@@ -1099,11 +1099,13 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     rt.post_turn_subconscious
         .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
         .await;
+    // Before the sessions drain: a pulse script finishing during that wait
+    // would otherwise start a new session in an agent that is stopping.
+    rt.pulse_scripts_stop.cancel();
     // Stop live sessions first, while the bus and its subscribers (notify
     // router included) are still running, so their results are recorded and
     // delivered rather than left for startup recovery on the next boot.
     rt.session_runtime.shutdown(SESSION_SHUTDOWN_TIMEOUT).await;
-    rt.pulse_scripts_stop.cancel();
     // After the sessions, which take checkpoints of their own.
     if tokio::time::timeout(CHECKPOINT_SETTLE_TIMEOUT, rt.checkpoints.settled())
         .await

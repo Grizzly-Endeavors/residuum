@@ -17,7 +17,7 @@ use crate::agent_keys::{
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
-use crate::util::process::{RunOutcome, run_with_timeout_and_cancel, shell_command};
+use crate::util::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// Maximum output size from a command (100KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -392,7 +392,7 @@ impl Tool for ExecTool {
             cmd,
             Duration::from_secs(timeout_secs),
             cancel,
-            usize::MAX,
+            (Capture::All, Capture::All),
         )
         .await
         {

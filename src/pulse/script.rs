@@ -5,23 +5,22 @@
 //! stdout either joins the task's prompt before the session starts, or, for
 //! a `script_only` pulse, becomes the pulse's result with no session at all
 //! (see [`script_only_result`]). A script that exits non-zero, runs past its
-//! timeout, or can't be started is reported, never dropped: the run comes
+//! timeout, or can't be run is reported, never dropped: the run comes
 //! back as [`ScriptRun::Failed`] carrying the cause and the tail of stderr.
 
 use std::path::PathBuf;
-use std::process::Output;
 
 use tokio_util::sync::CancellationToken;
 
 use super::types::{PulseDef, PulseTask};
-use crate::agent_keys::{Redactor, SharedAgentKeys};
+use crate::agent_keys::SharedAgentKeys;
 use crate::background::registry::{generate_address, generate_run_id};
 use crate::bus::{
     AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     ResultDisposition, ends_with_sentinel,
 };
 use crate::tools::SharedToolsPath;
-use crate::util::process::{RunOutcome, run_with_timeout_and_cancel, shell_command};
+use crate::util::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// How much of a failed script's stderr is kept: its last 2 KiB, where the
 /// error that ended it usually is.
@@ -33,13 +32,11 @@ const STDERR_TAIL_BYTES: usize = 2 * 1024;
 pub(crate) struct ScriptEnv {
     /// Every script starts here.
     pub workspace_root: PathBuf,
-    /// The agent's tools `PATH`, read live at spawn time. `None` leaves the
-    /// inherited `PATH` alone.
-    pub tools_path: Option<SharedToolsPath>,
+    /// The agent's tools `PATH`, read live at spawn time.
+    pub tools_path: SharedToolsPath,
     /// Agent-key values are redacted from script output before it reaches a
     /// prompt, the inbox, or a notice, as they are from `exec` output.
-    /// `None` redacts nothing.
-    pub agent_keys: Option<SharedAgentKeys>,
+    pub agent_keys: SharedAgentKeys,
 }
 
 /// What one task's script produced.
@@ -48,7 +45,7 @@ pub enum ScriptRun {
     /// The script exited 0. `stdout` is cut to the task's
     /// `script_max_output_kb`, with a marker saying so when it was.
     Succeeded { stdout: String },
-    /// The script exited non-zero, timed out, or couldn't be started.
+    /// The script exited non-zero, timed out, or couldn't be run.
     Failed(ScriptFailure),
 }
 
@@ -73,8 +70,9 @@ pub enum ScriptFailureCause {
     Exited { code: Option<i32> },
     /// It ran past its timeout and its process tree was killed.
     TimedOut { secs: u64 },
-    /// The shell couldn't be started.
-    SpawnFailed { error: String },
+    /// The shell couldn't be started, or its exit status or output couldn't
+    /// be read.
+    RunFailed { error: String },
 }
 
 impl ScriptFailure {
@@ -89,7 +87,7 @@ impl ScriptFailure {
             ScriptFailureCause::TimedOut { secs } => {
                 format!("ran past its {secs}-second limit and was stopped")
             }
-            ScriptFailureCause::SpawnFailed { error } => format!("couldn't be started ({error})"),
+            ScriptFailureCause::RunFailed { error } => format!("couldn't be run ({error})"),
         }
     }
 
@@ -105,7 +103,7 @@ impl ScriptFailure {
             ScriptFailureCause::TimedOut { secs } => {
                 format!("timed out after {secs} seconds; process tree killed")
             }
-            ScriptFailureCause::SpawnFailed { error } => format!("spawn failed: {error}"),
+            ScriptFailureCause::RunFailed { error } => format!("run failed: {error}"),
         };
         let mut details = format!("script: {}\n{ending}", self.script);
         if !self.stderr_tail.is_empty() {
@@ -148,18 +146,13 @@ async fn run_task_script(
 ) -> Option<ScriptRun> {
     let timeout = task.script_timeout();
     let max_stdout = task.script_max_output_bytes();
-    let redactor = match &env.agent_keys {
-        Some(keys) => keys.redactor().await,
-        None => Redactor::default(),
-    };
+    let redactor = env.agent_keys.redactor().await;
 
     let mut cmd = shell_command(script);
     cmd.current_dir(&env.workspace_root);
-    if let Some(tools_path) = &env.tools_path {
-        crate::tools::apply_tools_path(&mut cmd, tools_path).await;
-    }
+    crate::tools::apply_tools_path(&mut cmd, &env.tools_path).await;
 
-    tracing::debug!(
+    tracing::info!(
         pulse = %pulse_name,
         task = %task.name,
         timeout_secs = timeout.as_secs(),
@@ -167,17 +160,17 @@ async fn run_task_script(
         "running pulse task script"
     );
 
-    let result =
-        run_with_timeout_and_cancel(cmd, timeout, cancel, max_stdout.saturating_add(1)).await;
-    let run = match result {
-        Err(e) => ScriptRun::Failed(ScriptFailure {
-            script: script.to_string(),
-            cause: ScriptFailureCause::SpawnFailed {
+    let capture = (
+        Capture::Head(max_stdout.saturating_add(1)),
+        Capture::Tail(STDERR_TAIL_BYTES * 2),
+    );
+    let (cause, output) = match run_with_timeout_and_cancel(cmd, timeout, cancel, capture).await {
+        Err(e) => (
+            Some(ScriptFailureCause::RunFailed {
                 error: e.to_string(),
-            },
-            stdout: String::new(),
-            stderr_tail: String::new(),
-        }),
+            }),
+            None,
+        ),
         Ok((RunOutcome::Cancelled, _)) => {
             tracing::info!(
                 pulse = %pulse_name,
@@ -186,21 +179,39 @@ async fn run_task_script(
             );
             return None;
         }
-        Ok((outcome, output)) => classify_output(
-            script,
-            outcome,
-            &output,
-            timeout.as_secs(),
-            max_stdout,
-            &redactor,
+        Ok((RunOutcome::TimedOut, output)) => (
+            Some(ScriptFailureCause::TimedOut {
+                secs: timeout.as_secs(),
+            }),
+            Some(output),
         ),
+        Ok((RunOutcome::Finished, output)) if output.status.success() => (None, Some(output)),
+        Ok((RunOutcome::Finished, output)) => (
+            Some(ScriptFailureCause::Exited {
+                code: output.status.code(),
+            }),
+            Some(output),
+        ),
+    };
+    let (stdout, stderr) = output.map_or_else(Default::default, |o| (o.stdout, o.stderr));
+    let stdout = redactor
+        .redact(&capped_stdout(&stdout, max_stdout))
+        .into_owned();
+    let run = match cause {
+        None => ScriptRun::Succeeded { stdout },
+        Some(cause) => ScriptRun::Failed(ScriptFailure {
+            script: script.to_string(),
+            cause,
+            stdout,
+            stderr_tail: redactor.redact(&stderr_tail(&stderr)).into_owned(),
+        }),
     };
 
     match &run {
-        ScriptRun::Succeeded { stdout } => tracing::debug!(
+        ScriptRun::Succeeded { stdout: printed } => tracing::debug!(
             pulse = %pulse_name,
             task = %task.name,
-            output_bytes = stdout.len(),
+            output_bytes = printed.len(),
             "pulse task script finished"
         ),
         ScriptRun::Failed(failure) => tracing::warn!(
@@ -212,39 +223,6 @@ async fn run_task_script(
         ),
     }
     Some(run)
-}
-
-/// Turn a finished or timed-out run into a [`ScriptRun`], cutting stdout to
-/// `max_stdout` bytes and keeping the tail of stderr, both redacted.
-fn classify_output(
-    script: &str,
-    outcome: RunOutcome,
-    output: &Output,
-    timeout_secs: u64,
-    max_stdout: usize,
-    redactor: &Redactor,
-) -> ScriptRun {
-    let stdout = redactor
-        .redact(&capped_stdout(&output.stdout, max_stdout))
-        .into_owned();
-    let stderr_tail = redactor.redact(&stderr_tail(&output.stderr)).into_owned();
-    let cause = match outcome {
-        RunOutcome::Finished if output.status.success() => {
-            return ScriptRun::Succeeded { stdout };
-        }
-        RunOutcome::Finished => ScriptFailureCause::Exited {
-            code: output.status.code(),
-        },
-        RunOutcome::TimedOut | RunOutcome::Cancelled => {
-            ScriptFailureCause::TimedOut { secs: timeout_secs }
-        }
-    };
-    ScriptRun::Failed(ScriptFailure {
-        script: script.to_string(),
-        cause,
-        stdout,
-        stderr_tail,
-    })
 }
 
 /// Decode stdout, keeping at most `max` bytes and saying so when more was
@@ -343,24 +321,37 @@ pub(crate) fn script_only_result(
         }
     }
 
+    let single_task = pulse.tasks.len() == 1;
     let mut sections: Vec<String> = match outputs.as_slice() {
-        [(_, text)] if pulse.tasks.len() == 1 => vec![(*text).to_string()],
+        [(_, text)] if single_task => vec![(*text).to_string()],
         _ => outputs
             .iter()
             .map(|(name, text)| format!("### {name}\n{text}"))
             .collect(),
     };
+    // The notification router appends the failure reason itself ("This run
+    // failed: ..."), so a single task's failure carries only what the
+    // script printed; with several tasks, each failure names its task.
     for (name, failure) in &failures {
-        let mut section = format!("### {name}\nThe script {}.", failure.reason());
+        let mut lines = Vec::new();
+        if !single_task {
+            lines.push(format!("### {name}\nThe script {}.", failure.reason()));
+        }
         if !failure.stdout.trim().is_empty() {
-            section.push_str("\nWhat it printed before failing:\n");
-            section.push_str(failure.stdout.trim_end());
+            lines.push(format!(
+                "What it printed before failing:\n{}",
+                failure.stdout.trim_end()
+            ));
         }
         if !failure.stderr_tail.is_empty() {
-            section.push_str("\nThe last part of its error output:\n");
-            section.push_str(&failure.stderr_tail);
+            lines.push(format!(
+                "The last part of its error output:\n{}",
+                failure.stderr_tail
+            ));
         }
-        sections.push(section);
+        if !lines.is_empty() {
+            sections.push(lines.join("\n"));
+        }
     }
 
     let status = match failures.as_slice() {
@@ -388,7 +379,7 @@ pub(crate) fn script_only_result(
     };
     let disposition = if urgent {
         ResultDisposition::Urgent
-    } else if sections.is_empty() {
+    } else if sections.is_empty() && failures.is_empty() {
         ResultDisposition::Silent
     } else {
         ResultDisposition::Normal
@@ -409,15 +400,15 @@ pub(crate) fn script_only_result(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::testing::wait;
 
-    fn env(dir: &std::path::Path) -> ScriptEnv {
+    pub(crate) fn env(dir: &std::path::Path) -> ScriptEnv {
         ScriptEnv {
             workspace_root: dir.to_path_buf(),
-            tools_path: None,
-            agent_keys: None,
+            tools_path: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            agent_keys: crate::agent_keys::AgentKeys::new_shared(dir.join("no-agent-keys")),
         }
     }
 
@@ -569,6 +560,81 @@ mod tests {
         };
         assert_eq!(failure.cause, ScriptFailureCause::TimedOut { secs: 30 });
         assert!(failure.reason().contains("30-second limit"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_stderr_tail_is_the_end_of_long_error_output() {
+        let dir = tempfile::tempdir().unwrap();
+        // 100 KB of noise on stderr, past the 64 KiB stdout cap, then the
+        // line that explains the failure.
+        let t = task(
+            "t",
+            "head -c 100000 /dev/zero | tr '\\0' 'n' 1>&2; echo; echo final error 1>&2; exit 1",
+        );
+        let run = run_one(dir.path(), t).await;
+        let ScriptRun::Failed(failure) = run else {
+            panic!("expected failure, got {run:?}");
+        };
+        assert!(
+            failure.stderr_tail.ends_with("final error"),
+            "{}",
+            failure.stderr_tail
+        );
+        assert!(failure.stderr_tail.len() <= STDERR_TAIL_BYTES + 4);
+    }
+
+    // A script that leaves a background process holding its output still
+    // stops at its timeout. The clock is paused once the shell has been
+    // reaped, leaving only the pipes to wait on, so tokio jumps straight to
+    // the deadline.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_background_child_holding_the_output_still_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell_pid = dir.path().join("shell.pid");
+        let mut t = task(
+            "t",
+            &format!(
+                "echo $$ > '{}'; sleep 600 & echo started",
+                shell_pid.display()
+            ),
+        );
+        t.script_timeout_secs = Some(600);
+        let pulse = pulse(vec![t]);
+        let script_env = env(dir.path());
+        let cancel = CancellationToken::new();
+        let mut run = std::pin::pin!(run_pulse_scripts(&pulse, &script_env, &cancel));
+        let reaped = async {
+            let pid: u32 = wait::until("the shell's pid", || async {
+                tokio::fs::read_to_string(&shell_pid)
+                    .await
+                    .ok()?
+                    .trim()
+                    .parse()
+                    .ok()
+            })
+            .await;
+            wait::until_true("the shell to be reaped", || {
+                !std::path::Path::new(&format!("/proc/{pid}")).exists()
+            })
+            .await;
+        };
+        tokio::select! {
+            biased;
+            () = reaped => {}
+            runs = &mut run => panic!("the scripts ended before the shell was reaped: {runs:?}"),
+        }
+        tokio::time::pause();
+        let runs = crate::testing::clock::within(std::time::Duration::from_secs(3600), &mut run)
+            .await
+            .expect("the script ends at its timeout")
+            .unwrap();
+        let Some(Some(ScriptRun::Failed(failure))) = runs.into_iter().next() else {
+            panic!("expected a timeout failure");
+        };
+        assert_eq!(failure.cause, ScriptFailureCause::TimedOut { secs: 600 });
+        assert_eq!(failure.stdout.trim(), "started");
     }
 
     #[tokio::test]

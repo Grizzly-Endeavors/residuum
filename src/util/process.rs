@@ -230,14 +230,38 @@ pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
 /// How a spawned command's run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunOutcome {
-    /// The command exited on its own before the timeout or a stop.
+    /// The command exited on its own, and everything holding its output
+    /// pipes let go of them, before the timeout or a stop.
     Finished,
-    /// The timeout elapsed; the process tree was killed.
+    /// The timeout elapsed, either while the command ran or while a process
+    /// it left behind still held its output open; the process tree was
+    /// killed.
     TimedOut,
-    /// The caller's cancellation token fired while the command was running;
-    /// the process tree was killed.
+    /// The caller's cancellation token fired, either while the command ran
+    /// or while a process it left behind still held its output open; the
+    /// process tree was killed.
     Cancelled,
 }
+
+/// How much of a pipe [`run_with_timeout_and_cancel`] keeps. Whatever
+/// isn't kept is still read, so the command never blocks on a full pipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Capture {
+    /// Everything.
+    All,
+    /// The first `n` bytes. Ask for one byte more than will be shown to
+    /// learn whether output was cut.
+    Head(usize),
+    /// The last `n` bytes, where a failing command's final error usually is.
+    Tail(usize),
+}
+
+/// How long the pipes are still read after a killed command's process
+/// tree is gone. A process that escaped the kill can hold the pipes open
+/// for as long as it lives: one that left the process group on Unix, or,
+/// on Windows, a descendant `taskkill /T` can no longer find once the shell
+/// that started it has exited. Past this, whatever was read is returned.
+const KILLED_PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// How the race in [`run_with_timeout_and_cancel`] resolved, before the
 /// process tree has necessarily been killed or reaped yet.
@@ -250,17 +274,14 @@ enum Wait {
 /// Spawn `cmd`, race it against `timeout` and `cancel`, and return whatever
 /// output it produced along with how the run ended.
 ///
-/// Each pipe keeps at most `capture_limit` bytes; anything past that is
-/// still read, so the command never blocks on a full pipe, and discarded.
-/// A caller that needs to know whether output was cut asks for one byte
-/// more than it will show and checks the length.
-///
-/// On a timeout or a stop, [`kill_process_tree`] kills the whole process
-/// tree rather than only the immediate shell, and whatever stdout/stderr the
-/// command had already produced is still returned — the pipes reach EOF
-/// once every process holding their write end has exited, which the kill
-/// guarantees, so draining them afterward always yields whatever was
-/// captured before the command ended, partial or not.
+/// The timeout and `cancel` stay in force until both output pipes close,
+/// not only until the shell exits: a command that starts a background
+/// process which keeps its output open (`some-daemon & echo started`) is
+/// stopped at the timeout like any other. On a timeout or a stop,
+/// [`kill_process_tree`] kills the whole process tree rather than only the
+/// immediate shell, and whatever stdout/stderr the command had produced is
+/// still returned (see [`KILLED_PIPE_DRAIN_GRACE`] for a process the kill
+/// can't reach).
 ///
 /// # Errors
 /// Returns an error when the command can't be spawned, its exit status
@@ -269,19 +290,18 @@ pub(crate) async fn run_with_timeout_and_cancel(
     mut cmd: tokio::process::Command,
     timeout: Duration,
     cancel: &CancellationToken,
-    capture_limit: usize,
+    (stdout_capture, stderr_capture): (Capture, Capture),
 ) -> io::Result<(RunOutcome, Output)> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
 
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut child = cmd.spawn()?;
     let pid = child.id();
-    // Guards the window between spawn and the point below where the
-    // process tree has already been killed or the child already reaped —
-    // covers the case where this future itself is dropped (not cancelled
-    // through the `select!` below), e.g. the caller's turn future being
-    // dropped while this is still suspended awaiting the child.
+    // Kills the process tree if this future is dropped (not cancelled
+    // through `cancel`) before the run has fully ended, the pipe drain
+    // included — e.g. the caller's turn future being dropped mid-command.
     let mut tree_guard = ProcessTreeGuard::new(pid);
     let stdout_pipe = child
         .stdout
@@ -296,64 +316,154 @@ pub(crate) async fn run_with_timeout_and_cancel(
     // for as long as it takes — a command that writes more than the OS
     // pipe buffer holds would otherwise block on that write forever, since
     // nothing would be reading until after `child.wait()` resolves.
-    let stdout_task = spawn_pipe_reader(stdout_pipe, capture_limit);
-    let stderr_task = spawn_pipe_reader(stderr_pipe, capture_limit);
+    let stop_readers = CancellationToken::new();
+    let stdout_task = spawn_pipe_reader(stdout_pipe, stdout_capture, stop_readers.clone());
+    let stderr_task = spawn_pipe_reader(stderr_pipe, stderr_capture, stop_readers.clone());
+    let mut readers = std::pin::pin!(async move {
+        let stdout = join_pipe_reader(stdout_task).await;
+        let stderr = join_pipe_reader(stderr_task).await;
+        (stdout, stderr)
+    });
 
     let wait = tokio::select! {
         biased;
         () = cancel.cancelled() => Wait::Cancelled,
-        () = tokio::time::sleep(timeout) => Wait::TimedOut,
+        () = tokio::time::sleep_until(deadline) => Wait::TimedOut,
         status = child.wait() => Wait::Exited(status?),
     };
 
+    let mut drained = None;
     let (outcome, status) = match wait {
         Wait::Exited(status) => {
-            // The child already exited on its own; nothing left to kill.
-            tree_guard.disarm();
-            (RunOutcome::Finished, status)
+            // The shell is gone, but anything it started in the background
+            // may still hold the pipes; the deadline and the stop still apply.
+            let stopped = tokio::select! {
+                biased;
+                () = cancel.cancelled() => Some(RunOutcome::Cancelled),
+                () = tokio::time::sleep_until(deadline) => Some(RunOutcome::TimedOut),
+                output = &mut readers => {
+                    drained = Some(output);
+                    None
+                }
+            };
+            match stopped {
+                None => (RunOutcome::Finished, status),
+                // On Unix the process group outlives its leader while any
+                // member lives, so this still reaches what the shell left.
+                Some(outcome) => {
+                    kill_process_tree(pid).await;
+                    (outcome, status)
+                }
+            }
         }
         Wait::TimedOut => {
             kill_process_tree(pid).await;
-            tree_guard.disarm();
             (RunOutcome::TimedOut, child.wait().await?)
         }
         Wait::Cancelled => {
             kill_process_tree(pid).await;
-            tree_guard.disarm();
             (RunOutcome::Cancelled, child.wait().await?)
         }
     };
+
+    let (stdout, stderr) = match drained {
+        Some(output) => output,
+        None => {
+            tokio::select! {
+                biased;
+                output = &mut readers => output,
+                () = tokio::time::sleep(KILLED_PIPE_DRAIN_GRACE) => {
+                    stop_readers.cancel();
+                    (&mut readers).await
+                }
+            }
+        }
+    };
+    tree_guard.disarm();
 
     Ok((
         outcome,
         Output {
             status,
-            stdout: join_pipe_reader(stdout_task).await?,
-            stderr: join_pipe_reader(stderr_task).await?,
+            stdout: stdout?,
+            stderr: stderr?,
         },
     ))
 }
 
-/// Spawn a task that reads a child's pipe to EOF, keeping the first `keep`
-/// bytes and discarding the rest.
-fn spawn_pipe_reader<R>(mut pipe: R, keep: usize) -> tokio::task::JoinHandle<io::Result<Vec<u8>>>
+/// One pipe's captured bytes, kept per its [`Capture`].
+struct CaptureBuffer {
+    capture: Capture,
+    bytes: Vec<u8>,
+}
+
+impl CaptureBuffer {
+    fn new(capture: Capture) -> Self {
+        Self {
+            capture,
+            bytes: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        match self.capture {
+            Capture::All => self.bytes.extend_from_slice(chunk),
+            Capture::Head(keep) => {
+                let room = keep.saturating_sub(self.bytes.len());
+                if let Some(kept) = chunk.get(..chunk.len().min(room)) {
+                    self.bytes.extend_from_slice(kept);
+                }
+            }
+            Capture::Tail(keep) => {
+                self.bytes.extend_from_slice(chunk);
+                // Trimmed in batches so each byte is moved O(1) times.
+                if self.bytes.len() > keep.saturating_mul(2) {
+                    let excess = self.bytes.len() - keep;
+                    self.bytes.drain(..excess);
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if let Capture::Tail(keep) = self.capture
+            && self.bytes.len() > keep
+        {
+            let excess = self.bytes.len() - keep;
+            self.bytes.drain(..excess);
+        }
+        self.bytes
+    }
+}
+
+/// Spawn a task that reads a child's pipe to EOF, keeping what `capture`
+/// asks for. Once `stop` fires it still takes whatever is ready to read,
+/// then returns instead of waiting for more.
+fn spawn_pipe_reader<R>(
+    mut pipe: R,
+    capture: Capture,
+    stop: CancellationToken,
+) -> tokio::task::JoinHandle<io::Result<Vec<u8>>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     crate::util::spawn_in_span(async move {
-        let mut buf = Vec::new();
+        let mut buffer = CaptureBuffer::new(capture);
         let mut chunk = vec![0_u8; 8 * 1024];
         loop {
-            let read = pipe.read(&mut chunk).await?;
+            let read = tokio::select! {
+                biased;
+                read = pipe.read(&mut chunk) => read?,
+                () = stop.cancelled() => break,
+            };
             if read == 0 {
                 break;
             }
-            let room = keep.saturating_sub(buf.len());
-            if let Some(kept) = chunk.get(..read.min(room)) {
-                buf.extend_from_slice(kept);
+            if let Some(bytes) = chunk.get(..read) {
+                buffer.push(bytes);
             }
         }
-        Ok(buf)
+        Ok(buffer.finish())
     })
 }
 
@@ -416,5 +526,136 @@ mod tests {
     fn is_process_running_detects_current_process() {
         let current_pid = std::process::id();
         assert!(is_process_running(current_pid));
+    }
+
+    // ── capture ──────────────────────────────────────────────────────────
+
+    fn captured(capture: Capture, chunks: &[&[u8]]) -> Vec<u8> {
+        let mut buffer = CaptureBuffer::new(capture);
+        for chunk in chunks {
+            buffer.push(chunk);
+        }
+        buffer.finish()
+    }
+
+    #[test]
+    fn capture_all_keeps_everything() {
+        assert_eq!(captured(Capture::All, &[b"abc", b"def"]), b"abcdef");
+    }
+
+    #[test]
+    fn capture_head_keeps_the_first_bytes() {
+        assert_eq!(
+            captured(Capture::Head(4), &[b"abc", b"def", b"ghi"]),
+            b"abcd"
+        );
+    }
+
+    #[test]
+    fn capture_tail_keeps_the_last_bytes() {
+        let noise = vec![b'x'; 10_000];
+        assert_eq!(
+            captured(Capture::Tail(5), &[&noise, b"final", b" error"]),
+            b"error"
+        );
+        assert_eq!(captured(Capture::Tail(64), &[b"short"]), b"short");
+    }
+
+    // ── a background process left holding the output ─────────────────────
+
+    /// Wait until the shell whose pid `pid_file` holds has been reaped, which
+    /// only `child.wait()` inside `run_with_timeout_and_cancel` does — so the
+    /// run has seen the shell exit and is now waiting on the pipes alone.
+    #[cfg(target_os = "linux")]
+    async fn shell_reaped(pid_file: &std::path::Path) {
+        let pid: u32 = crate::testing::wait::until("the shell's pid", || async {
+            tokio::fs::read_to_string(pid_file)
+                .await
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        })
+        .await;
+        crate::testing::wait::until_true("the shell to be reaped", || {
+            !std::path::Path::new(&format!("/proc/{pid}")).exists()
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn background_pid_dies(pid_file: &std::path::Path) {
+        let pid: u32 = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        crate::testing::wait::until_true("the background process to be killed", || {
+            !is_process_running(pid)
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn leaves_a_background_child(dir: &std::path::Path) -> tokio::process::Command {
+        shell_command(&format!(
+            "echo $$ > '{shell}'; sleep 600 & echo $! > '{bg}'; echo hi",
+            shell = dir.join("shell.pid").display(),
+            bg = dir.join("bg.pid").display(),
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_stop_ends_a_run_whose_background_child_holds_the_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let run = run_with_timeout_and_cancel(
+            leaves_a_background_child(dir.path()),
+            Duration::from_secs(3600),
+            &cancel,
+            (Capture::All, Capture::All),
+        );
+        let stop = async {
+            shell_reaped(&dir.path().join("shell.pid")).await;
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(
+            crate::testing::wait::guarded("the stopped run to return", run),
+            stop
+        );
+        let (outcome, output) = result.unwrap();
+        assert_eq!(outcome, RunOutcome::Cancelled);
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
+        background_pid_dies(&dir.path().join("bg.pid")).await;
+    }
+
+    // Once the shell has been reaped, the clock is paused: with only the
+    // pipes left to wait on, tokio jumps straight to the run's deadline.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_timeout_ends_a_run_whose_background_child_holds_the_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let mut run = std::pin::pin!(run_with_timeout_and_cancel(
+            leaves_a_background_child(dir.path()),
+            Duration::from_secs(600),
+            &cancel,
+            (Capture::All, Capture::All),
+        ));
+        let shell_pid = dir.path().join("shell.pid");
+        tokio::select! {
+            biased;
+            () = shell_reaped(&shell_pid) => {}
+            result = &mut run => panic!("the run ended before its shell was reaped: {result:?}"),
+        }
+        tokio::time::pause();
+        let (outcome, output) = crate::testing::clock::within(Duration::from_secs(3600), &mut run)
+            .await
+            .expect("the run ends at its timeout")
+            .unwrap();
+        assert_eq!(outcome, RunOutcome::TimedOut);
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
+        background_pid_dies(&dir.path().join("bg.pid")).await;
     }
 }

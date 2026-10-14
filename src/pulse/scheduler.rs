@@ -236,7 +236,7 @@ impl PulseScheduler {
                     ProblemKind::RemovedOption => {
                         tracing::error!(pulse = %problem.name, "{}", problem.message);
                     }
-                    ProblemKind::Malformed => {
+                    ProblemKind::Malformed | ProblemKind::IgnoredSetting => {
                         tracing::warn!(pulse = %problem.name, "{}", problem.message);
                     }
                 }

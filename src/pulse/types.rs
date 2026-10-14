@@ -142,9 +142,15 @@ pub(crate) enum ProblemKind {
     RemovedOption,
     /// Anything else wrong with the file that isn't about a removed option
     /// (a duplicate pulse name, an unparseable `schedule` or
-    /// `active_hours`, tasks whose script options don't fit together). Logged at `warn!`; the owner notice links the
-    /// heartbeats reference doc instead.
+    /// `active_hours`, tasks whose script options don't fit together).
+    /// Logged at `warn!`; the owner notice links the heartbeats reference
+    /// doc instead.
     Malformed,
+    /// A setting the pulse has no use for (see [`ignored_settings`]). The
+    /// pulse still loads and runs. Logged at `warn!`; the owner notice
+    /// lists it apart from the problems that stop a pulse, and links the
+    /// heartbeats reference doc.
+    IgnoredSetting,
 }
 
 /// A single problem found while loading or evaluating a HEARTBEAT.yml pulse
@@ -173,11 +179,31 @@ pub(crate) struct HeartbeatProblem {
 /// unchanged file.
 #[must_use]
 pub(crate) fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String {
-    let details = problems
+    let listed = |listing: &[&HeartbeatProblem]| {
+        listing
+            .iter()
+            .map(|p| format!("- {}", p.message))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let (ignored, blocking): (Vec<&HeartbeatProblem>, Vec<&HeartbeatProblem>) = problems
         .iter()
-        .map(|p| format!("- {}", p.message))
-        .collect::<Vec<_>>()
-        .join("\n");
+        .partition(|p| p.kind == ProblemKind::IgnoredSetting);
+    let mut parts = Vec::new();
+    if !blocking.is_empty() {
+        parts.push(format!(
+            "HEARTBEAT.yml: {count} problem{plural} found and will not run until fixed:\n{details}",
+            count = blocking.len(),
+            plural = if blocking.len() == 1 { "" } else { "s" },
+            details = listed(&blocking),
+        ));
+    }
+    if !ignored.is_empty() {
+        parts.push(format!(
+            "HEARTBEAT.yml: settings with no effect (these pulses still run):\n{}",
+            listed(&ignored)
+        ));
+    }
     let guide = if problems
         .iter()
         .any(|p| p.kind == ProblemKind::RemovedOption)
@@ -192,11 +218,65 @@ pub(crate) fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String
             crate::util::HEARTBEATS_REFERENCE_URL
         )
     };
-    format!(
-        "HEARTBEAT.yml: {count} problem{plural} found and will not run until fixed:\n{details}\n{guide}",
-        count = problems.len(),
-        plural = if problems.len() == 1 { "" } else { "s" },
-    )
+    parts.push(guide);
+    parts.join("\n")
+}
+
+/// Settings a pulse sets but has no use for, named in one message, or
+/// `None` when it uses everything it sets.
+///
+/// A `script_only` pulse runs no session, so a session's settings (`agent`,
+/// `model_tier`, `context_from`, and its tasks' `prompt`s) do nothing
+/// there. The pulse still runs; this only tells the owner, since someone
+/// who wrote a prompt on a script-only task most likely expected it to be
+/// used.
+#[must_use]
+pub(crate) fn ignored_settings(pulse: &PulseDef) -> Option<String> {
+    if !pulse.is_script_only() {
+        return None;
+    }
+    let mut ignored = Vec::new();
+    if pulse.agent.is_some() {
+        ignored.push("`agent`".to_string());
+    }
+    if pulse.model_tier.is_some() {
+        ignored.push("`model_tier`".to_string());
+    }
+    if pulse.context_from.is_some() {
+        ignored.push("`context_from`".to_string());
+    }
+    for task in &pulse.tasks {
+        if !task.prompt.trim().is_empty() {
+            ignored.push(format!("the `prompt` of task '{}'", task.name));
+        }
+    }
+    if ignored.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "pulse '{}' is script-only (every task sets `script_only`), so it runs no session and \
+         {} {} no effect — remove {}, or remove `script_only` to have a session use {}",
+        pulse.name,
+        ignored.join(", "),
+        if ignored.len() == 1 { "has" } else { "have" },
+        if ignored.len() == 1 { "it" } else { "them" },
+        if ignored.len() == 1 { "it" } else { "them" },
+    ))
+}
+
+/// One [`ProblemKind::IgnoredSetting`] problem per pulse that sets
+/// something it has no use for (see [`ignored_settings`]).
+fn ignored_settings_problems(pulses: &[PulseDef]) -> Vec<HeartbeatProblem> {
+    pulses
+        .iter()
+        .filter_map(|pulse| {
+            ignored_settings(pulse).map(|message| HeartbeatProblem {
+                name: pulse.name.clone(),
+                message,
+                kind: ProblemKind::IgnoredSetting,
+            })
+        })
+        .collect()
 }
 
 /// One task within a pulse.
@@ -554,6 +634,7 @@ pub(crate) fn load_heartbeat(
 
     problems.extend(dedupe_pulse_names(&mut pulses));
     problems.extend(reject_invalid_pulses(&mut pulses));
+    problems.extend(ignored_settings_problems(&pulses));
 
     tracing::trace!(path = %path.display(), pulses = pulses.len(), "loaded HEARTBEAT.yml");
     Some(HeartbeatConfig { pulses })
@@ -632,27 +713,28 @@ pub(crate) fn diagnose_heartbeat(content: &str) -> Vec<crate::diagnostics::Diagn
         }
     }
 
-    diagnostics.extend(
-        dedupe_pulse_names(&mut pulses)
-            .into_iter()
-            .chain(reject_invalid_pulses(&mut pulses))
-            .map(pulse_problem_diagnostic),
-    );
+    let mut problems = dedupe_pulse_names(&mut pulses);
+    problems.extend(reject_invalid_pulses(&mut pulses));
+    problems.extend(ignored_settings_problems(&pulses));
+    diagnostics.extend(problems.into_iter().map(pulse_problem_diagnostic));
 
     diagnostics
 }
 
 /// Turn a [`HeartbeatProblem`] into a [`Diagnostic`] located at the pulse it
-/// names.
+/// names: a warning for a setting with no effect, an error otherwise.
 fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> crate::diagnostics::Diagnostic {
     use crate::diagnostics::{Diagnostic, Location};
 
-    Diagnostic::error_at(
-        problem.message,
-        Location::Path {
-            path: format!("pulses.{}", problem.name),
-        },
-    )
+    let location = Location::Path {
+        path: format!("pulses.{}", problem.name),
+    };
+    match problem.kind {
+        ProblemKind::IgnoredSetting => Diagnostic::warning_at(problem.message, location),
+        ProblemKind::RemovedOption | ProblemKind::Malformed => {
+            Diagnostic::error_at(problem.message, location)
+        }
+    }
 }
 
 /// Drop pulses that use a removed option (`agent: "main"` or
@@ -1762,5 +1844,45 @@ pulses:
         let (pulses, problems) = load_problems(yaml);
         assert!(problems.is_empty(), "{problems:?}");
         assert!(!pulses.first().unwrap().is_script_only());
+    }
+
+    #[test]
+    fn settings_a_script_only_pulse_ignores_are_flagged_but_the_pulse_still_loads() {
+        let yaml = r#"
+pulses:
+  - name: watch
+    schedule: "1h"
+    agent: researcher
+    tasks:
+      - name: check
+        prompt: "Look closely."
+        script: "echo hi"
+        script_only: true
+"#;
+        let (pulses, problems) = load_problems(yaml);
+        assert_eq!(pulses.len(), 1, "the pulse still runs");
+        let problem = problems.first().unwrap();
+        assert_eq!(problem.kind, ProblemKind::IgnoredSetting);
+        assert!(problem.message.contains("`agent`"), "{}", problem.message);
+        assert!(
+            problem.message.contains("`prompt` of task 'check'"),
+            "{}",
+            problem.message
+        );
+
+        let notice = heartbeat_problems_notice(&problems);
+        assert!(notice.contains("no effect"), "{notice}");
+        assert!(!notice.contains("will not run"), "{notice}");
+
+        let diagnostics = diagnose_heartbeat(yaml);
+        let diagnostic = diagnostics.first().unwrap();
+        assert_eq!(diagnostic.severity, crate::diagnostics::Severity::Warning);
+    }
+
+    #[test]
+    fn a_script_only_pulse_using_everything_it_sets_raises_nothing() {
+        let yaml = "pulses:\n  - name: p\n    schedule: \"1h\"\n    tasks:\n      - name: t\n        script: \"date\"\n        script_only: true\n";
+        let (_, problems) = load_problems(yaml);
+        assert!(problems.is_empty(), "{problems:?}");
     }
 }
