@@ -437,31 +437,47 @@ async fn handle_output_truncated(
     push_and_record(recent_messages, resources.transcript_sink, note).await;
 }
 
-/// Tell the user, once per turn, that a request left images out because the
-/// model can't take them. `noticed` records that this turn already has.
+/// Tell the user, once per turn, that images this turn brought in (the
+/// triggering message, an interrupt, a tool result) were left out because
+/// the model can't take them. Images from earlier turns are left out of every
+/// request too, quietly: the user heard about them when they arrived.
+/// `noticed` records that this turn already has.
 async fn notice_images_omitted(
     response: &InferenceResponse,
+    turn_messages: &[Message],
     events: &EventContext<'_>,
     noticed: &mut bool,
 ) {
     let Some(omitted) = &response.images_omitted else {
         return;
     };
+    let new_images: usize = turn_messages
+        .iter()
+        .map(|message| message.images.len())
+        .sum();
+    if new_images == 0 {
+        tracing::debug!(
+            model = %omitted.model,
+            images = omitted.count,
+            "left earlier turns' images out of a request to a model that can't take them"
+        );
+        return;
+    }
     if std::mem::replace(noticed, true) {
         return;
     }
     tracing::warn!(
         model = %omitted.model,
-        images = omitted.count,
+        images = new_images,
         learned = omitted.learned,
-        "left images out of a request to a model that can't take them"
+        "left this turn's images out of a request to a model that can't take them"
     );
     if let Err(e) = events
         .publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
             NoticeEvent {
-                message: images_omitted_notice(omitted),
+                message: images_omitted_notice(omitted, new_images),
             },
         )
         .await
@@ -471,8 +487,8 @@ async fn notice_images_omitted(
 }
 
 /// The plain-language notice for images a request left out.
-fn images_omitted_notice(omitted: &crate::inference::ImagesOmitted) -> String {
-    let count = match omitted.count {
+fn images_omitted_notice(omitted: &crate::inference::ImagesOmitted, count: usize) -> String {
+    let count = match count {
         1 => "1 image was".to_string(),
         n => format!("{n} images were"),
     };
@@ -787,7 +803,13 @@ pub(crate) async fn execute_turn(
                 }
             };
         settle_response(&mut response, events, call).await;
-        notice_images_omitted(&response, events, &mut images_noticed).await;
+        notice_images_omitted(
+            &response,
+            recent_messages.messages_since(turn_start),
+            events,
+            &mut images_noticed,
+        )
+        .await;
 
         if response.was_truncated() {
             handle_output_truncated(&response, resources, events, recent_messages).await;
@@ -3632,8 +3654,9 @@ mod tests {
         );
     }
 
-    /// Answers every call with images left out: a tool call first, then
-    /// text, so one turn makes two model requests.
+    /// Answers every call as if images were left out of the request (nine,
+    /// counted over the whole history): a tool call first, then text. From
+    /// the fourth call on, the model's text-only verdict is a learned one.
     struct ImagesOmittedProvider {
         calls: AtomicUsize,
     }
@@ -3654,8 +3677,8 @@ mod tests {
             };
             response.images_omitted = Some(crate::inference::ImagesOmitted {
                 model: "glm-5.3".to_string(),
-                count: if call == 0 { 1 } else { 2 },
-                learned: call > 0,
+                count: 9,
+                learned: call >= 3,
             });
             Ok(response)
         }
@@ -3665,8 +3688,15 @@ mod tests {
         }
     }
 
+    fn png() -> crate::inference::ImageData {
+        crate::inference::ImageData {
+            media_type: "image/png".to_string(),
+            data: "iVBORw0KGgo=".to_string(),
+        }
+    }
+
     #[tokio::test]
-    async fn images_left_out_of_requests_are_noticed_once_per_turn() {
+    async fn only_images_a_turn_brings_in_are_noticed_once_per_turn() {
         let provider = ImagesOmittedProvider {
             calls: AtomicUsize::new(0),
         };
@@ -3708,20 +3738,25 @@ mod tests {
             },
             session_conversation: None,
         };
-        let memory_ctx = MemoryContext {
-            observations: None,
-            recent_context: None,
-        };
-        let prompt_ctx = PromptContext::default();
         let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
 
-        for turn in ["look at this", "and again"] {
-            recent.push(Message::user(turn));
+        // A turn with one new image and two model requests, a turn with only
+        // that old image in history, and a turn with two new images.
+        let turns = [
+            Message::user_with_images("look at this", vec![png()]),
+            Message::user("and again"),
+            Message::user_with_images("two more", vec![png(), png()]),
+        ];
+        for (n, turn) in turns.into_iter().enumerate() {
+            recent.push(turn);
             execute_turn(
                 &resources,
-                &memory_ctx,
-                &prompt_ctx,
+                &MemoryContext {
+                    observations: None,
+                    recent_context: None,
+                },
+                &PromptContext::default(),
                 &mut recent,
                 &events,
                 None,
@@ -3730,41 +3765,35 @@ mod tests {
             )
             .await
             .unwrap();
+            let message = format!("end of turn {n}");
+            let end = topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
             publisher
-                .publish(
-                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    NoticeEvent {
-                        message: format!("end of {turn}"),
-                    },
-                )
+                .publish(end, NoticeEvent { message })
                 .await
                 .unwrap();
         }
 
-        let first = wait::next_event("the first turn's notice", &mut notices).await;
+        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
         assert_eq!(
-            first.message,
-            "This model can't see images, so 1 image was left out of the request."
+            next().await,
+            "This model can't see images, so 1 image was left out of the request.",
+            "the turn's own image is counted, not the history's"
         );
-        let first_end = wait::next_event("the first turn's end marker", &mut notices).await;
+        assert_eq!(next().await, "end of turn 0", "one notice for two requests");
         assert_eq!(
-            first_end.message, "end of look at this",
-            "the turn's second request adds no second notice"
+            next().await,
+            "end of turn 1",
+            "an image from an earlier turn is left out quietly"
         );
-        let second = wait::next_event("the second turn's notice", &mut notices).await;
+        let third = next().await;
         assert!(
-            second
-                .message
-                .starts_with("This model can't see images, so 2 images were left out"),
-            "each turn gets its own notice: {}",
-            second.message
+            third.starts_with("This model can't see images, so 2 images were left out"),
+            "{third}"
         );
         assert!(
-            second.message.contains("mark glm-5.3 as text only"),
-            "a learned verdict suggests declaring it: {}",
-            second.message
+            third.contains("mark glm-5.3 as text only"),
+            "a learned verdict suggests declaring it: {third}"
         );
-        let second_end = wait::next_event("the second turn's end marker", &mut notices).await;
-        assert_eq!(second_end.message, "end of and again");
+        assert_eq!(next().await, "end of turn 2");
     }
 }

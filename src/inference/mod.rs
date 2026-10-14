@@ -5,7 +5,7 @@ mod error;
 pub(crate) mod factory;
 pub(crate) mod failover;
 mod http;
-pub(crate) mod image_input;
+mod image_input;
 pub(crate) mod providers;
 mod reply;
 pub(crate) mod retry;

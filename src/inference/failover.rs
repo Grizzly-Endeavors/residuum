@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::stream::TrackedSink;
 use super::{
@@ -126,6 +126,33 @@ impl FailoverProvider {
         }
     }
 
+    /// The order to try the providers in for this request, each with whether
+    /// a later hop takes images (see [`InferenceProvider::complete_as_hop`]).
+    ///
+    /// A request without images, or one no provider can take the images of,
+    /// tries them in the configured order. Otherwise the providers that take
+    /// images go first, in order, so a vision-capable fallback answers rather
+    /// than a text-only primary that would leave the images out; the
+    /// text-only ones follow, in case every provider that takes images fails.
+    fn attempt_order(&self, messages: &[Message]) -> Vec<(usize, bool)> {
+        let has_images = messages.iter().any(|message| !message.images.is_empty());
+        let takes: Vec<bool> = self
+            .providers
+            .iter()
+            .map(|provider| has_images && provider.takes_images())
+            .collect();
+        let Some(last_taking) = takes.iter().rposition(|&taking| taking) else {
+            return (0..self.providers.len()).map(|idx| (idx, false)).collect();
+        };
+        let taking = (0..self.providers.len())
+            .filter(|&idx| takes.get(idx).copied().unwrap_or(false))
+            .map(|idx| (idx, idx < last_taking));
+        let text_only = (0..self.providers.len())
+            .filter(|&idx| !takes.get(idx).copied().unwrap_or(false))
+            .map(|idx| (idx, false));
+        taking.chain(text_only).collect()
+    }
+
     /// Try each provider in turn, streaming into `sink` when there is one.
     /// Whatever a failed provider already streamed is voided before the next
     /// one is tried.
@@ -136,7 +163,8 @@ impl FailoverProvider {
         options: &CompletionOptions,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
-        let total = self.providers.len();
+        let order = self.attempt_order(messages);
+        let total = order.len();
         let previously_active = self.active_index.load(Ordering::SeqCst);
         let mut last_error: Option<InferenceError> = None;
         // The cause of leaving whichever provider was active going into
@@ -144,22 +172,32 @@ impl FailoverProvider {
         // this time — the reason a fallback notice names.
         let mut active_provider_cause: Option<&'static str> = None;
 
-        for (idx, provider) in self.providers.iter().enumerate() {
-            let attempt = match sink {
-                Some(sink) => {
-                    provider
-                        .complete_streaming(messages, tools, options, sink)
-                        .await
-                }
-                None => provider.complete(messages, tools, options).await,
+        for (position, &(idx, image_fallback)) in order.iter().enumerate() {
+            let Some(provider) = self.providers.get(idx) else {
+                continue;
             };
+            let hop_sink = sink.map(|sink| sink as &dyn StreamSink);
+            let attempt = provider
+                .complete_as_hop(messages, tools, options, hop_sink, image_fallback)
+                .await;
             match attempt {
+                Ok(response) if position == 0 && idx > 0 => {
+                    // Earlier providers were passed over only because they
+                    // can't take this request's images, not because they
+                    // failed: nothing to tell the user, and the chain hasn't
+                    // moved off the provider it was on.
+                    debug!(
+                        answered_by = provider.model_name(),
+                        "request with images answered by a provider that takes them"
+                    );
+                    return Ok(response);
+                }
                 Ok(response) => {
                     if idx > 0 {
                         info!(
                             primary = self.providers.first().map_or("unknown", |p| p.model_name()),
                             succeeded_on = provider.model_name(),
-                            attempts = idx + 1,
+                            attempts = position + 1,
                             "failover succeeded"
                         );
                     }
@@ -168,7 +206,7 @@ impl FailoverProvider {
                     return Ok(response);
                 }
                 Err(err) => {
-                    let remaining = total - idx - 1;
+                    let remaining = total - position - 1;
                     if remaining > 0 {
                         warn!(
                             provider = provider.model_name(),
@@ -1069,6 +1107,218 @@ mod tests {
                 returned.contains("ANTH-SIG") && !returned.contains("GEM-SIG"),
                 "back on Anthropic, its own signature is replayed and Gemini's is not: {returned}"
             );
+        }
+    }
+
+    /// Requests that carry images, in a chain of image-input guards.
+    mod images {
+        use std::sync::Mutex;
+
+        use super::*;
+        use crate::config::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
+        use crate::inference::ImageData;
+        use crate::inference::image_input::{ImageInputGuard, LearnedTextOnly};
+
+        type Requests = Arc<Mutex<Vec<Vec<Message>>>>;
+
+        /// Records each request; turns down any that carries an image when
+        /// `rejects_images`, the way Z.ai did in issue #463.
+        struct Model {
+            name: &'static str,
+            rejects_images: bool,
+            requests: Requests,
+        }
+
+        #[async_trait]
+        impl InferenceProvider for Model {
+            async fn complete(
+                &self,
+                messages: &[Message],
+                _tools: &[ToolDefinition],
+                _options: &CompletionOptions,
+            ) -> Result<InferenceResponse, InferenceError> {
+                self.requests.lock().unwrap().push(messages.to_vec());
+                if self.rejects_images && messages.iter().any(|m| !m.images.is_empty()) {
+                    return Err(InferenceError::Api(
+                        "400 Bad Request: messages.content.type is invalid".to_string(),
+                    ));
+                }
+                Ok(InferenceResponse::new(
+                    format!("answer from {}", self.name),
+                    vec![],
+                ))
+            }
+
+            fn model_name(&self) -> &str {
+                self.name
+            }
+        }
+
+        /// A guarded hop for `name`, declared `image_input`.
+        fn hop(
+            name: &'static str,
+            image_input: ImageInput,
+            rejects_images: bool,
+        ) -> (Box<dyn InferenceProvider>, Requests) {
+            let requests = Requests::default();
+            let spec = ProviderSpec {
+                name: "test".to_string(),
+                model: ModelSpec {
+                    kind: ProviderKind::OpenAi,
+                    model: name.to_string(),
+                },
+                provider_url: "http://models.test".to_string(),
+                api_key: None,
+                keep_alive: None,
+                session_affinity: None,
+                image_input,
+            };
+            let model = Model {
+                name,
+                rejects_images,
+                requests: Arc::clone(&requests),
+            };
+            let guard =
+                ImageInputGuard::new(Box::new(model), &spec, Arc::new(LearnedTextOnly::default()));
+            (Box::new(guard), requests)
+        }
+
+        fn with_image() -> Vec<Message> {
+            vec![Message::user_with_images(
+                "what is this?",
+                vec![ImageData {
+                    media_type: "image/png".to_string(),
+                    data: "iVBORw0KGgo=".to_string(),
+                }],
+            )]
+        }
+
+        fn sent_images(requests: &Requests) -> Vec<usize> {
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|request| request.iter().map(|m| m.images.len()).sum())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn an_image_turn_goes_to_a_fallback_that_takes_images_without_a_notice() {
+            let bus_handle = crate::bus::spawn_broker();
+            let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
+                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+                .await
+                .unwrap();
+            let (primary, primary_requests) = hop("glm-5.3", ImageInput::TextOnly, false);
+            let (fallback, fallback_requests) = hop("gpt-4o", ImageInput::Accepted, false);
+            let chain = FailoverProvider::new(vec![primary, fallback])
+                .with_notices(bus_handle.publisher(), "main model");
+
+            let response = chain
+                .complete(&with_image(), &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+
+            assert_eq!(response.content, "answer from gpt-4o");
+            assert_eq!(response.images_omitted, None, "nothing was left out");
+            assert!(sent_images(&primary_requests).is_empty(), "primary skipped");
+            assert_eq!(sent_images(&fallback_requests), vec![1], "image sent");
+            assert_no_notice(&bus_handle, &mut notices).await;
+
+            let text = chain
+                .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                text.content, "answer from glm-5.3",
+                "text turns stay on the primary"
+            );
+            assert_no_notice(&bus_handle, &mut notices).await;
+        }
+
+        #[tokio::test]
+        async fn an_image_rejection_fails_over_to_a_hop_that_takes_images() {
+            let (primary, primary_requests) = hop("glm-5.3", ImageInput::Undeclared, true);
+            let (fallback, fallback_requests) = hop("gpt-4o", ImageInput::Accepted, false);
+            let chain = FailoverProvider::new(vec![primary, fallback]);
+
+            let response = chain
+                .complete(&with_image(), &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+
+            assert_eq!(response.content, "answer from gpt-4o");
+            assert_eq!(response.images_omitted, None);
+            assert_eq!(
+                sent_images(&primary_requests),
+                vec![1],
+                "the primary is tried once with the image and not retried without it"
+            );
+            assert_eq!(sent_images(&fallback_requests), vec![1]);
+
+            chain
+                .complete(&with_image(), &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                sent_images(&primary_requests),
+                vec![1, 1],
+                "a rejection that failed over teaches nothing: the primary is tried again"
+            );
+        }
+
+        #[tokio::test]
+        async fn with_no_hop_that_takes_images_the_first_answers_without_them() {
+            let (primary, primary_requests) = hop("glm-5.3", ImageInput::TextOnly, false);
+            let (fallback, fallback_requests) = hop("glm-4", ImageInput::TextOnly, false);
+            let chain = FailoverProvider::new(vec![primary, fallback]);
+
+            let response = chain
+                .complete(&with_image(), &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+
+            assert_eq!(response.content, "answer from glm-5.3");
+            assert_eq!(response.images_omitted.map(|o| o.count), Some(1));
+            assert_eq!(sent_images(&primary_requests), vec![0]);
+            assert!(sent_images(&fallback_requests).is_empty());
+        }
+
+        #[tokio::test]
+        async fn the_last_hop_that_takes_images_retries_its_rejection_without_them() {
+            let (primary, primary_requests) = hop("glm-5.3", ImageInput::Undeclared, true);
+            let (fallback, fallback_requests) = hop("glm-4", ImageInput::TextOnly, false);
+            let chain = FailoverProvider::new(vec![primary, fallback]);
+
+            let response = chain
+                .complete(&with_image(), &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+
+            assert_eq!(response.content, "answer from glm-5.3");
+            assert_eq!(response.images_omitted.map(|o| o.learned), Some(true));
+            assert_eq!(
+                sent_images(&primary_requests),
+                vec![1, 0],
+                "rejected with the image, then answered without it"
+            );
+            assert!(sent_images(&fallback_requests).is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_text_only_hop_still_answers_when_every_hop_that_takes_images_fails() {
+            let (primary, primary_requests) = hop("glm-5.3", ImageInput::TextOnly, false);
+            let failing: Box<dyn InferenceProvider> = Box::new(FailProvider { name: "gpt-4o" });
+            let chain = FailoverProvider::new(vec![primary, failing]);
+
+            let response = chain
+                .complete(&with_image(), &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+
+            assert_eq!(response.content, "answer from glm-5.3");
+            assert_eq!(response.images_omitted.map(|o| o.count), Some(1));
+            assert_eq!(sent_images(&primary_requests), vec![0]);
         }
     }
 }

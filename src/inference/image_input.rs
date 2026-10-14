@@ -4,7 +4,9 @@
 //! rewrite happens once, before any provider-specific conversion, for every
 //! provider and every failover hop alike. The conversation itself is never
 //! changed: only the outgoing request is, so switching back to a model that
-//! takes images sends them again.
+//! takes images sends them again. Which hop of a failover chain gets a
+//! request that carries images is decided in `failover`, which prefers a hop
+//! that takes them.
 
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -144,12 +146,16 @@ impl ImageInputGuard {
         Ok(response)
     }
 
+    /// Send the request, keeping images from a model that can't take them.
+    /// `image_fallback` says a later hop of the chain takes images, so an
+    /// image rejection goes back to the chain instead of being retried here.
     async fn run(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
         sink: Option<&TrackedSink<'_>>,
+        image_fallback: bool,
     ) -> Result<InferenceResponse, InferenceError> {
         if let Some(learned) = self.strip_up_front() {
             return match strip_images(messages) {
@@ -165,24 +171,29 @@ impl ImageInputGuard {
             Ok(response) => return Ok(response),
             Err(err) => err,
         };
-        if self.declared != ImageInput::Undeclared || !err.rejects_image_input() {
+        if image_fallback || self.declared != ImageInput::Undeclared || !err.rejects_image_input() {
             return Err(err);
         }
         let Some(stripped) = strip_images(messages) else {
             return Err(err);
         };
+        if let Some(sink) = sink {
+            sink.restart_if_needed();
+        }
+        // Only a retry that succeeds without the images shows they were the
+        // problem; a retry refused again leaves the model's images alone.
+        let response = self
+            .send_without_images(&stripped, tools, options, sink, true)
+            .await?;
         if self.learned.insert(&self.learned_key) {
             tracing::warn!(
                 model = self.inner.model_name(),
                 error = %err,
-                "provider turned down a request with images; sending this model no images for the rest of the run"
+                "provider turned down a request with images and took it without them; \
+                 sending this model no images for the rest of the run"
             );
         }
-        if let Some(sink) = sink {
-            sink.restart_if_needed();
-        }
-        self.send_without_images(&stripped, tools, options, sink, true)
-            .await
+        Ok(response)
     }
 }
 
@@ -194,7 +205,7 @@ impl InferenceProvider for ImageInputGuard {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError> {
-        self.run(messages, tools, options, None).await
+        self.run(messages, tools, options, None, false).await
     }
 
     async fn complete_streaming(
@@ -205,7 +216,25 @@ impl InferenceProvider for ImageInputGuard {
         sink: &dyn StreamSink,
     ) -> Result<InferenceResponse, InferenceError> {
         let tracked = TrackedSink::new(sink);
-        self.run(messages, tools, options, Some(&tracked)).await
+        self.run(messages, tools, options, Some(&tracked), false)
+            .await
+    }
+
+    async fn complete_as_hop(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: Option<&dyn StreamSink>,
+        image_fallback: bool,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let tracked = sink.map(TrackedSink::new);
+        self.run(messages, tools, options, tracked.as_ref(), image_fallback)
+            .await
+    }
+
+    fn takes_images(&self) -> bool {
+        self.strip_up_front().is_none()
     }
 
     fn model_name(&self) -> &str {
@@ -263,7 +292,8 @@ mod tests {
 
     use super::*;
     use crate::config::{ModelSpec, ProviderKind};
-    use crate::inference::ImageData;
+    use crate::inference::test_support::RecordingSink;
+    use crate::inference::{ImageData, StreamDelta};
 
     /// Records each request it gets and answers from a script, then with a
     /// plain reply once the script runs out.
@@ -613,6 +643,131 @@ mod tests {
             requests.lock().unwrap().len(),
             1,
             "nothing to retry without"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retry_refused_again_teaches_nothing() {
+        let (provider, requests) =
+            ScriptedProvider::new(vec![Err(zai_rejection()), Err(zai_rejection())]);
+        let guard = guard(provider, ImageInput::Undeclared);
+        let messages = conversation_with_images();
+
+        let err = ask(&guard, &messages).await.unwrap_err();
+
+        assert!(err.rejects_image_input(), "the retry's error comes back");
+        assert_eq!(requests.lock().unwrap().len(), 2, "one retry, no more");
+        ask(&guard, &messages).await.unwrap();
+        assert_eq!(
+            requests.lock().unwrap()[2][1].images.len(),
+            1,
+            "the next request still carries its images"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hop_with_a_fallback_that_takes_images_returns_the_rejection() {
+        let (provider, requests) = ScriptedProvider::rejecting_images();
+        let guard = guard(provider, ImageInput::Undeclared);
+
+        let err = guard
+            .complete_as_hop(
+                &conversation_with_images(),
+                &[],
+                &CompletionOptions::default(),
+                None,
+                true,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.rejects_image_input());
+        assert_eq!(requests.lock().unwrap().len(), 1, "no retry without images");
+        assert!(guard.takes_images(), "nothing learned from it");
+    }
+
+    /// Streams a piece of its answer before turning down a request with
+    /// images, and answers one without them.
+    struct StreamingRejecter {
+        requests: Arc<Mutex<Vec<Vec<Message>>>>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for StreamingRejecter {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            Err(InferenceError::Api("this test only streams".to_string()))
+        }
+
+        async fn complete_streaming(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+            sink: &dyn StreamSink,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.requests.lock().unwrap().push(messages.to_vec());
+            if messages.iter().any(|message| !message.images.is_empty()) {
+                sink.push(StreamDelta::Text("I see a".to_string()));
+                return Err(zai_rejection());
+            }
+            sink.push(StreamDelta::Text("no image here".to_string()));
+            Ok(InferenceResponse::new(
+                "no image here".to_string(),
+                Vec::new(),
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "glm-5.3"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_streamed_rejection_is_voided_before_the_retry_streams() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let guard = ImageInputGuard::new(
+            Box::new(StreamingRejecter {
+                requests: Arc::clone(&requests),
+            }),
+            &spec("glm-5.3", ImageInput::Undeclared),
+            Arc::new(LearnedTextOnly::default()),
+        );
+        let sink = RecordingSink::default();
+
+        let response = guard
+            .complete_streaming(
+                &conversation_with_images(),
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("I see a".to_string()),
+                StreamDelta::Restart,
+                StreamDelta::Text("no image here".to_string()),
+            ],
+            "the rejected attempt's text is voided before the retry's"
+        );
+        assert_eq!(sink.text(), "no image here");
+        let sent = requests.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(
+            sent[1].iter().all(|message| message.images.is_empty()),
+            "the retry carries no images"
+        );
+        assert_eq!(
+            response.images_omitted.map(|omitted| omitted.learned),
+            Some(true)
         );
     }
 }

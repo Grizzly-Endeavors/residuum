@@ -125,7 +125,7 @@ const IMAGE_INPUT_REJECTIONS: &[&str] = &[
 /// clients put it: at the very start (`"429 too many requests: ..."`,
 /// Gemini's `"503 unavailable: ..."`) or right after `"error "`
 /// (`"anthropic api error 500 ..."`). Digits elsewhere, such as the column
-/// number in DeepSeek's `"... at line 1 column 15003"`, are not a status.
+/// number in a `DeepSeek` error's `"... at line 1 column 15003"`, are not a status.
 fn http_status(lower: &str) -> Option<u16> {
     let after_error = lower
         .find("error ")
