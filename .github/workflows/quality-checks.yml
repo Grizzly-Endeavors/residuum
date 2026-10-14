@@ -407,10 +407,13 @@ jobs:
   # cfg(windows) (and test imports only some platforms use) is not compiled by
   # the host clippy above. Clippy rather than check, so that code is held to
   # the same lints. The other cross targets are opt-in (cross-compile.yml).
+  # Runs on the wide pool, as the cross-compile.yml clippy jobs do: it checks
+  # without running tests, and a third job on the fast pool queues behind the
+  # lint and test jobs of every open pull request.
   rust-lint-windows:
     name: Clippy (x86_64-pc-windows-gnu)
     if: inputs.rust
-    runs-on: lab-runners-fast
+    runs-on: lab-runners-wide
 
     steps:
       - uses: actions/checkout@v7
