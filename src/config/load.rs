@@ -656,7 +656,7 @@ main = "my-provider/claude-sonnet-4-6"
         let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
         let cfg = Config::load_agent_at(&agent_dir, &test_hub()).unwrap();
         assert_eq!(cfg.idle.timeout, std::time::Duration::from_mins(30));
-        assert!(cfg.idle.idle_channel.is_none());
+        assert_eq!(cfg.idle.idle_channel, "ws");
     }
 
     #[test]
@@ -679,7 +679,7 @@ main = "my-provider/claude-sonnet-4-6"
         let agent_dir = write_agent(dir.path(), "sam", toml, VALID_PROVIDERS);
         let cfg = Config::load_agent_at(&agent_dir, &test_hub()).unwrap();
         assert_eq!(cfg.idle.timeout, std::time::Duration::from_mins(15));
-        assert_eq!(cfg.idle.idle_channel.as_deref(), Some("telegram"));
+        assert_eq!(cfg.idle.idle_channel, "telegram");
     }
 
     #[test]

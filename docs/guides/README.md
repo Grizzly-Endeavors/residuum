@@ -14,4 +14,5 @@ For how a system is *intended* to work rather than how to drive it, see `../syst
 - [Migrating to agent sessions](migrating-to-agent-sessions.md) — breaking changes and new behavior for anyone upgrading from before the agent sessions overhaul.
 - [Reach Residuum from your phone and other browsers](remote-access.md) — pair a browser for Residuum Cloud, approve another from a paired one, use a recovery code, and remove a browser.
 - [Migrating to device pairing](migrating-to-device-pairing.md) — what to do before and after updating to the version where Residuum Cloud answers only paired browsers.
+- [Migrating to web-only updates while you're away](migrating-to-web-idle-updates.md) — agent-started turns go to the web app after the idle period unless `idle_channel` names a chat, and how to get them on a chat again.
 - [Migrating to the secure tunnel](migrating-to-secure-tunnel.md) — what changed when the older tunnel was removed and Residuum Cloud began serving every install end to end: the certificate, the recovery code, and what to do with more than one instance.
