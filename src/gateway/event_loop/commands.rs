@@ -67,7 +67,7 @@ pub async fn handle_server_command(
                 .publisher
                 .publish(
                     topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    NoticeEvent { message: reason },
+                    NoticeEvent::new(reason),
                 )
                 .await
             {

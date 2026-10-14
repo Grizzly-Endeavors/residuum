@@ -37,7 +37,7 @@ pub use hub_types::{
     HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, SystemOneConfig, SystemOneProvider,
 };
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
-pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
+pub use provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
     A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,

@@ -28,6 +28,7 @@ export type { DeletedAgentListResponse } from "./generated/DeletedAgentListRespo
 export type { HubClientMessage } from "./generated/HubClientMessage";
 export type { HubEvent } from "./generated/HubEvent";
 export type { HubInboxItem } from "./generated/HubInboxItem";
+export type { HubNoticeKind } from "./generated/HubNoticeKind";
 export type { HubInboxPage } from "./generated/HubInboxPage";
 export type { HubSocketFrame } from "./generated/HubSocketFrame";
 export type { InboxStatus } from "./generated/InboxStatus";

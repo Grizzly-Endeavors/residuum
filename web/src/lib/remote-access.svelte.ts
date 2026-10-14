@@ -6,6 +6,7 @@
 // entries with a valid slug are kept, and nothing here navigates anywhere
 // the relay named.
 
+import { accountDashboardUrl } from "./cloud.svelte";
 import { userErrorMessage } from "./errors";
 import type { InstanceInfo } from "./generated/InstanceInfo";
 import type { RemoteAccessStatus } from "./generated/RemoteAccessStatus";
@@ -25,6 +26,9 @@ export class RemoteAccessStore {
 
   /** The user's instances that have a usable slug. */
   readonly instances = $derived<InstanceInfo[]>(withValidSlugs(this.status?.instances ?? []));
+
+  /** The account dashboard on the relay this instance signs in to, where the user manages their instances. */
+  readonly accountUrl = $derived(accountDashboardUrl(this.status?.relay_origin));
 
   /** Take a status another reader just fetched, so the switcher shows it without another request. */
   accept(status: RemoteAccessStatus): void {
