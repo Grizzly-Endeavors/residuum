@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Context as _;
+use hickory_resolver::TokioResolver;
+use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ResolveHosts, ResolverConfig};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::RecordType;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
@@ -41,8 +45,10 @@ static CONTAINER_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 /// A running Pebble CA plus a challenge test server acting as its DNS resolver.
 ///
-/// Both run with host networking on freshly chosen free ports, so tests can run in parallel.
-/// Validation connections for TLS-ALPN-01 go to `127.0.0.1:tls_port()`; every
+/// Both run with host networking on ports reserved through
+/// [`crate::util::test_ports`], below the OS's ephemeral range, so tests can run
+/// in parallel: each reservation is held until just before the container that
+/// binds the port starts. Validation connections for TLS-ALPN-01 go to `127.0.0.1:tls_port()`; every
 /// name resolves to 127.0.0.1 unless the test says otherwise. The containers are removed on drop.
 pub(crate) struct PebbleHarness {
     dir: tempfile::TempDir,
@@ -53,6 +59,10 @@ pub(crate) struct PebbleHarness {
     tls_port: u16,
     /// Holds `tls_port` until the test binds it, see [`Self::release_tls_port`].
     tls_reservation: Mutex<Option<ReservedPort>>,
+    /// Pebble's HTTP-01 port. No test answers HTTP-01, so nothing ever binds
+    /// it; the reservation keeps it for the harness's lifetime so the number
+    /// Pebble is configured with stays this harness's.
+    _http_reservation: ReservedPort,
     root_ca: PathBuf,
 }
 
@@ -60,41 +70,28 @@ impl PebbleHarness {
     /// Start both containers and wait until they accept connections.
     pub(crate) async fn start() -> anyhow::Result<Self> {
         let dir = tempfile::tempdir().context("failed to create the harness directory")?;
-        let acme_port = free_port()?;
-        let pebble_management_port = free_port()?;
-        let http_port = free_port()?;
+        let acme = reserve_port();
+        let acme_port = acme.port();
+        let pebble_management = reserve_port();
+        let http = reserve_port();
         let tls = reserve_port();
         let tls_port = tls.port();
-        let management_port = free_port()?;
-        let dns_port = free_dns_port()?;
+        let challenge_management = reserve_port();
+        let management_port = challenge_management.port();
+        let dns = reserve_dns_port()?;
+        let dns_port = dns.port();
 
         let root_ca = dir.path().join("pebble.minica.pem");
         std::fs::write(&root_ca, PEBBLE_MINICA_PEM)
             .context("failed to write the Pebble root CA")?;
 
-        // Paths are inside the image: it carries Pebble's own test certificates.
-        let config = serde_json::json!({
-            "pebble": {
-                "listenAddress": format!("127.0.0.1:{acme_port}"),
-                "managementListenAddress": format!("127.0.0.1:{pebble_management_port}"),
-                "certificate": "test/certs/localhost/cert.pem",
-                "privateKey": "test/certs/localhost/key.pem",
-                "httpPort": http_port,
-                "tlsPort": tls_port,
-                "ocspResponderURL": "",
-                "externalAccountBindingRequired": false,
-                "domainBlocklist": ["blocked-domain.example"],
-                "retryAfter": { "authz": 1, "order": 1 },
-                "keyAlgorithm": "ecdsa",
-                "profiles": {
-                    "default": { "description": "default", "validityPeriod": 7_776_000 }
-                }
-            }
-        });
-        let config_path = dir.path().join("pebble-config.json");
-        std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)
-            .context("failed to write the Pebble configuration")?;
-        set_world_readable(&config_path)?;
+        let config_path = write_pebble_config(
+            dir.path(),
+            acme_port,
+            pebble_management.port(),
+            http.port(),
+            tls_port,
+        )?;
 
         let sequence = CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let unique = format!(
@@ -110,14 +107,16 @@ impl PebbleHarness {
             dns_port,
             tls_port,
             tls_reservation: Mutex::new(Some(tls)),
+            _http_reservation: http,
             root_ca,
         };
 
         let dns_bind = format!("127.0.0.1:{dns_port}");
         let management_bind = format!("127.0.0.1:{management_port}");
         // The test listens on the TLS-ALPN-01 port itself; the other challenge servers are off.
-        harness.run_container(
-            &format!("{unique}-dns"),
+        let dns_container = format!("{unique}-dns");
+        harness.create_container(
+            &dns_container,
             CHALLTESTSRV_IMAGE,
             &[],
             &[
@@ -138,14 +137,31 @@ impl PebbleHarness {
             ],
             &[],
         )?;
+        drop((challenge_management, dns));
+        start_container(&dns_container)?;
 
-        harness.run_container(
-            &format!("{unique}-ca"),
+        // Pebble rejects 5% of nonces by default to exercise a client's retries.
+        // instant-acme retries a rejected nonce twice, so three rejections in a
+        // row fail an order now and then. The engine retries a failed order
+        // only after a backoff of half a minute or more, and the ACME tests
+        // order once, so the harness turns the rejection off.
+        let ca_container = format!("{unique}-ca");
+        harness.create_container(
+            &ca_container,
             PEBBLE_IMAGE,
-            &["-e", "PEBBLE_VA_NOSLEEP=1", "-e", "PEBBLE_AUTHZREUSE=0"],
+            &[
+                "-e",
+                "PEBBLE_VA_NOSLEEP=1",
+                "-e",
+                "PEBBLE_AUTHZREUSE=0",
+                "-e",
+                "PEBBLE_WFE_NONCEREJECT=0",
+            ],
             &["-config", "/pebble-config.json", "-dnsserver", &dns_bind],
             &[(&config_path, "/pebble-config.json")],
         )?;
+        drop((acme, pebble_management));
+        start_container(&ca_container)?;
 
         for (what, port) in [
             ("Pebble", acme_port),
@@ -153,6 +169,9 @@ impl PebbleHarness {
         ] {
             harness.wait_for_port(what, port).await;
         }
+        // Pebble asks over TCP, and the CAA lookups under test over UDP.
+        harness.wait_for_dns("TCP", ConnectionConfig::tcp()).await?;
+        harness.wait_for_dns("UDP", ConnectionConfig::udp()).await?;
         Ok(harness)
     }
 
@@ -244,8 +263,8 @@ impl PebbleHarness {
         Ok(TlsAlpnListener { task })
     }
 
-    /// Create a container, copy `files` (local path, path in the container) into
-    /// it, and start it.
+    /// Create a container and copy `files` (local path, path in the container)
+    /// into it; [`start_container`] starts it.
     ///
     /// Files are copied rather than bind-mounted because the Docker daemon may not
     /// share this process's filesystem: on the CI runners it is a sidecar that
@@ -253,7 +272,7 @@ impl PebbleHarness {
     /// becomes an empty directory. The network is shared, which host networking
     /// relies on. Containers are not `--rm`, so a container that exits at
     /// startup keeps its logs for `docker logs`; `Drop` removes them.
-    fn run_container(
+    fn create_container(
         &mut self,
         name: &str,
         image: &str,
@@ -285,13 +304,6 @@ impl PebbleHarness {
                 String::from_utf8_lossy(&copied.stderr)
             );
         }
-
-        let started = docker(["start", name])?;
-        anyhow::ensure!(
-            started.status.success(),
-            "docker start {name} failed: {}",
-            String::from_utf8_lossy(&started.stderr)
-        );
         Ok(())
     }
 
@@ -306,22 +318,53 @@ impl PebbleHarness {
                     .ok()
                     .map(|_| ())
             },
-            || {
-                self.containers
-                    .iter()
-                    .map(|name| match docker(["logs", "--tail", "20", name]) {
-                        Ok(o) => format!(
-                            "{name}: {}{}",
-                            String::from_utf8_lossy(&o.stdout),
-                            String::from_utf8_lossy(&o.stderr)
-                        ),
-                        Err(error) => format!("{name}: {error:#}"),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
+            || self.container_logs(),
         )
         .await;
+    }
+
+    /// Wait for the challenge test server to answer a DNS query over
+    /// `connection`. The server logs a failure to bind its DNS port and keeps
+    /// running, and whatever holds the port instead may accept connections, so
+    /// only an answer shows the port is the challenge test server's.
+    async fn wait_for_dns(
+        &self,
+        protocol: &str,
+        connection: ConnectionConfig,
+    ) -> anyhow::Result<()> {
+        let resolver = dns_resolver(self.dns_addr(), connection)?;
+        wait::until_reporting(
+            format!(
+                "the challenge test server to answer DNS over {protocol} on port {}",
+                self.dns_port
+            ),
+            || async {
+                resolver
+                    .lookup("harness-ready.test.", RecordType::A)
+                    .await
+                    .ok()
+                    .map(|_| ())
+            },
+            || self.container_logs(),
+        )
+        .await;
+        Ok(())
+    }
+
+    /// The last lines of every container's log, for a failed wait.
+    fn container_logs(&self) -> String {
+        self.containers
+            .iter()
+            .map(|name| match docker(["logs", "--tail", "20", name]) {
+                Ok(o) => format!(
+                    "{name}: {}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+                Err(error) => format!("{name}: {error:#}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Let go of the TLS-ALPN-01 port so the caller can bind it: the fake relay
@@ -423,20 +466,95 @@ fn docker<'a>(args: impl IntoIterator<Item = &'a str>) -> anyhow::Result<Output>
         .context("failed to run docker (these tests need Docker)")
 }
 
-fn free_port() -> anyhow::Result<u16> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    Ok(listener.local_addr()?.port())
+/// Start a container made by [`PebbleHarness::create_container`].
+fn start_container(name: &str) -> anyhow::Result<()> {
+    let started = docker(["start", name])?;
+    anyhow::ensure!(
+        started.status.success(),
+        "docker start {name} failed: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    Ok(())
 }
 
-/// A port that is free for both UDP and TCP, since the DNS server uses both.
-fn free_dns_port() -> anyhow::Result<u16> {
+/// Write Pebble's configuration into `dir`, readable by the container's user,
+/// and return its path.
+fn write_pebble_config(
+    dir: &Path,
+    acme_port: u16,
+    management_port: u16,
+    http_port: u16,
+    tls_port: u16,
+) -> anyhow::Result<PathBuf> {
+    // Paths are inside the image: it carries Pebble's own test certificates.
+    let config = serde_json::json!({
+        "pebble": {
+            "listenAddress": format!("127.0.0.1:{acme_port}"),
+            "managementListenAddress": format!("127.0.0.1:{management_port}"),
+            "certificate": "test/certs/localhost/cert.pem",
+            "privateKey": "test/certs/localhost/key.pem",
+            "httpPort": http_port,
+            "tlsPort": tls_port,
+            "ocspResponderURL": "",
+            "externalAccountBindingRequired": false,
+            "domainBlocklist": ["blocked-domain.example"],
+            "retryAfter": { "authz": 1, "order": 1 },
+            "keyAlgorithm": "ecdsa",
+            "profiles": {
+                "default": { "description": "default", "validityPeriod": 7_776_000 }
+            }
+        }
+    });
+    let config_path = dir.join("pebble-config.json");
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)
+        .context("failed to write the Pebble configuration")?;
+    set_world_readable(&config_path)?;
+    Ok(config_path)
+}
+
+/// A reserved port whose UDP side is held too, since the DNS server binds both.
+struct DnsReservation {
+    tcp: ReservedPort,
+    _udp: UdpSocket,
+}
+
+impl DnsReservation {
+    fn port(&self) -> u16 {
+        self.tcp.port()
+    }
+}
+
+/// Reserve a port that is free for both TCP and UDP. [`reserve_port`] hands
+/// out each port once per process, so a port whose UDP side is taken is not
+/// offered again.
+fn reserve_dns_port() -> anyhow::Result<DnsReservation> {
     for _ in 0..20 {
-        let port = free_port()?;
-        if UdpSocket::bind(("127.0.0.1", port)).is_ok() {
-            return Ok(port);
+        let tcp = reserve_port();
+        if let Ok(udp) = UdpSocket::bind(("127.0.0.1", tcp.port())) {
+            return Ok(DnsReservation { tcp, _udp: udp });
         }
     }
-    anyhow::bail!("no port free for both UDP and TCP")
+    anyhow::bail!("no reserved port was free for UDP as well as TCP")
+}
+
+/// A resolver that asks only `server` over `connection`, without caching.
+fn dns_resolver(
+    server: SocketAddr,
+    mut connection: ConnectionConfig,
+) -> anyhow::Result<TokioResolver> {
+    connection.port = server.port();
+    let config = ResolverConfig::from_name_servers(vec![NameServerConfig::new(
+        server.ip(),
+        true,
+        vec![connection],
+    )]);
+    let mut builder = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
+    let options = builder.options_mut();
+    options.cache_size = 0;
+    options.use_hosts_file = ResolveHosts::Never;
+    builder
+        .build()
+        .context("failed to build the harness's DNS resolver")
 }
 
 /// The container runs as another user, and `docker cp` keeps the file's mode, so the configuration must be readable by others.
