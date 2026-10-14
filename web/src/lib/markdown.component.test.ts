@@ -146,6 +146,59 @@ describe("renderMarkdown images", () => {
   });
 
   it.each([
+    ["a backslash the URL parser reads as another host", String.raw`/\attacker.example/x.png`],
+    ["two backslashes", String.raw`\\attacker.example/x.png`],
+    [
+      "an encoded climb out of the file routes",
+      "/api/agents/scout/files/%2e%2e/%2e%2e/%2e%2e/cloud/callback?token=x",
+    ],
+    [
+      "an agent file path behind a user name on another host",
+      `${window.location.protocol}//${window.location.host}@attacker.example/api/agents/scout/files/a`,
+    ],
+  ])("shows %s, written as raw HTML, as a link", (_name, src) => {
+    const nodes = fragment(`<img src="${src}" alt="pic">`);
+    expect(nodes.querySelector("img")).toBeNull();
+    const link = nodes.querySelector(".prose-image-link");
+    expect(link?.getAttribute("href")).toBe(src);
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} pic`);
+  });
+
+  it.each([
+    ["a script URL", '<img src="javascript:alert(1)" alt="pic">'],
+    [
+      "a blob URL, which names nothing outside the page that made it",
+      '<img src="blob:https://example.com/5d1c" alt="pic">',
+    ],
+    ["an empty source", '<img src="" alt="pic">'],
+    ["no source", '<img alt="pic">'],
+  ])("names an image with %s in words, with nothing to open", (_name, markup) => {
+    const nodes = fragment(markup);
+    expect(nodes.querySelector("img, a")).toBeNull();
+    expect(nodes.querySelector("span.prose-image-link")?.textContent).toBe(
+      `${IMAGE_LINK_KIND} pic`,
+    );
+  });
+
+  it("drops a template and the image it holds", () => {
+    const nodes = fragment(
+      '<template><img src="https://attacker.example/t.png"></template><p>text</p>',
+    );
+    expect(nodes.querySelector("template")).toBeNull();
+    expect(nodes.textContent.trim()).toBe("text");
+  });
+
+  it.each([
+    ["opens with a frameset", "<frameset><frame src=x></frameset> hi"],
+    ["opens with spaces and a frameset", "  <frameset></frameset> hi"],
+  ])("shows a reply that %s as its plain text", (_name, content) => {
+    const root = document.createElement("div");
+    root.append(renderMarkdown(content));
+    expect(root.textContent).toBe(content);
+    expect(root.querySelector("frameset, frame")).toBeNull();
+  });
+
+  it.each([
     [
       "video",
       '<video src="https://attacker.example/v.mp4" poster="https://attacker.example/p.png">clip</video>',

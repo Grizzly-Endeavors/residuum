@@ -70,6 +70,8 @@ const FORBIDDEN_TAGS = [
   "embed",
   "svg",
   "math",
+  // Holds markup the page never shows, out of reach of the passes below.
+  "template",
   // Content placed over the page or moving on its own.
   "dialog",
   "marquee",
@@ -105,10 +107,10 @@ export const IMAGE_LINK_KIND = "Image";
 const AGENT_FILE_PATH = /^\/api\/agents\/[^/]+\/files\/[^/]/;
 
 /**
- * Whether an image source is a file the reply may show: a `data:` or `blob:`
- * URI, or an agent's file on the page's own origin. Loading any other URL is
- * a request the reply chose, to another server or to one of the hub's own
- * routes, and some hub routes change state on a plain `GET`.
+ * Whether an image source is a file the reply may show: a `data:` URI, or an
+ * agent's file on the page's own origin. Loading any other URL is a request
+ * the reply chose, to another server or to one of the hub's own routes, and
+ * some hub routes change state on a plain `GET`.
  */
 function isShownImageSource(src: string): boolean {
   let url: URL;
@@ -117,37 +119,39 @@ function isShownImageSource(src: string): boolean {
   } catch {
     return false;
   }
-  if (url.protocol === "data:" || url.protocol === "blob:") return true;
+  if (url.protocol === "data:") return true;
   return url.origin === window.location.origin && AGENT_FILE_PATH.test(url.pathname);
 }
 
 /**
- * Replace each image that isn't an agent's file or a `data:` or `blob:` URI
- * with a link to it. A reply is text a model wrote, and a model can be steered
+ * Replace each image that isn't an agent's file or a `data:` URI with a link
+ * to it. A reply is text a model wrote, and a model can be steered
  * by what it read into writing an image whose URL carries the conversation to
  * someone else's server, or calls one of the hub's own routes; the browser
  * would send the request the moment the reply is shown. A link sends nothing
  * until the user follows it. It reads `Image`, then the alt text, or the URL
  * when there is none. An image already inside a link becomes that text, since
- * a link can't hold another.
+ * a link can't hold another, and so does an image left with no source (the
+ * sanitizer drops a `javascript:` one, for example), which has nothing to open.
  */
 function linkUnshownImages(fragment: DocumentFragment): void {
   const doc = fragment.ownerDocument;
 
   for (const image of fragment.querySelectorAll("img")) {
-    const src = image.getAttribute("src");
-    if (src === null || isShownImageSource(src)) continue;
+    const src = image.getAttribute("src")?.trim() ?? "";
+    if (src !== "" && isShownImageSource(src)) continue;
 
     const kind = doc.createElement("span");
     kind.className = "prose-image-link-kind";
     kind.textContent = IMAGE_LINK_KIND;
     const label = image.getAttribute("alt")?.trim() || src;
 
-    const inLink = image.closest("a") !== null;
-    const stand = doc.createElement(inLink ? "span" : "a");
+    const linked = src !== "" && image.closest("a") === null;
+    const stand = doc.createElement(linked ? "a" : "span");
     stand.className = "prose-image-link";
-    if (!inLink) stand.setAttribute("href", src);
-    stand.append(kind, ` ${label}`);
+    if (linked) stand.setAttribute("href", src);
+    stand.append(kind);
+    if (label !== "") stand.append(` ${label}`);
     image.replaceWith(stand);
   }
 }
@@ -226,12 +230,14 @@ function fitToPage(fragment: DocumentFragment): void {
  * `.prose-check` that names its state to assistive technology. Headings sit
  * two levels below the page's own, tables scroll in a labelled group the
  * keyboard can focus, and links outside the app open in a new tab. Only an
- * agent's file (`/api/agents/{name}/files/…` on this origin) or a `data:` or
- * `blob:` image shows as an image; any other image is a link to it
+ * agent's file (`/api/agents/{name}/files/…` on this origin) or a `data:`
+ * image shows as an image; any other image is a link to it
  * (`.prose-image-link`), so showing a reply never makes the browser request a
- * URL the reply chose. Raw HTML in the
- * reply keeps its text but loses styles, forms, frames, media and the other
- * elements and attributes in `FORBIDDEN_TAGS` and `FORBIDDEN_ATTRS`.
+ * URL the reply chose. Raw HTML in the reply keeps its text but loses styles,
+ * forms, frames, media and the other elements and attributes in
+ * `FORBIDDEN_TAGS` and `FORBIDDEN_ATTRS`. A reply the sanitizer can't make a
+ * fragment of (one that opens with `<frameset>`, which replaces the document's
+ * body) shows as its plain text.
  */
 export function renderMarkdown(content: string, options: MarkdownOptions = {}): DocumentFragment {
   const { pathHref } = options;
@@ -262,12 +268,19 @@ export function renderMarkdown(content: string, options: MarkdownOptions = {}): 
     },
   });
   const rawHtml = marked.parse(content, { async: false });
+  // Typed as never null, but a `<frameset>` that takes the body's place leaves
+  // the sanitizer no body to return.
   const fragment = DOMPurify.sanitize(rawHtml, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: FORBIDDEN_TAGS,
     FORBID_ATTR: FORBIDDEN_ATTRS,
     RETURN_DOM_FRAGMENT: true,
-  });
+  }) as DocumentFragment | null;
+  if (fragment === null) {
+    const text = document.createDocumentFragment();
+    text.append(content);
+    return text;
+  }
   fitToPage(fragment);
   return fragment;
 }

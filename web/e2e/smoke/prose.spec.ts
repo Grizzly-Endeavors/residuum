@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { sendFromComposer } from "../support/composer";
+import { IMAGE_SHOWCASE_REMOTE_HOST } from "../../mock/data/chat";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -26,6 +27,38 @@ async function showcase(page: Page): Promise<Locator> {
   await expect(feed.getByRole("heading", { name: "Rollout notes" })).toBeVisible();
   return feed;
 }
+
+test("a reply's images from elsewhere are links the page never requests", async ({ page }) => {
+  // The fixture also fails the test if the page's policy refuses any request.
+  const requested: string[] = [];
+  page.on("request", (request) => {
+    requested.push(request.url());
+  });
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  const box = page.getByRole("combobox", { name: "Message atlas" });
+  await box.fill("images please");
+  await sendFromComposer(box);
+  await expect(feed.getByRole("heading", { name: "Image check" })).toBeVisible();
+
+  for (const [name, href] of [
+    ["Image tracker", `https://${IMAGE_SHOWCASE_REMOTE_HOST}/pixel.png?d=the-api-key`],
+    ["Image raw", `https://${IMAGE_SHOWCASE_REMOTE_HOST}/raw.png?d=the-api-key`],
+    ["Image sign in", "/cloud/callback?token=attacker"],
+  ]) {
+    const link = feed.getByRole("link", { name });
+    await expect(link).toHaveAttribute("href", href);
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  }
+  // A data: image is the page's own, and shows.
+  const dot = feed.getByRole("img", { name: "dot" });
+  await expect.poll(() => dot.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1);
+
+  expect(requested.filter((url) => url.includes(IMAGE_SHOWCASE_REMOTE_HOST))).toEqual([]);
+  expect(requested.filter((url) => url.includes("/cloud/callback"))).toEqual([]);
+});
 
 test("a table keeps its words whole and scrolls when it is wider than the message", async ({
   page,
