@@ -135,8 +135,8 @@ fn explain_connector_failure(reason: &str, app_id: &str) -> Option<String> {
         return Some(format!(
             "Microsoft won't let the bot sign in because its app isn't set up in your \
              organization's Microsoft account directory. Someone with admin rights there can fix \
-             it by running `az ad sp create --id {app_id}` with the Azure CLI, then send the bot \
-             a message to check."
+             it with this Azure CLI command, then send the bot a message to check: \
+             az ad sp create --id {app_id}"
         ));
     }
     None
@@ -164,6 +164,10 @@ mod tests {
         assert!(
             !fix.contains("AADSTS"),
             "the owner-facing fix should not repeat Microsoft's error code: {fix}"
+        );
+        assert!(
+            !fix.contains('`'),
+            "web UI errors render as plain text, so markdown would show literally: {fix}"
         );
     }
 
