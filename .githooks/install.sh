@@ -28,10 +28,11 @@ mkdir -p "$HOOK_DIR"
 
 for hook in pre-commit commit-msg post-commit pre-push; do
     chmod +x "$SCRIPT_DIR/$hook"
-    # Remove the old entry before writing. If it is still a symlink, writing
-    # through it would overwrite the tracked hook it points at.
-    rm -f "$HOOK_DIR/$hook"
-    cat >"$HOOK_DIR/$hook" <<'SHIM'
+    # Write beside the target, then rename over it. rename(2) replaces a symlink
+    # entry rather than writing through it, so an old symlink to the tracked hook
+    # is left alone and the swap is atomic.
+    tmp="$(mktemp "$HOOK_DIR/.$hook.XXXXXX")"
+    cat >"$tmp" <<'SHIM'
 #!/usr/bin/env bash
 #
 # Dispatcher for a git hook, written by .githooks/install.sh. Git runs hooks from
@@ -48,12 +49,13 @@ if [ ! -f "$target" ]; then
     target="$main/.githooks/$hook"
 fi
 if [ ! -f "$target" ]; then
-    echo "$hook: no tracked hook found in this worktree or the main checkout" >&2
+    echo "$hook: no tracked hook in this worktree or the main checkout. Delete the stale hook at $0, or re-run .githooks/install.sh from the main checkout." >&2
     exit 1
 fi
 exec "$target" "$@"
 SHIM
-    chmod +x "$HOOK_DIR/$hook"
+    chmod +x "$tmp"
+    mv -f "$tmp" "$HOOK_DIR/$hook"
     echo "installed $hook"
 done
 
