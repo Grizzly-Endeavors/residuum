@@ -530,14 +530,14 @@
     min-width: 0;
   }
 
-  /* Floats over the foot of the feed, beside the scrollbar, and takes up the dock's height. */
+  /* Floats over the foot of the feed, beside the scrollbar, and takes up the dock's height. Its backdrop is the surface the feed sits on: the page's, unless the host sets `--feed-surface`, as the context panel's session panel does. */
   .feed-dock {
     position: absolute;
     right: var(--feed-scrollbar);
     bottom: 0;
     left: 0;
     z-index: var(--z-sticky);
-    background: var(--color-stone-0);
+    background: var(--feed-surface, var(--color-stone-0));
 
     /* The lines scrolling under the dock fade out above it, so they don't stop at its edge. */
     &::before {
@@ -547,7 +547,7 @@
       bottom: 100%;
       left: 0;
       height: var(--space-24);
-      background: linear-gradient(to top, var(--color-stone-0), transparent);
+      background: linear-gradient(to top, var(--feed-surface, var(--color-stone-0)), transparent);
       pointer-events: none;
     }
   }

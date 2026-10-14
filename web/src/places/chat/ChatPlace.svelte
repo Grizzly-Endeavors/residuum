@@ -1,10 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import {
-    actionRegistry,
-    commandActions,
-    readCommandLine,
-  } from "../../lib/action-registry.svelte";
+  import { actionRegistry, commandActions } from "../../lib/action-registry.svelte";
+  import { runCommandLine } from "../../lib/command-line";
   import { composerClearance } from "../../lib/composer-clearance.svelte";
   import { carriesFiles } from "../../lib/file-drop";
   import { hub } from "../../lib/hub.svelte";
@@ -80,20 +77,9 @@
   // path included. An action that can't run now says why and leaves the line
   // in the box.
   function handleSend(text: string, images?: ImageAttachment[]): boolean {
-    const line = readCommandLine(commandActions(actionRegistry.all), text);
-    if (line === null) {
-      ws.sendChat(text, images);
-      return true;
-    }
-    if (line.action.disabled !== undefined) {
-      notifications.surface(
-        "error",
-        `Couldn't run /${line.action.command ?? ""}: ${line.action.disabled}.`,
-      );
-      return false;
-    }
-    void actionRegistry.run(line.action, line.text);
-    return true;
+    const outcome = runCommandLine(commandActions(actionRegistry.all), text);
+    if (outcome === "message") ws.sendChat(text, images);
+    return outcome !== "refused";
   }
 
   // ── Messages the agent hasn't read yet ─────────────────────────────

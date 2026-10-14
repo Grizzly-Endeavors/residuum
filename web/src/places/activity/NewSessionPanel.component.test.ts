@@ -6,6 +6,7 @@ import {
   render,
   screen,
   settle,
+  stubPointer,
   stubWebSocket,
 } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
@@ -55,9 +56,13 @@ function started(address: string): SessionSummary {
 }
 
 let starts: unknown[];
+/** Whether the device reports a coarse pointer, as a touch screen does. */
+let coarsePointer = false;
 let answer: () => Response;
 
 beforeEach(() => {
+  coarsePointer = false;
+  stubPointer(() => coarsePointer);
   stubWebSocket();
   starts = [];
   answer = () => jsonResponse({ address: "spawned-session-1a2b" }, 202);
@@ -151,5 +156,26 @@ describe("the new session panel", () => {
     expect(screen.getByRole("textbox", { name: "Task for the new session" })).toBeDisabled();
     expect(screen.getByText("Start atlas first.")).toBeVisible();
     expect(starts).toEqual([]);
+  });
+
+  it("makes Enter a new line on a touch screen, where only Start the session starts it", async () => {
+    coarsePointer = true;
+    show();
+    const box = screen.getByRole("textbox", { name: "Task for the new session" });
+    expect(box).toHaveAttribute("enterkeyhint", "enter");
+    await userEvent.type(box, "Plan the garden{Enter}and the shed");
+    expect(box).toHaveValue("Plan the garden\nand the shed");
+    expect(starts).toEqual([]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Start the session" }));
+    await waitFor(() => {
+      expect(starts).toEqual([{ prompt: "Plan the garden\nand the shed", model: "medium" }]);
+    });
+  });
+
+  it("has no / menu, since there is no session yet for one to act on", () => {
+    show();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Session actions" })).toBeNull();
   });
 });
