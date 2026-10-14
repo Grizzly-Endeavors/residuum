@@ -42,11 +42,12 @@ test("a reply's images from elsewhere are links the page never requests", async 
   await sendFromComposer(box);
   await expect(feed.getByRole("heading", { name: "Image check" })).toBeVisible();
 
-  for (const [name, href] of [
+  const links: Array<[name: string, href: string]> = [
     ["Image tracker", `https://${IMAGE_SHOWCASE_REMOTE_HOST}/pixel.png?d=the-api-key`],
     ["Image raw", `https://${IMAGE_SHOWCASE_REMOTE_HOST}/raw.png?d=the-api-key`],
     ["Image sign in", "/cloud/callback?token=attacker"],
-  ]) {
+  ];
+  for (const [name, href] of links) {
     const link = feed.getByRole("link", { name });
     await expect(link).toHaveAttribute("href", href);
     await expect(link).toHaveAttribute("target", "_blank");
