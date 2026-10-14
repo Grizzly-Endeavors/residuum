@@ -297,6 +297,7 @@ mod gateway_integration {
                     content: inbound.content.clone(),
                     images: Vec::new(),
                     sender: None,
+                    agent_sender: None,
                     endpoint: ep.to_string(),
                 },
                 MainConversationEvent::TurnStarted {

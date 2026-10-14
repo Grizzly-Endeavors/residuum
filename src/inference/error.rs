@@ -122,6 +122,16 @@ const IMAGE_INPUT_REJECTIONS: &[&str] = &[
     "unknown variant `image_url`",
 ];
 
+/// Lowercased text of `OpenAI`'s refusal of a Chat Completions request that
+/// has both function tools and a `reasoning_effort` other than `none`, which
+/// GPT-5.4 and later models answer with: `Function tools with
+/// reasoning_effort are not supported for gpt-5.6-sol in
+/// /v1/chat/completions. To use function tools, use /v1/responses or set
+/// reasoning_effort to 'none'.` Thinking with tools on those models needs
+/// the Responses API (<https://developers.openai.com/api/docs/guides/migrate-to-responses>).
+const TOOLS_WITH_REASONING_EFFORT_REJECTION: &str =
+    "function tools with reasoning_effort are not supported";
+
 /// The HTTP status a lowercased provider error names, read only where the
 /// clients put it: at the very start (`"429 too many requests: ..."`,
 /// Gemini's `"503 unavailable: ..."`) or right after `"error "`
@@ -170,6 +180,7 @@ fn has_server_error_type(lower: &str) -> bool {
 /// clients put it (see [`http_status`]) and matches the rest of that string.
 enum FailureCategory {
     AuthFailed,
+    ToolsWithThinkingUnsupported,
     RateLimited,
     ContextTooLong,
     ModelNotFound,
@@ -199,6 +210,8 @@ impl FailureCategory {
             || lower.contains("incorrect api key")
         {
             Self::AuthFailed
+        } else if lower.contains(TOOLS_WITH_REASONING_EFFORT_REJECTION) {
+            Self::ToolsWithThinkingUnsupported
         } else if has_status(&[429])
             || lower.contains("rate_limit")
             || lower.contains("rate limit")
@@ -237,6 +250,7 @@ impl FailureCategory {
     fn cause_phrase(&self) -> &'static str {
         match self {
             Self::AuthFailed => "an authentication failure",
+            Self::ToolsWithThinkingUnsupported => "the model not taking tools with thinking on",
             Self::RateLimited => "rate limiting",
             Self::ContextTooLong => "the conversation exceeding the model's context limit",
             Self::ModelNotFound => "the configured model being unavailable",
@@ -255,6 +269,10 @@ impl FailureCategory {
         match self {
             Self::AuthFailed => "Residuum couldn't authenticate with the AI provider. Check \
                 that the API key in Settings → Model is correct and hasn't expired."
+                .to_string(),
+            Self::ToolsWithThinkingUnsupported => "This model can't use tools while thinking \
+                is on, through the API Residuum uses for it. Turn thinking off for this model in \
+                Settings → Model, or choose another model."
                 .to_string(),
             Self::RateLimited => "The AI provider is rate-limiting requests right now. Wait a \
                 moment and try again, or check your usage limits with the provider."
@@ -536,5 +554,37 @@ mod tests {
                 "should not be taken for an image rejection: {err}"
             );
         }
+    }
+
+    #[test]
+    fn tools_refused_with_thinking_on_say_to_turn_thinking_off() {
+        let err = InferenceError::Api(
+            "400 Bad Request: Function tools with reasoning_effort are not supported for gpt-5.6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+                .to_string(),
+        );
+        assert!(!err.is_retryable(), "the same request fails the same way");
+        let message = err.user_message();
+        assert!(
+            message.contains("can't use tools while thinking is on")
+                && message.contains("Turn thinking off"),
+            "the user is told why and what to change: {message}"
+        );
+        assert!(
+            !message.contains("reasoning_effort") && !message.contains("/v1/"),
+            "no API internals reach the user: {message}"
+        );
+        assert_eq!(
+            err.cause_phrase(),
+            "the model not taking tools with thinking on"
+        );
+    }
+
+    #[test]
+    fn other_reasoning_effort_errors_are_not_taken_for_the_tools_refusal() {
+        let err = InferenceError::Api(
+            "400 Bad Request: Unsupported value: 'reasoning_effort' does not support 'low' with this model."
+                .to_string(),
+        );
+        assert_eq!(err.cause_phrase(), "an error talking to the AI provider");
     }
 }

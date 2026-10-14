@@ -5,6 +5,8 @@
 //! format is selected with [`OpenAiDialect`].
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -21,7 +23,7 @@ use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
-    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ThinkingOrigin,
+    ResponseFormat, Role, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ThinkingOrigin,
     ToolCall, ToolDefinition, Usage,
 };
 
@@ -30,6 +32,16 @@ const FIREWORKS_CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tok
 
 /// Fireworks request header that pins requests to a replica holding a warm cache.
 const FIREWORKS_SESSION_AFFINITY_HEADER: &str = "x-session-affinity";
+
+/// The `reasoning_content` sent with a tool-calling assistant message of the
+/// exchange in progress that has no reasoning of this host's to send back,
+/// such as one another provider wrote before a failover, once the host has
+/// refused a request for lacking it. In thinking mode with tools, `DeepSeek`
+/// requires `reasoning_content` back on every such message and refuses the
+/// request without it (<https://api-docs.deepseek.com/guides/thinking_mode>).
+/// Whether an empty string satisfies it is undocumented, and reports
+/// conflict, so the stand-in is short readable text.
+const MISSING_REASONING_PLACEHOLDER: &str = "(reasoning for this step is not available)";
 
 /// Host-specific behavior layered on the OpenAI-compatible wire format.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -61,6 +73,10 @@ pub(crate) struct OpenAiClient {
     model: String,
     retry: RetryConfig,
     dialect: OpenAiDialect,
+    /// Set once the host has refused a request for missing
+    /// `reasoning_content`, after which tool calls without reasoning of the
+    /// host's own carry [`MISSING_REASONING_PLACEHOLDER`] from the start.
+    fills_missing_reasoning: Arc<AtomicBool>,
 }
 
 impl OpenAiClient {
@@ -84,6 +100,7 @@ impl OpenAiClient {
             model: model.into(),
             retry,
             dialect: OpenAiDialect::default(),
+            fills_missing_reasoning: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -108,6 +125,7 @@ impl OpenAiClient {
             model: model.into(),
             retry,
             dialect: OpenAiDialect::default(),
+            fills_missing_reasoning: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -153,23 +171,36 @@ impl OpenAiClient {
 
     /// Convert a conversation to the wire format, replaying the reasoning an
     /// OpenAI-compatible API returned for the assistant messages of the
-    /// tool-use exchange in progress, on a host that wants it.
-    fn convert_messages(&self, messages: &[Message]) -> Vec<OpenAiMessage> {
-        let replay_from = self
-            .replays_reasoning()
-            .then(|| current_exchange_start(messages));
+    /// tool-use exchange in progress, on a host that wants it. Also returns
+    /// where, on such a host, a tool-calling message of that exchange has no
+    /// reasoning to replay: the messages that get
+    /// [`MISSING_REASONING_PLACEHOLDER`] once the host asks for it.
+    fn convert_messages(&self, messages: &[Message]) -> (Vec<OpenAiMessage>, Vec<usize>) {
+        let mut converted: Vec<OpenAiMessage> = messages.iter().map(OpenAiMessage::from).collect();
+        let mut missing = Vec::new();
+        if !self.replays_reasoning() {
+            return (converted, missing);
+        }
+        let start = current_exchange_start(messages);
         let origin = self.origin();
-        messages
+        for (index, (msg, wire)) in messages
             .iter()
+            .zip(converted.iter_mut())
             .enumerate()
-            .map(|(index, msg)| {
-                let mut converted = OpenAiMessage::from(msg);
-                if replay_from.is_some_and(|start| index >= start) {
-                    converted.reasoning_content = plain_reasoning(&msg.thinking, &origin);
-                }
-                converted
-            })
-            .collect()
+            .skip(start)
+        {
+            wire.reasoning_content = plain_reasoning(&msg.thinking, &origin);
+            if wire.reasoning_content.is_none()
+                && msg.role == Role::Assistant
+                && msg
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
+            {
+                missing.push(index);
+            }
+        }
+        (converted, missing)
     }
 
     /// Build everything about a request that stays the same across retries.
@@ -213,15 +244,19 @@ impl OpenAiClient {
             }),
         };
 
+        let reasoning_effort = options
+            .thinking
+            .as_ref()
+            .and_then(Self::build_reasoning_effort);
+        let (messages, missing_reasoning) = self.convert_messages(messages);
         PreparedRequest {
-            messages: self.convert_messages(messages),
+            messages,
+            missing_reasoning,
+            filled_messages: OnceLock::new(),
             tools: (!openai_tools.is_empty()).then_some(openai_tools),
             response_format,
             temperature: options.temperature,
-            reasoning_effort: options
-                .thinking
-                .as_ref()
-                .and_then(Self::build_reasoning_effort),
+            reasoning_effort,
         }
     }
 
@@ -238,8 +273,9 @@ impl OpenAiClient {
         let tracked = sink.map(TrackedSink::new);
 
         let response = with_retry(&self.retry, || async {
-            let request = prepared.request(&self.model, tracked.is_some());
-            let result = self.send(&request, tracked.as_ref()).await;
+            let result = self
+                .send_with_reasoning_fallback(&prepared, tracked.as_ref())
+                .await;
             if result.is_err()
                 && let Some(tracked) = &tracked
             {
@@ -249,6 +285,39 @@ impl OpenAiClient {
         })
         .await?;
         Ok(response.produced_at(&self.origin()))
+    }
+
+    /// Send a request, and once more with placeholder reasoning on the tool
+    /// calls that have none if the host refuses it for missing
+    /// `reasoning_content`.
+    async fn send_with_reasoning_fallback(
+        &self,
+        prepared: &PreparedRequest,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let mut fill = self.fills_missing_reasoning.load(Ordering::Relaxed);
+        loop {
+            let request = prepared.request(&self.model, sink.is_some(), fill);
+            match self.send(&request, sink).await {
+                Err(e)
+                    if !fill
+                        && !prepared.missing_reasoning.is_empty()
+                        && is_missing_reasoning_refusal(&e) =>
+                {
+                    if !self.fills_missing_reasoning.swap(true, Ordering::Relaxed) {
+                        info!(
+                            model = %self.model,
+                            "host requires reasoning_content on tool calls; sending placeholder reasoning where there is none from now on"
+                        );
+                    }
+                    if let Some(sink) = sink {
+                        sink.restart_if_needed();
+                    }
+                    fill = true;
+                }
+                result => return result,
+            }
+        }
     }
 
     /// Send a pre-built request to the OpenAI-compatible API and parse the response.
@@ -445,6 +514,28 @@ fn build_tool_calls(
     Ok(calls)
 }
 
+/// Whether the host refused a request because an assistant message lacked
+/// `reasoning_content` (`DeepSeek`: "The `reasoning_content` in the thinking
+/// mode must be passed back to the API."). A host refusing the field as one
+/// it doesn't know names it too, so that wording is not taken for a request
+/// for it.
+fn is_missing_reasoning_refusal(error: &InferenceError) -> bool {
+    let InferenceError::Api(message) = error else {
+        return false;
+    };
+    let lower = message.to_lowercase();
+    lower.contains("reasoning_content")
+        && ![
+            "unsupported",
+            "not permitted",
+            "not allowed",
+            "unknown",
+            "unrecognized",
+        ]
+        .iter()
+        .any(|refusal| lower.contains(refusal))
+}
+
 /// Whether `host` is `OpenAI`'s own service, which accepts only the fields
 /// its API documents.
 fn is_official_openai_host(host: &str) -> bool {
@@ -624,6 +715,11 @@ impl<'a> StreamAssembler<'a> {
 /// What stays the same across a request's attempts.
 struct PreparedRequest {
     messages: Vec<OpenAiMessage>,
+    /// Indexes in `messages` of the tool calls with no reasoning to replay.
+    missing_reasoning: Vec<usize>,
+    /// `messages` with [`MISSING_REASONING_PLACEHOLDER`] at each of
+    /// `missing_reasoning`, built the first time an attempt needs it.
+    filled_messages: OnceLock<Vec<OpenAiMessage>>,
     tools: Option<Vec<OpenAiToolEntry>>,
     response_format: Option<OpenAiResponseFormat>,
     temperature: Option<f32>,
@@ -631,11 +727,34 @@ struct PreparedRequest {
 }
 
 impl PreparedRequest {
-    /// The request body for one attempt.
-    fn request<'a>(&'a self, model: &'a str, stream: bool) -> ChatCompletionRequest<'a> {
+    /// The request body for one attempt, with placeholder reasoning on the
+    /// tool calls that have none when `fill_missing_reasoning` is set.
+    fn request<'a>(
+        &'a self,
+        model: &'a str,
+        stream: bool,
+        fill_missing_reasoning: bool,
+    ) -> ChatCompletionRequest<'a> {
+        let messages = if fill_missing_reasoning && !self.missing_reasoning.is_empty() {
+            self.filled_messages.get_or_init(|| {
+                let mut filled = self.messages.clone();
+                for index in &self.missing_reasoning {
+                    if let Some(message) = filled.get_mut(*index) {
+                        message.reasoning_content = Some(MISSING_REASONING_PLACEHOLDER.to_string());
+                    }
+                }
+                debug!(
+                    messages = self.missing_reasoning.len(),
+                    "sending placeholder reasoning for tool calls with none of this host's to replay"
+                );
+                filled
+            })
+        } else {
+            &self.messages
+        };
         ChatCompletionRequest {
             model,
-            messages: &self.messages,
+            messages,
             tools: self.tools.as_deref(),
             tool_choice: self.tools.is_some().then_some("auto"),
             response_format: self.response_format.as_ref(),
@@ -2856,6 +2975,7 @@ mod tests {
     fn replayed(client: &OpenAiClient) -> Vec<Option<String>> {
         client
             .convert_messages(&reasoning_exchange())
+            .0
             .into_iter()
             .map(|m| m.reasoning_content)
             .collect()
@@ -2953,5 +3073,207 @@ mod tests {
             body.pointer("/messages/1/reasoning_content").is_none(),
             "and not on an earlier exchange's"
         );
+    }
+
+    // --- Placeholder reasoning after a host asks for it ---
+
+    /// A tool-use exchange an Anthropic model began (its reasoning signed and
+    /// unreadable here) before a failover, then one step this host answered
+    /// with `own` reasoning, after an earlier exchange whose tool call had none.
+    fn failover_exchange(own: Option<&str>) -> Vec<Message> {
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            name: "exec".to_string(),
+            arguments: json!({}),
+            server: None,
+        };
+        let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-5-5");
+        let mut before = Message::assistant("", Some(vec![call("c1")]));
+        before.thinking = vec![
+            ThinkingBlock {
+                text: "signed elsewhere".to_string(),
+                signature: Some("sig".to_string()),
+                ..ThinkingBlock::default()
+            }
+            .from_origin(&anthropic),
+        ];
+        let mut after = Message::assistant("", Some(vec![call("c2")]));
+        if let Some(text) = own {
+            after.thinking = vec![ThinkingBlock::text(text).from_origin(&test_origin())];
+        }
+        vec![
+            Message::user("one"),
+            Message::assistant("", Some(vec![call("c0")])),
+            Message::tool("r0", "c0"),
+            Message::assistant("done", None),
+            Message::user("two"),
+            before,
+            Message::tool("r1", "c1"),
+            after,
+            Message::tool("r2", "c2"),
+        ]
+    }
+
+    const MISSING_REASONING_REFUSAL: &str = r#"{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API.","type":"invalid_request_error"}}"#;
+
+    /// The `reasoning_content` of the assistant message at `index` in a
+    /// received request.
+    fn reasoning_at(request: &wiremock::Request, index: usize) -> Option<String> {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        body.pointer(&format!("/messages/{index}/reasoning_content"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    /// A DeepSeek-style host: it refuses a request whose tool call at
+    /// message 5 carries no `reasoning_content`, and answers otherwise.
+    async fn mount_reasoning_host(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(|request: &wiremock::Request| reasoning_at(request, 5).is_none())
+            .respond_with(ResponseTemplate::new(400).set_body_string(MISSING_REASONING_REFUSAL))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"content": "ok"}}]
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[test]
+    fn tool_calls_without_this_hosts_reasoning_are_found() {
+        let deepseek = client_at("https://api.deepseek.com/v1");
+        let (converted, missing) = deepseek.convert_messages(&failover_exchange(Some("mine")));
+        assert_eq!(
+            missing,
+            vec![5],
+            "only the current exchange's tool call another provider answered"
+        );
+        assert_eq!(
+            converted
+                .get(7)
+                .and_then(|m| m.reasoning_content.as_deref()),
+            Some("mine"),
+            "the host's own reasoning is replayed as before"
+        );
+        assert!(
+            converted
+                .iter()
+                .take(7)
+                .all(|m| m.reasoning_content.is_none()),
+            "nothing is filled in until the host asks"
+        );
+        let (_, both_missing) = deepseek.convert_messages(&failover_exchange(None));
+        assert_eq!(both_missing, vec![5, 7]);
+        let (_, openai_missing) =
+            client_at("https://api.openai.com/v1").convert_messages(&failover_exchange(None));
+        assert!(openai_missing.is_empty(), "OpenAI never gets the field");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_for_missing_reasoning_is_retried_once_with_placeholders_and_remembered() {
+        let server = MockServer::start().await;
+        mount_reasoning_host(&server).await;
+        let client = make_client(server.uri(), "m");
+        for _ in 0..2 {
+            client
+                .complete(
+                    &failover_exchange(Some("mine")),
+                    &[],
+                    &CompletionOptions::default(),
+                )
+                .await
+                .unwrap();
+        }
+        let requests = server.received_requests().await.unwrap();
+        let sent: Vec<Option<String>> = requests.iter().map(|r| reasoning_at(r, 5)).collect();
+        let placeholder = Some(MISSING_REASONING_PLACEHOLDER.to_string());
+        assert_eq!(
+            sent,
+            vec![None, placeholder.clone(), placeholder],
+            "one refusal costs one extra request, and the next call fills it in straight away"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|r| reasoning_at(r, 7).as_deref() == Some("mine")),
+            "the host's own reasoning is never replaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_that_persists_with_placeholders_is_returned_after_one_retry() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(MISSING_REASONING_REFUSAL))
+            .mount(&server)
+            .await;
+        let result = make_client(server.uri(), "m")
+            .complete(&failover_exchange(None), &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_err(), "the refusal is returned");
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_host_that_never_refuses_never_gets_a_placeholder() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"content": "ok"}}]
+            })))
+            .mount(&server)
+            .await;
+        let client = make_client(server.uri(), "m");
+        for thinking in [None, Some(ThinkingConfig::Level(ThinkingLevel::High))] {
+            let options = CompletionOptions {
+                thinking,
+                ..CompletionOptions::default()
+            };
+            client
+                .complete(&failover_exchange(None), &[], &options)
+                .await
+                .unwrap();
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests.iter().all(|r| reasoning_at(r, 5).is_none()),
+            "thinking on or off, nothing is filled in"
+        );
+    }
+
+    #[tokio::test]
+    async fn other_refusals_get_no_placeholder_retry() {
+        for body in [
+            r#"{"error":{"message":"Invalid schema for function 'exec'"}}"#,
+            r#"{"error":{"message":"'messages.5' : property 'reasoning_content' is unsupported"}}"#,
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat/completions"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(body))
+                .mount(&server)
+                .await;
+            let client = make_client(server.uri(), "m");
+            let result = client
+                .complete(&failover_exchange(None), &[], &CompletionOptions::default())
+                .await;
+            assert!(result.is_err(), "{body}");
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                1,
+                "no retry for {body}"
+            );
+            assert!(
+                !client.fills_missing_reasoning.load(Ordering::Relaxed),
+                "nothing is remembered for {body}"
+            );
+        }
     }
 }

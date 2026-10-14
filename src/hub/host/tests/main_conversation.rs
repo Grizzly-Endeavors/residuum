@@ -304,8 +304,8 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
 
     assert_kinds(
         &frames,
-        &["turn_started", "response", "turn_ended"],
-        "no person's message started it",
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the teammate's message is announced ahead of the turn it starts",
     );
     let started = frame_of(&frames, "turn_started");
     assert_eq!(started["origin"]["endpoint"], "background");
@@ -314,6 +314,22 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 
     let turn_id = str_at(started, "reply_to");
+    let announced = frame_of(&frames, "user_message");
+    assert_eq!(str_at(announced, "turn_id"), turn_id);
+    assert_eq!(str_at(announced, "endpoint"), "background");
+    assert_eq!(
+        announced["agent_sender"],
+        json!({ "address": "agent:guest", "category": "teammate" }),
+        "the frame names the teammate, so the web shows its card live: {announced}"
+    );
+    assert!(
+        announced.get("sender").is_none(),
+        "no person sent it: {announced}"
+    );
+    assert!(
+        str_at(announced, "content").ends_with("status check"),
+        "{announced}"
+    );
     // The turn is written to history before `turn_ended` goes out, so a page
     // that reloads history on `turn_ended` finds it there.
     let (status, body) = hub.get("/api/agents/scout/chat/history").await;
@@ -347,8 +363,8 @@ async fn a_background_turn_with_no_endpoint_to_follow_still_reaches_the_web() {
 
     assert_kinds(
         &frames,
-        &["turn_started", "response", "turn_ended"],
-        "a turn with no endpoint",
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "a teammate's turn with no endpoint",
     );
     assert_eq!(
         str_at(frame_of(&frames, "response"), "endpoint"),
