@@ -142,7 +142,16 @@
     else if (event.key === "Home") next = items[0];
     else if (event.key === "End") next = items.at(-1);
     else next = typeahead(event, items, at);
-    if (next === undefined) return;
+    if (next === undefined) {
+      // A link's Space would scroll the page, so Space chooses a focused link here,
+      // after typeahead has declined the key, so a space within a search still types.
+      const focused = items[at];
+      if (event.key === " " && focused instanceof HTMLAnchorElement) {
+        event.preventDefault();
+        focused.click();
+      }
+      return;
+    }
     event.preventDefault();
     next.focus();
   }

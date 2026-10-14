@@ -54,13 +54,6 @@
     if (document.activeElement !== item) return;
     item.closest<HTMLElement>('[role="menu"]')?.focus({ preventScroll: true });
   }
-
-  // A link's Space would scroll the page, so Space chooses it, as it does a button.
-  function spaceChooses(event: KeyboardEvent): void {
-    if (event.key !== " ") return;
-    event.preventDefault();
-    (event.currentTarget as HTMLElement).click();
-  }
 </script>
 
 {#snippet content()}
@@ -89,7 +82,6 @@
     data-tone={tone}
     data-label={label}
     onclick={choose}
-    onkeydown={spaceChooses}
     onpointermove={focusOnPointer}
     onpointerleave={leaveToMenu}
   >

@@ -161,6 +161,22 @@ mod url_tests {
     }
 
     #[test]
+    fn the_web_origin_keeps_an_ipv6_host_in_brackets() {
+        assert_eq!(
+            web_origin("wss://[::1]:8443/tunnel/v2/register").as_deref(),
+            Some("https://[::1]:8443")
+        );
+    }
+
+    #[test]
+    fn the_web_origin_drops_any_userinfo() {
+        assert_eq!(
+            web_origin("wss://user:secret@relay.example.com/tunnel/v2/register").as_deref(),
+            Some("https://relay.example.com")
+        );
+    }
+
+    #[test]
     fn a_url_that_isnt_a_websocket_address_has_no_web_origin() {
         assert_eq!(web_origin("https://relay.example.com"), None);
         assert_eq!(web_origin("not a url"), None);
