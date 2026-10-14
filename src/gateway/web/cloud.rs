@@ -9,9 +9,16 @@ use axum::response::{IntoResponse, Json, Redirect, Response};
 use serde::Serialize;
 use tokio::sync::watch;
 
+use super::config::{HubConfigPatchError, PreparedHubConfigPatch, prepare_hub_config_patch};
+use crate::checkpoints::CheckpointEngine;
+use crate::config::HubConfig;
 use crate::config::secrets::SecretStore;
 use crate::gateway::types::ReloadSignal;
 use crate::tunnel::TunnelStatus;
+
+/// The `[cloud] token` value that names the sign-in token the callback stores
+/// under the `cloud_token` secret.
+const CLOUD_TOKEN_REF: &str = "secret:cloud_token";
 
 /// Shared state for cloud API endpoints.
 #[derive(Clone)]
@@ -20,6 +27,9 @@ pub(crate) struct CloudApiState {
     pub reload_tx: crate::gateway::types::ReloadSender,
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The hub's checkpoint repositories, so the `config.toml` writes here
+    /// can be undone from History like every other Settings save.
+    pub checkpoints: Arc<CheckpointEngine>,
 }
 
 /// The tunnel's status as `GET /api/hub/cloud/status` and the `tunnel` field
@@ -169,6 +179,20 @@ fn token_from_query(query: Option<&str>) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
+/// Prepare a `[cloud]` switch to `hub/config.toml` through the Settings patch
+/// path. The check is the first-run-tolerant one, so the switch lands on any
+/// file the hub loads, including one whose timezone is still unset. A stricter
+/// check would stop disconnect from switching the tunnel off on such a file.
+async fn prepare_tunnel_switch(
+    state: &CloudApiState,
+    switch: &serde_json::Value,
+) -> Result<PreparedHubConfigPatch, HubConfigPatchError> {
+    prepare_hub_config_patch(&state.hub_dir, switch, |text| {
+        HubConfig::validate_toml_for_onboarding(text, &state.hub_dir)
+    })
+    .await
+}
+
 /// `GET /cloud/callback?token=...` — where the relay sends the browser after
 /// sign-in.
 ///
@@ -176,6 +200,10 @@ fn token_from_query(query: Option<&str>) -> Option<String> {
 /// `config.toml`, triggers a config reload, and hands the browser to Settings
 /// → Residuum Cloud, which follows the tunnel from there. Every outcome is a
 /// redirect into the app; a failure is logged here and named by `cloud=`.
+///
+/// The `config.toml` switch is validated before anything is written. The
+/// `cloud sign-in` checkpoint is taken under the secret lock before the token
+/// is stored, so it holds the secrets and the config as they stood.
 pub(crate) async fn cloud_callback(
     State(state): State<CloudApiState>,
     RawQuery(query): RawQuery,
@@ -185,9 +213,21 @@ pub(crate) async fn cloud_callback(
         return CallbackOutcome::MissingToken.hand_off();
     };
 
+    let switch_on = serde_json::json!({ "cloud": { "enabled": true, "token": CLOUD_TOKEN_REF } });
+    let prepared = match prepare_tunnel_switch(&state, &switch_on).await {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            tracing::error!(error = %e, hub_dir = %state.hub_dir.display(), "failed to save the cloud sign-in to hub config.toml");
+            return CallbackOutcome::SaveFailed.hand_off();
+        }
+    };
+
     let hub_dir = state.hub_dir.clone();
     let store_result = {
         let _guard = state.secret_lock.lock().await;
+        let _checkpoint_id = prepared
+            .checkpoint(&state.checkpoints, "cloud sign-in")
+            .await;
         let dir = hub_dir.clone();
         crate::util::spawn_blocking_in_span(move || {
             let mut store = SecretStore::load(&dir)?;
@@ -208,17 +248,8 @@ pub(crate) async fn cloud_callback(
         }
     }
 
-    let config_path = hub_dir.join("config.toml");
-    let current = match std::fs::read_to_string(&config_path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            tracing::error!(error = %e, path = %config_path.display(), "failed to read hub config.toml for the cloud sign-in");
-            return CallbackOutcome::SaveFailed.hand_off();
-        }
-    };
-    if let Err(e) = std::fs::write(&config_path, update_cloud_section(&current, true)) {
-        tracing::error!(error = %e, path = %config_path.display(), "failed to write hub config.toml for the cloud sign-in");
+    if let Err(e) = prepared.write().await {
+        tracing::error!(error = %e, hub_dir = %hub_dir.display(), "failed to save the cloud sign-in to hub config.toml");
         return CallbackOutcome::SaveFailed.hand_off();
     }
 
@@ -229,16 +260,19 @@ pub(crate) async fn cloud_callback(
 
 /// `POST /api/hub/cloud/disconnect` — disable cloud tunnel without removing the token.
 pub(crate) async fn api_cloud_disconnect(State(state): State<CloudApiState>) -> Response {
-    let config_path = state.hub_dir.join("config.toml");
-    let current = match std::fs::read_to_string(&config_path) {
-        Ok(raw) => raw,
+    let switch_off = serde_json::json!({ "cloud": { "enabled": false } });
+    let prepared = match prepare_tunnel_switch(&state, &switch_off).await {
+        Ok(prepared) => prepared,
         Err(e) => {
-            tracing::error!(error = %e, path = %config_path.display(), "failed to read hub config.toml to disconnect the cloud tunnel");
+            tracing::error!(error = %e, hub_dir = %state.hub_dir.display(), "failed to switch the cloud tunnel off in hub config.toml");
             return disconnect_failed();
         }
     };
-    if let Err(e) = std::fs::write(&config_path, update_cloud_section(&current, false)) {
-        tracing::error!(error = %e, path = %config_path.display(), "failed to write hub config.toml to disconnect the cloud tunnel");
+    let _checkpoint_id = prepared
+        .checkpoint(&state.checkpoints, "cloud disconnect")
+        .await;
+    if let Err(e) = prepared.write().await {
+        tracing::error!(error = %e, hub_dir = %state.hub_dir.display(), "failed to switch the cloud tunnel off in hub config.toml");
         return disconnect_failed();
     }
 
@@ -257,70 +291,6 @@ fn disconnect_failed() -> Response {
         })),
     )
         .into_response()
-}
-
-/// Update or insert the `[cloud]` section in config TOML.
-///
-/// When `enable` is true: sets `enabled = true` and `token = "secret:cloud_token"`.
-/// When `enable` is false: sets `enabled = false`, preserves token.
-fn update_cloud_section(raw: &str, enable: bool) -> String {
-    let mut lines: Vec<String> = raw.lines().map(String::from).collect();
-    let mut cloud_start = None;
-    let mut cloud_end = None;
-
-    // Find the [cloud] section boundaries
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed == "[cloud]" {
-            cloud_start = Some(i);
-        } else if cloud_start.is_some() && cloud_end.is_none() && trimmed.starts_with('[') {
-            cloud_end = Some(i);
-        }
-    }
-
-    if let Some(start) = cloud_start {
-        let end = cloud_end.unwrap_or(lines.len());
-        // Update existing section
-        let mut new_section = vec!["[cloud]".to_string()];
-        if enable {
-            new_section.push("enabled = true".to_string());
-        } else {
-            new_section.push("enabled = false".to_string());
-        }
-
-        // Preserve token line and relay_url from original
-        for line in lines.get(start + 1..end).unwrap_or_default() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("token") || trimmed.starts_with("relay_url") {
-                new_section.push(line.clone());
-            }
-        }
-
-        // If enabling and no token line was found, add default
-        if enable && !new_section.iter().any(|l| l.trim().starts_with("token")) {
-            new_section.push("token = \"secret:cloud_token\"".to_string());
-        }
-
-        lines.splice(start..end, new_section);
-    } else {
-        // Append new section
-        if !lines.last().is_some_and(|l| l.trim().is_empty()) {
-            lines.push(String::new());
-        }
-        lines.push("[cloud]".to_string());
-        if enable {
-            lines.push("enabled = true".to_string());
-            lines.push("token = \"secret:cloud_token\"".to_string());
-        } else {
-            lines.push("enabled = false".to_string());
-        }
-    }
-
-    let mut result = lines.join("\n");
-    if !result.ends_with('\n') {
-        result.push('\n');
-    }
-    result
 }
 
 #[cfg(test)]
@@ -389,65 +359,6 @@ token = "secret:cloud_token"
     }
 
     #[test]
-    fn update_cloud_section_insert_new() {
-        let raw = "timezone = \"UTC\"\n";
-        let result = update_cloud_section(raw, true);
-        assert!(result.contains("[cloud]"));
-        assert!(result.contains("enabled = true"));
-        assert!(result.contains("token = \"secret:cloud_token\""));
-    }
-
-    #[test]
-    fn update_cloud_section_disable_existing() {
-        let raw = r#"timezone = "UTC"
-
-[cloud]
-enabled = true
-token = "secret:cloud_token"
-"#;
-        let result = update_cloud_section(raw, false);
-        assert!(result.contains("enabled = false"));
-        assert!(result.contains("token = \"secret:cloud_token\""));
-        assert!(!result.contains("enabled = true"));
-    }
-
-    #[test]
-    fn update_cloud_section_enable_existing() {
-        let raw = r#"timezone = "UTC"
-
-[cloud]
-enabled = false
-token = "secret:cloud_token"
-relay_url = "wss://custom.example.com"
-"#;
-        let result = update_cloud_section(raw, true);
-        assert!(result.contains("enabled = true"));
-        assert!(result.contains("token = \"secret:cloud_token\""));
-        assert!(result.contains("relay_url = \"wss://custom.example.com\""));
-        assert!(!result.contains("enabled = false"));
-    }
-
-    #[test]
-    fn update_cloud_section_preserves_other_sections() {
-        let raw = r#"timezone = "UTC"
-
-[gateway]
-port = 7700
-
-[cloud]
-enabled = true
-token = "secret:cloud_token"
-
-[discord]
-token = "secret:discord"
-"#;
-        let result = update_cloud_section(raw, false);
-        assert!(result.contains("[gateway]"));
-        assert!(result.contains("[discord]"));
-        assert!(result.contains("enabled = false"));
-    }
-
-    #[test]
     fn the_callback_takes_the_first_token_it_can_use() {
         assert_eq!(
             token_from_query(Some("token=rst_a")).as_deref(),
@@ -489,6 +400,7 @@ token = "secret:discord"
                 reload_tx,
                 tunnel_status_rx,
                 secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+                checkpoints: crate::checkpoints::test_engine(),
             });
 
         let resp = app
@@ -517,7 +429,206 @@ token = "secret:discord"
             reload_tx,
             tunnel_status_rx,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
+    }
+
+    /// A hub config with comments and keys the Settings form doesn't model in
+    /// `[cloud]`. A sign-in or disconnect must leave all of them as they are.
+    const CONFIG_WITH_CLOUD_NOTES: &str = "\
+# the hub's own notes
+timezone = \"UTC\"
+
+[cloud]
+# the relay this hub dials
+relay_url = \"wss://relay.example.test/tunnel/v2/register\"
+local_port = 9000
+enabled = false
+";
+
+    /// A hub whose `config.toml` holds `raw`, versioned by a checkpoint engine
+    /// over that hub directory, as the running hub's engine is. The returned
+    /// root keeps the directory alive.
+    fn hub_with_config(raw: &str) -> (tempfile::TempDir, PathBuf, Arc<CheckpointEngine>) {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), raw).unwrap();
+        let engine = CheckpointEngine::new(
+            "test-agent",
+            root.path().join("workspace"),
+            &crate::config::paths::TeamPaths::new(root.path().join("team")),
+            root.path().join("agent-config"),
+            &hub_dir,
+            &root.path().join("checkpoints"),
+            None,
+        )
+        .unwrap();
+        (root, hub_dir, Arc::new(engine))
+    }
+
+    fn state_over(
+        hub_dir: &std::path::Path,
+        checkpoints: Arc<CheckpointEngine>,
+    ) -> (
+        CloudApiState,
+        tokio::sync::mpsc::UnboundedReceiver<ReloadSignal>,
+    ) {
+        let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
+        let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
+        let state = CloudApiState {
+            hub_dir: hub_dir.to_path_buf(),
+            reload_tx,
+            tunnel_status_rx,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints,
+        };
+        (state, reload_rx)
+    }
+
+    #[tokio::test]
+    async fn cloud_sign_in_keeps_comments_and_keys_it_does_not_model() {
+        let (_root, hub_dir, checkpoints) = hub_with_config(CONFIG_WITH_CLOUD_NOTES);
+        let (state, mut reload_rx) = state_over(&hub_dir, checkpoints);
+
+        let resp = cloud_callback(State(state), RawQuery(Some("token=rst_signed_in".into()))).await;
+        assert_eq!(
+            hand_off_target(&resp),
+            "/home?settings=_all/cloud&cloud=connecting"
+        );
+
+        let config = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+        assert!(config.contains("# the hub's own notes"), "{config}");
+        assert!(config.contains("# the relay this hub dials"), "{config}");
+        assert!(config.contains("local_port = 9000"), "{config}");
+        assert!(
+            config.contains("relay_url = \"wss://relay.example.test/tunnel/v2/register\""),
+            "{config}"
+        );
+        assert!(config.contains("timezone = \"UTC\""), "{config}");
+        assert_eq!(config.matches("[cloud]").count(), 1, "{config}");
+        assert_eq!(parse_cloud_state(&config), (true, true), "{config}");
+        assert!(matches!(reload_rx.try_recv(), Ok(ReloadSignal::Hub)));
+    }
+
+    /// The id of the newest Hub checkpoint whose summary is `summary`.
+    async fn newest_checkpoint_id(checkpoints: &CheckpointEngine, summary: &str) -> String {
+        let page = checkpoints
+            .list_checkpoints(crate::checkpoints::RepoKind::Hub, None, None, None, None)
+            .await
+            .unwrap();
+        page.items
+            .into_iter()
+            .find(|checkpoint| checkpoint.summary == summary)
+            .expect("the action should leave a checkpoint named after it")
+            .id
+    }
+
+    #[tokio::test]
+    async fn cloud_sign_in_checkpoints_the_config_and_secrets_as_they_stood() {
+        let (_root, hub_dir, checkpoints) = hub_with_config(CONFIG_WITH_CLOUD_NOTES);
+        let mut seeded = SecretStore::load(&hub_dir).unwrap();
+        seeded.set("cloud_token", "rst_old", &hub_dir).unwrap();
+        let secrets_before = std::fs::read(hub_dir.join(crate::config::secrets::ENCRYPTED_FILE))
+            .expect("seeding a secret should write the secret store");
+        let (state, _reload_rx) = state_over(&hub_dir, Arc::clone(&checkpoints));
+
+        cloud_callback(State(state), RawQuery(Some("token=rst_signed_in".into()))).await;
+
+        let id = newest_checkpoint_id(&checkpoints, "cloud sign-in").await;
+        let stored_config = checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Hub,
+                id.clone(),
+                "config.toml".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_config.as_deref(),
+            Some(CONFIG_WITH_CLOUD_NOTES.as_bytes()),
+            "the checkpoint must hold config.toml as it was before the sign-in"
+        );
+        let stored_secrets = checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Hub,
+                id,
+                crate::config::secrets::ENCRYPTED_FILE.to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_secrets.as_deref(),
+            Some(secrets_before.as_slice()),
+            "the checkpoint must hold the secret store as it was before the sign-in, so the old token is restorable"
+        );
+        let store = SecretStore::load(&hub_dir).unwrap();
+        assert_eq!(store.get("cloud_token"), Some("rst_signed_in"));
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_whose_config_is_rejected_stores_no_token() {
+        let raw = "timezone = \"Not/AZone\"\n";
+        let (_root, hub_dir, checkpoints) = hub_with_config(raw);
+        let (state, mut reload_rx) = state_over(&hub_dir, Arc::clone(&checkpoints));
+
+        let resp = cloud_callback(State(state), RawQuery(Some("token=rst_signed_in".into()))).await;
+
+        assert_eq!(
+            hand_off_target(&resp),
+            "/home?settings=_all/cloud&cloud=save-failed"
+        );
+        let store = SecretStore::load(&hub_dir).unwrap();
+        assert_eq!(
+            store.get("cloud_token"),
+            None,
+            "a token the config can't reference must not be stored"
+        );
+        let config = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+        assert_eq!(config, raw, "a rejected sign-in leaves config.toml alone");
+        assert!(reload_rx.try_recv().is_err(), "nothing was switched on");
+    }
+
+    #[tokio::test]
+    async fn cloud_disconnect_switches_the_tunnel_off_and_leaves_the_rest_alone() {
+        let raw = CONFIG_WITH_CLOUD_NOTES.replace(
+            "enabled = false",
+            "token = \"secret:cloud_token\"\nenabled = true",
+        );
+        let (_root, hub_dir, checkpoints) = hub_with_config(&raw);
+        let (state, mut reload_rx) = state_over(&hub_dir, Arc::clone(&checkpoints));
+
+        let resp = api_cloud_disconnect(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed, serde_json::json!({ "ok": true }));
+
+        let config = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+        assert_eq!(
+            config,
+            raw.replace("enabled = true", "enabled = false"),
+            "only the enabled switch may change"
+        );
+        assert_eq!(parse_cloud_state(&config), (true, false));
+
+        let id = newest_checkpoint_id(&checkpoints, "cloud disconnect").await;
+        let stored = checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Hub,
+                id,
+                "config.toml".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(raw.as_bytes()),
+            "the checkpoint must hold config.toml as it was before the disconnect"
+        );
+        assert!(matches!(reload_rx.try_recv(), Ok(ReloadSignal::Hub)));
     }
 
     fn status_router() -> axum::Router {
