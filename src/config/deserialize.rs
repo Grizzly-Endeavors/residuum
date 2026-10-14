@@ -424,6 +424,8 @@ pub(super) struct DiscordConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub(super) context_messages: Option<usize>,
+    /// Whether text the agent writes before a tool call is posted to the chat.
+    pub(super) deliver_intermediate: Option<bool>,
 }
 
 /// Raw TOML `[telegram]` section.
@@ -436,6 +438,8 @@ pub(super) struct TelegramConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub(super) context_messages: Option<usize>,
+    /// Whether text the agent writes before a tool call is posted to the chat.
+    pub(super) deliver_intermediate: Option<bool>,
 }
 
 /// Raw TOML `[teams]` section.
@@ -452,6 +456,8 @@ pub(super) struct TeamsConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub(super) context_messages: Option<usize>,
+    /// Whether text the agent writes before a tool call is posted to the chat.
+    pub(super) deliver_intermediate: Option<bool>,
     /// Port for the dedicated Teams messaging listener.
     pub(super) port: Option<u16>,
 }

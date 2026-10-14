@@ -168,6 +168,9 @@ pub struct DiscordConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -176,6 +179,7 @@ impl std::fmt::Debug for DiscordConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -189,6 +193,9 @@ pub struct TelegramConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -197,6 +204,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -214,6 +222,9 @@ pub struct TeamsConfig {
     pub respond_to_others: bool,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
     /// Port for the dedicated messaging listener (bound on the gateway's address).
     ///
     /// Kept separate from the gateway port so a public tunnel pointed at it
@@ -229,6 +240,7 @@ impl std::fmt::Debug for TeamsConfig {
             .field("tenant_id", &self.tenant_id)
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .field("port", &self.port)
             .finish()
     }

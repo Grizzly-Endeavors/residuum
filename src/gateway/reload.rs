@@ -1145,6 +1145,7 @@ mod tests {
             token: "new-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let diff = diff_config(&old, &new);
@@ -1159,6 +1160,7 @@ mod tests {
             token: "existing-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         let mut new = old.clone();
         new.discord = None;
@@ -1174,12 +1176,14 @@ mod tests {
             token: "old-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         let mut new = old.clone();
         new.telegram = Some(TelegramConfig {
             token: "new-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let diff = diff_config(&old, &new);
@@ -1194,6 +1198,7 @@ mod tests {
             tenant_id: "tenant".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
             port: 7701,
         }
     }

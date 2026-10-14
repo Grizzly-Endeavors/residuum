@@ -1289,6 +1289,20 @@ candidate_multiplier = 8
         assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(true));
     }
 
+    #[test]
+    fn chat_bots_post_only_the_final_reply_by_default() {
+        let cfg = chat_bots_config("");
+        assert_eq!(cfg.discord.map(|d| d.deliver_intermediate), Some(false));
+        assert_eq!(cfg.telegram.map(|t| t.deliver_intermediate), Some(false));
+    }
+
+    #[test]
+    fn chat_bots_post_intermediate_text_when_enabled() {
+        let cfg = chat_bots_config("deliver_intermediate = true\n");
+        assert_eq!(cfg.discord.map(|d| d.deliver_intermediate), Some(true));
+        assert_eq!(cfg.telegram.map(|t| t.deliver_intermediate), Some(true));
+    }
+
     // ── Teams config ───────────────────────────────────────────────────────
 
     #[test]
@@ -1309,6 +1323,7 @@ app_password = "client-secret"
         assert_eq!(teams.tenant_id, "tenant-guid");
         assert_eq!(teams.app_password, "client-secret");
         assert!(!teams.respond_to_others, "owner-only by default");
+        assert!(!teams.deliver_intermediate, "final reply only by default");
         assert_eq!(teams.context_messages, DEFAULT_TEAMS_CONTEXT_MESSAGES);
         assert_eq!(teams.port, DEFAULT_TEAMS_PORT);
     }
@@ -1322,6 +1337,7 @@ tenant_id = "tenant"
 app_password = "secret"
 respond_to_others = true
 context_messages = 5
+deliver_intermediate = true
 port = 8801
 "#;
         let cfg = resolve_test(
@@ -1332,6 +1348,7 @@ port = 8801
         let teams = cfg.teams.unwrap();
         assert!(teams.respond_to_others);
         assert_eq!(teams.context_messages, 5);
+        assert!(teams.deliver_intermediate);
         assert_eq!(teams.port, 8801);
     }
 

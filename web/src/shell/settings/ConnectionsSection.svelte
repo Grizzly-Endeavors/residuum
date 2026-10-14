@@ -140,6 +140,12 @@
     placeholder="20"
     min={0}
   />
+  <ConfigToggle
+    {scope}
+    field={`${channel}_deliver_intermediate`}
+    label="Post updates while working"
+    hint={`Off: the chat gets ${agent}'s finished reply, with a typing indicator while it works. On: what ${agent} says between steps is posted too, each as its own message.`}
+  />
 {/snippet}
 
 <SettingsSection
