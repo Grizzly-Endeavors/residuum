@@ -3798,7 +3798,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
