@@ -42,7 +42,7 @@ Changing `display_name` in `config.toml` changes the name people see. The folder
 |------|-------|
 | `hub/config.toml` | `timezone` (shared), `[gateway]` bind and port, `[cloud]`, `[a2a]` `enabled`/`port`/`public_url`, `[tracing]`, `[push]` `contact` (a `mailto:` address or `https:` URL sent to push services; the project's address when unset), `[background]` `max_concurrent` (the session budget) and `hop_soft_limit`/`hop_hard_limit`, `[system_one]` (the shared [decision model](system-one.md)) |
 | `<agent>/config/config.toml` | Everything else: `display_name` (the name people see; absent means the folder name), `autostart` (default `true`), `timeout_secs`, `max_tokens`, `temperature`, `thinking`, `[memory]`, `[pulse]`, `[subconscious]`, `[learning]`, `[retry]`, `[agent]`, `[idle]`, `[discord]`, `[telegram]`, `[teams]`, `[webhooks]`, `[skills]`, `[tools]`, `[web_search]`, `[auto_mode]` (see [Auto Mode](auto-mode.md)), `[a2a]` `visibility`, and `[background]` idle timeouts, `episode_skip_token_floor`, and `subagent_depth_cap` |
-| `<agent>/config/providers.toml` | `[providers.*]`, `[models]`, `[background.models]` |
+| `<agent>/config/providers.toml` | `[providers.*]` (with per-model settings under `[providers.<name>.models."<model>"]`), `[models]`, `[background.models]` |
 
 Each file is parsed strictly against its own schema: a hub-only key in an agent's `config.toml` (or the reverse) is an unknown key, dropped with a notice (see [Config Loading](config-loading.md)). There is no `workspace_dir` setting: the agent's directory is its workspace. The user's name lives in `team/USER.md`. The agent's shown name is `display_name`.
 
@@ -76,6 +76,25 @@ Some providers refuse a tool-use exchange whose reasoning is missing, so the rea
 **Whose reasoning goes back.** Every reasoning block records where it came from, as an `origin` of provider API (`anthropic`, `gemini`, `openai_compatible` or `ollama`) and model, set by the provider that answered. A provider sends back only reasoning it produced: Anthropic and Gemini only blocks written by the same model, because a signature is checked against the model that issued it (and on current Claude models against the conversation before it), and the OpenAI-compatible and Ollama clients only text their own API returned, whichever model wrote it. Reasoning that another provider or model wrote is left out of the request, logged at `debug` with a count, so a failover from one provider to another in the middle of a tool-use exchange, or a model change, continues without it instead of failing on a signature the next provider cannot verify. A primary that comes back after a failover gets its own earlier blocks back and none of the fallback's. A block saved with no origin (the reasoning of a conversation recorded before origins were kept) is treated as foreign: it is never sent back, and the exchange it belongs to continues without it.
 
 Gemini 3 refuses a request whose current turn holds a function call with no thought signature, and a call another provider made has none to send. For the first function call of each such message in the exchange in progress, a Gemini 3 model (`gemini-3*`) is sent the stand-in value Google documents for this, `skip_thought_signature_validator`. Earlier turns, and other Gemini models, get none. Google calls the stand-in a last resort because the model then continues without that call's original reasoning.
+
+**Images and text-only models.** Images reach a model from a user's message (a chat interface or an upload) and from tool results (`read_file` on an image). A model that can't take them is described under its provider entry, keyed by the model's name after the slash:
+
+```toml
+[providers.zai]
+type = "openai"
+url = "https://api.z.ai/api/paas/v4"
+
+[providers.zai.models."glm-5.3"]
+input = ["text"]            # ["text", "image"] for a model that takes images
+```
+
+Settings → Model → Providers sets the same thing: editing a provider lists each model a role or failover list names through it, with "Not set", "Can view images" or "Text only". A model named by its type alone (`openai/gpt-4o` with no `[providers.openai]` entry) has no entry to hold the setting; add a provider entry for it first.
+
+For a model whose `input` leaves out `"image"`, every request replaces each message's images with one line of text: `(image omitted: this model can't view images)`, or `(tool image omitted: this model can't view images)` in a tool result. The conversation keeps its images, so switching to a model that takes images sends them again. `read_file` still reads an image the same way; the model learns it was left out from the placeholder.
+
+With no `input` set, images are sent. When the provider turns a request down for carrying them, the request is sent once more without them, and that model (at that address) gets no images for as long as Residuum runs; a restart sends them again until the provider refuses again. Only these refusals count, each seen from a real provider: `messages.content.type is invalid` (Z.ai), `image_url is only supported by certain models` (OpenAI) and ``unknown variant `image_url` `` (DeepSeek). Any other error, a `400` included, is returned as it is. A model declared `["text", "image"]` is never retried this way. The check happens per provider in a chain, so each failover hop applies its own model's setting.
+
+Each turn whose requests left images out shows one notice: "This model can't see images, so N image(s) were left out of the request." When a refusal taught it, the notice adds that the model can be marked text only in Settings → Model, which skips the refused first attempt. The log gets one `warn` per such turn with the model, the count, and whether it was learned, and one `warn` with the provider's error when a model is first found to refuse images.
 
 ## Environment overrides
 
