@@ -3,7 +3,8 @@
   import { menuContext } from "./Menu.svelte";
 
   // One choice in a Menu. A disabled item can still be reached with the
-  // arrow keys, so its label is heard, but choosing it does nothing.
+  // arrow keys, so its label is heard, but choosing it does nothing. An item
+  // with an `href` is a link that opens in a new tab and takes no `onselect`.
 
   interface Props {
     label: string;
@@ -15,7 +16,9 @@
     tone?: "default" | "danger";
     /** Makes it a checkbox item, checked or not. Choosing one leaves the menu open. */
     checked?: boolean;
-    onselect: () => void;
+    /** Makes it a link to this address, opened in a new tab. */
+    href?: string;
+    onselect?: () => void;
   }
 
   let {
@@ -25,38 +28,42 @@
     disabled = false,
     tone = "default",
     checked,
+    href,
     onselect,
   }: Props = $props();
 
   const menu = menuContext();
   const checkbox = $derived(checked !== undefined);
+
+  function choose(event: MouseEvent): void {
+    if (disabled) {
+      event.preventDefault();
+      return;
+    }
+    if (!checkbox) menu.chosen();
+    onselect?.();
+  }
+
+  function focusOnPointer(event: PointerEvent): void {
+    const item = event.currentTarget as HTMLElement;
+    if (document.activeElement !== item) item.focus({ preventScroll: true });
+  }
+
+  function leaveToMenu(event: PointerEvent): void {
+    const item = event.currentTarget as HTMLElement;
+    if (document.activeElement !== item) return;
+    item.closest<HTMLElement>('[role="menu"]')?.focus({ preventScroll: true });
+  }
+
+  // A link's Space would scroll the page, so Space chooses it, as it does a button.
+  function spaceChooses(event: KeyboardEvent): void {
+    if (event.key !== " ") return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).click();
+  }
 </script>
 
-<!-- Pointer and keyboard share one highlight: the focused item. -->
-<button
-  type="button"
-  role={checkbox ? "menuitemcheckbox" : "menuitem"}
-  aria-checked={checkbox ? checked : undefined}
-  aria-disabled={disabled || undefined}
-  tabindex="-1"
-  class="ui-menu-item"
-  data-tone={tone}
-  data-label={label}
-  onclick={() => {
-    if (disabled) return;
-    if (!checkbox) menu.chosen();
-    onselect();
-  }}
-  onpointermove={(event) => {
-    if (document.activeElement !== event.currentTarget) {
-      event.currentTarget.focus({ preventScroll: true });
-    }
-  }}
-  onpointerleave={(event) => {
-    if (document.activeElement !== event.currentTarget) return;
-    event.currentTarget.closest<HTMLElement>('[role="menu"]')?.focus({ preventScroll: true });
-  }}
->
+{#snippet content()}
   {#if icon}
     <span class="ui-menu-item-icon"><Icon name={icon} size={15} /></span>
   {/if}
@@ -67,7 +74,44 @@
   {#if checkbox}
     <span class="ui-menu-item-check"><Icon name="check" size={15} /></span>
   {/if}
-</button>
+{/snippet}
+
+<!-- Pointer and keyboard share one highlight: the focused item. -->
+{#if href !== undefined}
+  <a
+    role="menuitem"
+    {href}
+    target="_blank"
+    rel="noopener noreferrer"
+    aria-disabled={disabled || undefined}
+    tabindex="-1"
+    class="ui-menu-item"
+    data-tone={tone}
+    data-label={label}
+    onclick={choose}
+    onkeydown={spaceChooses}
+    onpointermove={focusOnPointer}
+    onpointerleave={leaveToMenu}
+  >
+    {@render content()}
+  </a>
+{:else}
+  <button
+    type="button"
+    role={checkbox ? "menuitemcheckbox" : "menuitem"}
+    aria-checked={checkbox ? checked : undefined}
+    aria-disabled={disabled || undefined}
+    tabindex="-1"
+    class="ui-menu-item"
+    data-tone={tone}
+    data-label={label}
+    onclick={choose}
+    onpointermove={focusOnPointer}
+    onpointerleave={leaveToMenu}
+  >
+    {@render content()}
+  </button>
+{/if}
 
 <style>
   .ui-menu-item {
@@ -80,6 +124,7 @@
     border-radius: var(--corner-sm);
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
+    text-decoration: none;
     white-space: nowrap;
     transition:
       background-color var(--duration-fast) var(--ease-out),

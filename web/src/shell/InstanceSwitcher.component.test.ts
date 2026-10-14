@@ -18,12 +18,14 @@ const desktop: InstanceInfo = {
   active: false,
   connected: false,
 };
+const RELAY = "https://agent-residuum.com";
 
 let instances: InstanceInfo[];
+let relayOrigin: string | null;
 let calls: string[];
 const reload = vi.fn();
 
-function statusWith(list: InstanceInfo[]): unknown {
+function statusWith(list: InstanceInfo[], origin: string | null = RELAY): unknown {
   return {
     state: "ready",
     detail: null,
@@ -39,6 +41,7 @@ function statusWith(list: InstanceInfo[]): unknown {
     join: null,
     pending_joins: [],
     pending_reset: null,
+    relay_origin: origin,
   };
 }
 
@@ -54,12 +57,15 @@ async function open(): Promise<ReturnType<typeof userEvent.setup>> {
 beforeEach(() => {
   vi.useFakeTimers();
   instances = [laptop, desktop];
+  relayOrigin = RELAY;
   calls = [];
   reload.mockReset();
   vi.stubGlobal("location", { reload });
   mockFetch((url, init) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
-    if (url === "/api/hub/remote-access/status") return jsonResponse(statusWith(instances));
+    if (url === "/api/hub/remote-access/status") {
+      return jsonResponse(statusWith(instances, relayOrigin));
+    }
     return new Response(null, { status: 204 });
   });
 });
@@ -147,6 +153,45 @@ describe("InstanceSwitcher", () => {
     await user.click(screen.getByRole("button", { name: /Instance:/ }));
     expect(screen.queryByText("Traversal")).not.toBeInTheDocument();
     expect(screen.queryByText("Injected")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem")).toHaveLength(2);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+  });
+
+  it("ends with a link to the account dashboard on the relay, in a new tab", async () => {
+    const user = await open();
+    await user.click(screen.getByRole("button", { name: /Instance:/ }));
+    const items = screen.getAllByRole("menuitem");
+    expect(items.at(-1)).toBe(screen.getByRole("menuitem", { name: "Manage instances…" }));
+    const link = screen.getByRole("menuitem", { name: "Manage instances…" });
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveAttribute("href", "https://agent-residuum.com/dashboard");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("reaches the dashboard link with the arrow keys", async () => {
+    const user = await open();
+    screen.getByRole("button", { name: /Instance:/ }).focus();
+    await user.keyboard("{ArrowUp}");
+    expect(screen.getByRole("menuitem", { name: "Manage instances…" })).toHaveFocus();
+  });
+
+  it("has no dashboard link when the relay origin is absent or not an http origin", async () => {
+    for (const origin of [null, "javascript:alert(1)", "https://relay.example.com/x"]) {
+      relayOrigin = origin;
+      const { unmount } = render(InstanceSwitcher, {
+        store: await loadedStore(),
+      });
+      await settle();
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(screen.getByRole("button", { name: /Instance:/ }));
+      expect(screen.queryByRole("menuitem", { name: "Manage instances…" })).not.toBeInTheDocument();
+      unmount();
+    }
   });
 });
+
+async function loadedStore(): Promise<RemoteAccessStore> {
+  const store = new RemoteAccessStore();
+  await store.refresh();
+  return store;
+}
