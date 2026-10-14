@@ -27,6 +27,14 @@ use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOri
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
 
+/// How long each `getUpdates` call is asked to hold open when there is nothing new.
+const LONG_POLL_SECS: u32 = 30;
+
+/// Total timeout for every Bot API request. It must exceed `LONG_POLL_SECS`, or every
+/// empty poll is cut client-side. It is also generous because file uploads (up to 50 MB)
+/// share this client.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Shared gateway references threaded through telegram message dispatch.
 struct TelegramContext<'a> {
     state: &'a TelegramState,
@@ -78,7 +86,10 @@ pub(super) async fn run_telegram_polling(
     // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
     // pool_idle_timeout evicts stale connections before they poison the pool.
     // Without these, long-poll requests reuse dead connections indefinitely.
+    // teloxide's default total timeout (17 s) is shorter than the long poll, so it
+    // must be replaced here.
     let http_client = teloxide::net::default_reqwest_settings()
+        .timeout(HTTP_TIMEOUT)
         .tcp_keepalive(Duration::from_mins(1))
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
@@ -125,7 +136,7 @@ pub(super) async fn run_telegram_polling(
 
     loop {
         let updates = tokio::select! {
-            result = bot.get_updates().offset(offset).timeout(30) => {
+            result = bot.get_updates().offset(offset).timeout(LONG_POLL_SECS) => {
                 match result {
                     Ok(updates) => {
                         if consecutive_errors > 0 {
@@ -775,6 +786,14 @@ mod tests {
 
     const BOT_USERNAME: &str = "resibot";
     const BOT_ID: UserId = UserId(9_999);
+
+    #[test]
+    fn http_timeout_outlasts_long_poll() {
+        assert!(
+            HTTP_TIMEOUT > Duration::from_secs(u64::from(LONG_POLL_SECS)),
+            "client timeout {HTTP_TIMEOUT:?} must exceed the long-poll hold {LONG_POLL_SECS}s"
+        );
+    }
 
     fn telegram_message(json: serde_json::Value) -> teloxide::types::Message {
         serde_json::from_value(json).expect("valid minimal telegram message fixture")

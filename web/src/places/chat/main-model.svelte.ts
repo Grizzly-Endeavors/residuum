@@ -33,6 +33,11 @@ export function modelControlLabel(model: string, thinking: string): string {
   return thinking === "off" ? `${model}, no extra thinking` : `${model}, ${thinking} thinking`;
 }
 
+/** The thinking level's short word for the trigger on phones, or "" when none is set. */
+export function thinkingBadge(thinking: string): string {
+  return COMPOSER_THINKING.find((level) => level.value === thinking)?.label ?? "";
+}
+
 export class MainModel {
   /** The main role's `provider/model`, or "" while unread or unset. */
   value = $state("");

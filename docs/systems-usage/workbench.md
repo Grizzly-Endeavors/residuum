@@ -16,7 +16,7 @@ The workbench is where the agent builds interactive artifacts for the user: char
 | `team/workbench/<name>/` | A folder artifact: `index.html` is its page, and any other files are loaded by relative URL. When both a page and a folder share a name, the folder wins. |
 | `team/workbench/<name>.<anything>` | That artifact's saved data (for example `<name>.state.json`), written through the workspace file API. Not part of the artifact, not watched for reloads, deleted with the artifact. |
 
-`<name>` is lowercase letters, digits, and single hyphens, at most 64 characters, and not `api`, which is the path the artifacts listener serves the API on; anything else is ignored. The listener serves files of any size. Symlinks are ignored, and a file must resolve inside its artifact's folder. A path segment of `.` or `..` is refused, while a dot-prefixed name such as `.well-known/` or `.env.example` is an ordinary file and is served.
+`<name>` is lowercase letters, digits, and single hyphens, at most 64 characters, and not `api`, which is the path the artifacts listener serves the API on; anything else is ignored. The listener serves files of any size, through Residuum Cloud as well as locally. Symlinks are ignored, and a file must resolve inside its artifact's folder. A path segment of `.` or `..` is refused, while a dot-prefixed name such as `.well-known/` or `.env.example` is an ordinary file and is served.
 
 ## The artifacts listener
 
