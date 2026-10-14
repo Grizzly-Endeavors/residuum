@@ -16,7 +16,16 @@ import { frameText } from "./sockets";
 import { createOverview } from "./overview";
 import { createState, type MockAgent, type MockHub, type MockState } from "./state";
 import { createTeamEvents } from "./team-events";
-import { sleep } from "./util";
+
+/**
+ * Run every timer the mock has set that falls due within `ms` of simulated
+ * time, in manual time, so a test sees what the mock does over a span without
+ * waiting for it.
+ */
+export async function advanceMockTime(env: MockEnv, ms: number): Promise<void> {
+  if (env.timeMode() !== "manual") env.setTimeMode("manual");
+  await env.advance(ms);
+}
 
 /** A hub with no sockets: agents are plain records, and hub frames go nowhere. */
 export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
@@ -246,9 +255,9 @@ export class TestSocket {
   }
 
   /**
-   * Wait until the server has handled everything this agent socket sent so
-   * far, which a `ping` answered by a `pong` shows, and return the frames that
-   * arrived since the last call. The hub socket doesn't answer a `ping`.
+   * Wait until the server has handled everything this socket sent so far, which
+   * a `ping` answered by a `pong` shows, and return the frames that arrived
+   * since the last call.
    */
   async settled(): Promise<Frame[]> {
     const start = this.cursor;
@@ -257,12 +266,19 @@ export class TestSocket {
     return this.frames.slice(start, this.cursor);
   }
 
-  /** The frames that arrive in the next `ms` milliseconds, for showing that nothing more comes. */
-  async quietFrames(ms = 100): Promise<Frame[]> {
+  /**
+   * The frames the server sends from now until it has handled everything sent
+   * so far (and `during`, when given, has finished), without the `pong` that
+   * shows it: what a test reads to show that nothing more comes. `during`
+   * moves mock time (`advanceMockTime`) so that a timer the mock set gets to
+   * run first.
+   */
+  async quietFrames(during?: () => Promise<void>): Promise<Frame[]> {
     const start = this.frames.length;
-    await sleep(ms);
-    this.cursor = this.frames.length;
-    return this.frames.slice(start);
+    await during?.();
+    this.send({ type: "ping" });
+    await this.nextOfType("pong");
+    return this.frames.slice(start, this.cursor).filter((frame) => frame.type !== "pong");
   }
 
   close(): Promise<void> {

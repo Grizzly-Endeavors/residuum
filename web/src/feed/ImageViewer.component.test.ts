@@ -1,7 +1,7 @@
-import { act, cleanup } from "@testing-library/svelte";
+import { cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "../test/component";
+import { render, screen, settle } from "../test/component";
 import { FeedStore } from "../lib/feed.svelte";
 import { router } from "../lib/router.svelte";
 import type { FeedItem } from "../lib/types";
@@ -55,7 +55,7 @@ afterEach(async () => {
   await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
-  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await settle();
 });
 
 describe("opening a message's images full size", () => {

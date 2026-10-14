@@ -13,6 +13,7 @@ import {
 import type { MockPulse } from "./scheduled";
 import type { MockAgent, MockHub } from "./state";
 import {
+  advanceMockTime,
   createStubHub,
   fetchJson,
   startMockServer,
@@ -526,7 +527,7 @@ describe("the overview routes", () => {
     await post("/api/mock/user-inbox-add?agent=atlas", { title: "Pelican" });
     await fetchJson(`${mock.baseUrl}/api/hub/agents/atlas`, { method: "DELETE" });
 
-    const rest = await socket.quietFrames(100);
+    const rest = await socket.quietFrames(() => advanceMockTime(mock.hub.env, COALESCE_WINDOW_MS));
     expect(
       rest.filter(
         (frame) =>

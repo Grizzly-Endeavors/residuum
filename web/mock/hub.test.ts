@@ -502,7 +502,7 @@ describe("hub socket", () => {
     });
     expect(snapshot.stopping).toEqual(["atlas"]);
     expect(await socket.quietFrames()).toEqual([]);
-    expect(socket.frames.map((f) => f.type)).toEqual([
+    expect(socket.frames.map((f) => f.type).filter((type) => type !== "pong")).toEqual([
       "hub_boot",
       "system_one_status",
       "agents_snapshot",

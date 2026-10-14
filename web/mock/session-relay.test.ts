@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fetchJson, startMockServer, type Frame, type MockServerHarness } from "./test-support";
+import {
+  advanceMockTime,
+  fetchJson,
+  startMockServer,
+  type Frame,
+  type MockServerHarness,
+} from "./test-support";
 import type { TestSocket } from "./test-support";
 
 /** What the hub says to a frame it can't read; it answers one, so a test can tell the hub has handled what came before. */
@@ -39,9 +45,11 @@ describe("the hub socket's session relay", () => {
   const sessionFrames = (socket: TestSocket): Frame[] =>
     socket.frames.filter((frame) => frame.type === "session_frame");
 
-  /** The session frames `socket` is sent in the next `ms` milliseconds, to show that no more come. */
+  /** The session frames `socket` is sent while the mock runs the next `ms` of simulated time, to show that no more come. */
   const relayedWithin = async (socket: TestSocket, ms: number): Promise<Frame[]> =>
-    (await socket.quietFrames(ms)).filter((frame) => frame.type === "session_frame");
+    (await socket.quietFrames(() => advanceMockTime(mock.hub.env, ms))).filter(
+      (frame) => frame.type === "session_frame",
+    );
 
   /** The type of the frame a `session_frame` carries. */
   const carried = (frame: Frame): string => (frame.frame as { type: string }).type;
