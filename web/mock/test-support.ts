@@ -20,7 +20,7 @@ import { createTeamEvents } from "./team-events";
 /**
  * Run every timer the mock has set that falls due within `ms` of simulated
  * time, in manual time, so a test sees what the mock does over a span without
- * waiting for it.
+ * waiting for it. The mock stays in manual time for the rest of the test.
  */
 export async function advanceMockTime(env: MockEnv, ms: number): Promise<void> {
   if (env.timeMode() !== "manual") env.setTimeMode("manual");
@@ -276,6 +276,8 @@ export class TestSocket {
   async quietFrames(during?: () => Promise<void>): Promise<Frame[]> {
     const start = this.frames.length;
     await during?.();
+    // Start the barrier's search at this call, so a `pong` from an earlier ping can't answer it.
+    this.cursor = start;
     this.send({ type: "ping" });
     await this.nextOfType("pong");
     return this.frames.slice(start, this.cursor).filter((frame) => frame.type !== "pong");
