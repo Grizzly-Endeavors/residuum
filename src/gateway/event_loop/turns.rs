@@ -5,9 +5,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::Agent;
 use crate::agent::context::{PromptContext, SkillsContext};
 use crate::agent::interrupt::{Interrupt, InterruptSource};
+use crate::agent::{Agent, LiveOutputEndpoint, TurnOutput};
 use crate::bus::{
     EndpointName, ErrorEvent, MainConversationEvent, MessageEvent, NotifyName, Publisher,
     ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, TurnOrigin, topics,
@@ -351,7 +351,9 @@ impl InterruptSource for MainInterrupts<'_> {
 
 /// Fold one mid-turn message-bus event into the turn: inject it if it
 /// belongs to main, route it elsewhere (off this select loop) otherwise, or
-/// just log a closed channel / type mismatch.
+/// just log a closed channel / type mismatch. In an agent-started turn
+/// (`follow` is set), a person's message also moves the owner's routing and
+/// the rest of the turn to where it came from (see [`OwnerFollow`]).
 ///
 /// Split out of `run_agent_turn_with_interrupts` purely to keep that
 /// function's line count down.
@@ -362,10 +364,17 @@ async fn handle_mid_turn_message(
     interrupt_tx: &mpsc::UnboundedSender<Interrupt>,
     hop_counter: &crate::agent::HopCounter,
     waiting: (&QueuedMessages, &Publisher),
+    follow: Option<&mut OwnerFollow<'_>>,
 ) {
     match next_msg {
         Ok(Some(inbound)) => {
             if inbound.origin.belongs_to_main() {
+                if let Some(follow) = follow
+                    && inbound.origin.is_from_person()
+                {
+                    let endpoint = EndpointName::from(inbound.origin.endpoint.as_str());
+                    follow.owner_wrote_from(endpoint, waiting.1).await;
+                }
                 // A mid-turn message on this topic may be a genuine user
                 // message (hop 0) or an agent message relayed to main (see
                 // `AgentMessenger::deliver_to_main`) — either way, it's one
@@ -461,7 +470,7 @@ async fn run_agent_turn_with_interrupts(
     conversation_router: &Arc<crate::background::ConversationRouter>,
     content: &str,
     publisher: &Publisher,
-    output_endpoint: Option<&EndpointName>,
+    output: TurnOutput<'_>,
     correlation_id: &str,
     origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
@@ -471,6 +480,7 @@ async fn run_agent_turn_with_interrupts(
     agent_stop_rx: &mut mpsc::Receiver<()>,
     subconscious: Option<Arc<crate::subconscious::Subconscious>>,
     queued: &QueuedMessages,
+    mut follow: Option<OwnerFollow<'_>>,
 ) -> (
     anyhow::Result<Vec<String>>,
     Vec<Interrupt>,
@@ -513,7 +523,7 @@ async fn run_agent_turn_with_interrupts(
         let mut turn = std::pin::pin!(agent.process_message(
             content,
             publisher,
-            output_endpoint,
+            output,
             correlation_id,
             origin,
             prompt_ctx,
@@ -533,6 +543,7 @@ async fn run_agent_turn_with_interrupts(
                         &interrupt_tx,
                         &hop_counter,
                         (queued, publisher),
+                        follow.as_mut(),
                     )
                     .await;
                 }
@@ -871,24 +882,127 @@ async fn defer_late_messages(rt: &mut AgentRuntime, leftovers: Vec<Interrupt>, s
 }
 
 /// Where a turn's replies go. Background turns go wherever `switch_endpoint`
-/// last pointed them, else the user's last endpoint; user turns derive from
-/// the origin and become the new last endpoint.
+/// last pointed them, else `last_output_endpoint` (the user's last endpoint,
+/// or the idle channel once the idle transition has run); user turns derive
+/// from the origin and become the new last endpoint.
 fn resolve_output_endpoint(
-    rt: &mut AgentRuntime,
+    last_output_endpoint: &mut Option<EndpointName>,
+    output_topic_override_tx: &tokio::sync::watch::Sender<Option<EndpointName>>,
     origin: &MessageOrigin,
     is_background: bool,
 ) -> Option<EndpointName> {
     if is_background {
         return background_output_endpoint(
-            rt.output_topic_override_tx.borrow().clone(),
-            rt.last_output_endpoint.as_ref(),
+            output_topic_override_tx.borrow().clone(),
+            last_output_endpoint.as_ref(),
         );
     }
-    // Clear any switch_endpoint override so responses follow the user's endpoint.
-    rt.output_topic_override_tx.send_replace(None);
     let ep = EndpointName::from(origin.endpoint.as_str());
-    rt.last_output_endpoint = Some(ep.clone());
+    follow_owner_to(last_output_endpoint, output_topic_override_tx, &ep);
     Some(ep)
+}
+
+/// The owner wrote from `endpoint`: later agent-started turns go there, and
+/// any `switch_endpoint` override is cleared so they follow the owner.
+fn follow_owner_to(
+    last_output_endpoint: &mut Option<EndpointName>,
+    output_topic_override_tx: &tokio::sync::watch::Sender<Option<EndpointName>>,
+    endpoint: &EndpointName,
+) {
+    output_topic_override_tx.send_replace(None);
+    *last_output_endpoint = Some(endpoint.clone());
+}
+
+/// The owner was active at `now`: the idle transition waits `timeout` from
+/// then. A zero timeout leaves idle off.
+fn reset_idle_timer(
+    timeout: std::time::Duration,
+    now: tokio::time::Instant,
+    last_user_message_instant: &mut Option<tokio::time::Instant>,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+) {
+    if timeout.is_zero() {
+        return;
+    }
+    *last_user_message_instant = Some(now);
+    *idle_deadline = Some(now + timeout);
+}
+
+/// The owner was active just now: restart the idle timer from now.
+fn note_owner_active_now(rt: &mut AgentRuntime, idle_deadline: &mut Option<tokio::time::Instant>) {
+    reset_idle_timer(
+        rt.cfg.idle.timeout,
+        tokio::time::Instant::now(),
+        &mut rt.last_user_message_instant,
+        idle_deadline,
+    );
+}
+
+/// An agent-started turn's hold on the routing an owner's message moves.
+/// When a person's message reaches main while the turn runs, it joins the
+/// turn as any mid-turn message does, and the owner counts as back on that
+/// interface from that moment: later agent-started turns go there, the idle
+/// timer restarts, and the rest of this turn (intermediate text, the reply,
+/// a failure, the typing indicator) is delivered there too.
+struct OwnerFollow<'a> {
+    /// The turn's own output endpoint, read each time the turn publishes.
+    output: &'a LiveOutputEndpoint,
+    correlation_id: &'a str,
+    last_output_endpoint: &'a mut Option<EndpointName>,
+    output_topic_override_tx: &'a tokio::sync::watch::Sender<Option<EndpointName>>,
+    idle_timeout: std::time::Duration,
+    last_user_message_instant: &'a mut Option<tokio::time::Instant>,
+    idle_deadline: &'a mut Option<tokio::time::Instant>,
+}
+
+impl OwnerFollow<'_> {
+    /// The owner wrote from `endpoint` while this turn runs.
+    async fn owner_wrote_from(&mut self, endpoint: EndpointName, publisher: &Publisher) {
+        follow_owner_to(
+            self.last_output_endpoint,
+            self.output_topic_override_tx,
+            &endpoint,
+        );
+        reset_idle_timer(
+            self.idle_timeout,
+            tokio::time::Instant::now(),
+            self.last_user_message_instant,
+            self.idle_deadline,
+        );
+        let previous = self.output.replace(endpoint.clone());
+        if previous.as_ref() == Some(&endpoint) {
+            return;
+        }
+        tracing::info!(
+            correlation_id = %self.correlation_id,
+            from = ?previous,
+            to = %endpoint,
+            "the owner wrote mid-turn, moving the agent-started turn's output to them"
+        );
+        // The chat it was going to stops showing it; the owner's chat starts.
+        if let Some(old) = chat_interface_endpoint(previous.as_ref()) {
+            publish_turn_ended(publisher, old, self.correlation_id).await;
+        }
+        publish_turn_started_to_chat_interface(publisher, Some(&endpoint), self.correlation_id)
+            .await;
+    }
+}
+
+/// Ready the agent for a turn's kickoff message: the context its interface
+/// supplied, and its hop count.
+fn prepare_kickoff(rt: &mut AgentRuntime, message: &MessageEvent) {
+    if let Some(context) = message.context.as_deref() {
+        rt.agent.inject_system_message(context);
+    }
+
+    // This turn's kickoff input's hop count: 0 for a genuine external
+    // message, or the hop count recorded when an agent message was
+    // delivered to main (see `AgentMessenger::deliver_to_main`), or restored
+    // for a message that arrived after the previous turn's last drain (see
+    // `process_leftover_interrupts`). Folded in with `bump`, not overwritten
+    // with `set`, so the counter never drops below what the kickoff carries.
+    let kickoff_hop = rt.agent_messenger.take_main_hop(&message.id);
+    rt.agent.hop_counter().bump(kickoff_hop);
 }
 
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
@@ -914,7 +1028,12 @@ pub async fn handle_inbound_message(
         Visibility::User
     };
 
-    let output_endpoint = resolve_output_endpoint(rt, &origin, is_background);
+    let output_endpoint = resolve_output_endpoint(
+        &mut rt.last_output_endpoint,
+        &rt.output_topic_override_tx,
+        &origin,
+        is_background,
+    );
 
     // Held for the whole turn, so the rail and Home show it busy until it
     // ends, however the turn ends.
@@ -929,23 +1048,22 @@ pub async fn handle_inbound_message(
     .await;
 
     let before = rt.agent.message_count();
-
-    if let Some(context) = message.context.as_deref() {
-        rt.agent.inject_system_message(context);
-    }
-
-    // This turn's kickoff input's hop count: 0 for a genuine external
-    // message, or the hop count recorded when an agent message was
-    // delivered to main (see `AgentMessenger::deliver_to_main`), or restored
-    // for a message that arrived after the previous turn's last drain (see
-    // `process_leftover_interrupts`). Folded in with `bump`, not overwritten
-    // with `set`, so the counter never drops below what the kickoff carries.
-    let kickoff_hop = rt.agent_messenger.take_main_hop(&message.id);
-    rt.agent.hop_counter().bump(kickoff_hop);
+    prepare_kickoff(rt, &message);
 
     let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
+    let live_output = LiveOutputEndpoint::new(output_endpoint);
+    // A turn no person started follows the owner when one writes mid-turn.
+    let follow = is_background.then(|| OwnerFollow {
+        output: &live_output,
+        correlation_id: &reply_id,
+        last_output_endpoint: &mut rt.last_output_endpoint,
+        output_topic_override_tx: &rt.output_topic_override_tx,
+        idle_timeout: rt.cfg.idle.timeout,
+        last_user_message_instant: &mut rt.last_user_message_instant,
+        idle_deadline: &mut *idle_deadline,
+    });
     let (turn_result, leftover_interrupts, subconscious_scratch, stop_requested) =
         run_agent_turn_with_interrupts(
             &mut rt.agent,
@@ -953,7 +1071,7 @@ pub async fn handle_inbound_message(
             &rt.conversation_router,
             &message.content,
             &rt.publisher,
-            output_endpoint.as_ref(),
+            TurnOutput::Live(&live_output),
             &reply_id,
             Some(&origin),
             &prompt_ctx,
@@ -964,8 +1082,11 @@ pub async fn handle_inbound_message(
             (!is_background && rt.subconscious.mid_turn_enabled())
                 .then(|| Arc::clone(&rt.subconscious)),
             &rt.queued,
+            follow,
         )
         .await;
+    // Where the turn ended up delivering: the owner may have moved it.
+    let delivered_to = live_output.get();
 
     spawn_main_turn_end_checkpoint(rt, &reply_id, &turn_result);
 
@@ -985,7 +1106,7 @@ pub async fn handle_inbound_message(
     publish_turn_outcome(
         turn_result,
         &rt.publisher,
-        output_endpoint.as_ref(),
+        delivered_to.as_ref(),
         &reply_id,
         rt.tz,
         &rt.tracing_service,
@@ -1012,10 +1133,8 @@ pub async fn handle_inbound_message(
     defer_late_messages(rt, leftover_interrupts, stop_requested).await;
 
     // Only update idle timer for user messages, not background turns.
-    if !is_background && !rt.cfg.idle.timeout.is_zero() {
-        let now = tokio::time::Instant::now();
-        rt.last_user_message_instant = Some(now);
-        *idle_deadline = Some(now + rt.cfg.idle.timeout);
+    if !is_background {
+        note_owner_active_now(rt, idle_deadline);
     }
 
     stop_requested
@@ -1120,6 +1239,529 @@ mod tests {
             Some(endpoint())
         );
         assert_eq!(background_output_endpoint(None, None), None);
+    }
+
+    fn web() -> EndpointName {
+        EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT)
+    }
+
+    /// The web UI and Telegram, both interactive, as a hub with Telegram
+    /// configured registers them.
+    fn registry_with_telegram() -> crate::bus::EndpointRegistry {
+        let interactive = |id: &str| crate::bus::EndpointEntry {
+            id: crate::bus::EndpointId::from(id),
+            topic: crate::bus::TopicId::Endpoint(EndpointName::from(id)),
+            capabilities: crate::bus::EndpointCapabilities::INTERACTIVE,
+            display_name: id.to_string(),
+        };
+        crate::bus::EndpointRegistry::from_entries([
+            interactive(crate::interfaces::types::WEB_UI_ENDPOINT),
+            interactive("telegram"),
+        ])
+    }
+
+    fn origin_on(endpoint: &str) -> MessageOrigin {
+        MessageOrigin {
+            endpoint: endpoint.to_string(),
+            sender: None,
+            conversation: None,
+            agent_sender: None,
+        }
+    }
+
+    /// An agent-started main turn: a teammate's or session's message to main.
+    fn agent_started() -> MessageOrigin {
+        crate::bus::MessageEvent::from_background(String::new()).origin
+    }
+
+    /// The owner talks on Telegram and goes quiet; with no `idle_channel`
+    /// set, the idle transition sends agent-started turns to the web, so the
+    /// Telegram adapter is handed none of such a turn's events. Once the
+    /// owner speaks on Telegram again, routing follows them as before.
+    #[tokio::test]
+    async fn after_idle_with_the_default_channel_an_agent_started_turn_reaches_only_the_web() {
+        let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
+        let mut last = None;
+
+        let owner = resolve_output_endpoint(&mut last, &override_tx, &origin_on("telegram"), false);
+        assert_eq!(owner, Some(endpoint()), "the owner's turn replies in place");
+        assert_eq!(
+            resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true),
+            Some(endpoint()),
+            "before the idle period an agent-started turn follows the owner"
+        );
+
+        let idle_channel = crate::config::IdleConfig::default().idle_channel;
+        last = Some(crate::gateway::idle::idle_output_endpoint(
+            &registry_with_telegram(),
+            &idle_channel,
+        ));
+        let after_idle = resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true);
+        assert_eq!(after_idle, Some(web()));
+
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut chat_responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut chat_lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut chat_errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut main: Subscriber<MainConversationEvent> =
+            handle.subscribe(topics::MainConversation).await.unwrap();
+
+        publish_turn_started_to_chat_interface(&publisher, after_idle.as_ref(), "bg-1").await;
+        publish_turn_outcome(
+            Ok(vec!["the session finished".into()]),
+            &publisher,
+            after_idle.as_ref(),
+            "bg-1",
+            TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
+        )
+        .await;
+
+        let ended = main.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&ended, MainConversationEvent::TurnEnded { turn_id } if turn_id == "bg-1"),
+            "the web's main conversation carries the turn: {ended:?}"
+        );
+        assert_no_event(&handle, &mut chat_responses).await;
+        assert_no_event(&handle, &mut chat_lifecycle).await;
+        assert_no_event(&handle, &mut chat_errors).await;
+
+        assert_eq!(
+            resolve_output_endpoint(&mut last, &override_tx, &origin_on("telegram"), false),
+            Some(endpoint()),
+            "the owner's next message still replies in place"
+        );
+        assert_eq!(
+            resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true),
+            Some(endpoint()),
+            "and agent-started turns follow the owner again until the next idle period"
+        );
+    }
+
+    /// An `idle_channel` naming a chat is the owner's choice to have
+    /// agent-started turns reach that chat while they are away.
+    #[tokio::test]
+    async fn after_idle_an_explicit_chat_channel_receives_agent_started_turns() {
+        let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
+        let mut last = None;
+        resolve_output_endpoint(&mut last, &override_tx, &origin_on("ws"), false);
+
+        last = Some(crate::gateway::idle::idle_output_endpoint(
+            &registry_with_telegram(),
+            "telegram",
+        ));
+        let after_idle = resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true);
+        assert_eq!(after_idle, Some(endpoint()));
+
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut chat_responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        publish_turn_outcome(
+            Ok(vec!["the session finished".into()]),
+            &publisher,
+            after_idle.as_ref(),
+            "bg-2",
+            TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
+        )
+        .await;
+
+        let response = chat_responses.recv().await.unwrap().unwrap();
+        assert_eq!(response.content, "the session finished");
+        assert_eq!(response.correlation_id, "bg-2");
+    }
+
+    /// The owner's message moves everything the moment it arrives: where
+    /// later agent-started turns go, the `switch_endpoint` override, the idle
+    /// timer, and the running turn's own output, with the typing indicator
+    /// moving from the chat it was on to the owner's.
+    #[tokio::test]
+    async fn an_owner_message_mid_turn_moves_routing_and_the_turn_at_once() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let discord = EndpointName::from("discord");
+        let mut old_chat: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(discord.clone()))
+            .await
+            .unwrap();
+        let mut new_chat: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let live = LiveOutputEndpoint::new(Some(discord.clone()));
+        let (override_tx, _override_rx) = tokio::sync::watch::channel(Some(discord.clone()));
+        let mut last = Some(discord);
+        let mut last_instant = None;
+        let mut deadline = None;
+        let timeout = std::time::Duration::from_mins(30);
+
+        let before = tokio::time::Instant::now();
+        OwnerFollow {
+            output: &live,
+            correlation_id: "bg-1",
+            last_output_endpoint: &mut last,
+            output_topic_override_tx: &override_tx,
+            idle_timeout: timeout,
+            last_user_message_instant: &mut last_instant,
+            idle_deadline: &mut deadline,
+        }
+        .owner_wrote_from(endpoint(), &publisher)
+        .await;
+        let after = tokio::time::Instant::now();
+
+        assert_eq!(
+            live.get(),
+            Some(endpoint()),
+            "the rest of the turn goes to the owner"
+        );
+        assert_eq!(
+            last,
+            Some(endpoint()),
+            "and so do later agent-started turns"
+        );
+        assert_eq!(
+            *override_tx.borrow(),
+            None,
+            "the switch_endpoint override is cleared"
+        );
+        let at = last_instant.expect("the owner counts as active");
+        assert!(
+            before <= at && at <= after,
+            "from the moment the message arrived"
+        );
+        assert_eq!(
+            deadline,
+            Some(at + timeout),
+            "the idle timer restarts from then"
+        );
+        let ended = old_chat.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "bg-1"),
+            "the chat the turn was on stops showing it: {ended:?}"
+        );
+        let started = new_chat.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&started, TurnLifecycleEvent::Started { correlation_id } if correlation_id == "bg-1"),
+            "the owner's chat shows it: {started:?}"
+        );
+    }
+
+    /// A provider for a three-call turn: the first call announces it started
+    /// and waits for the gate, then calls a tool; the second writes text
+    /// beside another tool call (intermediate text); the third answers.
+    struct GatedThreeCallProvider {
+        started: Arc<tokio::sync::Notify>,
+        gate: Arc<tokio::sync::Notify>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::inference::InferenceProvider for GatedThreeCallProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::inference::Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &crate::inference::CompletionOptions,
+        ) -> Result<crate::inference::InferenceResponse, crate::inference::InferenceError> {
+            let tool_call = |id: &str| crate::inference::ToolCall {
+                id: id.to_string(),
+                name: "look_around".to_string(),
+                arguments: serde_json::json!({}),
+                server: None,
+            };
+            match self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => {
+                    self.started.notify_one();
+                    self.gate.notified().await;
+                    Ok(crate::inference::InferenceResponse::new(
+                        String::new(),
+                        vec![tool_call("call-1")],
+                    ))
+                }
+                1 => Ok(crate::inference::InferenceResponse::new(
+                    "checking once more".to_string(),
+                    vec![tool_call("call-2")],
+                )),
+                _ => Ok(crate::inference::InferenceResponse::new(
+                    "all done".to_string(),
+                    vec![],
+                )),
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "gated-three-call"
+        }
+    }
+
+    /// The routing state an agent-started turn left behind, with the rig.
+    struct AgentStartedTurnEnd {
+        leftovers: Vec<Interrupt>,
+        last_output_endpoint: Option<EndpointName>,
+        last_user_message_instant: Option<tokio::time::Instant>,
+        idle_deadline: Option<tokio::time::Instant>,
+        rig: TurnRig,
+    }
+
+    /// Run an agent-started turn as the event loop does once the owner, who
+    /// last wrote on Telegram, has gone idle with the default idle channel:
+    /// it starts on the web, may follow the owner, and publishes its outcome
+    /// to wherever it ended up.
+    async fn agent_started_turn_after_idle(
+        mut rig: TurnRig,
+        idle_timeout: std::time::Duration,
+    ) -> AgentStartedTurnEnd {
+        let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
+        let mut last = Some(crate::gateway::idle::idle_output_endpoint(
+            &registry_with_telegram(),
+            &crate::config::IdleConfig::default().idle_channel,
+        ));
+        let origin = agent_started();
+        let initial = resolve_output_endpoint(&mut last, &override_tx, &origin, true);
+        assert_eq!(
+            initial,
+            Some(web()),
+            "after idle the turn starts on the web"
+        );
+        let live = LiveOutputEndpoint::new(initial);
+        let mut last_instant = None;
+        let mut deadline = None;
+        let prompt_ctx = PromptContext {
+            skills: crate::agent::context::SkillsContext {
+                index: None,
+                active_instructions: None,
+            },
+        };
+        let (result, leftovers, _scratch, _stopped) = run_agent_turn_with_interrupts(
+            &mut rig.agent,
+            &rig.messenger,
+            &rig.router,
+            "a session finished",
+            &rig.publisher,
+            TurnOutput::Live(&live),
+            "bg-follow",
+            Some(&origin),
+            &prompt_ctx,
+            &[],
+            &mut rig.subscriber,
+            &mut rig.stop_rx,
+            &mut rig.agent_stop_rx,
+            None,
+            &rig.queued,
+            Some(OwnerFollow {
+                output: &live,
+                correlation_id: "bg-follow",
+                last_output_endpoint: &mut last,
+                output_topic_override_tx: &override_tx,
+                idle_timeout,
+                last_user_message_instant: &mut last_instant,
+                idle_deadline: &mut deadline,
+            }),
+        )
+        .await;
+        publish_turn_outcome(
+            result,
+            &rig.publisher,
+            live.get().as_ref(),
+            "bg-follow",
+            TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
+        )
+        .await;
+        AgentStartedTurnEnd {
+            leftovers,
+            last_output_endpoint: last,
+            last_user_message_instant: last_instant,
+            idle_deadline: deadline,
+            rig,
+        }
+    }
+
+    /// After the idle period an agent-started turn delivers to the web. The
+    /// owner writes on Telegram while it runs: the message joins the turn,
+    /// and from then on the turn's intermediate text, its reply and its end
+    /// go to Telegram, routing stays on Telegram, and the idle timer restarts
+    /// from the message's arrival.
+    #[tokio::test]
+    async fn an_owner_chat_message_during_an_agent_started_turn_after_idle_takes_the_turn_there() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let rig = TurnRig::new(GatedThreeCallProvider {
+            started: Arc::clone(&started),
+            gate: Arc::clone(&gate),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .await;
+        let publisher = rig.publisher.clone();
+        let mut chat_lifecycle: Subscriber<TurnLifecycleEvent> = rig
+            .bus()
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut chat_intermediates: Subscriber<crate::bus::IntermediateEvent> = rig
+            .bus()
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut chat_responses: Subscriber<ResponseEvent> = rig
+            .bus()
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let timeout = std::time::Duration::from_mins(30);
+
+        let turn = crate::util::spawn_in_span(agent_started_turn_after_idle(rig, timeout));
+
+        wait::guarded("the first model call to start", started.notified()).await;
+        let mut owner_message = person_message("tg-1", "what did it find?");
+        owner_message.origin = origin_on("telegram");
+        publisher
+            .publish(topics::UserMessage, owner_message)
+            .await
+            .unwrap();
+        let typing = wait::guarded("Telegram to show the turn", chat_lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&typing, TurnLifecycleEvent::Started { correlation_id } if correlation_id == "bg-follow"),
+            "the owner's chat shows the turn as soon as the message arrives: {typing:?}"
+        );
+        let arrived_by = tokio::time::Instant::now();
+        gate.notify_one();
+
+        let ended_turn = wait::guarded("the turn to end", turn).await.unwrap();
+        assert!(
+            ended_turn.leftovers.is_empty(),
+            "the message joined the turn"
+        );
+        assert_eq!(
+            history_mentions(&ended_turn.rig.agent, "what did it find?"),
+            1
+        );
+
+        let intermediate = chat_intermediates.recv().await.unwrap().unwrap();
+        assert_eq!(intermediate.content, "checking once more");
+        let reply = chat_responses.recv().await.unwrap().unwrap();
+        assert_eq!(reply.content, "all done");
+        assert_eq!(reply.correlation_id, "bg-follow");
+        let ended = chat_lifecycle.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "bg-follow"),
+            "Telegram hears the turn end: {ended:?}"
+        );
+
+        assert_eq!(
+            ended_turn.last_output_endpoint,
+            Some(endpoint()),
+            "later agent-started turns go to Telegram"
+        );
+        let at = ended_turn
+            .last_user_message_instant
+            .expect("the owner counts as active");
+        assert!(
+            at <= arrived_by,
+            "from when the message arrived, not the turn's end"
+        );
+        assert_eq!(ended_turn.idle_deadline, Some(at + timeout));
+    }
+
+    /// Only a person moves routing: a relayed background message and a
+    /// teammate's message joining an agent-started turn after idle reach the
+    /// model, but leave routing, the idle timer and the turn's output alone.
+    #[tokio::test]
+    async fn agent_and_background_messages_during_an_agent_started_turn_leave_routing_alone() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let rig = TurnRig::new(GatedThreeCallProvider {
+            started: Arc::clone(&started),
+            gate: Arc::clone(&gate),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .await;
+        let publisher = rig.publisher.clone();
+        let messenger = Arc::clone(&rig.messenger);
+        let hop_counter = rig.agent.hop_counter().clone();
+        let bus = rig.bus().clone();
+        let mut chat_lifecycle: Subscriber<TurnLifecycleEvent> =
+            bus.subscribe(topics::Endpoint(endpoint())).await.unwrap();
+        let mut chat_intermediates: Subscriber<crate::bus::IntermediateEvent> =
+            bus.subscribe(topics::Endpoint(endpoint())).await.unwrap();
+        let mut chat_responses: Subscriber<ResponseEvent> =
+            bus.subscribe(topics::Endpoint(endpoint())).await.unwrap();
+
+        let turn = crate::util::spawn_in_span(agent_started_turn_after_idle(
+            rig,
+            std::time::Duration::from_mins(30),
+        ));
+
+        wait::guarded("the first model call to start", started.notified()).await;
+        publisher
+            .publish(
+                topics::UserMessage,
+                MessageEvent::from_background("a session's relayed result".to_string()),
+            )
+            .await
+            .unwrap();
+        messenger
+            .send(
+                "main",
+                crate::bus::SessionAddress::from("agent-beta"),
+                "teammate".to_string(),
+                "a teammate's note".to_string(),
+                5,
+            )
+            .await
+            .unwrap();
+        // The teammate's hop count shows the turn took its message in, and
+        // the relayed result was published, and so taken in, before it.
+        wait::until_true("the turn to take both messages in", || {
+            hop_counter.get() >= 5
+        })
+        .await;
+        gate.notify_one();
+
+        let ended_turn = wait::guarded("the turn to end", turn).await.unwrap();
+        assert_eq!(
+            history_mentions(&ended_turn.rig.agent, "a session's relayed result"),
+            1
+        );
+        assert_eq!(
+            history_mentions(&ended_turn.rig.agent, "a teammate's note"),
+            1
+        );
+        assert_eq!(
+            ended_turn.last_output_endpoint,
+            Some(web()),
+            "agent-started turns still go to the web"
+        );
+        assert_eq!(
+            ended_turn.last_user_message_instant, None,
+            "no owner activity"
+        );
+        assert_eq!(
+            ended_turn.idle_deadline, None,
+            "the idle timer is untouched"
+        );
+        assert_no_event(&bus, &mut chat_lifecycle).await;
+        assert_no_event(&bus, &mut chat_intermediates).await;
+        assert_no_event(&bus, &mut chat_responses).await;
     }
 
     /// Assert `sub` was sent nothing. A bus barrier proves every event published
@@ -1686,7 +2328,7 @@ mod tests {
                 &turn_conversation_router,
                 "hello",
                 &publisher,
-                None,
+                TurnOutput::Fixed(None),
                 "corr-hop",
                 None,
                 &prompt_ctx,
@@ -1696,6 +2338,7 @@ mod tests {
                 &mut agent_stop_rx,
                 None,
                 &QueuedMessages::default(),
+                None,
             )
             .await;
             turn_result.expect("gated turn should complete successfully");
@@ -1796,7 +2439,7 @@ mod tests {
             &conversation_router,
             "hello",
             &publisher,
-            None,
+            TurnOutput::Fixed(None),
             "corr-stale-stop",
             None,
             &prompt_ctx,
@@ -1806,6 +2449,7 @@ mod tests {
             &mut agent_stop_rx,
             None,
             &QueuedMessages::default(),
+            None,
         )
         .await;
 
@@ -1890,7 +2534,7 @@ mod tests {
                 &turn_conversation_router,
                 "hello",
                 &publisher,
-                None,
+                TurnOutput::Fixed(None),
                 "corr-route",
                 None,
                 &prompt_ctx,
@@ -1900,6 +2544,7 @@ mod tests {
                 &mut agent_stop_rx,
                 None,
                 &QueuedMessages::default(),
+                None,
             )
             .await;
             turn_result.expect("gated turn should complete successfully");
@@ -2362,7 +3007,7 @@ mod tests {
                 &self.router,
                 content,
                 &self.publisher,
-                None,
+                TurnOutput::Fixed(None),
                 correlation_id,
                 origin,
                 &prompt_ctx,
@@ -2372,6 +3017,7 @@ mod tests {
                 &mut self.agent_stop_rx,
                 None,
                 &self.queued,
+                None,
             )
             .await;
             result.expect("the turn completes");
@@ -2682,7 +3328,7 @@ mod tests {
                 &conversation_router,
                 "hello",
                 &publisher,
-                None,
+                TurnOutput::Fixed(None),
                 "corr-shutdown",
                 None,
                 &prompt_ctx,
@@ -2692,6 +3338,7 @@ mod tests {
                 &mut agent_stop_rx,
                 None,
                 &QueuedMessages::default(),
+                None,
             )
             .await
         });
