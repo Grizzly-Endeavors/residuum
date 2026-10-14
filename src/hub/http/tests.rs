@@ -1802,6 +1802,18 @@ async fn a_workspace_file_link_opened_in_a_tab_on_a_stopped_agent_shows_the_file
     );
 }
 
+#[tokio::test]
+async fn a_workspace_file_link_for_an_unknown_agent_is_not_found() {
+    let h = Harness::new();
+    let refused = h
+        .get_expect(
+            "/api/agents/ghost/files/workspace?path=notes%2Fplan.md",
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    assert_eq!(refused["error"], "no agent named 'ghost'", "{refused}");
+}
+
 // ---- artifact sessions ---------------------------------------------------
 
 #[tokio::test]

@@ -50,7 +50,8 @@ impl CheckpointAccess {
 #[derive(Clone)]
 pub struct AgentFilesState {
     /// This agent's name, used in the attachment URLs an inbox listing hands
-    /// out.
+    /// out and in the app address a workspace file link that can't be served
+    /// sends a browser to.
     pub agent_name: String,
     /// Path to the workspace root directory.
     pub workspace_dir: PathBuf,
