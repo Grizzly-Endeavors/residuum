@@ -13,7 +13,11 @@ beforeEach(() => {
 describe("the agent reloading its settings", () => {
   it("says so in plain words, and then how it went", () => {
     ws.transport.onMessage?.({ type: "reloading" });
-    ws.transport.onMessage?.({ type: "notice", message: "configuration reloaded: models" });
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "configuration reloaded: models",
+      reload: "reloaded",
+    });
 
     expect(notifications.history.map((entry) => entry.message).reverse()).toEqual([
       "Reloading settings…",
@@ -26,6 +30,7 @@ describe("the agent reloading its settings", () => {
     ws.transport.onMessage?.({
       type: "notice",
       message: "configuration reloaded: no changes detected",
+      reload: "unchanged",
     });
     expect(notifications.history.map((entry) => entry.message)).toEqual([
       "Settings reloaded. Nothing had changed.",
@@ -36,6 +41,7 @@ describe("the agent reloading its settings", () => {
     ws.transport.onMessage?.({
       type: "notice",
       message: "config reload failed (keeping current config): invalid TOML",
+      reload: "failed",
     });
     expect(notifications.history.map((entry) => [entry.kind, entry.message])).toEqual([
       ["error", "Residuum couldn't apply the new settings and is still using the old ones."],

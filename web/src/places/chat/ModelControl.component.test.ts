@@ -116,12 +116,18 @@ describe("the model and thinking popover", () => {
     await userEvent.click(screen.getByRole("button", { name: "Claude Haiku 4.5" }));
     await settle();
 
-    // What the agent sends back: it is reloading, and then how that went.
+    // What the agent sends back: it is reloading, how that went, and the
+    // settings watcher's second pass over the same file.
     ws.transport.onMessage?.({ type: "reloading" });
-    ws.transport.onMessage?.({ type: "notice", message: "configuration reloaded: models" });
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "configuration reloaded: models",
+      reload: "reloaded",
+    });
     ws.transport.onMessage?.({
       type: "notice",
       message: "configuration reloaded: no changes detected",
+      reload: "unchanged",
     });
 
     expect(notifications.history).toEqual([]);
@@ -138,6 +144,7 @@ describe("the model and thinking popover", () => {
     ws.transport.onMessage?.({
       type: "notice",
       message: "config reload failed (keeping current config): invalid TOML",
+      reload: "failed",
     });
 
     expect(notifications.history.map((entry) => [entry.kind, entry.message])).toEqual([

@@ -5,6 +5,7 @@ import type { MessageSender } from "./MessageSender";
 import type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 import type { PostTurnActivityKind } from "./PostTurnActivityKind";
 import type { QueuedMessage } from "./QueuedMessage";
+import type { ReloadOutcome } from "./ReloadOutcome";
 import type { SessionCommandErrorCode } from "./SessionCommandErrorCode";
 import type { SessionDeliveryOutcome } from "./SessionDeliveryOutcome";
 import type { SessionRunStatus } from "./SessionRunStatus";
@@ -263,9 +264,14 @@ id: string, } | { "type": "queued_message_unavailable",
  */
 id: string, } | { "type": "reloading" } | { "type": "notice", 
 /**
- * Human-readable result message.
+ * Human-readable message, as the agent wrote it.
  */
-message: string, } | { "type": "inline_output", 
+message: string, 
+/**
+ * What a settings reload came to, when this notice reports one. The
+ * web words the toast from it and keeps `message` as the detail.
+ */
+reload?: ReloadOutcome, } | { "type": "inline_output", 
 /**
  * Body to render inline.
  */

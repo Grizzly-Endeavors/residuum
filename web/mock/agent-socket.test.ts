@@ -132,6 +132,7 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("notice", 3000)).toEqual({
         type: "notice",
         message: "Configuration reloaded successfully.",
+        reload: "reloaded",
       });
     });
 

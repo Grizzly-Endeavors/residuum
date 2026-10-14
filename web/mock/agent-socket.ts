@@ -218,7 +218,11 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       case "reload":
         reply({ type: "reloading" });
         hub.env.after(RELOAD_MS, () => {
-          reply({ type: "notice", message: "Configuration reloaded successfully." });
+          reply({
+            type: "notice",
+            message: "Configuration reloaded successfully.",
+            reload: "reloaded",
+          });
         });
         break;
 
