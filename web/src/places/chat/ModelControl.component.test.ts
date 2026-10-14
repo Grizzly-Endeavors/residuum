@@ -202,6 +202,17 @@ describe("the trigger's text", () => {
       expect(within(trigger).getByText("Low")).toBeInTheDocument();
     });
 
+    it("keeps the whole label, with no badge, when the level has no word", async () => {
+      disk = `[models.main]\nmodel = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]\nthinking = "extreme"\n`;
+      render(ModelControl, { agent: "atlas" });
+      const trigger = await screen.findByRole("button", {
+        name: "Model: Claude Sonnet 4.6, extreme thinking",
+      });
+      expect(trigger).toHaveTextContent("Claude Sonnet 4.6, extreme thinking");
+      expect(within(trigger).queryByText("Extreme")).toBeNull();
+      expect(trigger.querySelector(".ui-badge")).toBeNull();
+    });
+
     it("shows only the model when no level is set", async () => {
       disk = `[models.main]\nmodel = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]\n`;
       render(ModelControl, { agent: "atlas" });

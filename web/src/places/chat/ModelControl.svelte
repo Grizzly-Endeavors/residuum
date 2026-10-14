@@ -46,12 +46,14 @@
   /**
    * On phones the model name and the thinking level render apart, so the level
    * keeps its place when a long model name is truncated. Null when there is no
-   * level to split off: the full label is then the visible text.
+   * level word to split off: the full label is then the visible text.
    */
   const phoneParts = $derived.by(() => {
     if (!phone.current || main.loadError !== null || !main.loaded) return null;
-    if (main.model === "" || main.thinking === "") return null;
-    return { model: main.modelName, level: thinkingBadge(main.thinking) };
+    if (main.model === "") return null;
+    const level = thinkingBadge(main.thinking);
+    if (level === "") return null;
+    return { model: main.modelName, level };
   });
 
   /** The provider's models, with the one in use first when its list doesn't have it. */
@@ -197,6 +199,10 @@
     &[aria-expanded="true"] {
       background: var(--color-stone-3);
       color: var(--color-text);
+
+      & :global(.ui-badge) {
+        background: var(--color-stone-4);
+      }
     }
 
     & :global(svg) {
