@@ -414,6 +414,9 @@ impl AnthropicClient {
                             "model does not support adaptive thinking; using a manual thinking budget from now on"
                         );
                     }
+                    if let Some(sink) = sink {
+                        sink.restart_if_needed();
+                    }
                     mode.manual = true;
                 }
                 Err(e) if adaptive && !mode.drop_mismatched && is_thinking_bound_elsewhere(&e) => {
@@ -422,6 +425,9 @@ impl AnthropicClient {
                             model = %self.model,
                             "the API refused replayed reasoning as bound to a different conversation; asking it to drop such reasoning from now on"
                         );
+                    }
+                    if let Some(sink) = sink {
+                        sink.restart_if_needed();
                     }
                     mode.drop_mismatched = true;
                 }

@@ -310,6 +310,9 @@ impl OpenAiClient {
                             "host requires reasoning_content on tool calls; sending placeholder reasoning where there is none from now on"
                         );
                     }
+                    if let Some(sink) = sink {
+                        sink.restart_if_needed();
+                    }
                     fill = true;
                 }
                 result => return result,
@@ -511,8 +514,6 @@ fn build_tool_calls(
     Ok(calls)
 }
 
-/// Whether `host` is `OpenAI`'s own service, which accepts only the fields
-/// its API documents.
 /// Whether the host refused a request because an assistant message lacked
 /// `reasoning_content` (`DeepSeek`: "The `reasoning_content` in the thinking
 /// mode must be passed back to the API."). A host refusing the field as one
@@ -535,6 +536,8 @@ fn is_missing_reasoning_refusal(error: &InferenceError) -> bool {
         .any(|refusal| lower.contains(refusal))
 }
 
+/// Whether `host` is `OpenAI`'s own service, which accepts only the fields
+/// its API documents.
 fn is_official_openai_host(host: &str) -> bool {
     host == "api.openai.com" || host.ends_with(".openai.com") || host.ends_with(".openai.azure.com")
 }
