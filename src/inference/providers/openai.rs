@@ -21,7 +21,7 @@ use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
-    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ThinkingOrigin,
+    ResponseFormat, Role, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ThinkingOrigin,
     ToolCall, ToolDefinition, Usage,
 };
 
@@ -30,6 +30,16 @@ const FIREWORKS_CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tok
 
 /// Fireworks request header that pins requests to a replica holding a warm cache.
 const FIREWORKS_SESSION_AFFINITY_HEADER: &str = "x-session-affinity";
+
+/// The `reasoning_content` sent with a tool-calling assistant message of the
+/// exchange in progress that has no reasoning of this host's to send back,
+/// such as one another provider wrote before a failover. In thinking mode
+/// with tools, `DeepSeek` requires `reasoning_content` back on every such
+/// message and refuses the request without it
+/// (<https://api-docs.deepseek.com/guides/thinking_mode>). Whether an empty
+/// string satisfies it is undocumented, and reports conflict, so the stand-in
+/// is short readable text.
+const MISSING_REASONING_PLACEHOLDER: &str = "(reasoning for this step is not available)";
 
 /// Host-specific behavior layered on the OpenAI-compatible wire format.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -154,22 +164,48 @@ impl OpenAiClient {
     /// Convert a conversation to the wire format, replaying the reasoning an
     /// OpenAI-compatible API returned for the assistant messages of the
     /// tool-use exchange in progress, on a host that wants it.
-    fn convert_messages(&self, messages: &[Message]) -> Vec<OpenAiMessage> {
-        let replay_from = self
-            .replays_reasoning()
-            .then(|| current_exchange_start(messages));
+    ///
+    /// A tool-calling message of that exchange with no such reasoning gets
+    /// [`MISSING_REASONING_PLACEHOLDER`] instead, when the host is evidently
+    /// reasoning: the request has thinking on, or another message of the
+    /// exchange carries reasoning the host returned. A host that isn't, such
+    /// as one serving a model without thinking, never receives the field it
+    /// may not know.
+    fn convert_messages(&self, messages: &[Message], thinking_on: bool) -> Vec<OpenAiMessage> {
+        let mut converted: Vec<OpenAiMessage> = messages.iter().map(OpenAiMessage::from).collect();
+        if !self.replays_reasoning() {
+            return converted;
+        }
+        let start = current_exchange_start(messages);
         let origin = self.origin();
-        messages
-            .iter()
-            .enumerate()
-            .map(|(index, msg)| {
-                let mut converted = OpenAiMessage::from(msg);
-                if replay_from.is_some_and(|start| index >= start) {
-                    converted.reasoning_content = plain_reasoning(&msg.thinking, &origin);
-                }
-                converted
-            })
-            .collect()
+        let mut host_reasoned = false;
+        for (msg, wire) in messages.iter().zip(converted.iter_mut()).skip(start) {
+            wire.reasoning_content = plain_reasoning(&msg.thinking, &origin);
+            host_reasoned |= wire.reasoning_content.is_some();
+        }
+        if !thinking_on && !host_reasoned {
+            return converted;
+        }
+        let mut filled = 0_usize;
+        for (msg, wire) in messages.iter().zip(converted.iter_mut()).skip(start) {
+            if msg.role == Role::Assistant
+                && msg
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
+                && wire.reasoning_content.is_none()
+            {
+                wire.reasoning_content = Some(MISSING_REASONING_PLACEHOLDER.to_string());
+                filled += 1;
+            }
+        }
+        if filled > 0 {
+            debug!(
+                messages = filled,
+                "sent placeholder reasoning for tool calls with none of this host's to replay"
+            );
+        }
+        converted
     }
 
     /// Build everything about a request that stays the same across retries.
@@ -213,15 +249,16 @@ impl OpenAiClient {
             }),
         };
 
+        let reasoning_effort = options
+            .thinking
+            .as_ref()
+            .and_then(Self::build_reasoning_effort);
         PreparedRequest {
-            messages: self.convert_messages(messages),
+            messages: self.convert_messages(messages, reasoning_effort.is_some()),
             tools: (!openai_tools.is_empty()).then_some(openai_tools),
             response_format,
             temperature: options.temperature,
-            reasoning_effort: options
-                .thinking
-                .as_ref()
-                .and_then(Self::build_reasoning_effort),
+            reasoning_effort,
         }
     }
 
@@ -2855,7 +2892,7 @@ mod tests {
 
     fn replayed(client: &OpenAiClient) -> Vec<Option<String>> {
         client
-            .convert_messages(&reasoning_exchange())
+            .convert_messages(&reasoning_exchange(), false)
             .into_iter()
             .map(|m| m.reasoning_content)
             .collect()
@@ -2952,6 +2989,145 @@ mod tests {
         assert!(
             body.pointer("/messages/1/reasoning_content").is_none(),
             "and not on an earlier exchange's"
+        );
+    }
+
+    /// A tool-use exchange an Anthropic model began (its reasoning signed and
+    /// unreadable here) before a failover, then one step this host answered
+    /// with `own` reasoning, after an earlier exchange whose tool call had none.
+    fn failover_exchange(own: Option<&str>) -> Vec<Message> {
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            name: "exec".to_string(),
+            arguments: json!({}),
+            server: None,
+        };
+        let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-5-5");
+        let mut before = Message::assistant("", Some(vec![call("c1")]));
+        before.thinking = vec![
+            ThinkingBlock {
+                text: "signed elsewhere".to_string(),
+                signature: Some("sig".to_string()),
+                ..ThinkingBlock::default()
+            }
+            .from_origin(&anthropic),
+        ];
+        let mut after = Message::assistant("", Some(vec![call("c2")]));
+        if let Some(text) = own {
+            after.thinking = vec![ThinkingBlock::text(text).from_origin(&test_origin())];
+        }
+        vec![
+            Message::user("one"),
+            Message::assistant("", Some(vec![call("c0")])),
+            Message::tool("r0", "c0"),
+            Message::assistant("done", None),
+            Message::user("two"),
+            before,
+            Message::tool("r1", "c1"),
+            after,
+            Message::tool("r2", "c2"),
+        ]
+    }
+
+    fn reasoning_sent(
+        client: &OpenAiClient,
+        messages: &[Message],
+        thinking_on: bool,
+    ) -> Vec<Option<String>> {
+        client
+            .convert_messages(messages, thinking_on)
+            .into_iter()
+            .map(|m| m.reasoning_content)
+            .collect()
+    }
+
+    #[test]
+    fn tool_calls_without_this_hosts_reasoning_get_a_placeholder_once_it_reasons() {
+        let placeholder = Some(MISSING_REASONING_PLACEHOLDER.to_string());
+        let deepseek = client_at("https://api.deepseek.com/v1");
+        assert_eq!(
+            reasoning_sent(&deepseek, &failover_exchange(Some("mine")), false),
+            vec![
+                None,
+                None,
+                None,
+                None,
+                None,
+                placeholder.clone(),
+                None,
+                Some("mine".to_string()),
+                None
+            ],
+            "the step another provider answered gets the placeholder, this host's keeps its \
+             own reasoning, and the earlier exchange gets nothing"
+        );
+        assert_eq!(
+            reasoning_sent(&deepseek, &failover_exchange(None), true),
+            vec![
+                None,
+                None,
+                None,
+                None,
+                None,
+                placeholder.clone(),
+                None,
+                placeholder,
+                None
+            ],
+            "with thinking on, every tool call of the exchange carries reasoning"
+        );
+    }
+
+    #[test]
+    fn a_host_that_is_not_reasoning_gets_no_placeholder() {
+        let client = client_at("https://api.mistral.ai/v1");
+        assert!(
+            reasoning_sent(&client, &failover_exchange(None), false)
+                .iter()
+                .all(Option::is_none),
+            "thinking off and no reasoning from the host: nothing to replay, no field"
+        );
+    }
+
+    #[test]
+    fn openai_itself_gets_no_placeholder_either() {
+        let client = client_at("https://api.openai.com/v1");
+        assert!(
+            reasoning_sent(&client, &failover_exchange(Some("mine")), true)
+                .iter()
+                .all(Option::is_none),
+            "OpenAI rejects fields it does not know"
+        );
+    }
+
+    #[tokio::test]
+    async fn placeholder_reasoning_reaches_the_wire() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"content": "ok"}}]
+            })))
+            .mount(&server)
+            .await;
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Level(ThinkingLevel::High)),
+            ..CompletionOptions::default()
+        };
+        make_client(server.uri(), "m")
+            .complete(&failover_exchange(None), &[], &options)
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert_eq!(
+            at(&body, "/messages/5/reasoning_content"),
+            &json!(MISSING_REASONING_PLACEHOLDER),
+            "the step another provider answered carries the placeholder"
+        );
+        assert!(
+            body.pointer("/messages/1/reasoning_content").is_none(),
+            "an earlier exchange's tool call does not"
         );
     }
 }

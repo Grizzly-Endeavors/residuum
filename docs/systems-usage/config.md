@@ -79,6 +79,8 @@ Some providers refuse a tool-use exchange whose reasoning is missing, so the rea
 
 Gemini 3 refuses a request whose current turn holds a function call with no thought signature, and a call another provider made has none to send. For the first function call of each such message in the exchange in progress, a Gemini 3 model (`gemini-3*`) is sent the stand-in value Google documents for this, `skip_thought_signature_validator`. Earlier turns, and other Gemini models, get none. Google calls the stand-in a last resort because the model then continues without that call's original reasoning.
 
+DeepSeek in thinking mode refuses a request with tools whose earlier tool-calling messages lack `reasoning_content`, and a message another provider wrote (before a failover, say) has none of the host's to send. On an OpenAI-compatible host that gets reasoning back (any but OpenAI's own), when the request has thinking on or another message of the exchange in progress carries reasoning that host returned, each tool-calling assistant message of that exchange without reasoning of its own is sent `reasoning_content` of `(reasoning for this step is not available)`, and the count is logged at `debug`. With thinking off and no reasoning from the host in the exchange, the field is left off, so a host serving a model without thinking never receives it.
+
 **Images and text-only models.** Images reach a model from a user's message (a chat interface or an upload) and from tool results (`read_file` on an image). A model that can't take them is described under its provider entry, keyed by the model's name after the slash:
 
 ```toml
