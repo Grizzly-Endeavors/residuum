@@ -14,7 +14,9 @@ use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::background::runtime::SessionRuntime;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
-use crate::config::{BackgroundConfig, BackgroundModelTier, ModelSelector, SharedModelCatalog};
+use crate::config::{
+    BackgroundConfig, BackgroundModelTier, ModelCatalog, ModelSelector, SharedModelCatalog,
+};
 use crate::inference::retry::RetryConfig;
 use crate::inference::{
     CompletionOptions, SharedHttpClient, build_provider_chain_with_shared_notices,
@@ -211,18 +213,36 @@ struct SessionModelChain {
 ///
 /// # Errors
 /// Returns an error naming the model if an explicit id doesn't resolve.
-async fn resolve_session_model(
+fn resolve_session_model(
     ctx: &SpawnContext,
+    catalog: &ModelCatalog,
+    model: &ModelSelector,
+) -> Result<SessionModelChain, anyhow::Error> {
+    resolve_model_chain(
+        &ctx.background_config.models,
+        &ctx.main_provider_specs,
+        &ctx.bg_tier_active_index,
+        catalog,
+        model,
+    )
+}
+
+/// [`resolve_session_model`] over its parts.
+///
+/// # Errors
+/// Returns an error naming the model if an explicit id doesn't resolve.
+fn resolve_model_chain(
+    tiers: &crate::config::BackgroundModelsConfig,
+    main: &[ProviderSpec],
+    tier_index: &BackgroundTierActiveIndex,
+    catalog: &ModelCatalog,
     model: &ModelSelector,
 ) -> Result<SessionModelChain, anyhow::Error> {
     match model {
         ModelSelector::Tier(tier) => Ok(SessionModelChain {
-            specs: ctx
-                .background_config
-                .models
-                .resolve_tier(tier, &ctx.main_provider_specs),
+            specs: tiers.resolve_tier(tier, main),
             label: format!("background sessions ({tier} tier)"),
-            active_index: ctx.bg_tier_active_index.for_tier(*tier),
+            active_index: tier_index.for_tier(*tier),
             overrides_key: Some(match tier {
                 BackgroundModelTier::Small => "bg_small",
                 BackgroundModelTier::Medium => "bg_medium",
@@ -230,10 +250,7 @@ async fn resolve_session_model(
             }),
         }),
         ModelSelector::Explicit(id) => {
-            let spec = ctx
-                .model_catalog
-                .read()
-                .await
+            let spec = catalog
                 .resolve(id)
                 .map_err(|e| anyhow::anyhow!("model '{id}' can't be used: {e}"))?;
             Ok(SessionModelChain {
@@ -329,7 +346,8 @@ pub(crate) async fn build_spawn_resources(
         trigger,
         conversation_target,
     } = session;
-    let chain = resolve_session_model(ctx, model).await?;
+    let catalog = ctx.model_catalog.read().await.clone();
+    let chain = resolve_session_model(ctx, &catalog, model)?;
     let resolved_model = chain
         .specs
         .first()
@@ -445,6 +463,66 @@ mod tests {
         // Different tiers never share a counter.
         assert_eq!(medium.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(large.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    fn spec(provider: &str, model: &str) -> ProviderSpec {
+        crate::config::ModelCatalog::default()
+            .resolve(&format!("{provider}/{model}"))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_tier_runs_its_failover_chain_with_its_overrides() {
+        let tiers = crate::config::BackgroundModelsConfig {
+            small: Some(vec![
+                spec("anthropic", "claude-haiku-4-5"),
+                spec("openai", "gpt-4o-mini"),
+            ]),
+            medium: None,
+            large: None,
+        };
+        let chain = resolve_model_chain(
+            &tiers,
+            &[spec("anthropic", "claude-sonnet-4-6")],
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::SMALL,
+        )
+        .unwrap();
+        assert_eq!(chain.specs.len(), 2, "the tier keeps its failover chain");
+        assert_eq!(chain.overrides_key, Some("bg_small"));
+    }
+
+    #[test]
+    fn an_explicit_model_runs_that_one_model_with_no_overrides() {
+        let chain = resolve_model_chain(
+            &crate::config::BackgroundModelsConfig::default(),
+            &[spec("anthropic", "claude-sonnet-4-6")],
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::Explicit("openai/gpt-4o".to_string()),
+        )
+        .unwrap();
+        let [only] = chain.specs.as_slice() else {
+            panic!("an explicit model has no failover chain: {:?}", chain.specs);
+        };
+        assert_eq!(only.model.model, "gpt-4o");
+        assert_eq!(chain.overrides_key, None);
+    }
+
+    #[test]
+    fn an_explicit_model_naming_no_provider_fails_the_spawn_naming_it() {
+        let Err(err) = resolve_model_chain(
+            &crate::config::BackgroundModelsConfig::default(),
+            &[spec("anthropic", "claude-sonnet-4-6")],
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::Explicit("nowhere/x".to_string()),
+        ) else {
+            panic!("an unknown provider must not resolve");
+        };
+        let message = err.to_string();
+        assert!(message.contains("nowhere/x"), "{message}");
     }
 
     #[tokio::test]

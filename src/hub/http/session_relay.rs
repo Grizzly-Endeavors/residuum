@@ -83,7 +83,7 @@ impl SessionRelay {
             Ok(AgentSessionEvent { agent, event, .. }) => {
                 let frame = HubSocketFrame::SessionFrame {
                     agent,
-                    frame: session_event_to_server_message(event),
+                    frame: Box::new(session_event_to_server_message(event)),
                 };
                 send_frame(outbound, &frame).await
             }

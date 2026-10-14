@@ -379,6 +379,47 @@ fn load_state(path: &Path) -> PulseScheduler {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_pulse_whose_explicit_model_does_not_resolve_is_reported_and_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(
+            &path,
+            "pulses:\n  - name: local\n    schedule: \"1m\"\n    model_tier: lcoal/qwen3:8b\n    tasks: []\n  \
+             - name: hosted\n    schedule: \"1m\"\n    model_tier: openai/gpt-4o\n    tasks: []\n",
+        )
+        .unwrap();
+        let models = crate::config::ModelCatalog::default();
+        let mut scheduler = PulseScheduler::new();
+        let start = chrono::Local::now().naive_local();
+        let _first = scheduler.due_pulses(start, &path, &models);
+        let due = scheduler.due_pulses(start + chrono::Duration::minutes(2), &path, &models);
+
+        let names: Vec<&str> = due.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["hosted"],
+            "only the pulse whose model resolves runs"
+        );
+        let [problem] = scheduler.current_problems() else {
+            panic!(
+                "expected one problem, got {:?}",
+                scheduler.current_problems()
+            );
+        };
+        assert_eq!(problem.name, "local");
+        assert!(
+            problem.message.contains("lcoal/qwen3:8b")
+                && problem.message.contains("not a known provider"),
+            "{}",
+            problem.message
+        );
+        assert!(
+            scheduler.take_problem_notice().is_some(),
+            "the owner is told once"
+        );
+    }
     use super::*;
     use tempfile::tempdir;
 

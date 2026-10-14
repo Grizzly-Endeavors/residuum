@@ -64,6 +64,8 @@ function liveRun(runId: string): SessionSummary {
     error: null,
     error_details: null,
     overlap: null,
+    model: null,
+    resolved_model: null,
   };
 }
 

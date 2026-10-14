@@ -252,11 +252,11 @@ impl ActionStore {
         fresh
     }
 
-    /// Whether the action with this id is held back because its model can't
-    /// run (see [`Self::record_model_problems`]).
+    /// Why the action with this id is held back, when its model can't run
+    /// (see [`Self::record_model_problems`]).
     #[must_use]
-    pub fn has_model_problem(&self, id: &str) -> bool {
-        self.model_problems.contains_key(id)
+    pub fn model_problem(&self, id: &str) -> Option<&str> {
+        self.model_problems.get(id).map(String::as_str)
     }
 
     /// Path to the backing JSON file.

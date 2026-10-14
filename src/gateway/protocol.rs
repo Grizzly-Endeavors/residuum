@@ -177,6 +177,16 @@ pub struct SessionSummary {
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. `None` for every other trigger.
     pub overlap: Option<crate::bus::PulseOverlap>,
+    /// The model the run was asked to use: a tier (`small`, `medium`,
+    /// `large`) or an explicit `provider/model` id. `None` for a record
+    /// written before this field existed.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The `provider/model` id the run started on: the first model of the
+    /// tier's failover chain, or the explicit model. `None` for a record
+    /// written before this field existed.
+    #[serde(default)]
+    pub resolved_model: Option<String>,
 }
 
 /// `GET /api/agents/{name}/sessions` response: live sessions plus one page of completed
@@ -308,6 +318,9 @@ pub struct PulseInfo {
     pub schedule: Option<String>,
     pub active_hours: Option<String>,
     pub agent: Option<String>,
+    /// The pulse's `model_tier` as written: a tier or an explicit
+    /// `provider/model` id. `None` runs the `small` tier.
+    pub model_tier: Option<String>,
     /// When the pulse next fires, from `pulse::next_run`: the schedule since
     /// `pulse_state.json`'s last run, moved into `active_hours`. `None` for a
     /// disabled pulse, one whose schedule or active hours can't be read or
@@ -332,7 +345,13 @@ pub struct ActionInfo {
     #[ts(type = "string")]
     pub run_at: DateTime<Utc>,
     pub agent: Option<String>,
+    /// The action's `model_tier` as stored: a tier or an explicit
+    /// `provider/model` id. `None` runs the `medium` tier.
     pub model_tier: Option<String>,
+    /// Why the action is held instead of running, when its model can't run
+    /// (an unreadable value, or a provider `providers.toml` doesn't have).
+    /// Plain language, ready to show as-is.
+    pub problem: Option<String>,
     pub current_run: Option<ScheduledCurrentRun>,
 }
 

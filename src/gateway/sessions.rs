@@ -41,6 +41,8 @@ pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         error: None,
         error_details: None,
         overlap: info.overlap.clone(),
+        model: Some(info.model.to_string()),
+        resolved_model: info.resolved_model.clone(),
     }
 }
 
@@ -94,6 +96,8 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         error: record.outcome_error.clone(),
         error_details: record.outcome_error_details.clone(),
         overlap: record.overlap.clone(),
+        model: record.model.clone(),
+        resolved_model: record.resolved_model.clone(),
     })
 }
 
@@ -674,8 +678,26 @@ mod tests {
                     "error": null,
                     "error_details": null,
                     "overlap": null,
+                    "model": "medium",
+                    "resolved_model": null,
                 },
             })
+        );
+    }
+
+    #[test]
+    fn a_run_record_keeps_the_model_its_run_used() {
+        let mut info = live_info("spawned-g-0001", SessionState::Running);
+        info.model = crate::config::ModelSelector::SMALL;
+        info.resolved_model = Some("anthropic/claude-haiku-4-5".to_string());
+        let mut record = RunRecord::starting(&info);
+        record.state = "completed".to_string();
+
+        let summary = summary_from_record(&record).unwrap();
+        assert_eq!(summary.model.as_deref(), Some("small"));
+        assert_eq!(
+            summary.resolved_model.as_deref(),
+            Some("anthropic/claude-haiku-4-5")
         );
     }
 

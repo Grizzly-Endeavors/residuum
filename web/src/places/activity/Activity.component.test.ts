@@ -50,6 +50,8 @@ function run(runId: string, overrides: Partial<SessionSummary> = {}): SessionSum
     error: null,
     error_details: null,
     overlap: null,
+    model: null,
+    resolved_model: null,
     ...overrides,
   };
 }

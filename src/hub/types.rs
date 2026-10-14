@@ -429,7 +429,7 @@ pub enum HubSocketFrame {
         /// The agent the session runs on.
         agent: String,
         /// The `session_*` frame exactly as the agent's own socket sends it.
-        frame: ServerMessage,
+        frame: Box<ServerMessage>,
     },
     /// The connection fell behind and lost session frames, so it can't know
     /// what it missed. A client reads the sessions it follows again over
@@ -729,11 +729,11 @@ mod tests {
         );
         let relayed = HubSocketFrame::SessionFrame {
             agent: "scout".to_string(),
-            frame: ServerMessage::SessionTurnStarted {
+            frame: Box::new(ServerMessage::SessionTurnStarted {
                 address: "spawned-x".to_string(),
                 run_id: "run-1".to_string(),
                 turn_id: "t-1".to_string(),
-            },
+            }),
         };
         assert_eq!(
             serde_json::to_value(relayed).unwrap(),

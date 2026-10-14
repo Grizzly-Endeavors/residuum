@@ -1527,6 +1527,16 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn a_resume_point_saved_with_a_model_tier_key_still_loads() {
+        let mut saved = serde_json::to_value(sample_resume_point("run-old")).unwrap();
+        let map = saved.as_object_mut().unwrap();
+        map.remove("model");
+        map.insert("model_tier".to_string(), serde_json::json!("large"));
+        let point: ResumePoint = serde_json::from_value(saved).unwrap();
+        assert_eq!(point.model, ModelSelector::LARGE);
+    }
+
     fn sample_resume_point(run_id: &str) -> ResumePoint {
         ResumePoint {
             previous_run_id: run_id.to_string(),

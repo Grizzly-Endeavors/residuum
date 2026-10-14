@@ -147,6 +147,7 @@ async fn build_pulse_infos(
             schedule: Some(pulse.schedule.clone()),
             active_hours: pulse.active_hours.clone(),
             agent: pulse.agent.clone(),
+            model_tier: pulse.model_tier.as_ref().map(ToString::to_string),
             next_fire_at: pulse_enabled
                 .then(|| next_run_at(pulse, last_run.get(&pulse.name).copied(), now, state.tz))
                 .flatten(),
@@ -180,6 +181,7 @@ async fn build_pulse_infos(
             schedule: None,
             active_hours: None,
             agent: None,
+            model_tier: None,
             next_fire_at: None,
             last_outcome: None,
             current_run: None,
@@ -282,9 +284,19 @@ async fn api_scheduled_pulse_set_enabled(
 
 /// `GET /api/agents/{name}/scheduled/actions`
 async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Response {
-    let actions = state.action_store.lock().await.list().to_vec();
+    let actions: Vec<_> = {
+        let store = state.action_store.lock().await;
+        store
+            .list()
+            .iter()
+            .map(|action| {
+                let problem = store.model_problem(&action.id).map(str::to_string);
+                (action.clone(), problem)
+            })
+            .collect()
+    };
     let mut infos = Vec::with_capacity(actions.len());
-    for action in actions {
+    for (action, problem) in actions {
         let source_label = format!("action:{}", action.name);
         infos.push(ActionInfo {
             id: action.id,
@@ -292,6 +304,7 @@ async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Respon
             run_at: action.run_at,
             agent: action.agent,
             model_tier: action.model_tier,
+            problem,
             current_run: current_run(&state.registry, &source_label),
         });
     }

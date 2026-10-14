@@ -1070,6 +1070,46 @@ pulses:
     }
 
     #[test]
+    fn load_heartbeat_reads_a_tier_or_explicit_model_and_rejects_anything_else() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(
+            &path,
+            "pulses:\n  - name: tiered\n    schedule: \"1h\"\n    model_tier: large\n    tasks: []\n  \
+             - name: explicit\n    schedule: \"1h\"\n    model_tier: local/qwen3:8b\n    tasks: []\n  \
+             - name: typo\n    schedule: \"1h\"\n    model_tier: lagre\n    tasks: []\n",
+        )
+        .unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
+
+        let models: Vec<_> = cfg
+            .pulses
+            .iter()
+            .map(|p| (p.name.as_str(), p.model_tier.clone()))
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                ("tiered", Some(crate::config::ModelSelector::LARGE)),
+                (
+                    "explicit",
+                    Some(crate::config::ModelSelector::Explicit(
+                        "local/qwen3:8b".to_string()
+                    ))
+                ),
+            ],
+            "a bad model_tier drops only that pulse"
+        );
+        let [problem] = problems.as_slice() else {
+            panic!("expected one problem, got {problems:?}");
+        };
+        assert_eq!(problem.name, "typo");
+        assert!(problem.message.contains("'lagre'"), "{}", problem.message);
+    }
+
+    #[test]
     fn load_heartbeat_unnamed_invalid_pulse_entry_is_labeled_by_position() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
