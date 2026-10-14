@@ -120,11 +120,35 @@ impl HubConfig {
     /// # Errors
     /// Returns a human-readable error string if validation fails.
     pub fn validate_toml(contents: &str, hub_dir: &Path) -> Result<(), String> {
+        Self::validate_with(contents, hub_dir, resolve::hub::from_file_and_env)
+    }
+
+    /// [`Self::validate_toml`] for a file the hub loads while first-run setup
+    /// is pending, where `timezone` may still be unset. Everything else is
+    /// checked as strictly as [`Self::validate_toml`] checks it.
+    ///
+    /// # Errors
+    /// Returns a human-readable error string if validation fails.
+    pub fn validate_toml_for_onboarding(contents: &str, hub_dir: &Path) -> Result<(), String> {
+        Self::validate_with(
+            contents,
+            hub_dir,
+            resolve::hub::from_file_and_env_for_onboarding,
+        )
+    }
+
+    /// Parse `contents` as `hub/config.toml` and resolve it with `resolve`,
+    /// the same two steps the hub takes when it loads the file.
+    fn validate_with(
+        contents: &str,
+        hub_dir: &Path,
+        resolve: fn(Option<&deserialize::HubConfigFile>, &Path) -> Result<HubConfig, FatalError>,
+    ) -> Result<(), String> {
         let (file, _notices) = parse_tolerating_unknown_keys::<deserialize::HubConfigFile>(
             contents,
             "hub/config.toml",
         )?;
-        resolve::hub::from_file_and_env(Some(&file), hub_dir).map_err(|e| e.to_string())?;
+        resolve(Some(&file), hub_dir).map_err(|e| e.to_string())?;
         Ok(())
     }
 

@@ -42,6 +42,10 @@ impl ChatOutbound for DiscordOutbound {
         "discord"
     }
 
+    fn display_name(&self) -> &'static str {
+        "Discord"
+    }
+
     fn unknown_conversation_reason(&self) -> &'static str {
         "that is not a Discord channel ID"
     }

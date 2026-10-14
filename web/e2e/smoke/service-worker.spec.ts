@@ -182,6 +182,20 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     ).toBeVisible();
     expect(new URL(page.url()).pathname).toBe("/agent/atlas/files");
   });
+
+  test("shows Not Found for a page load of a file that isn't cached, with no network", async ({
+    page,
+    context,
+  }) => {
+    await openWithWorker(page);
+    await context.setOffline(true);
+    await page.goto("/foo.json");
+    await expect(
+      page.getByRole("status").filter({ hasText: "Can't reach Residuum." }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Page not found", level: 1 })).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/foo.json");
+  });
 });
 
 test.describe("an app update", { tag: "@preview" }, () => {
