@@ -15,6 +15,38 @@ function history(text: string): Record<string, unknown> {
   };
 }
 
+const USER_ORIGIN = { endpoint: "ws", visibility: "user" };
+
+/**
+ * Scout's history once a turn is recorded: the earlier message, unless it was
+ * compressed into the episode `cursor`, then the finished turn.
+ */
+function recordedTurn(
+  cursor: string | null,
+  turnId: string,
+  question: string,
+  answer: string,
+): Record<string, unknown> {
+  const at = { timestamp: "2026-09-29T12:01:00Z", project_context: "", turn_id: turnId };
+  return {
+    kind: "recent",
+    messages: [
+      ...(cursor === null ? (history("hello from scout").messages as unknown[]) : []),
+      { role: "user", content: question, ...at },
+      { role: "assistant", content: answer, ...at },
+    ],
+    next_cursor: cursor,
+  };
+}
+
+/** The id of the last message the page sent on `socket`, which names the turn it starts. */
+function sentMessageId(socket: FakeWebSocket): string {
+  const sent = socket
+    .sentFrames()
+    .filter((frame) => (frame as { type?: string }).type === "send_message");
+  return (sent[sent.length - 1] as { id: string }).id;
+}
+
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -27,20 +59,34 @@ interface FakeServer {
   urls: string[];
   /** Hold the next history request for this agent until `release` is called. */
   hold: (agent: string) => { release: () => void };
+  /** Answer this agent's history requests from now on with `segment`. */
+  setHistory: (agent: string, segment: Record<string, unknown>) => void;
 }
 
 function installServer(): FakeServer {
   const urls: string[] = [];
   const held = new Map<string, Promise<void>>();
+  const histories = new Map<string, Record<string, unknown>>();
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string) => {
       urls.push(input);
       const agent = /\/api\/agents\/([^/]+)\//.exec(input)?.[1] ?? "";
+      const episode = /[?&]episode=([^&]+)/.exec(input)?.[1];
+      if (episode !== undefined) {
+        return json({
+          ...history(`hello from ${agent}`),
+          kind: "episode",
+          episode_id: episode,
+          date: "2026-09-29",
+        });
+      }
       if (input.includes("/chat/history")) {
+        // The history as it stood when asked, however long the answer takes.
+        const segment = histories.get(agent) ?? history(`hello from ${agent}`);
         await held.get(agent);
         held.delete(agent);
-        return json(history(`hello from ${agent}`));
+        return json(segment);
       }
       if (input.includes("/usage")) {
         await held.get(`${agent}:usage`);
@@ -72,6 +118,7 @@ function installServer(): FakeServer {
       );
       return { release };
     },
+    setHistory: (agent, segment) => histories.set(agent, segment),
   };
 }
 
@@ -277,5 +324,54 @@ describe("switching agents leaves nothing of the old agent behind", () => {
 
     expect(ws.store.isProcessing).toBe(false);
     expect(ws.store.activeTurnId).toBeNull();
+  });
+});
+
+describe("a turn that ends while the history is on its way stays in the feed", () => {
+  it("on binding the agent", async () => {
+    const server = installServer();
+    const held = server.hold("scout");
+    setViewedAgent("scout");
+    const socket = FakeWebSocket.last;
+    socket.simulateOpen();
+    await flush();
+    ws.sendChat("sent early");
+    const turnId = sentMessageId(socket);
+    socket.simulateMessage({ type: "turn_started", reply_to: turnId, origin: USER_ORIGIN });
+    socket.simulateMessage({ type: "response", reply_to: turnId, endpoint: "ws", content: "done" });
+    // History records the turn before its end reaches the page.
+    server.setHistory("scout", recordedTurn(null, turnId, "sent early", "done"));
+    socket.simulateMessage({ type: "turn_ended", reply_to: turnId });
+    held.release();
+    await flush();
+
+    expect(feedText()).toEqual(["hello from scout", "sent early", "done"]);
+  });
+
+  it("on reconnecting after history was compressed into a new episode", async () => {
+    const server = installServer();
+    setViewedAgent("scout");
+    const first = FakeWebSocket.last;
+    first.simulateOpen();
+    await flush();
+    ws.sendChat("tidy the wiki");
+    const turnId = sentMessageId(first);
+    first.simulateMessage({ type: "turn_started", reply_to: turnId, origin: USER_ORIGIN });
+    first.simulateClose();
+    // While the page is away the earlier message is compressed into ep-004;
+    // the turn in flight isn't recorded yet.
+    server.setHistory("scout", { kind: "recent", messages: [], next_cursor: "ep-004" });
+    const held = server.hold("scout");
+    ws.transport.reconnectNow();
+    const second = FakeWebSocket.last;
+    second.simulateOpen();
+    await flush();
+    second.simulateMessage({ type: "response", reply_to: turnId, endpoint: "ws", content: "done" });
+    server.setHistory("scout", recordedTurn("ep-004", turnId, "tidy the wiki", "done"));
+    second.simulateMessage({ type: "turn_ended", reply_to: turnId });
+    held.release();
+    await flush();
+
+    expect(feedText()).toEqual(["hello from scout", "tidy the wiki", "done"]);
   });
 });

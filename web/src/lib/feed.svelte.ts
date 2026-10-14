@@ -245,6 +245,18 @@ export class FeedStore {
    * live-only until the turn ends and history records them.
    */
   private turnStart: number | null = null;
+  /** How many turns have ended live, read through `turnsEndedLive`. */
+  private endedLiveTurns = 0;
+
+  /**
+   * How many turns have ended live. History records a turn before its end
+   * reaches the page, and once it has ended a reload keeps nothing of it, so a
+   * Recent segment read before this count last moved can lack a turn the feed
+   * shows: applying it would take that turn off the feed.
+   */
+  get turnsEndedLive(): number {
+    return this.endedLiveTurns;
+  }
 
   /**
    * What a screen reader is told about the agent's work: that a turn started,
@@ -323,6 +335,7 @@ export class FeedStore {
         this.activeTurnId = null;
         this.turnStart = null;
         this.liveBaseline = null;
+        this.endedLiveTurns++;
         break;
 
       case "turn_usage":
