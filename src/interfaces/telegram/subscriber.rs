@@ -46,6 +46,10 @@ impl ChatOutbound for TelegramOutbound {
         "telegram"
     }
 
+    fn delivers_intermediate(&self) -> bool {
+        self.state.deliver_intermediate
+    }
+
     fn display_name(&self) -> &'static str {
         "Telegram"
     }

@@ -33,6 +33,10 @@ impl ChatOutbound for Arc<TeamsRuntime> {
         "teams"
     }
 
+    fn delivers_intermediate(&self) -> bool {
+        self.cfg.deliver_intermediate
+    }
+
     fn display_name(&self) -> &'static str {
         "Microsoft Teams"
     }
