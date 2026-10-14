@@ -4,10 +4,11 @@ name: Quality Checks
 # without cutting a release.
 #
 # Every check is its own job so they run side by side. Each job names the
-# runner pool that suits it (grizzly-platform ADR-081): Rust jobs compile one
-# large crate, where per-core speed decides the time, so they run on
-# lab-runners-fast; the web jobs split well across runners, so they run on
-# lab-runners-wide.
+# runner pool that suits it (grizzly-platform ADR-081): the Rust jobs that
+# build and run the crate (lint and tests) compile one large crate, where
+# per-core speed decides the time, so they run on lab-runners-fast; the web
+# jobs split well across runners, so they run on lab-runners-wide, and so does
+# the Windows clippy, which checks without running tests.
 on:
   workflow_call:
     inputs:
@@ -120,10 +121,12 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # web/package.json allows Node 22, 24 and 26, so the unit and component tests
-  # run on the oldest and the newest of those that CI covers, each at its
-  # latest release. Only the tests are repeated: format, lint, types and the
-  # build do not depend on the Node version beyond what Web Checks runs.
+  # web/package.json allows Node 22, 24 and 26 and later. The unit and
+  # component tests run on Node 22 (the oldest allowed) and Node 24 (the
+  # current LTS, which docker/Dockerfile also uses), each at its latest
+  # release; Node 26 and later are not run. Only the tests are repeated:
+  # format, lint, types and the build do not depend on the Node version beyond
+  # what Web Checks runs.
   web-node:
     name: Web Tests (Node ${{ matrix.node }})
     if: inputs.web
