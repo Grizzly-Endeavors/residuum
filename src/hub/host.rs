@@ -1765,8 +1765,9 @@ impl AgentHost {
         Ok(crate::gateway::web::agent_repair_api_router(state))
     }
 
-    /// The agent's chat history, usage, user inbox, A2A settings, and
-    /// workspace file link routes, over its files on disk. Unlike
+    /// The agent's chat history, usage, user inbox, A2A settings, and file
+    /// link routes, over its files on disk (the token links from the ones it
+    /// saved in its `file_links.json`). Unlike
     /// [`Self::repair_router_for`] it opens no checkpoint repository: the one
     /// write that takes a checkpoint opens them when it runs, so these routes
     /// answer even when the repositories can't be opened.
@@ -1776,10 +1777,15 @@ impl AgentHost {
             .running
             .as_ref()
             .map(|running| running.control.reload_tx.clone());
+        let layout = WorkspaceLayout::new(&slot.dir);
         crate::gateway::web::agent_files_api_router(crate::gateway::web::AgentFilesState {
             agent_name: slot.name.clone(),
             workspace_dir: slot.dir.clone(),
-            memory_dir: Some(WorkspaceLayout::new(&slot.dir).memory_dir()),
+            memory_dir: Some(layout.memory_dir()),
+            file_registry: crate::gateway::file_server::FileRegistry::for_agent(
+                slot.name.clone(),
+                &layout,
+            ),
             reload_tx,
             checkpoints: crate::gateway::web::CheckpointAccess::lazy(
                 self.checkpoint_opener(&slot.name, &slot.dir),

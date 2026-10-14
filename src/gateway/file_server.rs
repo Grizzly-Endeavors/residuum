@@ -9,6 +9,11 @@
 //! the workspace (or the workspace boundary was never configured) falls
 //! back to the token-registry scheme below.
 //!
+//! An agent's token registrations are written through to its
+//! `file_links.json` (see [`FileRegistry::for_agent`]), so a token link
+//! keeps working across a restart of the agent until it expires, and the
+//! hub serves it from that file while the agent is stopped.
+//!
 //! Every response carrying a file an agent wrote goes through
 //! [`mark_agent_file`], which keeps the browser from running it with the
 //! hub's origin.
@@ -17,12 +22,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use tokio::sync::RwLock;
-use tokio::time::Instant;
+use chrono::{DateTime, Utc};
+use tokio::sync::{Mutex, OnceCell, RwLock};
 
 use crate::gateway::browser_landing::{self, AppNotice, Fallback};
+use crate::workspace::layout::WorkspaceLayout;
 
 /// The `Content-Security-Policy` of a file an agent wrote, served from the
 /// hub's own origin. An agent can be steered by what it read into writing an
@@ -56,23 +63,167 @@ pub(crate) fn mark_agent_file(headers: &mut HeaderMap, mime_type: &str) {
 }
 
 /// How long a registered file remains available (1 hour).
-const FILE_TTL_SECS: u64 = 3600;
+const FILE_TTL_SECS: i64 = 3600;
 
 /// How often the cleanup task sweeps expired entries (10 minutes).
 const CLEANUP_INTERVAL_SECS: u64 = 600;
 
-/// A registered file entry with expiration.
+/// A token link's registration: the file it serves, and until when.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct FileEntry {
     path: PathBuf,
     mime_type: String,
     filename: String,
-    expires_at: Instant,
+    expires_at: DateTime<Utc>,
+}
+
+impl FileEntry {
+    /// Whether the link no longer serves at `now`. No registration is due
+    /// more than one TTL out, so an entry that is (the clock was set back
+    /// since, or the file was edited by hand) counts as expired too.
+    fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at <= now || self.expires_at > now + chrono::Duration::seconds(FILE_TTL_SECS)
+    }
+}
+
+/// Token registrations, keyed by token.
+type Entries = HashMap<String, FileEntry>;
+
+/// The token registrations of one agent.
+///
+/// The saved entries are trusted as the agent's own registrations. Anything
+/// that can write the agent's directory can add an entry naming any path, but
+/// the agent can already register any path with `send_message`, so a forged
+/// entry adds no capability. A rule on which paths may be linked belongs at
+/// registration, applied in [`FileRegistry::get`] as well.
+struct TokenLinks {
+    /// The registrations, read from [`Self::store`] the first time they are
+    /// used.
+    entries: OnceCell<RwLock<Entries>>,
+    /// The file every change is written through to (the agent's
+    /// `file_links.json`), so a link outlives the process that registered
+    /// it. `None` keeps the registrations in memory only.
+    store: Option<PathBuf>,
+    /// Held from a change until its write is done, so the writes reach the
+    /// disk in the order the changes were made.
+    persist_lock: Mutex<()>,
+}
+
+impl TokenLinks {
+    fn new(store: Option<PathBuf>) -> Self {
+        Self {
+            entries: OnceCell::new(),
+            store,
+            persist_lock: Mutex::new(()),
+        }
+    }
+
+    async fn entries(&self) -> &RwLock<Entries> {
+        self.entries
+            .get_or_init(|| async {
+                let entries = match &self.store {
+                    Some(store) => load_file_links(store).await,
+                    None => HashMap::new(),
+                };
+                RwLock::new(entries)
+            })
+            .await
+    }
+
+    async fn insert(&self, id: String, entry: FileEntry) {
+        let _persist = self.persist_lock.lock().await;
+        let snapshot = {
+            let mut entries = self.entries().await.write().await;
+            entries.insert(id, entry);
+            self.store.as_ref().map(|_| entries.clone())
+        };
+        if let Some(snapshot) = snapshot {
+            self.save(&snapshot).await;
+        }
+    }
+
+    /// Remove the expired entries. Returns `(removed, remaining)`.
+    async fn sweep_expired(&self) -> (usize, usize) {
+        let _persist = self.persist_lock.lock().await;
+        let now = Utc::now();
+        let (removed, remaining, snapshot) = {
+            let mut entries = self.entries().await.write().await;
+            let before = entries.len();
+            entries.retain(|_, entry| !entry.is_expired(now));
+            let remaining = entries.len();
+            let removed = before - remaining;
+            let snapshot = (removed > 0 && self.store.is_some()).then(|| entries.clone());
+            (removed, remaining, snapshot)
+        };
+        if let Some(snapshot) = snapshot {
+            self.save(&snapshot).await;
+        }
+        (removed, remaining)
+    }
+
+    /// Write `entries` to the store. A failed write is logged, and the links
+    /// keep working from memory until the agent stops.
+    async fn save(&self, entries: &Entries) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        if let Err(e) = save_file_links(store, entries).await {
+            tracing::warn!(
+                path = %store.display(),
+                error = %format!("{e:#}"),
+                "couldn't save the agent's file links; links to files outside the workspace stop working when the agent stops"
+            );
+        }
+    }
+}
+
+/// Read the registrations saved at `path`. A missing file holds none; one
+/// that can't be read or parsed is logged and treated as holding none, so
+/// the agent still starts and new links still work.
+async fn load_file_links(path: &Path) -> Entries {
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HashMap::new(),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "couldn't read the agent's saved file links; links to files outside the workspace sent earlier won't open"
+            );
+            return HashMap::new();
+        }
+    };
+    if contents.trim().is_empty() {
+        return HashMap::new();
+    }
+    match serde_json::from_str(&contents) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "couldn't parse the agent's saved file links; links to files outside the workspace sent earlier won't open"
+            );
+            HashMap::new()
+        }
+    }
+}
+
+/// Write `entries` to `path` atomically.
+///
+/// # Errors
+/// Returns an error if serialization or the write fails.
+async fn save_file_links(path: &Path, entries: &Entries) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(entries).context("failed to serialize file links")?;
+    crate::util::fs::atomic_write(path, json)
+        .await
+        .with_context(|| format!("failed to write file links to {}", path.display()))
 }
 
 /// Thread-safe registry of files available for HTTP serving.
 #[derive(Clone)]
 pub struct FileRegistry {
-    entries: Arc<RwLock<HashMap<String, FileEntry>>>,
+    links: Arc<TokenLinks>,
     /// The workspace root, when configured — see [`Self::with_workspace_root`].
     workspace_root: Option<PathBuf>,
     /// The agent whose files this registry serves. Every URL it returns is
@@ -83,12 +234,27 @@ pub struct FileRegistry {
 impl FileRegistry {
     /// Create a new empty file registry for the agent named `agent_name`,
     /// with no workspace root configured (every file is served through the
-    /// expiring token scheme).
+    /// expiring token scheme) and its token registrations kept in memory
+    /// only.
     #[must_use]
     pub fn new(agent_name: impl Into<String>) -> Self {
         Self {
-            entries: Arc::new(RwLock::new(HashMap::new())),
+            links: Arc::new(TokenLinks::new(None)),
             workspace_root: None,
+            agent_name: agent_name.into(),
+        }
+    }
+
+    /// The registry of the agent whose directory `layout` describes: a file
+    /// in its workspace gets a durable workspace link, and its token
+    /// registrations live in its `file_links.json`, read from there on
+    /// first use. A registry built this way while the agent is stopped
+    /// serves the links the agent saved.
+    #[must_use]
+    pub fn for_agent(agent_name: impl Into<String>, layout: &WorkspaceLayout) -> Self {
+        Self {
+            links: Arc::new(TokenLinks::new(Some(layout.file_links_json()))),
+            workspace_root: Some(layout.root().to_path_buf()),
             agent_name: agent_name.into(),
         }
     }
@@ -103,14 +269,27 @@ impl FileRegistry {
 
     /// Register a file and return its unique serving ID.
     pub async fn register(&self, path: PathBuf, mime_type: String, filename: String) -> String {
+        let expires_at = Utc::now() + chrono::Duration::seconds(FILE_TTL_SECS);
+        self.register_until(path, mime_type, filename, expires_at)
+            .await
+    }
+
+    /// Register a file that is served until `expires_at`.
+    async fn register_until(
+        &self,
+        path: PathBuf,
+        mime_type: String,
+        filename: String,
+        expires_at: DateTime<Utc>,
+    ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let entry = FileEntry {
             path,
             mime_type,
             filename,
-            expires_at: Instant::now() + std::time::Duration::from_secs(FILE_TTL_SECS),
+            expires_at,
         };
-        self.entries.write().await.insert(id.clone(), entry);
+        self.links.insert(id.clone(), entry).await;
         id
     }
 
@@ -154,9 +333,9 @@ impl FileRegistry {
 
     /// Look up a file by ID. Returns `(path, mime_type, filename)` if found and not expired.
     pub async fn get(&self, id: &str) -> Option<(PathBuf, String, String)> {
-        let entries = self.entries.read().await;
+        let entries = self.links.entries().await.read().await;
         let entry = entries.get(id)?;
-        if entry.expires_at < Instant::now() {
+        if entry.is_expired(Utc::now()) {
             return None;
         }
         Some((
@@ -166,41 +345,34 @@ impl FileRegistry {
         ))
     }
 
-    /// Remove all expired entries. Returns `(removed, remaining)`.
+    /// Remove all expired entries, from memory and from the store. Returns
+    /// `(removed, remaining)`.
     pub async fn sweep_expired(&self) -> (usize, usize) {
-        sweep_entries(&self.entries).await
+        self.links.sweep_expired().await
     }
 
-    /// Spawn a background task that periodically sweeps expired entries. It
-    /// holds the entries weakly, so it ends on its own once every handle to
+    /// Spawn a background task that periodically sweeps expired entries. Its
+    /// first sweep runs at once, which also reads the saved registrations
+    /// and drops the ones that expired while the agent was stopped. It holds
+    /// the registrations weakly, so it ends on its own once every handle to
     /// the registry is gone (the agent that owns it stopped).
     pub fn spawn_cleanup_task(&self) {
-        let entries = Arc::downgrade(&self.entries);
+        let links = Arc::downgrade(&self.links);
         crate::util::spawn_in_span(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
             loop {
                 interval.tick().await;
-                let Some(entries) = entries.upgrade() else {
+                let Some(links) = links.upgrade() else {
                     return;
                 };
-                let (removed, remaining) = sweep_entries(&entries).await;
+                let (removed, remaining) = links.sweep_expired().await;
                 if removed > 0 {
                     tracing::debug!(removed, remaining, "swept expired file entries");
                 }
             }
         });
     }
-}
-
-/// Remove the expired entries from `entries`. Returns `(removed, remaining)`.
-async fn sweep_entries(entries: &RwLock<HashMap<String, FileEntry>>) -> (usize, usize) {
-    let now = Instant::now();
-    let mut entries = entries.write().await;
-    let before = entries.len();
-    entries.retain(|_, entry| entry.expires_at > now);
-    let remaining = entries.len();
-    (before - remaining, remaining)
 }
 
 /// Axum handler to serve a registered file by ID.
@@ -406,26 +578,170 @@ mod tests {
         assert!(registry.get("nonexistent").await.is_none());
     }
 
+    /// Register `path` with an expiry already in the past.
+    async fn register_expired(registry: &FileRegistry, path: PathBuf) -> String {
+        registry
+            .register_until(
+                path,
+                "application/pdf".to_string(),
+                "old.pdf".to_string(),
+                Utc::now() - chrono::Duration::seconds(1),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn an_entry_due_more_than_an_hour_out_counts_as_expired() {
+        let registry = FileRegistry::new("scout");
+        let far = registry
+            .register_until(
+                PathBuf::from("/tmp/far.pdf"),
+                "application/pdf".to_string(),
+                "far.pdf".to_string(),
+                Utc::now() + chrono::Duration::seconds(FILE_TTL_SECS + 60),
+            )
+            .await;
+        let fresh = registry
+            .register(
+                PathBuf::from("/tmp/fresh.pdf"),
+                "application/pdf".to_string(),
+                "fresh.pdf".to_string(),
+            )
+            .await;
+
+        assert!(
+            registry.get(&far).await.is_none(),
+            "beyond one TTL is refused"
+        );
+        assert!(registry.get(&fresh).await.is_some(), "a fresh link serves");
+        assert_eq!(registry.sweep_expired().await, (1, 1), "and is swept");
+    }
+
     #[tokio::test]
     async fn sweep_removes_expired() {
         let registry = FileRegistry::new("scout");
-        // Insert with already-expired time
-        {
-            let mut entries = registry.entries.write().await;
-            entries.insert(
-                "expired-id".to_string(),
-                FileEntry {
-                    path: PathBuf::from("/tmp/old.pdf"),
-                    mime_type: "application/pdf".to_string(),
-                    filename: "old.pdf".to_string(),
-                    expires_at: Instant::now() - std::time::Duration::from_secs(1),
-                },
-            );
-        }
+        let id = register_expired(&registry, PathBuf::from("/tmp/old.pdf")).await;
+        assert!(
+            registry.get(&id).await.is_none(),
+            "an expired link is refused"
+        );
         let (removed, remaining) = registry.sweep_expired().await;
         assert_eq!(removed, 1, "one expired entry should be removed");
         assert_eq!(remaining, 0, "no entries should remain");
-        assert!(registry.get("expired-id").await.is_none());
+        assert!(registry.get(&id).await.is_none());
+    }
+
+    /// A registry over the agent directory `dir`, as the agent and the hub
+    /// both build it.
+    fn agent_registry(dir: &Path) -> FileRegistry {
+        FileRegistry::for_agent("scout", &WorkspaceLayout::new(dir.join("scout")))
+    }
+
+    /// An agent directory `scout` under a fresh temp dir, and a file outside
+    /// it with `contents`.
+    fn agent_dir_and_outside_file(contents: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("scout")).unwrap();
+        std::fs::create_dir_all(dir.path().join("outside")).unwrap();
+        let file = dir.path().join("outside/report.html");
+        std::fs::write(&file, contents).unwrap();
+        (dir, file)
+    }
+
+    #[tokio::test]
+    async fn a_token_link_still_serves_after_the_registry_is_rebuilt_from_disk() {
+        let (dir, file) = agent_dir_and_outside_file("<p>report</p>");
+        let id = agent_registry(dir.path())
+            .register(file, "text/html".to_string(), "report.html".to_string())
+            .await;
+
+        // The agent restarts: a new registry over the same directory.
+        let restarted = agent_registry(dir.path());
+        let resp = token_file(restarted, &id, tab_headers()).await;
+
+        assert_eq!(resp.status(), StatusCode::OK, "served after the restart");
+        assert_eq!(
+            header_of(&resp, axum::http::header::CONTENT_SECURITY_POLICY),
+            Some("sandbox allow-scripts allow-popups allow-downloads"),
+            "still sandboxed"
+        );
+        assert_eq!(body_text(resp).await, "<p>report</p>");
+    }
+
+    #[tokio::test]
+    async fn a_link_that_expired_on_disk_is_refused_and_swept_from_the_file() {
+        let (dir, file) = agent_dir_and_outside_file("old");
+        let registry = agent_registry(dir.path());
+        let expired = register_expired(&registry, file.clone()).await;
+        let live = registry
+            .register(file, "text/plain".to_string(), "old.txt".to_string())
+            .await;
+
+        let restarted = agent_registry(dir.path());
+        let tab = token_file(restarted.clone(), &expired, tab_headers()).await;
+        assert_eq!(
+            location(&tab),
+            "/agent/scout?notice=file-link-expired",
+            "an expired link lands on the expired notice"
+        );
+
+        assert_eq!(restarted.sweep_expired().await, (1, 1), "swept");
+        let saved = std::fs::read_to_string(
+            WorkspaceLayout::new(dir.path().join("scout")).file_links_json(),
+        )
+        .unwrap();
+        assert!(!saved.contains(&expired), "gone from the file: {saved}");
+        assert!(saved.contains(&live), "the live link stays: {saved}");
+    }
+
+    #[tokio::test]
+    async fn a_token_link_whose_file_was_removed_lands_on_the_expired_notice_after_a_restart() {
+        let (dir, file) = agent_dir_and_outside_file("soon gone");
+        let id = agent_registry(dir.path())
+            .register(
+                file.clone(),
+                "text/plain".to_string(),
+                "gone.txt".to_string(),
+            )
+            .await;
+        std::fs::remove_file(&file).unwrap();
+
+        let tab = token_file(agent_registry(dir.path()), &id, tab_headers()).await;
+        assert_eq!(location(&tab), "/agent/scout?notice=file-link-expired");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_links_file_starts_empty_and_is_replaced_by_the_next_link() {
+        let (dir, file) = agent_dir_and_outside_file("fresh");
+        let store = WorkspaceLayout::new(dir.path().join("scout")).file_links_json();
+        std::fs::write(&store, "{ not json").unwrap();
+
+        let registry = agent_registry(dir.path());
+        assert!(
+            registry.get("anything").await.is_none(),
+            "a corrupt file holds no links"
+        );
+        let id = registry
+            .register(file, "text/plain".to_string(), "fresh.txt".to_string())
+            .await;
+
+        let resp = token_file(agent_registry(dir.path()), &id, fetch_headers()).await;
+        assert_eq!(resp.status(), StatusCode::OK, "the new link was saved");
+        assert_eq!(body_text(resp).await, "fresh");
+    }
+
+    #[tokio::test]
+    async fn no_links_file_means_no_links_and_none_is_written_until_one_is_registered() {
+        let (dir, _file) = agent_dir_and_outside_file("x");
+        let store = WorkspaceLayout::new(dir.path().join("scout")).file_links_json();
+
+        let registry = agent_registry(dir.path());
+        assert!(registry.get("anything").await.is_none());
+        assert_eq!(registry.sweep_expired().await, (0, 0));
+        assert!(
+            !store.exists(),
+            "a sweep with nothing to remove writes nothing"
+        );
     }
 
     #[tokio::test]
