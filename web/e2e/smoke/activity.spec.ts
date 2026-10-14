@@ -1,17 +1,21 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
  * Activity and the session panel: what an agent is running and has finished,
  * a run opened in the panel from Activity, a chat card and the Workbench,
- * messaging, stopping and resuming a run, a run on another agent streaming
+ * messaging, stopping and resuming a run, the message box over the
+ * transcript with its `/` menu, a run on another agent streaming
  * in through the hub's relay, outbound tasks, and the panel keeping its
  * state across a breakpoint.
  */
 
 const RESEARCH = "Compare fallback strategies for notification delivery";
 const FAMILY = "Conversation in Family chat";
+/** The session message box's send button. */
+const SEND = "Send to this session";
 
 /** Path and query of the page's URL, decoded. */
 function address(page: Page): string {
@@ -25,7 +29,7 @@ function sessionPanel(page: Page, isMobile: boolean, name: string): Locator {
 }
 
 function messageBox(panel: Locator): Locator {
-  return panel.getByRole("textbox", { name: "Message this session" });
+  return panel.getByRole("combobox", { name: "Message this session" });
 }
 
 async function scanPanel(page: Page, isMobile: boolean): Promise<void> {
@@ -79,7 +83,7 @@ test("a live run is messaged and stopped from the panel", async ({ page, isMobil
   await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
 
   await messageBox(panel).fill("Weigh safety over speed");
-  await messageBox(panel).press("Enter");
+  await sendFromComposer(messageBox(panel), SEND);
   await expect(panel.getByText("Delivered.")).toBeVisible();
   await expect(panel.getByText('Understood: "Weigh safety over speed".')).toBeVisible();
   await expect(messageBox(panel)).toHaveValue("");
@@ -96,6 +100,45 @@ test("a live run is messaged and stopped from the panel", async ({ page, isMobil
   }
 });
 
+test("the message box floats over the transcript, and its / menu stops the run", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto(`/agent/atlas/activity?panel=session:atlas:run-live-research`);
+  const panel = sessionPanel(page, isMobile, RESEARCH);
+  await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
+
+  // The transcript's scrolling area runs to the panel's foot, behind the box.
+  const transcript = await panel.getByRole("region", { name: "Transcript" }).boundingBox();
+  const composer = await panel.locator("form.composer").boundingBox();
+  if (!transcript || !composer) throw new Error("the transcript or the box isn't laid out");
+  expect(composer.y).toBeGreaterThan(transcript.y);
+  expect(composer.y + composer.height).toBeLessThanOrEqual(transcript.y + transcript.height);
+
+  const box = messageBox(panel);
+  await box.click();
+  if (isMobile) {
+    // On a touch screen Enter is a new line; only the send button sends.
+    await expect(box).toHaveAttribute("enterkeyhint", "enter");
+    await page.keyboard.type("first");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("second");
+    await expect(box).toHaveValue("first\nsecond");
+  } else {
+    await expect(box).not.toHaveAttribute("enterkeyhint");
+  }
+
+  await box.fill("/");
+  const menu = panel.getByRole("listbox", { name: "Session actions" });
+  await expect(menu.getByRole("option")).toHaveCount(1);
+  await expect(menu.getByRole("option", { name: /Stop this session/ })).toBeVisible();
+  await expect(box).toHaveAttribute("aria-expanded", "true");
+  await scanPanel(page, isMobile);
+  await page.keyboard.press("Enter");
+  await expect(panel.getByText("Session stopped.")).toBeVisible();
+  await expect(box).toHaveValue("");
+});
+
 test("a finished run is resumed by a message, and the panel follows it", async ({
   page,
   isMobile,
@@ -109,7 +152,7 @@ test("a finished run is resumed by a message, and the panel follows it", async (
   await expect(panel.getByText("Done. Nothing needed your attention.")).toBeVisible();
 
   await messageBox(panel).fill("Any news?");
-  await messageBox(panel).press("Enter");
+  await sendFromComposer(messageBox(panel), SEND);
   await expect(
     panel.getByText("This session had finished, so your message started a new run."),
   ).toBeVisible();
@@ -142,7 +185,7 @@ test("a run on another agent streams into the panel through the hub", async ({
   await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
 
   await messageBox(panel).fill("Hello from the bench");
-  await messageBox(panel).press("Enter");
+  await sendFromComposer(messageBox(panel), SEND);
   await expect(panel.getByText('Understood: "Hello from the bench".')).toBeVisible();
   await expect(panel.getByText("Checking the notes first.")).toBeVisible();
 });
