@@ -40,6 +40,7 @@ export function defaultRemoteAccess(): MockRemoteAccess {
       join: null,
       pending_joins: [],
       pending_reset: null,
+      relay_origin: "https://agent-residuum.com",
     },
   };
 }

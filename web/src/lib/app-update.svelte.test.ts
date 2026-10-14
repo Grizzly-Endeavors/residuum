@@ -44,7 +44,7 @@ class FakeContainer extends EventTarget implements ContainerLike {
   controller: unknown = null;
   readonly registration = new FakeRegistration();
   readonly register = vi.fn(
-    (_url: string): Promise<RegistrationLike> => Promise.resolve(this.registration),
+    (_url: string): Promise<RegistrationLike | undefined> => Promise.resolve(this.registration),
   );
 
   /** A worker takes control of the page, as a browser reports it. */
@@ -123,6 +123,16 @@ describe("registering the worker", () => {
     page.finishLoading();
     await settle();
     expect(container.register).toHaveBeenCalledExactlyOnceWith(WORKER_URL);
+  });
+
+  it("treats a browser that blocks workers as having none, without logging", async () => {
+    container.register.mockResolvedValue(undefined);
+    await start();
+    expect(logged).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    page.show();
+    expect(container.registration.update).not.toHaveBeenCalled();
+    expect(update.ready).toBe(false);
   });
 
   it("logs a registration that fails, and checks for no updates after it", async () => {

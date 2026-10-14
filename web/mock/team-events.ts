@@ -265,6 +265,17 @@ export function createTeamEvents(
         summary: plain(frame.message),
         target: null,
       });
+    } else if (frame.type === "hub_config_reloaded" && frame.message !== null) {
+      // The reload frame is the hub's only report of a reload; one that found
+      // nothing new carries no message and adds no entry.
+      record({
+        at: env.clock.iso(),
+        agent: null,
+        kind: "hub_notice",
+        level: frame.ok ? "info" : "warn",
+        summary: plain(frame.message),
+        target: null,
+      });
     }
   }
 

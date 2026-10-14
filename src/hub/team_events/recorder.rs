@@ -189,6 +189,7 @@ impl Recorder {
                 level,
                 message,
                 agent,
+                kind: _,
             } => self.record(
                 Utc::now(),
                 agent.as_deref(),
@@ -197,9 +198,26 @@ impl Recorder {
                 plain(&message),
                 None,
             ),
-            HubEvent::AgentStopping { .. }
-            | HubEvent::AgentActivity { .. }
-            | HubEvent::HubConfigReloaded { .. } => {}
+            HubEvent::HubConfigReloaded { ok, message, .. } => {
+                // A reload that found nothing new carries no message and adds
+                // no entry.
+                if let Some(message) = message {
+                    let level = if ok {
+                        TeamEventLevel::Info
+                    } else {
+                        TeamEventLevel::Warn
+                    };
+                    self.record(
+                        Utc::now(),
+                        None,
+                        TeamEventKind::HubNotice,
+                        level,
+                        plain(&message),
+                        None,
+                    );
+                }
+            }
+            HubEvent::AgentStopping { .. } | HubEvent::AgentActivity { .. } => {}
         }
     }
 

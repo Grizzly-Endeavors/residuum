@@ -164,7 +164,7 @@ async fn publish_failed_scheduled_run_notice(event: &AgentResultEvent, publisher
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message },
+            NoticeEvent::new(message),
         )
         .await
     {
