@@ -3,6 +3,7 @@
 use crate::background::registry::{MAIN_DEPTH, generate_address};
 use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, PulseOverlap, SpawnRequestEvent};
 
+use super::script::{ScriptRun, prompt_section};
 use super::types::PulseDef;
 
 /// A pulse's `context_from` target resolved to its stored output, for
@@ -36,13 +37,18 @@ pub struct PulseContext {
 ///
 /// `context` is `Some` when `pulse.context_from` names another pulse — see
 /// [`PulseContext`] — and is folded into the prompt by [`build_pulse_prompt`].
+///
+/// `scripts` lines up with `pulse.tasks`: each task's script run, already
+/// finished, whose output (or failure) joins that task's section of the
+/// prompt. Empty when the pulse has no scripts.
 #[must_use]
 pub fn build_pulse_execution(
     pulse: &PulseDef,
     overlap: Option<PulseOverlap>,
     context: Option<&PulseContext>,
+    scripts: &[Option<ScriptRun>],
 ) -> SpawnRequestEvent {
-    let prompt = build_pulse_prompt(pulse, context);
+    let prompt = build_pulse_prompt(pulse, context, scripts);
     let skill = pulse.agent.as_deref();
 
     tracing::debug!(
@@ -87,7 +93,11 @@ pub fn build_pulse_execution(
 /// exist, or has never delivered output) still says so explicitly rather
 /// than silently omitting the section, so the run isn't left guessing
 /// whether context injection is even configured.
-fn build_pulse_prompt(pulse: &PulseDef, context: Option<&PulseContext>) -> String {
+fn build_pulse_prompt(
+    pulse: &PulseDef,
+    context: Option<&PulseContext>,
+    scripts: &[Option<ScriptRun>],
+) -> String {
     let mut parts = Vec::new();
     parts.push(format!(
         "You are running a scheduled pulse check: {}",
@@ -106,8 +116,17 @@ fn build_pulse_prompt(pulse: &PulseDef, context: Option<&PulseContext>) -> Strin
 
     parts.push("## Tasks".to_string());
 
-    for task in &pulse.tasks {
-        parts.push(format!("### {}\n{}", task.name, task.prompt));
+    for (index, task) in pulse.tasks.iter().enumerate() {
+        let mut section = format!("### {}", task.name);
+        if !task.prompt.trim().is_empty() {
+            section.push('\n');
+            section.push_str(&task.prompt);
+        }
+        if let Some(run) = scripts.get(index).and_then(Option::as_ref) {
+            section.push_str("\n\n");
+            section.push_str(&prompt_section(run));
+        }
+        parts.push(section);
     }
 
     parts.push(format!(
@@ -162,10 +181,12 @@ mod tests {
                 PulseTask {
                     name: "check_inbox".to_string(),
                     prompt: "Check for new emails.".to_string(),
+                    ..PulseTask::default()
                 },
                 PulseTask {
                     name: "check_alerts".to_string(),
                     prompt: "Review alert dashboard.".to_string(),
+                    ..PulseTask::default()
                 },
             ],
         }
@@ -176,7 +197,7 @@ mod tests {
     #[test]
     fn execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:email_check");
         assert!(spawn_event.prompt.contains("email_check"));
@@ -198,7 +219,7 @@ mod tests {
     fn execution_agent_name_activates_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert_eq!(
             spawn_event.skill.as_ref().map(AsRef::as_ref),
             Some("memory-agent")
@@ -215,7 +236,7 @@ mod tests {
 
     #[test]
     fn prompt_teaches_both_sentinels() {
-        let prompt = build_pulse_prompt(&sample_pulse(), None);
+        let prompt = build_pulse_prompt(&sample_pulse(), None, &[]);
         assert!(
             prompt.contains(HEARTBEAT_OK),
             "session must be told how to exit silently"
@@ -229,7 +250,7 @@ mod tests {
     #[test]
     fn prompt_contains_pulse_name_and_tasks() {
         let pulse = sample_pulse();
-        let prompt = build_pulse_prompt(&pulse, None);
+        let prompt = build_pulse_prompt(&pulse, None, &[]);
 
         assert!(
             prompt.contains("email_check"),
@@ -252,7 +273,7 @@ mod tests {
     #[test]
     fn prompt_includes_autonomous_context_framing() {
         let pulse = sample_pulse();
-        let prompt = build_pulse_prompt(&pulse, None);
+        let prompt = build_pulse_prompt(&pulse, None, &[]);
 
         assert!(
             prompt.contains("autonomous"),
@@ -270,7 +291,7 @@ mod tests {
 
     #[test]
     fn prompt_does_not_forbid_further_background_work() {
-        let prompt = build_pulse_prompt(&sample_pulse(), None);
+        let prompt = build_pulse_prompt(&sample_pulse(), None, &[]);
         assert!(
             !prompt.contains("schedule further background work"),
             "scheduled sessions may spawn within the depth cap like any other session"
@@ -280,7 +301,7 @@ mod tests {
     #[test]
     fn prompt_ends_with_heartbeat_ok_instruction() {
         let pulse = sample_pulse();
-        let prompt = build_pulse_prompt(&pulse, None);
+        let prompt = build_pulse_prompt(&pulse, None, &[]);
 
         assert!(
             prompt.contains(HEARTBEAT_OK),
@@ -301,7 +322,7 @@ mod tests {
             include_identity: None,
             tasks: vec![],
         };
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert_eq!(spawn_event.source_label, "pulse:empty");
         assert!(
             spawn_event.prompt.contains(HEARTBEAT_OK),
@@ -313,7 +334,7 @@ mod tests {
 
     #[test]
     fn no_context_means_no_context_section() {
-        let prompt = build_pulse_prompt(&sample_pulse(), None);
+        let prompt = build_pulse_prompt(&sample_pulse(), None, &[]);
         assert!(
             !prompt.contains("Context from"),
             "a pulse with no context_from should get no context section at all"
@@ -326,7 +347,7 @@ mod tests {
             source_pulse: "collector".to_string(),
             output: Some("Found 3 overnight alerts.".to_string()),
         };
-        let prompt = build_pulse_prompt(&sample_pulse(), Some(&context));
+        let prompt = build_pulse_prompt(&sample_pulse(), Some(&context), &[]);
         assert!(
             prompt.contains("collector"),
             "prompt should name the source pulse"
@@ -343,7 +364,7 @@ mod tests {
             source_pulse: "never_ran".to_string(),
             output: None,
         };
-        let prompt = build_pulse_prompt(&sample_pulse(), Some(&context));
+        let prompt = build_pulse_prompt(&sample_pulse(), Some(&context), &[]);
         assert!(
             prompt.contains("never_ran"),
             "prompt should name the missing source pulse"
@@ -361,8 +382,71 @@ mod tests {
             source_pulse: "collector".to_string(),
             output: Some("Found 3 overnight alerts.".to_string()),
         };
-        let spawn_event = build_pulse_execution(&pulse, None, Some(&context));
+        let spawn_event = build_pulse_execution(&pulse, None, Some(&context), &[]);
         assert!(spawn_event.prompt.contains("collector"));
         assert!(spawn_event.prompt.contains("Found 3 overnight alerts."));
+    }
+
+    // ── task scripts ────────────────────────────────────────────────────
+
+    #[test]
+    fn script_output_is_appended_to_its_own_tasks_prompt() {
+        let pulse = sample_pulse();
+        let scripts = vec![
+            None,
+            Some(ScriptRun::Succeeded {
+                stdout: "2 alerts firing\n".to_string(),
+            }),
+        ];
+        let prompt = build_pulse_execution(&pulse, None, None, &scripts).prompt;
+        let alerts = prompt.find("### check_alerts").unwrap();
+        let inbox = prompt.find("### check_inbox").unwrap();
+        let output = prompt.find("2 alerts firing").unwrap();
+        assert!(
+            output > alerts && alerts > inbox,
+            "the output belongs to check_alerts' section: {prompt}"
+        );
+        let task_prompt = prompt.find("Review alert dashboard.").unwrap();
+        assert!(output > task_prompt, "the output follows the task's prompt");
+        assert!(
+            prompt.contains(HEARTBEAT_OK),
+            "the session still gets its sentinels"
+        );
+    }
+
+    #[test]
+    fn a_failed_script_is_noted_in_the_prompt() {
+        let pulse = sample_pulse();
+        let scripts = vec![Some(ScriptRun::Failed(
+            crate::pulse::script::ScriptFailure {
+                script: "check-mail".to_string(),
+                cause: crate::pulse::script::ScriptFailureCause::TimedOut { secs: 60 },
+                stdout: String::new(),
+                stderr_tail: "connection reset".to_string(),
+            },
+        ))];
+        let prompt = build_pulse_prompt(&pulse, None, &scripts);
+        assert!(prompt.contains("script failed"), "{prompt}");
+        assert!(prompt.contains("60-second limit"), "{prompt}");
+        assert!(prompt.contains("connection reset"), "{prompt}");
+    }
+
+    #[test]
+    fn a_task_with_only_a_script_gets_its_output_under_its_name() {
+        let mut pulse = sample_pulse();
+        pulse.tasks = vec![PulseTask {
+            name: "disk".to_string(),
+            script: Some("df -h".to_string()),
+            ..PulseTask::default()
+        }];
+        let scripts = vec![Some(ScriptRun::Succeeded {
+            stdout: "/ 91%".to_string(),
+        })];
+        let prompt = build_pulse_prompt(&pulse, None, &scripts);
+        assert!(
+            prompt.contains("### disk\n\nOutput of this task's script"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("/ 91%"));
     }
 }

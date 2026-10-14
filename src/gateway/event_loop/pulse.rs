@@ -1,24 +1,126 @@
 //! Pulse execution handling and scheduling in the event loop.
 
+use tokio_util::sync::CancellationToken;
+
 use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::bus::{
-    AgentResultEvent, AgentResultStatus, BusError, PulseOverlap, ResultDisposition, topics,
+    AgentResultEvent, AgentResultStatus, BusError, EventTrigger, NotificationEvent, Publisher,
+    PulseOverlap, ResultDisposition, SpawnRequestEvent, topics,
 };
-use crate::gateway::helpers::publish_notice;
+use crate::gateway::helpers::{publish_error, publish_notice};
 use crate::gateway::types::AgentRuntime;
-use crate::pulse::executor::PulseContext;
+use crate::pulse::executor::{PulseContext, build_pulse_execution};
 use crate::pulse::scheduler::PulseScheduler;
+use crate::pulse::script::{ScriptEnv, ScriptRun, run_pulse_scripts, script_only_result};
 use crate::pulse::types::PulseDef;
 
-/// Fork a session for a single due pulse.
-#[tracing::instrument(skip_all)]
-pub async fn handle_pulse_execution(
-    spawn_event: crate::bus::SpawnRequestEvent,
-    rt: &mut AgentRuntime,
-) {
+/// Publish a due pulse's spawn request, which forks its session.
+async fn publish_pulse_spawn(publisher: &Publisher, spawn_event: SpawnRequestEvent) {
     let source_label = spawn_event.source_label.clone();
-    if let Err(e) = rt.publisher.publish(topics::Background, spawn_event).await {
+    if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
         tracing::warn!(pulse = %source_label, error = %e, "failed to publish pulse spawn request");
+    }
+}
+
+/// What a pulse with task scripts needs to run them and deliver what they
+/// produced, away from the event loop.
+#[derive(Clone)]
+struct ScriptedPulseDeps {
+    publisher: Publisher,
+    env: ScriptEnv,
+    tz: chrono_tz::Tz,
+    /// Cancelled when the agent stops (`AgentRuntime::pulse_scripts_stop`).
+    stop: CancellationToken,
+}
+
+impl ScriptedPulseDeps {
+    fn from_runtime(rt: &AgentRuntime) -> Self {
+        Self {
+            publisher: rt.publisher.clone(),
+            env: ScriptEnv {
+                workspace_root: rt.layout.root().to_path_buf(),
+                tools_path: Some(std::sync::Arc::clone(&rt.tools_path)),
+                agent_keys: Some(std::sync::Arc::clone(&rt.agent_keys)),
+            },
+            tz: rt.tz,
+            stop: rt.pulse_scripts_stop.clone(),
+        }
+    }
+}
+
+/// Fire a pulse whose tasks run scripts: run them in task order, then
+/// either deliver a `script_only` pulse's result straight to the
+/// notification router, or start the pulse's session with each script's
+/// output in its task's prompt.
+///
+/// Runs on its own task (see [`handle_pulse_tick`]) so a slow script never
+/// holds up the agent's event loop. In a pulse that runs a session, a
+/// failed script is reported to the owner here (see
+/// [`report_script_failures`]) and the session still runs, told the script
+/// failed; a `script_only` pulse's failures travel in its result instead.
+/// Delivers nothing when the agent stops mid-script.
+async fn run_scripted_pulse(
+    pulse: PulseDef,
+    overlap: Option<PulseOverlap>,
+    context: Option<PulseContext>,
+    deps: ScriptedPulseDeps,
+) {
+    let Some(runs) = run_pulse_scripts(&pulse, &deps.env, &deps.stop).await else {
+        return;
+    };
+    if pulse.is_script_only() {
+        let event = script_only_result(&pulse, &runs, deps.tz);
+        tracing::debug!(
+            pulse = %pulse.name,
+            disposition = ?event.disposition,
+            status = %event.status,
+            "script-only pulse finished"
+        );
+        if let Err(e) = deps.publisher.publish(topics::Background, event).await {
+            tracing::warn!(pulse = %pulse.name, error = %e, "failed to publish script-only pulse result");
+        }
+        return;
+    }
+    report_script_failures(&pulse, &runs, &deps).await;
+    let spawn_event = build_pulse_execution(&pulse, overlap, context.as_ref(), &runs);
+    publish_pulse_spawn(&deps.publisher, spawn_event).await;
+}
+
+/// Tell the owner about each failed script in a pulse that still runs its
+/// session: an inbox item, filed like a pulse result, and an error notice
+/// with the technical detail (exit code, the tail of stderr) behind it.
+async fn report_script_failures(
+    pulse: &PulseDef,
+    runs: &[Option<ScriptRun>],
+    deps: &ScriptedPulseDeps,
+) {
+    for (task, run) in pulse.tasks.iter().zip(runs) {
+        let Some(ScriptRun::Failed(failure)) = run else {
+            continue;
+        };
+        let message = format!(
+            "The script for task '{}' in pulse '{}' {}. The pulse still ran its check, without \
+             that script's output.",
+            task.name,
+            pulse.name,
+            failure.reason()
+        );
+        let mut content = message.clone();
+        if !failure.stderr_tail.is_empty() {
+            content.push_str("\n\nThe last part of its error output:\n");
+            content.push_str(&failure.stderr_tail);
+        }
+        let item = NotificationEvent {
+            title: format!("pulse:{}", pulse.name),
+            content,
+            source: EventTrigger::Pulse,
+            urgent: false,
+            timestamp: crate::time::now_local(deps.tz),
+        };
+        if let Err(e) = deps.publisher.publish(topics::Inbox, item).await {
+            tracing::warn!(pulse = %pulse.name, task = %task.name, error = %e, "failed to file pulse script failure to the inbox");
+        }
+        publish_error(&deps.publisher, message, Some(failure.details())).await;
     }
 }
 
@@ -115,9 +217,12 @@ pub fn handle_pulse_result_event(
 }
 
 /// Process all due pulses.
+///
+/// A pulse whose tasks run scripts fires on its own task (see
+/// [`run_scripted_pulse`]), so the loop never waits on a script; every
+/// other pulse starts its session straight away.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
-    use crate::pulse::executor::build_pulse_execution;
     use crate::time;
 
     // Consumed once, up front: whether this tick is the first one after the
@@ -158,8 +263,13 @@ pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
             );
         }
         let context = resolve_pulse_context(pulse, &rt.pulse_scheduler);
-        let spawn_event = build_pulse_execution(pulse, overlap, context.as_ref());
-        handle_pulse_execution(spawn_event, rt).await;
+        if pulse.has_scripts() {
+            let deps = ScriptedPulseDeps::from_runtime(rt);
+            crate::util::spawn_in_span(run_scripted_pulse(pulse.clone(), overlap, context, deps));
+        } else {
+            let spawn_event = build_pulse_execution(pulse, overlap, context.as_ref(), &[]);
+            publish_pulse_spawn(&rt.publisher, spawn_event).await;
+        }
     }
 }
 
@@ -359,5 +469,224 @@ mod tests {
             "deployed",
         );
         assert_eq!(delivered_pulse_output(&event), None);
+    }
+
+    // ── scripted pulses ──────────────────────────────────────────────────
+
+    use crate::bus::{BusHandle, ErrorEvent, NotifyName, SYSTEM_CHANNEL, Subscriber};
+    use crate::pulse::types::PulseTask;
+    use crate::testing::wait;
+
+    fn scripted_deps(bus: &BusHandle, dir: &std::path::Path) -> ScriptedPulseDeps {
+        ScriptedPulseDeps {
+            publisher: bus.publisher(),
+            env: ScriptEnv {
+                workspace_root: dir.to_path_buf(),
+                tools_path: None,
+                agent_keys: None,
+            },
+            tz: chrono_tz::UTC,
+            stop: CancellationToken::new(),
+        }
+    }
+
+    fn scripted_pulse(script: &str, script_only: bool) -> PulseDef {
+        let mut pulse = sample_pulse_def("watch", None);
+        pulse.tasks = vec![PulseTask {
+            name: "check".to_string(),
+            prompt: if script_only {
+                String::new()
+            } else {
+                "Say whether anything changed.".to_string()
+            },
+            script: Some(script.to_string()),
+            script_only,
+            ..PulseTask::default()
+        }];
+        pulse
+    }
+
+    /// A broker with the notification router running on it, as in a live
+    /// agent, so a script-only result is followed all the way to the inbox.
+    async fn bus_with_router() -> BusHandle {
+        let bus = crate::bus::spawn_broker();
+        let router = crate::notify::router::spawn_notification_router(
+            &bus,
+            crate::bus::EndpointRegistry::from_entries([]),
+            bus.publisher(),
+        )
+        .await;
+        assert!(router.is_some(), "the router should subscribe");
+        bus
+    }
+
+    // `exit 0` with no output works the same under `sh -c` and `cmd /C`.
+    const SILENT_SCRIPT: &str = "exit 0";
+
+    #[tokio::test]
+    async fn script_only_pulse_with_empty_output_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut results: Subscriber<AgentResultEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+
+        run_scripted_pulse(
+            scripted_pulse(SILENT_SCRIPT, true),
+            None,
+            None,
+            scripted_deps(&bus, dir.path()),
+        )
+        .await;
+
+        let result = wait::next_event("the script-only result", &mut results).await;
+        assert_eq!(result.disposition, ResultDisposition::Silent);
+        assert!(matches!(result.status, AgentResultStatus::Completed));
+        assert_eq!(result.source_label, "pulse:watch");
+        wait::bus_barrier(&bus).await;
+        assert!(
+            spawns.drain().is_empty(),
+            "a script-only pulse never starts a session"
+        );
+    }
+
+    #[tokio::test]
+    async fn script_only_pulse_output_is_routed_to_the_inbox_as_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = bus_with_router().await;
+        let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
+
+        run_scripted_pulse(
+            scripted_pulse("echo site changed", true),
+            None,
+            None,
+            scripted_deps(&bus, dir.path()),
+        )
+        .await;
+
+        let item = wait::next_event("the inbox item", &mut inbox).await;
+        assert_eq!(item.title, "pulse:watch");
+        assert_eq!(item.content.trim(), "site changed");
+        assert!(!item.urgent, "no urgency unless the output asks for it");
+    }
+
+    #[tokio::test]
+    async fn script_only_pulse_failure_reaches_the_inbox_and_the_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = bus_with_router().await;
+        let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
+        let mut notices: Subscriber<crate::bus::NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+
+        run_scripted_pulse(
+            scripted_pulse("echo feed unreachable 1>&2 && exit 4", true),
+            None,
+            None,
+            scripted_deps(&bus, dir.path()),
+        )
+        .await;
+
+        let item = wait::next_event("the inbox item", &mut inbox).await;
+        assert!(
+            item.content.contains("exited with code 4"),
+            "{}",
+            item.content
+        );
+        assert!(
+            item.content.contains("feed unreachable"),
+            "{}",
+            item.content
+        );
+        let notice = wait::next_event("the failed-pulse notice", &mut notices).await;
+        assert!(notice.message.contains("watch"), "{}", notice.message);
+        assert!(
+            notice.message.contains("exited with code 4"),
+            "{}",
+            notice.message
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_mode_appends_script_output_to_the_session_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+
+        run_scripted_pulse(
+            scripted_pulse("echo 3 new posts", false),
+            None,
+            None,
+            scripted_deps(&bus, dir.path()),
+        )
+        .await;
+
+        let spawn = wait::next_event("the pulse's spawn request", &mut spawns).await;
+        assert_eq!(spawn.source_label, "pulse:watch");
+        assert!(spawn.prompt.contains("Say whether anything changed."));
+        assert!(spawn.prompt.contains("3 new posts"), "{}", spawn.prompt);
+    }
+
+    #[tokio::test]
+    async fn prompt_mode_failure_is_reported_and_the_session_still_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+        let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
+        let mut errors: Subscriber<ErrorEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+
+        run_scripted_pulse(
+            scripted_pulse("echo token expired 1>&2 && exit 2", false),
+            None,
+            None,
+            scripted_deps(&bus, dir.path()),
+        )
+        .await;
+
+        let item = wait::next_event("the inbox item", &mut inbox).await;
+        assert!(item.content.contains("'check'"), "{}", item.content);
+        assert!(
+            item.content.contains("exited with code 2"),
+            "{}",
+            item.content
+        );
+        assert!(item.content.contains("token expired"), "{}", item.content);
+        let error = wait::next_event("the error notice", &mut errors).await;
+        assert!(
+            error.message.contains("exited with code 2"),
+            "{}",
+            error.message
+        );
+        let details = error.details.unwrap();
+        assert!(details.contains("exit code: 2"), "{details}");
+        assert!(details.contains("token expired"), "{details}");
+        let spawn = wait::next_event("the pulse's spawn request", &mut spawns).await;
+        assert!(spawn.prompt.contains("script failed"), "{}", spawn.prompt);
+    }
+
+    #[tokio::test]
+    async fn a_stopped_agent_delivers_nothing_for_a_scripted_pulse() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut results: Subscriber<AgentResultEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+        let deps = scripted_deps(&bus, dir.path());
+        deps.stop.cancel();
+
+        run_scripted_pulse(scripted_pulse("echo hi", true), None, None, deps.clone()).await;
+        run_scripted_pulse(scripted_pulse("echo hi", false), None, None, deps).await;
+
+        wait::bus_barrier(&bus).await;
+        assert!(results.drain().is_empty());
+        assert!(spawns.drain().is_empty());
     }
 }

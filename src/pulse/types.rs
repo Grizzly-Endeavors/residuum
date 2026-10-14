@@ -71,6 +71,63 @@ pub fn validate_pulse(pulse: &PulseDef) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a pulse's tasks: each one has something to do, and the script
+/// options fit together.
+///
+/// # Errors
+/// Returns an error naming the pulse and task, and what to change, when a
+/// task sets `script_only` without a `script`, sets an empty `script`, sets
+/// a zero `script_timeout_secs` or `script_max_output_kb`, has neither a
+/// `prompt` nor a `script`, or when the pulse mixes `script_only` tasks
+/// with tasks that run a session (one pulse either runs a session or it
+/// doesn't).
+pub fn validate_pulse_tasks(pulse: &PulseDef) -> Result<(), String> {
+    for task in &pulse.tasks {
+        let label = format!("pulse '{}' task '{}'", pulse.name, task.name);
+        match task.script.as_deref() {
+            Some(script) if script.trim().is_empty() => {
+                return Err(format!(
+                    "{label} has an empty `script` — give it a command to run or remove the line"
+                ));
+            }
+            None if task.script_only => {
+                return Err(format!(
+                    "{label} sets `script_only` but has no `script` — add the command to run, or \
+                     remove `script_only` to have the session do this task"
+                ));
+            }
+            None if task.prompt.trim().is_empty() => {
+                return Err(format!(
+                    "{label} has no `prompt` — say what the session should do for it"
+                ));
+            }
+            Some(_) | None => {}
+        }
+        if task.script_timeout_secs == Some(0) {
+            return Err(format!(
+                "{label} sets `script_timeout_secs: 0` — use a number of seconds above zero, or \
+                 remove it for the default of {DEFAULT_SCRIPT_TIMEOUT_SECS}"
+            ));
+        }
+        if task.script_max_output_kb == Some(0) {
+            return Err(format!(
+                "{label} sets `script_max_output_kb: 0` — use a size above zero, or remove it \
+                 for the default of {DEFAULT_SCRIPT_MAX_OUTPUT_KB}"
+            ));
+        }
+    }
+    let script_only = pulse.tasks.iter().filter(|task| task.script_only).count();
+    if script_only > 0 && script_only < pulse.tasks.len() {
+        return Err(format!(
+            "pulse '{}' mixes `script_only` tasks with tasks that run a session — a pulse either \
+             runs a session or delivers its scripts' output directly, so move the `script_only` \
+             tasks into a pulse of their own",
+            pulse.name
+        ));
+    }
+    Ok(())
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -85,14 +142,15 @@ pub(crate) enum ProblemKind {
     RemovedOption,
     /// Anything else wrong with the file that isn't about a removed option
     /// (a duplicate pulse name, an unparseable `schedule` or
-    /// `active_hours`). Logged at `warn!`; the owner notice links the
+    /// `active_hours`, tasks whose script options don't fit together). Logged at `warn!`; the owner notice links the
     /// heartbeats reference doc instead.
     Malformed,
 }
 
 /// A single problem found while loading or evaluating a HEARTBEAT.yml pulse
-/// — a pulse using a removed option, a duplicate pulse name, or an
-/// unparseable `schedule`/`active_hours` string.
+/// — a pulse using a removed option, a duplicate pulse name, tasks whose
+/// script options don't fit together, or an unparseable
+/// `schedule`/`active_hours` string.
 ///
 /// Carries the already-formatted message so the log line and the owner
 /// notice built from it stay in sync with the reason.
@@ -142,10 +200,73 @@ pub(crate) fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String
 }
 
 /// One task within a pulse.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct PulseTask {
     pub name: String,
+    /// What the session is asked to do for this task. Unused by a
+    /// `script_only` task.
+    #[serde(default)]
     pub prompt: String,
+    /// Shell command run from the workspace root when the pulse fires,
+    /// before the session starts; its stdout is appended to this task's
+    /// prompt. See `crate::pulse::script`.
+    #[serde(default)]
+    pub script: Option<String>,
+    /// Deliver the script's stdout as the pulse's result instead of running
+    /// a session: empty output is silent, anything else is filed like a
+    /// pulse result. Needs `script`.
+    #[serde(default)]
+    pub script_only: bool,
+    /// How long the script may run before its process tree is killed.
+    /// Defaults to [`DEFAULT_SCRIPT_TIMEOUT_SECS`].
+    #[serde(default)]
+    pub script_timeout_secs: Option<u64>,
+    /// How much of the script's stdout is kept, in KiB; the rest is cut with
+    /// a visible marker. Defaults to [`DEFAULT_SCRIPT_MAX_OUTPUT_KB`].
+    #[serde(default)]
+    pub script_max_output_kb: Option<u64>,
+}
+
+/// Default for a task's `script_timeout_secs`.
+pub const DEFAULT_SCRIPT_TIMEOUT_SECS: u64 = 60;
+
+/// Default for a task's `script_max_output_kb`.
+pub const DEFAULT_SCRIPT_MAX_OUTPUT_KB: u64 = 64;
+
+impl PulseTask {
+    /// How long this task's script may run.
+    #[must_use]
+    pub fn script_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.script_timeout_secs
+                .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
+        )
+    }
+
+    /// How many bytes of this task's script stdout are kept.
+    #[must_use]
+    pub fn script_max_output_bytes(&self) -> usize {
+        let kb = self
+            .script_max_output_kb
+            .unwrap_or(DEFAULT_SCRIPT_MAX_OUTPUT_KB);
+        usize::try_from(kb.saturating_mul(1024)).unwrap_or(usize::MAX)
+    }
+}
+
+impl PulseDef {
+    /// Whether any task in this pulse runs a script.
+    #[must_use]
+    pub fn has_scripts(&self) -> bool {
+        self.tasks.iter().any(|task| task.script.is_some())
+    }
+
+    /// Whether this pulse runs no session at all: it has tasks and every
+    /// one is `script_only`. [`validate_pulse`] rejects a pulse that mixes
+    /// `script_only` tasks with ones that run a session.
+    #[must_use]
+    pub fn is_script_only(&self) -> bool {
+        !self.tasks.is_empty() && self.tasks.iter().all(|task| task.script_only)
+    }
 }
 
 /// Parse a schedule duration string like "30m", "2h", "24h", "1d", "60s".
@@ -335,7 +456,8 @@ fn yaml_kind(value: &serde_yaml_ng::Value) -> &'static str {
 /// `problems` is cleared and refilled on every call — with a whole-document
 /// syntax error or a non-list `pulses` key (see above), or with one entry
 /// per pulse dropped for failing to deserialize, using a removed option (see
-/// `validate_pulse`), or duplicating an earlier pulse's name. This function
+/// `validate_pulse`), having tasks that don't fit together (see
+/// `validate_pulse_tasks`), or duplicating an earlier pulse's name. This function
 /// itself doesn't log or notify about them — every call re-validates the
 /// whole file, so a caller hot-reloading on a timer (`PulseScheduler`) is
 /// responsible for comparing against the previous call's result and only
@@ -445,7 +567,8 @@ pub(crate) fn load_heartbeat(
 /// loading rejects or drops: a whole-document YAML syntax error carries
 /// `serde_yaml_ng`'s own line/column; a non-list top-level `pulses` key is
 /// its own diagnostic; and each pulse entry that fails to deserialize,
-/// duplicates an earlier name, or uses a removed option is its own
+/// duplicates an earlier name, uses a removed option, or has tasks that
+/// don't fit together is its own
 /// diagnostic naming that pulse — one bad entry doesn't hide problems in the
 /// others, matching how loading drops only the offending pulse. A pulse's
 /// diagnostics carry its name (or position, for one that failed to
@@ -533,23 +656,31 @@ fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> crate::diagnostics::Di
 }
 
 /// Drop pulses that use a removed option (`agent: "main"` or
-/// `include_identity`), returning what was dropped and why.
+/// `include_identity`, see [`validate_pulse`]) or whose tasks don't fit
+/// together (see [`validate_pulse_tasks`]), returning what was dropped and
+/// why.
 ///
 /// Never silently reinterpreted: the pulse is skipped entirely, not routed
 /// as if the option were absent. Logging and owner notification are the
 /// caller's responsibility (see `load_heartbeat`'s doc comment).
 fn reject_invalid_pulses(pulses: &mut Vec<PulseDef>) -> Vec<HeartbeatProblem> {
     let mut problems = Vec::new();
-    pulses.retain(|pulse| match validate_pulse(pulse) {
-        Ok(()) => true,
-        Err(message) => {
-            problems.push(HeartbeatProblem {
-                name: pulse.name.clone(),
-                message,
-                kind: ProblemKind::RemovedOption,
-            });
-            false
-        }
+    pulses.retain(|pulse| {
+        let problem = match validate_pulse(pulse) {
+            Err(message) => Some((message, ProblemKind::RemovedOption)),
+            Ok(()) => validate_pulse_tasks(pulse)
+                .err()
+                .map(|message| (message, ProblemKind::Malformed)),
+        };
+        let Some((message, kind)) = problem else {
+            return true;
+        };
+        problems.push(HeartbeatProblem {
+            name: pulse.name.clone(),
+            message,
+            kind,
+        });
+        false
     });
     problems
 }
@@ -1483,5 +1614,153 @@ pulses:
         let path = dir.join("HEARTBEAT.yml");
         std::fs::write(&path, content).unwrap();
         path
+    }
+
+    // ── task scripts ─────────────────────────────────────────────────────
+
+    fn load_problems(yaml: &str) -> (Vec<PulseDef>, Vec<HeartbeatProblem>) {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat_for_test(dir.path(), yaml);
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        let config = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
+        (config.pulses, problems)
+    }
+
+    #[test]
+    fn script_fields_parse_with_defaults() {
+        let yaml = r#"
+pulses:
+  - name: disk
+    schedule: "1h"
+    tasks:
+      - name: usage
+        script: "df -h"
+        script_only: true
+      - name: tuned
+        script: "df -h"
+        script_only: true
+        script_timeout_secs: 5
+        script_max_output_kb: 2
+"#;
+        let (pulses, problems) = load_problems(yaml);
+        assert!(problems.is_empty(), "{problems:?}");
+        let pulse = pulses.first().unwrap();
+        assert!(pulse.is_script_only());
+        assert!(pulse.has_scripts());
+        let [usage, tuned] = pulse.tasks.as_slice() else {
+            panic!("expected two tasks, got {:?}", pulse.tasks);
+        };
+        assert_eq!(usage.prompt, "", "a script_only task needs no prompt");
+        assert_eq!(
+            usage.script_timeout(),
+            std::time::Duration::from_secs(DEFAULT_SCRIPT_TIMEOUT_SECS)
+        );
+        assert_eq!(usage.script_max_output_bytes(), 64 * 1024);
+        assert_eq!(tuned.script_timeout(), std::time::Duration::from_secs(5));
+        assert_eq!(tuned.script_max_output_bytes(), 2 * 1024);
+    }
+
+    #[test]
+    fn a_pulse_without_scripts_is_not_script_only() {
+        let (pulses, problems) = load_problems(SIMPLE_VALID_HEARTBEAT);
+        assert!(problems.is_empty());
+        let pulse = pulses.first().unwrap();
+        assert!(!pulse.has_scripts());
+        assert!(!pulse.is_script_only());
+    }
+
+    #[test]
+    fn script_only_without_a_script_is_dropped_with_a_visible_problem() {
+        let yaml = r#"
+pulses:
+  - name: broken
+    schedule: "1h"
+    tasks:
+      - name: check
+        script_only: true
+  - name: fine
+    schedule: "1h"
+    tasks:
+      - name: check
+        prompt: "Look around."
+"#;
+        let (pulses, problems) = load_problems(yaml);
+        assert_eq!(
+            pulses.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            vec!["fine"],
+            "only the broken pulse is dropped"
+        );
+        let problem = problems.first().unwrap();
+        assert_eq!(problem.name, "broken");
+        assert_eq!(problem.kind, ProblemKind::Malformed);
+        assert!(
+            problem.message.contains("script_only") && problem.message.contains("no `script`"),
+            "{}",
+            problem.message
+        );
+        assert!(
+            diagnose_heartbeat(yaml)
+                .iter()
+                .any(|d| d.message.contains("script_only")),
+            "editing the file reports the same problem"
+        );
+    }
+
+    #[test]
+    fn pulse_mixing_script_only_and_session_tasks_is_rejected() {
+        let yaml = r#"
+pulses:
+  - name: mixed
+    schedule: "1h"
+    tasks:
+      - name: raw
+        script: "echo hi"
+        script_only: true
+      - name: think
+        prompt: "Think about it."
+"#;
+        let (pulses, problems) = load_problems(yaml);
+        assert!(pulses.is_empty());
+        assert!(
+            problems.first().unwrap().message.contains("mixes"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn task_with_neither_prompt_nor_script_is_rejected() {
+        let yaml =
+            "pulses:\n  - name: empty\n    schedule: \"1h\"\n    tasks:\n      - name: nothing\n";
+        let (pulses, problems) = load_problems(yaml);
+        assert!(pulses.is_empty());
+        assert!(
+            problems.first().unwrap().message.contains("no `prompt`"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn empty_script_and_zero_limits_are_rejected() {
+        for task in [
+            "script: \"  \"",
+            "script: \"date\"\n        script_timeout_secs: 0",
+            "script: \"date\"\n        script_max_output_kb: 0",
+        ] {
+            let yaml = format!(
+                "pulses:\n  - name: p\n    schedule: \"1h\"\n    tasks:\n      - name: t\n        prompt: \"x\"\n        {task}\n"
+            );
+            let (pulses, problems) = load_problems(&yaml);
+            assert!(pulses.is_empty(), "{task} should be rejected");
+            assert_eq!(problems.len(), 1, "{task}: {problems:?}");
+        }
+    }
+
+    #[test]
+    fn a_prompt_task_with_a_script_and_no_prompt_is_valid() {
+        let yaml = "pulses:\n  - name: p\n    schedule: \"1h\"\n    tasks:\n      - name: t\n        script: \"date\"\n";
+        let (pulses, problems) = load_problems(yaml);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(!pulses.first().unwrap().is_script_only());
     }
 }
