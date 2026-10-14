@@ -1230,45 +1230,8 @@ async fn spawn_login_process(atk_bin: &Path, log: &BoundedLog) -> Result<LoginSp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::script::write_executable as make_script;
     use crate::testing::wait;
-
-    /// Write an executable fake tool at `path`, ready to exec on return.
-    #[cfg(unix)]
-    fn make_script(path: &Path, content: &str) {
-        use std::io::Write as _;
-        use std::process::Stdio;
-
-        // A child shell writes the script, so this process never holds a write
-        // descriptor to it. Tests run on many threads, and a child another
-        // thread forks keeps copies of this process's descriptors until it
-        // execs; a write descriptor among them makes exec of the script fail
-        // with "Text file busy" for as long as that child takes.
-        let mut writer = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(r#"cat > "$1" && chmod 755 "$1""#)
-            .arg("sh")
-            .arg(path)
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
-        writer
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(content.as_bytes())
-            .unwrap();
-        let status = writer.wait().unwrap();
-        assert!(
-            status.success(),
-            "writing fake tool {} failed",
-            path.display()
-        );
-    }
-
-    #[cfg(not(unix))]
-    fn make_script(path: &Path, content: &str) {
-        std::fs::write(path, content).unwrap();
-    }
 
     const FAKE_ATK_UNIX: &str = r#"#!/bin/sh
 cmd="$1"
