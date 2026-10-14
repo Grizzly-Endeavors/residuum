@@ -12,6 +12,8 @@ Routing is a match on the disposition the producing agent declared. There is no 
 | `HEARTBEAT_URGENT` | `Urgent` | the inbox **and** every channel in `config/channels.toml` |
 | neither | `Normal` | the inbox |
 
+A `script_only` pulse runs no session; its scripts' output stands in for the summary (see `heartbeats.md`): no output, or output ending with `HEARTBEAT_OK`, is `Silent`; output ending with `HEARTBEAT_URGENT` is `Urgent`; anything else is `Normal`. A script that fails makes it a failed run, never a silent one.
+
 Results from agent-spawned (`spawned`) sessions never reach this router: every turn's outcome — completed, failed, cancelled, or panicked — is relayed directly to the session's **direct spawner** (main, or whichever session spawned it) through the agent-messaging system, tagged with the session's address and carrying the normal hop-count rules — see [background-tasks.md](background-tasks.md#messaging). The agent that asked for the work gets the answer, not necessarily main, and is never left simply not knowing what happened to a turn it's waiting on.
 
 Results from `artifact` sessions (started by a workbench artifact) are discarded by this router whatever their disposition, `HEARTBEAT_URGENT` included, and are never relayed to main either. Their output belongs to the artifact that started them, which reads it from the session's own stream — see [background-tasks.md](background-tasks.md#artifact-sessions). A session like that files an inbox item itself (`user_inbox_add`) when its task calls for one.
