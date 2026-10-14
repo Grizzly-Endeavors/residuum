@@ -1682,6 +1682,88 @@ mod tests {
         assert_eq!(ended_turn.idle_deadline, Some(at + timeout));
     }
 
+    /// Only a person moves routing: a relayed background message and a
+    /// teammate's message joining an agent-started turn after idle reach the
+    /// model, but leave routing, the idle timer and the turn's output alone.
+    #[tokio::test]
+    async fn agent_and_background_messages_during_an_agent_started_turn_leave_routing_alone() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let rig = TurnRig::new(GatedThreeCallProvider {
+            started: Arc::clone(&started),
+            gate: Arc::clone(&gate),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .await;
+        let publisher = rig.publisher.clone();
+        let messenger = Arc::clone(&rig.messenger);
+        let hop_counter = rig.agent.hop_counter().clone();
+        let bus = rig.bus().clone();
+        let mut chat_lifecycle: Subscriber<TurnLifecycleEvent> =
+            bus.subscribe(topics::Endpoint(endpoint())).await.unwrap();
+        let mut chat_intermediates: Subscriber<crate::bus::IntermediateEvent> =
+            bus.subscribe(topics::Endpoint(endpoint())).await.unwrap();
+        let mut chat_responses: Subscriber<ResponseEvent> =
+            bus.subscribe(topics::Endpoint(endpoint())).await.unwrap();
+
+        let turn = crate::util::spawn_in_span(agent_started_turn_after_idle(
+            rig,
+            std::time::Duration::from_mins(30),
+        ));
+
+        wait::guarded("the first model call to start", started.notified()).await;
+        publisher
+            .publish(
+                topics::UserMessage,
+                MessageEvent::from_background("a session's relayed result".to_string()),
+            )
+            .await
+            .unwrap();
+        messenger
+            .send(
+                "main",
+                crate::bus::SessionAddress::from("agent-beta"),
+                "teammate".to_string(),
+                "a teammate's note".to_string(),
+                5,
+            )
+            .await
+            .unwrap();
+        // The teammate's hop count shows the turn took its message in, and
+        // the relayed result was published, and so taken in, before it.
+        wait::until_true("the turn to take both messages in", || {
+            hop_counter.get() >= 5
+        })
+        .await;
+        gate.notify_one();
+
+        let ended_turn = wait::guarded("the turn to end", turn).await.unwrap();
+        assert_eq!(
+            history_mentions(&ended_turn.rig.agent, "a session's relayed result"),
+            1
+        );
+        assert_eq!(
+            history_mentions(&ended_turn.rig.agent, "a teammate's note"),
+            1
+        );
+        assert_eq!(
+            ended_turn.last_output_endpoint,
+            Some(web()),
+            "agent-started turns still go to the web"
+        );
+        assert_eq!(
+            ended_turn.last_user_message_instant, None,
+            "no owner activity"
+        );
+        assert_eq!(
+            ended_turn.idle_deadline, None,
+            "the idle timer is untouched"
+        );
+        assert_no_event(&bus, &mut chat_lifecycle).await;
+        assert_no_event(&bus, &mut chat_intermediates).await;
+        assert_no_event(&bus, &mut chat_responses).await;
+    }
+
     /// Assert `sub` was sent nothing. A bus barrier proves every event published
     /// before it has been handed to every subscriber, so what `sub` holds is
     /// everything it was sent.
