@@ -14,9 +14,10 @@
 //!   content-hash `ETag` and gets a bodyless 304 when nothing changed.
 //! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
 //!   accepts it. HTML and images are not.
-//! - HTML documents carry [`APP_SHELL_CSP`], which keeps the app from loading
-//!   images, media, plug-ins or frames from anywhere but the hub, and from
-//!   posting a form anywhere else.
+//! - HTML documents carry the app shell's Content-Security-Policy
+//!   ([`app_shell_csp`]), which keeps the app from loading images, media,
+//!   plug-ins or frames from anywhere but the hub, and from posting a form
+//!   anywhere else.
 
 use axum::Router;
 use axum::body::Body;
@@ -52,8 +53,15 @@ const REVALIDATE_CACHE_CONTROL: &str = "no-cache";
 /// builds itself. The app embeds no plug-ins or frames: workbench artifacts
 /// open in their own tab, on their own origin. Scripts, styles, fonts and
 /// connections are left to the browser's defaults.
-const APP_SHELL_CSP: &str = "img-src 'self' data: blob:; media-src 'self' blob:; \
-    object-src 'none'; frame-src 'none'; form-action 'self'";
+///
+/// The policy is the one line of `web/app-shell-csp.txt`, which the web app's
+/// mock servers send too, so the end-to-end suite runs under it.
+fn app_shell_csp() -> &'static str {
+    APP_SHELL_CSP_FILE.trim()
+}
+
+/// `web/app-shell-csp.txt`, as written; [`app_shell_csp`] is the policy.
+const APP_SHELL_CSP_FILE: &str = include_str!("../../../web/app-shell-csp.txt");
 
 /// Brotli quality and gzip level for compressing on the fly. The encoder's
 /// default brotli quality (11) takes about 0.7 s per request on the 566 kB
@@ -153,11 +161,8 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
         HeaderValue::from_static(cache_control),
     );
 
-    // An HTML document has no `ETag`, so a browser's revalidation is a full
-    // fetch, never a 304. Residuum Cloud's relay rewrites top-level HTML on
-    // the way out, adding an instance switcher that shows which instances are
-    // connected at that moment, and the browser caches the rewritten body. A
-    // 304 would keep showing that switcher's old state.
+    // An HTML document gets no `ETag`, so a browser's revalidation of it is
+    // always a full fetch, never a 304.
     if !hashed && !is_html(mime.essence_str()) {
         let etag = format!(
             "\"{}\"",
@@ -175,9 +180,10 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
     }
 
     if is_html(mime.essence_str()) {
-        headers.insert(
+        set_header(
+            &mut headers,
             header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(APP_SHELL_CSP),
+            app_shell_csp(),
         );
     }
 
@@ -221,13 +227,9 @@ fn is_html(essence: &str) -> bool {
     essence == "text/html"
 }
 
-/// Whether a response with this media type (no parameters) is worth
-/// compressing.
+/// Whether a response with this media type (no parameters) is compressed.
 ///
-/// HTML is left out on purpose. Residuum Cloud's relay inserts its instance
-/// switcher before the `</body>` of a top-level page, and it finds that tag by
-/// searching the body as text. In a compressed body it finds nothing and sends
-/// the page without a switcher. Images are already compressed.
+/// HTML is not compressed, and images are compressed already.
 fn is_compressible(essence: &str) -> bool {
     matches!(
         essence,
