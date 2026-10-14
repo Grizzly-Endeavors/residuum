@@ -123,11 +123,13 @@ describe("the model and thinking popover", () => {
       type: "notice",
       message: "configuration reloaded: models",
       reload: "reloaded",
+      reload_of: "agent_config",
     });
     ws.transport.onMessage?.({
       type: "notice",
       message: "configuration reloaded: no changes detected",
       reload: "unchanged",
+      reload_of: "agent_config",
     });
 
     expect(notifications.history).toEqual([]);
@@ -145,6 +147,7 @@ describe("the model and thinking popover", () => {
       type: "notice",
       message: "config reload failed (keeping current config): invalid TOML",
       reload: "failed",
+      reload_of: "agent_config",
     });
 
     expect(notifications.history.map((entry) => [entry.kind, entry.message])).toEqual([

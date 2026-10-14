@@ -374,6 +374,7 @@ async fn handle_client_message(
                         tx.send(ServerMessage::Notice {
                             message: "Added a note to the inbox.".to_string(),
                             reload: None,
+                            reload_of: None,
                         })
                         .ok();
                     }

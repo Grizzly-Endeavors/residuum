@@ -6,7 +6,7 @@ use ts_rs::TS;
 
 use crate::agent::usage::SessionUsageTotals;
 use crate::background::registry::{SessionCategory, SessionState};
-use crate::bus::{ReloadOutcome, TurnOrigin};
+use crate::bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
 use crate::inference::{ImageData, MessageSender};
 use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
@@ -697,6 +697,10 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         reload: Option<ReloadOutcome>,
+        /// Which files the reload read, beside `reload`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reload_of: Option<ReloadedFiles>,
     },
     /// Multi-line command output that should render inline in the chat
     /// stream rather than as a transient toast.
@@ -1202,6 +1206,7 @@ mod tests {
         let msg = ServerMessage::Notice {
             message: "observed successfully".to_string(),
             reload: None,
+            reload_of: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"notice\""), "should have type tag");
@@ -1225,6 +1230,7 @@ mod tests {
             let msg = ServerMessage::Notice {
                 message: "configuration reloaded: models".to_string(),
                 reload: Some(outcome),
+                reload_of: Some(ReloadedFiles::AgentConfig),
             };
             assert_eq!(
                 serde_json::to_value(&msg).unwrap(),
@@ -1232,6 +1238,7 @@ mod tests {
                     "type": "notice",
                     "message": "configuration reloaded: models",
                     "reload": word,
+                    "reload_of": "agent_config",
                 })
             );
         }

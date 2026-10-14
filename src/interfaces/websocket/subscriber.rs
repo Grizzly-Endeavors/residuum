@@ -372,9 +372,11 @@ impl WsSubscribers {
                     _ => return None,
                 },
                 event = self.notice.recv() => match event {
-                    Ok(Some(NoticeEvent { message, reload })) => {
-                        Some(ServerMessage::Notice { message, reload })
-                    }
+                    Ok(Some(NoticeEvent { message, reload })) => Some(ServerMessage::Notice {
+                        message,
+                        reload: reload.map(|report| report.outcome),
+                        reload_of: reload.map(|report| report.of),
+                    }),
                     _ => return None,
                 },
                 event = self.inline_output.recv() => match event {
@@ -448,7 +450,7 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::{ReloadOutcome, ToolCallEvent, ToolResultEvent};
+    use crate::bus::{ReloadOutcome, ReloadedFiles, ToolCallEvent, ToolResultEvent};
     use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind};
 
     fn ts() -> chrono::NaiveDateTime {
@@ -845,7 +847,7 @@ mod tests {
         let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            ServerMessage::Notice { message, reload: None }
+            ServerMessage::Notice { message, reload: None, reload_of: None }
                 if message == "Reflecting on the week's notes."
         ));
     }
@@ -854,16 +856,16 @@ mod tests {
     async fn reload_notice_keeps_its_outcome() {
         let (handle, mut subs) = subscribed().await;
 
-        for outcome in [
-            ReloadOutcome::Reloaded,
-            ReloadOutcome::Unchanged,
-            ReloadOutcome::Failed,
+        for (outcome, of) in [
+            (ReloadOutcome::Reloaded, ReloadedFiles::AgentConfig),
+            (ReloadOutcome::Unchanged, ReloadedFiles::HubConfig),
+            (ReloadOutcome::Failed, ReloadedFiles::Workspace),
         ] {
             handle
                 .publisher()
                 .publish(
                     topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
-                    NoticeEvent::reload(outcome, "configuration reloaded: models"),
+                    NoticeEvent::reload(outcome, of, "configuration reloaded: models"),
                 )
                 .await
                 .unwrap();
@@ -872,10 +874,12 @@ mod tests {
             assert!(
                 matches!(
                     &msg,
-                    ServerMessage::Notice { message, reload: Some(got) }
-                        if message == "configuration reloaded: models" && *got == outcome
+                    ServerMessage::Notice { message, reload: Some(got), reload_of: Some(got_of) }
+                        if message == "configuration reloaded: models"
+                            && *got == outcome
+                            && *got_of == of
                 ),
-                "{outcome:?} reached the socket as {msg:?}"
+                "{outcome:?} of {of:?} reached the socket as {msg:?}"
             );
         }
     }

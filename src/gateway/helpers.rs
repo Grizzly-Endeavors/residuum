@@ -1,7 +1,8 @@
 //! Gateway-specific helpers: bus notifications.
 
 use crate::bus::{
-    ErrorEvent, NoticeEvent, NotifyName, Publisher, ReloadOutcome, SYSTEM_CHANNEL, topics,
+    ErrorEvent, NoticeEvent, NotifyName, Publisher, ReloadOutcome, ReloadedFiles, SYSTEM_CHANNEL,
+    topics,
 };
 
 /// Publish a notice to the system notification channel.
@@ -9,15 +10,16 @@ pub(crate) async fn publish_notice(publisher: &Publisher, message: String) {
     publish_notice_event(publisher, NoticeEvent::new(message)).await;
 }
 
-/// Publish a settings reload's outcome to the system notification channel.
-/// `message` is the agent's own account of it, which the web keeps as the
-/// detail behind its own wording of `outcome`.
+/// Publish the outcome of a reload of the files `of` to the system
+/// notification channel. `message` is the agent's own account of it, which
+/// the web keeps as the detail behind its own wording of `outcome`.
 pub(crate) async fn publish_reload_notice(
     publisher: &Publisher,
     outcome: ReloadOutcome,
+    of: ReloadedFiles,
     message: String,
 ) {
-    publish_notice_event(publisher, NoticeEvent::reload(outcome, message)).await;
+    publish_notice_event(publisher, NoticeEvent::reload(outcome, of, message)).await;
 }
 
 async fn publish_notice_event(publisher: &Publisher, notice: NoticeEvent) {

@@ -222,6 +222,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
             type: "notice",
             message: "Configuration reloaded successfully.",
             reload: "reloaded",
+            reload_of: "agent_config",
           });
         });
         break;

@@ -8,6 +8,7 @@ export type { SnapshotFrame } from "./SnapshotFrame";
 export type { QueuedMessage } from "./QueuedMessage";
 export type { PostTurnActivityKind } from "./PostTurnActivityKind";
 export type { ReloadOutcome } from "./ReloadOutcome";
+export type { ReloadedFiles } from "./ReloadedFiles";
 export type { MessageSender } from "./MessageSender";
 export type { TurnOrigin } from "./TurnOrigin";
 export type { Visibility } from "./Visibility";

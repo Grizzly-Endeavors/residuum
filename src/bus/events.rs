@@ -652,9 +652,17 @@ impl SpawnRequestEvent {
 pub struct NoticeEvent {
     /// Human-readable notice message.
     pub message: String,
-    /// What a settings reload came to, when this notice reports one. The web
-    /// words the toast from it and keeps `message` as the detail.
-    pub reload: Option<ReloadOutcome>,
+    /// What a settings reload came to, and which files it read, when this
+    /// notice reports one. The web words the toast from it and keeps
+    /// `message` as the detail.
+    pub reload: Option<ReloadReport>,
+}
+
+/// A settings reload's outcome and the files it read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReloadReport {
+    pub outcome: ReloadOutcome,
+    pub of: ReloadedFiles,
 }
 
 impl NoticeEvent {
@@ -667,12 +675,12 @@ impl NoticeEvent {
         }
     }
 
-    /// A notice reporting how a settings reload went.
+    /// A notice reporting how a reload of the files `of` went.
     #[must_use]
-    pub fn reload(outcome: ReloadOutcome, message: impl Into<String>) -> Self {
+    pub fn reload(outcome: ReloadOutcome, of: ReloadedFiles, message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            reload: Some(outcome),
+            reload: Some(ReloadReport { outcome, of }),
         }
     }
 }
@@ -688,6 +696,21 @@ pub enum ReloadOutcome {
     Unchanged,
     /// The files couldn't be loaded; the settings already running stay in effect.
     Failed,
+}
+
+/// Which files an agent's reload read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReloadedFiles {
+    /// The agent's own `config.toml` and `providers.toml`.
+    AgentConfig,
+    /// `hub/config.toml`, which the agent reloads after the hub has; the hub
+    /// reports its own reload on the hub socket.
+    HubConfig,
+    /// The agent's workspace files: `mcp.json`, `channels.toml`,
+    /// `agent-card.json`, `a2a.json`, and the team's `AGENTS.md` and `USER.md`.
+    Workspace,
 }
 
 /// Which background post-turn cycle (see `crate::gateway::post_turn`) an

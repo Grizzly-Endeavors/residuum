@@ -17,6 +17,7 @@ describe("the agent reloading its settings", () => {
       type: "notice",
       message: "configuration reloaded: models",
       reload: "reloaded",
+      reload_of: "agent_config",
     });
 
     expect(notifications.history.map((entry) => entry.message).reverse()).toEqual([
@@ -31,6 +32,7 @@ describe("the agent reloading its settings", () => {
       type: "notice",
       message: "configuration reloaded: no changes detected",
       reload: "unchanged",
+      reload_of: "agent_config",
     });
     expect(notifications.history.map((entry) => entry.message)).toEqual([
       "Settings reloaded. Nothing had changed.",
@@ -42,9 +44,49 @@ describe("the agent reloading its settings", () => {
       type: "notice",
       message: "config reload failed (keeping current config): invalid TOML",
       reload: "failed",
+      reload_of: "agent_config",
     });
     expect(notifications.history.map((entry) => [entry.kind, entry.message])).toEqual([
       ["error", "Residuum couldn't apply the new settings and is still using the old ones."],
+    ]);
+  });
+
+  it("says the agent's files reloaded when its workspace did", () => {
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "workspace configuration reloaded",
+      reload: "reloaded",
+      reload_of: "workspace",
+    });
+    expect(notifications.history.map((entry) => entry.message)).toEqual(["Agent files reloaded."]);
+  });
+
+  it("says nothing of its own reload of the hub's settings unless that failed", () => {
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "hub configuration reloaded: timezone",
+      reload: "reloaded",
+      reload_of: "hub_config",
+    });
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "hub configuration reloaded: no changes detected",
+      reload: "unchanged",
+      reload_of: "hub_config",
+    });
+    expect(notifications.history).toEqual([]);
+
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "hub config reload failed (keeping current hub config): bad toml",
+      reload: "failed",
+      reload_of: "hub_config",
+    });
+    expect(notifications.history.map((entry) => [entry.kind, entry.message])).toEqual([
+      [
+        "error",
+        "This agent couldn't apply the new settings for all agents and is still using the old ones.",
+      ],
     ]);
   });
 

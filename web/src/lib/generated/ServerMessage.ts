@@ -6,6 +6,7 @@ import type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 import type { PostTurnActivityKind } from "./PostTurnActivityKind";
 import type { QueuedMessage } from "./QueuedMessage";
 import type { ReloadOutcome } from "./ReloadOutcome";
+import type { ReloadedFiles } from "./ReloadedFiles";
 import type { SessionCommandErrorCode } from "./SessionCommandErrorCode";
 import type { SessionDeliveryOutcome } from "./SessionDeliveryOutcome";
 import type { SessionRunStatus } from "./SessionRunStatus";
@@ -271,7 +272,11 @@ message: string,
  * What a settings reload came to, when this notice reports one. The
  * web words the toast from it and keeps `message` as the detail.
  */
-reload?: ReloadOutcome, } | { "type": "inline_output", 
+reload?: ReloadOutcome, 
+/**
+ * Which files the reload read, beside `reload`.
+ */
+reload_of?: ReloadedFiles, } | { "type": "inline_output", 
 /**
  * Body to render inline.
  */

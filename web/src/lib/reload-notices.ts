@@ -3,12 +3,16 @@
 // the server's own account behind the expandable detail:
 //
 // - The agent's socket answers a reload request with a `reloading` frame, and
-//   reports how each reload of the agent's settings went in a `notice` whose
-//   `reload` field is `reloaded`, `unchanged` or `failed`. A reload the user's
-//   own file edit set off reports too, and the settings watcher can follow a
-//   reload with a second one that finds nothing left to apply.
+//   reports how each reload went in a `notice` whose `reload` field is
+//   `reloaded`, `unchanged` or `failed` and whose `reload_of` names the files:
+//   the agent's own config, the hub's, or the agent's workspace files. A
+//   reload the user's own file edit set off reports too, and the settings
+//   watcher can follow a reload with a second one that finds nothing left to
+//   apply.
 // - The hub's socket reports each reload of the settings for all agents in a
-//   `hub_config_reloaded` frame.
+//   `hub_config_reloaded` frame. That is the one report of a hub reload: each
+//   agent then reloads the hub's config too, and its socket's report of that
+//   is shown only when the agent couldn't apply it.
 //
 // A control that already says what happens (the composer's model control
 // tells the user a change applies from the next reply) asks for a reload
@@ -17,6 +21,7 @@
 
 import type { NotificationKind } from "./notifications.svelte";
 import type { ReloadOutcome } from "./generated/ReloadOutcome";
+import type { ReloadedFiles } from "./generated/ReloadedFiles";
 
 /**
  * How long after a quiet request the reload's success reports stay unsaid:
@@ -71,35 +76,44 @@ export function reloadingNotice(): ReloadNotice | null {
 export interface NoticeFrame {
   message: string;
   reload?: ReloadOutcome;
+  reload_of?: ReloadedFiles;
 }
 
+/** The plain words for each outcome of a reload of one set of files. */
+const RELOAD_WORDS: Record<ReloadedFiles, Record<ReloadOutcome, string>> = {
+  agent_config: {
+    reloaded: "Settings reloaded.",
+    unchanged: "Settings reloaded. Nothing had changed.",
+    failed: "Residuum couldn't apply the new settings and is still using the old ones.",
+  },
+  hub_config: {
+    reloaded: "This agent took up the new settings for all agents.",
+    unchanged: "This agent's settings for all agents hadn't changed.",
+    failed:
+      "This agent couldn't apply the new settings for all agents and is still using the old ones.",
+  },
+  workspace: {
+    reloaded: "Agent files reloaded.",
+    unchanged: "Agent files reloaded. Nothing had changed.",
+    failed: "Residuum couldn't reload the agent's files and is still using the old ones.",
+  },
+};
+
 /**
- * The toast for an agent socket `notice` frame, or `null` for a reload's
- * success report a quiet request covers. A reload report is put in plain
- * words with the agent's own behind the detail; any other notice is shown as
- * it came.
+ * The toast for an agent socket `notice` frame, or `null` for a success
+ * report nobody needs: one a quiet request covers, or the agent's own reload
+ * of the hub's config, which the hub socket already reported. A reload report
+ * is put in plain words with the agent's own behind the detail; a failed one
+ * always shows; any other notice is shown as it came.
  */
 export function noticeFrameNotice(frame: NoticeFrame): ReloadNotice | null {
   const { message, reload } = frame;
-  switch (reload) {
-    case undefined:
-      return { kind: "notice", message };
-    case "failed":
-      return {
-        kind: "error",
-        message: "Residuum couldn't apply the new settings and is still using the old ones.",
-        details: message,
-      };
-    case "reloaded":
-    case "unchanged":
-      if (quietReloads.quiet) return null;
-      return {
-        kind: "notice",
-        message:
-          reload === "unchanged" ? "Settings reloaded. Nothing had changed." : "Settings reloaded.",
-        details: message,
-      };
-  }
+  if (reload === undefined) return { kind: "notice", message };
+  const files = frame.reload_of ?? "agent_config";
+  const words = RELOAD_WORDS[files][reload];
+  if (reload === "failed") return { kind: "error", message: words, details: message };
+  if (files === "hub_config" || quietReloads.quiet) return null;
+  return { kind: "notice", message: words, details: message };
 }
 
 /** The hub socket's `hub_config_reloaded` frame. */

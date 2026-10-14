@@ -973,6 +973,7 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
             )),
             crate::bus::NoticeEvent::reload(
                 crate::bus::ReloadOutcome::Reloaded,
+                crate::bus::ReloadedFiles::Workspace,
                 "workspace configuration reloaded",
             ),
         )

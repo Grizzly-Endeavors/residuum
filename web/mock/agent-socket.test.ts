@@ -133,6 +133,7 @@ describe("agent socket", () => {
         type: "notice",
         message: "Configuration reloaded successfully.",
         reload: "reloaded",
+        reload_of: "agent_config",
       });
     });
 

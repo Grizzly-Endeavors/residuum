@@ -11,9 +11,17 @@ const REPORT = "configuration reloaded: models";
 const NOTHING_CHANGED = "configuration reloaded: no changes detected";
 const FAILED = "config reload failed (keeping current config): invalid TOML at line 4";
 
-const reloaded = { message: REPORT, reload: "reloaded" } as const;
-const unchanged = { message: NOTHING_CHANGED, reload: "unchanged" } as const;
-const failed = { message: FAILED, reload: "failed" } as const;
+const reloaded = { message: REPORT, reload: "reloaded", reload_of: "agent_config" } as const;
+const unchanged = {
+  message: NOTHING_CHANGED,
+  reload: "unchanged",
+  reload_of: "agent_config",
+} as const;
+const failed = { message: FAILED, reload: "failed", reload_of: "agent_config" } as const;
+
+const HUB_REPORT = "hub configuration reloaded: timezone";
+const HUB_FAILED = "hub config reload failed (keeping current hub config): bad toml";
+const WORKSPACE_REPORT = "workspace configuration reloaded";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -51,11 +59,41 @@ describe("a reload nobody asked to keep quiet", () => {
   });
 
   it("goes by the outcome, not by what the text says", () => {
-    expect(
-      noticeFrameNotice({ message: "workspace configuration reloaded", reload: "reloaded" }),
-    ).toMatchObject({ message: "Settings reloaded." });
+    expect(noticeFrameNotice({ message: "anything at all", reload: "reloaded" })).toMatchObject({
+      message: "Settings reloaded.",
+    });
     // Text that reads like a reload report but carries no outcome is any other notice.
     expect(noticeFrameNotice({ message: REPORT })).toEqual({ kind: "notice", message: REPORT });
+  });
+
+  it("names the agent's files when the workspace reloaded", () => {
+    expect(
+      noticeFrameNotice({ message: WORKSPACE_REPORT, reload: "reloaded", reload_of: "workspace" }),
+    ).toEqual({ kind: "notice", message: "Agent files reloaded.", details: WORKSPACE_REPORT });
+  });
+
+  it("leaves the agent's reload of the hub's settings to the hub's own report", () => {
+    expect(
+      noticeFrameNotice({ message: HUB_REPORT, reload: "reloaded", reload_of: "hub_config" }),
+    ).toBeNull();
+    expect(
+      noticeFrameNotice({
+        message: "hub configuration reloaded: no changes detected",
+        reload: "unchanged",
+        reload_of: "hub_config",
+      }),
+    ).toBeNull();
+  });
+
+  it("still shows an agent failing to apply the hub's settings, as an error", () => {
+    expect(
+      noticeFrameNotice({ message: HUB_FAILED, reload: "failed", reload_of: "hub_config" }),
+    ).toEqual({
+      kind: "error",
+      message:
+        "This agent couldn't apply the new settings for all agents and is still using the old ones.",
+      details: HUB_FAILED,
+    });
   });
 
   it("passes any other notice along as it came", () => {
