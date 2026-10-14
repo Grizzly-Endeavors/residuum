@@ -1446,6 +1446,7 @@ mod tests {
             api_key: Some(api_key.to_string()),
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         }
     }
 

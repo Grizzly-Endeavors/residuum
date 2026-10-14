@@ -11,8 +11,10 @@ use std::str::FromStr;
 use crate::config::types::{BackgroundModelsConfig, RoleOverrides};
 use crate::util::FatalError;
 
-use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
-use super::super::provider::{ModelSpec, ProviderKind, ProviderSpec};
+use super::super::deserialize::{
+    InputModalityFile, ModelAssignment, ModelsConfigFile, ProviderEntryFile,
+};
+use super::super::provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
 use super::super::secrets::SecretStore;
 
 /// Resolved model provider specs for all roles.
@@ -174,6 +176,7 @@ fn resolve_model_string(
             api_key,
             keep_alive: entry.keep_alive.clone(),
             session_affinity: None,
+            image_input: declared_image_input(entry, model_name),
         });
     }
 
@@ -200,7 +203,23 @@ fn resolve_model_string(
         api_key,
         keep_alive: None,
         session_affinity: None,
+        image_input: ImageInput::Undeclared,
     })
+}
+
+/// Whether `model_name` takes images, from its `input` list under the
+/// provider entry's `models` table.
+fn declared_image_input(entry: &ProviderEntryFile, model_name: &str) -> ImageInput {
+    let input = entry
+        .models
+        .as_ref()
+        .and_then(|models| models.get(model_name))
+        .and_then(|model| model.input.as_ref());
+    match input {
+        None => ImageInput::Undeclared,
+        Some(kinds) if kinds.contains(&InputModalityFile::Image) => ImageInput::Accepted,
+        Some(_) => ImageInput::TextOnly,
+    }
 }
 
 /// Resolve a `ModelAssignment` into a `Vec<ProviderSpec>` (failover chain).
@@ -372,6 +391,7 @@ mod tests {
                 api_key: Some("sk-explicit".to_string()),
                 url: None,
                 keep_alive: None,
+                models: None,
             },
         );
 
@@ -407,12 +427,110 @@ mod tests {
                 api_key: Some("csk-123".to_string()),
                 url: Some("https://api.cerebras.ai/v1".to_string()),
                 keep_alive: None,
+                models: None,
             },
         );
 
         let spec = resolve_model_string("cerebras/llama-4", Some(&providers), &secrets).unwrap();
         assert_eq!(spec.model.kind, ProviderKind::OpenAi);
         assert_eq!(spec.provider_url, "https://api.cerebras.ai/v1");
+    }
+
+    // ── Per-model input declarations ─────────────────────────────────────────
+
+    fn chain_with_models(toml: &str) -> Vec<ProviderSpec> {
+        let prov_file = parse_providers(toml);
+        let cfg = from_file_and_env(
+            Some(&parse_config("")),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
+        cfg.main
+    }
+
+    #[test]
+    fn model_input_declarations_resolve_per_model() {
+        let main = chain_with_models(
+            r#"
+[providers.zai]
+type = "openai"
+url = "https://api.z.ai/api/paas/v4"
+
+[providers.zai.models."glm-5.3"]
+input = ["text"]
+
+[providers.zai.models."glm-5v"]
+input = ["text", "image"]
+
+[models]
+main = ["zai/glm-5.3", "zai/glm-5v", "zai/glm-other", "ollama/llama3"]
+"#,
+        );
+        let inputs: Vec<ImageInput> = main.iter().map(|spec| spec.image_input).collect();
+        assert_eq!(
+            inputs,
+            vec![
+                ImageInput::TextOnly,
+                ImageInput::Accepted,
+                ImageInput::Undeclared,
+                ImageInput::Undeclared,
+            ],
+            "each model in the chain takes its own declaration; undeclared and implicit-provider models stay undeclared"
+        );
+    }
+
+    #[test]
+    fn model_input_without_image_is_text_only() {
+        let main = chain_with_models(
+            r#"
+[providers.local]
+type = "ollama"
+models = { "qwen3" = { input = [] } }
+
+[models]
+main = "local/qwen3"
+"#,
+        );
+        assert_eq!(main[0].image_input, ImageInput::TextOnly);
+    }
+
+    #[test]
+    fn model_input_rejects_an_unknown_kind() {
+        let err = toml::from_str::<super::super::super::deserialize::ProvidersFile>(
+            r#"
+[providers.zai]
+type = "openai"
+
+[providers.zai.models."glm-5.3"]
+input = ["text", "imgae"]
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("imgae") && err.contains("image"),
+            "the error should name the bad value and the accepted ones: {err}"
+        );
+    }
+
+    #[test]
+    fn model_entry_rejects_unknown_keys() {
+        let result = toml::from_str::<super::super::super::deserialize::ProvidersFile>(
+            r#"
+[providers.zai]
+type = "openai"
+
+[providers.zai.models."glm-5.3"]
+inputs = ["text"]
+"#,
+        );
+        assert!(
+            result.is_err(),
+            "a misspelled per-model key should not load silently"
+        );
     }
 
     // ── Full config resolution via from_file_and_env ──────────────────────────
@@ -636,7 +754,7 @@ observer = "gemini/gemini-3.0-flash"
 main = "anthropic/claude-sonnet-4-6"
 typo_field = "oops"
 "#;
-        let result = toml::from_str::<ProvidersFile>(toml_str);
+        let result = toml::from_str::<super::super::super::deserialize::ProvidersFile>(toml_str);
         assert!(
             result.is_err(),
             "unknown field in [models] should be rejected"
@@ -785,6 +903,7 @@ default = "openai/gpt-4o"
                 api_key: Some("${RESIDUUM_TEST_PROVIDER_KEY}".to_string()),
                 url: None,
                 keep_alive: None,
+                models: None,
             },
         );
 
@@ -811,6 +930,7 @@ default = "openai/gpt-4o"
                 api_key: Some("secret:my_openai".to_string()),
                 url: None,
                 keep_alive: None,
+                models: None,
             },
         );
 
@@ -837,6 +957,7 @@ default = "openai/gpt-4o"
                 api_key: Some("secret:nonexistent".to_string()),
                 url: None,
                 keep_alive: None,
+                models: None,
             },
         );
 
