@@ -33,6 +33,14 @@ impl ChatOutbound for Arc<TeamsRuntime> {
         "teams"
     }
 
+    fn display_name(&self) -> &'static str {
+        "Microsoft Teams"
+    }
+
+    fn explain_failure(&self, reason: &str) -> Option<String> {
+        explain_connector_failure(reason, &self.cfg.app_id)
+    }
+
     fn unknown_conversation_reason(&self) -> &'static str {
         "the bot no longer knows that conversation"
     }
@@ -115,4 +123,54 @@ fn attachment_fallback(content: &str, attachment: &FileAttachment) -> String {
     )
     .trim_start()
     .to_string()
+}
+
+/// The owner's fix for a send failure whose cause Microsoft names with a
+/// known Entra error code. `app_id` is the bot's configured app (bot) ID.
+fn explain_connector_failure(reason: &str, app_id: &str) -> Option<String> {
+    // AADSTS7000229: the bot's app registration has no service principal in
+    // the tenant, so Entra refuses it a Bot Connector token and every reply
+    // fails.
+    if reason.contains("AADSTS7000229") {
+        return Some(format!(
+            "Microsoft won't let the bot sign in because its app isn't set up in your \
+             organization's Microsoft account directory. Someone with admin rights there can fix \
+             it by running `az ad sp create --id {app_id}` with the Azure CLI, then send the bot \
+             a message to check."
+        ));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const APP_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+    #[test]
+    fn missing_service_principal_names_the_command_for_this_bot() {
+        let reason = "could not get a bot token from Microsoft: 401 Unauthorized: \
+                      {\"error\":\"invalid_client\",\"error_description\":\"AADSTS7000229: \
+                      The client application 11111111-2222-3333-4444-555555555555 is missing \
+                      service principal in the tenant.\"}";
+
+        let fix = explain_connector_failure(reason, APP_ID).expect("a known cause has a fix");
+
+        assert!(
+            fix.contains(&format!("az ad sp create --id {APP_ID}")),
+            "the fix should name the command for this bot: {fix}"
+        );
+        assert!(
+            !fix.contains("AADSTS"),
+            "the owner-facing fix should not repeat Microsoft's error code: {fix}"
+        );
+    }
+
+    #[test]
+    fn unrecognized_failure_has_no_fix() {
+        let reason = "bot connector returned 403 Forbidden: {\"error\":{\"code\":\"BotDisabled\"}}";
+
+        assert_eq!(explain_connector_failure(reason, APP_ID), None);
+    }
 }
