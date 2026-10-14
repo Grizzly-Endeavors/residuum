@@ -76,10 +76,6 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
             "/api/files/{id}",
             get(crate::gateway::file_server::serve_file),
         )
-        .route(
-            "/api/files/workspace",
-            get(crate::gateway::file_server::serve_workspace_file),
-        )
         .with_state(state.file_registry.clone());
 
     let sessions = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
@@ -117,9 +113,10 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
 /// A2A settings, and status. The chat history, usage, user inbox, and A2A
 /// settings routes are the same file routes a stopped agent gets from
 /// `hub::AgentDirectory::agent_file_router`, here on the agent's own open
-/// state. It carries no hub-level route, no repair route (see
-/// `hub::http::agent_repair_router`), no static assets and no request guards;
-/// the hub router serves it under `/api/agents/{name}/` and applies those.
+/// state. The workspace file links are among them. It carries no hub-level
+/// route, no repair route (see `hub::http::agent_repair_router`), no static
+/// assets and no request guards; the hub router serves it under
+/// `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
     state: GatewayState,
     config_api_state: web::ConfigApiState,
