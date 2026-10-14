@@ -128,6 +128,22 @@ impl HubConfig {
         Ok(())
     }
 
+    /// [`Self::validate_toml`] for a file the hub loads while first-run setup
+    /// is pending, where `timezone` may still be unset. Everything else is
+    /// checked as strictly as [`Self::validate_toml`] checks it.
+    ///
+    /// # Errors
+    /// Returns a human-readable error string if validation fails.
+    pub fn validate_toml_for_onboarding(contents: &str, hub_dir: &Path) -> Result<(), String> {
+        let (file, _notices) = parse_tolerating_unknown_keys::<deserialize::HubConfigFile>(
+            contents,
+            "hub/config.toml",
+        )?;
+        resolve::hub::from_file_and_env_for_onboarding(Some(&file), hub_dir)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Diagnostics for `contents` as `hub/config.toml`. Mirrors
     /// `Config::diagnose_agent_toml`'s syntax-then-semantic approach.
     #[must_use]

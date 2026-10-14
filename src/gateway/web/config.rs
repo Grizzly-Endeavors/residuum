@@ -233,73 +233,109 @@ pub(super) async fn api_hub_config_raw_put(
     )))
 }
 
+/// Why a patch to `hub/config.toml` didn't land. Nothing was written.
+#[derive(Debug)]
+pub(crate) enum HubConfigPatchError {
+    /// The diff doesn't apply to the file, or the patched file doesn't validate.
+    Rejected(String),
+    /// The file couldn't be read or written.
+    Io(String),
+}
+
+impl std::fmt::Display for HubConfigPatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(msg) | Self::Io(msg) => f.write_str(msg),
+        }
+    }
+}
+
+/// Merge a JSON `diff` into `hub_dir/config.toml`: the one path every change
+/// to that file takes. The diff is applied to the parsed document, so comments
+/// and keys the diff doesn't name survive. The patched text must pass
+/// `validate`, the file as it stood is checkpointed under `summary` so History
+/// can restore it, and the new text replaces the file atomically. Returns the
+/// checkpoint's id, `None` when it couldn't be recorded. Reloading the hub is
+/// the caller's call.
+pub(crate) async fn patch_hub_config(
+    hub_dir: &std::path::Path,
+    checkpoints: &crate::checkpoints::CheckpointEngine,
+    diff: &serde_json::Value,
+    summary: &str,
+    validate: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<Option<String>, HubConfigPatchError> {
+    let Some(diff_map) = diff.as_object() else {
+        return Err(HubConfigPatchError::Rejected(
+            "hub config patch must be a JSON object".to_string(),
+        ));
+    };
+
+    let config_path = hub_dir.join("config.toml");
+    let existing = match tokio::fs::read_to_string(&config_path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(HubConfigPatchError::Io(format!(
+                "failed to read hub config.toml: {e}"
+            )));
+        }
+    };
+
+    let patched = crate::config::patch::apply_patch(&existing, diff_map, "hub/config.toml")
+        .map_err(HubConfigPatchError::Rejected)?;
+    validate(&patched).map_err(HubConfigPatchError::Rejected)?;
+
+    let checkpoint_id = checkpoints
+        .checkpoint_config_id_before_write(crate::checkpoints::CheckpointContext::system(
+            crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+            summary,
+        ))
+        .await;
+    crate::util::fs::atomic_write(&config_path, &patched)
+        .await
+        .map_err(|e| HubConfigPatchError::Io(format!("failed to write hub config.toml: {e}")))?;
+
+    Ok(checkpoint_id)
+}
+
+/// The API error for a hub config patch that didn't land, logged at the
+/// level its kind of failure calls for.
+fn hub_patch_failed(error: HubConfigPatchError) -> (StatusCode, Json<ValidateResponse>) {
+    let (status, msg) = match error {
+        HubConfigPatchError::Rejected(msg) => {
+            tracing::warn!(error = %msg, "hub config.toml patch rejected");
+            (StatusCode::BAD_REQUEST, msg)
+        }
+        HubConfigPatchError::Io(msg) => {
+            tracing::error!(error = %msg, "hub config.toml patch couldn't be saved");
+            (StatusCode::INTERNAL_SERVER_ERROR, msg)
+        }
+    };
+    (
+        status,
+        Json(ValidateResponse {
+            valid: false,
+            error: Some(msg),
+            diagnostics: Vec::new(),
+        }),
+    )
+}
+
 /// `PATCH /api/hub/config/patch` — merge a JSON diff into the existing
 /// `hub/config.toml`, validate, save, trigger a hub reload if running.
 pub(super) async fn api_hub_config_patch(
     State(state): State<HubApiState>,
     Json(diff): Json<serde_json::Value>,
 ) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
-    let bad_request = |msg: String| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(msg),
-                diagnostics: Vec::new(),
-            }),
-        )
-    };
-
-    let Some(diff_map) = diff.as_object() else {
-        return Err(bad_request(
-            "hub config patch must be a JSON object".to_string(),
-        ));
-    };
-
-    let config_path = state.hub_dir.join("config.toml");
-    let existing = match tokio::fs::read_to_string(&config_path).await {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            tracing::error!(error = %e, path = %config_path.display(), "failed to read hub config.toml for patching");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ValidateResponse {
-                    valid: false,
-                    error: Some(format!("failed to read hub config.toml: {e}")),
-                    diagnostics: Vec::new(),
-                }),
-            ));
-        }
-    };
-
-    let patched =
-        crate::config::patch::apply_patch(&existing, diff_map, "hub/config.toml").map_err(|msg| {
-            tracing::warn!(error = %msg, path = %config_path.display(), "hub config.toml patch rejected");
-            bad_request(msg)
-        })?;
-
-    crate::config::HubConfig::validate_toml(&patched, &state.hub_dir).map_err(|e| {
-        tracing::warn!(error = %e, path = %config_path.display(), "patched hub config.toml failed validation");
-        bad_request(e)
-    })?;
-
-    let checkpoint_id = state
-        .checkpoint_config_id_before_write("patch hub config.toml")
-        .await;
-    crate::util::fs::atomic_write(&config_path, &patched)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, path = %config_path.display(), "failed to write patched hub config.toml");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ValidateResponse {
-                    valid: false,
-                    error: Some(format!("failed to write hub config.toml: {e}")),
-                    diagnostics: Vec::new(),
-                }),
-            )
-        })?;
+    let checkpoint_id = patch_hub_config(
+        &state.hub_dir,
+        &state.checkpoints,
+        &diff,
+        "patch hub config.toml",
+        |text| crate::config::HubConfig::validate_toml(text, &state.hub_dir),
+    )
+    .await
+    .map_err(hub_patch_failed)?;
 
     state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
 
