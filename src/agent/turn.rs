@@ -541,9 +541,7 @@ async fn notice_images_omitted(
         .publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent {
-                message: images_omitted_notice(omitted, new_images),
-            },
+            NoticeEvent::new(images_omitted_notice(omitted, new_images)),
         )
         .await
     {
@@ -3873,7 +3871,7 @@ mod tests {
             let message = format!("end of turn {n}");
             let end = topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
             publisher
-                .publish(end, NoticeEvent { message })
+                .publish(end, NoticeEvent::new(message))
                 .await
                 .unwrap();
         }
