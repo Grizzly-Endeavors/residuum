@@ -195,6 +195,7 @@ const AGENT_CONFIG_KEYS: Readonly<Record<string, AgentSectionId>> = {
   discord: "connections",
   telegram: "connections",
   teams: "connections",
+  slack: "connections",
   webhooks: "connections",
   skills: "tools",
   tools: "tools",

@@ -302,6 +302,13 @@ impl WorkspaceLayout {
         self.root.join("telegram_state.json")
     }
 
+    /// Path to `slack_state.json` -- the Slack owner (and, once the
+    /// outbound side lands, known conversation references).
+    #[must_use]
+    pub fn slack_state_json(&self) -> PathBuf {
+        self.root.join("slack_state.json")
+    }
+
     /// Path to `scheduled_actions.json` -- persisted one-off scheduled actions.
     #[must_use]
     pub fn scheduled_actions_json(&self) -> PathBuf {

@@ -1,0 +1,22 @@
+{
+  "payload": {
+    "token": "verification-token",
+    "team_id": "T0001",
+    "api_app_id": "A0001",
+    "event": {
+      "type": "message",
+      "channel_type": "im",
+      "channel": "D0001",
+      "user": "U0001",
+      "text": "hello from slack",
+      "ts": "1728558000.000100",
+      "event_ts": "1728558000.000100"
+    },
+    "type": "event_callback",
+    "event_id": "Ev0001",
+    "event_time": 1728558000
+  },
+  "envelope_id": "env-evt-1",
+  "type": "events_api",
+  "accepts_response_payload": false
+}

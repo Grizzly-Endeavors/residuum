@@ -58,6 +58,22 @@ pub(crate) trait ChatOutbound: Send + Sync {
     /// Start a typing indicator. Dropping the sender stops it.
     fn start_typing(&self, target: Self::Target) -> tokio::sync::watch::Sender<()>;
 
+    /// A main-agent turn started, whatever endpoint it arrived on. Called
+    /// before the loop's own typing handling, and awaited inline — the same
+    /// backpressure discipline as sends. The event carries only the
+    /// correlation id, so a platform that needs the turn's origin (Slack's
+    /// working reaction, which must fire only for its own turns) resolves the
+    /// correlation through its own reply-target map. Default: nothing —
+    /// Telegram, Discord, and Teams signal typing through
+    /// [`Self::start_typing`] alone.
+    async fn turn_started(&self, _correlation_id: &str) {}
+
+    /// A main-agent turn finished, whatever its outcome. Called before
+    /// [`Self::release_reply`] drops the correlation's mapping, so an
+    /// implementation that still needs to resolve the turn can. Default:
+    /// nothing.
+    async fn turn_ended(&self, _correlation_id: &str) {}
+
     /// Send text, or a file when `attachment` is set.
     ///
     /// Empty content with no attachment succeeds without sending. A file the
@@ -75,6 +91,20 @@ pub(crate) trait ChatOutbound: Send + Sync {
 }
 
 /// Receive bus events for one chat platform until a subscription closes.
+///
+/// The `select!` below is deliberately `biased` with the `turn_lifecycle`
+/// arm polled LAST. Each event type arrives on its own subscriber channel,
+/// so nothing at the bus orders them against each other — but the gateway
+/// always publishes a turn's reply (or its failure) before the turn's
+/// `Ended`, on the broker's single ordered command stream. Polling the
+/// output topics before the lifecycle topic turns that publish order into
+/// processing order: by the time `Ended` is observable, its turn's output
+/// is already queued and is drained first, so an `Ended` handler (typing
+/// stop, `release_reply`, Slack's working-reaction removal) always runs
+/// after the turn's text — never between the text and its audience. The
+/// unbiased loop processed a queued `Ended` first ~67% of the time (task-10
+/// review C-1), so an end-of-turn handler routinely ran before the reply it
+/// was meant to follow.
 pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
     // One typing loop per in-flight turn, stopped by dropping its sender.
     let mut typing: std::collections::HashMap<String, tokio::sync::watch::Sender<()>> =
@@ -88,23 +118,10 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
 
     loop {
         tokio::select! {
-            event = subs.turn_lifecycle.recv() => {
-                match take_event(event, chat.name()) {
-                    ControlFlow::Break(clean) => {
-                        clean_exit = clean;
-                        break;
-                    }
-                    ControlFlow::Continue(TurnLifecycleEvent::Started { correlation_id }) => {
-                        if let Some(target) = chat.reply_target(&correlation_id).await {
-                            typing.insert(correlation_id, chat.start_typing(target));
-                        }
-                    }
-                    ControlFlow::Continue(TurnLifecycleEvent::Ended { correlation_id }) => {
-                        typing.remove(&correlation_id);
-                        chat.release_reply(&correlation_id);
-                    }
-                }
-            }
+            // Biased, lifecycle last — see this function's doc comment.
+            // The output topics come first in poll order so a turn's text
+            // is always delivered before its `Ended` is processed.
+            biased;
             event = subs.conversation_typing.recv() => {
                 match take_event(event, chat.name()) {
                     ControlFlow::Break(clean) => {
@@ -155,6 +172,28 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
                         break;
                     }
                     ControlFlow::Continue(err) => deliver_turn_error(&chat, err).await,
+                }
+            }
+            // Polled last: a turn's output, already queued whenever its
+            // `Ended` is, is always processed first (see the `biased` note
+            // above).
+            event = subs.turn_lifecycle.recv() => {
+                match take_event(event, chat.name()) {
+                    ControlFlow::Break(clean) => {
+                        clean_exit = clean;
+                        break;
+                    }
+                    ControlFlow::Continue(TurnLifecycleEvent::Started { correlation_id }) => {
+                        chat.turn_started(&correlation_id).await;
+                        if let Some(target) = chat.reply_target(&correlation_id).await {
+                            typing.insert(correlation_id, chat.start_typing(target));
+                        }
+                    }
+                    ControlFlow::Continue(TurnLifecycleEvent::Ended { correlation_id }) => {
+                        typing.remove(&correlation_id);
+                        chat.turn_ended(&correlation_id).await;
+                        chat.release_reply(&correlation_id);
+                    }
                 }
             }
         }

@@ -107,6 +107,10 @@ export interface ConfigFields {
   teams_respond_to_others: boolean;
   teams_context_messages: string;
   teams_port: string;
+  slack_bot_token: string;
+  slack_app_token: string;
+  slack_respond_to_others: boolean;
+  slack_working_reaction: string;
   a2a_enabled: boolean;
   a2a_port: string;
   a2a_public_url: string;
@@ -210,6 +214,10 @@ export function defaultConfigFields(): ConfigFields {
     teams_respond_to_others: false,
     teams_context_messages: "",
     teams_port: "",
+    slack_bot_token: "",
+    slack_app_token: "",
+    slack_respond_to_others: false,
+    slack_working_reaction: "",
     a2a_enabled: true,
     a2a_port: "",
     a2a_public_url: "",
@@ -415,6 +423,14 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.teams_respond_to_others = bool(teams.respond_to_others, false);
     fields.teams_context_messages = str(teams.context_messages);
     fields.teams_port = str(teams.port);
+  }
+
+  const slack = doc.slack as Record<string, unknown> | undefined;
+  if (slack) {
+    fields.slack_bot_token = str(slack.bot_token);
+    fields.slack_app_token = str(slack.app_token);
+    fields.slack_respond_to_others = bool(slack.respond_to_others, false);
+    fields.slack_working_reaction = str(slack.working_reaction);
   }
 
   const a2a = doc.a2a as Record<string, unknown> | undefined;
@@ -950,6 +966,21 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     default: "20",
   },
   { key: "teams_port", path: ["teams", "port"], kind: "numberDefault", default: "7701" },
+
+  { key: "slack_bot_token", path: ["slack", "bot_token"], kind: "string" },
+  { key: "slack_app_token", path: ["slack", "app_token"], kind: "string" },
+  {
+    key: "slack_respond_to_others",
+    path: ["slack", "respond_to_others"],
+    kind: "bool",
+    default: false,
+  },
+  {
+    key: "slack_working_reaction",
+    path: ["slack", "working_reaction"],
+    kind: "stringDefault",
+    default: "eyes",
+  },
 
   { key: "a2a_enabled", path: ["a2a", "enabled"], kind: "bool", default: true },
   { key: "a2a_port", path: ["a2a", "port"], kind: "numberDefault", default: "7702" },

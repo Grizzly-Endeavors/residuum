@@ -1,4 +1,4 @@
-//! Discord, Telegram, and Teams tasks the event loop supervises together.
+//! Discord, Telegram, Slack, and Teams tasks the event loop supervises together.
 //!
 //! Each running adapter is a name, a task handle, and a shutdown signal.
 //! Reload and shutdown address an adapter by name instead of a dedicated

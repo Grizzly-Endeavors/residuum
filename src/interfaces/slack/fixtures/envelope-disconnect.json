@@ -1,0 +1,5 @@
+{
+  "type": "disconnect",
+  "reason": "too_many_websockets",
+  "debug_info": {"host": "applink"}
+}

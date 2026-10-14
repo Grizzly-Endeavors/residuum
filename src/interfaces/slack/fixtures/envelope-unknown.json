@@ -1,0 +1,18 @@
+{
+  "payload": {
+    "token": "verification-token",
+    "team_id": "T0001",
+    "team_domain": "example",
+    "channel_id": "C0001",
+    "channel_name": "general",
+    "user_id": "U0001",
+    "user_name": "someone",
+    "command": "/who",
+    "text": "",
+    "response_url": "https://hooks.slack.com/commands/T0001/0001/abc123",
+    "trigger_id": "0001.0001.abc123"
+  },
+  "envelope_id": "env-unknown-1",
+  "type": "slash_commands",
+  "accepts_response_payload": true
+}
