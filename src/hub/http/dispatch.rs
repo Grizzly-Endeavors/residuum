@@ -49,14 +49,16 @@ pub(super) fn routes(directory: Arc<dyn AgentDirectory>) -> Router {
 /// Which of an agent's routers serves an inner path.
 #[derive(Debug, PartialEq, Eq)]
 enum AgentRouterKind {
-    /// Config, providers, MCP, workspace-file, and checkpoint routes, which
-    /// work on a stopped or failed agent so the user can repair it.
+    /// Config, providers, MCP, workspace file API (`/api/workspace/...`),
+    /// checkpoint, and teams-setup routes, which work on a stopped or failed
+    /// agent so the user can repair it.
     Repair,
     /// Routes that only read and write the agent's files: chat history,
-    /// usage, the user inbox, and the raw A2A client settings. A running
-    /// agent serves them from its own router, at the cost it always had. Any
-    /// other agent gets them from a router that opens no checkpoint
-    /// repository, so they answer even when the repositories can't be opened.
+    /// usage, the user inbox, the raw A2A client settings, and the workspace
+    /// file links. A running agent serves them from its own router, at the
+    /// cost it always had. Any other agent gets them from a router that opens
+    /// no checkpoint repository, so they answer even when the repositories
+    /// can't be opened.
     Files,
     /// Everything else, which needs a running agent.
     Running,
@@ -88,7 +90,7 @@ impl AgentRouterKind {
 /// file-only data routes.
 fn is_file_data_route(route: &[&str]) -> bool {
     match route {
-        ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] => true,
+        ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] | ["files", "workspace"] => true,
         ["inbox", rest @ ..] => matches!(
             rest,
             [] | ["archive"] | [_, "read" | "archive" | "restore"] | [_, "attachments", _]
@@ -338,6 +340,7 @@ mod tests {
             "/api/chat/history",
             "/api/usage",
             "/api/a2a/agents/raw",
+            "/api/files/workspace",
             "/api/inbox",
             "/api/inbox/archive",
             "/api/inbox/2026-09-30-note/read",
@@ -362,7 +365,7 @@ mod tests {
             "/api/sessions",
             "/api/configuration",
             "/api/workspaces",
-            "/api/files/workspace",
+            "/api/files/abc123",
             "/api/agent-inbox",
             "/api/chat",
             "/api/chat/history/extra",

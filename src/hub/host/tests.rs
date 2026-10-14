@@ -348,6 +348,14 @@ impl Fixture {
     }
 
     /// Write a user-inbox item named `id` into the agent's workspace.
+    /// Write `body` to `relative` in the agent's workspace, which is its
+    /// directory.
+    fn add_workspace_file(&self, name: &str, relative: &str, body: &str) {
+        let path = self.root.path().join(name).join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
     fn add_inbox_item(&self, name: &str, id: &str) {
         let dir = self.root.path().join(name).join("inbox/user");
         std::fs::create_dir_all(&dir).unwrap();
@@ -527,6 +535,8 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
     })
     .await;
     hub.add_inbox_item("scout", "20260930_pelican");
+    hub.add_workspace_file("scout", "notes/plan.md", "the plan");
+    let plan_link = "/api/agents/scout/files/workspace?path=notes%2Fplan.md";
 
     let (running_usage_status, running_usage) = hub.get("/api/agents/scout/usage").await;
     assert_eq!(running_usage_status, 200, "{running_usage}");
@@ -536,9 +546,11 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
         running_inbox.contains("20260930_pelican"),
         "{running_inbox}"
     );
+    assert_eq!(hub.get(plan_link).await, (200, "the plan".to_string()));
 
     hub.host.stop("scout").await.unwrap();
     assert_eq!(hub.state_of("scout"), AgentState::Stopped);
+    assert_eq!(hub.get(plan_link).await, (200, "the plan".to_string()));
 
     let (history_status, history) = hub.get("/api/agents/scout/chat/history").await;
     assert_eq!(history_status, 200, "{history}");
@@ -589,6 +601,12 @@ async fn assert_file_routes_answer(hub: &Fixture, name: &str) {
     assert_eq!(archive_status, 200, "{archive}");
     let (a2a_status, a2a) = hub.get(&format!("/api/agents/{name}/a2a/agents/raw")).await;
     assert_eq!(a2a_status, 200, "{a2a}");
+    let (plan_status, plan) = hub
+        .get(&format!(
+            "/api/agents/{name}/files/workspace?path=notes%2Fplan.md"
+        ))
+        .await;
+    assert_eq!((plan_status, plan.as_str()), (200, "the plan"), "{name}");
 }
 
 #[tokio::test]
@@ -608,6 +626,7 @@ async fn a_stopped_agents_history_and_inbox_answer_when_its_checkpoint_repositor
     hub.wait_for_a_turn_checkpoint("scout").await;
     hub.host.stop("scout").await.unwrap();
     hub.add_inbox_item("scout", "20260930_pelican");
+    hub.add_workspace_file("scout", "notes/plan.md", "the plan");
     hub.make_checkpoints_unopenable("scout");
 
     // The repair routes open the repositories, which shows they can't be
@@ -650,6 +669,7 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
     hub.wait_for_a_turn_checkpoint("scout").await;
     hub.wait_for_checkpoints_to_settle("scout").await;
     hub.add_inbox_item("scout", "20260930_pelican");
+    hub.add_workspace_file("scout", "notes/plan.md", "the plan");
     hub.make_checkpoints_unopenable("scout");
 
     // A route that opens the repositories now fails, so the file routes
