@@ -586,6 +586,40 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
     assert_eq!(status_status, 200, "{status_body}");
 }
 
+#[tokio::test]
+async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
+    let hub = Fixture::new(&["scout"], "").await;
+    // A file outside the workspace, linked before the agent last stopped.
+    let outside = hub.root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let report = outside.join("report.txt");
+    std::fs::write(&report, "the report").unwrap();
+    let id = crate::gateway::file_server::FileRegistry::for_agent(
+        "scout",
+        &crate::workspace::layout::WorkspaceLayout::new(hub.root.path().join("scout")),
+    )
+    .register(report, "text/plain".to_string(), "report.txt".to_string())
+    .await;
+    let link = format!("/api/agents/scout/files/{id}");
+
+    hub.host.start_autostart().await;
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
+    assert_eq!(
+        hub.get(&link).await,
+        (200, "the report".to_string()),
+        "the running agent's registry loaded the saved link"
+    );
+
+    hub.host.stop("scout").await.unwrap();
+    assert_eq!(hub.state_of("scout"), AgentState::Stopped);
+    assert_eq!(
+        hub.get(&link).await,
+        (200, "the report".to_string()),
+        "the hub serves the saved link while the agent is stopped"
+    );
+    assert_eq!(hub.get("/api/agents/scout/files/not-a-token").await.0, 404);
+}
+
 /// Assert that the agent's history, usage, inbox, and raw A2A settings
 /// answer with what is on disk.
 async fn assert_file_routes_answer(hub: &Fixture, name: &str) {

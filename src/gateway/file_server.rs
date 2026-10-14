@@ -78,8 +78,11 @@ struct FileEntry {
 }
 
 impl FileEntry {
+    /// Whether the link no longer serves at `now`. No registration is due
+    /// more than one TTL out, so an entry that is (the clock was set back
+    /// since, or the file was edited by hand) counts as expired too.
     fn is_expired(&self, now: DateTime<Utc>) -> bool {
-        self.expires_at <= now
+        self.expires_at <= now || self.expires_at > now + chrono::Duration::seconds(FILE_TTL_SECS)
     }
 }
 
@@ -87,6 +90,12 @@ impl FileEntry {
 type Entries = HashMap<String, FileEntry>;
 
 /// The token registrations of one agent.
+///
+/// The saved entries are trusted as the agent's own registrations. Anything
+/// that can write the agent's directory can add an entry naming any path, but
+/// the agent can already register any path with `send_message`, so a forged
+/// entry adds no capability. A rule on which paths may be linked belongs at
+/// registration, applied in [`FileRegistry::get`] as well.
 struct TokenLinks {
     /// The registrations, read from [`Self::store`] the first time they are
     /// used.
@@ -243,9 +252,11 @@ impl FileRegistry {
     /// serves the links the agent saved.
     #[must_use]
     pub fn for_agent(agent_name: impl Into<String>, layout: &WorkspaceLayout) -> Self {
-        Self::new(agent_name)
-            .with_workspace_root(layout.root().to_path_buf())
-            .with_store(layout.file_links_json())
+        Self {
+            links: Arc::new(TokenLinks::new(Some(layout.file_links_json()))),
+            workspace_root: Some(layout.root().to_path_buf()),
+            agent_name: agent_name.into(),
+        }
     }
 
     /// Serve a file under `root` by its durable workspace-relative URL
@@ -253,16 +264,6 @@ impl FileRegistry {
     #[must_use]
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.workspace_root = Some(root);
-        self
-    }
-
-    /// Keep the token registrations in `store`: read from it on first use,
-    /// with every registration and sweep written back to it. It replaces the
-    /// registrations, so it belongs where the registry is built, before the
-    /// registry is cloned.
-    #[must_use]
-    pub fn with_store(mut self, store: PathBuf) -> Self {
-        self.links = Arc::new(TokenLinks::new(Some(store)));
         self
     }
 
@@ -587,6 +588,33 @@ mod tests {
                 Utc::now() - chrono::Duration::seconds(1),
             )
             .await
+    }
+
+    #[tokio::test]
+    async fn an_entry_due_more_than_an_hour_out_counts_as_expired() {
+        let registry = FileRegistry::new("scout");
+        let far = registry
+            .register_until(
+                PathBuf::from("/tmp/far.pdf"),
+                "application/pdf".to_string(),
+                "far.pdf".to_string(),
+                Utc::now() + chrono::Duration::seconds(FILE_TTL_SECS + 60),
+            )
+            .await;
+        let fresh = registry
+            .register(
+                PathBuf::from("/tmp/fresh.pdf"),
+                "application/pdf".to_string(),
+                "fresh.pdf".to_string(),
+            )
+            .await;
+
+        assert!(
+            registry.get(&far).await.is_none(),
+            "beyond one TTL is refused"
+        );
+        assert!(registry.get(&fresh).await.is_some(), "a fresh link serves");
+        assert_eq!(registry.sweep_expired().await, (1, 1), "and is swept");
     }
 
     #[tokio::test]
