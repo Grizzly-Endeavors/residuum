@@ -5,13 +5,15 @@ use super::*;
 use crate::workbench::forward::ArtifactsOrigin;
 
 /// The routes a request through the artifacts origin is refused.
-const BLOCKED: [&str; 6] = [
+const BLOCKED: [&str; 8] = [
     "/api/hub/shutdown",
     "/api/hub/stop-all",
     "/api/hub/update/check",
     "/api/hub/update/apply",
     "/api/hub/update/restart",
     "/api/hub/config/complete-setup",
+    "/api/hub/cloud/connect",
+    "/api/hub/cloud/disconnect",
 ];
 
 /// `request` as the artifacts listener forwards it.
@@ -87,9 +89,50 @@ async fn the_blocked_routes_work_without_the_marker() {
         .await;
     assert_eq!(setup["valid"], false);
 
+    let sign_in = h
+        .expect(
+            Method::POST,
+            "/api/hub/cloud/connect",
+            Some(json!({})),
+            StatusCode::OK,
+        )
+        .await;
+    assert!(sign_in["url"].as_str().unwrap().contains("state="));
+
+    h.post_expect("/api/hub/cloud/disconnect", StatusCode::OK)
+        .await;
+
     // `POST /api/hub/update/check` is left out: unmarked, it asks GitHub for
     // the latest release, which a test must not do. Its route exists (the
     // 405 above) and the block list's unit test covers its path.
+}
+
+#[tokio::test]
+async fn a_page_on_the_artifacts_origin_cannot_start_a_cloud_sign_in() {
+    let mut h = Harness::new();
+    let connect = Request::builder()
+        .method(Method::POST)
+        .uri("/api/hub/cloud/connect")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, body) = h.send_body(through_the_artifacts_origin(connect)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert!(body.get("url").is_none(), "{body}");
+
+    // No state was handed out, so no callback can be completed with one.
+    let (_, headers, _) = h
+        .send(request(
+            Method::GET,
+            "/cloud/callback?token=rst_from_a_page&state=AAAAAAAAAAAAAAAAAAAAAA",
+        ))
+        .await;
+    assert_eq!(
+        headers["location"],
+        "/home?settings=_all/cloud&cloud=not-started-here"
+    );
+    assert!(h.reload_rx.try_recv().is_err());
 }
 
 #[tokio::test]

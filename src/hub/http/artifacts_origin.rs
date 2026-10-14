@@ -20,15 +20,20 @@ use super::error::json_error;
 use crate::workbench::forward::ArtifactsOrigin;
 
 /// The hub routes a page on the artifacts origin is refused, whatever the
-/// method: shutdown, stop-all, update check, apply and restart, and setup
-/// completion. Routes match on their exact path, which the router does too.
-const BLOCKED_ROUTES: [&str; 6] = [
+/// method: shutdown, stop-all, update check, apply and restart, setup
+/// completion, and starting or switching off a Residuum Cloud connection. A
+/// page that could start a sign-in could read its `state` and complete the
+/// callback with a token of its own, signing the install in to another
+/// account. Routes match on their exact path, which the router does too.
+const BLOCKED_ROUTES: [&str; 8] = [
     "/api/hub/shutdown",
     "/api/hub/stop-all",
     "/api/hub/update/check",
     "/api/hub/update/apply",
     "/api/hub/update/restart",
     "/api/hub/config/complete-setup",
+    "/api/hub/cloud/connect",
+    "/api/hub/cloud/disconnect",
 ];
 
 /// Route prefixes a page on the artifacts origin is refused, at the prefix
@@ -80,7 +85,8 @@ mod tests {
             "/api/hub/update/status",
             "/api/hub/agents",
             "/api/hub/agents/scout/stop",
-            "/api/hub/cloud/disconnect",
+            "/api/hub/cloud/status",
+            "/api/hub/cloud/connectx",
             "/api/hub/config/raw",
             "/api/agents/scout/status",
             "/api/hub/shutdown/now",
