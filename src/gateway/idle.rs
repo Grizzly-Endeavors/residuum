@@ -1,8 +1,9 @@
 //! Idle transition logic.
 //!
 //! After a configurable period of user inactivity the gateway deactivates
-//! active skills, fires the observer, clears the message buffer, and
-//! injects a continuity system message. The observer fire-and-clear-and-summarize
+//! active skills, sends agent-started turns to the idle channel, fires the
+//! observer, clears the message buffer, and injects a continuity system
+//! message. The observer fire-and-clear-and-summarize
 //! sequence runs through the same background worker as every other automatic
 //! observe (see `crate::gateway::post_turn`), so [`execute_idle_transition`]
 //! itself returns almost immediately — [`apply_idle_continuation`] finishes
@@ -30,35 +31,38 @@ pub(super) async fn execute_idle_transition(
     let total_skills = deactivate_remaining_skills(rt).await;
     *observe_deadline = None;
 
-    // 2. Trigger the observe cycle in the background; steps 3-5 (clearing
-    // messages, switching the interface, injecting the continuity note)
-    // wait for it via `apply_idle_continuation` so a message that hasn't
-    // yet been observed is never wiped out by the clear below racing ahead
-    // of it.
+    // 2. Send agent-started turns to the idle channel now, not once the
+    // observe cycle below returns: an owner who writes while it runs moves
+    // routing back to themselves, and must not be overridden afterwards.
+    let idle_endpoint = idle_output_endpoint(&rt.endpoint_registry, &rt.cfg.idle.idle_channel);
+    rt.last_output_endpoint = Some(idle_endpoint.clone());
+
+    // 3. Trigger the observe cycle in the background; the remaining steps
+    // (clearing messages, injecting the continuity note) wait for it via
+    // `apply_idle_continuation` so a message that hasn't yet been observed
+    // is never wiped out by the clear racing ahead of it.
     let mem = MemorySubsystems::from_runtime(rt);
     rt.memory_worker.trigger_for_idle(
         mem,
         IdleContinuation {
             timeout_mins,
             total_skills,
-            idle_channel: rt.cfg.idle.idle_channel.clone(),
+            idle_endpoint,
         },
     );
 }
 
 /// Finish an idle transition once its background observe cycle's result
-/// arrives: clear the in-memory message buffer, switch where agent-started
-/// turns go, and inject the continuity system message. Called from
-/// `run_loop`'s `apply_post_turn_result`.
+/// arrives: clear the in-memory message buffer and inject the continuity
+/// system message. Called from `run_loop`'s `apply_post_turn_result`.
 pub(super) fn apply_idle_continuation(rt: &mut AgentRuntime, continuation: &IdleContinuation) {
     rt.agent.clear_messages();
 
-    rt.last_output_endpoint = Some(idle_output_endpoint(
-        &rt.endpoint_registry,
-        &continuation.idle_channel,
-    ));
-
-    let summary = format_idle_summary(continuation.timeout_mins, continuation.total_skills);
+    let summary = format_idle_summary(
+        continuation.timeout_mins,
+        continuation.total_skills,
+        &continuation.idle_endpoint,
+    );
     rt.agent.inject_system_message(&summary);
 }
 
@@ -121,8 +125,14 @@ async fn deactivate_remaining_skills(rt: &mut AgentRuntime) -> usize {
     count
 }
 
-/// Build the idle summary message injected into the agent context.
-fn format_idle_summary(timeout_mins: u64, skill_count: usize) -> String {
+/// Build the idle summary message injected into the agent context. It says
+/// where turns the agent starts now reach the user, so the agent doesn't
+/// assume a chat notification went out when it only reached the web app.
+fn format_idle_summary(
+    timeout_mins: u64,
+    skill_count: usize,
+    idle_endpoint: &EndpointName,
+) -> String {
     let mut parts = vec![format!(
         "[Idle] Transitioned to idle after {timeout_mins}m of inactivity."
     )];
@@ -131,6 +141,17 @@ fn format_idle_summary(timeout_mins: u64, skill_count: usize) -> String {
         parts.push(format!(
             "Deactivated {skill_count} skill{}.",
             if skill_count == 1 { "" } else { "s" }
+        ));
+    }
+
+    if idle_endpoint.as_ref() == WEB_UI_ENDPOINT {
+        parts.push(
+            "Until the user writes again, turns you start reach them only in the web app; use send_message to reach them on a chat."
+                .to_string(),
+        );
+    } else {
+        parts.push(format!(
+            "Until the user writes again, turns you start reach them on {idle_endpoint}."
         ));
     }
 
@@ -184,30 +205,49 @@ mod tests {
         }
     }
 
+    const WEB_NOTE: &str = "Until the user writes again, turns you start reach them only in the web app; use send_message to reach them on a chat.";
+
+    fn web() -> EndpointName {
+        EndpointName::from(WEB_UI_ENDPOINT)
+    }
+
     #[test]
     fn format_idle_summary_with_skills() {
-        let result = format_idle_summary(15, 3);
+        let result = format_idle_summary(15, 3, &web());
         assert_eq!(
             result,
-            "[Idle] Transitioned to idle after 15m of inactivity. Deactivated 3 skills."
+            format!(
+                "[Idle] Transitioned to idle after 15m of inactivity. Deactivated 3 skills. {WEB_NOTE}"
+            )
         );
     }
 
     #[test]
     fn format_idle_summary_nothing_active() {
-        let result = format_idle_summary(30, 0);
+        let result = format_idle_summary(30, 0, &web());
         assert_eq!(
             result,
-            "[Idle] Transitioned to idle after 30m of inactivity."
+            format!("[Idle] Transitioned to idle after 30m of inactivity. {WEB_NOTE}")
         );
     }
 
     #[test]
     fn format_idle_summary_single_skill_no_plural() {
-        let result = format_idle_summary(30, 1);
+        let result = format_idle_summary(30, 1, &web());
         assert_eq!(
             result,
-            "[Idle] Transitioned to idle after 30m of inactivity. Deactivated 1 skill."
+            format!(
+                "[Idle] Transitioned to idle after 30m of inactivity. Deactivated 1 skill. {WEB_NOTE}"
+            )
+        );
+    }
+
+    #[test]
+    fn format_idle_summary_names_a_chat_idle_channel() {
+        let result = format_idle_summary(30, 0, &EndpointName::from("telegram"));
+        assert_eq!(
+            result,
+            "[Idle] Transitioned to idle after 30m of inactivity. Until the user writes again, turns you start reach them on telegram."
         );
     }
 }
