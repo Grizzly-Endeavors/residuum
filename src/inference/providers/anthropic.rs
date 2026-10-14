@@ -37,6 +37,10 @@ const OAUTH_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for 
 /// Lets a model that takes a manual thinking budget reason between tool calls.
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
+/// Lets a request say what happens to a replayed thinking block whose
+/// conversation changed after it was written (`thinking.block_binding`).
+const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+
 /// The least thinking budget the API accepts in manual mode.
 const MIN_THINKING_BUDGET: u32 = 1024;
 
@@ -450,12 +454,13 @@ impl AnthropicClient {
         if oauth {
             betas.push(OAUTH_BETA);
         }
-        if request
-            .thinking
-            .as_ref()
-            .is_some_and(AnthropicThinking::is_manual)
-        {
-            betas.push(INTERLEAVED_THINKING_BETA);
+        if let Some(thinking) = &request.thinking {
+            if thinking.is_manual() {
+                betas.push(INTERLEAVED_THINKING_BETA);
+            }
+            if thinking.block_binding.is_some() {
+                betas.push(THINKING_BINDING_BETA);
+            }
         }
         if !betas.is_empty() {
             req_builder = req_builder.header("anthropic-beta", betas.join(","));
@@ -581,6 +586,7 @@ impl AnthropicClient {
         resp.usage = usage;
         resp.thinking = thinking;
         resp.stop_reason = response.stop_reason.as_deref().map(map_stop_reason);
+        resp.thinking_dropped = count_dropped_thinking(&response.input_transformations);
         resp
     }
 }
@@ -624,6 +630,26 @@ impl InferenceProvider for AnthropicClient {
     fn model_name(&self) -> &str {
         &self.model
     }
+}
+
+/// How many replayed thinking blocks the API reports dropping. The turn
+/// tells the user; the paths are only worth a debug line.
+fn count_dropped_thinking(transformations: &[AnthropicInputTransformation]) -> usize {
+    let mut dropped = 0;
+    for t in transformations {
+        if t.is_thinking_dropped() {
+            dropped += 1;
+            debug!(path = %t.path, reason = %t.reason, "the API dropped a replayed thinking block");
+        } else {
+            debug!(
+                kind = %t.r#type,
+                path = %t.path,
+                reason = %t.reason,
+                "the API reported an input transformation this client does not act on"
+            );
+        }
+    }
+    dropped
 }
 
 pub(crate) fn is_oauth_key(key: &str) -> bool {
@@ -805,6 +831,8 @@ enum StreamEvent {
 struct StreamMessageStart {
     #[serde(default)]
     usage: Option<PartialUsage>,
+    #[serde(default)]
+    input_transformations: Vec<AnthropicInputTransformation>,
 }
 
 #[derive(Deserialize)]
@@ -878,6 +906,7 @@ struct StreamAssembler<'a> {
     blocks: BTreeMap<usize, StreamBlock>,
     usage: Option<PartialUsage>,
     stop_reason: Option<String>,
+    input_transformations: Vec<AnthropicInputTransformation>,
     stopped: bool,
 }
 
@@ -888,6 +917,7 @@ impl<'a> StreamAssembler<'a> {
             blocks: BTreeMap::new(),
             usage: None,
             stop_reason: None,
+            input_transformations: Vec::new(),
             stopped: false,
         }
     }
@@ -901,6 +931,7 @@ impl<'a> StreamAssembler<'a> {
                 if let Some(usage) = message.usage {
                     self.merge_usage(usage);
                 }
+                self.input_transformations = message.input_transformations;
             }
             StreamEvent::ContentBlockStart {
                 index,
@@ -1065,6 +1096,7 @@ impl<'a> StreamAssembler<'a> {
             content,
             usage,
             stop_reason: self.stop_reason,
+            input_transformations: self.input_transformations,
         })
     }
 }
@@ -1140,29 +1172,81 @@ struct AnthropicThinking {
     display: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     budget_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_binding: Option<AnthropicBlockBinding>,
 }
 
 impl AnthropicThinking {
     /// The model decides how much to think; the response carries a summary.
+    /// A replayed block whose conversation changed is dropped rather than
+    /// refused (see [`AnthropicBlockBinding`]).
     fn adaptive() -> Self {
         Self {
             r#type: "adaptive",
             display: Some("summarized"),
             budget_tokens: None,
+            block_binding: Some(AnthropicBlockBinding::DROP_BLOCK),
         }
     }
 
-    /// Think for up to `budget_tokens`.
+    /// Think for up to `budget_tokens`. Only models without adaptive thinking
+    /// get this, and they don't bind thinking blocks to the conversation, so
+    /// it carries no `block_binding`.
     fn manual(budget_tokens: u32) -> Self {
         Self {
             r#type: "enabled",
             display: None,
             budget_tokens: Some(budget_tokens),
+            block_binding: None,
         }
     }
 
     fn is_manual(&self) -> bool {
         self.budget_tokens.is_some()
+    }
+}
+
+/// What the API does with a replayed thinking block whose signature no
+/// longer matches the conversation before it.
+///
+/// Current Claude models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) bind
+/// each thinking block to everything ahead of it: the system prompt, the
+/// tool definitions and the earlier messages. The turn loop rebuilds the
+/// system prompt and the tool list (with whatever MCP servers offer right
+/// then) for every model call, so an MCP server connecting, disconnecting or
+/// changing its tools in the middle of a tool-use exchange changes that
+/// prefix, and by default the API refuses the next request with "Invalid
+/// `signature` in `thinking` block". `drop_block` makes it drop that block
+/// and every thinking block after it and answer anyway; the response's
+/// `input_transformations` says so (see [`AnthropicInputTransformation`]).
+/// Sonnet 5.5 and Haiku 5.5 accept this only beside `adaptive` thinking.
+/// <https://platform.claude.com/docs/build-with-claude/preserved-thinking>
+#[derive(Debug, Clone, Serialize)]
+struct AnthropicBlockBinding {
+    prefix_mismatch_behavior: &'static str,
+}
+
+impl AnthropicBlockBinding {
+    const DROP_BLOCK: Self = Self {
+        prefix_mismatch_behavior: "drop_block",
+    };
+}
+
+/// Something the API changed in the request before the model read it.
+#[derive(Debug, Deserialize)]
+struct AnthropicInputTransformation {
+    #[serde(default)]
+    r#type: String,
+    /// Where in the request, e.g. `messages.1.content.0`.
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    reason: String,
+}
+
+impl AnthropicInputTransformation {
+    fn is_thinking_dropped(&self) -> bool {
+        self.r#type == "thinking_dropped"
     }
 }
 
@@ -1373,6 +1457,8 @@ struct AnthropicResponse {
     content: Vec<AnthropicContentBlock>,
     usage: Option<AnthropicUsage>,
     stop_reason: Option<String>,
+    #[serde(default)]
+    input_transformations: Vec<AnthropicInputTransformation>,
 }
 
 /// Map Anthropic's `stop_reason` to the provider-agnostic [`StopReason`].
@@ -2840,7 +2926,11 @@ mod tests {
         let body: Value = serde_json::from_slice(&requests.first().unwrap().body).unwrap();
         assert_eq!(
             at(&body, "/thinking"),
-            &json!({"type": "adaptive", "display": "summarized"}),
+            &json!({
+                "type": "adaptive",
+                "display": "summarized",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"}
+            }),
             "an on toggle asks for adaptive thinking"
         );
         assert!(
@@ -3998,5 +4088,174 @@ mod tests {
             2,
             "thinking comes through complete too"
         );
+    }
+
+    #[tokio::test]
+    async fn adaptive_thinking_asks_to_drop_blocks_whose_conversation_changed() {
+        let server = MockServer::start().await;
+        mount_ok(&server).await;
+        let client = test_client(&server.uri());
+        client
+            .complete(&simple_user_message(), &[], &thinking_options(4096))
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let request = requests.first().unwrap();
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(
+            at(&body, "/thinking"),
+            &json!({
+                "type": "adaptive",
+                "display": "summarized",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"}
+            }),
+            "adaptive thinking asks for a mismatched block to be dropped"
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("anthropic-beta")
+                .map(|v| v.to_str().unwrap()),
+            Some(THINKING_BINDING_BETA),
+            "block_binding needs its beta header"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_thinking_and_thinking_off_send_no_block_binding() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "thinking": {"type": "adaptive"}
+            })))
+            .respond_with(ResponseTemplate::new(400).set_body_json(adaptive_unsupported_body()))
+            .mount(&server)
+            .await;
+        mount_ok(&server).await;
+
+        let client = test_client(&server.uri());
+        client
+            .complete(&simple_user_message(), &[], &thinking_options(4096))
+            .await
+            .unwrap();
+        client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let manual = requests.get(1).unwrap();
+        let manual_body: Value = serde_json::from_slice(&manual.body).unwrap();
+        assert_eq!(at(&manual_body, "/thinking/type"), &json!("enabled"));
+        assert!(
+            at(&manual_body, "/thinking").get("block_binding").is_none(),
+            "a manual budget carries no block_binding: {manual_body}"
+        );
+        assert_eq!(
+            manual
+                .headers
+                .get("anthropic-beta")
+                .map(|v| v.to_str().unwrap()),
+            Some(INTERLEAVED_THINKING_BETA),
+            "only the interleaved-thinking beta goes with a manual budget"
+        );
+        let off = requests.get(2).unwrap();
+        assert!(
+            off.headers.get("anthropic-beta").is_none(),
+            "no beta header without thinking"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_and_block_binding_betas_are_sent_together() {
+        let server = MockServer::start().await;
+        mount_ok(&server).await;
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = AnthropicClient::new(
+            http,
+            server.uri(),
+            "sk-ant-oat01-test",
+            TEST_MODEL,
+            4096,
+            RetryConfig::no_retry(),
+        );
+        client
+            .complete(&simple_user_message(), &[], &thinking_options(4096))
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests
+                .first()
+                .unwrap()
+                .headers
+                .get("anthropic-beta")
+                .map(|v| v.to_str().unwrap()),
+            Some(format!("{OAUTH_BETA},{THINKING_BINDING_BETA}").as_str()),
+            "the betas share one header"
+        );
+    }
+
+    /// Two input transformations: one dropped thinking block, and one of a
+    /// kind this client doesn't act on.
+    fn transformations() -> Value {
+        json!([
+            {"type": "thinking_dropped", "path": "messages.1.content.0",
+                "reason": "prefix_binding_mismatch"},
+            {"type": "something_else", "path": "system"}
+        ])
+    }
+
+    #[tokio::test]
+    async fn dropped_thinking_is_reported_from_a_whole_response() {
+        let server = MockServer::start().await;
+        let mut body = success_response_body();
+        body.as_object_mut()
+            .unwrap()
+            .insert("input_transformations".to_string(), transformations());
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let response = test_client(&server.uri())
+            .complete(&simple_user_message(), &[], &thinking_options(4096))
+            .await
+            .unwrap();
+        assert_eq!(response.thinking_dropped, 1, "one block was dropped");
+        assert_eq!(response.content, "Hello! How can I help?");
+    }
+
+    #[tokio::test]
+    async fn dropped_thinking_is_reported_from_message_start_when_streaming() {
+        let start = event(
+            "message_start",
+            json!({"type": "message_start", "message": {
+                "id": "msg_1", "type": "message", "role": "assistant", "content": [],
+                "model": "claude-test", "stop_reason": null,
+                "usage": {"input_tokens": 5, "output_tokens": 1},
+                "input_transformations": transformations()
+            }}),
+        );
+        let events = [
+            start,
+            block_start(0, json!({"type": "text", "text": ""})),
+            delta(0, json!({"type": "text_delta", "text": "Carrying on."})),
+            block_stop(0),
+            message_end("end_turn", json!({"output_tokens": 3})),
+        ]
+        .concat();
+        let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
+        let response = result.unwrap();
+        assert_eq!(response.thinking_dropped, 1, "one block was dropped");
+        assert_eq!(response.content, "Carrying on.");
+    }
+
+    #[tokio::test]
+    async fn a_response_without_transformations_drops_nothing() {
+        let (result, _, _) = stream_from(sse_response(&[full_stream()]), test_client).await;
+        assert_eq!(result.unwrap().thinking_dropped, 0);
     }
 }
