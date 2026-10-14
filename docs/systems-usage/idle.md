@@ -1,10 +1,10 @@
 # Idle
 
-After a configurable period of user inactivity, the gateway runs an idle transition: it deactivates any explicitly-activated skills, fires the observer and clears the in-memory message buffer, switches where agent-started turns are delivered (the web UI unless `idle_channel` names a chat), and injects a continuity message into the agent's history. There is no polling — a single deadline in the event loop's `select!` loop (`idle_deadline`, alongside `observe_deadline`) fires once and is cleared.
+After a configurable period of user inactivity, the gateway runs an idle transition: it deactivates any explicitly-activated skills, switches where agent-started turns are delivered (the web UI unless `idle_channel` names a chat), fires the observer and clears the in-memory message buffer, and injects a continuity message into the agent's history. There is no polling — a single deadline in the event loop's `select!` loop (`idle_deadline`, alongside `observe_deadline`) fires once and is cleared.
 
 ## Trigger
 
-Only inbound user messages reset the idle deadline (`handle_inbound_message` in `src/gateway/event_loop/turns.rs`) — background-origin turns (`origin.endpoint == "background"`) do not. On a qualifying message, `idle_deadline` is set to `now + rt.cfg.idle.timeout`, provided the timeout isn't zero. When the deadline expires, `idle::execute_idle_transition` (`src/gateway/idle.rs`) runs and `idle_deadline` is cleared back to `None` (`src/gateway/event_loop/run_loop.rs`). Nothing resets the deadline besides a new user message — tool calls, background task results, and pulses are not activity.
+Only a person's messages reset the idle deadline: at the end of the turn the message started (`handle_inbound_message` in `src/gateway/event_loop/turns.rs`), or, for a message that joins a running agent-started turn, the moment it arrives (`OwnerFollow`, see below). Background-origin turns (`origin.endpoint == "background"`) do not. The deadline is set to `now + rt.cfg.idle.timeout` (with `last_user_message_instant` set to `now`), provided the timeout isn't zero. When the deadline expires, `idle::execute_idle_transition` (`src/gateway/idle.rs`) runs and `idle_deadline` is cleared back to `None` (`src/gateway/event_loop/run_loop.rs`). Nothing resets the deadline besides a person's message — tool calls, background task results, and pulses are not activity.
 
 `timeout_minutes = 0` disables the system entirely: the deadline is never set.
 
@@ -13,9 +13,9 @@ Only inbound user messages reset the idle deadline (`handle_inbound_message` in 
 `execute_idle_transition` runs these steps in order:
 
 1. **Deactivate explicitly-activated skills** (`deactivate_remaining_skills`).
-2. **Fire the observer, then clear the in-memory message buffer.** Runs the normal `execute_observation` path so the episode gets a proper summary, then calls `rt.agent.clear_messages()` so the agent doesn't see stale mid-conversation context on the next turn. Also clears `observe_deadline`.
-3. **Switch where agent-started turns go** to `idle.idle_channel` (see below).
-4. **Inject a continuity system message** built by `format_idle_summary`, e.g. `[Idle] Transitioned to idle after 30m of inactivity. Deactivated 2 skills.`
+2. **Switch where agent-started turns go** to `idle.idle_channel` (see below). This happens when the transition starts, so an owner who writes while the observer runs moves routing back to themselves and stays there.
+3. **Fire the observer, then clear the in-memory message buffer.** Runs the normal `execute_observation` path in the background memory worker so the episode gets a proper summary; once it returns, `apply_idle_continuation` calls `rt.agent.clear_messages()` so the agent doesn't see stale mid-conversation context on the next turn. Also clears `observe_deadline`.
+4. **Inject a continuity system message** built by `format_idle_summary`, also from `apply_idle_continuation`. It tells the agent where turns it starts now reach the user, e.g. `[Idle] Transitioned to idle after 30m of inactivity. Deactivated 2 skills. Until the user writes again, turns you start reach them only in the web app; use send_message to reach them on a chat.` With a chat idle channel the last sentence is `Until the user writes again, turns you start reach them on telegram.`
 
 ## Switching where agent-started turns go
 
@@ -25,7 +25,9 @@ The idle transition sets `rt.last_output_endpoint` to the resolved `idle.idle_ch
 
 With the default (`ws`), a chat interface is handed none of an agent-started turn's events after the idle period: no typing indicator, intermediate text, reply or error. The web UI shows the turn in the main conversation as it shows every main turn. The agent still reaches a chat deliberately with `send_message`, and a `switch_endpoint` the agent sets still takes precedence over the idle channel, as it does over the owner's last endpoint. The owner's next message, from any interface, sets `last_output_endpoint` back to where they wrote from.
 
-Owner-started turns are unaffected: a person's message is always answered where it came from.
+A person's message can also arrive while an agent-started turn is running. It joins that turn, as any mid-turn message does, and the owner counts as back on that interface from the moment it arrives (`OwnerFollow::owner_wrote_from` in `src/gateway/event_loop/turns.rs`): `last_output_endpoint` moves there, the `switch_endpoint` override is cleared, and the idle timer restarts. The running turn's output endpoint is a `LiveOutputEndpoint` the turn reads at each publish, so the rest of that turn goes there too: its typing indicator moves to the owner's chat (the chat it was on, if any, gets the turn's end), and its later intermediate text, its reply, and a failure are delivered there. So a message the owner sends is always answered where they sent it.
+
+Owner-started turns keep their output where they started: a person's message is always answered where it came from.
 
 ## Configuration
 
@@ -46,7 +48,7 @@ The web UI edits both keys in the agent's Runtime settings (Advanced), under Whe
 A config reload that changes `[idle]` is detected via `ConfigDiff::idle_changed` (`src/gateway/reload.rs`) and translated into an `IdleAction`:
 
 - `Disable` — timeout became zero; clears `idle_deadline` immediately.
-- `Recalculate { new_timeout }` — timeout changed; the deadline is recomputed from `last_user_message_instant` plus the new timeout. If that recalculated deadline has already passed, the idle transition runs immediately instead of waiting for the next tick.
+- `Recalculate { new_timeout }` — the timeout or `idle_channel` changed; the deadline is recomputed from `last_user_message_instant` plus the timeout. If that recalculated deadline has already passed, the idle transition runs again immediately instead of waiting for the next tick. That is also how a new `idle_channel` takes effect while the owner is away: the transition re-runs (another observe, message clear and `[Idle]` message) and switches to the new channel.
 - `None` — no idle-relevant change.
 
 ## Reactivation
@@ -57,5 +59,5 @@ There is none, automatic or otherwise. The next user message is processed normal
 
 - **Skills**: explicitly-activated skills are swept in step 1. See [skills.md](skills.md).
 - **Memory**: the observer fires before the message buffer is cleared, so the idle boundary is captured in the episode record rather than lost. See [memory.md](memory.md).
-- **Notifications**: switching `last_output_endpoint` decides where relayed session results, teammates' messages and other agent-started turns surface after the user goes idle. See [notifications.md](notifications.md).
+- **Notifications**: switching `last_output_endpoint` decides where relayed session results, teammates' messages and other agent-started turns surface after the user goes idle, until the user writes again. See [notifications.md](notifications.md).
 - **Background Tasks**: unaffected by idle — background tasks, pulses, and scheduled actions keep running regardless of user activity; only user messages drive the idle timer. See [background-tasks.md](background-tasks.md).

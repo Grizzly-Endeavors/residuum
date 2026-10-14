@@ -49,7 +49,7 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 ### Interactive endpoints
 
 Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agent can:
-- `switch_endpoint` to send background output (relayed session results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from. Without a switch, background output follows the user's last message until they have been idle for `[idle] timeout_minutes`; after that it goes to the web UI, or to the chat `[idle] idle_channel` names. `send_message` reaches a chat at any time.
+- `switch_endpoint` to send background output (relayed session results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from. Without a switch, background output follows the user's last message until they have been idle for `[idle] timeout_minutes`; after that it goes to the web UI, or to the chat `[idle] idle_channel` names. A message the user sends while such a turn runs joins it and moves the rest of it, and later background output, to where they wrote. `send_message` reaches a chat at any time.
 - `send_message` to send a one-off message to any interactive endpoint.
 - `send_message` with `conversation` to post into a specific DM, group chat, or channel on a chat interface (Discord, Telegram, Teams). `list_conversations` shows the IDs. Without `conversation`, a proactive message on a chat interface goes to the owner's direct message.
 
