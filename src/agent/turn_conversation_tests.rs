@@ -600,8 +600,8 @@ async fn a_teammates_message_folded_in_mid_turn_is_announced_with_its_sender() {
     let announced = run
         .main
         .iter()
-        .find_map(|event| match event {
-            MainConversationEvent::UserMessage {
+        .find_map(|event| {
+            if let MainConversationEvent::UserMessage {
                 id,
                 turn_id,
                 content,
@@ -609,8 +609,12 @@ async fn a_teammates_message_folded_in_mid_turn_is_announced_with_its_sender() {
                 agent_sender,
                 endpoint,
                 ..
-            } => Some((id, turn_id, content, sender, agent_sender, endpoint)),
-            _ => None,
+            } = event
+            {
+                Some((id, turn_id, content, sender, agent_sender, endpoint))
+            } else {
+                None
+            }
         })
         .expect("the teammate's message is announced");
     assert_eq!(announced.0, &delivered_id);

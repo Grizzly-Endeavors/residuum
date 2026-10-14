@@ -312,21 +312,21 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 
     let turn_id = str_at(started, "reply_to");
-    let message = frame_of(&frames, "user_message");
-    assert_eq!(str_at(message, "turn_id"), turn_id);
-    assert_eq!(str_at(message, "endpoint"), "background");
+    let announced = frame_of(&frames, "user_message");
+    assert_eq!(str_at(announced, "turn_id"), turn_id);
+    assert_eq!(str_at(announced, "endpoint"), "background");
     assert_eq!(
-        message["agent_sender"],
+        announced["agent_sender"],
         json!({ "address": "agent:guest", "category": "teammate" }),
-        "the frame names the teammate, so the web shows its card live: {message}"
+        "the frame names the teammate, so the web shows its card live: {announced}"
     );
     assert!(
-        message.get("sender").is_none(),
-        "no person sent it: {message}"
+        announced.get("sender").is_none(),
+        "no person sent it: {announced}"
     );
     assert!(
-        str_at(message, "content").ends_with("status check"),
-        "{message}"
+        str_at(announced, "content").ends_with("status check"),
+        "{announced}"
     );
     // The turn is written to history before `turn_ended` goes out, so a page
     // that reloads history on `turn_ended` finds it there.

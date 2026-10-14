@@ -550,7 +550,11 @@ mod tests {
 
         let snapshot = journal.snapshot();
         assert_eq!(texts(&snapshot), ["user:status?", "started:bg-1"]);
-        let opening = snapshot.turn.as_ref().map(|t| &t.entries[0].event);
+        let opening = snapshot
+            .turn
+            .as_ref()
+            .and_then(|t| t.entries.first())
+            .map(|entry| &entry.event);
         assert!(
             matches!(
                 opening,
