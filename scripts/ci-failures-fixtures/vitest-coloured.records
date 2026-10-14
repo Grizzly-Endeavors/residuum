@@ -1,2 +1,3 @@
 vitest	vt|src/zz-ci-failures-import.test.ts [ src/zz-ci-failures-import.test.ts ]	src/zz-ci-failures-import.test.ts	web/src/zz-ci-failures-import.test.ts	1		Error: Cannot find module './zz-does-not-exist' imported from /home/runner/_work/residuum/residuum/web/src/zz-ci-failures-import.test.ts
 vitest	vt|src/zz-ci-failures-probe.test.ts > probe suite > fails the probe	src/zz-ci-failures-probe.test.ts > probe suite > fails the probe	web/src/zz-ci-failures-probe.test.ts	1		AssertionError: expected 2 to be 3 // Object.is equality
+vitest	vt|zz-ci-failures-root.test.ts > root suite > fails at the root	zz-ci-failures-root.test.ts > root suite > fails at the root	web/zz-ci-failures-root.test.ts	1		AssertionError: expected 2 to be 4 // Object.is equality
