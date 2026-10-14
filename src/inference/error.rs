@@ -35,7 +35,9 @@ impl InferenceError {
     ///
     /// - Request/Timeout/Stalled/StreamInterrupted: transient network failures
     /// - Parse: permanent -- malformed response won't improve
-    /// - Api: retryable only when the message indicates rate-limiting or overload
+    /// - Api: by its HTTP status when the message names one (a timeout, a
+    ///   rate limit or a server error); otherwise when the message indicates
+    ///   rate-limiting, overload or a server-side failure
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -45,14 +47,13 @@ impl InferenceError {
             Self::Parse(_) => false,
             Self::Api(msg) => {
                 let lower = msg.to_lowercase();
+                if let Some(status) = http_status(&lower) {
+                    return status == 408 || status == 429 || status >= 500;
+                }
                 lower.contains("rate")
                     || lower.contains("limit")
                     || lower.contains("overload")
                     || lower.contains("capacity")
-                    || lower.contains("429")
-                    || lower.contains("500")
-                    || lower.contains("502")
-                    || lower.contains("503")
                     || has_server_error_type(&lower)
             }
         }
@@ -120,6 +121,38 @@ const IMAGE_INPUT_REJECTIONS: &[&str] = &[
     "unknown variant `image_url`",
 ];
 
+/// The HTTP status a lowercased provider error names, read only where the
+/// clients put it: at the very start (`"429 too many requests: ..."`,
+/// Gemini's `"503 unavailable: ..."`) or right after `"error "`
+/// (`"anthropic api error 500 ..."`). Digits elsewhere, such as the column
+/// number in DeepSeek's `"... at line 1 column 15003"`, are not a status.
+fn http_status(lower: &str) -> Option<u16> {
+    let after_error = lower
+        .find("error ")
+        .and_then(|at| lower.get(at + "error ".len()..));
+    [Some(lower), after_error]
+        .into_iter()
+        .flatten()
+        .find_map(leading_status)
+}
+
+/// A three-digit status at the start of `text`, followed by anything but
+/// another digit.
+fn leading_status(text: &str) -> Option<u16> {
+    let digits = text.get(..3)?;
+    let ends = text
+        .chars()
+        .nth(3)
+        .is_none_or(|next| !next.is_ascii_digit());
+    if !ends || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse()
+        .ok()
+        .filter(|status| (100..600).contains(status))
+}
+
 /// Whether a lowercased provider error names a server-side failure by its
 /// error type rather than an HTTP status. A streaming response reports a
 /// failure after its `200` status has gone out, so the error type
@@ -130,11 +163,10 @@ fn has_server_error_type(lower: &str) -> bool {
 }
 
 /// A plain-language bucket for an [`InferenceError`], independent of which
-/// provider produced it. Providers today collapse their own status code and
+/// provider produced it. Providers collapse their own status code and
 /// error body into `InferenceError::Api`'s single string (see
-/// `src/inference/providers/`), so classification matches on that string —
-/// the same substring-matching approach `InferenceError::is_retryable`
-/// already uses for the same reason.
+/// `src/inference/providers/`), so classification reads the status where the
+/// clients put it (see [`http_status`]) and matches the rest of that string.
 enum FailureCategory {
     AuthFailed,
     RateLimited,
@@ -155,9 +187,10 @@ impl FailureCategory {
     /// "unclassified").
     fn from_api_message(msg: &str) -> Self {
         let lower = msg.to_lowercase();
-        let has_status = |codes: &[&str]| codes.iter().any(|c| lower.contains(c));
+        let status = http_status(&lower);
+        let has_status = |codes: &[u16]| status.is_some_and(|status| codes.contains(&status));
 
-        if has_status(&["401", "403"])
+        if has_status(&[401, 403])
             || lower.contains("invalid api key")
             || lower.contains("invalid x-api-key")
             || lower.contains("authentication_error")
@@ -165,7 +198,7 @@ impl FailureCategory {
             || lower.contains("incorrect api key")
         {
             Self::AuthFailed
-        } else if has_status(&["429"])
+        } else if has_status(&[429])
             || lower.contains("rate_limit")
             || lower.contains("rate limit")
             || lower.contains("quota")
@@ -184,7 +217,7 @@ impl FailureCategory {
             || (lower.contains("model") && lower.contains("not found"))
         {
             Self::ModelNotFound
-        } else if has_status(&["500", "502", "503", "504"])
+        } else if has_status(&[500, 502, 503, 504])
             || has_server_error_type(&lower)
             || lower.contains("overloaded_error")
             || lower.contains("overload")
@@ -421,6 +454,50 @@ mod tests {
             .is_retryable(),
             "a rejected request is not retryable"
         );
+    }
+
+    #[test]
+    fn digits_inside_the_body_are_not_a_status() {
+        let err = InferenceError::Api(
+            "400 Bad Request: Failed to deserialize the JSON body into the target type: \
+             messages[1]: unknown variant `image_url`, expected `text` at line 1 column 15003"
+                .to_string(),
+        );
+        assert!(
+            !err.is_retryable(),
+            "a 400 whose column number holds 500 is not a server error"
+        );
+        assert_eq!(err.cause_phrase(), "an error talking to the AI provider");
+
+        let quota = InferenceError::Api("400 Bad Request: token 4290 is invalid".to_string());
+        assert!(
+            !quota.is_retryable(),
+            "429 inside a number is not a rate limit"
+        );
+    }
+
+    #[test]
+    fn the_status_decides_where_the_message_names_one() {
+        for (message, retryable) in [
+            ("429 Too Many Requests: slow down", true),
+            ("503 Service Unavailable: try later", true),
+            ("529 <unknown status code>: overloaded", true),
+            ("408 Request Timeout: took too long", true),
+            ("anthropic api error 500 Internal Server Error: oops", true),
+            ("Error 429: too many requests", true),
+            ("400 Bad Request: the limit on tools is 128", false),
+            ("401 Unauthorized: invalid api key", false),
+            (
+                "anthropic api error 404 Not Found (not_found_error): model",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                InferenceError::Api(message.to_string()).is_retryable(),
+                retryable,
+                "{message}"
+            );
+        }
     }
 
     #[test]
