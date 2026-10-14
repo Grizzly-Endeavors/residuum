@@ -188,17 +188,17 @@ web-test *args: _web-deps
 web-coverage *args: _web-deps
     cd web && npm run test:coverage -- "$@"
 
-# End-to-end and accessibility specs in Chromium, desktop and phone, with no Docker. The visual specs are left out. Args go to playwright, e.g. `just web-e2e-fast e2e/smoke`
+# End-to-end and accessibility specs in Chromium, desktop and phone. The visual specs are left out. Runs on this machine's Chromium, installed on first use; when that install fails or stalls, the run says so and moves to the Playwright container (needs Docker). Args go to playwright, e.g. `just web-e2e-fast e2e/smoke`
 [group('web')]
 [positional-arguments]
-web-e2e-fast *args: _web-e2e-browsers
-    cd web && npm run e2e:fast -- "$@"
+web-e2e-fast *args: _web-deps
+    scripts/with-e2e-browser.sh npm --prefix web run e2e:fast -- "$@"
 
-# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). CI runs the fast specs in its Web End-to-End jobs and the visual comparisons in a job of their own that never fails a pull request
+# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). When this machine's Chromium can't be installed, the fast specs run in the container too. CI runs the fast specs in its Web End-to-End jobs and the visual comparisons in a job of their own that never fails a pull request
 [group('web')]
 [positional-arguments]
-web-e2e *args: _web-e2e-browsers
-    scripts/with-playwright-container.sh npm --prefix web run e2e -- "$@"
+web-e2e *args: _web-deps
+    scripts/with-e2e-browser.sh --visual npm --prefix web run e2e -- "$@"
 
 # Refresh the visual baselines in the Playwright container (needs Docker); `just web-e2e-update -g "<part of a test title>"` refreshes only the matching shots. Review the changed images under web/e2e/__screenshots__ before committing them
 [group('web')]
@@ -212,11 +212,11 @@ web-e2e-update *args: _web-deps
 web-e2e-webkit *args: _web-deps
     scripts/with-playwright-container.sh npm --prefix web run e2e:webkit -- "$@"
 
-# The end-to-end specs this branch adds or changes, each run repeatedly (WEB_STRESS_REPEAT, default 5) with the browser's CPU throttled (WEB_STRESS_CPU_THROTTLE, default 4); args go to playwright, e.g. `just web-stress --grep "tab is titled"`
+# The end-to-end specs this branch adds or changes, each run repeatedly (WEB_STRESS_REPEAT, default 5) with the browser's CPU throttled (WEB_STRESS_CPU_THROTTLE, default 4); on this machine's Chromium, or in the Playwright container when that can't be installed; args go to playwright, e.g. `just web-stress --grep "tab is titled"`
 [group('web')]
 [positional-arguments]
-web-stress *args: _web-e2e-browsers
-    scripts/web-stress.sh "$@"
+web-stress *args: _web-deps
+    scripts/with-e2e-browser.sh scripts/web-stress.sh "$@"
 
 # --- checks ------------------------------------------------------------------
 
@@ -288,11 +288,6 @@ clean:
 [private]
 _web-deps:
     @[ web/node_modules/.package-lock.json -nt web/package-lock.json ] || (cd web && npm ci)
-
-# Playwright's Chromium, which the end-to-end specs drive. A no-op once installed. A fresh Linux machine also needs its system libraries: `cd web && npx playwright install --with-deps chromium`
-[private]
-_web-e2e-browsers: _web-deps
-    cd web && npx playwright install chromium
 
 # build.rs panics without web/dist, and the gateway's asset tests read dist/sw.js. Rebuilds a dist that is
 # missing, incomplete or stale: sw.js is the last file a build writes, so a dist without it is unfinished,

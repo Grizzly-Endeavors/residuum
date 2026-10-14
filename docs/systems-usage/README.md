@@ -24,6 +24,7 @@ Every agent's file tools and the web file API see the team layer under a `team/`
 | `memory/REFLECTOR.md` | Low | Reflector compression prompt. Same — agent self-improves. |
 | `scheduled_actions.json` | Managed via tools | Never edited directly. Created/removed by `schedule_action` / `cancel_action`. |
 | `pulse_state.json` | Managed by gateway | Pulse last-run timestamps and run counts. Persisted across restarts. Never edited directly. |
+| `file_links.json` | Managed by gateway | The token links to files outside the workspace the agent sent on the web UI, each with its file's path and its expiry an hour after sending, so the links survive a restart and open while the agent is stopped. Expired entries are dropped every ten minutes. Never edited directly. See [Notifications](notifications.md). |
 | `teams_state.json` | Managed by the Teams interface | Teams owner and conversation references for proactive messages. Edit only to reset the owner (see [Microsoft Teams](teams.md)). |
 | `discord_state.json` | Managed by the Discord interface | Discord owner and the conversations the bot has seen. Edit only to reset the owner (see [Discord](discord.md)). |
 | `telegram_state.json` | Managed by the Telegram interface | Telegram owner and the chats the bot has seen. Edit only to reset the owner (see [Telegram](telegram.md)). |

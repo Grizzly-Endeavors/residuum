@@ -306,8 +306,6 @@ async fn api_teams_setup_cleanup(
 )]
 mod tests {
     use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     use axum::body::Body;
@@ -318,6 +316,7 @@ mod tests {
     use crate::gateway::web::{ConfigApiState, WorkspaceScope};
     use crate::interfaces::teams::atk_runner::AtkRunnerOverrides;
     use crate::interfaces::teams::setup_job::{TeamsSetupJobManager, register_test_manager};
+    use crate::testing::script::write_executable as make_script;
 
     fn test_state(root: &Path, agent: &str) -> ConfigApiState {
         ConfigApiState {
@@ -330,19 +329,6 @@ mod tests {
             checkpoints: crate::checkpoints::test_engine(),
             team: None,
             scope: WorkspaceScope::Agent,
-        }
-    }
-
-    fn make_script(path: &Path, content: &str) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(path, content).unwrap();
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(path, perms).unwrap();
         }
     }
 

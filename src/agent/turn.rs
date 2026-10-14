@@ -354,8 +354,9 @@ impl EventContext<'_> {
         .await;
     }
 
-    /// Announce a person's message joining this main-agent turn mid-turn. Not
-    /// for one agent's message to another, and not for a session's turn.
+    /// Announce a person's or a teammate's message joining this main-agent
+    /// turn mid-turn (see [`MainConversationEvent::user_message`]). Not for a
+    /// session's turn.
     async fn publish_user_message(&self, message: &MessageEvent) {
         let EventTarget::Endpoint { correlation_id, .. } = self.target else {
             return;
@@ -546,6 +547,41 @@ async fn notice_images_omitted(
         .await
     {
         tracing::warn!(error = %e, "failed to publish images-omitted notice");
+    }
+}
+
+/// The notice for reasoning the provider dropped from a request.
+const THINKING_DROPPED_NOTICE: &str =
+    "Some of the model's earlier reasoning couldn't be reused, so it continued without it.";
+
+/// Tell the user, once per turn, that the provider dropped some of the
+/// model's earlier reasoning from a request instead of reading it, because
+/// what came before that reasoning changed since it was written. The turn
+/// carries on; the model just answers without that reasoning. Every later
+/// request in the exchange resends the same blocks and has them dropped
+/// again, so only the first report of a turn is raised. `noticed` records
+/// that this turn already has.
+async fn notice_thinking_dropped(
+    response: &InferenceResponse,
+    events: &EventContext<'_>,
+    noticed: &mut bool,
+) {
+    if response.thinking_dropped == 0 || std::mem::replace(noticed, true) {
+        return;
+    }
+    tracing::warn!(
+        blocks = response.thinking_dropped,
+        "the provider dropped replayed reasoning because what preceded it in the request changed; the model continued without it"
+    );
+    if let Err(e) = events
+        .publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent::new(THINKING_DROPPED_NOTICE),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish dropped-reasoning notice");
     }
 }
 
@@ -813,6 +849,7 @@ pub(crate) async fn execute_turn(
     let mut turn_usage = TurnUsage::default();
     let mut repeat_guard = RepeatCallGuard::new();
     let mut images_noticed = false;
+    let mut thinking_drop_noticed = false;
 
     let mut iteration: usize = 0;
     loop {
@@ -873,6 +910,7 @@ pub(crate) async fn execute_turn(
             &mut images_noticed,
         )
         .await;
+        notice_thinking_dropped(&response, events, &mut thinking_drop_noticed).await;
 
         if response.was_truncated() {
             handle_output_truncated(&response, resources, events, recent_messages).await;
@@ -1122,8 +1160,9 @@ async fn check_interrupts_and_stop(
 /// continues to the end of the buffered batch even after a stop is seen, so
 /// any interrupts queued just before it are still folded into history.
 ///
-/// A person's message is announced to the main conversation at the moment it
-/// is folded in, so a client sees it at the position the model does.
+/// A person's or a teammate's message is announced to the main conversation
+/// at the moment it is folded in, so a client sees it at the position the
+/// model does.
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
@@ -3858,5 +3897,118 @@ mod tests {
             "a learned verdict suggests declaring it: {third}"
         );
         assert_eq!(next().await, "end of turn 2");
+    }
+
+    /// Answers every call as if the provider dropped a replayed thinking
+    /// block: a tool call first, then text.
+    struct ThinkingDroppedProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ThinkingDroppedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut response = if call.is_multiple_of(2) {
+                InferenceResponse::new(String::new(), vec![counting_tool_call("c1")])
+            } else {
+                InferenceResponse::new("done".to_string(), vec![])
+            };
+            response.thinking_dropped = 1;
+            Ok(response)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "claude-opus-5-5"
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_reasoning_is_noticed_once_per_turn() {
+        let provider = ThinkingDroppedProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Endpoint {
+                output_endpoint: TurnOutput::Fixed(None),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+
+        // Two turns of two model requests each, every request reporting a
+        // dropped block.
+        for n in 0..2 {
+            recent.push(Message::user("go"));
+            execute_turn(
+                &resources,
+                &MemoryContext {
+                    observations: None,
+                    recent_context: None,
+                },
+                &PromptContext::default(),
+                &mut recent,
+                &events,
+                None,
+                &mut interrupt_rx,
+                None,
+            )
+            .await
+            .unwrap();
+            let message = format!("end of turn {n}");
+            let end = topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
+            publisher
+                .publish(end, NoticeEvent::new(message))
+                .await
+                .unwrap();
+        }
+
+        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        assert_eq!(next().await, THINKING_DROPPED_NOTICE);
+        assert_eq!(next().await, "end of turn 0", "one notice for two requests");
+        assert_eq!(
+            next().await,
+            THINKING_DROPPED_NOTICE,
+            "the next turn tells the user again"
+        );
+        assert_eq!(next().await, "end of turn 1");
     }
 }

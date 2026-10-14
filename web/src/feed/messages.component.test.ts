@@ -151,6 +151,29 @@ describe("a message from a session or a teammate", () => {
     expect(screen.getByRole("article", { name: "Teammate: scout" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
   });
+
+  it("shows a teammate's live message as the card history gives it, without its header", () => {
+    const store = new FeedStore();
+    store.handleMessage({
+      type: "user_message",
+      id: "bg-1",
+      turn_id: "bg-1",
+      content:
+        "[Message from teammate agent:scout, not the user. Your response in this turn is not " +
+        'shown to them; to reply, call message_agent with to="agent:scout".]\n' +
+        "Can you look over the wiki index?",
+      agent_sender: { address: "agent:scout", category: "teammate" },
+      endpoint: "background",
+    });
+    const held = store.feed[0];
+    if (held === undefined) throw new Error("the frame added nothing to the feed");
+    render(FeedItemView, { item: held, agent: "atlas" });
+
+    const card = screen.getByRole("article", { name: "Teammate: scout" });
+    expect(card).toHaveTextContent("Can you look over the wiki index?");
+    expect(card).not.toHaveTextContent("Message from teammate");
+    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
+  });
 });
 
 describe("dividers and markers", () => {
