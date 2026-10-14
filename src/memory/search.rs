@@ -6,7 +6,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tantivy::collector::TopDocs;
-use tantivy::directory::MmapDirectory;
 use tantivy::query::{BooleanQuery, QueryParser};
 use tantivy::schema::document::{ReferenceValue, ReferenceValueLeaf, Value};
 use tantivy::schema::{FAST, Field, STORED, STRING, Schema, TEXT};
@@ -17,6 +16,7 @@ use anyhow::Context;
 use crate::config::SearchConfig;
 use crate::inference::EmbeddingProvider;
 use crate::memory::chunk_extractor::read_idx_jsonl;
+use crate::memory::fork_safe_directory::ForkSafeMmapDirectory;
 use crate::memory::team_wiki::TeamWikiIndex;
 use crate::memory::types::{DocSource, IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
@@ -208,9 +208,9 @@ impl MemoryIndex {
         })?;
 
         let (schema, fields) = build_schema();
-        let mmap_dir = MmapDirectory::open(index_dir)
+        let directory = ForkSafeMmapDirectory::open(index_dir)
             .with_context(|| format!("failed to open mmap directory at {}", index_dir.display()))?;
-        let index = Index::open_or_create(mmap_dir, schema)
+        let index = Index::open_or_create(directory, schema)
             .with_context(|| format!("failed to open search index at {}", index_dir.display()))?;
         Self::from_index(index, &fields)
     }
@@ -1345,7 +1345,7 @@ mod tests {
         let mut builder = Schema::builder();
         builder.add_text_field("some_other_field", TEXT | STORED);
         let foreign = builder.build();
-        let mmap_dir = MmapDirectory::open(&index_dir).unwrap();
+        let mmap_dir = tantivy::directory::MmapDirectory::open(&index_dir).unwrap();
         Index::open_or_create(mmap_dir, foreign).unwrap();
 
         let Err(err) = MemoryIndex::open_or_create(&index_dir) else {
