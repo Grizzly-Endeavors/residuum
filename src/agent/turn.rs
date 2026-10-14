@@ -577,9 +577,7 @@ async fn notice_thinking_dropped(
         .publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent {
-                message: THINKING_DROPPED_NOTICE.to_string(),
-            },
+            NoticeEvent::new(THINKING_DROPPED_NOTICE),
         )
         .await
     {
@@ -3997,7 +3995,7 @@ mod tests {
             let message = format!("end of turn {n}");
             let end = topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
             publisher
-                .publish(end, NoticeEvent { message })
+                .publish(end, NoticeEvent::new(message))
                 .await
                 .unwrap();
         }
