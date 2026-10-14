@@ -33,7 +33,7 @@ All changes go through pull requests.
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
 4. The git hooks are the first quality gate: formatting and the dependency audit run on every commit; clippy, the whole test suite (which includes the source scans), the generated-types check, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
-5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
+5. Clippy for Windows runs on every Rust PR; the other cross-platform checks (clippy for aarch64 Linux and macOS, plus tests on Windows) are opt-in; see below
 
 ### Rust Toolchain
 
@@ -41,7 +41,9 @@ The Rust version is pinned in `rust-toolchain.toml`, and rustup installs exactly
 
 ### Cross-Platform Checks
 
-The git hooks only build for your own platform. `.github/workflows/cross-compile.yml` runs `cargo clippy -- -D warnings` for the other release targets, so code behind another platform's `cfg` is held to the same lints as your own build, and runs the full test suite on a Windows runner, where `cfg(windows)` code actually executes. It runs when:
+The git hooks only build for your own platform. Every PR that runs the Rust checks also runs `cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings` (the `Clippy (x86_64-pc-windows-gnu)` job in `.github/workflows/quality-checks.yml`), so code behind `cfg(windows)`, and test code that only some platforms use, is held to the same lints as your own build before it reaches `main`.
+
+`.github/workflows/cross-compile.yml` adds clippy for aarch64 Linux and macOS, and runs the full test suite on a Windows runner, where `cfg(windows)` code actually executes. It runs when:
 
 - the PR carries the `cross-compile` label (adding the label starts a run, and every later push re-runs it)
 - the PR changes `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` (automatic)
@@ -49,7 +51,7 @@ The git hooks only build for your own platform. `.github/workflows/cross-compile
 
 Opt in when a change touches anything platform-sensitive: `unsafe` or FFI code, `#[cfg(target_os = ...)]` / `#[cfg(windows)]` / `#[cfg(unix)]` branches, filesystem paths, process spawning, signals, or file permissions. Anything else that slips through gets caught by the release build, which compiles every target.
 
-From Linux, the Windows and aarch64 Linux targets can also be linted locally once installed (`rustup target add x86_64-pc-windows-gnu`): `cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings`.
+From Linux, the Windows and aarch64 Linux targets can also be linted locally with `just cross-clippy` (Windows) or `just cross-clippy aarch64-unknown-linux-gnu`, which install the target first; `just cross-check` lints both.
 
 To run Windows-specific code yourself, the local VM harness in `scripts/windows-vm/` runs the test suite and desktop checks (such as toast notifications) on Windows 11; see [docs/runbooks/windows-harness.md](docs/runbooks/windows-harness.md).
 

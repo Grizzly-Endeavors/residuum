@@ -120,6 +120,34 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # web/package.json allows Node 22, 24 and 26, so the unit and component tests
+  # run on the oldest and the newest of those that CI covers, each at its
+  # latest release. Only the tests are repeated: format, lint, types and the
+  # build do not depend on the Node version beyond what Web Checks runs.
+  web-node:
+    name: Web Tests (Node ${{ matrix.node }})
+    if: inputs.web
+    runs-on: lab-runners-wide
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Web unit tests
+        run: cd web && npm test
+
   # The end-to-end and accessibility specs drive a browser against the mock
   # (web/CONTRIBUTING.md, "Testing"), split into shards that run on separate
   # runners. Playwright gives each shard a share of the individual tests.
@@ -374,6 +402,30 @@ jobs:
             sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The release builds Windows from Linux with the gnu target, and code behind
+  # cfg(windows) (and test imports only some platforms use) is not compiled by
+  # the host clippy above. Clippy rather than check, so that code is held to
+  # the same lints. The other cross targets are opt-in (cross-compile.yml).
+  rust-lint-windows:
+    name: Clippy (x86_64-pc-windows-gnu)
+    if: inputs.rust
+    runs-on: lab-runners-fast
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      - name: Add target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings
 
   rust-test:
     name: Rust Tests
