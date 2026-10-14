@@ -80,7 +80,6 @@ pub(super) struct CreateAgentArgs {
     pub hop_counter: crate::agent::HopCounter,
 }
 
-/// Build the tool registry with all default and domain-specific tools.
 /// Main's tools for managing sessions and teammates: `stop_agent`,
 /// `list_agents`, `subagent_spawn`, and the teammate lifecycle tools.
 fn register_main_session_tools(
@@ -107,6 +106,7 @@ fn register_main_session_tools(
     tools.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
 }
 
+/// Build the tool registry with all default and domain-specific tools.
 pub(super) fn init_tool_registry(
     cfg: &Config,
     layout: &WorkspaceLayout,

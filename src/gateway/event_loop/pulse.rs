@@ -130,10 +130,11 @@ pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
         .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Heartbeat);
 
     let now = time::now_local(rt.tz);
-    let models = rt.spawn_context.model_catalog.read().await.clone();
-    let due = rt
-        .pulse_scheduler
-        .due_pulses(now, &rt.layout.heartbeat_yml(), &models);
+    let due = {
+        let models = rt.spawn_context.model_catalog.read().await;
+        rt.pulse_scheduler
+            .due_pulses(now, &rt.layout.heartbeat_yml(), &models)
+    };
     if deliver_to_agent {
         let outcome = heartbeat_reload_outcome(&rt.pulse_scheduler);
         rt.agent.inject_system_message(outcome);

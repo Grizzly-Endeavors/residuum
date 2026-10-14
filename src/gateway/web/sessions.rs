@@ -66,6 +66,9 @@ pub(crate) struct SessionsApiState {
     pub publisher: Publisher,
     /// The skill index, to refuse a start naming a skill that doesn't exist.
     pub skill_state: SharedSkillState,
+    /// The live model catalog, to refuse a start naming an explicit model
+    /// whose provider isn't configured.
+    pub models: crate::config::SharedModelCatalog,
     /// Main's saved conversation (`recent_messages.json`), which a fork
     /// starts from.
     pub main_conversation: std::path::PathBuf,
@@ -406,10 +409,13 @@ pub(crate) async fn api_session_start(
     let model = match body.model.as_deref() {
         None => ModelSelector::MEDIUM,
         Some(raw) => match raw.parse::<ModelSelector>() {
-            Ok(tier) => tier,
+            Ok(model) => model,
             Err(message) => return json_error(StatusCode::BAD_REQUEST, message),
         },
     };
+    if let Err(message) = state.models.read().await.check(&model) {
+        return json_error(StatusCode::BAD_REQUEST, message);
+    }
     if let Some(skill) = body.skill.as_deref()
         && let Err(message) = check_skill(&state.skill_state, skill).await
     {
@@ -721,6 +727,7 @@ mod tests {
             messenger,
             publisher: bus.publisher(),
             skill_state: crate::skills::SkillState::new_shared(index, vec![]),
+            models: crate::config::ModelCatalog::default().into_shared(),
             main_conversation: dir.path().join("recent_messages.json"),
         };
         (state, Fixture { _dir: dir, bus })
@@ -1310,6 +1317,19 @@ mod tests {
         .await;
         assert_eq!(bad_model.status, StatusCode::BAD_REQUEST);
         assert!(bad_model.text("error").contains("huge"));
+
+        let unknown_provider = start(
+            &state,
+            headers(),
+            serde_json::json!({ "prompt": "go", "model": "nowhere/x" }),
+        )
+        .await;
+        assert_eq!(unknown_provider.status, StatusCode::BAD_REQUEST);
+        assert!(
+            unknown_provider.text("error").contains("nowhere/x"),
+            "got {}",
+            unknown_provider.body
+        );
 
         let bad_skill = start(
             &state,

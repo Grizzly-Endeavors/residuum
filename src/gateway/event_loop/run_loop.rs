@@ -558,6 +558,7 @@ async fn spawn_agent_tasks(
                 tracker: Arc::clone(&parts.a2a_tracker),
             },
             tunnel_status_rx: services.tunnel_status_rx.clone(),
+            model_catalog: Arc::clone(&parts.spawn_context.model_catalog),
         },
     );
     let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts, services);
@@ -1036,7 +1037,7 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
 
 /// Fork sessions for every due scheduled action.
 async fn check_and_run_due_actions(rt: &mut AgentRuntime) {
-    let models = rt.spawn_context.model_catalog.read().await.clone();
+    let models = rt.spawn_context.model_catalog.read().await;
     actions::spawn_due_actions(&rt.action_store, &rt.publisher, &models).await;
 }
 

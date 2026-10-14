@@ -3,6 +3,7 @@
 // times read the way Home's do.
 
 import type { IconName } from "../../lib/icons";
+import { isTier } from "../../lib/session-format";
 import { relativeTime } from "../../lib/time";
 import type {
   ActionInfo,
@@ -47,11 +48,6 @@ export function pulseNext(pulse: PulseInfo, state: StatusDotState, now: number):
 export function modelLine(model: string | null): string | null {
   if (model === null) return null;
   return isTier(model) ? `Model: ${model} tier` : `Model: ${model}`;
-}
-
-/** Whether a model selector names one of the background tiers rather than one model. */
-export function isTier(model: string): boolean {
-  return model === "small" || model === "medium" || model === "large";
 }
 
 /** What the place says in place of the schedule while the agent isn't running. */

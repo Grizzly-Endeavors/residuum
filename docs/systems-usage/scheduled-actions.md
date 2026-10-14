@@ -26,7 +26,7 @@ If the gateway was offline when an action was due, it fires on next startup.
 
 ### `list_actions`
 
-No parameters. Returns all pending actions.
+No parameters. Returns all pending actions with their fire time, skill and model; an action held because its model can't run is marked `held, not running` with the reason.
 
 ### `cancel_action`
 

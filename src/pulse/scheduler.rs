@@ -111,14 +111,13 @@ impl PulseScheduler {
     /// - Its schedule duration can be parsed
     /// - `now - last_run >= schedule duration`
     /// - If `active_hours` is set, `now` falls within the window
+    /// - Its `model_tier`, when it names an explicit model, resolves against
+    ///   `models`
     ///
     /// A pulse with no `last_run` yet (a new install, or a pulse just added
     /// to HEARTBEAT.yml) is not due: it is recorded as seen at `now` and first
     /// runs one schedule duration later. A pulse outside its `active_hours`
     /// window is not recorded until it is evaluated inside the window.
-    ///
-    /// - Its `model_tier`, when it names an explicit model, resolves against
-    ///   `models`
     ///
     /// Due and first-seen pulses have their `last_run` set to `now` and
     /// persisted (if a state path is set).

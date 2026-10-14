@@ -179,7 +179,8 @@ impl Tool for ListActionsTool {
         ToolDefinition {
             name: self.name().to_string(),
             description:
-                "List all pending scheduled actions with their IDs, names, and fire times."
+                "List all pending scheduled actions with their IDs, names, fire times, and \
+                 models, and say which are held because their model can't run."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -208,11 +209,18 @@ impl Tool for ListActionsTool {
                 Some(skill) => format!(" [skill: {skill}]"),
                 None => String::new(),
             };
+            let model_label = match action.model_tier.as_deref() {
+                Some(model) => format!(" [model: {model}]"),
+                None => String::new(),
+            };
+            let held_label = match store.model_problem(&action.id) {
+                Some(reason) => format!(" — held, not running: {reason}"),
+                None => String::new(),
+            };
             lines.push(format!(
-                "  {name} ({id}) — fires: {run_at}{agent}",
+                "  {name} ({id}) — fires: {run_at}{agent_label}{model_label}{held_label}",
                 name = action.name,
                 id = action.id,
-                agent = agent_label,
             ));
         }
 
@@ -526,6 +534,48 @@ mod tests {
         assert!(
             unknown_stored.is_empty(),
             "nothing is scheduled on an unknown provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_actions_shows_the_model_and_a_held_action_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-list-held.json"),
+        )));
+        {
+            let mut locked = store.lock().await;
+            locked.add(ScheduledAction {
+                id: "action-held0001".to_string(),
+                name: "local summary".to_string(),
+                prompt: "summarize".to_string(),
+                run_at: Utc::now() - chrono::Duration::minutes(5),
+                agent: None,
+                model_tier: Some("lcoal/qwen3:8b".to_string()),
+                created_at: Utc::now(),
+            });
+            let _fresh = locked.record_model_problems(std::collections::HashMap::from([(
+                "action-held0001".to_string(),
+                "'lcoal' is not a known provider".to_string(),
+            )]));
+        }
+
+        let result = ListActionsTool::new(store, chrono_tz::UTC)
+            .execute(serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert!(
+            result.output.contains("[model: lcoal/qwen3:8b]"),
+            "{}",
+            result.output
+        );
+        assert!(
+            result
+                .output
+                .contains("held, not running: 'lcoal' is not a known provider"),
+            "{}",
+            result.output
         );
     }
 

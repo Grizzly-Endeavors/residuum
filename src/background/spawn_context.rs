@@ -203,31 +203,23 @@ struct SessionModelChain {
     overrides_key: Option<&'static str>,
 }
 
-/// Resolve `model` to the provider chain a session runs on.
-///
-/// A tier resolves through `[background.models]` (falling back to the next
-/// tier up, then main) and keeps its shared failover counter and its
-/// `bg_<tier>` overrides. An explicit model resolves against the live
-/// [`crate::config::ModelCatalog`] to that one model: no failover chain, and
-/// no `role_overrides` entry, so the global temperature/thinking apply.
-///
-/// # Errors
-/// Returns an error naming the model if an explicit id doesn't resolve.
-fn resolve_session_model(
-    ctx: &SpawnContext,
-    catalog: &ModelCatalog,
-    model: &ModelSelector,
-) -> Result<SessionModelChain, anyhow::Error> {
-    resolve_model_chain(
-        &ctx.background_config.models,
-        &ctx.main_provider_specs,
-        &ctx.bg_tier_active_index,
-        catalog,
-        model,
-    )
+impl SessionModelChain {
+    /// `provider/model` id of the chain's first model, the one a run starts on.
+    fn first_model_id(&self) -> String {
+        self.specs
+            .first()
+            .map(|spec| format!("{}/{}", spec.name, spec.model.model))
+            .unwrap_or_default()
+    }
 }
 
-/// [`resolve_session_model`] over its parts.
+/// Resolve `model` to the provider chain a session runs on.
+///
+/// A tier resolves through `tiers` (falling back to the next tier up, then
+/// `main`) and keeps its shared failover counter and its `bg_<tier>`
+/// overrides. An explicit model resolves against `catalog` to that one model:
+/// no failover chain, and no `role_overrides` entry, so the global
+/// temperature/thinking apply.
 ///
 /// # Errors
 /// Returns an error naming the model if an explicit id doesn't resolve.
@@ -309,7 +301,7 @@ async fn load_fork_identity_and_memory(
 
 /// Build isolated `SubAgentResources` for a new session run on `model`.
 ///
-/// Resolves the model (see [`resolve_session_model`]), constructs the provider,
+/// Resolves the model (see [`resolve_model_chain`]), constructs the provider,
 /// and builds fresh isolated state. When `skill` is set, that skill is activated
 /// on the session's own skill state so its body becomes the session's role
 /// instructions. Also snapshots the global observation log and recent-context
@@ -346,13 +338,14 @@ pub(crate) async fn build_spawn_resources(
         trigger,
         conversation_target,
     } = session;
-    let catalog = ctx.model_catalog.read().await.clone();
-    let chain = resolve_session_model(ctx, &catalog, model)?;
-    let resolved_model = chain
-        .specs
-        .first()
-        .map(|spec| format!("{}/{}", spec.name, spec.model.model))
-        .unwrap_or_default();
+    let chain = resolve_model_chain(
+        &ctx.background_config.models,
+        &ctx.main_provider_specs,
+        &ctx.bg_tier_active_index,
+        &*ctx.model_catalog.read().await,
+        model,
+    )?;
+    let resolved_model = chain.first_model_id();
 
     let (provider, dropped) = build_provider_chain_with_shared_notices(
         &chain.specs,

@@ -374,7 +374,7 @@ On error: invalid datetime, `run_at` in the past, or save failure.
 **Source:** `actions.rs` · `ListActionsTool`
 
 **Description sent to LLM:**
-> List all pending scheduled actions with their IDs, names, and fire times.
+> List all pending scheduled actions with their IDs, names, fire times, and models, and say which are held because their model can't run.
 
 ### Input
 
@@ -385,10 +385,10 @@ No parameters required (empty object accepted).
 On success: count header followed by one entry per action (fire times displayed in user's local timezone):
 ```
 {N} action(s):
-  {name} ({id}) — fires: {datetime} [agent info]
+  {name} ({id}) — fires: {datetime} [skill: {skill}] [model: {model}] — held, not running: {reason}
 ```
 
-The agent label shows `[skill: {name}]` for skill-routed actions, or nothing for a plain session with no skill.
+`[skill: …]` appears for skill-routed actions, `[model: …]` for an action that names a model (a tier or a `provider/model` id), and `— held, not running: {reason}` for an action whose model can't run (an unreadable value, or a provider `providers.toml` doesn't have), which stays scheduled without running until its model works or it is cancelled.
 
 When no actions exist: `"No pending scheduled actions."`
 

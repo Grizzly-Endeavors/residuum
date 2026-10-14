@@ -21,7 +21,7 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
 | `schedule_action` | `name`, `prompt`, `run_at`, `agent_name`, `model_tier` | Schedule a new one-off action. |
-| `list_actions` | *(none)* | List all pending actions with name, ID, fire time, and agent routing. |
+| `list_actions` | *(none)* | List all pending actions with name, ID, fire time, skill, and model; a held action is marked `held, not running` with the reason. |
 | `cancel_action` | `id` | Cancel a pending action by ID. |
 
 ## `schedule_action` Details

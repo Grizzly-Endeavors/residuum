@@ -31,26 +31,24 @@ pub(super) async fn spawn_due_actions(
 
     let mut runnable = std::collections::HashMap::new();
     let mut problems = std::collections::HashMap::new();
+    let mut remedies = std::collections::HashMap::new();
     for action in store.list() {
         match action_model(action, models) {
             Ok(model) => {
                 runnable.insert(action.id.clone(), model);
             }
-            Err(reason) => {
-                problems.insert(action.id.clone(), reason);
+            Err(held) => {
+                remedies.insert(action.id.clone(), held.remedy());
+                problems.insert(action.id.clone(), held.reason);
             }
         }
     }
     for (name, id, reason) in store.record_model_problems(problems) {
         tracing::warn!(action = %name, id = %id, reason = %reason, "scheduled action's model can't run; holding it until it does");
+        let remedy = remedies.get(&id).copied().unwrap_or_default();
         publish_notice(
             publisher,
-            format!(
-                "The scheduled action \"{name}\" (id {id}) can't run: {reason}. It stays \
-                 scheduled and starts as soon as its model works — add the provider to \
-                 providers.toml, or cancel the action and schedule it again with a different \
-                 model."
-            ),
+            format!("The scheduled action \"{name}\" (id {id}) can't run: {reason}. {remedy}"),
         )
         .await;
     }
@@ -88,18 +86,47 @@ pub(super) async fn spawn_due_actions(
     }
 }
 
+/// Why a scheduled action's model can't run, which decides what the owner
+/// is told to do about it.
+struct HeldModel {
+    /// Plain-language reason naming the value.
+    reason: String,
+    /// `true` when the value is a `provider/model` id whose provider isn't
+    /// configured, which adding the provider fixes; `false` when the value
+    /// isn't a tier or a model id at all, which only rescheduling fixes.
+    fixable_by_provider: bool,
+}
+
+impl HeldModel {
+    /// What the owner can do about it.
+    fn remedy(&self) -> &'static str {
+        if self.fixable_by_provider {
+            "It stays scheduled and starts as soon as its model works — add the provider to \
+             providers.toml, or cancel the action and schedule it again with a different model."
+        } else {
+            "It won't run as scheduled — cancel it in the Schedule place and schedule it again \
+             with a tier (small, medium, or large) or a provider/model id."
+        }
+    }
+}
+
 /// An action's model, checked against `models`.
 ///
 /// # Errors
-/// Returns a plain-language reason naming the value when `model_tier` is
-/// neither a tier nor a `provider/model` id, or names a model that doesn't
-/// resolve.
+/// Returns a [`HeldModel`] naming the value when `model_tier` is neither a
+/// tier nor a `provider/model` id, or names a model that doesn't resolve.
 fn action_model(
     action: &crate::actions::types::ScheduledAction,
     models: &ModelCatalog,
-) -> Result<ModelSelector, String> {
-    let model = action.model()?;
-    models.check(&model)?;
+) -> Result<ModelSelector, HeldModel> {
+    let model = action.model().map_err(|reason| HeldModel {
+        reason,
+        fixable_by_provider: false,
+    })?;
+    models.check(&model).map_err(|reason| HeldModel {
+        reason,
+        fixable_by_provider: true,
+    })?;
     Ok(model)
 }
 
@@ -279,15 +306,16 @@ mod tests {
         ];
         texts.sort();
         assert!(
-            texts
-                .iter()
-                .any(|t| t.contains("typo tier") && t.contains("'lagre'")),
-            "{texts:?}"
+            texts.iter().any(|t| t.contains("typo tier")
+                && t.contains("'lagre'")
+                && t.contains("schedule it again")
+                && !t.contains("providers.toml")),
+            "an unreadable value is fixed by rescheduling, not by providers.toml: {texts:?}"
         );
         assert!(
-            texts
-                .iter()
-                .any(|t| t.contains("unknown provider") && t.contains("nowhere")),
+            texts.iter().any(|t| t.contains("unknown provider")
+                && t.contains("nowhere")
+                && t.contains("providers.toml")),
             "{texts:?}"
         );
         assert_eq!(
