@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SetupWizardState, McpCatalogEntry } from "../../lib/types";
   import { Badge, Banner, Button, EmptyState, Skeleton, TextField } from "../../lib/ui";
-  import { missingServerKeys } from "../../lib/setup-keys";
+  import { catalogSecretEnvKeys, missingServerKeys } from "../../lib/setup-keys";
   import SetupGroup from "./SetupGroup.svelte";
   import SetupNav from "./SetupNav.svelte";
 
@@ -31,10 +31,6 @@
 
   function isAdded(name: string): boolean {
     return wizardState.mcpServers.some((s) => s.name === name);
-  }
-
-  function envKeyOf(field: string): string {
-    return field.startsWith("env.") ? field.slice(4) : field;
   }
 
   function handleAdd(idx: number) {
@@ -78,18 +74,18 @@
     }
     if (hasError) return;
 
-    // Build env with user values — strip "env." prefix from catalog field names
-    const env = { ...(srv.env || {}) };
-    for (const req of srv.requires_input) {
-      env[envKeyOf(req.field)] = (pendingInputs[req.field] ?? "").trim();
-    }
+    const secretEnvKeys = catalogSecretEnvKeys(srv);
+    const env: Record<string, string> = { ...(srv.env || {}) };
+    srv.requires_input.forEach((req, i) => {
+      env[secretEnvKeys[i] ?? req.field] = (pendingInputs[req.field] ?? "").trim();
+    });
 
     const entry = {
       name: srv.name,
       command: srv.command,
       args: [...(srv.args || [])],
-      env: env as Record<string, string>,
-      secretEnvKeys: srv.requires_input.map((req) => envKeyOf(req.field)),
+      env,
+      secretEnvKeys,
     };
     // A server restored from a draft is already added, without its key.
     const existsIdx = wizardState.mcpServers.findIndex((s) => s.name === srv.name);

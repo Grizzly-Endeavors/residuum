@@ -4,6 +4,7 @@
   import { fetchTimezone, fetchMcpCatalog } from "./lib/api";
   import { DEFAULT_AGENT_NAME } from "./lib/agent-name";
   import { userErrorMessage } from "./lib/errors";
+  import { markCatalogKeys } from "./lib/setup-keys";
   import { Icon } from "./lib/icons";
   import { Banner } from "./lib/ui";
   import SetupProgress from "./components/setup/SetupProgress.svelte";
@@ -172,6 +173,7 @@
     catalogError = null;
     try {
       catalog = await fetchMcpCatalog();
+      markCatalogKeys(wizardState.mcpServers, catalog);
     } catch (err: unknown) {
       catalogError = userErrorMessage(err, { action: "Couldn't load the MCP server catalog." });
     } finally {

@@ -204,15 +204,6 @@ export interface McpServerEntry {
   url?: string;
   /** http only. */
   headers?: Record<string, string>;
-  /**
-   * Names of `env` keys that hold a credential the catalog's
-   * `requires_input` asked for, as opposed to plain config. Only ever set by
-   * the setup wizard, which uses it to keep the value out of the
-   * `localStorage` draft and to exchange it for a `secret:<name>` reference
-   * on save, the same way it already does for provider keys and chat
-   * tokens.
-   */
-  secretEnvKeys?: string[];
 }
 
 export interface McpRequiredInput {
@@ -239,6 +230,17 @@ export interface IntegrationsConfig {
   teamsAppPassword: string;
 }
 
+/** A tool server the setup wizard adds from the catalog. */
+export interface SetupMcpServer extends McpServerEntry {
+  /**
+   * Names of `env` keys that hold a key the catalog's `requires_input` asked
+   * for, as opposed to plain config. The wizard keeps their values out of the
+   * `localStorage` draft and exchanges them for `secret:<name>` references on
+   * save, the same way it does for provider keys and chat tokens.
+   */
+  secretEnvKeys?: string[];
+}
+
 export interface SetupWizardState {
   userName: string;
   agentName: string;
@@ -249,7 +251,7 @@ export interface SetupWizardState {
   roles: Record<string, RoleConfig>;
   embeddingModel: EmbeddingConfig;
   backgroundModels: Record<string, BackgroundModelConfig>;
-  mcpServers: McpServerEntry[];
+  mcpServers: SetupMcpServer[];
   integrations: IntegrationsConfig;
   secretRefs: Record<string, string>;
 }

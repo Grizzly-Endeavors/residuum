@@ -41,7 +41,7 @@ Both paths perform the MCP handshake via `rmcp`'s `ServiceExt::serve`; a spawn/d
 
 ## `${agent-key:<name>}` references
 
-Stdio `env` values and HTTP `headers` values may contain `${agent-key:<name>}` anywhere in the value. `McpRegistry::connect` resolves them against the agent key store before spawning or dialing, so the value reaches the server without ever appearing in `mcp.json`. An unknown key, or an unterminated reference, fails that server's connection with an error naming the problem; an entry with no references never touches the store. References resolve only against the agent key store, never the system secret store. See [Agent keys](agent-keys.md).
+Stdio `env` values and HTTP `headers` values may contain `${agent-key:<name>}` anywhere in the value. `McpRegistry::connect` resolves them against the agent key store before spawning or dialing, so the value reaches the server without ever appearing in `mcp.json`. An unknown key, or an unterminated reference, fails that server's connection with an error naming the problem; an entry with no references never touches the store. `${agent-key:...}` references resolve only against the agent key store; a whole-value `secret:<name>` (below) is how an entry reads the hub's secret store. See [Agent keys](agent-keys.md).
 
 ## `secret:<name>` references
 

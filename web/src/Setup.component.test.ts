@@ -135,6 +135,26 @@ describe("Setup wizard", () => {
     ]);
   });
 
+  it("strips a tool server key from a draft that didn't mark it as a key", async () => {
+    const { secretEnvKeys: _, ...unmarked } = TAVILY_WITHOUT_KEY;
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        step: 3,
+        wizardState: { mcpServers: [{ ...unmarked, env: { TAVILY_API_KEY: "tvly-old" } }] },
+      }),
+    );
+    render(Setup, { onComplete: () => {} });
+    await settle();
+
+    await waitFor(() => {
+      expect(localStorage.getItem(DRAFT_KEY)).not.toContain("tvly-old");
+    });
+    // The key is still in the wizard, so the server doesn't ask for it again.
+    expect(screen.getByText("Added")).toBeTruthy();
+    expect(screen.queryByText("Needs its key")).toBeNull();
+  });
+
   it("asks for a restored provider's and tool server's keys again", async () => {
     localStorage.setItem(
       DRAFT_KEY,

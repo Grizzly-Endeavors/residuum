@@ -107,6 +107,42 @@ describe("Setup save step", () => {
     });
   });
 
+  it("writes nothing when a tool server key can't be stored", async () => {
+    const requested: string[] = [];
+    mockFetch((url, init) => {
+      requested.push(url);
+      const body = JSON.parse(typeof init?.body === "string" ? init.body : "null") as {
+        name: string;
+      } | null;
+      if (url.endsWith("/secrets") && body?.name === "mcp_tavily_tavily_api_key") {
+        return jsonResponse({ error: "the secret store is unreadable" }, 500);
+      }
+      if (url.endsWith("/secrets")) return jsonResponse({ reference: `secret:${body?.name}` });
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    renderStep(
+      wizard({
+        mcpServers: [
+          {
+            name: "tavily",
+            command: "npx",
+            args: ["tavily"],
+            env: { TAVILY_API_KEY: "tvly-plain" },
+            secretEnvKeys: ["TAVILY_API_KEY"],
+          },
+        ],
+      }),
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Save and start" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn't store your keys and tokens."),
+    );
+    expect(requested.some((url) => url.endsWith("/config/complete-setup"))).toBe(false);
+    expect(screen.getByRole("button", { name: "Save and start" })).toBeEnabled();
+  });
+
   it("says nothing about missing keys when every key is entered", () => {
     renderStep(wizard());
 
