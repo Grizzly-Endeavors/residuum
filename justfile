@@ -15,7 +15,7 @@ default:
 [group('setup')]
 setup: hooks web-install
 
-# Symlink the tracked git hooks into this repo
+# Install the tracked git hooks into this repo's hooks directory (all worktrees share it)
 [group('setup')]
 hooks:
     .githooks/install.sh
