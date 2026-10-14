@@ -82,7 +82,7 @@ Two places hear live events.
 |--------|--------|------------|
 | `turn_started` | `reply_to`, `origin` (`endpoint`, `sender?`, `visibility`) | The agent starts a turn in its main chat, started from the web, a chat interface (`origin.endpoint` is `telegram`, `discord` or `teams`), or no person at all (`background`). `reply_to` is the turn's id. |
 | `turn_ended` | `reply_to` | The turn is over, whatever its outcome. |
-| `user_message` | `id`, `turn_id`, `content`, `images?`, `sender?`, `endpoint` | A person's message entered the main chat, starting a turn or joining the one running. |
+| `user_message` | `id`, `turn_id`, `content`, `images?`, `sender?`, `agent_sender?`, `endpoint` | A person's message, or a teammate's (named by `agent_sender`), entered the main chat, starting a turn or joining the one running. |
 | `text_delta` / `thinking_delta` | `reply_to`, `call`, `text` | More of a model call's text or reasoning as it is written; a preview of the `broadcast_response` / `response` / `thinking` frame that follows. |
 | `stream_restart` | `reply_to`, `call` | What was streamed for that `call` is void; it starts over. |
 | `thinking` | `reply_to`, `call`, `content` | A model call's complete readable reasoning, sent before its text and tool calls. |

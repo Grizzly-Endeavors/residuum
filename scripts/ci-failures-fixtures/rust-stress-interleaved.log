@@ -1,0 +1,21 @@
+2026-10-14T11:12:38.5293079Z ##[group]Run scripts/stress-tests.sh
+2026-10-14T11:12:38.5294131Z [36;1mscripts/stress-tests.sh[0m
+2026-10-14T11:12:38.5317261Z shell: /usr/bin/bash -e {0}
+2026-10-14T11:12:38.5317824Z env:
+2026-10-14T11:12:38.5318316Z   STRESS_TESTS_LOG: /home/runner/_work/_temp/tests.log
+2026-10-14T11:12:38.5318883Z ##[endgroup]
+2026-10-14T11:12:39.9826046Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1.01s
+2026-10-14T11:12:40.0148785Z Stress: 15 test binaries, 2 copies at once, 20 CPU burners, 1 round(s), on 20 CPUs.
+2026-10-14T11:12:40.0157308Z Load before: 136.22 66.64 74.22
+2026-10-14T11:17:57.2180686Z Round 1 done. Load: 106.84 100.47 88.58. inotify instances in use mid-run: 0 of 128.
+2026-10-14T11:17:57.2255705Z 
+2026-10-14T11:17:57.2256215Z Failures (count out of 2 runs of each test):
+2026-10-14T11:17:57.2261993Z Failed under load only, so a test waiting on time (fix the wait; CONTRIBUTING.md, "Waiting in tests"):
+2026-10-14T11:17:57.2264167Z error: tests failed under load. Logs are in target/stress/; the summary says which failures waited on time and which also failed in the Tests step.
+2026-10-14T11:17:57.2265217Z 1 commands::update_watchdog::tests::roll_back_restores_previous_binary_and_writes_notice
+2026-10-14T11:17:57.2265652Z 
+2026-10-14T11:17:57.2265657Z 
+2026-10-14T11:17:57.2282369Z ##[error]Process completed with exit code 1.
+2026-10-14T11:17:57.2639042Z ##[group]Run cargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests
+2026-10-14T11:17:57.2639475Z [36;1mcargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests[0m
+2026-10-14T11:17:57.2646540Z shell: /usr/bin/bash -e {0}

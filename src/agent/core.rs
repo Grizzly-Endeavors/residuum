@@ -623,6 +623,7 @@ mod tests {
                 thinking: Vec::new(),
                 stop_reason: None,
                 images_omitted: None,
+                thinking_dropped: 0,
             },
             InferenceResponse {
                 content: "second".to_string(),
@@ -636,6 +637,7 @@ mod tests {
                 thinking: Vec::new(),
                 stop_reason: None,
                 images_omitted: None,
+                thinking_dropped: 0,
             },
         ]);
 

@@ -546,11 +546,11 @@ async fn a_person_message_folded_in_mid_turn_is_announced_under_its_own_id() {
 }
 
 #[tokio::test]
-async fn messages_no_person_sent_are_not_announced_as_user_messages() {
+async fn background_input_and_own_sessions_messages_are_not_announced_as_user_messages() {
     let background = MessageEvent::from_background("a session finished".to_string());
-    let from_agent = AgentMessageEvent {
-        from: SessionAddress::from("agent:atlas"),
-        from_category: "teammate".to_string(),
+    let from_session = AgentMessageEvent {
+        from: SessionAddress::from("spawned-research-1a2b"),
+        from_category: "spawned".to_string(),
         content: "status?".to_string(),
         hop_count: 0,
     };
@@ -559,8 +559,8 @@ async fn messages_no_person_sent_are_not_announced_as_user_messages() {
         Options {
             interrupts: vec![
                 Interrupt::UserMessage(background),
-                Interrupt::UserMessage(MessageEvent::from_agent(&from_agent)),
-                Interrupt::AgentMessage(from_agent),
+                Interrupt::UserMessage(MessageEvent::from_agent(&from_session)),
+                Interrupt::AgentMessage(from_session),
             ],
             ..Options::default()
         },
@@ -570,12 +570,65 @@ async fn messages_no_person_sent_are_not_announced_as_user_messages() {
     assert_eq!(
         shape(&run.main),
         ["usage", "response:0:ws:ok"],
-        "agent-to-agent traffic reaches the model but is not a person speaking"
+        "a session's message shows on its own stream, and background input is no one speaking"
     );
     assert!(
         run.history.iter().any(|m| m.content.contains("status?")),
         "the model still reads it"
     );
+}
+
+#[tokio::test]
+async fn a_teammates_message_folded_in_mid_turn_is_announced_with_its_sender() {
+    let from_teammate = AgentMessageEvent {
+        from: SessionAddress::from("agent:atlas"),
+        from_category: "teammate".to_string(),
+        content: "status?".to_string(),
+        hop_count: 0,
+    };
+    let delivered = MessageEvent::from_agent(&from_teammate);
+    let delivered_id = delivered.id.clone();
+    let run = run_turn_with(
+        vec![Step::reply(text("ok"))],
+        Options {
+            interrupts: vec![Interrupt::UserMessage(delivered)],
+            ..Options::default()
+        },
+    )
+    .await;
+
+    let announced = run
+        .main
+        .iter()
+        .find_map(|event| {
+            if let MainConversationEvent::UserMessage {
+                id,
+                turn_id,
+                content,
+                sender,
+                agent_sender,
+                endpoint,
+                ..
+            } = event
+            {
+                Some((id, turn_id, content, sender, agent_sender, endpoint))
+            } else {
+                None
+            }
+        })
+        .expect("the teammate's message is announced");
+    assert_eq!(announced.0, &delivered_id);
+    assert_eq!(announced.1, TURN, "it joined the running turn");
+    assert_eq!(announced.2, &from_teammate.format_for_agent());
+    assert!(announced.3.is_none(), "no person sent it");
+    assert_eq!(
+        announced.4.as_ref(),
+        Some(&crate::inference::AgentSender {
+            address: "agent:atlas".to_string(),
+            category: "teammate".to_string(),
+        })
+    );
+    assert_eq!(announced.5, "background");
 }
 
 // ── Streaming ────────────────────────────────────────────────────────────
