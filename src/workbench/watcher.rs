@@ -288,9 +288,8 @@ mod tests {
         }
 
         async fn next_reload(&mut self) -> WorkbenchEvent {
-            tokio::time::timeout(Duration::from_secs(10), self.reloads.recv())
+            crate::testing::wait::guarded("an artifact reload", self.reloads.recv())
                 .await
-                .expect("timed out waiting for an artifact reload")
                 .unwrap()
                 .unwrap()
         }

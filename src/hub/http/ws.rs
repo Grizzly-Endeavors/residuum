@@ -9,7 +9,8 @@
 //! changes, `artifact_updated` and `artifact_removed` for the workbench (see
 //! [`super::artifact_events`]), and `workspace_changed` frames for the team
 //! paths the client watches. Client to server: `watch_team`, `presence`
-//! reports for Web Push, and the session subscriptions of
+//! reports for Web Push, `ping` (answered with `pong` once every earlier
+//! message has been handled), and the session subscriptions of
 //! [`super::session_relay`], which answer `subscribed` and deliver
 //! `session_frame`s.
 //!
@@ -358,6 +359,7 @@ async fn handle_client_frame(
             sessions.unsubscribe_artifact_sessions(&artifact);
             true
         }
+        HubClientMessage::Ping => send_frame(outbound, &HubSocketFrame::Pong).await,
     }
 }
 

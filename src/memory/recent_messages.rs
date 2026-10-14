@@ -193,8 +193,8 @@ mod tests {
         let _scout_rewrite = held.lock().await;
 
         // Another agent's file rewrites while scout's is locked.
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+        crate::testing::wait::guarded(
+            "atlas's rewrite to finish while scout's lock is held",
             append_recent_messages(
                 &atlas,
                 &[sample_message("hello")],
@@ -204,7 +204,6 @@ mod tests {
             ),
         )
         .await
-        .expect("atlas's rewrite is not held up by scout's lock")
         .unwrap();
         assert!(Arc::ptr_eq(&held, &rewrite_lock(&scout)));
         assert!(!Arc::ptr_eq(&held, &rewrite_lock(&atlas)));

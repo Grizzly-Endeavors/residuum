@@ -1,3 +1,5 @@
+import { backgroundTurnFrames } from "./chat-scenarios";
+import type { TimeProgress, TurnHold } from "./env";
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import { offeredModelsOnly } from "./provider-models";
 import type { Route, RouteContext } from "./routes";
@@ -38,8 +40,12 @@ function missedRelay({ res, state }: RouteContext): void {
 
 /**
  * A teammate (`?from=`, scout by default) messages an agent (`?agent=atlas`):
- * the message lands in its main conversation, and the hub reports it unread
- * until the web UI opens that agent's socket.
+ * the message lands in its main conversation and the agent answers it in a
+ * turn that no person started. Every connected page is sent that turn's
+ * frames (and, as the backend does, none for the message itself), history
+ * records both under the turn's id, and the hub reports the reply unread
+ * until the web UI opens that agent's socket. All of it has happened by the
+ * time the request is answered.
  */
 function teammateMessage({ res, hub, query }: RouteContext): void {
   const agent = hub.agents.get(query.get("agent") ?? "");
@@ -51,6 +57,7 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   const from = query.get("from") ?? "scout";
   const reply = `${from} asked me to check the wiki index. On it.`;
   const address = `agent:${from}`;
+  const turnId = `bg-${String(hub.env.nextId())}`;
   agent.state.extraRecent.push(
     {
       role: "user",
@@ -62,13 +69,49 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
       timestamp: now,
       visibility: "background",
       agent_sender: { address, category: "teammate" },
+      turn_id: turnId,
     },
-    { role: "assistant", content: reply, timestamp: now, visibility: "user" },
+    {
+      role: "assistant",
+      content: reply,
+      timestamp: now,
+      // Recorded for the user to see, so Home and the team feed show the reply.
+      visibility: "user",
+      turn_id: turnId,
+    },
   );
-  agent.state.broadcast({ type: "response", reply_to: "teammate", content: reply });
+  for (const frame of backgroundTurnFrames(turnId, reply)) agent.state.broadcast(frame);
   hub.teamEvents.agentReplied(agent);
   hub.overview.changed(agent);
   if (agent.connectedClients() === 0) hub.addUnread(agent);
+  json(res, 200, { ok: true });
+}
+
+/**
+ * A person writes to an agent (`?agent=atlas`) on Telegram, as `{ content?, name? }`
+ * (a question about the routing doc, from Alex, by default): every connected
+ * page is told of the message and then sees the agent work on it, and the
+ * agent answers on Telegram. The turn is recorded in history with its sender.
+ */
+async function telegramMessage({ req, res, hub, query }: RouteContext): Promise<void> {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (!agent) {
+    json(res, 404, { error: "mock: name an agent with ?agent=" });
+    return;
+  }
+  const raw = await readBody(req);
+  const {
+    content = "Can you check what the routing doc says about urgent notices?",
+    name = "Alex",
+  } = raw.trim() === "" ? {} : parseJsonObject(raw);
+  if (typeof content !== "string" || typeof name !== "string") {
+    json(res, 422, { error: "mock: `content` and `name` must be strings" });
+    return;
+  }
+  agent.receiveMessage(content, {
+    endpoint: "telegram",
+    sender: { name, id: "42", interface: "telegram", location: "direct message" },
+  });
   json(res, 200, { ok: true });
 }
 
@@ -125,6 +168,108 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
   }
   hub.env.setDelayScale(scale);
   json(res, 200, { scale });
+}
+
+/**
+ * `{ mode }`: how simulated time passes, `"manual"` or `"scaled"` (see
+ * `TimeMode`). A spec sets it before it starts what it wants to watch; reset
+ * puts it back to scaled. Answers with the time the mock reads and when the
+ * next waiting timer is due.
+ */
+async function setTimeMode({ req, res, hub }: RouteContext): Promise<void> {
+  const { mode } = await readJsonObject(req);
+  if (mode !== "manual" && mode !== "scaled") {
+    json(res, 422, { error: 'mock: `mode` must be "manual" or "scaled"' });
+    return;
+  }
+  hub.env.setTimeMode(mode);
+  json(res, 200, { mode, pending: hub.env.pendingTimers(), ...readings(hub) });
+}
+
+/**
+ * The time the mock reads, and in manual time when the next waiting timer
+ * comes due (`null` when none waits, or in scaled time). The e2e fixture
+ * sets the page's clock from these, so the page and the mock agree on time.
+ */
+function readings(hub: RouteContext["hub"]): { now: string; next: string | null } {
+  const nextIn = hub.env.nextTimerIn();
+  return {
+    now: hub.env.clock.iso(),
+    next: nextIn === null ? null : hub.env.clock.isoIn(nextIn),
+  };
+}
+
+/** Answer a move of manual time with what it did, the time the mock now reads, and when the next timer is due. */
+function timeMoved(
+  res: RouteContext["res"],
+  hub: RouteContext["hub"],
+  progress: TimeProgress,
+): void {
+  json(res, 200, { ...progress, ...readings(hub) });
+}
+
+/**
+ * `{ ms }`: in manual time, move simulated time forward. Every timer that
+ * comes due runs, in order, along with the timers their work sets within the
+ * span. Answers `{ fired, pending, elapsedMs, now, next }` once they have.
+ */
+async function advanceTime({ req, res, hub }: RouteContext): Promise<void> {
+  const { ms } = await readJsonObject(req);
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    json(res, 422, { error: "mock: `ms` must be a non-negative number of milliseconds" });
+    return;
+  }
+  if (hub.env.timeMode() !== "manual") {
+    json(res, 409, { error: "mock: time is scaled; set manual time first" });
+    return;
+  }
+  timeMoved(res, hub, await hub.env.advance(ms));
+}
+
+/**
+ * In manual time, run the next timer that waits, however far ahead it is.
+ * Answers `{ fired, pending, elapsedMs, now, next }`; `fired` is 0 when none waits.
+ */
+async function stepTime({ res, hub }: RouteContext): Promise<void> {
+  if (hub.env.timeMode() !== "manual") {
+    json(res, 409, { error: "mock: time is scaled; set manual time first" });
+    return;
+  }
+  timeMoved(res, hub, await hub.env.step());
+}
+
+/**
+ * `{ held }`: how far simulated turns may get. `"reply"` stops each once its
+ * reply has streamed in, before it ends; `true` stops each at its last step,
+ * before its reply; `"steps"` stops each while its file reads are still
+ * running; and `false` lets them end. Easing the hold lets the waiting turns
+ * carry on. Reset lifts it.
+ */
+async function holdTurns({ req, res, hub }: RouteContext): Promise<void> {
+  const { held } = await readJsonObject(req);
+  const holds = new Map<unknown, TurnHold>([
+    [true, "end"],
+    [false, "none"],
+    ["steps", "steps"],
+    ["reply", "reply"],
+  ]);
+  const hold = holds.get(held);
+  if (hold === undefined) {
+    json(res, 422, { error: 'mock: `held` must be true, false, "steps" or "reply"' });
+    return;
+  }
+  hub.env.holdTurns(hold);
+  json(res, 200, { held });
+}
+
+/** `GET ?agent=name`: how many pages have the agent's chat socket open right now, as `{ pages }`. */
+function connectedPages({ res, hub, query }: RouteContext): void {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (agent === undefined) {
+    json(res, 404, { error: "mock: no such agent" });
+    return;
+  }
+  json(res, 200, { pages: agent.connectedClients() });
 }
 
 /**
@@ -228,8 +373,14 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
+  { method: "POST", pattern: "/api/mock/telegram-message", handler: telegramMessage },
   { method: "POST", pattern: "/api/mock/fix-agent", handler: fixAgent },
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
   { method: "POST", pattern: "/api/mock/delays", handler: setDelays },
+  { method: "POST", pattern: "/api/mock/time", handler: setTimeMode },
+  { method: "POST", pattern: "/api/mock/time/advance", handler: advanceTime },
+  { method: "POST", pattern: "/api/mock/time/step", handler: stepTime },
+  { method: "POST", pattern: "/api/mock/turn-hold", handler: holdTurns },
+  { method: "GET", pattern: "/api/mock/connected-pages", handler: connectedPages },
 ];

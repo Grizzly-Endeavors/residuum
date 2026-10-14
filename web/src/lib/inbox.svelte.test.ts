@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubInboxItem, HubInboxPage } from "./hub-types";
 import { InboxStore } from "./inbox.svelte";
+import { waitFor } from "../test/wait";
 
 function item(agent: string, id: string, overrides: Partial<HubInboxItem> = {}): HubInboxItem {
   return {
@@ -186,7 +187,7 @@ describe("following the counts", () => {
     expect(requests).toHaveLength(1);
 
     store.followCounts("atlas=2");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(requests).toHaveLength(2);
     });
 
@@ -321,7 +322,7 @@ describe("archiving and restoring", () => {
     listAnswer = () => page([item("atlas", "a"), item("atlas", "b")]);
     await store.restore({ agent: "atlas", id: "a" });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.items.map((i) => i.id)).toEqual(["a", "b"]);
     });
   });

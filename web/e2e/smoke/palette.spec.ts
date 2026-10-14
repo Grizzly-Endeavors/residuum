@@ -211,7 +211,9 @@ test("the shortcuts dialog lists Esc for stopping a reply and what / does", asyn
   }
   const dialog = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Stop the reply while the agent is replying")).toBeVisible();
+  await expect(
+    dialog.getByText("Press twice to stop the reply while the agent is replying"),
+  ).toBeVisible();
   await expect(dialog.getByText(/As the first character, list the chat actions/)).toBeVisible();
   await expectNoAxeViolations(page, { within: OVERLAYS });
 });

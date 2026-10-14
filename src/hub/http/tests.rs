@@ -39,7 +39,8 @@ use crate::hub::{
     AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
     RestoreAgentRequest,
 };
-use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
+use crate::testing::wait;
+use crate::tunnel::TunnelStatus;
 use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
@@ -49,6 +50,7 @@ mod events;
 mod inbox;
 mod overview;
 mod overview_schedule;
+mod pairing;
 mod push;
 mod session_relay;
 
@@ -440,6 +442,7 @@ struct Harness {
     app: Router,
     directory: Arc<FakeDirectory>,
     push: Arc<crate::hub::push::PushService>,
+    pairing: crate::pairing::DevicePairing,
     root: tempfile::TempDir,
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
@@ -490,6 +493,7 @@ impl Harness {
         let overview =
             TeamOverview::with_window(TEST_BOOT_ID, Arc::clone(&shared), OVERVIEW_WINDOW);
         let push = crate::hub::push::PushService::new(&hub_dir, None);
+        let pairing = crate::pairing::DevicePairing::open(&hub_dir);
         let hub = HubHttpState {
             hub_dir: hub_dir.clone(),
             reload_tx,
@@ -528,12 +532,15 @@ impl Harness {
             overview: Arc::clone(&overview),
             agent_changes: Arc::clone(&changes),
             system_one: crate::inference::system_one::SystemOneService::new(None),
+            pairing: pairing.clone(),
+            remote_access: crate::remote_access::slot::RemoteAccessSlot::new(root.path()),
         };
         let app = hub_router(shared, hub);
         Self {
             app,
             directory,
             push,
+            pairing,
             root,
             reload_rx,
             shutdown_rx,
@@ -685,9 +692,8 @@ async fn connect_hub(addr: SocketAddr) -> ClientSocket {
 }
 
 async fn next_frame(socket: &mut ClientSocket) -> Value {
-    let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+    let message = wait::guarded("a frame on the socket", socket.next())
         .await
-        .expect("timed out waiting for a frame")
         .expect("socket closed")
         .expect("socket error");
     match message {
@@ -1506,7 +1512,7 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
             (Method::GET, "a2a/card"),
             (Method::GET, "a2a/outbound"),
             (Method::GET, "memory/search"),
-            (Method::GET, "files/workspace"),
+            (Method::GET, "files/abc"),
         ] {
             let uri = format!("/api/agents/{name}/{route}");
             let refused = h
@@ -1613,9 +1619,8 @@ async fn a_websocket_upgrade_passes_through_dispatch() {
     let addr = h.serve().await;
     let mut socket = connect(addr, "/api/agents/scout/ws").await;
     socket.send(ClientMessage::text("hello")).await.unwrap();
-    let reply = tokio::time::timeout(Duration::from_secs(5), socket.next())
+    let reply = wait::guarded("the echo", socket.next())
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     assert_eq!(reply, ClientMessage::text("echo:hello"));
@@ -1653,6 +1658,160 @@ async fn webhooks_reach_the_named_agents_webhook_route() {
         .post_expect("/webhook/ghost/deploy", StatusCode::NOT_FOUND)
         .await;
     assert_eq!(unknown["error"], "no agent named 'ghost'");
+}
+
+/// A browser opening `uri` in a tab.
+fn tab(uri: &str) -> Request<Body> {
+    Request::get(uri)
+        .header("sec-fetch-dest", "document")
+        .header("sec-fetch-mode", "navigate")
+        .header("accept", "text/html,*/*;q=0.8")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_webhook_address_opened_in_a_tab_goes_to_its_settings() {
+    let h = Harness::new();
+    for (uri, expected) in [
+        (
+            "/webhook/scout/deploy",
+            "/agent/scout?settings=scout%2Fconnections&notice=webhook-address",
+        ),
+        (
+            "/webhook/scout",
+            "/agent/scout?settings=scout%2Fconnections&notice=webhook-address",
+        ),
+        ("/webhook", "/home?notice=webhook-address"),
+        ("/webhook/Bad_Name/x", "/home?notice=webhook-address"),
+    ] {
+        let (status, headers, _) = h.send(tab(uri)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(headers["location"], expected, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_script_reading_a_webhook_address_is_told_it_takes_posts() {
+    let h = Harness::new();
+    let refused = h
+        .get_expect("/webhook/scout/deploy", StatusCode::METHOD_NOT_ALLOWED)
+        .await;
+    assert_eq!(
+        refused["error"],
+        "Webhooks receive POST requests from other services."
+    );
+    let incomplete = h.post_expect("/webhook/scout", StatusCode::NOT_FOUND).await;
+    assert!(
+        incomplete["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("/webhook/{agent}/{name}")),
+        "{incomplete}"
+    );
+}
+
+#[tokio::test]
+async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() {
+    let h = Harness::new();
+    for (uri, expected) in [
+        (
+            "/api/agents/quiet/files/abc",
+            "/agent/quiet?notice=agent-stopped",
+        ),
+        ("/api/agents/ghost/files/abc", "/agent/ghost"),
+    ] {
+        let (status, headers, _) = h.send(tab(uri)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(headers["location"], expected, "{uri}");
+    }
+    // A script still gets the contract errors.
+    h.get_expect("/api/agents/quiet/files/abc", StatusCode::CONFLICT)
+        .await;
+}
+
+#[tokio::test]
+async fn a_workspace_file_link_is_served_while_the_agent_is_stopped_or_failed() {
+    let h = Harness::new();
+    h.add_failed_agent();
+    // The workspace is the agent's directory. The secret sits beside it, so
+    // a link that climbs out of the workspace would reach it.
+    tokio::fs::write(h.root.path().join("secret.txt"), "the secret contents")
+        .await
+        .unwrap();
+    for name in EVERY_STATE {
+        let notes = h.agent_dir(name).join("notes");
+        tokio::fs::create_dir_all(&notes).await.unwrap();
+        tokio::fs::write(notes.join("plan.md"), format!("plan of {name}"))
+            .await
+            .unwrap();
+    }
+    let opens = || h.directory.checkpoint_opens.load(Ordering::SeqCst);
+
+    for name in EVERY_STATE {
+        let link = format!("/api/agents/{name}/files/workspace?path=notes%2Fplan.md");
+        let (_, body) = h.request_ok(Method::GET, &link, "").await;
+        assert_eq!(body, format!("plan of {name}").into_bytes(), "{link}");
+
+        let climbing = format!("/api/agents/{name}/files/workspace?path=..%2Fsecret.txt");
+        let (status, refused) = h
+            .send_body(Request::get(&climbing).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{climbing}");
+        assert!(
+            !String::from_utf8_lossy(&refused).contains("the secret contents"),
+            "{climbing}"
+        );
+
+        let missing = format!("/api/agents/{name}/files/workspace?path=notes%2Fgone.md");
+        h.get_expect(&missing, StatusCode::NOT_FOUND).await;
+    }
+    assert_eq!(
+        opens(),
+        0,
+        "serving a workspace file never opens the repositories"
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_file_link_opened_in_a_tab_on_a_stopped_agent_shows_the_file() {
+    let h = Harness::new();
+    let notes = h.agent_dir("quiet").join("notes");
+    tokio::fs::create_dir_all(&notes).await.unwrap();
+    tokio::fs::write(notes.join("plan.md"), "the plan")
+        .await
+        .unwrap();
+
+    let (served_status, served_headers, served_body) = h
+        .send(tab(
+            "/api/agents/quiet/files/workspace?path=notes%2Fplan.md",
+        ))
+        .await;
+    assert_eq!(served_status, StatusCode::OK);
+    assert_eq!(served_body, b"the plan");
+    assert_eq!(served_headers["content-type"], "text/markdown");
+
+    let (missing_status, missing_headers, _) = h
+        .send(tab(
+            "/api/agents/quiet/files/workspace?path=notes%2Fgone.md",
+        ))
+        .await;
+    assert_eq!(missing_status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        missing_headers["location"],
+        "/agent/quiet/files?panel=file%3Anotes%2Fgone.md"
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_file_link_for_an_unknown_agent_is_not_found() {
+    let h = Harness::new();
+    let refused = h
+        .get_expect(
+            "/api/agents/ghost/files/workspace?path=notes%2Fplan.md",
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    assert_eq!(refused["error"], "no agent named 'ghost'", "{refused}");
 }
 
 // ---- artifact sessions ---------------------------------------------------
@@ -1712,11 +1871,20 @@ fn cross_site(method: Method, uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-fn through_the_tunnel(method: Method, uri: &str) -> Request<Body> {
+/// `method uri` as a paired browser's same-origin request arrives through
+/// the tunnel: with the transport's mark and the credential of a device paired
+/// just now.
+async fn through_the_tunnel(h: &Harness, method: Method, uri: &str) -> Request<Body> {
+    let (cookie, _workbench) = h.pairing.pair_device_for_tests("test browser").await;
     Request::builder()
         .method(method)
         .uri(uri)
-        .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
+        .extension(crate::pairing::remote::RemoteTransport {
+            peer_ip: Some("203.0.113.7".to_string()),
+            origin: None,
+        })
+        .header("sec-fetch-site", "same-origin")
+        .header("cookie", cookie)
         .body(Body::empty())
         .unwrap()
 }
@@ -1753,7 +1921,9 @@ async fn the_cross_site_guard_covers_the_whole_app() {
 async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunnel() {
     let mut h = Harness::new();
     for uri in ["/api/hub/shutdown", "/api/hub/cloud/disconnect"] {
-        let guarded_status = h.status(through_the_tunnel(Method::POST, uri)).await;
+        let guarded_status = h
+            .status(through_the_tunnel(&h, Method::POST, uri).await)
+            .await;
         assert_eq!(guarded_status, StatusCode::FORBIDDEN, "{uri}");
     }
     assert!(h.directory.calls().is_empty(), "no agent was stopped");
@@ -1761,10 +1931,7 @@ async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunne
 
     // Other lifecycle routes stay reachable remotely.
     let open_status = h
-        .status(through_the_tunnel(
-            Method::POST,
-            "/api/hub/agents/scout/stop",
-        ))
+        .status(through_the_tunnel(&h, Method::POST, "/api/hub/agents/scout/stop").await)
         .await;
     assert_eq!(open_status, StatusCode::OK);
 }
@@ -1773,7 +1940,7 @@ async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunne
 async fn stop_all_is_reachable_over_the_tunnel() {
     let h = Harness::new();
     let status = h
-        .status(through_the_tunnel(Method::POST, "/api/hub/stop-all"))
+        .status(through_the_tunnel(&h, Method::POST, "/api/hub/stop-all").await)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(h.directory.calls(), ["stop scout"]);
@@ -2112,13 +2279,52 @@ async fn the_cross_site_guard_covers_the_embedded_app() {
 }
 
 #[tokio::test]
-async fn the_cloud_callback_stays_at_the_root() {
-    let h = Harness::new();
-    let (status, bytes) = h
-        .send_body(Request::get("/cloud/callback").body(Body::empty()).unwrap())
+async fn the_cloud_callback_saves_the_sign_in_and_hands_off_to_settings() {
+    let mut h = Harness::new();
+    let (status, headers, _) = h
+        .send(
+            Request::get("/cloud/callback?token=rst_signed_in")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(String::from_utf8(bytes).unwrap().contains("Missing token"));
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        headers["location"],
+        "/home?settings=_all/cloud&cloud=connecting"
+    );
+
+    let hub_dir = h.root.path().join("hub");
+    let store = crate::config::secrets::SecretStore::load(&hub_dir).unwrap();
+    assert_eq!(store.get("cloud_token"), Some("rst_signed_in"));
+    let config = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+    assert!(config.contains("enabled = true"), "{config}");
+    assert!(
+        config.contains("token = \"secret:cloud_token\""),
+        "{config}"
+    );
+    assert!(matches!(h.reload_rx.try_recv(), Ok(ReloadSignal::Hub)));
+}
+
+#[tokio::test]
+async fn a_cloud_callback_without_a_usable_token_hands_off_to_settings() {
+    let mut h = Harness::new();
+    for uri in [
+        "/cloud/callback",
+        "/cloud/callback?token=",
+        "/cloud/callback?token&token",
+        "/cloud/callback?%zz=%",
+    ] {
+        let (status, headers, _) = h.send(Request::get(uri).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(
+            headers["location"], "/home?settings=_all/cloud&cloud=missing-token",
+            "{uri}"
+        );
+    }
+    let config = std::fs::read_to_string(h.root.path().join("hub/config.toml")).unwrap();
+    assert!(!config.contains("[cloud]"), "{config}");
+    assert!(h.reload_rx.try_recv().is_err());
 }
 
 // ---- hub websocket -------------------------------------------------------
@@ -2170,15 +2376,34 @@ async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
 
     h.directory
         .events
-        .send(HubEvent::Notice {
-            level: crate::hub::types::NoticeLevel::Warn,
-            message: "watch out".to_string(),
-            agent: Some("scout".to_string()),
-        })
+        .send(HubEvent::notice(
+            crate::hub::types::NoticeLevel::Warn,
+            "watch out".to_string(),
+            Some("scout".to_string()),
+        ))
         .unwrap();
     assert_eq!(
         next_frame(&mut socket).await,
         json!({ "type": "notice", "level": "warn", "message": "watch out", "agent": "scout" })
+    );
+
+    h.directory
+        .events
+        .send(HubEvent::Notice {
+            level: crate::hub::types::NoticeLevel::Warn,
+            message: "gateway rebind failed (0.0.0.0:7700): in use".to_string(),
+            agent: None,
+            kind: Some(crate::hub::types::HubNoticeKind::GatewayRebindFailed),
+        })
+        .unwrap();
+    assert_eq!(
+        next_frame(&mut socket).await,
+        json!({
+            "type": "notice",
+            "level": "warn",
+            "message": "gateway rebind failed (0.0.0.0:7700): in use",
+            "kind": "gateway_rebind_failed",
+        })
     );
 }
 
@@ -2218,9 +2443,8 @@ async fn a_clean_client_close_completes_with_the_clients_code() {
         .await
         .unwrap();
 
-    let reply = tokio::time::timeout(Duration::from_secs(5), socket.next())
+    let reply = wait::guarded("the hub to answer the close", socket.next())
         .await
-        .expect("timed out waiting for the hub to answer the close")
         .expect("the socket closed without answering the close")
         .expect("socket error while waiting for the close reply");
     match reply {
@@ -2352,27 +2576,27 @@ fn team_change(path: &str) -> WorkspaceChange {
     }
 }
 
-/// Publish `changes` on the team bus until the socket shows a frame, since
-/// the watch request has no acknowledgement.
-async fn publish_until_a_frame_arrives(
-    h: &Harness,
-    socket: &mut ClientSocket,
-    changes: &[&str],
-) -> Value {
-    let publisher = h.team_bus.publisher();
-    for _attempt in 0..100 {
-        let batch: Vec<WorkspaceChange> = changes.iter().map(|p| team_change(p)).collect();
-        publisher
-            .publish(topics::Workspace, WorkspaceEvent::Changed(batch.into()))
-            .await
-            .unwrap();
-        if let Ok(Some(Ok(ClientMessage::Text(text)))) =
-            tokio::time::timeout(Duration::from_millis(100), socket.next()).await
-        {
-            return serde_json::from_str(text.as_str()).unwrap();
-        }
-    }
-    panic!("no frame arrived");
+/// Replace what the socket watches, and wait until the hub has applied it:
+/// the socket handles a client's messages in order, so the answer to a
+/// `ping` sent after the request means the request has taken effect.
+async fn watch_team(socket: &mut ClientSocket, prefixes: Value) {
+    send_client(
+        socket,
+        &json!({ "type": "watch_team", "prefixes": prefixes }),
+    )
+    .await;
+    send_client(socket, &json!({ "type": "ping" })).await;
+    assert_eq!(next_frame(socket).await, json!({ "type": "pong" }));
+}
+
+/// Publish one batch of team `changes` on the team bus.
+async fn publish_team_changes(h: &Harness, changes: &[&str]) {
+    let batch: Vec<WorkspaceChange> = changes.iter().map(|p| team_change(p)).collect();
+    h.team_bus
+        .publisher()
+        .publish(topics::Workspace, WorkspaceEvent::Changed(batch.into()))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -2382,44 +2606,33 @@ async fn watched_team_paths_are_forwarded_and_others_are_not() {
     let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
 
-    send_client(
-        &mut socket,
-        &json!({ "type": "watch_team", "prefixes": ["team/wiki"] }),
-    )
-    .await;
-    let frame = publish_until_a_frame_arrives(
-        &h,
-        &mut socket,
-        &["team/wiki/a.md", "team/skills/s.md", "memory/m.md"],
-    )
-    .await;
+    watch_team(&mut socket, json!(["team/wiki"])).await;
+    publish_team_changes(&h, &["team/wiki/a.md", "team/skills/s.md", "memory/m.md"]).await;
     assert_eq!(
-        frame,
+        next_frame(&mut socket).await,
         json!({
             "type": "workspace_changed",
             "changes": [{ "path": "team/wiki/a.md", "kind": "modified" }],
         })
     );
 
-    // Watching nothing stops the frames.
-    send_client(
-        &mut socket,
-        &json!({ "type": "watch_team", "prefixes": [] }),
-    )
-    .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let publisher = h.team_bus.publisher();
-    for _attempt in 0..5 {
-        publisher
-            .publish(
-                topics::Workspace,
-                WorkspaceEvent::Changed(vec![team_change("team/wiki/a.md")].into()),
-            )
-            .await
-            .unwrap();
-    }
-    let quiet = tokio::time::timeout(Duration::from_millis(400), socket.next()).await;
-    assert!(quiet.is_err(), "no frames once nothing is watched");
+    // Watching nothing stops the frames. The wiki change below is followed
+    // on the same feed by a skills change the next watch forwards; the feed
+    // keeps its order, so a forwarded wiki frame would arrive first. Neither
+    // watch takes the wiki path, so the order of the watch and the change
+    // doesn't matter.
+    watch_team(&mut socket, json!([])).await;
+    publish_team_changes(&h, &["team/wiki/a.md"]).await;
+    watch_team(&mut socket, json!(["team/skills"])).await;
+    publish_team_changes(&h, &["team/skills/s.md"]).await;
+    assert_eq!(
+        next_frame(&mut socket).await,
+        json!({
+            "type": "workspace_changed",
+            "changes": [{ "path": "team/skills/s.md", "kind": "modified" }],
+        }),
+        "no frame for the wiki change once nothing was watched"
+    );
 }
 
 #[tokio::test]
@@ -2467,31 +2680,18 @@ async fn a_resync_reaches_a_watching_client() {
     let addr = h.serve().await;
     let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
-    send_client(
-        &mut socket,
-        &json!({ "type": "watch_team", "prefixes": ["team"] }),
-    )
-    .await;
+    watch_team(&mut socket, json!(["team"])).await;
 
-    let publisher = h.team_bus.publisher();
-    for _attempt in 0..100 {
-        publisher
-            .publish(
-                topics::Workspace,
-                WorkspaceEvent::Resync(crate::workspace::watch::WorkspaceResyncReason::Overflow),
-            )
-            .await
-            .unwrap();
-        if let Ok(Some(Ok(ClientMessage::Text(text)))) =
-            tokio::time::timeout(Duration::from_millis(100), socket.next()).await
-        {
-            let frame: Value = serde_json::from_str(text.as_str()).unwrap();
-            assert_eq!(
-                frame,
-                json!({ "type": "workspace_resync", "reason": "overflow" })
-            );
-            return;
-        }
-    }
-    panic!("no resync frame arrived");
+    h.team_bus
+        .publisher()
+        .publish(
+            topics::Workspace,
+            WorkspaceEvent::Resync(crate::workspace::watch::WorkspaceResyncReason::Overflow),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        next_frame(&mut socket).await,
+        json!({ "type": "workspace_resync", "reason": "overflow" })
+    );
 }

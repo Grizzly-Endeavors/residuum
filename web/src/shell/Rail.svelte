@@ -5,8 +5,8 @@
   import { Icon, type IconName } from "../lib/icons";
   import { hub } from "../lib/hub.svelte";
   import { overview } from "../lib/overview.svelte";
-  import { ws } from "../lib/ws.svelte";
   import { router } from "../lib/router.svelte";
+  import { runningCount } from "../lib/running-count";
   import { formatLocation, HOME, locationAt, placesEqual, type Place } from "../lib/routes";
   import {
     Badge,
@@ -20,11 +20,13 @@
     VisuallyHidden,
   } from "../lib/ui";
   import type { RailAccordion } from "./accordion.svelte";
+  import InstanceSwitcher from "./InstanceSwitcher.svelte";
   import { AGENT_PLACES, agentRowStatus } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
   // The rail: the search row, Home and Inbox, every agent with its places in
-  // an accordion, the team's places, and a footer with help and Settings. At
+  // an accordion, the team's places, and a footer with help and Settings. When
+  // the user has more than one instance, a switcher sits above the search row. At
   // phone width the same rail opens in the drawer.
 
   interface Props {
@@ -60,12 +62,6 @@
     event.preventDefault();
     void router.openPlace(target);
     onclose?.();
-  }
-
-  /** The bound agent's running sessions; the rail knows no other agent's yet. */
-  function runningCount(agent: string): number {
-    if (ws.agent !== agent) return 0;
-    return ws.sessions.live.length + ws.sessions.outbound.length;
   }
 
   /** Up and Down move between the rows that show, Home and End go to the ends. */
@@ -114,6 +110,8 @@
       <IconButton icon="close" label="Close menu" data-overlay-close onclick={onclose} />
     {/if}
   </div>
+
+  <InstanceSwitcher />
 
   <button type="button" class="rail-search" aria-haspopup="dialog" onclick={actions.openSearch}>
     <Icon name="search" size={15} />
@@ -170,12 +168,7 @@
             <span class="rail-chevron"><Icon name="chevron-down" size={14} /></span>
             <VisuallyHidden>, {status.spoken}</VisuallyHidden>
           </button>
-          <ul
-            class="rail-places"
-            id="{uid}-places-{agent.name}"
-            hidden={!expanded}
-            data-working={status.working || undefined}
-          >
+          <ul class="rail-places" id="{uid}-places-{agent.name}" hidden={!expanded}>
             {#each AGENT_PLACES as entry (entry.kind)}
               {@const target = { kind: entry.kind, agent: agent.name } satisfies Place}
               {@const running = entry.kind === "activity" ? runningCount(agent.name) : 0}
@@ -389,20 +382,6 @@
       width: 1px;
       background: linear-gradient(180deg, var(--color-vein-dim), var(--color-vein-tint));
     }
-
-    /* While the agent works, a pulse of light runs down the vein. */
-    &[data-working]::after {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 14px;
-      width: 4px;
-      height: 26px;
-      border-radius: var(--space-2);
-      background: linear-gradient(180deg, transparent, var(--color-vein-bright), transparent);
-      pointer-events: none;
-      animation: rail-flow var(--duration-flow) var(--ease-out) infinite;
-    }
   }
 
   .rail-place {
@@ -447,22 +426,6 @@
     .rail-agent,
     .rail-place {
       height: var(--layout-touch-target);
-    }
-  }
-
-  @keyframes rail-flow {
-    0% {
-      opacity: 0;
-      transform: translateY(-8px);
-    }
-
-    25% {
-      opacity: 1;
-    }
-
-    100% {
-      opacity: 0;
-      transform: translateY(150px);
     }
   }
 </style>

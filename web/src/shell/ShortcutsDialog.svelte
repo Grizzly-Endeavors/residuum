@@ -22,13 +22,13 @@
     {
       heading: "In the message box",
       shortcuts: [
-        { keys: [["Enter"]], does: "Send" },
+        { keys: [["Enter"]], does: "Send. On a touch screen, Enter starts a new line instead" },
         { keys: [["Shift", "Enter"]], does: "Start a new line" },
         {
           keys: [["/"]],
           does: "As the first character, list the chat actions, such as Summarize older messages now. Keep typing to narrow them; Tab fills one in, Enter runs it.",
         },
-        { keys: [["Esc"]], does: "Stop the reply while the agent is replying" },
+        { keys: [["Esc"]], does: "Press twice to stop the reply while the agent is replying" },
       ],
     },
     {

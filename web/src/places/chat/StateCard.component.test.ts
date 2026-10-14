@@ -8,6 +8,7 @@ import type { AgentErrorKind, AgentSummary } from "../../lib/hub-types";
 import { router } from "../../lib/router.svelte";
 import type { ShellActions } from "../../shell/shell-actions";
 import StateCard from "./StateCard.svelte";
+import { waitFor } from "../../test/wait";
 
 function failed(kind: AgentErrorKind): AgentSummary {
   return {
@@ -112,7 +113,7 @@ describe("a failed agent's card", () => {
     render(StateCard, { agent: failed("config"), shown: "failed", alone: false, actions: shell });
 
     await userEvent.click(screen.getByRole("button", { name: "Fix settings" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(openSettings).toHaveBeenCalledWith({ scope: "brittle", section: "model" });
     });
   });

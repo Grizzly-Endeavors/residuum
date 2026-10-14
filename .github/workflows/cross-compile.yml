@@ -16,7 +16,7 @@ concurrency:
 jobs:
   gate:
     name: Decide whether to cross-compile
-    runs-on: lab-runners
+    runs-on: lab-runners-light
 
     outputs:
       run: ${{ steps.decide.outputs.run }}
@@ -60,7 +60,7 @@ jobs:
     name: Clippy (${{ matrix.target }})
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: lab-runners
+    runs-on: lab-runners-wide
 
     strategy:
       fail-fast: false
@@ -172,5 +172,13 @@ jobs:
       - name: Build web assets
         run: cd web && npm ci && npm run build
 
+      # Git for Windows puts sh, sleep, true and the rest of its Unix tools on
+      # this runner's PATH, where a stock Windows install has none, so a test
+      # that shells out to one would pass here and fail for users. The step
+      # runs without them.
       - name: Test
-        run: cargo test --quiet --all-features
+        shell: pwsh
+        run: |
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch '\\Git\\(usr\\)?bin\\?$' }) -join ';'
+          if (Get-Command sleep.exe -ErrorAction SilentlyContinue) { throw 'Unix tools are still on PATH' }
+          cargo test --quiet --all-features

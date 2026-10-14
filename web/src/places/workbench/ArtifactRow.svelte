@@ -69,7 +69,16 @@
     </button>
     <span class="actions">
       {#if url}
-        <a class="open" href={url} target="_blank" rel="noopener" aria-label="Open {item.title}">
+        <a
+          class="open"
+          href={url}
+          target="_blank"
+          rel="noopener"
+          aria-label="Open {item.title}"
+          onclick={(event) => {
+            list.open(event, item.name);
+          }}
+        >
           <Icon name="external-link" size={14} />Open
         </a>
       {:else}

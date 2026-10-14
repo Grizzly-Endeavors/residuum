@@ -105,11 +105,13 @@ test("Runtime: a limit and the idle channel are saved and read back from disk", 
   await page.goto("/agent/atlas?settings=atlas/runtime");
   await expect(page.getByRole("heading", { name: "Runtime", level: 2 })).toBeVisible();
   await expect(page.getByLabel("Reply time limit")).toHaveValue("120");
-  await expect(page.getByLabel("Reply length")).toHaveValue("8192");
+  await expect(page.getByLabel("Reply length")).toHaveValue("16384");
+  await expect(page.getByRole("switch", { name: "Catch repeated tool calls" })).toBeChecked();
   await expectNoAxeViolations(page, overlay);
 
   await page.getByLabel("Reply length").fill("4096");
   await page.getByLabel("Tool calls per turn").fill("40");
+  await expect(page.getByLabel("Send its updates to")).toHaveValue("websocket");
   await page.getByLabel("Send its updates to").selectOption("telegram");
   await saveChanges(page);
   await reloadFromDisk(page);

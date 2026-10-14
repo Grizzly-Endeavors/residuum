@@ -23,11 +23,26 @@ pub(super) struct StatusResponse {
     /// growth is visible.
     /// `null` for a repo whose stats couldn't be read just now.
     checkpoints: CheckpointsStatus,
+    /// Whether file changes in the agent's directory reach open pages and
+    /// the agent's watchers: `starting`, `native` (OS notifications),
+    /// `polling` (the fallback, up to two seconds late) or `off`.
+    live_updates: crate::workspace::watch::WatchHealth,
+}
+
+/// What the running agent's status route reads: its config state and the
+/// health of the change feed over its directory.
+#[derive(Clone)]
+pub(crate) struct AgentStatusState {
+    pub(crate) config: ConfigApiState,
+    pub(crate) live_updates: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
 }
 
 /// Per-repository checkpoint stats shown in `/api/agents/{name}/status`.
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
+    /// How many of the agent's automatic checkpoints are still being
+    /// written; they run off the turn's path.
+    pending: usize,
     workspace: Option<crate::checkpoints::RepoStats>,
     team: Option<crate::checkpoints::RepoStats>,
     agent_config: Option<crate::checkpoints::RepoStats>,
@@ -125,12 +140,20 @@ pub(super) struct CompleteSetupRequest {
 }
 
 /// `GET /api/agents/{name}/status` — returns `{ mode, version, features, checkpoints }`.
-pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<StatusResponse> {
+pub(super) async fn api_status(
+    State(AgentStatusState {
+        config: state,
+        live_updates,
+    }): State<AgentStatusState>,
+) -> Json<StatusResponse> {
+    let live_updates = *live_updates.borrow();
     Json(StatusResponse {
+        live_updates,
         mode: "running",
         version: update::CURRENT_VERSION,
         features: features::FEATURES,
         checkpoints: CheckpointsStatus {
+            pending: state.checkpoints.pending_checkpoints(),
             workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
                 .await,
             team: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Team).await,
@@ -210,73 +233,141 @@ pub(super) async fn api_hub_config_raw_put(
     )))
 }
 
+/// Why a patch to `hub/config.toml` didn't land. Nothing was written.
+#[derive(Debug)]
+pub(crate) enum HubConfigPatchError {
+    /// The diff doesn't apply to the file, or the patched file doesn't validate.
+    Rejected(String),
+    /// The file couldn't be read or written.
+    Io(String),
+}
+
+impl std::fmt::Display for HubConfigPatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(msg) | Self::Io(msg) => f.write_str(msg),
+        }
+    }
+}
+
+/// A JSON diff applied to `hub/config.toml` and validated, but not yet written.
+///
+/// A caller that must checkpoint the file before some related write, such as
+/// a secret, takes the checkpoint with [`Self::checkpoint`] and only then
+/// calls [`Self::write`]. The checkpoint holds the file as it stood, not as
+/// the patch leaves it.
+pub(crate) struct PreparedHubConfigPatch {
+    path: std::path::PathBuf,
+    text: String,
+}
+
+impl PreparedHubConfigPatch {
+    /// Checkpoint `config.toml` as it stands, named `summary` in History.
+    /// Returns the checkpoint's id, `None` when it couldn't be recorded. The
+    /// write still proceeds in that case.
+    pub(crate) async fn checkpoint(
+        &self,
+        checkpoints: &crate::checkpoints::CheckpointEngine,
+        summary: &str,
+    ) -> Option<String> {
+        checkpoints
+            .checkpoint_config_id_before_write(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+                summary,
+            ))
+            .await
+    }
+
+    /// Replace `config.toml` with the patched text, atomically.
+    pub(crate) async fn write(&self) -> Result<(), HubConfigPatchError> {
+        crate::util::fs::atomic_write(&self.path, &self.text)
+            .await
+            .map_err(|e| HubConfigPatchError::Io(format!("failed to write hub config.toml: {e}")))
+    }
+}
+
+/// Apply a JSON `diff` to `hub_dir/config.toml`, the one path every change to
+/// that file takes. The diff is applied to the parsed document, so comments and
+/// keys the diff doesn't name survive. The patched text must pass `validate`.
+/// Nothing is written here; see [`PreparedHubConfigPatch`].
+pub(crate) async fn prepare_hub_config_patch(
+    hub_dir: &std::path::Path,
+    diff: &serde_json::Value,
+    validate: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<PreparedHubConfigPatch, HubConfigPatchError> {
+    let Some(diff_map) = diff.as_object() else {
+        return Err(HubConfigPatchError::Rejected(
+            "hub config patch must be a JSON object".to_string(),
+        ));
+    };
+
+    let config_path = hub_dir.join("config.toml");
+    let existing = match tokio::fs::read_to_string(&config_path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(HubConfigPatchError::Io(format!(
+                "failed to read hub config.toml: {e}"
+            )));
+        }
+    };
+
+    let patched = crate::config::patch::apply_patch(&existing, diff_map, "hub/config.toml")
+        .map_err(HubConfigPatchError::Rejected)?;
+    validate(&patched).map_err(HubConfigPatchError::Rejected)?;
+
+    Ok(PreparedHubConfigPatch {
+        path: config_path,
+        text: patched,
+    })
+}
+
+/// The API error for a hub config patch that didn't land, logged with the
+/// file's path at the level its kind of failure calls for.
+fn hub_patch_failed(
+    error: HubConfigPatchError,
+    config_path: &std::path::Path,
+) -> (StatusCode, Json<ValidateResponse>) {
+    let (status, msg) = match error {
+        HubConfigPatchError::Rejected(msg) => {
+            tracing::warn!(error = %msg, path = %config_path.display(), "hub config.toml patch rejected");
+            (StatusCode::BAD_REQUEST, msg)
+        }
+        HubConfigPatchError::Io(msg) => {
+            tracing::error!(error = %msg, path = %config_path.display(), "hub config.toml patch couldn't be saved");
+            (StatusCode::INTERNAL_SERVER_ERROR, msg)
+        }
+    };
+    (
+        status,
+        Json(ValidateResponse {
+            valid: false,
+            error: Some(msg),
+            diagnostics: Vec::new(),
+        }),
+    )
+}
+
 /// `PATCH /api/hub/config/patch` — merge a JSON diff into the existing
 /// `hub/config.toml`, validate, save, trigger a hub reload if running.
 pub(super) async fn api_hub_config_patch(
     State(state): State<HubApiState>,
     Json(diff): Json<serde_json::Value>,
 ) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
-    let bad_request = |msg: String| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(msg),
-                diagnostics: Vec::new(),
-            }),
-        )
-    };
-
-    let Some(diff_map) = diff.as_object() else {
-        return Err(bad_request(
-            "hub config patch must be a JSON object".to_string(),
-        ));
-    };
-
     let config_path = state.hub_dir.join("config.toml");
-    let existing = match tokio::fs::read_to_string(&config_path).await {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            tracing::error!(error = %e, path = %config_path.display(), "failed to read hub config.toml for patching");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ValidateResponse {
-                    valid: false,
-                    error: Some(format!("failed to read hub config.toml: {e}")),
-                    diagnostics: Vec::new(),
-                }),
-            ));
-        }
-    };
+    let prepared = prepare_hub_config_patch(&state.hub_dir, &diff, |text| {
+        crate::config::HubConfig::validate_toml(text, &state.hub_dir)
+    })
+    .await
+    .map_err(|e| hub_patch_failed(e, &config_path))?;
 
-    let patched =
-        crate::config::patch::apply_patch(&existing, diff_map, "hub/config.toml").map_err(|msg| {
-            tracing::warn!(error = %msg, path = %config_path.display(), "hub config.toml patch rejected");
-            bad_request(msg)
-        })?;
-
-    crate::config::HubConfig::validate_toml(&patched, &state.hub_dir).map_err(|e| {
-        tracing::warn!(error = %e, path = %config_path.display(), "patched hub config.toml failed validation");
-        bad_request(e)
-    })?;
-
-    let checkpoint_id = state
-        .checkpoint_config_id_before_write("patch hub config.toml")
+    let checkpoint_id = prepared
+        .checkpoint(&state.checkpoints, "patch hub config.toml")
         .await;
-    crate::util::fs::atomic_write(&config_path, &patched)
+    prepared
+        .write()
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, path = %config_path.display(), "failed to write patched hub config.toml");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ValidateResponse {
-                    valid: false,
-                    error: Some(format!("failed to write hub config.toml: {e}")),
-                    diagnostics: Vec::new(),
-                }),
-            )
-        })?;
+        .map_err(|e| hub_patch_failed(e, &config_path))?;
 
     state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
 
@@ -865,12 +956,53 @@ mod tests {
         }
     }
 
+    fn status_state(
+        live_updates: crate::workspace::watch::WatchHealth,
+    ) -> (
+        AgentStatusState,
+        tokio::sync::watch::Sender<crate::workspace::watch::WatchHealth>,
+    ) {
+        let (tx, rx) = tokio::sync::watch::channel(live_updates);
+        (
+            AgentStatusState {
+                config: state(),
+                live_updates: rx,
+            },
+            tx,
+        )
+    }
+
     #[tokio::test]
     async fn status_reports_mode_version_and_features() {
-        let Json(running) = api_status(State(state())).await;
+        let (state, _tx) = status_state(crate::workspace::watch::WatchHealth::Native);
+        let Json(running) = api_status(State(state)).await;
         assert_eq!(running.mode, "running");
         assert_eq!(running.version, update::CURRENT_VERSION);
         assert_eq!(running.features, features::FEATURES);
+    }
+
+    #[tokio::test]
+    async fn status_reports_how_live_updates_reach_the_agent() {
+        use crate::workspace::watch::WatchHealth;
+
+        let (state, tx) = status_state(WatchHealth::Starting);
+        let read = |current: AgentStatusState| async move {
+            let Json(status) = api_status(State(current)).await;
+            serde_json::to_value(&status)
+                .unwrap()
+                .get("live_updates")
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(read(state.clone()).await, "starting");
+        tx.send_replace(WatchHealth::Polling);
+        assert_eq!(
+            read(state.clone()).await,
+            "polling",
+            "a fallback to polling shows in the status"
+        );
+        tx.send_replace(WatchHealth::Off);
+        assert_eq!(read(state).await, "off");
     }
 
     /// A state backed by a real temp directory, for tests that read/write

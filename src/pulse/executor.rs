@@ -75,6 +75,7 @@ pub fn build_pulse_execution(
         inbound: None,
         images: Vec::new(),
         overlap,
+        carried_history: Vec::new(),
     }
 }
 

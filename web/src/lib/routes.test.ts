@@ -73,23 +73,36 @@ describe("places", () => {
 
 describe("unknown routes", () => {
   it.each([
-    ["/nowhere", "/home"],
-    ["/home/extra", "/home"],
-    ["/inbox/extra", "/home"],
-    ["/agent", "/home"],
-    ["/agent/Bad_Name", "/home"],
-    ["/agent/scout/nowhere", "/home"],
-    ["/agent/scout/files/extra", "/home"],
-    ["/team/nowhere", "/home"],
-    ["/team/files/extra", "/home"],
-    ["/%E0%A4%A", "/home"],
-  ])("corrects %s to %s", (from, to) => {
-    expect(where(from)).toBe(to);
+    "/nowhere",
+    "/home/extra",
+    "/inbox/extra",
+    "/agent",
+    "/agent/Bad_Name",
+    "/agent/scout/nowhere",
+    "/agent/scout/files/extra",
+    "/team/nowhere",
+    "/team/files/extra",
+    "/team/workbench/a/b",
+    "/notes.txt",
+    "/%E0%A4%A",
+  ])("shows %s as Not Found and keeps its address", (path) => {
+    const { location, notices } = read(path);
+    expect(location.place).toEqual({ kind: "not-found", path });
+    expect(location.panel).toBeNull();
+    expect(notices).toEqual([]);
+    expect(formatLocation(location)).toBe(path);
+  });
+
+  it("keeps the Settings modal over Not Found, and drops a panel it can't show", () => {
+    expect(where("/nowhere?settings=_all/cloud&panel=size")).toBe("/nowhere?settings=_all/cloud");
+  });
+
+  it("is not an agent's place", () => {
+    expect(viewedAgentOf({ kind: "not-found", path: "/agent/x/y" })).toBeNull();
   });
 
   it("corrects a malformed artifact name to the list", () => {
     expect(where("/team/workbench/Bad_Name")).toBe("/team/workbench");
-    expect(where("/team/workbench/a/b")).toBe("/home");
   });
 
   it("accepts the artifact-name rule's limits", () => {
@@ -165,14 +178,17 @@ describe("the panel parameter", () => {
     ["/team/files?panel=file:notes/plan.md", { kind: "file", path: "notes/plan.md" }],
     ["/agent/scout?panel=size", { kind: "size" }],
     ["/agent/scout/files?panel=size", { kind: "size" }],
+    ["/agent/scout/activity?panel=new-session:scout", { kind: "new-session", agent: "scout" }],
+    ["/agent/scout?panel=new-session:scout", { kind: "new-session", agent: "scout" }],
   ] as [string, Panel][])("keeps %s", (url, panel) => {
     const parsed = read(url);
     expect(parsed.location.panel).toEqual(panel);
     expect(parsed.url).toBe(url);
   });
 
-  it("removes a session panel for another agent on an agent place", () => {
+  it("removes a session or new-session panel for another agent on an agent place", () => {
     expect(where("/agent/scout?panel=session:atlas:run-1")).toBe("/agent/scout");
+    expect(where("/agent/scout/activity?panel=new-session:atlas")).toBe("/agent/scout/activity");
     expect(where("/agent/scout/files?panel=session:atlas:run-1")).toBe("/agent/scout/files");
   });
 
@@ -186,6 +202,8 @@ describe("the panel parameter", () => {
       "/team/workbench?panel=file:a.md",
       "/team/files?panel=size",
       "/team/files?panel=session:scout:run-1",
+      "/team/workbench?panel=new-session:scout",
+      "/home?panel=new-session:scout",
       "/agent/scout?panel=file:",
     ]) {
       expect(read(url).location.panel).toBeNull();
@@ -206,6 +224,9 @@ describe("the panel parameter", () => {
       "session:Bad_Name:run-1",
       "size:extra",
       "file",
+      "new-session",
+      "new-session:",
+      "new-session:Bad_Name",
     ]) {
       expect(where(`/agent/scout?panel=${value}`)).toBe("/agent/scout");
     }
@@ -229,6 +250,11 @@ describe("the panel parameter", () => {
     expect(panelAllowed(chat, session("scout", "r"))).toBe(true);
     expect(panelAllowed(chat, session("atlas", "r"))).toBe(false);
     expect(panelAllowed({ kind: "workbench", artifact: null }, session("atlas", "r"))).toBe(true);
+    expect(panelAllowed(chat, { kind: "new-session", agent: "scout" })).toBe(true);
+    expect(panelAllowed(chat, { kind: "new-session", agent: "atlas" })).toBe(false);
+    expect(
+      panelAllowed({ kind: "workbench", artifact: null }, { kind: "new-session", agent: "atlas" }),
+    ).toBe(false);
     expect(panelAllowed(HOME, { kind: "size" })).toBe(false);
     expect(panelAllowed({ kind: "shared-files" }, { kind: "file", path: "a" })).toBe(true);
     expect(panelAllowed({ kind: "shared-files" }, { kind: "size" })).toBe(false);

@@ -6,6 +6,7 @@
   import { LazyComponent } from "../lib/lazy-component.svelte";
   import { notifications } from "../lib/notifications.svelte";
   import { overview } from "../lib/overview.svelte";
+  import { remoteAccess } from "../lib/remote-access.svelte";
   import { router } from "../lib/router.svelte";
   import { ws } from "../lib/ws.svelte";
   import { ALL_SCOPE } from "../lib/settings-sections";
@@ -32,6 +33,7 @@
   import Rail from "./Rail.svelte";
   import type { FeedbackTab, ShellActions } from "./shell-actions";
   import ShortcutsDialog from "./ShortcutsDialog.svelte";
+  import TabTitle from "./TabTitle.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
 
   // The frame around every place: the rail beside the main region at medium
@@ -146,6 +148,9 @@
     };
   });
 
+  // The instance switcher in the rail follows the secure tunnel's status.
+  onMount(() => remoteAccess.follow());
+
   onMount(() => {
     // The drawer is the phone's rail; a wider window shows the rail itself.
     const phone = window.matchMedia(PHONE_QUERY);
@@ -182,6 +187,7 @@
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
+<TabTitle />
 
 <!-- data-hub and data-overview say how far the hub's state has arrived (the socket, then the counts it brings), for the end-to-end suite, which waits for "connected" and "loaded" before it acts. -->
 <div

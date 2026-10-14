@@ -248,7 +248,7 @@
     <span class="setup-wordmark"><Icon name="mark" size={18} />Residuum</span>
   </header>
   <main class="setup-scroller" bind:this={scroller}>
-    <div class="setup-column">
+    <div class="setup-column" data-setup-column>
       <SetupProgress labels={stepLabels} current={step} />
 
       <div class="setup-head">

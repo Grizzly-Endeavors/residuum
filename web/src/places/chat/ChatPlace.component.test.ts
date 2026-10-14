@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import {
+  fireEvent,
   jsonResponse,
   mockFetch,
   render,
@@ -9,12 +10,17 @@ import {
   stubWebSocket,
 } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
+import { actionRegistry } from "../../lib/action-registry.svelte";
+import { saveDraft, saveDraftImages } from "../../lib/composer-drafts";
 import { hub } from "../../lib/hub.svelte";
+import { notifications } from "../../lib/notifications.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
 import { router } from "../../lib/router.svelte";
 import type { SessionSummary } from "../../lib/types";
+import { toast } from "../../lib/toast.svelte";
 import { setViewedAgent } from "../../lib/viewed-agent";
 import { ws } from "../../lib/ws.svelte";
+import { waitFor } from "../../test/wait";
 import { registerAppActions } from "../../shell/app-actions.svelte";
 import type { ShellActions } from "../../shell/shell-actions";
 import ChatPlace from "./ChatPlace.svelte";
@@ -172,7 +178,7 @@ describe("the conversation", () => {
 
     expect(screen.getByRole("region", { name: "drifter is stopped" })).toBeInTheDocument();
     expect(screen.queryByText("No messages yet")).toBeNull();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByText(/Reconnecting/)).toBeNull();
   });
 
@@ -202,19 +208,25 @@ describe("the conversation", () => {
     setViewedAgent("drifter");
     render(ChatPlace, { agent: "drifter", actions: shell });
     await settle();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
 
     hub.handleFrame({ type: "agent_state", agent: agent("drifter", { state: "running" }) });
     await settle();
     expect(screen.queryByRole("region", { name: "drifter is stopped" })).toBeNull();
-    expect(screen.getByRole("textbox")).toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
   });
 
   it("shows the live turn of the agent that is open, not the one that was", async () => {
     setViewedAgent("scout");
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     ws.store.handleMessage({
       type: "tool_call",
+      reply_to: "t1",
+      call: 0,
       id: "c1",
       name: "memory_search",
       arguments: { query: "release notes" },
@@ -256,7 +268,11 @@ describe("the conversation", () => {
 describe("stopping the reply", () => {
   function startTurn(): void {
     setViewedAgent("atlas");
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
   }
 
   it("stops it from the activity line, which says it is stopping", async () => {
@@ -271,15 +287,19 @@ describe("stopping the reply", () => {
     expect(screen.getByRole("button", { name: "Stop the reply" })).toHaveTextContent("Stopping…");
   });
 
-  it("stops it with Esc while the composer has focus", async () => {
+  it("stops it with a second Esc while the composer has focus", async () => {
     startTurn();
     const stop = vi.spyOn(ws, "stop");
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
 
-    screen.getByRole("textbox").focus();
+    screen.getByRole("combobox").focus();
+    await userEvent.keyboard("{Escape}");
+    expect(stop).not.toHaveBeenCalled();
+    expect(screen.getByText("Press Esc again to stop")).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     expect(stop).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Press Esc again to stop")).toBeNull();
   });
 
   it("leaves Esc to an open overlay, and does nothing between turns", async () => {
@@ -287,16 +307,252 @@ describe("stopping the reply", () => {
     const stop = vi.spyOn(ws, "stop");
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
-    screen.getByRole("textbox").focus();
+    screen.getByRole("combobox").focus();
     await userEvent.keyboard("{Escape}");
     expect(stop).not.toHaveBeenCalled();
 
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     await userEvent.click(screen.getByRole("button", { name: "More for atlas" }));
     expect(screen.getByRole("menu", { name: "More for atlas" })).toBeInTheDocument();
-    screen.getByRole("textbox").focus();
+    screen.getByRole("combobox").focus();
     await userEvent.keyboard("{Escape}");
     expect(stop).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu", { name: "More for atlas" })).toBeNull();
+    expect(screen.queryByText("Press Esc again to stop")).toBeNull();
+  });
+});
+
+describe("sending a line", () => {
+  async function open(): Promise<HTMLElement> {
+    Element.prototype.scrollIntoView = vi.fn();
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    return screen.getByRole("combobox", { name: "Message atlas" });
+  }
+
+  afterEach(() => {
+    saveDraft("atlas", "");
+  });
+
+  it("sends a pasted path as a message, though it starts with a slash", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const surface = vi.spyOn(notifications, "surface");
+    surface.mockClear();
+
+    await userEvent.click(box);
+    await userEvent.paste("/home/bear/logs/app.log has the error");
+    await userEvent.keyboard("{Enter}");
+
+    expect(sendChat).toHaveBeenCalledWith("/home/bear/logs/app.log has the error", undefined);
+    expect(surface).not.toHaveBeenCalledWith("error", expect.stringContaining("run /"));
+    expect(box).toHaveValue("");
+  });
+
+  it("sends a slash word that names no action as a message", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+
+    await userEvent.type(box, "/nope at all{Enter}");
+
+    expect(sendChat).toHaveBeenCalledWith("/nope at all", undefined);
+  });
+
+  it("runs the action a line names, with the rest as its text", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const run = vi.spyOn(actionRegistry, "run").mockResolvedValue(true);
+
+    await userEvent.type(box, "/inbox water the plants{Enter}");
+
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0]?.[0].command).toBe("inbox");
+    expect(run.mock.calls[0]?.[1]).toBe("water the plants");
+    expect(box).toHaveValue("");
+  });
+
+  it("forks the conversation into a session with /multitask, and opens it from the toast", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const starts: unknown[] = [];
+    mockFetch((url, init) => {
+      if (url === "/api/agents/atlas/sessions" && init?.method === "POST") {
+        if (typeof init.body === "string") starts.push(JSON.parse(init.body));
+        return jsonResponse({ address: "spawned-multitask-1a2b" }, 202);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await userEvent.type(box, "/multitask price out the paint{Enter}");
+
+    const confirmation = await waitFor(() => {
+      const shown = [...toast.toasts.values()].find((t) => t.message.startsWith("Forked into"));
+      expect(shown).toBeDefined();
+      return shown;
+    });
+    expect(confirmation?.message).toBe(
+      "Forked into spawned-multitask-1a2b. Its replies show there, not in this chat.",
+    );
+    expect(starts).toEqual([{ prompt: "price out the paint", fork: true }]);
+    expect(sendChat).not.toHaveBeenCalled();
+
+    ws.sessions.live = [{ ...liveRun("run-7"), address: "spawned-multitask-1a2b" }];
+    expect(confirmation?.action?.label).toBe("Open session");
+    confirmation?.action?.onClick();
+    await waitFor(() => {
+      expect(openPlace).toHaveBeenCalledWith(
+        { kind: "chat", agent: "atlas" },
+        { panel: { kind: "session", agent: "atlas", runId: "run-7" } },
+      );
+    });
+  });
+
+  it("asks for the task when /multitask has none, and says why a fork failed", async () => {
+    const box = await open();
+    const surface = vi.spyOn(notifications, "surface");
+    mockFetch(() => jsonResponse({ error: "prompt must not be empty" }, 400));
+
+    // The first Enter picks the action from the `/` menu, the second sends the line.
+    await userEvent.type(box, "/multitask{Enter}{Enter}");
+    await waitFor(() => {
+      expect(surface).toHaveBeenCalledWith(
+        "notice",
+        'Add the task after /multitask, like "/multitask compare the three quotes".',
+        undefined,
+        undefined,
+      );
+    });
+
+    await userEvent.type(box, "/multitask  x {Enter}");
+    await waitFor(() => {
+      expect(surface).toHaveBeenCalledWith(
+        "error",
+        "Couldn't fork the conversation. Prompt must not be empty.",
+        undefined,
+        undefined,
+      );
+    });
+  });
+
+  it("says why an action can't run now, and leaves the line in the box", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const surface = vi.spyOn(notifications, "surface");
+
+    await userEvent.type(box, "/stop now{Enter}");
+
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(surface).toHaveBeenCalledWith("error", expect.stringMatching(/^Couldn't run \/stop: /));
+    expect(box).toHaveValue("/stop now");
+  });
+});
+
+describe("loading the history", () => {
+  const historyPath = "/api/agents/atlas/chat/history";
+
+  it("stands in for the conversation with a skeleton until it has loaded", async () => {
+    // The history request never answers, so the conversation stays loading
+    // until the test hands the feed its history.
+    mockFetch((url) =>
+      url === historyPath ? new Promise<Response>(() => {}) : jsonResponse({}, 404),
+    );
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    expect(screen.getByText("Loading the conversation")).toBeInTheDocument();
+    expect(screen.queryByText("No messages yet")).toBeNull();
+
+    ws.store.loadHistory({ kind: "recent", messages: [], next_cursor: null });
+    await settle();
+    expect(screen.queryByText("Loading the conversation")).toBeNull();
+  });
+
+  it("says why it didn't load, in the conversation, and offers Retry", async () => {
+    mockFetch((url) => jsonResponse({}, url === historyPath ? 500 : 404));
+    setViewedAgent("atlas");
+    const load = vi.spyOn(ws, "loadMainHistory").mockResolvedValue();
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+
+    const conversation = screen.getByRole("region", { name: "Conversation with atlas" });
+    expect(conversation).toHaveTextContent("Couldn't load the conversation");
+    expect(conversation).toHaveTextContent("Residuum ran into a problem on its end.");
+    expect(screen.queryByText("Loading the conversation")).toBeNull();
+    expect(screen.queryByText("No messages yet")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(load).toHaveBeenCalledOnce();
+  });
+});
+
+describe("dropping images", () => {
+  const png = (name: string): File => new File(["png"], name, { type: "image/png" });
+  const carrying = (...files: File[]): { dataTransfer: Partial<DataTransfer> } => ({
+    dataTransfer: { types: ["Files"], files: files as unknown as FileList },
+  });
+
+  afterEach(() => {
+    saveDraftImages("atlas", []);
+  });
+
+  it("takes images dropped anywhere on the place, with an overlay while they are over it", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "atlas" });
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+
+    // Over the header, which is nowhere near the composer.
+    const taken = !(await fireEvent.dragOver(header, carrying(png("a.png"))));
+    expect(taken).toBe(true);
+    await settle();
+    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+
+    await fireEvent.drop(header, carrying(png("a.png")));
+    await settle();
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+    expect(await screen.findByRole("img", { name: "Image 1" })).toBeInTheDocument();
+  });
+
+  it("drops the overlay when the files leave the place", async () => {
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "atlas" });
+    await fireEvent.dragOver(header, carrying(png("a.png")));
+    await settle();
+    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+
+    await fireEvent.dragLeave(header, { relatedTarget: null });
+    await settle();
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+  });
+
+  it("ignores a drag that isn't carrying files", async () => {
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "atlas" });
+    const taken = !(await fireEvent.dragOver(header, { dataTransfer: { types: ["text/plain"] } }));
+    expect(taken).toBe(false);
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+  });
+
+  it("takes nothing while the agent has no composer, and leaves the drop for the app to refuse", async () => {
+    setViewedAgent("drifter");
+    render(ChatPlace, { agent: "drifter", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "drifter" });
+    const taken = !(await fireEvent.dragOver(header, carrying(png("a.png"))));
+    expect(taken).toBe(false);
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
   });
 });

@@ -100,11 +100,113 @@ export interface MockEnv {
   after: (ms: number, action: () => void) => () => void;
   /** Resolve after `ms` milliseconds of simulated time, or reject with `MockResetError` if the mock is reset first. */
   sleep: (ms: number) => Promise<void>;
+  /** How simulated time passes now: see `TimeMode`. */
+  timeMode: () => TimeMode;
+  /**
+   * Change how simulated time passes. A timer already waiting moves with it:
+   * into manual time with the delay it had left, or onto the wall clock for
+   * what remains of its simulated delay.
+   */
+  setTimeMode: (mode: TimeMode) => void;
+  /**
+   * In manual time, move simulated time forward by `ms`. Each timer that comes
+   * due runs in order, and what it starts gets to set its own timers before
+   * the next one runs, so a timer set and due within the span runs too. The
+   * clock moves with it.
+   */
+  advance: (ms: number) => Promise<TimeProgress>;
+  /** In manual time, run the next timer that waits, moving simulated time and the clock to when it was due. */
+  step: () => Promise<TimeProgress>;
+  /** How many timers wait. */
+  pendingTimers: () => number;
+  /**
+   * In manual time, how much simulated time until the next timer that waits
+   * comes due, or `null` when none waits. A test reads it to know when what
+   * a `step` runs happens.
+   */
+  nextTimerIn: () => number | null;
+  /**
+   * How far simulated turns may get, so a test can look at a running turn for
+   * as long as it needs, however slowly the browser keeps up:
+   * - `"reply"`: a turn writes its reply, then waits with the reply still
+   *   streaming instead of ending.
+   * - `"end"`: a turn runs through its steps, then waits before writing its reply.
+   * - `"steps"`: a turn waits with its tool calls running, sending no more frames.
+   * - `"none"`: turns run to their end.
+   * Easing the hold lets the waiting turns carry on, in the order they waited.
+   */
+  holdTurns: (hold: TurnHold) => void;
+  /** Run `action`, a turn's `stage`, now, or once the hold lets that stage through. Returns its cancel. */
+  whenTurnReleased: (stage: TurnStage, action: () => void) => () => void;
   /** The next number of a sequence that starts at 1 again on reset, for ids that have to differ. */
   nextId: () => number;
-  /** Cancel every pending timer, return the clock, the delays and the sequence to where they started. */
+  /** Cancel every pending timer and held turn, return the clock, the delays, the time mode, the hold and the sequence to where they started. */
   reset: () => void;
 }
+
+/**
+ * How simulated time passes:
+ * - `"scaled"`: on the wall clock, each delay multiplied by the delay scale.
+ * - `"manual"`: only when a test moves it (`advance`, `step`). Nothing the mock
+ *   simulates happens in between, however long the browser takes, so a test
+ *   can look at one moment of a running turn for as long as it needs. The
+ *   delay scale doesn't apply: a delay is its natural length.
+ */
+export type TimeMode = "scaled" | "manual";
+
+/** What a move of manual time did. */
+export interface TimeProgress {
+  /** How many timers ran. */
+  fired: number;
+  /** How many still wait. */
+  pending: number;
+  /** Simulated milliseconds since manual time began. */
+  elapsedMs: number;
+}
+
+/** How far simulated turns may get: see `MockEnv.holdTurns`. */
+export type TurnHold = "none" | "reply" | "end" | "steps";
+
+/**
+ * The part of a turn a hold can stop at: delivering its tool results, writing
+ * its reply, or finishing once the reply is written.
+ */
+export type TurnStage = "results" | "end" | "finish";
+
+/** How much of a turn each hold stops, and the hold each stage needs to be stopped: a later stage stops at more holds. */
+const HOLD_REACH: Record<TurnHold, number> = { none: 0, reply: 1, end: 2, steps: 3 };
+const STAGE_REACH: Record<TurnStage, number> = { finish: 1, end: 2, results: 3 };
+
+/** Whether `hold` keeps a turn from carrying out `stage`. */
+function holds(hold: TurnHold, stage: TurnStage): boolean {
+  return HOLD_REACH[hold] >= STAGE_REACH[stage];
+}
+
+/** A timer waiting for its moment of simulated time. */
+interface Timer {
+  /** When it runs: the wall-clock instant in scaled time, the simulated one in manual time. */
+  due: number;
+  /** The order it was set in, which breaks ties between timers due together. */
+  order: number;
+  /** In scaled time, the wall-clock timer that runs it. */
+  handle: NodeJS.Timeout | undefined;
+  fire: () => void;
+  /** What a reset does to it: a `sleep` rejects, an `after` is dropped. */
+  abort: () => void;
+}
+
+/**
+ * How many event-loop turns a move of manual time gives a fired timer's work
+ * to set its next timers. The mock's work is in memory, so a chain settles in
+ * a few turns; the limit only stops a timer that keeps setting another at
+ * once from holding the move forever.
+ */
+const SETTLE_TURN_LIMIT = 50;
+
+const nextTurn = (): Promise<void> =>
+  new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 
 export function createMockEnv(options: EnvOptions = {}): MockEnv {
   const deterministic = options.deterministic ?? false;
@@ -112,7 +214,84 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
   const clock = createClock(deterministic ? FIXED_START_MS : null);
   let scale = initialScale;
   let sequence = 0;
-  const pending = new Set<{ timer: NodeJS.Timeout; abort: () => void }>();
+  let timerOrder = 0;
+  let mode: TimeMode = "scaled";
+  /** Simulated milliseconds since manual time began. */
+  let simulatedMs = 0;
+  /** Bumped whenever a timer is set or goes, so `settle` can tell when a fired timer's work has stopped setting more. */
+  let timersChanged = 0;
+  const timers = new Set<Timer>();
+  let turnHold: TurnHold = "none";
+  const heldTurns = new Set<{ stage: TurnStage; action: () => void }>();
+
+  const run = (timer: Timer): void => {
+    timers.delete(timer);
+    timersChanged += 1;
+    timer.fire();
+  };
+
+  /** Put `timer` on the wall clock, `remainingMs` of simulated time from now. */
+  const schedule = (timer: Timer, remainingMs: number): void => {
+    const delay = remainingMs * scale;
+    timer.due = Date.now() + delay;
+    timer.handle = setTimeout(() => {
+      run(timer);
+    }, delay);
+  };
+
+  const addTimer = (ms: number, fire: () => void, abort: () => void): Timer => {
+    const timer: Timer = { due: 0, order: timerOrder++, handle: undefined, fire, abort };
+    if (mode === "manual") timer.due = simulatedMs + ms;
+    else schedule(timer, ms);
+    timers.add(timer);
+    timersChanged += 1;
+    return timer;
+  };
+
+  const removeTimer = (timer: Timer): void => {
+    if (timer.handle !== undefined) clearTimeout(timer.handle);
+    if (timers.delete(timer)) timersChanged += 1;
+  };
+
+  /** The manual-time timer that runs next, if one is due by `limit`. */
+  const nextDue = (limit: number): Timer | undefined => {
+    let next: Timer | undefined;
+    for (const timer of timers) {
+      if (timer.due > limit) continue;
+      const earlier =
+        next === undefined ||
+        timer.due < next.due ||
+        (timer.due === next.due && timer.order < next.order);
+      if (earlier) next = timer;
+    }
+    return next;
+  };
+
+  /** Let a fired timer's work run until it stops setting or clearing timers. */
+  const settle = async (): Promise<void> => {
+    let quietTurns = 0;
+    for (let turn = 0; turn < SETTLE_TURN_LIMIT && quietTurns < 2; turn++) {
+      const before = timersChanged;
+      await nextTurn();
+      quietTurns = timersChanged === before ? quietTurns + 1 : 0;
+    }
+  };
+
+  /** Move simulated time, and the clock with it, to `target`. */
+  const moveTo = (target: number): void => {
+    clock.advance(target - simulatedMs);
+    simulatedMs = target;
+  };
+
+  const progress = (fired: number): TimeProgress => ({
+    fired,
+    pending: timers.size,
+    elapsedMs: simulatedMs,
+  });
+
+  const requireManual = (what: string): void => {
+    if (mode !== "manual") throw new Error(`mock: ${what} needs manual time; set it first`);
+  };
 
   return {
     deterministic,
@@ -122,39 +301,93 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
       scale = next;
     },
     after: (ms, action) => {
-      const entry = {
-        timer: setTimeout(() => {
-          pending.delete(entry);
-          action();
-        }, ms * scale),
-        abort: () => undefined,
-      };
-      pending.add(entry);
+      const timer = addTimer(ms, action, () => undefined);
       return () => {
-        clearTimeout(entry.timer);
-        pending.delete(entry);
+        removeTimer(timer);
       };
     },
     sleep: (ms) =>
       new Promise<void>((resolve, reject) => {
-        const entry = {
-          timer: setTimeout(() => {
-            pending.delete(entry);
-            resolve();
-          }, ms * scale),
-          abort: () => {
-            reject(new MockResetError());
-          },
-        };
-        pending.add(entry);
+        addTimer(ms, resolve, () => {
+          reject(new MockResetError());
+        });
       }),
+    timeMode: () => mode,
+    setTimeMode: (next) => {
+      if (next === mode) return;
+      if (next === "manual") {
+        // A scaled timer keeps the share of its simulated delay it hadn't waited yet.
+        simulatedMs = 0;
+        const now = Date.now();
+        for (const timer of timers) {
+          if (timer.handle !== undefined) clearTimeout(timer.handle);
+          timer.handle = undefined;
+          timer.due = scale > 0 ? Math.max(0, timer.due - now) / scale : 0;
+        }
+      } else {
+        for (const timer of timers) schedule(timer, Math.max(0, timer.due - simulatedMs));
+      }
+      mode = next;
+    },
+    advance: async (ms) => {
+      requireManual("advancing time");
+      const target = simulatedMs + ms;
+      let fired = 0;
+      for (let next = nextDue(target); next !== undefined; next = nextDue(target)) {
+        moveTo(next.due);
+        run(next);
+        fired += 1;
+        await settle();
+      }
+      moveTo(target);
+      return progress(fired);
+    },
+    step: async () => {
+      requireManual("stepping time");
+      const next = nextDue(Number.POSITIVE_INFINITY);
+      if (next === undefined) return progress(0);
+      moveTo(Math.max(simulatedMs, next.due));
+      run(next);
+      await settle();
+      return progress(1);
+    },
+    pendingTimers: () => timers.size,
+    nextTimerIn: () => {
+      if (mode !== "manual") return null;
+      const next = nextDue(Number.POSITIVE_INFINITY);
+      return next === undefined ? null : Math.max(0, next.due - simulatedMs);
+    },
+    holdTurns: (hold) => {
+      turnHold = hold;
+      for (const entry of [...heldTurns]) {
+        if (holds(turnHold, entry.stage)) continue;
+        heldTurns.delete(entry);
+        entry.action();
+      }
+    },
+    whenTurnReleased: (stage, action) => {
+      if (!holds(turnHold, stage)) {
+        action();
+        return () => undefined;
+      }
+      const entry = { stage, action };
+      heldTurns.add(entry);
+      return () => {
+        heldTurns.delete(entry);
+      };
+    },
     nextId: () => ++sequence,
     reset: () => {
-      for (const entry of [...pending]) {
-        clearTimeout(entry.timer);
-        entry.abort();
+      for (const timer of [...timers]) {
+        if (timer.handle !== undefined) clearTimeout(timer.handle);
+        timer.abort();
       }
-      pending.clear();
+      timers.clear();
+      timersChanged += 1;
+      mode = "scaled";
+      simulatedMs = 0;
+      heldTurns.clear();
+      turnHold = "none";
       scale = initialScale;
       sequence = 0;
       clock.reset();

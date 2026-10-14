@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { keyboardScrollable } from "./keyboard-scrollable";
+import { waitFor } from "../../test/wait";
 
 // jsdom lays nothing out, so each region states its own sizes, and frames
 // run when the test says.
@@ -88,7 +89,7 @@ describe("keyboardScrollable", () => {
 
     size.content = 900;
     element.append(document.createElement("p"));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(frames).not.toHaveLength(0);
     });
     runFrames();

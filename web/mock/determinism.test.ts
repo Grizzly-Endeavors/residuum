@@ -1,11 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "../src/test/wait";
 import {
+  advanceMockTime,
   startMockServer,
   type Frame,
   type MockServerHarness,
   type TestSocket,
 } from "./test-support";
-import { sleep } from "./util";
 
 interface Step {
   method: string;
@@ -69,8 +70,8 @@ async function chat(mock: MockServerHarness): Promise<Frame[]> {
   const socket: TestSocket = await mock.openSocket("/api/agents/scout/ws");
   socket.send({ type: "set_verbose", enabled: true });
   socket.send({ type: "send_message", id: "m1", content: "spawn look into the fallback" });
-  await socket.nextOfType("turn_ended");
   await socket.nextOfType("session_turn_ended");
+  await socket.nextOfType("turn_ended");
   await socket.close();
   return socket.frames;
 }
@@ -80,6 +81,7 @@ describe("a deterministic mock", () => {
   const others: MockServerHarness[] = [];
 
   afterEach(async () => {
+    vi.useRealTimers();
     await mock?.close();
     mock = null;
     await Promise.all(others.splice(0).map((other) => other.close()));
@@ -136,7 +138,9 @@ describe("a deterministic mock", () => {
         }>
       )[0]?.next_fire_at ?? "";
     const before = await now();
-    await sleep(30);
+    // The wall clock moves an hour on; a clock that followed it would move too.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    vi.setSystemTime(Date.now() + 3_600_000);
     expect(await now()).toBe(before);
 
     const advanced = await fetch(`${server.baseUrl}/api/mock/clock/advance`, {
@@ -240,9 +244,9 @@ describe("a deterministic mock", () => {
     await reset(server);
     const hub = await server.openSocket("/api/hub/ws");
     await hub.nextOfType("agents_snapshot");
-    // The turn would have ended, and reported scout idle, by now.
-    await sleep(500);
-    expect(hub.frames.map((frame) => frame.type)).toEqual([
+    // The turn would have ended, and reported scout idle, within this span.
+    expect(await hub.quietFrames(() => advanceMockTime(server.hub.env, 60_000))).toEqual([]);
+    expect(hub.frames.map((frame) => frame.type).filter((type) => type !== "pong")).toEqual([
       "hub_boot",
       "system_one_status",
       "agents_snapshot",
@@ -254,7 +258,9 @@ describe("a deterministic mock", () => {
   it("answers a request that was waiting on simulated time when the mock was reset with 503", async () => {
     const server = await start({ delayScale: 1 });
     const waiting = fetch(`${server.baseUrl}/api/hub/agents/drifter/start`, { method: "POST" });
-    await sleep(50);
+    await waitFor(() => {
+      expect(server.hub.agents.get("drifter")?.runState).toBe("starting");
+    });
     await reset(server);
     const res = await waiting;
     expect(res.status).toBe(503);

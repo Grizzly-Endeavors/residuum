@@ -4,6 +4,7 @@ import type {
   AgentListResponse,
   AgentState,
   AgentSummary,
+  MessageSender,
   OutboundA2aTaskSummary,
   ServerMessage,
   SessionUsageTotals,
@@ -25,6 +26,8 @@ import type { MockOverview } from "./overview";
 import type { SessionEventFrame } from "./session-relay";
 import type { MockTeamEvents } from "./team-events";
 import type { MockCloud } from "./cloud";
+import { emptyPairing, type MockPairing } from "./pairing";
+import { defaultRemoteAccess, type MockRemoteAccess } from "./remote-access";
 import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
@@ -79,6 +82,10 @@ export interface MockState {
   cloud: MockCloud;
   /** The devices registered for Web Push, oldest first. Only the hub's state holds any. */
   pushDevices: MockPushDevice[];
+  /** The browsers paired for remote access, and the requests waiting. Only the hub's state holds any. */
+  pairing: MockPairing;
+  /** The secure tunnel's status. Only the hub's state holds it. */
+  remoteAccess: MockRemoteAccess;
   /** The checkpoint histories this state holds: an agent's own, or the hub's. */
   checkpoints: MockCheckpoints;
   /**
@@ -104,6 +111,12 @@ export interface MockState {
    * clients whose `watch_workspace` prefixes it touches.
    */
   broadcast: (frame: ServerMessage) => void;
+  /**
+   * Note a frame of the main conversation that no page receives, because the
+   * connection is down, so a page that asks for the turn in flight once it is
+   * back still gets it. Set by the agent socket.
+   */
+  journalOnly: (frame: ServerMessage) => void;
   /**
    * Open tasks sent to remote agents, for the sessions sidebar. `laptop`'s
    * task is unreachable, so stopping it answers `502 unreachable` and the
@@ -142,6 +155,8 @@ export interface MockAgent {
   state: MockState;
   /** How many web clients have this agent's WebSocket open. Set by the agent socket. */
   connectedClients: () => number;
+  /** Have the main conversation take a message another channel brought, as a turn from that channel. Set by the agent socket. */
+  receiveMessage: (content: string, source: { endpoint: string; sender?: MessageSender }) => void;
   /** Close the agent's WebSocket route and its connections. Set by the agent socket. */
   dispose: () => void;
 }
@@ -342,6 +357,7 @@ export function createState(
     usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
     dropSockets: () => {},
     broadcast: () => {},
+    journalOnly: () => {},
     compressedAt: null,
     inboxItems: [],
     inboxArchive: [],
@@ -350,6 +366,8 @@ export function createState(
     update: { latest: null, lastChecked: null },
     cloud: { tunnel: null, viaTunnel: false },
     pushDevices: [],
+    pairing: emptyPairing(),
+    remoteAccess: defaultRemoteAccess(),
     checkpoints: {},
     hasConversation: false,
     teamsSetupJob: null,

@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { invalidate } from "../../lib/cache";
 import { cacheKeyProvidersRaw } from "../../lib/api";
+import { notifications } from "../../lib/notifications.svelte";
 import { router } from "../../lib/router.svelte";
+import { toast } from "../../lib/toast.svelte";
 import { ws } from "../../lib/ws.svelte";
+import { within } from "@testing-library/svelte";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
+import { PHONE_QUERY } from "../../styles/breakpoints";
 import ModelControl from "./ModelControl.svelte";
+import { waitFor } from "../../test/wait";
 
 const FILE = `[models.main]
 model = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
@@ -16,6 +21,8 @@ let disk = FILE;
 let patches: unknown[] = [];
 
 beforeEach(() => {
+  notifications.clear();
+  for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
   disk = FILE;
   patches = [];
   invalidate(cacheKeyProvidersRaw("atlas"));
@@ -59,7 +66,7 @@ describe("the model and thinking popover", () => {
     expect(popover).toHaveTextContent("Model, from Anthropic");
     const current = screen.getByRole("button", { name: "Claude Sonnet 4.6" });
     expect(current).toHaveAttribute("aria-pressed", "true");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(current).toHaveFocus();
     });
     expect(screen.getByRole("button", { name: "Low" })).toHaveAttribute("aria-pressed", "true");
@@ -69,7 +76,7 @@ describe("the model and thinking popover", () => {
     await opened();
     const sonnet = screen.getByRole("button", { name: "Claude Sonnet 4.6" });
     const haiku = screen.getByRole("button", { name: "Claude Haiku 4.5" });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(sonnet).toHaveFocus();
     });
 
@@ -103,6 +110,51 @@ describe("the model and thinking popover", () => {
     ).toBeInTheDocument();
   });
 
+  it("reloads without announcing the reload, which the popover already explained", async () => {
+    vi.spyOn(ws, "send").mockImplementation(() => {});
+    await opened();
+    await userEvent.click(screen.getByRole("button", { name: "Claude Haiku 4.5" }));
+    await settle();
+
+    // What the agent sends back: it is reloading, how that went, and the
+    // settings watcher's second pass over the same file.
+    ws.transport.onMessage?.({ type: "reloading" });
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "configuration reloaded: models",
+      reload: "reloaded",
+      reload_of: "agent_config",
+    });
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "configuration reloaded: no changes detected",
+      reload: "unchanged",
+      reload_of: "agent_config",
+    });
+
+    expect(notifications.history).toEqual([]);
+    expect([...toast.toasts.values()]).toEqual([]);
+  });
+
+  it("still reports a reload failing after a model change", async () => {
+    vi.spyOn(ws, "send").mockImplementation(() => {});
+    await opened();
+    await userEvent.click(screen.getByRole("button", { name: "Claude Haiku 4.5" }));
+    await settle();
+
+    ws.transport.onMessage?.({ type: "reloading" });
+    ws.transport.onMessage?.({
+      type: "notice",
+      message: "config reload failed (keeping current config): invalid TOML",
+      reload: "failed",
+      reload_of: "agent_config",
+    });
+
+    expect(notifications.history.map((entry) => [entry.kind, entry.message])).toEqual([
+      ["error", "Residuum couldn't apply the new settings and is still using the old ones."],
+    ]);
+  });
+
   it("clears the thinking level when the chosen one is pressed again", async () => {
     vi.spyOn(ws, "send").mockImplementation(() => {});
     await opened();
@@ -128,5 +180,55 @@ describe("the model and thinking popover", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Model: Model" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read atlas's model.");
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+});
+
+describe("the trigger's text", () => {
+  it("shows the whole label on a desktop", async () => {
+    render(ModelControl, { agent: "atlas" });
+    const trigger = await screen.findByRole("button", {
+      name: "Model: Claude Sonnet 4.6, low thinking",
+    });
+    expect(trigger).toHaveTextContent("Claude Sonnet 4.6, low thinking");
+    expect(within(trigger).queryByText("Low")).toBeNull();
+  });
+
+  describe("on a phone", () => {
+    beforeEach(() => {
+      vi.stubGlobal("matchMedia", (media: string) => ({
+        matches: media === PHONE_QUERY,
+        media,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+    });
+
+    it("keeps the thinking level in its own badge, with the whole label still the name", async () => {
+      render(ModelControl, { agent: "atlas" });
+      const trigger = await screen.findByRole("button", {
+        name: "Model: Claude Sonnet 4.6, low thinking",
+      });
+      expect(within(trigger).getByText("Claude Sonnet 4.6")).toBeInTheDocument();
+      expect(within(trigger).getByText("Low")).toBeInTheDocument();
+    });
+
+    it("keeps the whole label, with no badge, when the level has no word", async () => {
+      disk = `[models.main]\nmodel = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]\nthinking = "extreme"\n`;
+      render(ModelControl, { agent: "atlas" });
+      const trigger = await screen.findByRole("button", {
+        name: "Model: Claude Sonnet 4.6, extreme thinking",
+      });
+      expect(trigger).toHaveTextContent("Claude Sonnet 4.6, extreme thinking");
+      expect(within(trigger).queryByText("Extreme")).toBeNull();
+      expect(trigger.querySelector(".ui-badge")).toBeNull();
+    });
+
+    it("shows only the model when no level is set", async () => {
+      disk = `[models.main]\nmodel = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]\n`;
+      render(ModelControl, { agent: "atlas" });
+      const trigger = await screen.findByRole("button", { name: "Model: Claude Sonnet 4.6" });
+      expect(within(trigger).getByText("Claude Sonnet 4.6")).toBeInTheDocument();
+      expect(within(trigger).queryByText(/^(Off|Low|Medium|High)$/)).toBeNull();
+    });
   });
 });

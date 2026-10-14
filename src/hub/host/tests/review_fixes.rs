@@ -47,7 +47,7 @@ async fn a_user_created_agent_gets_its_role_as_the_owners_own_message() {
         .await
         .unwrap();
 
-    eventually("the description to reach the new agent", || async {
+    wait::until("the description to reach the new agent", || async {
         model_was_told(hub.mock("scout"), "keeps the wiki tidy")
             .await
             .then_some(())
@@ -72,7 +72,7 @@ async fn an_agent_created_by_an_agent_gets_its_role_as_a_teammate_message() {
         .unwrap();
 
     assert!(!result.is_error, "{}", result.output);
-    eventually(
+    wait::until(
         "the role to arrive framed as a teammate message",
         || async {
             model_was_told(hub.mock("scout"), "Message from teammate agent:scout")
@@ -102,16 +102,22 @@ async fn a_create_chain_stops_at_the_hop_limit() {
         result.output
     );
     assert!(hub.host.summary("nova").is_ok());
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The notice is sent only after the delivery has been refused, so once it
+    // arrives, nothing is on its way to the creator's model.
+    wait::next_matching(
+        "the refusal to be shown to the user",
+        &mut events,
+        |event| {
+            matches!(
+                event,
+                HubEvent::Notice { message, .. }
+                    if message.contains("role description couldn't be delivered")
+            )
+        },
+    )
+    .await;
     assert!(
         !model_was_told(hub.mock("scout"), "keeps the wiki tidy").await,
         "a message past the hop limit is not delivered"
-    );
-    assert!(
-        drain_events(&mut events).iter().any(|event| matches!(
-            event,
-            HubEvent::Notice { message, .. } if message.contains("role description couldn't be delivered")
-        )),
-        "the refusal is shown to the user"
     );
 }

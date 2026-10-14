@@ -51,6 +51,7 @@ mod embedded {
     pub(super) struct WebAssets;
 }
 pub(crate) use assets::static_assets;
+pub(crate) use config::AgentStatusState;
 use embedded::WebAssets;
 
 pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
@@ -501,7 +502,7 @@ pub(crate) fn team_workspace_api_router(state: ConfigApiState) -> axum::Router {
 
 /// The running agent's `status` route: the one per-agent data route that
 /// describes the live process, so it needs a running agent.
-pub(crate) fn agent_status_api_router(state: ConfigApiState) -> axum::Router {
+pub(crate) fn agent_status_api_router(state: AgentStatusState) -> axum::Router {
     axum::Router::new()
         .route("/api/status", get(config::api_status))
         .with_state(state)
@@ -792,6 +793,74 @@ mod tests {
             }
             chat::ChatHistorySegment::Recent { .. } => panic!("expected Episode"),
         }
+    }
+
+    #[tokio::test]
+    async fn chat_history_pages_only_through_the_main_conversation() {
+        use crate::memory::episode_store::write_episode_transcript_tagged;
+        use crate::memory::types::{Episode, SourceTag};
+        use axum::Json;
+        use axum::extract::{Query, State};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let episodes_dir = memory_dir.join("episodes");
+        let wiki_lint = SourceTag::session("scheduled-wiki-lint-2b42", "run-1", "scheduled");
+        for (id, tag) in [
+            ("ep-001", SourceTag::main()),
+            ("ep-002", wiki_lint.clone()),
+            ("ep-003", SourceTag::main()),
+            ("ep-004", wiki_lint),
+        ] {
+            let episode = Episode {
+                id: id.to_string(),
+                date: chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap(),
+                observations: vec![],
+            };
+            write_episode_transcript_tagged(
+                &episodes_dir,
+                &episode,
+                &[crate::inference::Message::user(id)],
+                &tag,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
+        let history = |episode: Option<&str>| {
+            chat::api_chat_history(
+                State(state.clone()),
+                Query(chat::ChatHistoryQuery {
+                    episode: episode.map(str::to_string),
+                }),
+            )
+        };
+
+        let Json(recent) = history(None).await.unwrap();
+        let chat::ChatHistorySegment::Recent { next_cursor, .. } = recent else {
+            panic!("expected Recent");
+        };
+        assert_eq!(
+            next_cursor.as_deref(),
+            Some("ep-003"),
+            "the newest episode is a pulse run, not main history"
+        );
+
+        let Json(newest) = history(Some("ep-003")).await.unwrap();
+        let chat::ChatHistorySegment::Episode {
+            next_cursor: older, ..
+        } = newest
+        else {
+            panic!("expected Episode");
+        };
+        assert_eq!(older.as_deref(), Some("ep-001"));
+
+        assert_eq!(
+            history(Some("ep-002")).await.unwrap_err(),
+            axum::http::StatusCode::NOT_FOUND,
+            "a session run's episode is never served as main chat history"
+        );
     }
 
     #[tokio::test]

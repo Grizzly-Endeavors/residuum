@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 import type { E2EOptions } from "./e2e/support/fixtures";
-import { devServer, previewServer } from "./e2e/support/servers";
+import { workerCount, workerServers } from "./e2e/support/servers";
 
 /**
  * End-to-end, accessibility and visual tests against the mock server.
@@ -9,7 +9,11 @@ import { devServer, previewServer } from "./e2e/support/servers";
  * Specs are sorted into projects by tag:
  * - `@visual`  renders in the Playwright container (`visual-*`),
  * - `@preview` needs the production build (`preview-*`),
- * - everything else runs against the Vite dev server (`desktop`, `phone`, `webkit-phone`).
+ * - `@dev` needs the dev server: the component gallery, which builds leave
+ *   out, or the dev server's own state, such as having no service worker
+ *   (`dev-*`),
+ * - everything else runs against the Vite dev server (`desktop`, `phone`, `webkit-phone`),
+ *   or on CI against the production build (see `smokeServer` below).
  *
  * A project never picks up another kind's specs, so a tag changes where a spec
  * runs and nothing else. Tags go on a test or a describe block:
@@ -65,6 +69,21 @@ if (allInContainer && containerBrowser === "") {
 }
 const chromiumBrowser = allInContainer ? inContainer : {};
 
+/**
+ * On CI (or with `E2E_SMOKE_ON_BUILD=1`) the `desktop` and `phone` specs run
+ * against the production build, as the `preview-*` ones do. The dev server
+ * serves every module as its own request, and a shared runner queues each of
+ * them, so a page load there takes seconds and a spec with a few of them
+ * reaches its timeout; the build loads in a handful of requests. Its service
+ * worker is blocked, so these specs see the app as the dev server serves it,
+ * and the `preview-*` specs cover the worker. Locally they keep the dev
+ * server, which needs no build to try a change.
+ */
+const smokeOnBuild = process.env.CI !== undefined || process.env.E2E_SMOKE_ON_BUILD === "1";
+const smokeServer = smokeOnBuild
+  ? ({ mockServer: "preview", serviceWorkers: "block" } as const)
+  : ({} as const);
+
 /** What makes a screenshot repeatable: the container's browser, the mock's time and no motion. */
 const visualUse = {
   ...inContainer,
@@ -75,7 +94,10 @@ const visualUse = {
 
 const visualTag = /@visual/;
 const previewTag = /@preview/;
+const devTag = /@dev/;
 const eitherTag = /@visual|@preview/;
+/** What the `desktop` and `phone` projects leave to the others. */
+const notSmoke = /@visual|@preview|@dev/;
 
 export default defineConfig<E2EOptions>({
   testDir: "e2e",
@@ -85,11 +107,17 @@ export default defineConfig<E2EOptions>({
   // Compiles the dev server's modules once, so no spec pays for the first compile of a page or a lazy chunk.
   globalSetup: "./e2e/support/warmup.ts",
 
-  // The mock's state is global to its server, and every test starts by resetting it.
-  workers: 1,
-  fullyParallel: false,
+  // Every worker drives its own mock servers (`e2e/support/servers.ts`), and every test starts by resetting its worker's mock, so any test can run on any worker.
+  workers: workerCount,
+  fullyParallel: true,
   forbidOnly: process.env.CI !== undefined,
   retries: 0,
+  // A hang guard, not a speed budget: every step waits on what it needs, so
+  // only a test that would never finish reaches it. A spec of several page
+  // loads takes many times longer on a machine other suites share than on a
+  // quiet one, and the 30s default failed such specs there. The same rule
+  // bounds the unit tests (src/test/guard.ts).
+  timeout: 180_000,
 
   reporter: [["list"], ["html", { open: "never" }]],
 
@@ -100,7 +128,7 @@ export default defineConfig<E2EOptions>({
   },
 
   use: {
-    baseURL: devServer.url,
+    // `baseURL` is the worker's own dev or preview server, set by the fixtures from `mockServer`.
     locale: "en-US",
     timezoneId: "UTC",
     // A selector that matches nothing fails here, well before the test's own timeout.
@@ -113,12 +141,24 @@ export default defineConfig<E2EOptions>({
   projects: [
     {
       name: "desktop",
-      use: { ...desktop, ...chromiumBrowser },
-      grepInvert: eitherTag,
+      use: { ...desktop, ...chromiumBrowser, ...smokeServer },
+      grepInvert: notSmoke,
     },
     {
       name: "phone",
+      use: { ...phone, ...chromiumBrowser, ...smokeServer },
+      grepInvert: notSmoke,
+    },
+    {
+      name: "dev-desktop",
+      use: { ...desktop, ...chromiumBrowser },
+      grep: devTag,
+      grepInvert: eitherTag,
+    },
+    {
+      name: "dev-phone",
       use: { ...phone, ...chromiumBrowser },
+      grep: devTag,
       grepInvert: eitherTag,
     },
     {
@@ -130,13 +170,13 @@ export default defineConfig<E2EOptions>({
     },
     {
       name: "preview-desktop",
-      use: { ...desktop, ...chromiumBrowser, baseURL: previewServer.url },
+      use: { ...desktop, ...chromiumBrowser, mockServer: "preview" },
       grep: previewTag,
       grepInvert: visualTag,
     },
     {
       name: "preview-phone",
-      use: { ...phone, ...chromiumBrowser, baseURL: previewServer.url },
+      use: { ...phone, ...chromiumBrowser, mockServer: "preview" },
       grep: previewTag,
       grepInvert: visualTag,
     },
@@ -154,28 +194,30 @@ export default defineConfig<E2EOptions>({
     },
   ],
 
+  // Playwright starts these one after another, in this order, so the first preview server's build is in place before the others serve it.
   webServer: [
-    {
-      command: `npm run dev:mock -- --port ${devServer.port} --strictPort`,
-      url: devServer.url,
+    ...workerServers.map(({ dev }) => ({
+      command: `npm run dev:mock -- --port ${dev.port} --strictPort`,
+      url: dev.url,
       env: {
         MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(devServer.artifactsPort),
+        MOCK_ARTIFACTS_PORT: String(dev.artifactsPort),
+        VITE_CACHE_DIR: `node_modules/.vite-e2e/${String(dev.port)}`,
       },
       // A server left over from another run would carry its state and its code into this one.
       reuseExistingServer: false,
       timeout: 60_000,
-    },
-    {
-      // The build is what the preview server serves, so it is rebuilt every run.
-      command: `npm run build && npm run preview:mock -- --port ${previewServer.port} --strictPort`,
-      url: previewServer.url,
+    })),
+    ...workerServers.map(({ preview }, index) => ({
+      // The build is what the preview servers serve, so it is rebuilt every run, once.
+      command: `${index === 0 ? "npm run build && " : ""}npm run preview:mock -- --port ${preview.port} --strictPort`,
+      url: preview.url,
       env: {
         MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(previewServer.artifactsPort),
+        MOCK_ARTIFACTS_PORT: String(preview.artifactsPort),
       },
       reuseExistingServer: false,
-      timeout: 180_000,
-    },
+      timeout: index === 0 ? 180_000 : 60_000,
+    })),
   ],
 });

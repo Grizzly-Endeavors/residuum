@@ -451,7 +451,11 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_server_is_reported_as_unreachable() {
-        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(2)).unwrap();
+        // `.invalid` never resolves, but a resolver can take a while to say so (cluster DNS walks
+        // its search domains first, which took over 2s on the CI runner), and a timeout shorter
+        // than that lookup reports Timeout instead. A closed loopback port is no faster: Windows
+        // retries the refused connection for about 2s.
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(30)).unwrap();
         let c = SystemOneClient::new(
             http,
             SystemOneEndpoint {

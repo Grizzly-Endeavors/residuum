@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use super::helpers::publish_notice;
+use super::helpers::{publish_notice, publish_reload_notice};
 use crate::background::spawn_context::SpawnContext;
+use crate::bus::{ReloadOutcome, ReloadedFiles};
 use crate::config::Config;
 use crate::gateway::{last_known_good, startup};
 use crate::inference::CompletionOptions;
@@ -303,7 +304,13 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
             let message = format!("config reload failed (keeping current config): {err}");
-            publish_notice(&rt.publisher, message.clone()).await;
+            publish_reload_notice(
+                &rt.publisher,
+                ReloadOutcome::Failed,
+                ReloadedFiles::AgentConfig,
+                message.clone(),
+            )
+            .await;
             if deliver_to_agent {
                 rt.agent.inject_system_message(message);
             }
@@ -325,7 +332,13 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
         // previous save predates a since-reverted edit.
         last_known_good::save(&rt.config_dir);
         let message = "configuration reloaded: no changes detected".to_string();
-        publish_notice(&rt.publisher, message.clone()).await;
+        publish_reload_notice(
+            &rt.publisher,
+            ReloadOutcome::Unchanged,
+            ReloadedFiles::AgentConfig,
+            message.clone(),
+        )
+        .await;
         if deliver_to_agent {
             rt.agent.inject_system_message(message);
         }
@@ -363,7 +376,13 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     last_known_good::save(&rt.config_dir);
 
     let message = format!("configuration reloaded: {summary}");
-    publish_notice(&rt.publisher, message.clone()).await;
+    publish_reload_notice(
+        &rt.publisher,
+        ReloadOutcome::Reloaded,
+        ReloadedFiles::AgentConfig,
+        message.clone(),
+    )
+    .await;
     if deliver_to_agent {
         rt.agent.inject_system_message(message);
     }
@@ -411,7 +430,13 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
         Err(err) => {
             tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
             let message = format!("hub config reload failed (keeping current hub config): {err}");
-            publish_notice(&rt.publisher, message.clone()).await;
+            publish_reload_notice(
+                &rt.publisher,
+                ReloadOutcome::Failed,
+                ReloadedFiles::HubConfig,
+                message.clone(),
+            )
+            .await;
             if deliver_to_agent {
                 rt.agent.inject_system_message(message);
             }
@@ -435,7 +460,13 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
 
     if !diff.changed {
         let message = "hub configuration reloaded: no changes detected".to_string();
-        publish_notice(&rt.publisher, message.clone()).await;
+        publish_reload_notice(
+            &rt.publisher,
+            ReloadOutcome::Unchanged,
+            ReloadedFiles::HubConfig,
+            message.clone(),
+        )
+        .await;
         if deliver_to_agent {
             rt.agent.inject_system_message(message);
         }
@@ -464,7 +495,13 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
     rt.hub_cfg = new_hub;
 
     let message = format!("hub configuration reloaded: {summary}");
-    publish_notice(&rt.publisher, message.clone()).await;
+    publish_reload_notice(
+        &rt.publisher,
+        ReloadOutcome::Reloaded,
+        ReloadedFiles::HubConfig,
+        message.clone(),
+    )
+    .await;
     if deliver_to_agent {
         rt.agent.inject_system_message(message);
     }
@@ -1145,6 +1182,7 @@ mod tests {
             token: "new-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let diff = diff_config(&old, &new);
@@ -1159,6 +1197,7 @@ mod tests {
             token: "existing-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         let mut new = old.clone();
         new.discord = None;
@@ -1174,12 +1213,14 @@ mod tests {
             token: "old-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         let mut new = old.clone();
         new.telegram = Some(TelegramConfig {
             token: "new-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let diff = diff_config(&old, &new);
@@ -1194,6 +1235,7 @@ mod tests {
             tenant_id: "tenant".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
             port: 7701,
         }
     }
@@ -1269,7 +1311,7 @@ mod tests {
     fn diff_config_detects_idle_channel_change() {
         let old = test_config();
         let mut new = old.clone();
-        new.idle.idle_channel = Some("telegram".to_string());
+        new.idle.idle_channel = "telegram".to_string();
 
         let diff = diff_config(&old, &new);
         assert!(diff.idle_changed);
@@ -1381,13 +1423,13 @@ mod tests {
         old.cloud = Some(CloudConfig {
             relay_url: "wss://example.com".to_string(),
             token: "old-token".to_string(),
-            local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
         let mut new = old.clone();
         new.cloud = Some(CloudConfig {
             relay_url: "wss://example.com".to_string(),
             token: "new-token".to_string(),
-            local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
 
         let diff = diff_config(&old, &new);
@@ -1403,7 +1445,7 @@ mod tests {
         new.cloud = Some(CloudConfig {
             relay_url: "wss://example.com".to_string(),
             token: "tok".to_string(),
-            local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
 
         let diff = diff_config(&old, &new);
@@ -1416,7 +1458,7 @@ mod tests {
         old.cloud = Some(CloudConfig {
             relay_url: "wss://example.com".to_string(),
             token: "tok".to_string(),
-            local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
         let mut new = old.clone();
         new.cloud = None;
@@ -1446,6 +1488,7 @@ mod tests {
             api_key: Some(api_key.to_string()),
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         }
     }
 

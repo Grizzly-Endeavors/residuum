@@ -19,10 +19,12 @@
 
 # ── General settings ──────────────────────────────────────────────────────────
 # autostart = true   # whether this agent starts when the hub starts
+# A model call may take timeout_secs; a streamed reply fails only after that
+# many seconds with no output at all, so a long answer is never cut off.
 timeout_secs = 120
-max_tokens = 8192
+max_tokens = 16384
 # temperature = 0.7
-# thinking = "medium"
+# thinking = "medium"   # off, on, low, medium or high
 
 # ── Retry (optional, defaults shown) ─────────────────────────────────────────
 # [retry]
@@ -88,6 +90,7 @@ enabled = true
 # token = "secret:discord_token"
 # respond_to_others = false   # true: anyone who can DM or @mention the bot can use the agent
 # context_messages = 20       # earlier unmentioned server messages shared on @mention
+# deliver_intermediate = false # true: also post what the agent writes between tool calls
 
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
 # The bot token is a "secret:name" reference, a "${ENV_VAR}" reference, or a
@@ -101,6 +104,7 @@ enabled = true
 # respond_to_others = false   # true: anyone who can reach the bot can use the agent
 # context_messages = 20       # earlier unmentioned group messages shared when addressed; requires
 #                              # privacy mode off in BotFather (or the bot made a group admin)
+# deliver_intermediate = false # true: also post what the agent writes between tool calls
 
 # ── Microsoft Teams bot (optional) ───────────────────────────────────────────
 # Setup walkthrough: docs/guides/teams-setup.md.
@@ -117,6 +121,7 @@ enabled = true
 # app_password = "secret:teams"
 # respond_to_others = false   # true: coworkers can @mention / message the agent
 # context_messages = 20       # earlier group chat messages shared on @mention
+# deliver_intermediate = false # true: also post what the agent writes between tool calls
 # port = 7701
 
 # ── Agent2Agent (A2A) visibility (optional) ──────────────────────────────────
@@ -184,6 +189,16 @@ enabled = true
 # summary contains HEARTBEAT_OK is discarded without delivery.
 # Urgency is decided by the sub-agent that ran the task, so it is steered by
 # how a pulse's prompt is worded rather than by configuration here.
+
+# ── When you're away (optional) ──────────────────────────────────────────────
+# After timeout_minutes without a message from you, the agent saves the
+# conversation to memory and starts the next one fresh. From then until you
+# write again, turns the agent starts itself (a session's result, a teammate's
+# message) go to idle_channel: the web app unless you name a chat here.
+#
+# [idle]
+# timeout_minutes = 30       # 0 turns this off (default: 30)
+# idle_channel = "telegram"  # "websocket" (default), "telegram", "discord", or "teams"
 
 # ── Agent ability gates and turn limits (optional) ───────────────────────────
 # Controls what the agent can modify at runtime, and how long a turn's tool

@@ -45,8 +45,8 @@ use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
     A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentPatch, AgentState,
-    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
-    NoticeLevel, RestoreAgentRequest,
+    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, HubNoticeKind,
+    LifecycleError, NoticeLevel, RestoreAgentRequest,
 };
 use crate::workspace::team_files::TeamWriter;
 
@@ -428,10 +428,17 @@ impl AgentHost {
 
     /// Publish a hub notice for the user.
     pub fn notice(&self, level: NoticeLevel, message: String, agent: Option<String>) {
+        self.publish(HubEvent::notice(level, message, agent));
+    }
+
+    /// Publish a hub notice the web words itself from `kind`, keeping
+    /// `message` as the detail behind it.
+    pub fn notice_of_kind(&self, level: NoticeLevel, kind: HubNoticeKind, message: String) {
         self.publish(HubEvent::Notice {
             level,
             message,
-            agent,
+            agent: None,
+            kind: Some(kind),
         });
     }
 
@@ -554,6 +561,32 @@ impl AgentHost {
                 tracing::warn!(agent = %slot.name, "couldn't tell a running agent about {about}: its reload channel is closed");
             }
         }
+    }
+
+    /// The health of the change feed over the running agent `name`'s
+    /// directory, or `None` when it isn't running. The receiver belongs to
+    /// this run of the agent: its sender goes away when the agent stops, so
+    /// after a restart a caller asks again.
+    #[must_use]
+    pub fn workspace_watch_health(
+        &self,
+        name: &str,
+    ) -> Option<watch::Receiver<crate::workspace::watch::WatchHealth>> {
+        let slot = self.slot(name).ok()?;
+        let state = slot.lock();
+        state
+            .running
+            .as_ref()
+            .map(|running| running.control.workspace_watch_health.clone())
+    }
+
+    /// How many web clients are connected to the agent `name`'s WebSocket,
+    /// or `None` for an agent the hub doesn't have.
+    #[must_use]
+    pub fn connected_clients(&self, name: &str) -> Option<usize> {
+        self.slot(name)
+            .ok()
+            .map(|slot| slot.activity.connected_clients())
     }
 
     /// How many config reloads the running agent `name` has finished, or
@@ -1732,11 +1765,11 @@ impl AgentHost {
         Ok(crate::gateway::web::agent_repair_api_router(state))
     }
 
-    /// The agent's chat history, usage, user inbox, and A2A settings routes,
-    /// over its files on disk. Unlike [`Self::repair_router_for`] it opens no
-    /// checkpoint repository: the one write that takes a checkpoint opens them
-    /// when it runs, so these routes answer even when the repositories
-    /// can't be opened.
+    /// The agent's chat history, usage, user inbox, A2A settings, and
+    /// workspace file link routes, over its files on disk. Unlike
+    /// [`Self::repair_router_for`] it opens no checkpoint repository: the one
+    /// write that takes a checkpoint opens them when it runs, so these routes
+    /// answer even when the repositories can't be opened.
     fn file_router_for(&self, slot: &AgentSlot) -> Router {
         let reload_tx = slot
             .lock()

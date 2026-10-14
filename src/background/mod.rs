@@ -6,6 +6,7 @@ pub mod conversation_router;
 pub(crate) mod events;
 pub(crate) mod listener;
 pub mod messaging;
+pub(crate) mod owner_session;
 pub mod registry;
 pub(crate) mod runtime;
 pub(crate) mod session_memory;

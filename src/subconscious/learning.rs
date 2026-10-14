@@ -200,6 +200,7 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         inbound: None,
         images: Vec::new(),
         overlap: None,
+        carried_history: Vec::new(),
     }
 }
 

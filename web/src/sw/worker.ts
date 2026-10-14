@@ -9,8 +9,21 @@
 // Every build whose files differ produces a different worker, which is how a
 // browser notices an update.
 
-import { isPageMessage, openTargetMessage } from "./protocol";
-import { clickTarget, notificationFor, readPushData, windowForClick } from "./push";
+import type { PushKeyResponse } from "../lib/generated/PushKeyResponse";
+import { base64urlBytes } from "../lib/push-devices";
+import {
+  type EndpointChangedMessage,
+  endpointChangedMessage,
+  isPageMessage,
+  openTargetMessage,
+} from "./protocol";
+import {
+  clickTarget,
+  notificationFor,
+  readPushData,
+  rotationRequest,
+  windowForClick,
+} from "./push";
 import {
   handlingOf,
   isGatewayFailure,
@@ -202,4 +215,48 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(openTarget(clickTarget(event.notification.data)));
+});
+
+/**
+ * Re-subscribe under the hub's key after the browser rotates this device's
+ * subscription on its own (a key expiring, its storage being cleared), and
+ * send the new subscription back naming the endpoint it replaces, so the hub
+ * updates the same device instead of registering a second one. A browser
+ * that doesn't support this event still falls back to the ordinary path: the
+ * next delivery against the stale endpoint gets 404 or 410, and the hub
+ * prunes the device and raises its own notice.
+ */
+async function handleSubscriptionChange(previousEndpoint: string | undefined): Promise<void> {
+  try {
+    const keyResponse = await fetch("/api/hub/push/key");
+    if (!keyResponse.ok) throw new Error(`the hub answered ${String(keyResponse.status)}`);
+    const { public_key: publicKey } = (await keyResponse.json()) as PushKeyResponse;
+    const subscription = await self.registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: base64urlBytes(publicKey),
+    });
+    const request = rotationRequest(subscription.toJSON(), previousEndpoint);
+    if (request === null) throw new Error("the new subscription has no keys");
+    const putResponse = await fetch("/api/hub/push/devices", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    if (!putResponse.ok) throw new Error(`the hub answered ${String(putResponse.status)}`);
+    await tellWindows(endpointChangedMessage(request.subscription.endpoint));
+  } catch {
+    // Resubscribing or telling the hub failed. Nothing more to do here: once
+    // the stale endpoint next fails delivery, the hub's own prune notice
+    // covers it.
+  }
+}
+
+/** Tell every open window of the app `message`. */
+async function tellWindows(message: EndpointChangedMessage): Promise<void> {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const window of windows) window.postMessage(message);
+}
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(handleSubscriptionChange(event.oldSubscription?.endpoint));
 });

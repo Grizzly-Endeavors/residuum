@@ -124,7 +124,7 @@ pub struct CardRuntime {
     /// is served at this exact URL, HTTP+JSON (REST) at `{base}/rest`.
     ///
     /// This is `[a2a] public_url` plus `/agents/<name>` when set; otherwise
-    /// the agent's relay address (`{origin}/a2a/{instance}/<name>`) while the
+    /// the agent's instance address (`{instance origin}/a2a/<name>`) while the
     /// tunnel is connected; otherwise a local fallback
     /// (`http://{bind}:{port}/agents/<name>`), which is good for same-host
     /// and same-network callers but not for callers over the public
@@ -139,7 +139,7 @@ pub struct CardRuntime {
 
 impl CardRuntime {
     /// Build runtime facts for `agent_name` from the resolved `[a2a]` config,
-    /// the gateway's bind address, and the relay base (`{origin}/a2a/{instance}`,
+    /// the gateway's bind address, and the instance's A2A base (`{instance origin}/a2a`,
     /// see [`super::public_url::relay_a2a_base`]) when the tunnel is
     /// connected: `public_url` plus `/agents/<name>` when set, otherwise the
     /// agent's relay address, otherwise the local listener address plus

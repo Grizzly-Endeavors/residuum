@@ -25,10 +25,11 @@ use tower::ServiceExt as _;
 use crate::config::A2aVisibility;
 use crate::hub::{self, AgentDirectory, LifecycleError};
 
-use super::auth::{Admission, AuthState, TunnelNonceSource, authorize};
+use super::auth::{Admission, AuthState, authorize};
 use super::card::SharedCardState;
 use super::keys_runtime::SharedA2aKeys;
 use super::public_url::AGENTS_PATH_PREFIX;
+use crate::remote_access::siblings::{NoSiblings, SiblingKeyVerifier};
 
 /// A [`a2a_server::RequestHandler`] that refuses every operation with
 /// `A2AError::unsupported_operation`. Production wiring uses
@@ -272,27 +273,47 @@ pub struct A2aListener {
     directory: Arc<dyn AgentDirectory>,
     auth: AuthState,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    /// A socket already bound to the address, served instead of binding at start.
+    bound: Option<tokio::net::TcpListener>,
 }
 
 impl A2aListener {
-    /// Create the listener. `bind` is the gateway's bind address; `keys` and
-    /// `tunnel_nonce` are the hub-level caller-key store and tunnel nonce.
+    /// Create the listener. `bind` is the gateway's bind address; `keys` is
+    /// the hub-level caller-key store.
     #[must_use]
     pub fn new(
         bind: String,
         port: u16,
         directory: Arc<dyn AgentDirectory>,
         keys: SharedA2aKeys,
-        tunnel_nonce: Arc<dyn TunnelNonceSource>,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             bind,
             port,
             directory,
-            auth: AuthState { keys, tunnel_nonce },
+            auth: AuthState {
+                keys,
+                sibling_keys: Arc::new(NoSiblings),
+            },
             shutdown_rx,
+            bound: None,
         }
+    }
+
+    /// Serve on `listener`, which the caller bound to this listener's address,
+    /// rather than binding at start.
+    #[must_use]
+    pub fn with_bound_listener(mut self, listener: tokio::net::TcpListener) -> Self {
+        self.bound = Some(listener);
+        self
+    }
+
+    /// Accept the keys issued to joined siblings as calls from those siblings.
+    #[must_use]
+    pub fn with_sibling_keys(mut self, sibling_keys: Arc<dyn SiblingKeyVerifier>) -> Self {
+        self.auth.sibling_keys = sibling_keys;
+        self
     }
 
     /// Run until the shutdown signal fires.
@@ -303,9 +324,12 @@ impl A2aListener {
         let app = hub_a2a_app(self.directory, self.auth);
 
         let addr = format!("{}:{}", self.bind, self.port);
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .with_context(|| format!("failed to bind the A2A listener on {addr}"))?;
+        let listener = match self.bound {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(&addr)
+                .await
+                .with_context(|| format!("failed to bind the A2A listener on {addr}"))?,
+        };
         tracing::info!(addr = %addr, "a2a interface listening");
 
         let mut shutdown_rx = self.shutdown_rx;

@@ -161,14 +161,14 @@ pub(super) fn move_to(h: &Harness, agent: &str, state: AgentState) {
         .unwrap();
 }
 
-/// The next overview frame, within `within`.
+/// The next overview frame within `within` of paused time, or `None`. The
+/// test must run on a paused clock (see `crate::testing::clock`).
 pub(super) async fn frame_within(
     frames: &mut broadcast::Receiver<AgentOverview>,
     within: Duration,
 ) -> Option<AgentOverview> {
-    tokio::time::timeout(within, frames.recv())
+    crate::testing::clock::within(within, frames.recv())
         .await
-        .ok()
         .and_then(Result::ok)
 }
 
@@ -176,12 +176,12 @@ pub(super) async fn frame_within(
 pub(super) async fn next_overview(
     frames: &mut broadcast::Receiver<AgentOverview>,
 ) -> AgentOverview {
-    frame_within(frames, Duration::from_secs(5))
+    wait::guarded("an overview frame", frames.recv())
         .await
         .expect("an overview frame arrives")
 }
 
-/// Check that no frame comes for several windows.
+/// Check that no frame comes for several windows of paused time.
 pub(super) async fn expect_no_frame(frames: &mut broadcast::Receiver<AgentOverview>) {
     let got = frame_within(frames, OVERVIEW_WINDOW * 3).await;
     assert!(got.is_none(), "no frame was due, but one came: {got:?}");
@@ -380,7 +380,7 @@ async fn recent_history_wins_over_an_episode_and_a_broken_file_falls_back_to_the
     assert_eq!(fallback["at_precision"], "day");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_running_agents_last_message_starts_from_its_files_and_follows_its_turns() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -436,7 +436,7 @@ async fn a_running_agents_last_message_starts_from_its_files_and_follows_its_tur
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_turn_with_nothing_to_show_changes_nothing() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -521,7 +521,7 @@ async fn live_sessions_appear_as_they_start_and_clear_as_they_end_or_when_the_ag
     assert_eq!(overview_of(&h, "scout").await["live_sessions"], json!([]));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_unread_count_follows_the_inbox_tool_and_files_placed_by_hand() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -555,7 +555,7 @@ async fn the_unread_count_follows_the_inbox_tool_and_files_placed_by_hand() {
     expect_no_frame(&mut frames).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_hubs_inbox_actions_update_the_count_of_a_running_and_of_a_stopped_agent() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -610,7 +610,7 @@ async fn the_hubs_inbox_actions_update_the_count_of_a_running_and_of_a_stopped_a
     expect_no_frame(&mut frames).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_request_counts_a_stopped_agents_inbox_again_and_tells_other_clients_what_changed() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -662,7 +662,7 @@ async fn a_burst_of_changes_is_gathered_into_frames_a_window_apart_and_the_last_
         let id = format!("20260930_{n:02}");
         place_item(&h, "scout", &id).await;
         changed(&h, "scout", AgentChangeKind::UserInboxAdded { item_id: id });
-        tokio::time::sleep(BURST_GAP).await;
+        crate::testing::clock::elapse(BURST_GAP).await;
     }
     let received = collector.await.unwrap();
 
@@ -705,7 +705,7 @@ async fn a_change_during_the_wait_is_in_the_frame_the_wait_ends_with() {
             item_id: "20260930_first".to_string(),
         },
     );
-    tokio::time::sleep(OVERVIEW_WINDOW / 2).await;
+    crate::testing::clock::elapse(OVERVIEW_WINDOW / 2).await;
     place_item(&h, "scout", "20260930_second").await;
     changed(
         &h,

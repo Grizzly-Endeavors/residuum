@@ -85,9 +85,13 @@ mod tests {
         let file_registry = FileRegistry::new("scout");
         let (_watch_tx, watch_set) =
             tokio::sync::watch::channel(residuum::workspace::watch::WatchSet::default());
-        let mut subs = WsSubscribers::new(&bus, &bus, ep.clone(), file_registry, watch_set)
+        let journal = residuum::gateway::turn_journal::TurnJournal::spawn(&bus)
             .await
             .unwrap();
+        let mut subs =
+            WsSubscribers::new(&bus, &bus, ep.clone(), file_registry, watch_set, &journal)
+                .await
+                .unwrap();
 
         let att = residuum::interfaces::attachment::FileAttachment {
             path: file_path.clone(),

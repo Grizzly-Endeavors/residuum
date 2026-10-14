@@ -3,7 +3,15 @@
 
 export type { ClientMessage } from "./ClientMessage";
 export type { ServerMessage } from "./ServerMessage";
+export type { TurnInProgress } from "./TurnInProgress";
+export type { SnapshotFrame } from "./SnapshotFrame";
+export type { QueuedMessage } from "./QueuedMessage";
 export type { PostTurnActivityKind } from "./PostTurnActivityKind";
+export type { ReloadOutcome } from "./ReloadOutcome";
+export type { ReloadedFiles } from "./ReloadedFiles";
+export type { MessageSender } from "./MessageSender";
+export type { TurnOrigin } from "./TurnOrigin";
+export type { Visibility } from "./Visibility";
 export type { ImageAttachment } from "./ImageAttachment";
 export type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 export type { SessionCategory } from "./SessionCategory";
@@ -48,6 +56,7 @@ export type { AgentListResponse } from "./AgentListResponse";
 export type { DeletedAgentListResponse } from "./DeletedAgentListResponse";
 export type { Actor } from "./Actor";
 export type { NoticeLevel } from "./NoticeLevel";
+export type { HubNoticeKind } from "./HubNoticeKind";
 export type { HubEvent } from "./HubEvent";
 export type { HubSocketFrame } from "./HubSocketFrame";
 export type { HubClientMessage } from "./HubClientMessage";

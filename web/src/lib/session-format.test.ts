@@ -53,6 +53,10 @@ describe("a run's words", () => {
     const spawned = session("s", "spawned", "agent:researcher");
     expect(runKind("atlas", { ...spawned, spawner: "main" })).toBe("Started by atlas");
     expect(runKind("atlas", { ...spawned, spawner: "spawned-a-1" })).toBe("Started by spawned-a-1");
+    expect(runKind("atlas", { ...spawned, spawner: null })).toBe("Started by you");
+    expect(runKind("atlas", { ...spawned, category: "artifact", spawner: null })).toBe(
+      "From a workbench page",
+    );
   });
 
   it("says how a live run is doing, with how long it has run", () => {

@@ -162,6 +162,7 @@ pub(crate) async fn shutdown_adapter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
 
     #[tokio::test]
     async fn next_exit_reports_a_finished_adapter_once() {
@@ -173,8 +174,14 @@ mod tests {
         assert_eq!(name, "discord");
         assert!(result.is_ok(), "finished adapter task");
 
-        let pending = tokio::time::timeout(Duration::from_millis(50), adapters.next_exit()).await;
-        assert!(pending.is_err(), "a finished adapter is not reported again");
+        // Polled once without waiting: the exit above was taken from a finished
+        // adapter, so a second report would be ready on this first poll.
+        let reported_again = tokio::select! {
+            biased;
+            _ = adapters.next_exit() => true,
+            () = std::future::ready(()) => false,
+        };
+        assert!(!reported_again, "a finished adapter is not reported again");
     }
 
     #[tokio::test]
@@ -210,9 +217,8 @@ mod tests {
 
         drop(adapters);
 
-        tokio::time::timeout(Duration::from_secs(1), alive_rx)
+        wait::guarded("the adapter task to end", alive_rx)
             .await
-            .expect("the task ended")
             .expect_err("the task dropped its sender without sending");
     }
 

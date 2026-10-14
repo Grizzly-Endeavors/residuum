@@ -120,11 +120,35 @@ impl HubConfig {
     /// # Errors
     /// Returns a human-readable error string if validation fails.
     pub fn validate_toml(contents: &str, hub_dir: &Path) -> Result<(), String> {
+        Self::validate_with(contents, hub_dir, resolve::hub::from_file_and_env)
+    }
+
+    /// [`Self::validate_toml`] for a file the hub loads while first-run setup
+    /// is pending, where `timezone` may still be unset. Everything else is
+    /// checked as strictly as [`Self::validate_toml`] checks it.
+    ///
+    /// # Errors
+    /// Returns a human-readable error string if validation fails.
+    pub fn validate_toml_for_onboarding(contents: &str, hub_dir: &Path) -> Result<(), String> {
+        Self::validate_with(
+            contents,
+            hub_dir,
+            resolve::hub::from_file_and_env_for_onboarding,
+        )
+    }
+
+    /// Parse `contents` as `hub/config.toml` and resolve it with `resolve`,
+    /// the same two steps the hub takes when it loads the file.
+    fn validate_with(
+        contents: &str,
+        hub_dir: &Path,
+        resolve: fn(Option<&deserialize::HubConfigFile>, &Path) -> Result<HubConfig, FatalError>,
+    ) -> Result<(), String> {
         let (file, _notices) = parse_tolerating_unknown_keys::<deserialize::HubConfigFile>(
             contents,
             "hub/config.toml",
         )?;
-        resolve::hub::from_file_and_env(Some(&file), hub_dir).map_err(|e| e.to_string())?;
+        resolve(Some(&file), hub_dir).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -248,5 +272,41 @@ mod tests {
                 .iter()
                 .any(|n| n.contains("not_a_real_key"))
         );
+    }
+
+    #[test]
+    fn load_at_keeps_gateway_section_when_it_has_an_unknown_key() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[gateway]\nbind = \"127.0.0.1\"\nport = 4321\nfuture_knob = true\n",
+        )
+        .unwrap();
+
+        let cfg = HubConfig::load_at(dir.path()).unwrap();
+
+        assert_eq!(cfg.gateway.bind, "127.0.0.1");
+        assert_eq!(cfg.gateway.port, 4321);
+        assert_eq!(
+            cfg.load_notices
+                .iter()
+                .filter(|n| n.contains("future_knob"))
+                .count(),
+            1,
+            "{:?}",
+            cfg.load_notices
+        );
+    }
+
+    #[test]
+    fn load_at_still_fails_on_a_type_error_in_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[gateway]\nport = \"not-a-port\"\nfuture_knob = true\n",
+        )
+        .unwrap();
+
+        assert!(HubConfig::load_at(dir.path()).is_err());
     }
 }

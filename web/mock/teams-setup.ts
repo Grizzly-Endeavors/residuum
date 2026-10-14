@@ -250,11 +250,11 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
     return;
   }
 
-  // Replace existing check
+  // Existing configuration check
   if (!start.replace_existing && prereqs.teams_already_configured) {
     json(res, 400, {
       error:
-        "replace_existing is required: Microsoft Teams is already configured. Confirm replacing the existing bot to continue.",
+        "Microsoft Teams is already configured for this agent. Confirm that setup should update the existing configuration to continue.",
     });
     return;
   }

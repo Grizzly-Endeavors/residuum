@@ -52,7 +52,7 @@ test("Fix settings flags brittle's model, and after Save a restart from its card
   await page.getByRole("button", { name: "Close settings" }).click();
   await failed.getByRole("button", { name: "Restart brittle" }).click();
   await expect(failed).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "Message brittle" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Message brittle" })).toBeVisible();
 });
 
 test("a provider is added with its key stored, then removed", async ({ page }) => {
@@ -72,6 +72,12 @@ test("a provider is added with its key stored, then removed", async ({ page }) =
       hasText: "work (OpenAI)",
     }),
   ).toHaveCount(1);
+  const edit = page.getByRole("button", { name: "Edit work" });
+  await edit.click();
+  await expect(edit).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByLabel("Address")).toBeVisible();
+  await edit.click();
+  await expect(edit).toHaveAttribute("aria-expanded", "false");
   await saveChanges(page, "providers.toml");
   expect(parseToml(await fileText(page, "atlas", "providers"))).toMatchObject({
     providers: { work: { type: "openai", api_key: "secret:work" } },

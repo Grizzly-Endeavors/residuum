@@ -158,6 +158,7 @@ export class OverviewStore {
       case "subscribed":
       case "session_frame":
       case "session_relay_lagged":
+      case "pong":
         // Other owners keep these; an agent's overview changes reach here as its own frame.
         break;
     }

@@ -37,11 +37,207 @@ function escapeHtml(text: string): string {
 }
 
 /**
+ * What a reply's HTML may not carry. A reply is text a model wrote, often
+ * after reading the web, so markup that restyles or covers the app, shows a
+ * form that posts elsewhere, or loads a document, frame or script has no
+ * place in it. The sanitizer's profile already drops several of these; they
+ * are named here as well so a change of profile can't bring one back. A
+ * removed element leaves its text behind, except `style`, `script` and the
+ * like, whose contents the sanitizer drops with them.
+ */
+const FORBIDDEN_TAGS = [
+  // Restyle the whole page from inside a message.
+  "style",
+  "link",
+  "meta",
+  "base",
+  // Forms: a reply can't ask for input or post it anywhere.
+  "form",
+  "input",
+  "button",
+  "select",
+  "option",
+  "optgroup",
+  "datalist",
+  "textarea",
+  "fieldset",
+  "legend",
+  "label",
+  "output",
+  // Documents, frames and plug-ins.
+  "iframe",
+  "object",
+  "embed",
+  "svg",
+  "math",
+  // Holds markup the page never shows, out of reach of the passes below.
+  "template",
+  // Content placed over the page or moving on its own.
+  "dialog",
+  "marquee",
+  // Media and image maps. A source is fetched as soon as the element is
+  // shown, so a reply could send what it read to another server in the URL;
+  // images get their own handling in `fitToPage`.
+  "video",
+  "audio",
+  "source",
+  "track",
+  "picture",
+  "area",
+  "map",
+];
+
+/**
+ * Attributes dropped from every element. Inline `style` can position content
+ * over the app (`position: fixed`), so no inline style is kept: a reply is
+ * styled by the message's own stylesheet, never its own. `popover` makes an
+ * element a top-layer overlay. `srcset`, `background` and `poster` load a URL
+ * as soon as the element is shown, the way an image's `src` does.
+ */
+const FORBIDDEN_ATTRS = ["style", "popover", "srcset", "background", "poster"];
+
+/** What an image shown as a link says it stands for, before its alt text or URL. */
+export const IMAGE_LINK_KIND = "Image";
+
+/**
+ * An agent's file on the hub: `/api/agents/{name}/files/{id}`, or
+ * `/api/agents/{name}/files/workspace?path=…` for a workspace file, the URLs
+ * the gateway hands out for files an agent shares.
+ */
+const AGENT_FILE_PATH = /^\/api\/agents\/[^/]+\/files\/[^/]/;
+
+/**
+ * Whether an image source is a file the reply may show: a `data:` URI, or an
+ * agent's file on the page's own origin. Loading any other URL is a request
+ * the reply chose, to another server or to one of the hub's own routes, and
+ * some hub routes change state on a plain `GET`.
+ */
+function isShownImageSource(src: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(src, window.location.href);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "data:") return true;
+  return url.origin === window.location.origin && AGENT_FILE_PATH.test(url.pathname);
+}
+
+/**
+ * Replace each image that isn't an agent's file or a `data:` URI with a link
+ * to it. A reply is text a model wrote, and a model can be steered
+ * by what it read into writing an image whose URL carries the conversation to
+ * someone else's server, or calls one of the hub's own routes; the browser
+ * would send the request the moment the reply is shown. A link sends nothing
+ * until the user follows it. It reads `Image`, then the alt text, or the URL
+ * when there is none. An image already inside a link becomes that text, since
+ * a link can't hold another, and so does an image left with no source (the
+ * sanitizer drops a `javascript:` one, for example), which has nothing to open.
+ */
+function linkUnshownImages(fragment: DocumentFragment): void {
+  const doc = fragment.ownerDocument;
+
+  for (const image of fragment.querySelectorAll("img")) {
+    const src = image.getAttribute("src")?.trim() ?? "";
+    if (src !== "" && isShownImageSource(src)) continue;
+
+    const kind = doc.createElement("span");
+    kind.className = "prose-image-link-kind";
+    kind.textContent = IMAGE_LINK_KIND;
+    const label = image.getAttribute("alt")?.trim() || src;
+
+    const linked = src !== "" && image.closest("a") === null;
+    const stand = doc.createElement(linked ? "a" : "span");
+    stand.className = "prose-image-link";
+    if (linked) stand.setAttribute("href", src);
+    stand.append(kind);
+    if (label !== "") stand.append(` ${label}`);
+    image.replaceWith(stand);
+  }
+}
+
+/** How far a reply's headings sit below the page's own: a reply's `#` is an `h3`. */
+const HEADING_DEMOTION = 2;
+const DEEPEST_HEADING = 6;
+
+/** What a task item's glyph says to assistive technology, which can't see it. */
+const TASK_DONE = "Done: ";
+const TASK_TO_DO = "To do: ";
+
+/** A code block's Copy button: what it shows, and what assistive technology calls it. */
+export const COPY_LABEL = "Copy";
+export const COPY_NAME = "Copy code";
+
+/**
+ * What a reply's HTML needs after the sanitizer and before the page: headings
+ * moved below the page's own, each table inside a scroller the keyboard can
+ * reach, links that open beside the app rather than over it, a link in place
+ * of each image that isn't an agent's file, and a Copy button on each code
+ * block. These are DOM changes, not Markdown renderers, because they have to
+ * hold for the raw HTML a reply can carry as well, the sanitizer
+ * drops `target`, and it drops buttons: the Copy button is made here, after it.
+ */
+function fitToPage(fragment: DocumentFragment): void {
+  const doc = fragment.ownerDocument;
+
+  // Before the links below, so an image's link opens in a new tab too.
+  linkUnshownImages(fragment);
+
+  for (const block of fragment.querySelectorAll(".prose-code")) {
+    const copy = doc.createElement("button");
+    copy.type = "button";
+    copy.className = "prose-copy";
+    copy.setAttribute("aria-label", COPY_NAME);
+    copy.setAttribute("data-copy-code", "");
+    copy.textContent = COPY_LABEL;
+    block.append(copy);
+  }
+
+  for (const heading of fragment.querySelectorAll("h1, h2, h3, h4, h5, h6")) {
+    const level = Math.min(Number(heading.tagName.slice(1)) + HEADING_DEMOTION, DEEPEST_HEADING);
+    const demoted = doc.createElement(`h${String(level)}`);
+    for (const { name, value } of heading.attributes) demoted.setAttribute(name, value);
+    demoted.append(...heading.childNodes);
+    heading.replaceWith(demoted);
+  }
+
+  for (const table of fragment.querySelectorAll("table")) {
+    const scroller = doc.createElement("div");
+    scroller.className = "prose-table";
+    scroller.setAttribute("role", "group");
+    scroller.setAttribute("aria-label", "Table");
+    scroller.tabIndex = 0;
+    table.replaceWith(scroller);
+    scroller.append(table);
+  }
+
+  for (const link of fragment.querySelectorAll("a[href]")) {
+    // A workspace path opens in the app's panel, and a fragment stays on the page.
+    if (link.hasAttribute("data-path") || link.getAttribute("href")?.startsWith("#") === true) {
+      continue;
+    }
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+  }
+}
+
+/**
  * Render message Markdown (GFM, single line breaks kept) to sanitized DOM
  * nodes: the sanitizer parses the HTML, so no unsanitized string reaches the
  * page. Each code block carries a `data-copy-code` button, and a workspace
  * path in inline code becomes an `a[data-path]` when `pathHref` is given; the
- * view showing the nodes handles their clicks.
+ * view showing the nodes handles their clicks. A task list item leads with a
+ * `.prose-check` that names its state to assistive technology. Headings sit
+ * two levels below the page's own, tables scroll in a labelled group the
+ * keyboard can focus, and links outside the app open in a new tab. Only an
+ * agent's file (`/api/agents/{name}/files/…` on this origin) or a `data:`
+ * image shows as an image; any other image is a link to it
+ * (`.prose-image-link`), so showing a reply never makes the browser request a
+ * URL the reply chose. Raw HTML in the reply keeps its text but loses styles,
+ * forms, frames, media and the other elements and attributes in
+ * `FORBIDDEN_TAGS` and `FORBIDDEN_ATTRS`. A reply the sanitizer can't make a
+ * fragment of (one that opens with `<frameset>`, which replaces the document's
+ * body) shows as its plain text.
  */
 export function renderMarkdown(content: string, options: MarkdownOptions = {}): DocumentFragment {
   const { pathHref } = options;
@@ -52,18 +248,39 @@ export function renderMarkdown(content: string, options: MarkdownOptions = {}): 
       code({ text, lang }: Tokens.Code): string {
         const language = /^\S+/.exec(lang ?? "")?.[0];
         const langClass = language ? ` class="language-${escapeHtml(language)}"` : "";
-        return (
-          `<div class="prose-code"><pre><code${langClass}>${escapeHtml(text)}\n</code></pre>` +
-          `<button type="button" class="prose-copy" data-copy-code>Copy</button></div>\n`
-        );
+        const label = language ? `Code, ${escapeHtml(language)}` : "Code";
+        // The block scrolls sideways, so the keyboard has to be able to reach it.
+        return `<div class="prose-code"><pre tabindex="0" role="group" aria-label="${label}"><code${langClass}>${escapeHtml(text)}\n</code></pre></div>\n`;
       },
       codespan({ text }: Tokens.Codespan): string {
         const code = `<code>${escapeHtml(text)}</code>`;
         if (pathHref === undefined || !isWorkspacePath(text)) return code;
         return `<a class="prose-path" href="${escapeHtml(pathHref(text))}" data-path="${escapeHtml(text)}">${code}</a>`;
       },
+      listitem(item: Tokens.ListItem): string | false {
+        if (!item.task) return false;
+        return `<li class="prose-task">${this.parser.parse(item.tokens)}</li>\n`;
+      },
+      checkbox({ checked }: Tokens.Checkbox): string {
+        const state = checked ? TASK_DONE : TASK_TO_DO;
+        return `<span class="prose-check" data-done="${String(checked)}"><span class="prose-sr-only">${state}</span></span>`;
+      },
     },
   });
   const rawHtml = marked.parse(content, { async: false });
-  return DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true }, RETURN_DOM_FRAGMENT: true });
+  // Typed as never null, but a `<frameset>` that takes the body's place leaves
+  // the sanitizer no body to return.
+  const fragment = DOMPurify.sanitize(rawHtml, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: FORBIDDEN_TAGS,
+    FORBID_ATTR: FORBIDDEN_ATTRS,
+    RETURN_DOM_FRAGMENT: true,
+  }) as DocumentFragment | null;
+  if (fragment === null) {
+    const text = document.createDocumentFragment();
+    text.append(content);
+    return text;
+  }
+  fitToPage(fragment);
+  return fragment;
 }

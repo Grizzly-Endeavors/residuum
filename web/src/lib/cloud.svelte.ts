@@ -13,7 +13,7 @@ import { userErrorMessage } from "./errors";
 import type { CloudStatusResponse, ValidateResponse } from "./types";
 
 /** The relay Residuum Cloud's tunnel dials when `[cloud] relay_url` is empty. */
-export const DEFAULT_RELAY_URL = "wss://agent-residuum.com/tunnel/register";
+export const DEFAULT_RELAY_URL = "wss://agent-residuum.com/tunnel/v2/register";
 
 /** The port the gateway listens on when `[gateway] port` is empty. */
 const DEFAULT_GATEWAY_PORT = "7700";
@@ -22,10 +22,21 @@ const POLL_INTERVAL_MS = 3000;
 /** How long after the user starts signing in on the relay's page the section keeps looking for the result. */
 const EXPECT_WINDOW_MS = 120_000;
 
-/** The messaging endpoint Microsoft posts Teams activities to for one agent. */
-export function teamsMessagingEndpoint(origin: string, instance: string, agent: string): string {
-  const base = origin.endsWith("/") ? origin.slice(0, -1) : origin;
-  return `${base}/teams/${instance}/${agent}`;
+/** The parts of the Cloud status the Teams messaging endpoint is built from. */
+export type EndpointSource = Pick<CloudStatusResponse, "instance_origin">;
+
+function withoutTrailingSlash(origin: string): string {
+  return origin.endsWith("/") ? origin.slice(0, -1) : origin;
+}
+
+/**
+ * The messaging endpoint Microsoft posts Teams activities to for one agent: on
+ * the instance's own origin. Null while the status has no instance origin.
+ */
+export function teamsMessagingEndpoint(source: EndpointSource, agent: string): string | null {
+  const instanceOrigin = source.instance_origin;
+  if (instanceOrigin == null || instanceOrigin === "") return null;
+  return `${withoutTrailingSlash(instanceOrigin)}/teams/${agent}`;
 }
 
 /** The relay's sign-in page for a gateway, and the host it is on. */
@@ -36,21 +47,48 @@ export interface ConnectTarget {
 
 const RELAY_ADDRESS = /^(wss?):\/\/([^/?#\s]+)/i;
 
-/** Where the relay's sign-in page for a gateway is, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
-export function connectTarget(relayUrl: string, gatewayPort: string): ConnectTarget | null {
+/** The relay's web origin and host, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
+function relayWeb(relayUrl: string): { origin: string; host: string } | null {
   const found = RELAY_ADDRESS.exec(relayUrl.trim() === "" ? DEFAULT_RELAY_URL : relayUrl.trim());
   if (found === null) return null;
   const [, scheme = "", host = ""] = found;
-  const port = gatewayPort.trim() === "" ? DEFAULT_GATEWAY_PORT : gatewayPort.trim();
-  const origin = `${scheme.toLowerCase() === "wss" ? "https" : "http"}://${host}`;
-  return { url: `${origin}/connect?port=${encodeURIComponent(port)}`, host };
+  return { origin: `${scheme.toLowerCase() === "wss" ? "https" : "http"}://${host}`, host };
 }
 
-/** What the section shows for a tunnel status. A saved token that is switched on counts as connecting: the tunnel is being started, or retrying. */
-export type CloudPhase = "connected" | "connecting" | "disconnected" | "none";
+/** Where the relay's sign-in page for a gateway is, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
+export function connectTarget(relayUrl: string, gatewayPort: string): ConnectTarget | null {
+  const relay = relayWeb(relayUrl);
+  if (relay === null) return null;
+  const port = gatewayPort.trim() === "" ? DEFAULT_GATEWAY_PORT : gatewayPort.trim();
+  return { url: `${relay.origin}/connect?port=${encodeURIComponent(port)}`, host: relay.host };
+}
+
+/** The relay's account dashboard, where the user manages their instances, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
+export function accountTarget(relayUrl: string): ConnectTarget | null {
+  const relay = relayWeb(relayUrl);
+  return relay === null ? null : { url: `${relay.origin}/dashboard`, host: relay.host };
+}
+
+const WEB_ORIGIN = /^https?:\/\/[^/?#\s]+$/i;
+
+/** The account dashboard on the relay's web origin, as the hub reports it. Null when the origin isn't a plain http or https origin, so nothing is linked to a value that isn't one. */
+export function accountDashboardUrl(relayOrigin: string | null | undefined): string | null {
+  if (relayOrigin === null || relayOrigin === undefined || !WEB_ORIGIN.test(relayOrigin)) {
+    return null;
+  }
+  return `${relayOrigin}/dashboard`;
+}
+
+/**
+ * What the section shows for a tunnel status. A saved token that is switched
+ * on counts as connecting: the tunnel is being started, or retrying. Refused
+ * is a switched-on token the relay turned away.
+ */
+export type CloudPhase = "connected" | "connecting" | "refused" | "disconnected" | "none";
 
 export function phaseOf(status: CloudStatusResponse): CloudPhase {
   if (status.status === "connected") return "connected";
+  if (status.status === "refused" && status.has_token && status.enabled) return "refused";
   if (status.status === "connecting" || (status.has_token && status.enabled)) return "connecting";
   return status.has_token ? "disconnected" : "none";
 }

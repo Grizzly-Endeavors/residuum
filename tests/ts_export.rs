@@ -2,6 +2,9 @@
 //!
 //! Running `cargo test` produces `.ts` files in `web/src/lib/generated/`.
 //! These files are committed to git so the frontend can import them directly.
+//! `RESIDUUM_TS_EXPORT_DIR` writes them somewhere else instead, which is how
+//! `scripts/export-generated-types.sh` exports into a scratch directory for
+//! `scripts/check-generated-types.sh` and `scripts/update-generated-types.sh`.
 
 #[expect(
     clippy::tests_outside_test_module,
@@ -41,6 +44,16 @@ mod ts_export {
     };
     use residuum::inbox::InboxAttachment;
     use residuum::inference::ImageData;
+    use residuum::pairing::types::{
+        CreatePairingRequestBody, DeviceInfo, DeviceListResponse, HandoffBody, PairLinkResponse,
+        PairedResponse, PairingPollResponse, PairingRequestCreated, PairingRequestStatus,
+        PairingStateResponse, PendingPairingInfo, PollPairingBody, RecoveryCodeBody,
+        RecoveryCodesResponse, RedeemTokenBody, WorkbenchHandoffResponse,
+    };
+    use residuum::remote_access::status::{
+        CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,
+        RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
+    };
 
     #[test]
     #[expect(
@@ -48,11 +61,12 @@ mod ts_export {
         reason = "exports all protocol types sequentially into TypeScript"
     )]
     fn export_protocol_types() {
-        let out_dir = "web/src/lib/generated";
-        let cfg = ts_rs::Config::new().with_out_dir(out_dir);
+        let out_dir = std::env::var("RESIDUUM_TS_EXPORT_DIR")
+            .unwrap_or_else(|_| "web/src/lib/generated".to_owned());
+        let cfg = ts_rs::Config::new().with_out_dir(&out_dir);
 
         // Ensure the output directory exists
-        std::fs::create_dir_all(out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
 
         // Export each type — dependencies are exported transitively
         ClientMessage::export_all(&cfg).unwrap();
@@ -106,12 +120,12 @@ mod ts_export {
         AgentListResponse::export_all(&cfg).unwrap();
         DeletedAgentListResponse::export_all(&cfg).unwrap();
         // The hub WebSocket: `HubEvent` is every frame the hub forwards from
-        // its bus (with `Actor` and `NoticeLevel`), `HubSocketFrame` the two it
-        // sends on its own (`hub_boot` and `agents_snapshot`), and
-        // `HubClientMessage` the one message a client sends. The team change
-        // frames are the agent protocol's `ServerMessage` variants. The client
-        // message is exported under this name so it doesn't collide with the
-        // agent protocol's `ClientMessage`.
+        // its bus (with `Actor`, `NoticeLevel` and `HubNoticeKind`),
+        // `HubSocketFrame` the two it sends on its own (`hub_boot` and
+        // `agents_snapshot`), and `HubClientMessage` the one message a client
+        // sends. The team change frames are the agent protocol's
+        // `ServerMessage` variants. The client message is exported under this
+        // name so it doesn't collide with the agent protocol's `ClientMessage`.
         HubEvent::export_all(&cfg).unwrap();
         HubSocketFrame::export_all(&cfg).unwrap();
         HubClientMessage::export_all(&cfg).unwrap();
@@ -128,6 +142,51 @@ mod ts_export {
         InboxAttachment::export_all(&cfg).unwrap();
         HubInboxUnread::export_all(&cfg).unwrap();
         InboxStatus::export_all(&cfg).unwrap();
+
+        // Device pairing: `PairingStateResponse` answers `GET
+        // /api/hub/pairing/state`; `CreatePairingRequestBody` and
+        // `PairingRequestCreated` are the body and answer of `POST
+        // /api/hub/pairing/requests`; `PollPairingBody` and
+        // `PairingPollResponse` (with `PairingRequestStatus`) those of `POST
+        // .../requests/poll`; `RedeemTokenBody`, `RecoveryCodeBody` and
+        // `HandoffBody` are the bodies of the routes that pair with a token, a
+        // recovery code and a workbench handoff, all answered by
+        // `PairedResponse`. `DeviceListResponse` (with its `DeviceInfo` and
+        // `PendingPairingInfo` items) answers `GET /api/hub/devices`,
+        // `PairLinkResponse` `POST /api/hub/remote-access/pair-link`,
+        // `RecoveryCodesResponse` `POST /api/hub/devices/recovery-codes`, and
+        // `WorkbenchHandoffResponse` `POST /api/hub/devices/workbench-handoff`.
+        PairingStateResponse::export_all(&cfg).unwrap();
+        CreatePairingRequestBody::export_all(&cfg).unwrap();
+        PairingRequestCreated::export_all(&cfg).unwrap();
+        PollPairingBody::export_all(&cfg).unwrap();
+        PairingPollResponse::export_all(&cfg).unwrap();
+        PairingRequestStatus::export_all(&cfg).unwrap();
+        RedeemTokenBody::export_all(&cfg).unwrap();
+        RecoveryCodeBody::export_all(&cfg).unwrap();
+        HandoffBody::export_all(&cfg).unwrap();
+        PairedResponse::export_all(&cfg).unwrap();
+        DeviceListResponse::export_all(&cfg).unwrap();
+        DeviceInfo::export_all(&cfg).unwrap();
+        PendingPairingInfo::export_all(&cfg).unwrap();
+        PairLinkResponse::export_all(&cfg).unwrap();
+        RecoveryCodesResponse::export_all(&cfg).unwrap();
+        WorkbenchHandoffResponse::export_all(&cfg).unwrap();
+
+        // Remote access: `RemoteAccessStatus` (with its `RemoteAccessState`,
+        // `RemoteHosts`, `CertificateInfo`, `PinInfo`, `InstanceInfo`,
+        // `SiblingInfo`, `PendingJoinInfo` and `JoinProgress` parts) answers `GET
+        // /api/hub/remote-access/status`.
+        RemoteAccessStatus::export_all(&cfg).unwrap();
+        RemoteAccessState::export_all(&cfg).unwrap();
+        RemoteHosts::export_all(&cfg).unwrap();
+        CertificateInfo::export_all(&cfg).unwrap();
+        PinInfo::export_all(&cfg).unwrap();
+        InstanceInfo::export_all(&cfg).unwrap();
+        SiblingInfo::export_all(&cfg).unwrap();
+        PendingJoinInfo::export_all(&cfg).unwrap();
+        JoinState::export_all(&cfg).unwrap();
+        JoinProgress::export_all(&cfg).unwrap();
 
         // Web Push: `PushKeyResponse` answers `GET /api/hub/push/key`,
         // `PushDeviceList` answers `GET /api/hub/push/devices` (with its
@@ -196,23 +255,33 @@ mod ts_export {
 
         // Verify the generated files exist
         assert!(
-            std::path::Path::new("web/src/lib/generated/ClientMessage.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("ClientMessage.ts")
+                .exists(),
             "ClientMessage.ts should be generated"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/ServerMessage.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("ServerMessage.ts")
+                .exists(),
             "ServerMessage.ts should be generated"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/ImageAttachment.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("ImageAttachment.ts")
+                .exists(),
             "ImageAttachment.ts should be generated (renamed from ImageData)"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/TeamsSetupJob.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("TeamsSetupJob.ts")
+                .exists(),
             "TeamsSetupJob.ts should be generated"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/TeamsSetupPrereqs.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("TeamsSetupPrereqs.ts")
+                .exists(),
             "TeamsSetupPrereqs.ts should be generated"
         );
     }

@@ -1,7 +1,6 @@
 //! Keeps the relay's copy of the hub's agent list current.
 //!
-//! The relay routes `/a2a/{instance}/{agent}` requests and builds its A2A
-//! directory from the list the tunnel sends after every (re)connect. This
+//! The relay builds its A2A directory from the list the tunnel sends after every (re)connect. This
 //! module computes that list from the agent directory and republishes it
 //! whenever an agent is created or deleted, changes state, or changes A2A
 //! visibility, or the hub's `[a2a] enabled` flips. The tunnel sends whatever
@@ -26,7 +25,7 @@ use tokio::time::Instant;
 
 use super::directory::AgentDirectory;
 use super::types::{A2aVisibility, AgentState, AgentSummary, HubEvent};
-use crate::tunnel::protocol::AgentInfo;
+use crate::tunnel::v2::frames::AgentInfo;
 
 /// How long a burst of changes is allowed to gather before one update goes
 /// out. Creating an agent publishes a creation and then a start-up state
@@ -53,7 +52,6 @@ pub(crate) fn agent_infos(
                 && agent.state == AgentState::Running
                 && !stopping.contains(&agent.name),
             a2a_private: agent.a2a_visibility == A2aVisibility::Private,
-            teams_configured: agent.teams_configured,
         })
         .collect()
 }
@@ -188,11 +186,8 @@ async fn settle(events: &mut broadcast::Receiver<HubEvent>) -> bool {
 mod tests {
     use super::*;
     use crate::a2a::StaticAgentDirectory;
+    use crate::testing::{clock, wait};
     use axum::Router;
-
-    /// Bound on every wait, so a missing update fails the test instead of
-    /// hanging the suite.
-    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn summary(name: &str, state: AgentState, visibility: A2aVisibility) -> AgentSummary {
         AgentSummary {
@@ -216,16 +211,15 @@ mod tests {
     }
 
     async fn next_list(rx: &mut watch::Receiver<Vec<AgentInfo>>) -> Vec<AgentInfo> {
-        tokio::time::timeout(TEST_TIMEOUT, rx.changed())
+        wait::guarded("an agent list update", rx.changed())
             .await
-            .expect("no agent list update arrived")
             .expect("the list sender was dropped");
         rx.borrow_and_update().clone()
     }
 
     async fn no_update_within(rx: &mut watch::Receiver<Vec<AgentInfo>>, window: Duration) {
         assert!(
-            tokio::time::timeout(window, rx.changed()).await.is_err(),
+            clock::within(window, rx.changed()).await.is_none(),
             "an unrelated event must not produce an update"
         );
     }
@@ -256,16 +250,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_agent_with_teams_configured_stays_configured() {
-        let mut agent = summary("scout", AgentState::Stopped, A2aVisibility::Public);
-        agent.teams_configured = true;
-        let infos = agent_infos(&[agent], true, &HashSet::new());
-        let scout = infos.first().expect("scout");
-        assert!(scout.teams_configured);
-        assert!(!scout.a2a_enabled);
-    }
-
-    #[test]
     fn a_running_agent_that_has_begun_stopping_is_not_a2a_enabled() {
         let agents = [summary("scout", AgentState::Running, A2aVisibility::Public)];
         let stopping = HashSet::from(["scout".to_string()]);
@@ -286,7 +270,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_initial_list_describes_every_agent() {
         let directory = directory(&[
             ("scout", A2aVisibility::Public),
@@ -307,7 +291,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn creating_an_agent_republishes_the_list() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -321,7 +305,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn deleting_an_agent_republishes_the_list() {
         let directory = directory(&[
             ("scout", A2aVisibility::Public),
@@ -338,7 +322,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn stopping_and_starting_an_agent_toggles_its_a2a_enablement() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -354,7 +338,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_agent_that_begins_stopping_is_disabled_before_it_finishes() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -373,7 +357,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_visibility_change_republishes_the_list() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -386,7 +370,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn turning_the_a2a_listener_off_disables_every_agent() {
         let directory = directory(&[
             ("scout", A2aVisibility::Public),
@@ -407,7 +391,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_burst_of_changes_is_one_update() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -428,7 +412,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn events_that_do_not_change_the_list_send_nothing() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);

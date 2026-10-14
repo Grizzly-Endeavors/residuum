@@ -65,6 +65,8 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
                 let trigger = event.source.clone();
+                let owner_address =
+                    super::owner_session::is_owner_start(&event).then(|| event.address.clone());
                 match handle_spawn_request(&ctx, event).await {
                     Ok(()) => {
                         if spawn_failures.remove(&source_label).is_some() {
@@ -74,16 +76,21 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                             );
                         }
                     }
-                    Err(e) => {
-                        handle_spawn_failure(
-                            &ctx.publisher,
-                            &mut spawn_failures,
-                            &trigger,
-                            &source_label,
-                            &e,
-                        )
-                        .await;
-                    }
+                    Err(e) => match owner_address {
+                        Some(address) => {
+                            notify_owner_start_failed(&ctx.publisher, &address, &e).await;
+                        }
+                        None => {
+                            handle_spawn_failure(
+                                &ctx.publisher,
+                                &mut spawn_failures,
+                                &trigger,
+                                &source_label,
+                                &e,
+                            )
+                            .await;
+                        }
+                    },
                 }
             }
             Ok(None) => break,
@@ -147,11 +154,33 @@ async fn handle_spawn_failure(
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message: notice },
+            NoticeEvent::new(notice),
         )
         .await
     {
         tracing::warn!(source = %source_label, error = %e, "failed to publish spawn-failure notice");
+    }
+}
+
+/// Tell the owner a session they started by hand couldn't start. Their start
+/// was already accepted (the web UI is waiting for the run to appear, or a
+/// chat command already named its address), so the failure has to reach them
+/// on its own.
+async fn notify_owner_start_failed(
+    publisher: &Publisher,
+    address: &SessionAddress,
+    error: &anyhow::Error,
+) {
+    tracing::warn!(address = %address, error = format!("{error:#}"), "failed to fork a session the owner started");
+    let notice = format!("The session {address} you started couldn't start: {error}");
+    if let Err(e) = publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent::new(notice),
+        )
+        .await
+    {
+        tracing::warn!(address = %address, error = %e, "failed to publish an owner session's start-failure notice");
     }
 }
 
@@ -391,6 +420,7 @@ async fn fork_and_spawn(
             sender: event.sender,
             inbound: event.inbound,
             images: event.images,
+            carried_history: event.carried_history,
         },
         conversation_target: event.conversation,
         overlap: event.overlap,
@@ -416,6 +446,7 @@ mod tests {
     use crate::config::BackgroundModelTier;
     use crate::inference::MessageSender;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
+    use crate::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     fn sample_inbound(id: &str, content: &str, sender_name: &str) -> MessageEvent {
@@ -463,6 +494,7 @@ mod tests {
             images: inbound.images.clone(),
             inbound: Some(inbound),
             overlap: None,
+            carried_history: Vec::new(),
         }
     }
 
@@ -637,25 +669,18 @@ mod tests {
         deliver_race_guard_content(&registry, &publisher, new_event)
             .expect("a saturated channel must hand off to a retry, not error");
 
-        let mut delivered = false;
-        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
-            let Ok(Some(interrupt)) =
-                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
-            else {
-                break;
-            };
-            if let Interrupt::UserMessage(m) = interrupt
-                && m.id == "the-new-message"
-            {
-                assert_eq!(m.content, "can anyone see this?");
-                delivered = true;
-                break;
+        let interrupt = wait::next_matching(
+            "the race-guard user message to be delivered, never dropped",
+            &mut rx,
+            |interrupt| matches!(interrupt, Interrupt::UserMessage(m) if m.id == "the-new-message"),
+        )
+        .await;
+        match interrupt {
+            Interrupt::UserMessage(m) => assert_eq!(m.content, "can anyone see this?"),
+            Interrupt::AgentMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                panic!("the race-guard user message should be the one delivered")
             }
         }
-        assert!(
-            delivered,
-            "the race-guard user message must eventually be delivered, never dropped"
-        );
     }
 
     #[tokio::test]
@@ -682,11 +707,8 @@ mod tests {
         deliver_race_guard_content(&registry, &publisher, new_event)
             .expect("a target that just finished must hand off to a retry, not error");
 
-        let republished = tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("a fresh spawn request should be republished promptly")
-            .unwrap()
-            .unwrap();
+        let republished =
+            wait::next_event("a fresh spawn request to be republished", &mut spawns).await;
         assert_eq!(republished.address, SessionAddress::from(address));
         assert_eq!(
             republished.inbound.map(|m| m.content),
@@ -696,14 +718,6 @@ mod tests {
     }
 
     // ── handle_spawn_failure dedup ───────────────────────────────────────
-
-    async fn recv_notice(sub: &mut Subscriber<NoticeEvent>) -> Option<NoticeEvent> {
-        tokio::time::timeout(std::time::Duration::from_millis(150), sub.recv())
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-    }
 
     #[tokio::test]
     async fn first_pulse_spawn_failure_publishes_a_notice() {
@@ -723,11 +737,33 @@ mod tests {
         )
         .await;
 
-        let notice = recv_notice(&mut sub)
-            .await
-            .expect("first failure should notice");
+        let notice = wait::next_event("the first failure's notice", &mut sub).await;
         assert!(notice.message.contains("email_check"));
         assert!(notice.message.contains("skill 'ghost' not found"));
+    }
+
+    #[tokio::test]
+    async fn an_owner_session_that_fails_to_start_tells_the_owner_which_one() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+
+        notify_owner_start_failed(
+            &bus.publisher(),
+            &SessionAddress::from("spawned-multitask-1a2b"),
+            &anyhow::anyhow!("no API key for the medium tier"),
+        )
+        .await;
+
+        let notice = wait::next_event("the owner's failure notice", &mut sub).await;
+        assert!(
+            notice.message.contains("spawned-multitask-1a2b"),
+            "{}",
+            notice.message
+        );
+        assert!(notice.message.contains("no API key"), "{}", notice.message);
     }
 
     #[tokio::test]
@@ -748,7 +784,7 @@ mod tests {
             &err,
         )
         .await;
-        assert!(recv_notice(&mut sub).await.is_some(), "first call notices");
+        wait::next_event("the first call's notice", &mut sub).await;
 
         handle_spawn_failure(
             &bus.publisher(),
@@ -758,8 +794,9 @@ mod tests {
             &err,
         )
         .await;
+        wait::bus_barrier(&bus).await;
         assert!(
-            recv_notice(&mut sub).await.is_none(),
+            sub.drain().is_empty(),
             "an unchanged, still-failing retry must not notice again"
         );
     }
@@ -781,7 +818,7 @@ mod tests {
             &anyhow::anyhow!("skill 'ghost' not found"),
         )
         .await;
-        assert!(recv_notice(&mut sub).await.is_some());
+        wait::next_event("the first pulse failure's notice", &mut sub).await;
 
         handle_spawn_failure(
             &bus.publisher(),
@@ -791,9 +828,7 @@ mod tests {
             &anyhow::anyhow!("a different failure now"),
         )
         .await;
-        let notice = recv_notice(&mut sub)
-            .await
-            .expect("a genuinely new error should notice again");
+        let notice = wait::next_event("a genuinely new error's notice", &mut sub).await;
         assert!(notice.message.contains("a different failure now"));
     }
 
@@ -815,7 +850,7 @@ mod tests {
         )
         .await;
 
-        let notice = recv_notice(&mut sub).await.expect("should notice");
+        let notice = wait::next_event("the scheduled action's notice", &mut sub).await;
         assert!(notice.message.contains("scheduled action"));
         assert!(notice.message.contains("nightly digest"));
     }
@@ -844,6 +879,7 @@ mod tests {
             .await;
         }
 
-        assert!(recv_notice(&mut sub).await.is_none());
+        wait::bus_barrier(&bus).await;
+        assert!(sub.drain().is_empty());
     }
 }

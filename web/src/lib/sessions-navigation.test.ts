@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionsStore } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import type { SessionSummary } from "./types";
+import { waitFor } from "../test/wait";
 
 function summary(
   runId: string,
@@ -109,7 +110,7 @@ describe("the finished list", () => {
     expect(s.finished.scheduled.loaded).toBe(false);
 
     s.showFinished("scheduled");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(s.finished.scheduled.loaded).toBe(true);
     });
     expect(s.finishedKind).toBe("scheduled");

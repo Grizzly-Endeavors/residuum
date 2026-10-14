@@ -1,6 +1,6 @@
 //! The per-agent routes that only read and write the agent's files (chat
-//! history and usage, the user inbox, the raw A2A client settings), and the
-//! state they run on.
+//! history and usage, the user inbox, the raw A2A client settings, and the
+//! workspace file links), and the state they run on.
 //!
 //! The state holds no open checkpoint repositories. The one handler that
 //! takes a checkpoint, the raw A2A settings write, opens them when it runs,
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use axum::routing::{get, post, put};
 
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointError, CheckpointTrigger};
+use crate::gateway::file_server::{self, FileRegistry};
 use crate::gateway::types::ReloadSender;
 
 use super::{ConfigApiState, a2a, chat, inbox};
@@ -49,7 +50,8 @@ impl CheckpointAccess {
 #[derive(Clone)]
 pub struct AgentFilesState {
     /// This agent's name, used in the attachment URLs an inbox listing hands
-    /// out.
+    /// out and in the app address a workspace file link that can't be served
+    /// sends a browser to.
     pub agent_name: String,
     /// Path to the workspace root directory.
     pub workspace_dir: PathBuf,
@@ -110,9 +112,22 @@ impl AgentFilesState {
 }
 
 /// The routes that read and write an agent's files and nothing of its live
-/// state: chat history, session usage, the user inbox, and the raw A2A client
-/// settings.
+/// state: chat history, session usage, the user inbox, the raw A2A client
+/// settings, and the workspace file links the web app hands out.
 pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
+    // A link serves a file under the workspace root by its path, so the route
+    // needs the root and the agent's name for the browser landings, and no
+    // live state. The registry is built here, from the same root the running
+    // agent's file registry uses.
+    let workspace_files: axum::Router = axum::Router::new()
+        .route(
+            "/api/files/workspace",
+            get(file_server::serve_workspace_file),
+        )
+        .with_state(
+            FileRegistry::new(state.agent_name.clone())
+                .with_workspace_root(state.workspace_dir.clone()),
+        );
     axum::Router::new()
         .route("/api/chat/history", get(chat::api_chat_history))
         .route("/api/usage", get(chat::api_usage))
@@ -128,4 +143,5 @@ pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
             get(inbox::api_inbox_attachment),
         )
         .with_state(state)
+        .merge(workspace_files)
 }

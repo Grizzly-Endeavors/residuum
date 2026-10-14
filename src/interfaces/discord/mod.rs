@@ -42,6 +42,8 @@ const ENDPOINT: &str = "discord";
 /// State shared by the event handler and the outbound subscriber.
 pub(super) struct DiscordState {
     respond_to_others: bool,
+    /// Whether intermediate (pre-tool-call) text is posted to the chat.
+    deliver_intermediate: bool,
     /// The owner and every conversation the bot has seen, keyed by channel ID.
     store: ChatStateStore<ChatRef>,
     /// Channel each in-flight turn should answer in, by correlation ID.
@@ -154,6 +156,7 @@ impl DiscordInterface {
         }
         let state = Arc::new(DiscordState {
             respond_to_others: self.cfg.respond_to_others,
+            deliver_intermediate: self.cfg.deliver_intermediate,
             store: chat_store,
             reply_targets: ReplyTargets::default(),
             bot_id: OnceLock::new(),
@@ -172,6 +175,7 @@ impl DiscordInterface {
             state: Arc::clone(&state),
             publisher: self.senders.publisher.clone(),
             inbox_dir: layout.agent_inbox_dir(),
+            main_conversation: layout.recent_messages_json(),
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
             stop_tx: self.senders.stop,

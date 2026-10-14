@@ -120,8 +120,43 @@ pub struct CloudConfig {
     pub relay_url: String,
     /// Authentication token.
     pub token: String,
-    /// Local port to forward requests to.
-    pub local_port: u16,
+    /// Settings for end-to-end encrypted remote access.
+    pub remote: RemoteAccessSettings,
+}
+
+/// Production Let's Encrypt directory.
+pub const ACME_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
+/// Let's Encrypt staging directory.
+pub const ACME_STAGING_DIRECTORY: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+/// Validated settings for end-to-end encrypted remote access (`[cloud]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAccessSettings {
+    /// Domain the relay serves hosts under; every host name is derived from
+    /// it and the stored user and slug.
+    pub base_domain: String,
+    /// ACME directory certificates are ordered from.
+    pub acme_directory: String,
+    /// Extra PEM root the ACME directory's TLS certificate may chain to, for
+    /// a private test CA.
+    pub acme_root_ca: Option<std::path::PathBuf>,
+    /// Base URL of the pin service.
+    pub pin_service_url: String,
+    /// Public DNS resolver used to see which CAA records the world sees.
+    pub caa_resolver: std::net::SocketAddr,
+}
+
+impl Default for RemoteAccessSettings {
+    fn default() -> Self {
+        Self {
+            base_domain: "agent-residuum.com".to_string(),
+            acme_directory: ACME_PRODUCTION_DIRECTORY.to_string(),
+            acme_root_ca: None,
+            pin_service_url: "https://pins.agent-residuum.com".to_string(),
+            caa_resolver: std::net::SocketAddr::from(([1, 1, 1, 1], 53)),
+        }
+    }
 }
 
 /// Validated Discord bot configuration.
@@ -133,6 +168,9 @@ pub struct DiscordConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -141,6 +179,7 @@ impl std::fmt::Debug for DiscordConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -154,6 +193,9 @@ pub struct TelegramConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -162,6 +204,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -179,6 +222,9 @@ pub struct TeamsConfig {
     pub respond_to_others: bool,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
     /// Port for the dedicated messaging listener (bound on the gateway's address).
     ///
     /// Kept separate from the gateway port so a public tunnel pointed at it
@@ -194,6 +240,7 @@ impl std::fmt::Debug for TeamsConfig {
             .field("tenant_id", &self.tenant_id)
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .field("port", &self.port)
             .finish()
     }
@@ -208,7 +255,7 @@ pub enum A2aVisibility {
     #[default]
     Public,
     /// Every route, including the Agent Card, answers a plain 404 to a
-    /// caller without a valid key or sibling attestation — indistinguishable
+    /// caller without a valid key — indistinguishable
     /// from an agent that doesn't exist.
     Private,
 }
@@ -484,15 +531,16 @@ impl AutoModeConfig {
 pub struct IdleConfig {
     /// Inactivity timeout. `Duration::ZERO` means disabled.
     pub timeout: Duration,
-    /// Interface to switch to when idle. `None` = keep current. (Phase 2)
-    pub idle_channel: Option<String>,
+    /// Endpoint that agent-started main turns go to once the owner is idle:
+    /// `ws` (the web UI) unless the config names a chat interface.
+    pub idle_channel: String,
 }
 
 impl Default for IdleConfig {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_MINUTES * 60),
-            idle_channel: None,
+            idle_channel: crate::interfaces::types::WEB_UI_ENDPOINT.to_string(),
         }
     }
 }
@@ -1105,54 +1153,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolve_tier_tests() {
+    fn dummy_spec(tier: &str) -> ProviderSpec {
         use super::super::provider::{ModelSpec, ProviderKind};
 
-        let p_small = ProviderSpec {
-            name: "dummy-small".to_string(),
+        ProviderSpec {
+            name: format!("dummy-{tier}"),
             model: ModelSpec {
                 kind: ProviderKind::OpenAi,
-                model: "small-model".to_string(),
+                model: format!("{tier}-model"),
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-        };
-        let p_medium = ProviderSpec {
-            name: "dummy-medium".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "medium-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_large = ProviderSpec {
-            name: "dummy-large".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "large-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_main = ProviderSpec {
-            name: "dummy-main".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "main-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
+            image_input: crate::config::ImageInput::Undeclared,
+        }
+    }
+
+    #[test]
+    fn resolve_tier_tests() {
+        let p_small = dummy_spec("small");
+        let p_medium = dummy_spec("medium");
+        let p_large = dummy_spec("large");
+        let p_main = dummy_spec("main");
 
         let main_slice = std::slice::from_ref(&p_main);
 
@@ -1231,6 +1254,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_medium = ProviderSpec {
             name: "dummy-medium".to_string(),
@@ -1242,6 +1266,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_main = ProviderSpec {
             name: "dummy-main".to_string(),
@@ -1253,6 +1278,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
 
         let main_slice = std::slice::from_ref(&p_main);

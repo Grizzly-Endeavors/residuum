@@ -12,12 +12,14 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::Request;
-use axum::http::{StatusCode, Uri};
+use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::Response;
 use tower::ServiceExt;
 use tracing::Instrument;
 
 use super::error::{json_error, lifecycle_error_response};
+use crate::config::paths::validate_agent_name;
+use crate::gateway::browser_landing::{self, AppNotice, Fallback, Landing};
 use crate::hub::{AgentDirectory, LifecycleError};
 
 /// The routes that hand requests to an agent: everything under
@@ -47,14 +49,16 @@ pub(super) fn routes(directory: Arc<dyn AgentDirectory>) -> Router {
 /// Which of an agent's routers serves an inner path.
 #[derive(Debug, PartialEq, Eq)]
 enum AgentRouterKind {
-    /// Config, providers, MCP, workspace-file, and checkpoint routes, which
-    /// work on a stopped or failed agent so the user can repair it.
+    /// Config, providers, MCP, workspace file API (`/api/workspace/...`),
+    /// checkpoint, and teams-setup routes, which work on a stopped or failed
+    /// agent so the user can repair it.
     Repair,
     /// Routes that only read and write the agent's files: chat history,
-    /// usage, the user inbox, and the raw A2A client settings. A running
-    /// agent serves them from its own router, at the cost it always had. Any
-    /// other agent gets them from a router that opens no checkpoint
-    /// repository, so they answer even when the repositories can't be opened.
+    /// usage, the user inbox, the raw A2A client settings, and the workspace
+    /// file links. A running agent serves them from its own router, at the
+    /// cost it always had. Any other agent gets them from a router that opens
+    /// no checkpoint repository, so they answer even when the repositories
+    /// can't be opened.
     Files,
     /// Everything else, which needs a running agent.
     Running,
@@ -86,7 +90,7 @@ impl AgentRouterKind {
 /// file-only data routes.
 fn is_file_data_route(route: &[&str]) -> bool {
     match route {
-        ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] => true,
+        ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] | ["files", "workspace"] => true,
         ["inbox", rest @ ..] => matches!(
             rest,
             [] | ["archive"] | [_, "read" | "archive" | "restore"] | [_, "attachments", _]
@@ -128,14 +132,60 @@ async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response
 /// `/webhook/{agent}/{name}`: the agent's own `/webhook/{name}` route. The
 /// request's path has already lost its `/webhook` prefix: it is
 /// `/{agent}/{name}`.
+///
+/// A webhook address is for other services to post to. A browser that opens
+/// one goes to the agent's webhook settings in the app, which say so.
 async fn webhook_request(directory: &dyn AgentDirectory, req: Request) -> Response {
     let path = req.uri().path().to_string();
-    let Some((agent, webhook)) = path.strip_prefix('/').and_then(|rest| rest.split_once('/'))
+    if browser_landing::is_top_level_navigation(req.method(), req.headers()) {
+        let agent = path.trim_start_matches('/').split('/').next();
+        return webhook_address_opened(agent);
+    }
+    let Some((agent, webhook)) = path
+        .strip_prefix('/')
+        .and_then(|rest| rest.split_once('/'))
+        .filter(|(agent, webhook)| !agent.is_empty() && !webhook.is_empty())
     else {
-        return json_error(StatusCode::NOT_FOUND, "not found");
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "A webhook address names its agent and webhook: /webhook/{agent}/{name}.",
+        );
     };
+    if req.method() != Method::POST {
+        let mut response = json_error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "Webhooks receive POST requests from other services.",
+        );
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("POST"));
+        return response;
+    }
     let inner = format!("/webhook/{webhook}");
     forward(agent, directory.agent_router(agent), req, &inner).await
+}
+
+/// Send a browser that opened a webhook address to that agent's webhooks in
+/// Settings (Connections), or Home when the address names no agent.
+fn webhook_address_opened(agent: Option<&str>) -> Response {
+    let notice = ("notice", AppNotice::WebhookAddress.code());
+    let target = match agent.filter(|name| validate_agent_name(name).is_ok()) {
+        Some(agent) => {
+            let settings = format!("{agent}/connections");
+            browser_landing::app_path(
+                &format!("/agent/{agent}"),
+                &[("settings", &settings), notice],
+            )
+        }
+        None => browser_landing::app_path("/home", &[notice]),
+    };
+    browser_landing::app_redirect(
+        &target,
+        Fallback {
+            title: "Webhook address",
+            message: "This is a webhook address: other services send POST requests to it to give an agent work. There's nothing to open here in a browser.",
+        },
+    )
 }
 
 /// Split `/{name}{rest}` into the raw name and `rest` (empty, or starting
@@ -162,6 +212,9 @@ async fn forward(
 ) -> Response {
     let router = match router {
         Ok(router) => router,
+        Err(e) if browser_landing::is_top_level_navigation(req.method(), req.headers()) => {
+            return agent_unavailable_to_browser(agent, &e);
+        }
         Err(e) => return lifecycle_error_response(&e),
     };
     let path_and_query = req.uri().query().map_or_else(
@@ -183,6 +236,50 @@ async fn forward(
     {
         Ok(response) => response,
         Err(never) => match never {},
+    }
+}
+
+/// A link opened in a browser (a file, an attachment) that the agent can't
+/// answer: a stopped agent's page shows its state and how to start it, a
+/// missing agent's address lets the app say there's no such agent, and
+/// anything else gets the fallback page.
+fn agent_unavailable_to_browser(agent: &str, error: &LifecycleError) -> Response {
+    let agent_page = validate_agent_name(agent)
+        .is_ok()
+        .then(|| format!("/agent/{agent}"));
+    match (error, agent_page) {
+        (LifecycleError::NotRunning { .. }, Some(page)) => browser_landing::app_redirect(
+            &browser_landing::app_path(&page, &[("notice", AppNotice::AgentStopped.code())]),
+            Fallback {
+                title: "Agent stopped",
+                message: "This link needs its agent running. Start the agent in Residuum, then open the link again.",
+            },
+        ),
+        (LifecycleError::NotFound(_), page) => browser_landing::app_redirect(
+            page.as_deref().unwrap_or("/home"),
+            Fallback {
+                title: "No such agent",
+                message: "There's no agent by that name in Residuum. It may have been renamed or deleted.",
+            },
+        ),
+        (LifecycleError::ShuttingDown(message), _) => browser_landing::fallback_page(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &Landing::new("Residuum is shutting down", message.clone()),
+        ),
+        (other, _) => {
+            if matches!(other, LifecycleError::Failed(_)) {
+                tracing::error!(error = %other, agent, "hub request failed");
+            } else {
+                tracing::debug!(error = %other, agent, "a browser opened a link the agent can't answer");
+            }
+            browser_landing::fallback_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &Landing::new(
+                    "Couldn't open this link",
+                    "Residuum couldn't open this link. Try again, and if it keeps happening, Residuum's logs have the details.",
+                ),
+            )
+        }
     }
 }
 
@@ -243,6 +340,7 @@ mod tests {
             "/api/chat/history",
             "/api/usage",
             "/api/a2a/agents/raw",
+            "/api/files/workspace",
             "/api/inbox",
             "/api/inbox/archive",
             "/api/inbox/2026-09-30-note/read",
@@ -267,7 +365,7 @@ mod tests {
             "/api/sessions",
             "/api/configuration",
             "/api/workspaces",
-            "/api/files/workspace",
+            "/api/files/abc123",
             "/api/agent-inbox",
             "/api/chat",
             "/api/chat/history/extra",

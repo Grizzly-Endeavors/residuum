@@ -14,7 +14,7 @@ use crate::bus::EndpointName;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::types::{MessageOrigin, WEB_UI_ENDPOINT};
 use crate::interfaces::websocket::subscriber::WsSubscribers;
 use crate::workbench::forward::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
@@ -64,9 +64,10 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     let mut subs = match WsSubscribers::new(
         &state.bus_handle,
         &state.team_feed.bus,
-        EndpointName::from("ws"),
+        EndpointName::from(WEB_UI_ENDPOINT),
         state.file_registry.clone(),
         watch_set_rx,
+        &state.turn_journal,
     )
     .await
     {
@@ -77,6 +78,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
         }
     };
 
+    let resync = subs.resync_requests();
     // Local channel for per-connection messages (pong, errors, inbox responses)
     let (local_tx, mut local_rx) = mpsc::unbounded_channel::<ServerMessage>();
 
@@ -116,23 +118,16 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
                 }
             };
 
-            if let Some(msg) = msg {
-                if !verbose_fwd.load(Ordering::Relaxed) && is_verbose_only(&msg) {
-                    continue;
-                }
-
-                let json = match serde_json::to_string(&msg) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to serialize server message");
-                        continue;
-                    }
-                };
-                if ws_tx.send(WsMessage::text(json)).await.is_err() {
-                    break; // client disconnected
-                }
+            let Some(msg) = msg.and_then(|m| shown_frame(m, verbose_fwd.load(Ordering::Relaxed)))
+            else {
+                continue;
+            };
+            if !send_frame(&mut ws_tx, &msg).await {
+                break; // client disconnected
             }
         }
+        // Nothing more will be forwarded: close, so the client knows to reconnect.
+        ws_tx.close().await.ok();
     });
 
     // Read loop: WebSocket client → bus / local channel
@@ -165,7 +160,13 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
             }
         };
 
-        if !handle_client_message(client_msg, &state, &local_tx, &verbose, &watch_set_tx).await {
+        let channels = ConnectionChannels {
+            local: &local_tx,
+            verbose: &verbose,
+            watch_set: &watch_set_tx,
+            resync: &resync,
+        };
+        if !handle_client_message(client_msg, &state, &channels).await {
             break;
         }
     }
@@ -190,6 +191,18 @@ async fn answer_client_close(
     }
 }
 
+/// The per-connection state a client message can act on.
+struct ConnectionChannels<'a> {
+    /// Replies to this connection only.
+    local: &'a mpsc::UnboundedSender<ServerMessage>,
+    /// Whether tool events reach this connection.
+    verbose: &'a AtomicBool,
+    /// The workspace prefixes this connection watches.
+    watch_set: &'a tokio::sync::watch::Sender<WatchSet>,
+    /// Asks the forwarding task for a `turn_snapshot` frame.
+    resync: &'a mpsc::UnboundedSender<()>,
+}
+
 /// Dispatch a single client message. Returns `false` to break the read loop.
 #[expect(
     clippy::too_many_lines,
@@ -198,16 +211,33 @@ async fn answer_client_close(
 async fn handle_client_message(
     msg: ClientMessage,
     state: &GatewayState,
-    local_tx: &mpsc::UnboundedSender<ServerMessage>,
-    verbose: &AtomicBool,
-    watch_set: &tokio::sync::watch::Sender<WatchSet>,
+    channels: &ConnectionChannels<'_>,
 ) -> bool {
+    let ConnectionChannels {
+        local: local_tx,
+        verbose,
+        watch_set,
+        resync,
+    } = *channels;
     match msg {
         ClientMessage::SendMessage {
             id,
             content,
             images,
         } => {
+            // The id names the turn this message starts or joins in every
+            // frame about it, and an empty one reads as a message posted
+            // outside any turn. A client that sent none gets one made here.
+            let id = if id.is_empty() {
+                let generated = format!("ws-{}", uuid::Uuid::new_v4());
+                tracing::warn!(
+                    message_id = %generated,
+                    "client sent a message with an empty id; gave it one"
+                );
+                generated
+            } else {
+                id
+            };
             if !images.is_empty()
                 && let Err(reason) = validate_images(&images)
             {
@@ -222,7 +252,7 @@ async fn handle_client_message(
             }
 
             let origin = MessageOrigin {
-                endpoint: "ws".to_string(),
+                endpoint: WEB_UI_ENDPOINT.to_string(),
                 sender: None,
                 conversation: None,
                 agent_sender: None,
@@ -252,6 +282,9 @@ async fn handle_client_message(
         }
         ClientMessage::Ping => {
             local_tx.send(ServerMessage::Pong).ok();
+        }
+        ClientMessage::ResyncTurn => {
+            resync.send(()).ok();
         }
         ClientMessage::Reload => {
             tracing::info!("reload requested by client");
@@ -303,6 +336,12 @@ async fn handle_client_message(
                 tracing::warn!("failed to dispatch stop request: channel closed or full");
             }
         }
+        ClientMessage::SendQueuedNow { id } => {
+            send_queued_now(state, id, local_tx);
+        }
+        ClientMessage::WithdrawQueued { id } => {
+            withdraw_queued(state, id, local_tx).await;
+        }
         ClientMessage::SessionSendMessage {
             id,
             address,
@@ -334,6 +373,8 @@ async fn handle_client_message(
                     Ok(_filename) => {
                         tx.send(ServerMessage::Notice {
                             message: "Added a note to the inbox.".to_string(),
+                            reload: None,
+                            reload_of: None,
                         })
                         .ok();
                     }
@@ -400,6 +441,103 @@ fn replace_watch_set(
 
 /// Whether `msg` is only sent to clients that turned verbose mode on: tool
 /// call and result events, the main agent's and sessions' alike.
+/// Write one frame to the client. Returns `false` once the client is gone; a
+/// frame that can't be serialized is logged and skipped.
+async fn send_frame(
+    ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    msg: &ServerMessage,
+) -> bool {
+    let json = match serde_json::to_string(msg) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize server message");
+            return true;
+        }
+    };
+    ws_tx.send(WsMessage::text(json)).await.is_ok()
+}
+
+/// Send a waiting message now: it is held out of the running turn, which is
+/// stopped, so the message starts the next one. Whichever turn is running is
+/// stopped, since a message left waiting after its own turn ended waits for
+/// the turn now running. A message no longer waiting is answered to this
+/// connection only.
+fn send_queued_now(
+    state: &GatewayState,
+    id: String,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    if !state.queued.send_now(&id) {
+        tracing::info!(msg_id = %id, "send now asked for a message no longer waiting");
+        local_tx
+            .send(ServerMessage::QueuedMessageUnavailable { id })
+            .ok();
+        return;
+    }
+    tracing::info!(msg_id = %id, "sending a waiting message now: stopping the running turn");
+    if state
+        .stop_tx
+        .try_send(crate::gateway::types::StopRequest {
+            reply_to: None,
+            result_tx: None,
+        })
+        .is_err()
+    {
+        // The message still starts the next turn, ahead of anything else
+        // waiting; only the stop that would have brought that turn sooner is lost.
+        tracing::warn!(msg_id = %id, "failed to dispatch the stop for a message to send now: channel closed or full");
+    }
+}
+
+/// Take back a waiting message, so the agent never reads it. Every
+/// connection hears it was withdrawn; a message no longer waiting is answered
+/// to this connection only.
+async fn withdraw_queued(
+    state: &GatewayState,
+    id: String,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    if !state.queued.withdraw(&id) {
+        tracing::info!(msg_id = %id, "withdraw asked for a message no longer waiting");
+        local_tx
+            .send(ServerMessage::QueuedMessageUnavailable { id })
+            .ok();
+        return;
+    }
+    tracing::info!(msg_id = %id, "withdrew a waiting message");
+    if let Err(e) = state
+        .publisher
+        .publish(
+            crate::bus::topics::MainConversation,
+            crate::bus::MainConversationEvent::MessageWithdrawn { id: id.clone() },
+        )
+        .await
+    {
+        // It is withdrawn either way; only other pages keep showing it as
+        // waiting, until their next snapshot or reload.
+        tracing::warn!(error = %e, msg_id = %id, "failed to announce a withdrawn message");
+        local_tx.send(ServerMessage::MessageWithdrawn { id }).ok();
+    }
+}
+
+/// `msg` as a connection gets it: a connection that isn't verbose gets no
+/// tool frames, neither on their own nor inside a `turn_snapshot`.
+fn shown_frame(mut msg: ServerMessage, verbose: bool) -> Option<ServerMessage> {
+    if verbose {
+        return Some(msg);
+    }
+    if is_verbose_only(&msg) {
+        return None;
+    }
+    if let ServerMessage::TurnSnapshot {
+        turn: Some(turn), ..
+    } = &mut msg
+    {
+        turn.frames.retain(|entry| !is_verbose_only(&entry.frame));
+    }
+    Some(msg)
+}
+
 fn is_verbose_only(msg: &ServerMessage) -> bool {
     matches!(
         msg,
@@ -514,6 +652,7 @@ fn validate_images(images: &[ImageData]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
 
     #[test]
     fn set_verbose_updates_flag() {
@@ -710,6 +849,8 @@ mod tests {
             auto_mode: None,
         };
         let main_call = ServerMessage::ToolCall {
+            reply_to: "turn-1".into(),
+            call: 0,
             id: "tc".into(),
             name: "exec".into(),
             arguments: serde_json::json!({}),
@@ -740,7 +881,15 @@ mod tests {
     /// WebSocket stack. Mirrors the helper in `gateway/web/inbox.rs`'s own
     /// test module.
     fn make_test_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
-        let (core, _receivers) = crate::gateway::types::GatewayCore::new(
+        make_test_gateway_state_with_receivers(workspace_dir).0
+    }
+
+    /// [`make_test_gateway_state`], with the receivers the event loop would
+    /// read the state's channels from.
+    fn make_test_gateway_state_with_receivers(
+        workspace_dir: &std::path::Path,
+    ) -> (GatewayState, crate::gateway::types::CoreReceivers) {
+        let (core, receivers) = crate::gateway::types::GatewayCore::new(
             workspace_dir.to_path_buf(),
             workspace_dir.to_path_buf(),
         );
@@ -757,7 +906,9 @@ mod tests {
                 crate::agent::hop::HopLimits { soft: 8, hard: 32 },
             ));
 
-        GatewayState {
+        let state = GatewayState {
+            turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
+            queued: std::sync::Arc::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
@@ -790,16 +941,137 @@ mod tests {
                 tokio::sync::broadcast::channel(4).0,
                 crate::hub::agent_watch::AgentChangeFeed::new(),
             ),
+        };
+        (state, receivers)
+    }
+
+    async fn next_server_message(
+        local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
+    ) -> ServerMessage {
+        wait::next("a message to be sent", local_rx).await
+    }
+
+    /// Handle one client message on a connection with no watches, returning
+    /// what was sent back to that connection alone.
+    async fn handle_on_connection(
+        msg: ClientMessage,
+        state: &GatewayState,
+    ) -> mpsc::UnboundedReceiver<ServerMessage> {
+        let (local_tx, local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let keep_going = handle_client_message(
+            msg,
+            state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+        local_rx
+    }
+
+    #[tokio::test]
+    async fn withdrawing_a_waiting_message_tells_every_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let mut main: crate::bus::Subscriber<crate::bus::MainConversationEvent> = state
+            .bus_handle
+            .subscribe(crate::bus::topics::MainConversation)
+            .await
+            .unwrap();
+        state.queued.enqueue("m1");
+
+        let mut local =
+            handle_on_connection(ClientMessage::WithdrawQueued { id: "m1".into() }, &state).await;
+
+        let event = main.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&event, crate::bus::MainConversationEvent::MessageWithdrawn { id } if id == "m1"),
+            "expected the withdrawal on the main conversation, got {event:?}"
+        );
+        assert!(
+            local.try_recv().is_err(),
+            "nothing for this connection alone"
+        );
+        assert!(!state.queued.send_now("m1"), "it no longer waits");
+    }
+
+    #[tokio::test]
+    async fn acting_on_a_message_no_longer_waiting_says_so_to_that_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        for msg in [
+            ClientMessage::WithdrawQueued { id: "read".into() },
+            ClientMessage::SendQueuedNow { id: "read".into() },
+        ] {
+            let mut local = handle_on_connection(msg, &state).await;
+            let reply = next_server_message(&mut local).await;
+            assert!(
+                matches!(&reply, ServerMessage::QueuedMessageUnavailable { id } if id == "read"),
+                "expected QueuedMessageUnavailable, got {reply:?}"
+            );
         }
     }
 
-    async fn recv_with_timeout(
-        local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
-    ) -> ServerMessage {
-        tokio::time::timeout(std::time::Duration::from_millis(500), local_rx.recv())
+    #[tokio::test]
+    async fn sending_a_waiting_message_now_stops_whichever_turn_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, mut receivers) = make_test_gateway_state_with_receivers(dir.path());
+        state.queued.enqueue("m1");
+
+        let mut local =
+            handle_on_connection(ClientMessage::SendQueuedNow { id: "m1".into() }, &state).await;
+
+        let stop = receivers.stop.try_recv().expect("a stop request");
+        assert_eq!(stop.reply_to, None);
+        assert!(state.queued.is_send_now("m1"));
+        assert!(
+            local.try_recv().is_err(),
+            "nothing for this connection alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_without_an_id_is_given_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let mut inbound: crate::bus::Subscriber<crate::bus::MessageEvent> = state
+            .bus_handle
+            .subscribe(crate::bus::topics::UserMessage)
             .await
-            .expect("a message should have been sent")
-            .expect("channel should still be open")
+            .unwrap();
+        let (local_tx, _local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::SendMessage {
+                id: String::new(),
+                content: "hello".to_string(),
+                images: Vec::new(),
+            },
+            &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+
+        let event = inbound.recv().await.unwrap().unwrap();
+        assert!(
+            !event.id.is_empty(),
+            "an empty id would make the turn's reply look like a post outside any turn"
+        );
+        assert_eq!(event.content, "hello");
     }
 
     #[tokio::test]
@@ -816,16 +1088,19 @@ mod tests {
                 body: "remember this".to_string(),
             },
             &state,
-            &local_tx,
-            &verbose,
-            &watch_tx,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
         )
         .await;
         assert!(keep_going);
 
-        let msg = recv_with_timeout(&mut local_rx).await;
+        let msg = next_server_message(&mut local_rx).await;
         assert!(
-            matches!(&msg, ServerMessage::Notice { message } if message == "Added a note to the inbox."),
+            matches!(&msg, ServerMessage::Notice { message, .. } if message == "Added a note to the inbox."),
             "expected a plain-language Notice, got {msg:?}"
         );
     }
@@ -846,14 +1121,17 @@ mod tests {
                 body: "remember this".to_string(),
             },
             &state,
-            &local_tx,
-            &verbose,
-            &watch_tx,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
         )
         .await;
         assert!(keep_going);
 
-        let msg = recv_with_timeout(&mut local_rx).await;
+        let msg = next_server_message(&mut local_rx).await;
         assert!(
             matches!(
                 &msg,

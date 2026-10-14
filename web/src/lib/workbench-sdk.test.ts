@@ -166,65 +166,18 @@ describe("residuum.fetch lanes", () => {
   });
 });
 
-describe("residuum.fetch overload retries", () => {
-  it("retries the relay's overloaded 503 with backoff until it goes through", async () => {
+describe("residuum.fetch overload responses", () => {
+  it("returns a 503 as it is, without sending the request again", async () => {
     vi.useFakeTimers();
     const { sdk, requests } = loadSdk();
     const pending = sdk.fetch("/api/agents/atlas/status");
     await settle();
     lastRequest(requests).respond(503, "agent overloaded");
-    await settle();
-    expect(requests).toHaveLength(1);
-
-    await vi.advanceTimersByTimeAsync(600);
-    expect(requests).toHaveLength(2);
-    lastRequest(requests).respond(503, "agent overloaded\n");
-    await settle();
-    await vi.advanceTimersByTimeAsync(1200);
-    expect(requests).toHaveLength(3);
-    lastRequest(requests).respond(200, { mode: "running" });
-    expect((await pending).status).toBe(200);
-  });
-
-  it("gives up after three retries and returns the 503", async () => {
-    vi.useFakeTimers();
-    const { sdk, requests, console } = loadSdk();
-    const pending = sdk.fetch("/api/agents/atlas/status");
-    for (let attempt = 1; attempt <= 4; attempt += 1) {
-      await settle();
-      expect(requests).toHaveLength(attempt);
-      lastRequest(requests).respond(503, "agent overloaded");
-      await settle();
-      await vi.advanceTimersByTimeAsync(5000);
-    }
     const resp = await pending;
     expect(resp.status).toBe(503);
     expect(await resp.text()).toBe("agent overloaded");
-    expect(requests).toHaveLength(4);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("giving up"));
-  });
-
-  it("returns any other 503 at once", async () => {
-    vi.useFakeTimers();
-    const { sdk, requests } = loadSdk();
-    const pending = sdk.fetch("/api/hub/agents/atlas/start", { method: "POST" });
-    await settle();
-    lastRequest(requests).respond(503, { error: "Residuum is shutting down" });
-    expect((await pending).status).toBe(503);
     await vi.advanceTimersByTimeAsync(5000);
     expect(requests).toHaveLength(1);
-  });
-
-  it("holds the lane while it retries", async () => {
-    vi.useFakeTimers();
-    const { sdk, requests } = loadSdk();
-    for (let i = 0; i < 9; i += 1) void sdk.fetch(`/api/hub/status?n=${i}`);
-    await settle();
-    requests[0]?.respond(503, "agent overloaded");
-    await settle();
-    await vi.advanceTimersByTimeAsync(600);
-    expect(requests.map((r) => r.url).filter((u) => u.endsWith("n=8"))).toEqual([]);
-    expect(lastRequest(requests).url).toBe("/api/hub/status?n=0");
   });
 });
 

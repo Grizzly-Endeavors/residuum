@@ -1493,7 +1493,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn wait_until_clear_returns_once_the_entry_is_removed() {
         let registry = std::sync::Arc::new(SessionRegistry::new());
         let info = sample_info("spawned-researcher-0007d");
@@ -1507,17 +1507,19 @@ mod tests {
             waiter_registry.wait_until_clear(&address).await;
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::testing::clock::elapse(Duration::from_millis(20)).await;
         assert!(
             !waiter.is_finished(),
             "should still be waiting while the entry is live"
         );
 
         registry.remove(&info.address, &info.run_id);
-        tokio::time::timeout(Duration::from_secs(1), waiter)
-            .await
-            .expect("wait_until_clear should return once the entry is removed")
-            .unwrap();
+        crate::testing::wait::guarded(
+            "wait_until_clear to return once the entry is removed",
+            waiter,
+        )
+        .await
+        .unwrap();
     }
 
     fn sample_resume_point(run_id: &str) -> ResumePoint {

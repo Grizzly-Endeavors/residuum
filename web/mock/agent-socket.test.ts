@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseClientMessage } from "./agent-socket";
 import {
+  advanceMockTime,
   startMockServer,
   type Frame,
   type MockServerHarness,
@@ -13,6 +14,7 @@ describe("parseClientMessage", () => {
     [{ type: "set_verbose", enabled: true }],
     [{ type: "ping" }],
     [{ type: "reload" }],
+    [{ type: "resync_turn" }],
     [{ type: "server_command", name: "context", args: null }],
     [{ type: "inbox_add", body: "remember" }],
     [{ type: "cancel", reply_to: "m1" }],
@@ -131,6 +133,8 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("notice", 3000)).toEqual({
         type: "notice",
         message: "Configuration reloaded successfully.",
+        reload: "reloaded",
+        reload_of: "agent_config",
       });
     });
 
@@ -170,12 +174,101 @@ describe("agent socket", () => {
       expect(bare).toBeDefined();
     });
 
+    it("answers resync_turn with the turn in flight so far, its reply still streaming", async () => {
+      harness.hub.env.holdTurns("reply");
+      socket.send({ type: "set_verbose", enabled: true });
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.next((f) => f.type === "text_delta" && f.call === 2);
+
+      const late = await harness.openSocket("/api/agents/atlas/ws");
+      late.send({ type: "set_verbose", enabled: true });
+      late.send({ type: "resync_turn" });
+      const snapshot = await late.nextOfType("turn_snapshot");
+      const turn = snapshot.turn as { reply_to: string; frames: { frame: Frame }[] };
+      expect(turn.reply_to).toBe("m1");
+      const frames = turn.frames.map((entry) => entry.frame);
+      expect(frames.slice(0, 2).map((f) => f.type)).toEqual(["user_message", "turn_started"]);
+      expect(frames.map((f) => f.type)).toContain("tool_call");
+      const reply = frames.filter((f) => f.type === "text_delta" && f.call === 2);
+      expect(reply).toHaveLength(1);
+      expect(reply[0]?.text).not.toBe("");
+    });
+
+    it("leaves tool frames out of a snapshot for a page that isn't verbose", async () => {
+      harness.hub.env.holdTurns("end");
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("broadcast_response");
+      socket.send({ type: "resync_turn" });
+      const snapshot = await socket.nextOfType("turn_snapshot");
+      const turn = snapshot.turn as { frames: { frame: Frame }[] };
+      const types = turn.frames.map((entry) => entry.frame.type);
+      expect(types).toContain("broadcast_response");
+      expect(types).not.toContain("tool_call");
+    });
+
+    it("answers resync_turn with no turn when none runs", async () => {
+      socket.send({ type: "resync_turn" });
+      expect(await socket.nextOfType("turn_snapshot")).toEqual({
+        type: "turn_snapshot",
+        turn: null,
+        queued: [],
+      });
+    });
+
+    it("keeps a message sent while a turn runs waiting, and starts its turn once that one ends", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "and another" });
+      expect(await socket.nextOfType("message_queued")).toEqual({
+        type: "message_queued",
+        message: { id: "m2", content: "and another", endpoint: "ws" },
+      });
+      socket.send({ type: "resync_turn" });
+      const snapshot = await socket.nextOfType("turn_snapshot");
+      expect(snapshot.queued).toEqual([{ id: "m2", content: "and another", endpoint: "ws" }]);
+
+      socket.send({ type: "cancel", reply_to: "m1" });
+      await socket.nextOfType("turn_ended");
+      expect(await socket.nextOfType("turn_started")).toMatchObject({ reply_to: "m2" });
+    });
+
+    it("sends a waiting message now by stopping the turn in flight", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "first" });
+      socket.send({ type: "send_message", id: "m3", content: "second" });
+      await socket.nextOfType("message_queued");
+      await socket.nextOfType("message_queued");
+
+      socket.send({ type: "send_queued_now", id: "m3" });
+      expect(await socket.nextOfType("turn_ended")).toEqual({ type: "turn_ended", reply_to: "m1" });
+      expect(await socket.nextOfType("turn_started")).toMatchObject({ reply_to: "m3" });
+    });
+
+    it("takes back a waiting message, and says when one no longer waits", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "never mind" });
+      await socket.nextOfType("message_queued");
+
+      socket.send({ type: "withdraw_queued", id: "m2" });
+      expect(await socket.nextOfType("message_withdrawn")).toEqual({
+        type: "message_withdrawn",
+        id: "m2",
+      });
+      socket.send({ type: "withdraw_queued", id: "m2" });
+      expect(await socket.nextOfType("queued_message_unavailable")).toEqual({
+        type: "queued_message_unavailable",
+        id: "m2",
+      });
+    });
+
     it("stops a turn when asked to cancel it", async () => {
       socket.send({ type: "send_message", id: "m1", content: "a long one" });
       await socket.nextOfType("turn_started");
       socket.send({ type: "cancel", reply_to: "m1" });
       expect(await socket.nextOfType("turn_ended")).toEqual({ type: "turn_ended", reply_to: "m1" });
-      const rest = await socket.quietFrames(1800);
+      const rest = await socket.quietFrames(() => advanceMockTime(harness.hub.env, 1800));
       expect(rest.map((f) => f.type)).not.toContain("response");
       expect(harness.hub.agents.get("atlas")?.busySince).toBeNull();
     });
@@ -244,9 +337,15 @@ describe("agent socket", () => {
       await verbose.nextOfType("turn_ended");
       await socket.nextOfType("turn_ended");
 
-      const types = (frames: Frame[]): string[] => frames.map((f) => String(f.type));
+      // Not the pieces the model's text and reasoning stream in as.
+      const types = (frames: Frame[]): string[] =>
+        frames
+          .map((f) => String(f.type))
+          .filter((type) => type !== "text_delta" && type !== "thinking_delta");
       expect(types(socket.frames)).toEqual([
+        "user_message",
         "turn_started",
+        "thinking",
         "broadcast_response",
         "turn_usage",
         "turn_usage",
@@ -255,7 +354,9 @@ describe("agent socket", () => {
       ]);
       expect(types(verbose.frames)).toEqual([
         "pong",
+        "user_message",
         "turn_started",
+        "thinking",
         "broadcast_response",
         "tool_call",
         "tool_result",

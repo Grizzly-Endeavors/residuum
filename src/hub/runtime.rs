@@ -10,11 +10,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use axum::http::request::Parts;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use crate::config::{Config, HubConfig};
+use crate::gateway::browser_landing::{self, Landing};
 use crate::gateway::last_known_good;
 use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSignal};
 use crate::inference::EmbeddingProvider;
@@ -31,7 +33,7 @@ use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
 use super::team_events::{TeamEventLog, TeamEventRecorder, record_hub_started};
-use super::types::{HubEvent, NoticeLevel};
+use super::types::{HubEvent, HubNoticeKind, NoticeLevel};
 
 /// How often the hub checks for a newer version.
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(6);
@@ -130,14 +132,14 @@ fn build_team_embedding(source: &EmbeddingSource) -> Option<Arc<dyn EmbeddingPro
     }
 }
 
-/// Bind the HTTP server and serve `app` on it.
+/// Bind the gateway's address from its config. The hub serves on the bound
+/// listener, so binding happens before the hub's other services start.
 ///
 /// # Errors
 /// Returns `FatalError::Gateway` if the address cannot be bound.
-async fn spawn_http_server(
+async fn bind_gateway(
     gateway: &crate::config::GatewayConfig,
-    app: axum::Router,
-) -> Result<HttpServer, FatalError> {
+) -> Result<tokio::net::TcpListener, FatalError> {
     let addr = gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -149,6 +151,11 @@ async fn spawn_http_server(
             "web UI is exposed on a non-loopback address with no authentication"
         );
     }
+    Ok(listener)
+}
+
+/// Serve `app` on the gateway's bound `listener`.
+fn spawn_http_server(listener: tokio::net::TcpListener, app: axum::Router) -> HttpServer {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let handle = crate::util::spawn_in_span(async move {
         if let Err(e) = axum::serve(listener, app)
@@ -160,78 +167,230 @@ async fn spawn_http_server(
             tracing::error!(error = %e, "gateway server error");
         }
     });
-    Ok(HttpServer {
-        handle,
-        shutdown_tx,
-    })
-}
-
-/// The handles a relay tunnel is started with.
-struct TunnelInputs<'a> {
-    workbench_port: Option<u16>,
-    status_tx: &'a Arc<watch::Sender<TunnelStatus>>,
-    relay_agents: &'a RelayAgents,
-    teams_ports: watch::Receiver<std::collections::BTreeMap<String, u16>>,
-}
-
-/// Start the relay tunnel for `cloud`. The tunnel forwards A2A requests to the
-/// hub's A2A listener when it is enabled, and keeps the relay's agent list
-/// current from `relay_agents`.
-fn spawn_tunnel(
-    hub: &HubConfig,
-    cloud: &crate::config::CloudConfig,
-    inputs: &TunnelInputs<'_>,
-) -> TunnelTask {
-    let cloud = cloud.clone();
-    let workbench_port = inputs.workbench_port;
-    let a2a_port = hub.a2a.enabled.then_some(hub.a2a.port);
-    let agents_rx = inputs.relay_agents.subscribe();
-    let teams_ports = inputs.teams_ports.clone();
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let status_tx = Arc::clone(inputs.status_tx);
-    let handle = crate::util::spawn_monitored("tunnel", async move {
-        crate::tunnel::start_tunnel(
-            cloud,
-            workbench_port,
-            a2a_port,
-            teams_ports,
-            agents_rx,
-            shutdown_rx,
-            status_tx,
-        )
-        .await;
-    });
-    TunnelTask {
+    HttpServer {
         handle,
         shutdown_tx,
     }
 }
 
+/// What the secure tunnel serves and reports through, kept for the hub's
+/// lifetime and handed to each tunnel task.
+#[derive(Clone)]
+struct RemoteWiring {
+    /// The main gateway router, served in-process for the UI host.
+    ui_router: axum::Router,
+    /// The workbench router, served in-process for the workbench host.
+    workbench_router: axum::Router,
+    pairing: crate::pairing::DevicePairing,
+    slot: crate::remote_access::slot::RemoteAccessSlot,
+    /// Delivers a warning to the user as a hub notice.
+    notify: crate::remote_access::manager::Notifier,
+}
+
+impl RemoteWiring {
+    fn new(
+        app: &axum::Router,
+        workbench_router: Option<axum::Router>,
+        services: &HubServices,
+        host: &Arc<AgentHost>,
+    ) -> Self {
+        let notices = Arc::clone(host);
+        Self {
+            ui_router: app.clone(),
+            workbench_router: workbench_router
+                .unwrap_or_else(|| workbench_unavailable_router(services.pairing.clone())),
+            pairing: services.pairing.clone(),
+            slot: services.remote_access.clone(),
+            notify: Arc::new(move |message| notices.notice(NoticeLevel::Warn, message, None)),
+        }
+    }
+}
+
+/// Stands in for the workbench router when its listener couldn't start.
+fn workbench_unavailable_router(pairing: crate::pairing::DevicePairing) -> axum::Router {
+    axum::Router::new().fallback(move |request: Parts| {
+        let ui_origin = pairing.origin_of(crate::pairing::Surface::Ui);
+        std::future::ready(workbench_unavailable(&request, ui_origin))
+    })
+}
+
+/// A tab goes to the Workbench in the app, which shows why artifacts aren't
+/// available; anything else is told here.
+fn workbench_unavailable(request: &Parts, ui_origin: Option<String>) -> axum::response::Response {
+    if let Some(origin) = &ui_origin
+        && browser_landing::is_top_level_navigation(&request.method, &request.headers)
+    {
+        return browser_landing::redirect_to_app_origin(origin, "/team/workbench");
+    }
+    let link = ui_origin.map(|origin| format!("{origin}/team/workbench"));
+    browser_landing::page_or_text(
+        &request.method,
+        &request.headers,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        &Landing::new(
+            "Workbench unavailable",
+            "Workbench artifacts aren't available on this Residuum instance right now. Check Residuum's logs for why its artifacts listener couldn't start.",
+        )
+        .with_app_link(link.as_deref(), "Open the Workbench"),
+    )
+}
+
+/// The handles a relay tunnel is started with.
+struct TunnelInputs<'a> {
+    remote: &'a RemoteWiring,
+    status_tx: &'a Arc<watch::Sender<TunnelStatus>>,
+    relay_agents: &'a RelayAgents,
+    teams_ports: watch::Receiver<std::collections::BTreeMap<String, u16>>,
+}
+
+/// Start the relay tunnel for `cloud`, which keeps the relay's agent list
+/// current from `relay_agents`. `None` when the secure tunnel's manager can't
+/// be built (logged, and reported through the remote access status).
+fn spawn_tunnel(
+    hub: &HubConfig,
+    cloud: &crate::config::CloudConfig,
+    inputs: &TunnelInputs<'_>,
+) -> Option<TunnelTask> {
+    let cloud = cloud.clone();
+    let a2a_port = hub.a2a.enabled.then_some(hub.a2a.port);
+    let agents_rx = inputs.relay_agents.subscribe();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let status_tx = Arc::clone(inputs.status_tx);
+    let remote = start_remote_access(hub, &cloud, a2a_port, inputs)?;
+    let handle = crate::util::spawn_monitored("tunnel", async move {
+        crate::tunnel::start_tunnel(cloud, agents_rx, shutdown_rx, status_tx, remote).await;
+    });
+    Some(TunnelTask {
+        handle,
+        shutdown_tx,
+    })
+}
+
+/// Start the tunnel the hub config asks for at startup, if it asks for one.
+fn spawn_initial_tunnel(hub: &HubConfig, inputs: &TunnelInputs<'_>) -> Option<TunnelTask> {
+    hub.cloud
+        .as_ref()
+        .and_then(|cloud| spawn_tunnel(hub, cloud, inputs))
+}
+
+/// Build the secure tunnel's manager for `cloud`, install it where the HTTP
+/// API finds it, and return it as the tunnel's session handler. `None` when it
+/// can't be built (logged), which leaves remote access down.
+fn start_remote_access(
+    hub: &HubConfig,
+    cloud: &crate::config::CloudConfig,
+    a2a_port: Option<u16>,
+    inputs: &TunnelInputs<'_>,
+) -> Option<Arc<dyn crate::tunnel::v2::SessionHandler>> {
+    use crate::remote_access::status::RemoteAccessState;
+    let wiring = inputs.remote;
+    let built = crate::remote_access::manager::RemoteAccess::new(
+        crate::remote_access::manager::RemoteAccessInputs {
+            settings: cloud.remote.clone(),
+            hub_dir: hub.config_dir.clone(),
+            routers: crate::remote_access::engine::EngineRouters {
+                ui: wiring.ui_router.clone(),
+                workbench: wiring.workbench_router.clone(),
+            },
+            a2a_port,
+            teams_ports: inputs.teams_ports.clone(),
+            pairing: wiring.pairing.clone(),
+            tunnel_status: Arc::clone(inputs.status_tx),
+            status: wiring.slot.status_sender(),
+            relay_origin: crate::tunnel::v2::web_origin(&cloud.relay_url),
+            notify: Arc::clone(&wiring.notify),
+            siblings: wiring.slot.sibling_keys(),
+            discovery: wiring.slot.discovery_sender(),
+            sibling_channel: None,
+        },
+    );
+    match built {
+        Ok(remote) => {
+            remote.start_background();
+            wiring.slot.install(remote.clone());
+            Some(Arc::new(remote))
+        }
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), "couldn't start the secure tunnel; Residuum Cloud is not connected");
+            wiring.slot.clear(
+                RemoteAccessState::Error,
+                "Residuum couldn't start the secure tunnel, so Residuum Cloud is not connected. Check Residuum's logs.",
+            );
+            None
+        }
+    }
+}
+
+/// Bind the A2A listener's address from its config, when A2A is enabled. A
+/// bind that fails is logged and left to the listener, which tries again when
+/// it starts.
+async fn bind_a2a(hub: &HubConfig) -> Option<tokio::net::TcpListener> {
+    if !hub.a2a.enabled {
+        return None;
+    }
+    let addr = format!("{}:{}", hub.gateway.bind, hub.a2a.port);
+    match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            tracing::warn!(addr = %addr, error = %e, "a2a interface couldn't bind; it will try again when it starts");
+            None
+        }
+    }
+}
+
 /// Start the hub's A2A listener over `host`, serving every agent under
-/// `/agents/{name}/`.
+/// `/agents/{name}/`. It serves on `bound` when the caller bound it.
 fn spawn_a2a_listener(
     hub: &HubConfig,
     host: &Arc<AgentHost>,
     services: &HubServices,
+    bound: Option<tokio::net::TcpListener>,
 ) -> A2aListenerTask {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let listener = crate::a2a::A2aListener::new(
+    // Nothing the relay says names a caller: siblings present the keys they
+    // were issued when they joined.
+    let mut listener = crate::a2a::A2aListener::new(
         hub.gateway.bind.clone(),
         hub.a2a.port,
         Arc::clone(host) as Arc<dyn AgentDirectory>,
         Arc::clone(&services.a2a_keys),
-        Arc::new(|| Some(Arc::<str>::from(crate::tunnel::tunnel_nonce()))),
         shutdown_rx,
-    );
+    )
+    .with_sibling_keys(services.remote_access.sibling_keys());
+    if let Some(bound) = bound {
+        listener = listener.with_bound_listener(bound);
+    }
+    let host = Arc::clone(host);
+    let port = hub.a2a.port;
     let handle = crate::util::spawn_monitored("a2a", async move {
         if let Err(e) = listener.start().await {
-            tracing::error!(error = %e, "a2a interface failed");
+            tracing::error!(error = %e, port, "a2a interface failed");
+            host.notice(NoticeLevel::Warn, a2a_failure_message(port, &e), None);
         }
     });
     A2aListenerTask {
         handle,
         shutdown_tx,
     }
+}
+
+/// The user's notice for an A2A listener that could not serve on `port`. The
+/// reason comes from the io error under `error`, put in plain words.
+fn a2a_failure_message(port: u16, error: &anyhow::Error) -> String {
+    let reason = match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map(std::io::Error::kind)
+    {
+        Some(std::io::ErrorKind::AddrInUse) => {
+            "the port is already in use. Choose another port in settings or stop the program using it."
+        }
+        Some(std::io::ErrorKind::PermissionDenied) => {
+            "the system doesn't allow residuum to use that port. Choose another port in settings."
+        }
+        _ => "something went wrong while starting it. Check the logs for details.",
+    };
+    format!("The agent-to-agent listener couldn't start on port {port}: {reason}")
 }
 
 /// Stop a task by its switch and wait up to five seconds for it to finish.
@@ -287,6 +446,7 @@ impl TeamTracking {
             hub_events: host.subscribe(),
             changes: host.agent_changes().subscribe(),
             notice: Box::new(move |message| notices.notice(NoticeLevel::Warn, message, None)),
+            decisions: None,
         });
         Self {
             events,
@@ -314,6 +474,7 @@ struct HubRuntime {
     setup_done_rx: Option<watch::Receiver<bool>>,
     tunnel: Option<TunnelTask>,
     tunnel_status_tx: Arc<watch::Sender<TunnelStatus>>,
+    remote_wiring: RemoteWiring,
     relay_agents: RelayAgents,
     a2a: Option<A2aListenerTask>,
     workbench_shutdown_tx: Option<watch::Sender<bool>>,
@@ -331,6 +492,8 @@ impl HubRuntime {
         root: &Path,
         hub_cfg: HubConfig,
         fallback_problem: Option<String>,
+        gateway: tokio::net::TcpListener,
+        a2a_listener: Option<tokio::net::TcpListener>,
     ) -> Result<Self, FatalError> {
         let hub_dir = hub_cfg.config_dir.clone();
         let (restart_tx, restart_rx) = mpsc::channel::<()>(1);
@@ -338,9 +501,12 @@ impl HubRuntime {
         let (tunnel_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
         let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
+        let pairing = crate::pairing::DevicePairing::open(&hub_dir);
+        pairing.track_identity(tunnel_status_rx.clone());
+
         let scan = scan_agents(root, &hub_cfg);
-        let (workbench_serving, workbench_shutdown_tx, workbench_api) =
-            start_workbench_listener(root, &hub_cfg, &scan.teams_ports).await;
+        let (workbench_serving, workbench_shutdown_tx, workbench_api, workbench_router) =
+            start_workbench_listener(root, &hub_cfg, &scan.teams_ports, &pairing).await;
         let services = HubServices::open(
             root,
             &hub_cfg,
@@ -351,6 +517,7 @@ impl HubRuntime {
                 shutdown_tx,
             },
             workbench_serving,
+            pairing,
             scan.team_embedding.as_ref().and_then(build_team_embedding),
         )
         .await?;
@@ -379,27 +546,25 @@ impl HubRuntime {
             setup_done,
         )?;
         workbench_api.bind(app.clone());
-        let server = spawn_http_server(&hub_cfg.gateway, app.clone()).await?;
+        let remote_wiring = RemoteWiring::new(&app, workbench_router, &services, &host);
+        let server = spawn_http_server(gateway, app.clone());
         let a2a = hub_cfg
             .a2a
             .enabled
-            .then(|| spawn_a2a_listener(&hub_cfg, &host, &services));
+            .then(|| spawn_a2a_listener(&hub_cfg, &host, &services, a2a_listener));
         let relay_agents = RelayAgents::spawn(
             Arc::clone(&host) as Arc<dyn AgentDirectory>,
             hub_cfg.a2a.enabled,
         );
-        let tunnel = hub_cfg.cloud.as_ref().map(|cloud| {
-            spawn_tunnel(
-                &hub_cfg,
-                cloud,
-                &TunnelInputs {
-                    workbench_port: services.workbench_serving.port(),
-                    status_tx: &tunnel_status_tx,
-                    relay_agents: &relay_agents,
-                    teams_ports: host.subscribe_teams_ports(),
-                },
-            )
-        });
+        let tunnel = spawn_initial_tunnel(
+            &hub_cfg,
+            &TunnelInputs {
+                remote: &remote_wiring,
+                status_tx: &tunnel_status_tx,
+                relay_agents: &relay_agents,
+                teams_ports: host.subscribe_teams_ports(),
+            },
+        );
         let watcher = crate::gateway::watcher::spawn_hub_config_watcher(
             hub_dir.join("config.toml"),
             reload_tx,
@@ -431,6 +596,7 @@ impl HubRuntime {
             setup_done_rx,
             tunnel,
             tunnel_status_tx,
+            remote_wiring,
             relay_agents,
             a2a,
             workbench_shutdown_tx,
@@ -530,17 +696,19 @@ impl HubRuntime {
             .await;
         self.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
         if let Some(cloud) = &self.hub_cfg.cloud {
-            self.tunnel = Some(spawn_tunnel(
+            self.tunnel = spawn_tunnel(
                 &self.hub_cfg,
                 cloud,
                 &TunnelInputs {
-                    workbench_port: self.services.workbench_serving.port(),
+                    remote: &self.remote_wiring,
                     status_tx: &self.tunnel_status_tx,
                     relay_agents: &self.relay_agents,
                     teams_ports: self.host.subscribe_teams_ports(),
                 },
-            ));
-            tracing::info!("tunnel respawned after unexpected exit");
+            );
+            if self.tunnel.is_some() {
+                tracing::info!("tunnel respawned after unexpected exit");
+            }
         } else {
             self.tunnel = None;
         }
@@ -605,13 +773,12 @@ impl HubRuntime {
             Ok(hub) => hub,
             Err(err) => {
                 tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
-                let message =
-                    format!("hub config reload failed (keeping current hub config): {err}");
-                self.host.notice(NoticeLevel::Warn, message.clone(), None);
                 self.host.publish(HubEvent::HubConfigReloaded {
                     ok: false,
                     changed: false,
-                    message: Some(message),
+                    message: Some(format!(
+                        "hub config reload failed (keeping current hub config): {err}"
+                    )),
                 });
                 return;
             }
@@ -667,10 +834,10 @@ impl HubRuntime {
         }
         if old.background.max_concurrent != new_hub.background.max_concurrent {
             changed.push("background limits");
-            self.host.notice(
+            self.host.notice_of_kind(
                 NoticeLevel::Info,
+                HubNoticeKind::BackgroundLimitAfterRestart,
                 "background.max_concurrent changed in hub/config.toml — this takes effect on the next restart, not immediately.".to_string(),
-                None,
             );
         } else if old.background != new_hub.background {
             changed.push("background limits");
@@ -680,36 +847,35 @@ impl HubRuntime {
         last_known_good::hub::save(&self.hub_dir);
         let summary = changed.join(", ");
         tracing::info!(changes = %summary, "hub configuration reloaded successfully");
-        let message = format!("hub configuration reloaded: {summary}");
-        self.host.notice(NoticeLevel::Info, message.clone(), None);
         self.host.publish(HubEvent::HubConfigReloaded {
             ok: true,
             changed: true,
-            message: Some(message),
+            message: Some(format!("hub configuration reloaded: {summary}")),
         });
     }
 
     /// Serve the hub's HTTP app on the new address, then retire the old
     /// server. A bind failure keeps the current server and tells the user.
     async fn rebind_http(&mut self, new_hub: &HubConfig) {
-        match spawn_http_server(&new_hub.gateway, self.app.clone()).await {
-            Ok(server) => {
-                let old = std::mem::replace(&mut self.server, server);
-                old.shutdown_tx.send(true).ok();
-                tracing::info!(addr = %new_hub.gateway.addr(), "gateway rebound to new address");
-            }
+        let listener = match bind_gateway(&new_hub.gateway).await {
+            Ok(listener) => listener,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to bind to the new gateway address, keeping the current server");
-                self.host.notice(
+                self.host.notice_of_kind(
                     NoticeLevel::Warn,
+                    HubNoticeKind::GatewayRebindFailed,
                     format!(
                         "gateway rebind failed ({}): {e} — keeping the current server",
                         new_hub.gateway.addr()
                     ),
-                    None,
                 );
+                return;
             }
-        }
+        };
+        let server = spawn_http_server(listener, self.app.clone());
+        let old = std::mem::replace(&mut self.server, server);
+        old.shutdown_tx.send(true).ok();
+        tracing::info!(addr = %new_hub.gateway.addr(), "gateway rebound to new address");
     }
 
     /// Push a changed `[tracing]` section into the tracing service and the
@@ -734,18 +900,24 @@ impl HubRuntime {
         }
         self.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
         if let Some(cloud) = &new_hub.cloud {
-            self.tunnel = Some(spawn_tunnel(
+            self.tunnel = spawn_tunnel(
                 new_hub,
                 cloud,
                 &TunnelInputs {
-                    workbench_port: self.services.workbench_serving.port(),
+                    remote: &self.remote_wiring,
                     status_tx: &self.tunnel_status_tx,
                     relay_agents: &self.relay_agents,
                     teams_ports: self.host.subscribe_teams_ports(),
                 },
-            ));
-            tracing::info!("tunnel restarted with new config");
+            );
+            if self.tunnel.is_some() {
+                tracing::info!("tunnel restarted with new config");
+            }
         } else {
+            self.remote_wiring.slot.clear(
+                crate::remote_access::status::RemoteAccessState::Disabled,
+                "Residuum Cloud isn't set up on this install.",
+            );
             tracing::info!("cloud tunnel removed from config");
         }
     }
@@ -756,7 +928,12 @@ impl HubRuntime {
             stop_task("a2a", &a2a.shutdown_tx, a2a.handle).await;
         }
         if new_hub.a2a.enabled {
-            self.a2a = Some(spawn_a2a_listener(new_hub, &self.host, &self.services));
+            self.a2a = Some(spawn_a2a_listener(
+                new_hub,
+                &self.host,
+                &self.services,
+                None,
+            ));
             tracing::info!("a2a listener restarted with new config");
         } else {
             tracing::info!("a2a listener removed from config");
@@ -823,6 +1000,8 @@ pub(super) fn build_app(
         overview: Arc::clone(overview),
         agent_changes: Arc::clone(host.agent_changes()),
         system_one: Arc::clone(&services.system_one),
+        pairing: services.pairing.clone(),
+        remote_access: services.remote_access.clone(),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
@@ -854,10 +1033,12 @@ async fn start_workbench_listener(
     root: &Path,
     hub: &HubConfig,
     teams_ports: &[u16],
+    pairing: &crate::pairing::DevicePairing,
 ) -> (
     crate::workbench::server::WorkbenchServing,
     Option<watch::Sender<bool>>,
     HubApi,
+    Option<axum::Router>,
 ) {
     let mut reserved = vec![
         crate::config::DEFAULT_TEAMS_PORT,
@@ -868,15 +1049,16 @@ async fn start_workbench_listener(
     let workbench_dir =
         crate::config::paths::TeamPaths::new(crate::config::paths::team_dir(root)).workbench_dir();
     let api = HubApi::new();
-    let (serving, shutdown_tx) = crate::workbench::server::start(
+    let (serving, shutdown_tx, router) = crate::workbench::server::start(
         &hub.gateway.bind,
         hub.gateway.port,
         &reserved,
         workbench_dir,
         api.clone(),
+        pairing.clone(),
     )
     .await;
-    (serving, shutdown_tx, api)
+    (serving, shutdown_tx, api, router)
 }
 
 /// Report what the hub itself found wrong while starting: a fallback to its
@@ -928,7 +1110,9 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
     let hub_dir = crate::config::paths::hub_dir(root);
     let (hub_cfg, fallback_problem) = load_hub_with_fallback(&hub_dir)?;
-    let runtime = HubRuntime::start(root, hub_cfg, fallback_problem).await?;
+    let gateway = bind_gateway(&hub_cfg.gateway).await?;
+    let a2a_listener = bind_a2a(&hub_cfg).await;
+    let runtime = HubRuntime::start(root, hub_cfg, fallback_problem, gateway, a2a_listener).await?;
     Ok(Box::pin(runtime.run(true)).await)
 }
 
@@ -943,7 +1127,8 @@ mod tests {
         ok: bool,
         changed: bool,
         message: Option<String>,
-        /// The notices sent before the `hub_config_reloaded` frame.
+        /// The notices sent before the `hub_config_reloaded` frame. The frame
+        /// is the reload's report, so a notice here came from something else.
         notices: Vec<String>,
     }
 
@@ -974,10 +1159,9 @@ mod tests {
     ) -> serde_json::Value {
         use futures_util::StreamExt as _;
 
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
+        let message = crate::testing::wait::guarded("a hub socket frame", socket.next())
             .await
             .expect("a frame arrives")
-            .unwrap()
             .unwrap();
         serde_json::from_str(&message.into_text().unwrap()).unwrap()
     }
@@ -1008,21 +1192,21 @@ mod tests {
             )
             .unwrap();
             let model = MockServer::start().await;
-            mount_reply(&model, "hello", Duration::ZERO).await;
+            mount_reply(&model, "hello").await;
             for name in names {
                 write_agent(root.path(), name, &model.uri());
             }
             let hub_config = HubConfig::load_at(&hub_dir).unwrap();
-            // The gateway and A2A listeners bind these exact ports inside
-            // `HubRuntime::start`; drop the reservations right before so no
-            // other test process can take them in the gap, while leaving the
-            // ports free for `HubRuntime::start` itself to bind.
-            drop(gateway_reservation);
-            drop(a2a_reservation);
+            // The hub serves on the sockets the reservations hold, so no other
+            // process can take either port before the hub starts.
+            let gateway = gateway_reservation.into_tokio_listener();
+            let a2a = a2a_reservation.into_tokio_listener();
             let runtime = HubRuntime::start(
                 root.path(),
                 hub_config,
                 fallback_problem.map(str::to_string),
+                gateway,
+                Some(a2a),
             )
             .await
             .unwrap();
@@ -1052,14 +1236,25 @@ mod tests {
         }
 
         async fn eventually_status(&self, port: u16, path: &str, expected: Option<u16>) {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-            while self.status_of(port, path).await != expected {
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "timed out waiting for {path} on port {port} to answer {expected:?}"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            crate::testing::wait::until(
+                format!("{path} on port {port} to answer {expected:?}"),
+                || async { (self.status_of(port, path).await == expected).then_some(()) },
+            )
+            .await;
+        }
+
+        /// The boot id of whatever hub answers on `port`, if one does.
+        async fn boot_id_on(&self, port: u16) -> Option<String> {
+            let page: serde_json::Value = self
+                .http
+                .get(format!("http://127.0.0.1:{port}/api/hub/events?limit=1"))
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()?;
+            page.pointer("/boot_id")?.as_str().map(str::to_string)
         }
 
         /// The hub's team event log over HTTP: its boot id and every entry,
@@ -1085,21 +1280,13 @@ mod tests {
         /// Wait until the team event log holds an entry of `kind` about
         /// `agent`, and return it.
         async fn team_event(&self, kind: &str, agent: &str) -> serde_json::Value {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-            loop {
+            crate::testing::wait::until(format!("a {kind} entry about {agent}"), || async {
                 let (_boot, events) = self.team_events().await;
-                if let Some(found) = events
+                events
                     .into_iter()
                     .find(|event| at(event, "/kind") == kind && at(event, "/agent") == agent)
-                {
-                    return found;
-                }
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "timed out waiting for a {kind} entry about {agent}"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            })
+            .await
         }
 
         fn hub_config_path(&self) -> std::path::PathBuf {
@@ -1109,7 +1296,7 @@ mod tests {
         /// Wait for the hub to announce a finished config reload, and return
         /// its frame with the notices that came before it.
         async fn next_reload(&mut self) -> Reload {
-            tokio::time::timeout(Duration::from_secs(20), async {
+            crate::testing::wait::guarded("the hub to announce the reload", async {
                 let mut notices = Vec::new();
                 loop {
                     match self.events.recv().await.unwrap() {
@@ -1136,7 +1323,6 @@ mod tests {
                 }
             })
             .await
-            .expect("the hub announces the reload")
         }
 
         async fn shut_down(self) {
@@ -1150,10 +1336,12 @@ mod tests {
                 .await
                 .unwrap();
             assert!(response.status().is_success());
-            let exit = tokio::time::timeout(Duration::from_secs(60), self.exit)
-                .await
-                .expect("the hub stops after a shutdown request")
-                .unwrap();
+            let exit = crate::testing::wait::guarded(
+                "the hub to stop after a shutdown request",
+                self.exit,
+            )
+            .await
+            .unwrap();
             assert!(matches!(exit, GatewayExit::Shutdown));
         }
     }
@@ -1278,8 +1466,8 @@ mod tests {
         let hub = RunningHub::start().await;
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
-        let new_port_reservation = reserve_port();
-        let new_port = new_port_reservation.port();
+        let (boot_id, _) = hub.team_events().await;
+        let new_port = crate::util::test_ports::unprobed_port_after(hub.gateway_port);
 
         std::fs::write(
             hub.hub_config_path(),
@@ -1289,19 +1477,103 @@ mod tests {
             ),
         )
         .unwrap();
-        // The config watcher picks this up and rebinds the gateway on
-        // `new_port` asynchronously; drop the reservation now, as close to
-        // that rebind as this test can get.
-        drop(new_port_reservation);
 
         hub.eventually_status(new_port, "/api/agents/scout/status", Some(200))
             .await;
         hub.eventually_status(new_port, "/api/agents/atlas/status", Some(200))
             .await;
-        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", None)
-            .await;
+        // Another test process may bind the old port once this hub lets go of
+        // it, so the check is that this hub no longer answers there, not that
+        // nothing does.
+        crate::testing::wait::until(
+            format!("this hub to stop answering on port {}", hub.gateway_port),
+            || async {
+                (hub.boot_id_on(hub.gateway_port).await.as_ref() != Some(&boot_id)).then_some(())
+            },
+        )
+        .await;
         let mut hub = hub;
         hub.gateway_port = new_port;
+        hub.shut_down().await;
+    }
+
+    #[test]
+    fn an_a2a_bind_failure_is_worded_by_its_io_cause() {
+        let port = crate::util::test_ports::free_port();
+        let in_use = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::AddrInUse))
+            .context(format!(
+                "failed to bind the A2A listener on 127.0.0.1:{port}"
+            ));
+        assert_eq!(
+            a2a_failure_message(port, &in_use),
+            format!(
+                "The agent-to-agent listener couldn't start on port {port}: the port is already in use. Choose another port in settings or stop the program using it."
+            )
+        );
+
+        let denied =
+            anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                .context(format!(
+                    "failed to bind the A2A listener on 127.0.0.1:{port}"
+                ));
+        assert_eq!(
+            a2a_failure_message(port, &denied),
+            format!(
+                "The agent-to-agent listener couldn't start on port {port}: the system doesn't allow residuum to use that port. Choose another port in settings."
+            )
+        );
+
+        let other = anyhow::anyhow!("a2a listener failed");
+        assert_eq!(
+            a2a_failure_message(port, &other),
+            format!(
+                "The agent-to-agent listener couldn't start on port {port}: something went wrong while starting it. Check the logs for details."
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn moving_the_a2a_listener_onto_a_taken_port_warns_the_user() {
+        let mut hub = RunningHub::start().await;
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
+            .await;
+        // The reservation holds the port, so the listener's bind fails.
+        let taken = reserve_port();
+        let taken_port = taken.port();
+        std::fs::write(
+            hub.hub_config_path(),
+            format!(
+                "timezone = \"UTC\"\n[gateway]\nport = {}\n[a2a]\nport = {taken_port}\n",
+                hub.gateway_port
+            ),
+        )
+        .unwrap();
+
+        let notice = crate::testing::wait::next_matching(
+            "the hub to warn that the A2A listener couldn't start",
+            &mut hub.events,
+            |event| {
+                matches!(
+                    event,
+                    HubEvent::Notice {
+                        level: NoticeLevel::Warn,
+                        message,
+                        ..
+                    } if message.contains(&format!("start on port {taken_port}"))
+                )
+            },
+        )
+        .await;
+        let HubEvent::Notice { message, .. } = notice else {
+            unreachable!("the predicate only matches notices");
+        };
+        assert_eq!(
+            message,
+            format!(
+                "The agent-to-agent listener couldn't start on port {taken_port}: the port is already in use. Choose another port in settings or stop the program using it."
+            )
+        );
+        drop(taken);
         hub.shut_down().await;
     }
 
@@ -1321,10 +1593,10 @@ mod tests {
         let message = reload.message.expect("a failed reload says why");
         assert!(message.starts_with("hub config reload failed"), "{message}");
         assert!(message.contains("keeping current hub config"), "{message}");
-        assert_eq!(
-            reload.notices,
-            [message],
-            "the notice says what the frame says"
+        assert!(
+            reload.notices.is_empty(),
+            "the frame is the only report: {:?}",
+            reload.notices
         );
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
@@ -1350,7 +1622,11 @@ mod tests {
             reload.message.as_deref(),
             Some("hub configuration reloaded: timezone")
         );
-        assert_eq!(reload.notices, ["hub configuration reloaded: timezone"]);
+        assert!(
+            reload.notices.is_empty(),
+            "the frame is the only report: {:?}",
+            reload.notices
+        );
         hub.shut_down().await;
     }
 
@@ -1383,7 +1659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_hub_config_reload_that_finds_nothing_new_says_so_without_a_notice() {
+    async fn a_hub_config_reload_that_finds_nothing_new_says_so_in_its_frame() {
         let mut hub = RunningHub::start().await;
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
@@ -1495,14 +1771,11 @@ mod tests {
 
         assert!(response.status().is_success(), "{response:?}");
         for (name, before) in ["atlas", "scout"].into_iter().zip(reloads_before) {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-            while hub.host.reloads_finished(name).unwrap() <= before {
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "{name} never reloaded after the team USER.md changed"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            crate::testing::wait::until(
+                format!("{name} to reload after the team USER.md changed"),
+                || async { (hub.host.reloads_finished(name).unwrap() > before).then_some(()) },
+            )
+            .await;
         }
         hub.shut_down().await;
     }

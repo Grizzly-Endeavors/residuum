@@ -1,22 +1,27 @@
 // ── Feed store (Svelte 5 runes) ──────────────────────────────────────
 
 import { SvelteMap } from "svelte/reactivity";
+import { failedAnnouncement, repliedAnnouncement, workingAnnouncement } from "./announce";
+import { LiveStreams, MessageIds, nextAnimationFrame, type FrameScheduler } from "./feed-stream";
+import { dayLabel } from "./day-label";
 import { nextFeedId } from "./feed-id";
 import {
   appendToolCall,
   applyToolResult,
   convertHistory,
+  countByTurn,
   countTurnCalls,
   feedItemSignature,
   settlePendingCalls,
   type BackgroundTurnState,
 } from "./feed-items";
 import { ObservedTurns, type TurnEnding } from "./observed-turns.svelte";
-import { isoNow } from "./time";
+import { localDay, localTimestamp, localTimestampAt } from "./time";
 import type {
   ServerMessage,
   RecentMessage,
   FeedItem,
+  UserFeedItem,
   DividerFeedItem,
   ToolCallState,
   ImageAttachment,
@@ -24,6 +29,8 @@ import type {
   RecentHistorySegment,
   EpisodeHistorySegment,
   SessionUsageTotals,
+  TurnInProgress,
+  WaitingMessage,
 } from "./types";
 
 /**
@@ -79,42 +86,53 @@ function afterLastRun(fresh: (string | null)[], anchor: string[]): number {
 }
 
 /**
- * Whether `messages` holds the turn `turnId` (`null` when no turn is live).
- * The server tags every message a turn produces — including its own user
- * message — with the turn's correlation id in one atomic write when the
- * turn completes, so this is true exactly when the turn has finished and
- * been recorded, never for a turn still in flight.
+ * How many of `messages` belong to the turn `turnId`. The server tags every
+ * message a turn produces, including its own user message, with the turn's
+ * correlation id in one atomic write when the turn completes, so a turn has
+ * messages exactly when it has finished and been recorded, never while it is
+ * still in flight.
  */
-function historyHasTurn(messages: RecentMessage[], turnId: string | null): boolean {
-  return turnId !== null && messages.some((msg) => msg.turn_id === turnId);
+function recordedMessages(messages: RecentMessage[], turnId: string): number {
+  return messages.filter((msg) => msg.turn_id === turnId).length;
 }
 
-const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  month: "long",
-  day: "numeric",
-});
+type UserMessageFrame = Extract<ServerMessage, { type: "user_message" }>;
+type QueuedMessageFrame = Extract<ServerMessage, { type: "message_queued" }>["message"];
 
-function dayKey(iso: string): string {
-  // Timestamps are either "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM". Slice to date.
-  return iso.slice(0, 10);
+/**
+ * Whether a turn snapshot draws `item` again: the agent's output, and the
+ * messages it names (`echoed`). Anything else of the turn stays as it is.
+ */
+function redrawnBySnapshot(item: FeedItem, echoed: readonly string[]): boolean {
+  if (item.kind === "assistant" || item.kind === "thinking" || item.kind === "tool-group") {
+    return true;
+  }
+  return item.kind === "user" && item.messageId !== undefined && echoed.includes(item.messageId);
 }
 
-function dayLabel(iso: string): string {
-  const date = new Date(iso.length === 10 ? `${iso}T00:00` : iso);
-  if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
-  return DAY_DIVIDER_FORMATTER.format(date);
+/**
+ * Where a reply went, when that was a chat interface rather than this page: an
+ * empty endpoint means nowhere, `ws` is this page, and `background` is no
+ * interface at all.
+ */
+function deliveredElsewhere(endpoint: string): string | undefined {
+  return endpoint === "" || endpoint === "ws" || endpoint === "background" ? undefined : endpoint;
+}
+
+/** A divider naming the day `iso` falls on, on the reader's clock. */
+function dayDivider(iso: string): DividerFeedItem {
+  const date = localDay(iso);
+  return { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(date), date };
 }
 
 /** A day-divider callback with its own memory of the last day seen. */
 function dayDividerTracker(): (iso: string) => DividerFeedItem | null {
   let lastKey: string | null = null;
   return (iso) => {
-    const key = dayKey(iso);
+    const key = localDay(iso);
     const crossed = lastKey !== null && key !== lastKey;
     lastKey = key;
-    return crossed
-      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
-      : null;
+    return crossed ? dayDivider(iso) : null;
   };
 }
 
@@ -135,6 +153,36 @@ export class FeedStore {
    * how it ended, and where steps may be missing. The activity line reads it.
    */
   readonly observed = new ObservedTurns();
+  /**
+   * The id of a message this page sent with no turn in flight. The agent
+   * starts a turn for it under that id, so history can record the turn before
+   * its `turn_started` arrives here.
+   */
+  private sentTurnId: string | null = null;
+  /**
+   * A turn that history recorded, and the feed took from history, while its
+   * frames were still arriving. The rest of them are dropped until its
+   * `turn_ended`, or they would draw the turn a second time.
+   */
+  private settledTurnId: string | null = null;
+  /**
+   * How many messages the Recent history last loaded held for each turn id.
+   * Older history repeats ids (every page load once counted from `web-1`),
+   * so a turn id in history doesn't by itself mean the turn in flight is
+   * recorded: it is recorded once history holds more messages for it than it
+   * did when the turn began.
+   */
+  private historyTurnCounts: ReadonlyMap<string, number> = countByTurn([]);
+  /** The turn in flight and what `historyTurnCounts` held for its id when it began. */
+  private liveBaseline: { turnId: string; recorded: number } | null = null;
+  /**
+   * People's messages the agent hasn't read yet, oldest first: sent while a
+   * turn ran, they join the feed where the agent reads them (its
+   * `user_message` frame), and until then wait apart from it.
+   */
+  waiting = $state<WaitingMessage[]>([]);
+  /** The page's connections so far, for telling a waiting message that went out before this one. */
+  private connection = 0;
   /** Output tokens generated by every model call so far this turn. */
   turnOutputTokens = $state(0);
   /** Whether any model call so far this turn reported usage. */
@@ -197,23 +245,81 @@ export class FeedStore {
    * live-only until the turn ends and history records them.
    */
   private turnStart: number | null = null;
+  /** How many turns have ended live, read through `turnsEndedLive`. */
+  private endedLiveTurns = 0;
+
+  /**
+   * How many turns have ended live. History records a turn before its end
+   * reaches the page, and once it has ended a reload keeps nothing of it, so a
+   * Recent segment read before this count last moved can lack a turn the feed
+   * shows: applying it would take that turn off the feed.
+   */
+  get turnsEndedLive(): number {
+    return this.endedLiveTurns;
+  }
+
+  /**
+   * What a screen reader is told about the agent's work: that a turn started,
+   * that its reply is complete (with the start of it), or that it couldn't
+   * finish. Each is new, so the same words twice in a row are read twice.
+   * Only whole messages are announced, never a reply as it streams in.
+   */
+  announcement = $state<{ id: number; text: string } | null>(null);
+  private announced = 0;
+  /** Text and reasoning still streaming in, which the authoritative messages replace. */
+  private readonly streams: LiveStreams;
+  /** The ids of the messages this page sent, so the agent's echo of one isn't shown a second time. */
+  private readonly sentIds = new MessageIds();
+  /**
+   * When the frame being replayed from a turn snapshot was sent, in
+   * milliseconds, or `null` outside a replay, when frames arrive as they are sent.
+   */
+  private replayClock: number | null = null;
 
   /**
    * @param joinedTurnStart When the agent became busy, for a turn this page
    *   joined already running; null when unknown.
+   * @param agentName How the agent is named in what a screen reader is told.
+   * @param schedule When streamed text is added to what is shown: once per frame.
    */
-  constructor(private readonly joinedTurnStart: () => number | null = () => null) {}
+  constructor(
+    private readonly joinedTurnStart: () => number | null = () => null,
+    private readonly agentName: () => string = () => "The agent",
+    schedule: FrameScheduler = nextAnimationFrame,
+  ) {
+    this.streams = new LiveStreams(
+      this.feed,
+      schedule,
+      () => localTimestampAt(this.now()),
+      () => this.now(),
+    );
+  }
+
+  /** When the frame being handled was sent: now, unless it is replayed from a snapshot. */
+  private now(): number {
+    return this.replayClock ?? Date.now();
+  }
+
+  private announce(text: string): void {
+    // A replayed turn was announced when it happened, or was already under way.
+    if (this.replayClock !== null) return;
+    this.announcement = { id: ++this.announced, text };
+  }
 
   /** Dispatch a server message into the feed. */
   handleMessage(msg: ServerMessage): void {
+    if (this.isOfSettledTurn(msg)) return;
     switch (msg.type) {
       case "turn_started":
+        this.sentTurnId = null;
         this.isProcessing = true;
         this.activeTurnId = msg.reply_to;
+        this.announce(workingAnnouncement(this.agentName()));
+        this.captureBaseline(msg.reply_to);
         this.turnStart ??= this.feed.length;
         // The user message that started it arrived first.
         for (const item of this.feed.slice(this.turnStart)) item.turnId = msg.reply_to;
-        this.observed.start(msg.reply_to);
+        this.observed.start(msg.reply_to, this.now());
         this.turnOutputTokens = 0;
         this.turnHasUsage = false;
         this.turnToolCalls = 0;
@@ -224,11 +330,12 @@ export class FeedStore {
         // replies) — harmless no-op if isProcessing already cleared via
         // one of those paths.
         this.isProcessing = false;
-        this.nameJoinedTurn(msg.reply_to);
         this.tagTurnStart(msg.reply_to);
         this.closeTurn(msg.reply_to);
         this.activeTurnId = null;
         this.turnStart = null;
+        this.liveBaseline = null;
+        this.endedLiveTurns++;
         break;
 
       case "turn_usage":
@@ -245,38 +352,101 @@ export class FeedStore {
         break;
 
       case "tool_call":
-        this.joinTurn();
-        appendToolCall(this.feed, this.pendingToolCalls, msg, this.activeTurnId ?? undefined);
+        this.joinTurn(msg.reply_to);
+        this.attempted(msg.reply_to);
+        this.streams.endThought(msg.reply_to, msg.call);
+        appendToolCall(
+          this.feed,
+          this.pendingToolCalls,
+          msg,
+          this.activeTurnId ?? undefined,
+          msg.call,
+          this.now(),
+        );
         break;
 
       case "tool_result":
-        this.joinTurn();
-        applyToolResult(this.pendingToolCalls, msg);
+        this.joinTurn(msg.reply_to);
+        applyToolResult(this.pendingToolCalls, msg, this.now());
         break;
 
-      case "response":
-        this.isProcessing = false;
-        this.nameJoinedTurn(msg.reply_to);
+      case "turn_snapshot":
+        this.applyTurnSnapshot(msg.turn);
+        this.reconcileWaiting(msg.queued);
+        break;
+
+      case "message_queued":
+        this.addWaiting(msg.message);
+        break;
+
+      case "message_withdrawn":
+        this.waiting = this.waiting.filter((message) => message.id !== msg.id);
+        break;
+
+      case "queued_message_unavailable": {
+        // Already read or taken back: its frame for that, if not here yet, is on its way.
+        const message = this.waiting.find((waiting) => waiting.id === msg.id);
+        if (message !== undefined) delete message.asked;
+        break;
+      }
+
+      case "response": {
+        // A reply posted to this page outside any turn (the agent's send_message)
+        // is a message of its own, and ends nothing.
+        const standalone = msg.reply_to === "";
+        if (!standalone) {
+          this.isProcessing = false;
+          this.attempted(msg.reply_to);
+          if (msg.call !== undefined) this.streams.endThought(msg.reply_to, msg.call);
+        }
         if (msg.content) {
-          this.feed.push({
-            id: nextFeedId(),
-            kind: "assistant",
-            content: msg.content,
-            ...this.ofLiveTurn(),
-          });
+          this.streams.completeText(
+            msg.reply_to,
+            standalone ? undefined : msg.call,
+            msg.content,
+            standalone ? {} : this.ofLiveTurn(),
+            deliveredElsewhere(msg.endpoint),
+          );
+          this.announce(repliedAnnouncement(this.agentName(), msg.content));
         }
         break;
+      }
 
       case "broadcast_response":
-        this.joinTurn();
-        if (msg.content) {
-          this.feed.push({
-            id: nextFeedId(),
-            kind: "assistant",
-            content: msg.content,
-            ...this.ofLiveTurn(),
-          });
-        }
+        this.joinTurn(msg.reply_to);
+        this.attempted(msg.reply_to);
+        this.streams.endThought(msg.reply_to, msg.call);
+        this.streams.completeText(msg.reply_to, msg.call, msg.content, this.ofLiveTurn());
+        break;
+
+      case "text_delta":
+        this.joinTurn(msg.reply_to);
+        this.attempted(msg.reply_to);
+        this.streams.endThought(msg.reply_to, msg.call);
+        this.streams.appendText(msg.reply_to, msg.call, msg.text, this.ofLiveTurn());
+        break;
+
+      case "thinking_delta":
+        this.joinTurn(msg.reply_to);
+        this.attempted(msg.reply_to);
+        this.streams.appendThought(msg.reply_to, msg.call, msg.text, this.ofLiveTurn());
+        break;
+
+      case "thinking":
+        this.joinTurn(msg.reply_to);
+        this.streams.completeThought(msg.reply_to, msg.call, msg.content, this.ofLiveTurn());
+        break;
+
+      case "stream_restart":
+        // The call starts over: what it had streamed is dropped, and the turn
+        // says it is retrying until something of the new attempt arrives.
+        this.joinTurn(msg.reply_to);
+        this.streams.restart(msg.reply_to, msg.call);
+        this.observed.retry(msg.reply_to, true);
+        break;
+
+      case "user_message":
+        this.receiveUserMessage(msg);
         break;
 
       case "error":
@@ -284,6 +454,12 @@ export class FeedStore {
         // goes back to Send). The notification surface itself is
         // dispatched by WsCoordinator before this runs.
         this.isProcessing = false;
+        // An error that names a turn is that turn failing: it leaves its
+        // account in the feed after the toast is gone.
+        if (msg.reply_to !== null) {
+          this.recordFailure(msg.reply_to, msg.message, msg.details);
+          this.announce(failedAnnouncement(this.agentName()));
+        }
         break;
 
       case "notice":
@@ -296,7 +472,6 @@ export class FeedStore {
         break;
 
       case "file_attachment": {
-        this.nameJoinedTurn(msg.reply_to);
         const item: FileAttachmentFeedItem = {
           id: nextFeedId(),
           kind: "file-attachment",
@@ -305,6 +480,7 @@ export class FeedStore {
           size: msg.size,
           url: msg.url,
           caption: msg.caption,
+          timestamp: localTimestamp(),
           ...this.ofLiveTurn(),
         };
         this.feed.push(item);
@@ -363,6 +539,7 @@ export class FeedStore {
     this.observed.clear(this.activeTurnId);
     this.generation++;
     this.recentCursor = segment.next_cursor;
+    this.countHistoryTurns(segment.messages);
     // With no older history, a turn can't have begun before this segment.
     this.recentCarriedTurn = segment.next_cursor === null ? "hidden" : undefined;
     this.historyLoaded = true;
@@ -389,6 +566,7 @@ export class FeedStore {
    */
   reconcileRecent(segment: RecentHistorySegment): boolean {
     if (!this.historyLoaded || segment.next_cursor !== this.recentCursor) return false;
+    this.countHistoryTurns(segment.messages);
     const fresh = convertHistory(segment.messages, {
       mode: "main",
       carriedTurn: this.recentCarriedTurn,
@@ -410,15 +588,28 @@ export class FeedStore {
       }
     }
     const freshSigs = fresh.map(feedItemSignature);
+    // History read before the agent recorded what the page has since shown
+    // live is behind the page, not different from it: there is nothing to add.
+    const freshSigned = freshSigs.filter((sig): sig is string => sig !== null);
+    if (
+      freshSigned.length > 0 &&
+      freshSigned.length < shown.length &&
+      afterSignedPrefix(shown, freshSigned) >= 0
+    ) {
+      return true;
+    }
     // Exactly what was shown, then more: the usual case. Failing that (the
     // live feed showed something history doesn't hold), line up on the last
     // few messages shown.
     let appendFrom = afterSignedPrefix(freshSigs, shown);
     if (appendFrom < 0) appendFrom = afterLastRun(freshSigs, shown.slice(-RECONCILE_ANCHOR_ITEMS));
     if (appendFrom < 0) return false;
-    while (trailingToolGroups > 0 && fresh[appendFrom]?.kind === "tool-group") {
+    // The reasoning that led to those tool calls is shown too, ahead of them.
+    while (trailingToolGroups > 0) {
+      const next = fresh[appendFrom]?.kind;
+      if (next !== "tool-group" && next !== "thinking") break;
       appendFrom++;
-      trailingToolGroups--;
+      if (next === "tool-group") trailingToolGroups--;
     }
     this.placeRecorded(fresh.slice(appendFrom), liveStart, segment.messages);
     this.syncDayKey(segment);
@@ -434,12 +625,11 @@ export class FeedStore {
     const liveStart = this.turnStart;
     const live = liveStart === null ? [] : this.feed.slice(liveStart);
     const pendingTools = [...this.pendingToolCalls];
-    const turnId = this.activeTurnId;
+    const turnId = this.liveTurnId();
     this.loadHistory(segment);
     if (liveStart === null) return;
-    if (historyHasTurn(segment.messages, turnId)) {
-      this.endLiveTurn();
-      if (turnId !== null) this.observed.forget(turnId);
+    if (turnId !== null && this.historyRecords(segment.messages, turnId)) {
+      this.settleFromHistory(turnId);
       return;
     }
     this.turnStart = this.feed.length;
@@ -459,7 +649,7 @@ export class FeedStore {
     if (this.loadedEpisodes.has(segment.episode_id)) return;
     this.loadedEpisodes.add(segment.episode_id);
 
-    const conversion = convertHistory(segment.messages, { mode: "main" });
+    const conversion = convertHistory(segment.messages, { mode: "main", timestamps: false });
     if (conversion.endTurn !== "unknown") this.resolvePendingHeads(conversion.endTurn);
 
     const block: FeedItem[] = [
@@ -467,7 +657,9 @@ export class FeedStore {
         id: nextFeedId(),
         kind: "divider",
         variant: "episode",
-        label: `${segment.episode_id} · ${segment.date}`,
+        label: dayLabel(segment.date),
+        date: segment.date,
+        episode: segment.episode_id,
       } satisfies DividerFeedItem,
       ...conversion.items,
     ];
@@ -511,7 +703,8 @@ export class FeedStore {
       category,
       content,
       runId,
-      ...this.ofLiveTurn(),
+      timestamp: localTimestamp(),
+      ...this.reachedLiveTurn(),
     });
   }
 
@@ -521,23 +714,78 @@ export class FeedStore {
     this.usageProblem = null;
   }
 
-  /** Add a user message to the feed. */
-  pushUserMessage(content: string, images?: ImageAttachment[]): void {
-    // Live user messages carry an implicit "now" timestamp — inject a day
-    // divider if the calendar day has rolled over since the last live entry.
-    this.maybePushDayDivider(isoNow());
+  /**
+   * Show a message the user sent. `id` is the message's id, which names the
+   * turn it starts when no turn is in flight. Sent while a turn runs, it waits
+   * apart from the feed until the agent reads it; `delivered` says whether it
+   * went out now, or waits for the connection to come back.
+   */
+  pushUserMessage(
+    content: string,
+    images?: ImageAttachment[],
+    id?: string,
+    delivered = true,
+  ): void {
+    if (id !== undefined && this.activeTurnId !== null) {
+      this.sentIds.add(id);
+      this.waiting.push({
+        id,
+        content,
+        ...(images === undefined || images.length === 0 ? {} : { images }),
+        endpoint: "ws",
+        connection: delivered ? this.connection : this.connection + 1,
+      });
+      return;
+    }
+    // Live user messages are stamped with the moment they arrive — inject a
+    // day divider if the calendar day has rolled over since the last live entry.
+    const timestamp = localTimestamp();
+    this.maybePushDayDivider(timestamp);
+    if (id !== undefined) this.sentIds.add(id);
+    if (this.activeTurnId === null && id !== undefined) {
+      this.sentTurnId ??= id;
+      this.captureBaseline(id);
+    }
     this.turnStart ??= this.feed.length;
-    this.feed.push({ id: nextFeedId(), kind: "user", content, images, ...this.ofLiveTurn() });
+    this.feed.push({
+      id: nextFeedId(),
+      kind: "user",
+      content,
+      images,
+      timestamp,
+      ...(id === undefined ? {} : { messageId: id }),
+      ...this.reachedLiveTurn(),
+    });
     this.isProcessing = true;
   }
 
   /**
-   * The agent stopped with a turn in flight. What the turn showed stays, but
-   * no more of it will arrive, and history never records it.
+   * The agent stopped with a turn in flight. What the turn showed stays as it
+   * is, and no more of it will arrive. History records the turn as the agent
+   * stops it, and shows it from there after a reload, unless the agent was
+   * force-aborted or crashed. Messages still waiting go into history as the
+   * agent stops, and show from there.
    */
   abandonLiveTurn(): void {
     if (this.activeTurnId !== null) this.closeTurn(this.activeTurnId, "interrupted");
     this.endLiveTurn();
+    this.waiting = [];
+  }
+
+  /** A connection opened; messages sent before it went out on an earlier one. */
+  connected(): void {
+    this.connection++;
+  }
+
+  /** The connection dropped: nothing asked of a waiting message will be answered. */
+  forgetAsks(): void {
+    for (const message of this.waiting) delete message.asked;
+  }
+
+  /** Something was asked of the waiting message `id`, and its answer is awaited. */
+  askOfWaiting(id: string, asked: NonNullable<WaitingMessage["asked"]>): void {
+    const message = this.waiting.find((waiting) => waiting.id === id);
+    if (message !== undefined) message.asked = asked;
   }
 
   /** The user asked to stop the turn in flight. */
@@ -550,6 +798,8 @@ export class FeedStore {
    * the page was away may be missing from its line.
    */
   markReconnectGap(): void {
+    // A new connection carries no more frames of a turn history settled.
+    this.settledTurnId = null;
     const turnId = this.activeTurnId;
     if (turnId === null) return;
     this.observed.gap(turnId, countTurnCalls(this.feed.slice(this.turnStart ?? 0), turnId));
@@ -558,36 +808,114 @@ export class FeedStore {
   // ── Private ──────────────────────────────────────────────────────────
 
   /**
-   * A frame of a turn arrived with no turn in flight: the page connected
-   * while it ran. It becomes the turn in flight, joined partway, under its
-   * id when the frame carries one and a stand-in until one does.
+   * A frame of the turn `turnId` arrived with no turn in flight: the page
+   * connected while it ran. It becomes the turn in flight, joined partway.
    */
-  private joinTurn(turnId?: string): void {
-    if (this.activeTurnId !== null) {
-      if (turnId !== undefined) this.nameJoinedTurn(turnId);
-      return;
-    }
+  private joinTurn(turnId: string): void {
+    if (this.activeTurnId !== null) return;
     // A late frame of a turn that already ended starts nothing.
-    if (turnId !== undefined && this.observed.get(turnId)?.endedAt != null) return;
-    this.activeTurnId = this.observed.join(turnId ?? null, this.joinedTurnStart());
+    if (this.observed.get(turnId)?.endedAt != null) return;
+    this.activeTurnId = this.observed.join(turnId, this.joinedTurnStart());
+    this.captureBaseline(turnId);
     this.turnStart = this.feed.length;
     this.isProcessing = true;
   }
 
-  /** A frame named the turn in flight, joined under a stand-in id: tag its items with the real one. */
-  private nameJoinedTurn(turnId: string): void {
-    const current = this.activeTurnId;
-    if (current === null || current === turnId || !this.observed.isUnnamed(current)) return;
-    for (const item of this.feed.slice(this.turnStart ?? 0)) {
-      if (item.turnId === current) item.turnId = turnId;
+  /** Something of the turn's current attempt arrived, so it is no longer retrying. */
+  private attempted(turnId: string): void {
+    this.observed.retry(turnId, false);
+  }
+
+  /**
+   * A person's message entering the main conversation, from any channel. One
+   * this page sent is already shown. One that arrives while its turn runs
+   * joins it; any other starts the turn that follows, which `turn_started`
+   * then announces.
+   */
+  private receiveUserMessage(msg: UserMessageFrame): void {
+    // The agent read a waiting message: it joins the feed here, where the agent read it.
+    const waited = this.waiting.some((message) => message.id === msg.id);
+    if (waited) this.waiting = this.waiting.filter((message) => message.id !== msg.id);
+    // A snapshot draws the turn again, this page's own messages included.
+    if (!waited && this.replayClock === null && this.sentIds.has(msg.id)) return;
+    const joins = this.activeTurnId === msg.turn_id;
+    const timestamp = localTimestampAt(this.now());
+    if (!joins) {
+      this.maybePushDayDivider(timestamp);
+      this.turnStart ??= this.feed.length;
     }
-    this.observed.rename(current, turnId);
-    this.activeTurnId = turnId;
+    this.feed.push({
+      id: nextFeedId(),
+      kind: "user",
+      content: msg.content,
+      timestamp,
+      messageId: msg.id,
+      ...(msg.images === undefined || msg.images.length === 0 ? {} : { images: msg.images }),
+      ...(msg.sender === undefined ? {} : { sender: msg.sender }),
+      turnId: msg.turn_id,
+      ...(joins ? { midTurn: true } : {}),
+    });
+  }
+
+  /** A message the agent hasn't read yet, unless it's already shown waiting. */
+  private addWaiting(message: QueuedMessageFrame): void {
+    if (this.waiting.some((waiting) => waiting.id === message.id)) return;
+    this.waiting.push({
+      id: message.id,
+      content: message.content,
+      ...(message.images === undefined || message.images.length === 0
+        ? {}
+        : { images: message.images }),
+      ...(message.sender === undefined ? {} : { sender: message.sender }),
+      endpoint: message.endpoint,
+      connection: this.connection,
+    });
+  }
+
+  /**
+   * The messages still waiting as a snapshot lists them. One this page sent
+   * on an earlier connection that the list leaves out was read, or taken
+   * back, while the page was away; one sent on this connection may not have
+   * reached the agent yet when the snapshot was taken, and stays.
+   */
+  private reconcileWaiting(queued: readonly QueuedMessageFrame[]): void {
+    const listed = queued.map((message) => message.id);
+    this.waiting = this.waiting.filter(
+      (message) => listed.includes(message.id) || message.connection >= this.connection,
+    );
+    for (const message of queued) this.addWaiting(message);
+  }
+
+  /**
+   * Show that the turn `turnId` couldn't finish, as the last thing in it. When
+   * the user's own message began the turn, it is kept for Try again.
+   */
+  private recordFailure(turnId: string, message: string, details: string | null): void {
+    this.streams.finish(turnId, "interrupted");
+    const asked = this.feed.findLast(
+      (item): item is UserFeedItem =>
+        item.kind === "user" &&
+        item.turnId === turnId &&
+        item.midTurn !== true &&
+        item.sender === undefined,
+    );
+    const images = asked?.images === undefined ? [] : $state.snapshot(asked.images);
+    this.feed.push({
+      id: nextFeedId(),
+      kind: "turn-failure",
+      turnId,
+      message,
+      ...(details === null || details === "" ? {} : { details }),
+      ...(asked === undefined
+        ? {}
+        : { retry: { content: asked.content, ...(images.length > 0 ? { images } : {}) } }),
+    });
   }
 
   /** The turn ended: settle calls still waiting on results, and record how it ended. */
   private closeTurn(turnId: string, ending?: TurnEnding): void {
     const how = this.observed.end(turnId, ending);
+    this.streams.finish(turnId, how);
     settlePendingCalls(this.pendingToolCalls, how === "finished" ? "done" : "stopped");
   }
 
@@ -597,6 +925,32 @@ export class FeedStore {
    */
   private ofLiveTurn(): { turnId?: string } {
     return this.activeTurnId === null ? {} : { turnId: this.activeTurnId };
+  }
+
+  /**
+   * The turn in flight, for a user or agent message that arrives now. One
+   * that arrives during a turn is flagged `midTurn`, which keeps it inside
+   * that turn's block; one that arrives with none running starts a turn.
+   */
+  private reachedLiveTurn(): { turnId?: string; midTurn?: true } {
+    return this.activeTurnId === null ? {} : { turnId: this.activeTurnId, midTurn: true };
+  }
+
+  /** Remember how much of `turnId` history held before the turn began. */
+  private captureBaseline(turnId: string): void {
+    if (this.liveBaseline?.turnId === turnId) return;
+    this.liveBaseline = { turnId, recorded: this.historyTurnCounts.get(turnId) ?? 0 };
+  }
+
+  /** Whether `messages` records the turn `turnId`, beyond what history held before it began. */
+  private historyRecords(messages: RecentMessage[], turnId: string): boolean {
+    const before = this.liveBaseline?.turnId === turnId ? this.liveBaseline.recorded : 0;
+    return recordedMessages(messages, turnId) > before;
+  }
+
+  /** Count what a Recent segment holds for each turn id, for `historyRecords`. */
+  private countHistoryTurns(messages: RecentMessage[]): void {
+    this.historyTurnCounts = countByTurn(messages);
   }
 
   /**
@@ -624,7 +978,11 @@ export class FeedStore {
     for (const head of heads) {
       if (head.recent) this.recentCarriedTurn = turn;
       if (turn === "hidden") continue;
-      const items = convertHistory(head.messages, { mode: "main", carriedTurn: "shown" }).items;
+      const items = convertHistory(head.messages, {
+        mode: "main",
+        carriedTurn: "shown",
+        timestamps: head.recent,
+      }).items;
       this.feed.splice(head.index, 0, ...items);
       if (head.index < this.recentStart) this.recentStart += items.length;
       if (this.turnStart !== null && head.index <= this.turnStart) {
@@ -644,15 +1002,74 @@ export class FeedStore {
     liveStart: number,
     historyMessages: RecentMessage[],
   ): void {
-    const turnId = this.activeTurnId;
-    if (this.turnStart !== null && turnId !== null && historyHasTurn(historyMessages, turnId)) {
+    const turnId = this.liveTurnId();
+    if (
+      this.turnStart !== null &&
+      turnId !== null &&
+      this.historyRecords(historyMessages, turnId)
+    ) {
       this.feed.splice(liveStart, this.feed.length - liveStart, ...recorded);
-      this.endLiveTurn();
-      this.observed.forget(turnId);
+      this.settleFromHistory(turnId);
       return;
     }
     this.feed.splice(liveStart, 0, ...recorded);
     if (this.turnStart !== null) this.turnStart += recorded.length;
+  }
+
+  /**
+   * Show the turn in flight as the agent has run it so far, in place of what
+   * the page showed of it: what streamed before the page connected, or while
+   * it was disconnected, is in the snapshot, and the frames after it
+   * continue it.
+   */
+  private applyTurnSnapshot(turn: TurnInProgress | null): void {
+    // With no turn running, a turn the page still shows live ended while it
+    // was away, and history settles it.
+    if (turn === null || turn.reply_to === this.settledTurnId) return;
+    const echoed = turn.frames.flatMap(({ frame }) =>
+      frame.type === "user_message" ? [frame.id] : [],
+    );
+    const stopAsked = this.observed.get(turn.reply_to)?.stopAsked === true;
+    const sentTurnId = this.sentTurnId;
+    const kept = this.dropLiveTurn(echoed);
+    // The snapshot's times are on the server's clock; this places them on the page's.
+    const serverNow = Date.parse(turn.now);
+    const skew = Number.isNaN(serverNow) ? 0 : Date.now() - serverNow;
+    const onPageClock = (at: string): number => {
+      const sent = Date.parse(at);
+      return Number.isNaN(sent) ? Date.now() : sent + skew;
+    };
+    try {
+      for (const { at, frame } of turn.frames) {
+        this.replayClock = onPageClock(at);
+        this.handleMessage(frame);
+      }
+    } finally {
+      this.replayClock = null;
+    }
+    this.streams.flush();
+    if (this.observed.get(turn.reply_to) === undefined) {
+      this.observed.start(turn.reply_to, onPageClock(turn.started_at));
+    }
+    if (stopAsked) this.observed.askStop(turn.reply_to);
+    // A message this page sent that the agent hasn't taken in yet still
+    // starts the turn after this one.
+    if (sentTurnId !== null && !echoed.includes(sentTurnId)) this.sentTurnId = sentTurnId;
+    for (const item of kept) this.feed.push(item);
+  }
+
+  /**
+   * Take the turn in flight out of the feed, for a snapshot to draw again.
+   * Returns its items the snapshot doesn't draw (a message the agent hasn't
+   * taken in yet, a session's message, a note, a failure), to go back after it.
+   */
+  private dropLiveTurn(echoed: readonly string[]): FeedItem[] {
+    const start = this.turnStart;
+    const dropped = this.activeTurnId;
+    this.endLiveTurn();
+    if (dropped !== null) this.observed.forget(dropped);
+    if (start === null) return [];
+    return this.feed.splice(start).filter((item) => !redrawnBySnapshot(item, echoed));
   }
 
   /** The turn in flight is over (history records it); clear its live state. */
@@ -660,22 +1077,73 @@ export class FeedStore {
     this.turnStart = null;
     this.isProcessing = false;
     this.activeTurnId = null;
+    this.sentTurnId = null;
+    this.liveBaseline = null;
+    this.streams.clear();
     this.pendingToolCalls.clear();
+  }
+
+  /** The turn in flight, or the one a message this page sent is about to start. */
+  private liveTurnId(): string | null {
+    return this.activeTurnId ?? this.sentTurnId;
+  }
+
+  /**
+   * History recorded the turn in flight, and the feed now shows it from there.
+   * Its frames can still be on their way, since history and the socket are
+   * separate connections, so they are dropped until its `turn_ended`.
+   */
+  private settleFromHistory(turnId: string): void {
+    this.endLiveTurn();
+    this.observed.forget(turnId);
+    this.settledTurnId = turnId;
+  }
+
+  /**
+   * Whether `msg` belongs to the turn history settled. The main conversation
+   * runs one turn at a time, so until that turn's `turn_ended` (or another
+   * turn's start) every turn frame without an id is one of its own.
+   */
+  private isOfSettledTurn(msg: ServerMessage): boolean {
+    const settled = this.settledTurnId;
+    if (settled === null) return false;
+    if (msg.type === "turn_started") {
+      if (msg.reply_to === settled) return true;
+      this.settledTurnId = null;
+      return false;
+    }
+    if (msg.type === "turn_ended") {
+      if (msg.reply_to !== settled) return false;
+      this.settledTurnId = null;
+      return true;
+    }
+    if (msg.type === "user_message") return msg.turn_id === settled;
+    return (
+      (msg.type === "response" ||
+        msg.type === "turn_usage" ||
+        msg.type === "file_attachment" ||
+        msg.type === "tool_call" ||
+        msg.type === "tool_result" ||
+        msg.type === "broadcast_response" ||
+        msg.type === "text_delta" ||
+        msg.type === "thinking_delta" ||
+        msg.type === "thinking" ||
+        msg.type === "stream_restart") &&
+      msg.reply_to === settled
+    );
   }
 
   /** Continue live day dividers from the newest message in `segment`. */
   private syncDayKey(segment: RecentHistorySegment): void {
     const last = segment.messages[segment.messages.length - 1];
-    if (last?.timestamp) this.lastLiveDayKey = dayKey(last.timestamp);
+    if (last?.timestamp) this.lastLiveDayKey = localDay(last.timestamp);
   }
 
   private dayDividerFor(iso: string): DividerFeedItem | null {
-    const key = dayKey(iso);
+    const key = localDay(iso);
     const crossed = this.lastLiveDayKey !== null && key !== this.lastLiveDayKey;
     this.lastLiveDayKey = key;
-    return crossed
-      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
-      : null;
+    return crossed ? dayDivider(iso) : null;
   }
 
   private maybePushDayDivider(iso: string): void {

@@ -19,6 +19,7 @@ import {
   type WatchSet,
 } from "./sockets";
 import type { MockAgent, MockHub } from "./state";
+import { MockTurnJournal } from "./turn-journal";
 
 /** How long a reload takes before the page is told it finished. */
 const RELOAD_MS = 1000;
@@ -59,6 +60,7 @@ export function parseClientMessage(raw: string): ClientMessage {
     }
     case "ping":
     case "reload":
+    case "resync_turn":
       return { type };
     case "server_command":
       return { type, name: requiredString(body, "name"), args: stringField(body, "args") ?? null };
@@ -66,6 +68,9 @@ export function parseClientMessage(raw: string): ClientMessage {
       return { type, body: requiredString(body, "body") };
     case "cancel":
       return { type, reply_to: requiredString(body, "reply_to") };
+    case "send_queued_now":
+    case "withdraw_queued":
+      return { type, id: requiredString(body, "id") };
     case "session_send_message":
       return {
         type,
@@ -99,6 +104,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   const { state } = agent;
   const wss = new WebSocketServer({ noServer: true });
   const chat = createChatSimulator(hub, agent);
+  const journal = new MockTurnJournal(() => hub.env.clock.iso());
   const verbose = new WeakSet<WebSocket>();
   /** The sockets opened through the artifacts origin. A workbench page isn't the user reading the chat, so they don't count as clients. */
   const throughArtifactsOrigin = new WeakSet<WebSocket>();
@@ -114,7 +120,11 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   state.dropSockets = () => {
     for (const client of wss.clients) client.terminate();
   };
+  state.journalOnly = (frame) => {
+    journal.record(frame);
+  };
   state.broadcast = (frame) => {
+    journal.record(frame);
     // The hub's relay carries every session event too, to the pages that follow it.
     if (isSessionEventFrame(frame)) hub.relaySession(agent, frame);
     for (const client of wss.clients) {
@@ -125,12 +135,14 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       if (sent !== null) sendFrame(client, sent);
     }
   };
+  agent.receiveMessage = chat.receive;
   agent.connectedClients = () =>
     [...wss.clients].filter((client) => !throughArtifactsOrigin.has(client)).length;
   agent.dispose = () => {
     stopRouting();
     state.dropSockets();
     wss.close();
+    journal.clear();
   };
 
   function handle(ws: WebSocket, msg: ClientMessage): void {
@@ -153,10 +165,28 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         chat.cancel(msg.reply_to);
         break;
 
+      case "send_queued_now":
+        if (!chat.sendWaitingNow(msg.id)) reply({ type: "queued_message_unavailable", id: msg.id });
+        break;
+
+      case "withdraw_queued":
+        if (!chat.withdrawWaiting(msg.id))
+          reply({ type: "queued_message_unavailable", id: msg.id });
+        break;
+
       case "set_verbose":
         if (msg.enabled) verbose.add(ws);
         else verbose.delete(ws);
         break;
+
+      case "resync_turn": {
+        const turn = journal.snapshot();
+        if (turn !== null && !verbose.has(ws)) {
+          turn.frames = turn.frames.filter((entry) => !VERBOSE_ONLY_FRAMES.has(entry.frame.type));
+        }
+        reply({ type: "turn_snapshot", turn, queued: journal.queued() });
+        break;
+      }
 
       case "watch_workspace": {
         // Like the backend, it replaces what the page watches, unless a prefix
@@ -188,7 +218,12 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       case "reload":
         reply({ type: "reloading" });
         hub.env.after(RELOAD_MS, () => {
-          reply({ type: "notice", message: "Configuration reloaded successfully." });
+          reply({
+            type: "notice",
+            message: "Configuration reloaded successfully.",
+            reload: "reloaded",
+            reload_of: "agent_config",
+          });
         });
         break;
 

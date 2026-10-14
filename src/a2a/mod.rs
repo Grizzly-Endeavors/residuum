@@ -27,10 +27,7 @@ pub mod static_directory;
 pub mod task_store;
 
 pub use agent_router::{AgentA2a, AgentA2aState, agent_a2a_router};
-pub use auth::{
-    AUTH_CHECK_PATH, Admission, AuthState, CALLER_HEADER, Caller, NoTunnel, TunnelNonceSource,
-    authorize,
-};
+pub use auth::{AUTH_CHECK_PATH, Admission, AuthState, CALLER_HEADER, Caller, authorize};
 pub use card::{
     AgentCardFile, AgentCardSkillFile, CardError, CardRuntime, CardState, SharedCardState,
     build_agent_card,

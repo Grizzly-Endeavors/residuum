@@ -2,7 +2,7 @@
 
 use tokio_util::sync::CancellationToken;
 
-use crate::bus::{EndpointName, Publisher};
+use crate::bus::Publisher;
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
@@ -13,7 +13,7 @@ use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::hop::HopCounter;
 use super::interrupt;
 use super::recent_messages::RecentMessages;
-use super::turn::{EventContext, EventTarget, TurnResources, execute_turn};
+use super::turn::{EventContext, EventTarget, TurnOutput, TurnResources, execute_turn};
 use super::usage::{MainUsageSink, SessionUsageTotals};
 
 /// Configuration for creating a new `Agent`.
@@ -59,6 +59,10 @@ pub struct Agent {
     /// The agent's handle on the hub's team router, read for the `TEAM`
     /// roster at each turn entry. `None` leaves the prompt without a roster.
     team: Option<crate::hub::team::TeamLink>,
+    /// Told as each endpoint reply of a turn reaches the main conversation,
+    /// so the hub counts it read or unread at that moment. `None` counts
+    /// nothing.
+    reply_audience: Option<std::sync::Arc<dyn super::ReplyAudience>>,
     last_user_message_at: Option<chrono::NaiveDateTime>,
     /// Main's current-turn hop count: the highest hop count among the
     /// inputs (kickoff message, agent-message interrupts drained mid-turn)
@@ -108,6 +112,7 @@ impl Agent {
             tz: config.tz,
             layout: config.layout,
             team: None,
+            reply_audience: None,
             last_user_message_at: None,
             hop_counter,
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -152,6 +157,12 @@ impl Agent {
     /// from `team` at every turn entry.
     pub fn set_team(&mut self, team: crate::hub::team::TeamLink) {
         self.team = Some(team);
+    }
+
+    /// Tell `audience` as each of a turn's endpoint replies reaches the main
+    /// conversation.
+    pub fn set_reply_audience(&mut self, audience: std::sync::Arc<dyn super::ReplyAudience>) {
+        self.reply_audience = Some(audience);
     }
 
     /// Get a reference to the MCP registry.
@@ -341,8 +352,11 @@ impl Agent {
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
-    /// emitted alongside tool calls are sent via `reply` in real-time but not
-    /// included in the return value.
+    /// emitted alongside tool calls are published to the bus as they are
+    /// produced (the main conversation, and the topic of the chat interface
+    /// `output_endpoint` names at that moment, if it is one) but not included in the return
+    /// value. `correlation_id` names the turn in
+    /// everything it publishes.
     ///
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors
@@ -352,16 +366,15 @@ impl Agent {
         reason = "publisher and topic params added during bus migration"
     )]
     #[tracing::instrument(skip_all)]
-    pub async fn process_message(
+    pub async fn process_message<'o>(
         &mut self,
         user_input: &str,
         publisher: &Publisher,
-        output_endpoint: Option<&EndpointName>,
-        tool_activity_endpoint: Option<&EndpointName>,
+        output_endpoint: impl Into<TurnOutput<'o>>,
         correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
-        interrupt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<interrupt::Interrupt>,
+        interrupt_rx: &mut dyn interrupt::InterruptSource,
         images: &[crate::inference::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
         stop_token: &CancellationToken,
@@ -413,9 +426,9 @@ impl Agent {
         };
         let events = EventContext {
             publisher,
+            reply_audience: self.reply_audience.as_deref(),
             target: EventTarget::Endpoint {
-                output_endpoint,
-                tool_activity_endpoint,
+                output_endpoint: output_endpoint.into(),
                 correlation_id,
             },
             session_conversation: None,
@@ -582,7 +595,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -608,8 +620,9 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
+                images_omitted: None,
             },
             InferenceResponse {
                 content: "second".to_string(),
@@ -620,8 +633,9 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
+                images_omitted: None,
             },
         ]);
 
@@ -647,7 +661,6 @@ mod tests {
                     msg,
                     &publisher,
                     Some(&ep),
-                    None,
                     "",
                     None,
                     &PromptContext::default(),
@@ -743,7 +756,6 @@ mod tests {
                 "run echo test",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -805,7 +817,6 @@ mod tests {
                 "what does echo test print?",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -876,7 +887,6 @@ mod tests {
                 "loop past the old cap",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -941,7 +951,6 @@ mod tests {
                 "loop forever",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1281,7 +1290,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1361,7 +1369,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1426,7 +1433,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1483,7 +1489,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1568,7 +1573,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1631,7 +1635,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1840,7 +1843,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1861,7 +1863,6 @@ mod tests {
                 "hi again",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1928,7 +1929,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1947,7 +1947,6 @@ mod tests {
                 "hi again",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -2010,7 +2009,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),

@@ -61,4 +61,4 @@ Agents in your team never need A2A to talk to each other. A2A is for agents outs
 - **Private** (the default for agents you create): callers with no key, and no relationship to your other installs, get nothing, not even the agent's card.
 - **Public**: anyone can read the card. Sending tasks still needs a caller key.
 
-A caller key works for every agent in the hub, private ones included. With Residuum Cloud connected, each running agent is reachable at `{origin}/a2a/{instance}/{agent}`. See [Connect agents with A2A](a2a-setup.md).
+A caller key works for every agent in the hub, private ones included. With Residuum Cloud connected, each running agent is reachable at `https://{instance}.{user}.agent-residuum.com/a2a/{agent}`. See [Connect agents with A2A](a2a-setup.md).

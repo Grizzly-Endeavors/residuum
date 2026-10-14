@@ -1,0 +1,10 @@
+# actionlint configuration (https://github.com/rhysd/actionlint/blob/main/docs/config.md).
+# Declares the self-hosted runner labels the workflows use, so actionlint
+# accepts them in `runs-on`. The hosted labels (ubuntu-*, macos-*, windows-*)
+# are built into actionlint and need no entry here.
+self-hosted-runner:
+  labels:
+    - lab-runners-fast
+    - lab-runners-wide
+    - lab-runners-light
+    - claude-runners

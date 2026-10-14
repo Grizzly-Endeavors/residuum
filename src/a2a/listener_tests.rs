@@ -5,7 +5,6 @@
 
 use crate::util::test_ports::reserve_port;
 use std::sync::Arc;
-use std::time::Duration;
 
 use a2a::{
     A2AError, AgentCard, CancelTaskRequest, DeleteTaskPushNotificationConfigRequest,
@@ -21,15 +20,13 @@ use futures_util::stream::BoxStream;
 use reqwest::StatusCode;
 use tokio::sync::Notify;
 
-use crate::a2a::auth::NoTunnel;
 use crate::a2a::card::{CardRuntime, CardState};
 use crate::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
 use crate::a2a::listener::{A2aListener, StubHandler, agent_handler_router};
 use crate::a2a::static_directory::StaticAgentDirectory;
 use crate::config::A2aConfig;
 use crate::hub::{A2aVisibility, AgentState};
-
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::testing::wait;
 
 /// A handler that identifies its agent in every reply and gates its second
 /// streamed event on `gate`, so a test can prove the first event arrived
@@ -153,6 +150,8 @@ impl a2a_server::RequestHandler for AgentHandler {
 struct Fixture {
     port: u16,
     keys: SharedA2aKeys,
+    /// The keys of joined siblings the listener also accepts.
+    siblings: Arc<crate::remote_access::siblings::SiblingKeys>,
     directory: Arc<StaticAgentDirectory>,
     /// Released to let every agent's gated stream finish.
     gate: Arc<Notify>,
@@ -211,7 +210,7 @@ fn agent_router(
 }
 
 /// Two agents behind one listener: `scout` (public) and `vault` (private).
-async fn fixture() -> Fixture {
+fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let reservation = reserve_port();
     let port = reservation.port();
@@ -230,32 +229,28 @@ async fn fixture() -> Fixture {
             ),
     );
     let keys = A2aKeys::new_shared(dir.path());
+    let siblings = Arc::new(crate::remote_access::siblings::SiblingKeys::open(
+        &dir.path().join("remote-access"),
+    ));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let listener = A2aListener::new(
         "127.0.0.1".to_string(),
         port,
         Arc::<StaticAgentDirectory>::clone(&directory),
         Arc::clone(&keys),
-        Arc::new(NoTunnel),
         shutdown_rx,
-    );
-    // `listener.start()` binds `port` for real; drop the reservation right
-    // before spawning it so no other test process can take it first.
-    drop(reservation);
+    )
+    .with_sibling_keys(
+        Arc::clone(&siblings) as Arc<dyn crate::remote_access::siblings::SiblingKeyVerifier>
+    )
+    // The listener serves on the reserved socket itself, so no other process
+    // can take the port, and connections queue on it until it accepts them.
+    .with_bound_listener(reservation.into_tokio_listener());
     crate::util::spawn_in_span(listener.start());
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_err()
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for the listener on port {port}"));
     Fixture {
         port,
         keys,
+        siblings,
         directory,
         gate,
         shutdown_tx,
@@ -286,12 +281,11 @@ async fn client_for(
         .default_headers(auth)
         .build()
         .unwrap();
-    let card = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let card = wait::guarded(
+        "the reply to resolve",
         AgentCardResolver::new(Some(http)).resolve(&fixture.url(&format!("/agents/{agent}"))),
     )
     .await
-    .expect("timed out resolving the agent card")
     .unwrap();
     A2AClientFactory::builder()
         .with_interceptor(Arc::new(AuthInterceptor::bearer(token)))
@@ -319,7 +313,7 @@ fn text_of_event(event: &StreamResponse) -> &str {
 
 #[tokio::test]
 async fn each_agent_serves_its_own_card_with_its_own_url() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -354,7 +348,7 @@ async fn each_agent_serves_its_own_card_with_its_own_url() {
 
 #[tokio::test]
 async fn a_public_agent_serves_its_card_without_a_key_but_nothing_else() {
-    let fx = fixture().await;
+    let fx = fixture();
     let http = reqwest::Client::new();
 
     let card = http
@@ -384,7 +378,7 @@ async fn a_public_agent_serves_its_card_without_a_key_but_nothing_else() {
 
 #[tokio::test]
 async fn a_private_agent_is_404_on_every_route_without_a_key_and_served_with_one() {
-    let fx = fixture().await;
+    let fx = fixture();
     let http = reqwest::Client::new();
 
     for path in [
@@ -422,8 +416,78 @@ async fn a_private_agent_is_404_on_every_route_without_a_key_and_served_with_one
 }
 
 #[tokio::test]
+async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_not() {
+    use crate::remote_access::siblings::keys::{NewSibling, issue_key};
+    let fx = fixture();
+    let inbound = issue_key();
+    fx.siblings
+        .upsert(NewSibling {
+            slug: "desktop".to_string(),
+            display_name: "Desk".to_string(),
+            account_uri: "https://acme.test/acct/desktop".to_string(),
+            outbound_key: issue_key(),
+            inbound_key: inbound.clone(),
+        })
+        .await
+        .unwrap();
+    let http = reqwest::Client::new();
+    let card_url = fx.url("/agents/vault/.well-known/agent-card.json");
+
+    assert_eq!(
+        http.get(&card_url).send().await.unwrap().status(),
+        StatusCode::NOT_FOUND,
+        "no key"
+    );
+    assert_eq!(
+        http.get(&card_url)
+            .bearer_auth(issue_key())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND,
+        "a key nobody holds"
+    );
+    assert_eq!(
+        http.get(&card_url)
+            .bearer_auth(&inbound)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK,
+        "the sibling's key"
+    );
+    // The same key calls the agent: a real message round trip as `sibling:desktop`.
+    let client = client_for(&fx, "vault", &inbound).await;
+    let reply = wait::guarded(
+        "the reply to send_message",
+        client.send_message(&user_message("hello from the desktop")),
+    )
+    .await
+    .unwrap();
+    assert!(
+        text_of(&reply).contains("vault"),
+        "the private agent answered: {}",
+        text_of(&reply)
+    );
+
+    // Revoking the join closes the door again.
+    fx.siblings.remove("desktop").await.unwrap();
+    assert_eq!(
+        http.get(&card_url)
+            .bearer_auth(&inbound)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
 async fn an_unknown_agent_is_404_even_with_a_valid_key() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -444,7 +508,7 @@ async fn an_unknown_agent_is_404_even_with_a_valid_key() {
 
 #[tokio::test]
 async fn a_stopped_agent_is_503_with_a_body_saying_it_isnt_running() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
     fx.directory.set_state("scout", AgentState::Stopped);
@@ -491,7 +555,7 @@ async fn a_stopped_agent_is_503_with_a_body_saying_it_isnt_running() {
 
 #[tokio::test]
 async fn paths_outside_an_agent_prefix_are_404() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -525,48 +589,49 @@ async fn paths_outside_an_agent_prefix_are_404() {
 
 #[tokio::test]
 async fn jsonrpc_reaches_the_named_agent_through_the_prefix() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
 
     let scout = client_for(&fx, "scout", &key).await;
     let vault = client_for(&fx, "vault", &key).await;
-    let from_scout = tokio::time::timeout(TEST_TIMEOUT, scout.send_message(&user_message("x")))
-        .await
-        .unwrap()
-        .unwrap();
-    let from_vault = tokio::time::timeout(TEST_TIMEOUT, vault.send_message(&user_message("x")))
-        .await
-        .unwrap()
-        .unwrap();
+    let from_scout = wait::guarded(
+        "the reply to send_message",
+        scout.send_message(&user_message("x")),
+    )
+    .await
+    .unwrap();
+    let from_vault = wait::guarded(
+        "the reply to send_message",
+        vault.send_message(&user_message("x")),
+    )
+    .await
+    .unwrap();
     assert_eq!(text_of(&from_scout), "scout says hi");
     assert_eq!(text_of(&from_vault), "vault says hi");
 }
 
 #[tokio::test]
 async fn jsonrpc_streams_events_through_the_prefix_as_they_are_produced() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let client = client_for(&fx, "scout", &key).await;
 
-    let mut stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let mut stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&user_message("stream")),
     )
     .await
-    .unwrap()
     .unwrap();
 
-    let first = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+    let first = wait::guarded("the next streamed event", stream.next())
         .await
-        .expect("the first event must arrive while the stream is still open")
         .unwrap()
         .unwrap();
     assert_eq!(text_of_event(&first), "scout says first");
 
     fx.gate.notify_one();
-    let second = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+    let second = wait::guarded("the next streamed event", stream.next())
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     assert_eq!(text_of_event(&second), "scout says second");
@@ -585,7 +650,7 @@ fn rest_body(text: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn rest_reaches_the_named_agent_through_the_prefix() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -603,7 +668,7 @@ async fn rest_reaches_the_named_agent_through_the_prefix() {
 
 #[tokio::test]
 async fn rest_streams_chunks_through_the_prefix_as_they_are_produced() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -616,18 +681,16 @@ async fn rest_streams_chunks_through_the_prefix_as_they_are_produced() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let first = tokio::time::timeout(TEST_TIMEOUT, resp.chunk())
+    let first = wait::guarded("the reply to chunk", resp.chunk())
         .await
-        .expect("the first chunk must arrive while the response is still open")
         .unwrap()
         .unwrap();
     assert!(String::from_utf8_lossy(&first).contains("scout says first"));
 
     fx.gate.notify_one();
     let mut tail = String::new();
-    while let Some(chunk) = tokio::time::timeout(TEST_TIMEOUT, resp.chunk())
+    while let Some(chunk) = wait::guarded("the reply to chunk", resp.chunk())
         .await
-        .unwrap()
         .unwrap()
     {
         tail.push_str(&String::from_utf8_lossy(&chunk));
@@ -637,7 +700,7 @@ async fn rest_streams_chunks_through_the_prefix_as_they_are_produced() {
 
 #[tokio::test]
 async fn the_query_string_survives_prefix_stripping() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 

@@ -15,7 +15,7 @@ Fires after agent turns when accumulated unobserved message tokens exceed a thre
 - **Soft threshold** (`threshold_tokens`): starts a cooldown timer; fires when cooldown expires.
 - **Force threshold** (`force_threshold_tokens`): fires immediately, bypassing cooldown.
 
-The main agent's own cycle runs off the event loop in a background worker, so it never delays the next message, a stop, or a shutdown — at most one cycle runs at a time, and a trigger arriving mid-cycle coalesces into one follow-up rather than stacking. Memory can be "one step stale" as a result: a turn that starts before a still-running cycle finishes sees the pre-cycle context. The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
+The main agent's own cycle runs off the event loop in a background worker, so it never delays the next message, a stop, or a shutdown — at most one cycle runs at a time, and a trigger arriving mid-cycle coalesces into one follow-up rather than stacking. The `/observe` and `/reflect` chat commands run through the same worker and answer with a notice when they finish. Memory can be "one step stale" as a result: a turn that starts before a still-running cycle finishes sees the pre-cycle context. The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
 
 | File | Format | Contents |
 |------|--------|----------|
@@ -29,7 +29,7 @@ The bundled `OBSERVER.md` also extracts **interaction signals** — corrections/
 
 Customize extraction guidance by editing `memory/OBSERVER.md`.
 
-Extraction (the LLM call) and persistence (episode id allocation, writing files, indexing, embedding, the reflector check) are separate steps. Persistence always goes through the memory merge writer — a single serialized writer shared by the main agent's own observation flow and every agent session's completion, so episode numbering and log appends never race.
+Extraction (the LLM call) and persistence (episode id allocation, writing files, indexing, embedding, the reflector check) are separate steps. Persistence always goes through the memory merge writer — a single serialized writer shared by the main agent's own observation flow and every agent session's completion, so episode numbering and log appends never race. No lock is held across a model or embedding call, so a reflection in progress never holds up another run's merge or a config reload.
 
 An automatic extraction or merge failure backs off exponentially (1m, 2m, 4m, ... capped at 1h) instead of re-attempting — and re-spending an LLM call — on every later threshold crossing while unobserved messages keep piling up; those messages are never discarded on a failed attempt, so they're picked up once it recovers. You're told once when a failure streak starts, in plain language, and once when it clears. The `/observe` chat command always attempts regardless of this backoff, and a working manual retry clears it for the automatic path too.
 
@@ -45,7 +45,7 @@ Fires when `memory/observations.json` exceeds its token threshold. Calls an LLM 
 
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki. These are completely separate systems.
 
-The original observations are backed up to `observations.json.bak` before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
+The original observations are backed up to `observations.json.bak` before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content). Observations merged while the reflector's model call runs are kept, after the compressed ones.
 
 An automatic reflection failure follows the same backoff and once-per-streak notice as the observer's own, above — the reflector's tracker is shared globally across the main agent and every session, since the observation log it compresses is itself global. The `/reflect` chat command bypasses the backoff and always attempts, and its outcome updates the same tracker.
 
@@ -68,6 +68,10 @@ Use `memory_get` to retrieve the full transcript of a specific episode by ID, or
 Episodes are indexed after each observer extraction and synced on startup. Wiki pages in `team/wiki/` are resynced into the team index before every search, so a page you just wrote is searchable immediately; a wiki result's ID is the page path (`team/wiki/...`) to open with `read_file`, and `source: "wiki"` searches only the team wiki. Wiki pages are exempt from temporal decay.
 
 A workbench artifact runs the same search via `GET /api/agents/<agent>/memory/search?q=<query>&limit=<1..50, default 10>&source=observations|episodes|wiki&date_from=&date_to=` (no `episode_ids` filter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, `semantic` saying whether vector search contributed. A blank `q`, an unrecognized `source`, or a malformed date answers `400`.
+
+## Thinking
+
+An assistant message may carry the model's reasoning as `thinking` blocks (readable `text`, plus an opaque `signature` or encrypted block some providers need replayed). `recent_messages.json` and session transcripts keep the blocks whole; episode transcripts keep the readable text only. The observer, reflector, search index, `memory_get` and token estimates never include it. If you read `recent_messages.json` directly, ignore the `signature`, `redacted`, `part` and `origin` fields (`origin` names the provider and model that produced a block, so a provider replays only its own).
 
 ## Gotchas
 

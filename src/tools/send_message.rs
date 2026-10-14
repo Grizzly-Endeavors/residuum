@@ -8,12 +8,9 @@ use crate::bus::{
     NotificationEvent, NotifyName, Publisher, ResponseEvent, topics,
 };
 use crate::inference::ToolDefinition;
+use crate::interfaces::types::WEB_UI_ENDPOINT;
 
 use super::{Tool, ToolError, ToolResult};
-
-/// The web UI's endpoint name — always the owner's own channel, with no
-/// conversation concept to post elsewhere within.
-const WEB_UI_ENDPOINT: &str = "ws";
 
 /// Error returned to a session that tries to reach the owner directly.
 const SESSION_OWNER_TARGET_REFUSED: &str = "sessions cannot message the owner directly; message \

@@ -3,8 +3,9 @@
 //! The artifacts listener forwards `/api` to this router with an
 //! [`ArtifactsOrigin`] marker on the request (see `workbench::forward`). An
 //! artifact page can call everything the web UI can, except the routes listed
-//! in [`BLOCKED_ROUTES`]: they end or reconfigure the whole process, and a page
-//! that an agent wrote has no business doing that. The refusal is a `403` with
+//! in [`BLOCKED_ROUTES`] and below [`BLOCKED_PREFIXES`]: they end or
+//! reconfigure the whole process, or decide who may reach it remotely, and a
+//! page that an agent wrote has no business doing that. The refusal is a `403` with
 //! a plain-language `{ "error" }`, so the page can show why.
 //!
 //! The marker is a request extension, so a client can't send it, and a request
@@ -30,8 +31,14 @@ const BLOCKED_ROUTES: [&str; 6] = [
     "/api/hub/config/complete-setup",
 ];
 
-const REFUSAL_MESSAGE: &str = "Pages opened from the workbench can't shut down, stop, update, or \
-set up Residuum. Do that from the Residuum app.";
+/// Route prefixes a page on the artifacts origin is refused, at the prefix
+/// itself and below it: the paired devices and the remote-access setup. A page
+/// that could approve a pairing request or mint a pairing link could let a
+/// stranger in.
+const BLOCKED_PREFIXES: [&str; 2] = ["/api/hub/devices", "/api/hub/remote-access"];
+
+const REFUSAL_MESSAGE: &str = "Pages opened from the workbench can't shut down, stop, update, set up, \
+or manage who can reach Residuum. Do that from the Residuum app.";
 
 /// Refuse a request that arrived through the artifacts origin to a route in
 /// [`BLOCKED_ROUTES`]. Every other request passes untouched.
@@ -49,6 +56,10 @@ pub(super) async fn refuse_blocked_artifact_calls(req: Request, next: Next) -> R
 
 fn is_blocked(path: &str) -> bool {
     BLOCKED_ROUTES.contains(&path)
+        || BLOCKED_PREFIXES.iter().any(|prefix| {
+            path.strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
 }
 
 #[cfg(test)]
@@ -73,8 +84,23 @@ mod tests {
             "/api/hub/config/raw",
             "/api/agents/scout/status",
             "/api/hub/shutdown/now",
+            "/api/hub/pairing/handoff",
+            "/api/hub/devicesx",
         ] {
             assert!(!is_blocked(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_device_and_remote_access_routes_are_blocked_at_and_below_their_prefix() {
+        for path in [
+            "/api/hub/devices",
+            "/api/hub/devices/abc",
+            "/api/hub/devices/pending/abc/approve",
+            "/api/hub/devices/recovery-codes",
+            "/api/hub/remote-access/pair-link",
+        ] {
+            assert!(is_blocked(path), "{path}");
         }
     }
 

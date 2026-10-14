@@ -9,10 +9,78 @@
 use super::agent_watch::agent_bus;
 use super::*;
 use crate::bus::{NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, UserInboxAddedEvent, topics};
-use crate::hub::push::{Browser, PushPreferencesPatch, PutPushDeviceRequest, WebPushSubscription};
+use crate::hub::agent_watch::AgentChangeKind;
+use crate::hub::push::{
+    Browser, PushPreferencesPatch, PutPushDeviceRequest, Trigger, TriggerDecision, TriggerInput,
+    WebPushSubscription,
+};
+use crate::memory::types::Visibility;
 
-/// How long to wait to be sure nothing more is coming.
-const QUIET: Duration = Duration::from_millis(500);
+/// One decision a test waits for, by what it is about.
+type Decided = Box<dyn Fn(&TriggerDecision) -> bool>;
+
+/// Read the triggers' decisions until one has been seen for each of
+/// `expected`, in any order (two alike need two decisions), then wait until
+/// every push those decisions started has finished delivering. After that
+/// the devices have received everything the inputs behind them will send.
+///
+/// Returns every push the decisions read here started, for a failed count
+/// to say where each push came from.
+async fn until_decided(
+    hub: &Fixture,
+    decisions: &mut broadcast::Receiver<TriggerDecision>,
+    what: &str,
+    expected: Vec<Decided>,
+) -> Vec<Trigger> {
+    let mut waiting: Vec<Option<Decided>> = expected.into_iter().map(Some).collect();
+    let mut started = Vec::new();
+    while waiting.iter().any(Option::is_some) {
+        let decision = wait::next(what, decisions).await;
+        started.extend(decision.triggers.iter().cloned());
+        if let Some(slot) = waiting
+            .iter_mut()
+            .find(|slot| slot.as_ref().is_some_and(|matches| matches(&decision)))
+        {
+            *slot = None;
+        }
+    }
+    let mut pending = hub.services.push.deliveries_pending();
+    wait::watch_until("the pushes to finish delivering", &mut pending, |n| *n == 0).await;
+    started
+}
+
+/// The decision about an inbox item `item_id` the tool announced.
+fn inbox_item(item_id: &'static str) -> Decided {
+    Box::new(move |decision| {
+        matches!(&decision.input, TriggerInput::Change(change)
+            if matches!(&change.kind, AgentChangeKind::UserInboxAdded { item_id: id } if id == item_id))
+    })
+}
+
+/// The decision about a turn of `visibility` ending.
+fn turn_ended(visibility: Visibility) -> Decided {
+    Box::new(move |decision| {
+        matches!(&decision.input, TriggerInput::Change(change)
+            if matches!(&change.kind, AgentChangeKind::TurnEnded(turn) if turn.visibility == visibility))
+    })
+}
+
+/// The decision about an outbound task announcement.
+fn outbound_announced() -> Decided {
+    Box::new(|decision| {
+        matches!(&decision.input, TriggerInput::Change(change)
+            if matches!(change.kind, AgentChangeKind::OutboundTaskChanged(_)))
+    })
+}
+
+/// The decision that `agent` failed, and that started its push.
+fn failed(agent: &'static str) -> Decided {
+    Box::new(move |decision| {
+        decision.triggers.iter().any(
+            |trigger| matches!(trigger, Trigger::AgentFailed { agent: name, .. } if name == agent),
+        )
+    })
+}
 
 type HubSocketStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -52,6 +120,7 @@ impl Phone {
                 },
                 label: Some(label.to_string()),
                 preferences: Some(preferences),
+                previous_endpoint: None,
             })
             .await
             .unwrap();
@@ -68,16 +137,10 @@ impl Phone {
 
     /// Wait until `count` pushes have arrived.
     async fn until_pushes(&self, count: usize) {
-        eventually(&format!("{count} push(es) to arrive"), || async {
+        wait::until(&format!("{count} push(es) to arrive"), || async {
             (self.pushes().await >= count).then_some(())
         })
         .await;
-    }
-
-    /// Wait out [`QUIET`], then say how many pushes have arrived in all.
-    async fn pushes_after_quiet(&self) -> usize {
-        tokio::time::sleep(QUIET).await;
-        self.pushes().await
     }
 
     /// What the push that arrived first says. A browser's key opens one
@@ -160,7 +223,7 @@ async fn report_presence(socket: &mut HubSocketStream, device_id: &str, active: 
 
 /// Wait until the hub's book says whether `device_id` is present.
 async fn until_present(hub: &Fixture, device_id: &str, present: bool) {
-    eventually("the hub to record the device's presence", || async {
+    wait::until("the hub to record the device's presence", || async {
         (hub.services
             .push
             .presence()
@@ -190,6 +253,7 @@ async fn an_item_an_agent_files_is_one_push_whose_badge_is_every_agents_unread_c
     // A stopped agent's unread items count toward the badge too.
     hub.add_inbox_item("atlas", "20260930_heron");
     let mut phone = Phone::register(&hub, "Phone", all_on()).await;
+    let mut decisions = hub.push_decisions.subscribe();
 
     hub.chat("scout", "please file a note").await;
     phone.until_pushes(1).await;
@@ -212,10 +276,17 @@ async fn an_item_an_agent_files_is_one_push_whose_badge_is_every_agents_unread_c
     );
     // The turn that filed it ended with the web client connected, and the
     // file change beside the announcement is not another item.
+    let started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the turn's end",
+        vec![turn_ended(Visibility::User)],
+    )
+    .await;
     assert_eq!(
-        phone.pushes_after_quiet().await,
+        phone.pushes().await,
         1,
-        "one item is one push, and the reply the client saw is none"
+        "one item is one push, and the reply the client saw is none; pushes started: {started:?}"
     );
 }
 
@@ -233,16 +304,24 @@ async fn each_device_hears_only_the_events_its_preferences_turn_on() {
         },
     )
     .await;
+    let mut decisions = hub.push_decisions.subscribe();
 
     file_item(&hub, "scout", "20260930_pelican").await;
     wants.until_pushes(1).await;
     announce_outbound(&hub, "scout", outbound_task(true)).await;
     declines.until_pushes(1).await;
 
+    let started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the item and the task",
+        vec![inbox_item("20260930_pelican"), outbound_announced()],
+    )
+    .await;
     assert_eq!(
-        wants.pushes_after_quiet().await,
+        wants.pushes().await,
         2,
-        "it wants the item and the unreachable remote"
+        "it wants the item and the unreachable remote; pushes started: {started:?}"
     );
     assert_eq!(
         declines.pushes().await,
@@ -262,6 +341,7 @@ async fn an_agent_that_cant_start_is_one_push_and_nothing_in_its_inbox() {
     )
     .unwrap();
     let mut phone = Phone::register(&hub, "Phone", PushPreferencesPatch::default()).await;
+    let mut decisions = hub.push_decisions.subscribe();
 
     hub.host.start("scout").await.unwrap_err();
     phone.until_pushes(1).await;
@@ -276,10 +356,17 @@ async fn an_agent_that_cant_start_is_one_push_and_nothing_in_its_inbox() {
     );
     assert_eq!(str_at(&payload, "tag"), "failed:scout");
     assert_eq!(str_at(&payload, "target"), "/agent/scout");
+    let started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the failure",
+        vec![failed("scout")],
+    )
+    .await;
     assert_eq!(
-        phone.pushes_after_quiet().await,
+        phone.pushes().await,
         1,
-        "the failure is the only push, with no inbox item to announce beside it"
+        "the failure is the only push, with no inbox item to announce beside it; pushes started: {started:?}"
     );
     assert!(
         !hub.root.path().join("scout/inbox").exists(),
@@ -320,6 +407,7 @@ async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
     let mut phone = Phone::register(&hub, "Phone", all_on()).await;
+    let mut decisions = hub.push_decisions.subscribe();
 
     // The streak starts and passes the threshold, and then the tracker
     // announces the same streak once more.
@@ -328,7 +416,22 @@ async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
     phone.until_pushes(1).await;
     announce_outbound(&hub, "scout", outbound_task(true)).await;
 
-    assert_eq!(phone.pushes_after_quiet().await, 1, "once per streak");
+    let started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read all three announcements",
+        vec![
+            outbound_announced(),
+            outbound_announced(),
+            outbound_announced(),
+        ],
+    )
+    .await;
+    assert_eq!(
+        phone.pushes().await,
+        1,
+        "once per streak; pushes started: {started:?}"
+    );
     let payload = phone.first_payload().await;
     assert_eq!(str_at(&payload, "event"), "outbound_unreachable");
     assert_eq!(str_at(&payload, "title"), "scout can't reach laptop");
@@ -349,19 +452,16 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
     let mut phone = Phone::register(&hub, "Phone", all_on()).await;
+    let mut decisions = hub.push_decisions.subscribe();
 
     // A reply the connected client saw.
     assert_eq!(hub.chat("scout", "hello").await, "scout here");
 
-    // A reply the client left before: a slow model, and the client closes
-    // its socket while the turn runs.
+    // A reply the client left before: the model holds its reply, and the
+    // client closes its socket while the turn runs.
     hub.mock("scout").reset().await;
-    mount_reply(
-        hub.mock("scout"),
-        "**Away** reply",
-        Duration::from_millis(600),
-    )
-    .await;
+    mount_reply(hub.mock("scout"), "**Away** reply").await;
+    hub.gate("scout").close();
     let (mut ws, _) =
         tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
             .await
@@ -371,12 +471,14 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     ))
     .await
     .unwrap();
-    eventually("scout to be busy", || async {
-        hub.activity_of("scout").busy.then_some(())
-    })
-    .await;
+    hub.gate("scout").until_held(1).await;
     ws.close(None).await.unwrap();
     drop(ws);
+    wait::until("the client to leave", || async {
+        (hub.host.connected_clients("scout") == Some(0)).then_some(())
+    })
+    .await;
+    hub.gate("scout").open_all();
     phone.until_pushes(1).await;
 
     // A teammate's message starts a background turn that still replies.
@@ -389,9 +491,8 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
         .await
         .unwrap();
     loop {
-        let change = tokio::time::timeout(POLL_TIMEOUT, changes.recv())
+        let change = wait::guarded("the background turn to end", changes.recv())
             .await
-            .expect("the background turn ends")
             .unwrap();
         if matches!(change.kind, crate::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn)
             if turn.visibility == crate::memory::types::Visibility::Background)
@@ -400,10 +501,17 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
         }
     }
 
+    let started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the background turn's end",
+        vec![turn_ended(Visibility::Background)],
+    )
+    .await;
     assert_eq!(
-        phone.pushes_after_quiet().await,
+        phone.pushes().await,
         1,
-        "only the reply nobody saw is a push"
+        "only the reply nobody saw is a push; pushes started: {started:?}"
     );
     let payload = phone.first_payload().await;
     assert_eq!(str_at(&payload, "event"), "reply_while_away");
@@ -411,6 +519,71 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     assert_eq!(str_at(&payload, "body"), "Away reply");
     assert_eq!(str_at(&payload, "tag"), "reply:scout");
     assert_eq!(str_at(&payload, "target"), "/agent/scout");
+}
+
+#[tokio::test]
+async fn a_reply_the_reader_saw_is_not_pushed_or_unread_when_they_leave_before_the_turn_ends() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let phone = Phone::register(&hub, "Phone", all_on()).await;
+    let mut decisions = hub.push_decisions.subscribe();
+    let mut changes = hub.host.agent_changes().subscribe();
+
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
+            .await
+            .unwrap();
+    ws.send(WsMessage::text(
+        json!({ "type": "send_message", "id": "m1", "content": "ping" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    // The reader sees the reply, then closes the page while the rest of the
+    // turn (writing history, the endpoint copy) is still to come.
+    wait::guarded("the reply to reach the page", async {
+        while let Some(frame) = ws.next().await {
+            if let WsMessage::Text(raw) = frame.unwrap()
+                && serde_json::from_str::<Value>(&raw)
+                    .unwrap()
+                    .get("type")
+                    .and_then(Value::as_str)
+                    == Some("response")
+            {
+                return;
+            }
+        }
+        panic!("the WebSocket closed before the reply arrived");
+    })
+    .await;
+    ws.close(None).await.unwrap();
+    drop(ws);
+    wait::until("the reader to leave", || async {
+        (hub.host.connected_clients("scout") == Some(0)).then_some(())
+    })
+    .await;
+
+    let turn = wait::guarded("the turn to end", async {
+        loop {
+            let change = changes.recv().await.unwrap();
+            if let AgentChangeKind::TurnEnded(turn) = change.kind {
+                return turn;
+            }
+        }
+    })
+    .await;
+    assert!(
+        turn.client_connected,
+        "the reply reached a connected reader: {turn:?}"
+    );
+    let started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the turn's end",
+        vec![turn_ended(Visibility::User)],
+    )
+    .await;
+    assert_eq!(phone.pushes().await, 0, "pushes started: {started:?}");
+    assert_eq!(hub.activity_of("scout").unread, 0);
 }
 
 // ─── Presence ─────────────────────────────────────────────────────────
@@ -422,16 +595,24 @@ async fn a_device_in_front_of_its_user_hears_nothing_until_it_isnt() {
     let mut phone = Phone::register(&hub, "Phone", PushPreferencesPatch::default()).await;
     let other = Phone::register(&hub, "Other", PushPreferencesPatch::default()).await;
     let mut socket = open_hub_socket(&hub).await;
+    let mut decisions = hub.push_decisions.subscribe();
 
     // The window is visible and focused.
     report_presence(&mut socket, &phone.id, true).await;
     until_present(&hub, &phone.id, true).await;
     file_item(&hub, "scout", "20260930_first").await;
     other.until_pushes(1).await;
+    let first_started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the first item",
+        vec![inbox_item("20260930_first")],
+    )
+    .await;
     assert_eq!(
-        phone.pushes_after_quiet().await,
+        phone.pushes().await,
         0,
-        "the device in front of its user is skipped, and the other one is not"
+        "the device in front of its user is skipped, and the other one is not; pushes started: {first_started:?}"
     );
 
     // The window loses focus.
@@ -445,10 +626,17 @@ async fn a_device_in_front_of_its_user_hears_nothing_until_it_isnt() {
     until_present(&hub, &phone.id, true).await;
     file_item(&hub, "scout", "20260930_third").await;
     other.until_pushes(3).await;
+    let third_started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the third item",
+        vec![inbox_item("20260930_third")],
+    )
+    .await;
     assert_eq!(
-        phone.pushes_after_quiet().await,
+        phone.pushes().await,
         1,
-        "present again, so the third item is skipped"
+        "present again, so the third item is skipped; pushes started: {third_started:?}"
     );
 
     // Its socket closes without another word.
@@ -499,7 +687,7 @@ async fn a_device_that_stops_receiving_is_told_to_the_user() {
 
     file_item(&hub, "scout", "20260930_first").await;
 
-    let notice = eventually("the notice about the removed device", || async {
+    let notice = wait::until("the notice about the removed device", || async {
         hub.push_notices.lock().unwrap().first().cloned()
     })
     .await;

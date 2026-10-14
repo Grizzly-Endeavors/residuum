@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { connectTarget, phaseOf, teamsMessagingEndpoint } from "./cloud.svelte";
+import {
+  accountDashboardUrl,
+  accountTarget,
+  connectTarget,
+  phaseOf,
+  teamsMessagingEndpoint,
+} from "./cloud.svelte";
 import type { CloudStatusResponse } from "./types";
 
 function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusResponse {
@@ -14,13 +20,59 @@ function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusRespon
 }
 
 describe("teamsMessagingEndpoint", () => {
-  it("builds the address pasted into the Teams developer portal", () => {
-    expect(teamsMessagingEndpoint("https://bear.agent-residuum.com", "laptop", "scout")).toBe(
-      "https://bear.agent-residuum.com/teams/laptop/scout",
+  it("builds the address pasted into the Teams developer portal on the instance's own origin", () => {
+    const source = { instance_origin: "https://laptop.bear.agent-residuum.com" };
+    expect(teamsMessagingEndpoint(source, "scout")).toBe(
+      "https://laptop.bear.agent-residuum.com/teams/scout",
     );
-    expect(teamsMessagingEndpoint("https://bear.agent-residuum.com/", "laptop", "scout")).toBe(
-      "https://bear.agent-residuum.com/teams/laptop/scout",
+    expect(
+      teamsMessagingEndpoint(
+        { instance_origin: "https://laptop.bear.agent-residuum.com/" },
+        "scout",
+      ),
+    ).toBe("https://laptop.bear.agent-residuum.com/teams/scout");
+  });
+
+  it("has no address until the status names an instance origin", () => {
+    expect(teamsMessagingEndpoint({}, "scout")).toBeNull();
+    expect(teamsMessagingEndpoint({ instance_origin: "" }, "scout")).toBeNull();
+  });
+});
+
+describe("accountTarget", () => {
+  it("manages the account on Residuum Cloud's dashboard when no relay is set", () => {
+    expect(accountTarget("")).toEqual({
+      url: "https://agent-residuum.com/dashboard",
+      host: "agent-residuum.com",
+    });
+  });
+
+  it("follows the relay URL", () => {
+    expect(accountTarget("ws://127.0.0.1:8080/tunnel/v2/register")?.url).toBe(
+      "http://127.0.0.1:8080/dashboard",
     );
+  });
+
+  it("has nowhere to go for an address that isn't a ws or wss one", () => {
+    expect(accountTarget("https://relay.example.com")).toBeNull();
+  });
+});
+
+describe("accountDashboardUrl", () => {
+  it("is the dashboard on the relay's web origin", () => {
+    expect(accountDashboardUrl("https://agent-residuum.com")).toBe(
+      "https://agent-residuum.com/dashboard",
+    );
+    expect(accountDashboardUrl("http://127.0.0.1:8080")).toBe("http://127.0.0.1:8080/dashboard");
+  });
+
+  it("has nowhere to go without an origin, or for one that isn't a plain http origin", () => {
+    expect(accountDashboardUrl(null)).toBeNull();
+    expect(accountDashboardUrl(undefined)).toBeNull();
+    expect(accountDashboardUrl("")).toBeNull();
+    expect(accountDashboardUrl("javascript:alert(1)")).toBeNull();
+    expect(accountDashboardUrl("https://relay.example.com/path")).toBeNull();
+    expect(accountDashboardUrl("https://relay.example.com?x=1")).toBeNull();
   });
 });
 
@@ -33,11 +85,11 @@ describe("connectTarget", () => {
   });
 
   it("follows the relay URL, so a relay on this machine is signed in to there", () => {
-    expect(connectTarget("ws://127.0.0.1:8080/tunnel/register", "7701")).toEqual({
+    expect(connectTarget("ws://127.0.0.1:8080/tunnel/v2/register", "7701")).toEqual({
       url: "http://127.0.0.1:8080/connect?port=7701",
       host: "127.0.0.1:8080",
     });
-    expect(connectTarget(" wss://relay.example.com/tunnel/register ", "7700")?.url).toBe(
+    expect(connectTarget(" wss://relay.example.com/tunnel/v2/register ", "7700")?.url).toBe(
       "https://relay.example.com/connect?port=7700",
     );
   });
@@ -54,18 +106,26 @@ describe("connectTarget", () => {
 });
 
 describe("phaseOf", () => {
-  it("tells the four states apart", () => {
+  it("tells the five states apart", () => {
     expect(phaseOf(status({ status: "connected", has_token: true, enabled: true }))).toBe(
       "connected",
     );
     expect(phaseOf(status({ status: "connecting", has_token: true, enabled: true }))).toBe(
       "connecting",
     );
+    expect(phaseOf(status({ status: "refused", has_token: true, enabled: true }))).toBe("refused");
     expect(phaseOf(status({ has_token: true, enabled: false }))).toBe("disconnected");
     expect(phaseOf(status())).toBe("none");
   });
 
   it("counts a saved token that is switched on as connecting while the tunnel isn't up yet", () => {
     expect(phaseOf(status({ has_token: true, enabled: true }))).toBe("connecting");
+  });
+
+  it("reads a refusal the tunnel left behind as switched off once the token is off or gone", () => {
+    expect(phaseOf(status({ status: "refused", has_token: true, enabled: false }))).toBe(
+      "disconnected",
+    );
+    expect(phaseOf(status({ status: "refused" }))).toBe("none");
   });
 });

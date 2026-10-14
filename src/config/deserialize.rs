@@ -239,6 +239,28 @@ pub(super) struct ProviderEntryFile {
     pub(super) url: Option<String>,
     /// Ollama `keep_alive` duration (e.g. `"5m"`, `"0"` to unload immediately).
     pub(super) keep_alive: Option<String>,
+    /// Per-model settings under `[providers.<name>.models.<model>]`, keyed by
+    /// the model name as it appears after the slash.
+    pub(super) models: Option<HashMap<String, ProviderModelEntryFile>>,
+}
+
+/// One model's settings under `[providers.<name>.models.<model>]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProviderModelEntryFile {
+    /// The kinds of input the model takes, e.g. `["text"]` or
+    /// `["text", "image"]`. Unset means undeclared.
+    pub(super) input: Option<Vec<InputModalityFile>>,
+}
+
+/// A kind of model input named in a model's `input` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum InputModalityFile {
+    /// Text.
+    Text,
+    /// Images.
+    Image,
 }
 
 /// A model string that can be either a single string or a list (for failover).
@@ -424,6 +446,8 @@ pub(super) struct DiscordConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub(super) context_messages: Option<usize>,
+    /// Whether text the agent writes before a tool call is posted to the chat.
+    pub(super) deliver_intermediate: Option<bool>,
 }
 
 /// Raw TOML `[telegram]` section.
@@ -436,6 +460,8 @@ pub(super) struct TelegramConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub(super) context_messages: Option<usize>,
+    /// Whether text the agent writes before a tool call is posted to the chat.
+    pub(super) deliver_intermediate: Option<bool>,
 }
 
 /// Raw TOML `[teams]` section.
@@ -452,6 +478,8 @@ pub(super) struct TeamsConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub(super) context_messages: Option<usize>,
+    /// Whether text the agent writes before a tool call is posted to the chat.
+    pub(super) deliver_intermediate: Option<bool>,
     /// Port for the dedicated Teams messaging listener.
     pub(super) port: Option<u16>,
 }
@@ -506,7 +534,7 @@ pub(super) struct RetryConfigFile {
 pub(super) struct IdleConfigFile {
     /// Inactivity timeout in minutes (0 = disabled).
     pub(super) timeout_minutes: Option<u64>,
-    /// Interface to switch notifications to when idle.
+    /// Interface agent-started main turns go to when idle; unset means the web UI.
     pub(super) idle_channel: Option<String>,
 }
 
@@ -520,8 +548,20 @@ pub(super) struct CloudConfigFile {
     pub(super) relay_url: Option<String>,
     /// Authentication token (supports `${ENV_VAR}` syntax).
     pub(super) token: Option<String>,
-    /// Local port to forward requests to.
+    /// Accepted so an existing config still loads; it has no effect.
     pub(super) local_port: Option<u16>,
+    /// Accepted so an existing config still loads; it has no effect.
+    pub(super) remote_access: Option<bool>,
+    /// Domain hosts are derived under.
+    pub(super) base_domain: Option<String>,
+    /// `"production"`, `"staging"` or a directory URL.
+    pub(super) acme_directory: Option<String>,
+    /// Extra PEM root for the ACME directory's TLS certificate.
+    pub(super) acme_root_ca: Option<String>,
+    /// Pin service base URL.
+    pub(super) pin_service_url: Option<String>,
+    /// Public DNS resolver as `ip:port`.
+    pub(super) caa_resolver: Option<String>,
 }
 
 /// Raw TOML `[web_search]` section.

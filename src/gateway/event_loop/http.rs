@@ -76,10 +76,6 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
             "/api/files/{id}",
             get(crate::gateway::file_server::serve_file),
         )
-        .route(
-            "/api/files/workspace",
-            get(crate::gateway::file_server::serve_workspace_file),
-        )
         .with_state(state.file_registry.clone());
 
     let sessions = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
@@ -89,6 +85,7 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
         messenger: Arc::clone(&state.agent_messenger),
         publisher: state.publisher.clone(),
         skill_state: Arc::clone(&state.skill_state),
+        main_conversation: state.layout.recent_messages_json(),
     });
 
     let scheduled = web::scheduled::scheduled_api_router(web::scheduled::ScheduledApiState {
@@ -116,9 +113,10 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
 /// A2A settings, and status. The chat history, usage, user inbox, and A2A
 /// settings routes are the same file routes a stopped agent gets from
 /// `hub::AgentDirectory::agent_file_router`, here on the agent's own open
-/// state. It carries no hub-level route, no repair route (see
-/// `hub::http::agent_repair_router`), no static assets and no request guards;
-/// the hub router serves it under `/api/agents/{name}/` and applies those.
+/// state. The workspace file links are among them. It carries no hub-level
+/// route, no repair route (see `hub::http::agent_repair_router`), no static
+/// assets and no request guards; the hub router serves it under
+/// `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
     state: GatewayState,
     config_api_state: web::ConfigApiState,
@@ -127,6 +125,7 @@ pub fn build_gateway_app(
     use axum::routing::get;
 
     let state_tunnel_status_rx = extra.tunnel_status_rx.clone();
+    let live_updates = state.workspace_watch_health.clone();
     let routers = build_feature_routers(&state, extra);
 
     axum::Router::new()
@@ -147,7 +146,10 @@ pub fn build_gateway_app(
         .merge(web::agent_files_api_router(web::AgentFilesState::from(
             &config_api_state,
         )))
-        .merge(web::agent_status_api_router(config_api_state))
+        .merge(web::agent_status_api_router(web::AgentStatusState {
+            config: config_api_state,
+            live_updates,
+        }))
 }
 
 /// Spawn the Discord, Telegram, and Teams adapters that are configured.

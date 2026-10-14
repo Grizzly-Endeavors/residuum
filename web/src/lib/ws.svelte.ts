@@ -17,8 +17,10 @@ import { scheduled } from "./scheduled.svelte";
 import { FeedStore } from "./feed.svelte";
 import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
+import { noticeFrameNotice, reloadingNotice } from "./reload-notices";
 import { invalidate } from "./cache";
-import { userErrorMessage } from "./errors";
+import { newMessageId } from "./message-id";
+import { userErrorMessage, userErrorReason } from "./errors";
 import { normalizeWatchPrefix } from "./workspace-watch";
 import { WatchRegistry } from "./watch-registry";
 import {
@@ -32,7 +34,7 @@ import {
   cacheKeyProvidersRaw,
   cacheKeyMcpRaw,
 } from "./api";
-import type { ClientMessage, ImageAttachment, ServerMessage } from "./types";
+import type { ClientMessage, ImageAttachment, RecentHistorySegment, ServerMessage } from "./types";
 
 class WsCoordinator {
   /** The bound agent: the one this connection and its stores belong to, or `null` before one is chosen. */
@@ -43,13 +45,19 @@ class WsCoordinator {
   });
   /** The main chat's feed for the bound agent. Replaced on an agent switch. */
   store = $state<FeedStore>(this.createFeed(null));
+  /** Why the main chat's history couldn't be loaded, in plain words, until a load succeeds. */
+  historyError = $state<string | null>(null);
   /** The bound agent's sessions. Replaced on an agent switch. */
   sessions = $state<SessionsStore>(this.createSessions(null, this.store));
-  private msgCounter = 0;
   private hasConnected = false;
   /** The agent started while bound, so its chat may be behind once the connection opens. */
   private catchUpOnConnect = false;
   private frameListeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
+  /** Withdrawals of waiting messages awaiting the agent's answer, by message id. */
+  private withdrawals = new Map<
+    string,
+    { resolve: (withdrawn: boolean) => void; reject: (err: Error) => void }
+  >();
   /**
    * The bound agent's workspace watches. Whatever follows changes on this
    * socket registers here, and the registry keeps the socket's one watch set
@@ -94,18 +102,20 @@ class WsCoordinator {
         this.sessions.handleFrame(msg);
         return;
       }
+      this.settleWithdrawal(msg);
       if (msg.type === "error") {
         notifications.surface("error", msg.message, msg.details ?? undefined);
       } else if (msg.type === "workspace_watch_unavailable") {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;
       } else if (msg.type === "notice") {
-        notifications.surface("notice", msg.message);
+        const notice = noticeFrameNotice(msg);
+        if (notice !== null) notifications.surface(notice.kind, notice.message, notice.details);
       } else if (msg.type === "reloading") {
-        notifications.surface("system", "Gateway is reloading…");
+        const notice = reloadingNotice();
+        if (notice !== null) notifications.surface(notice.kind, notice.message);
         // Gateway is reloading config from disk — anything we cached about
-        // server-side state may be stale. Episode history is immutable and
-        // intentionally stays cached.
+        // server-side state may be stale.
         invalidate(CACHE_KEY_TIMEZONE);
         invalidate(CACHE_KEY_MCP_CATALOG);
         if (this.agent !== null) {
@@ -119,9 +129,14 @@ class WsCoordinator {
     };
 
     this.transport.onConnected = () => {
+      // Before anything goes out on it, so a message sent from here on counts as this connection's.
+      this.store.connected();
       // First on every connection: the activity line is built from the tool
       // frames, which the agent sends only to a connection that asks.
       this.transport.send({ type: "set_verbose", enabled: true });
+      // Then the turn in flight so far, which the live frames alone can't
+      // show: what streamed before this page connected, or while it was away.
+      this.transport.send({ type: "resync_turn" });
       // A turn still in flight carried on while the page was away.
       if (this.hasConnected) this.store.markReconnectGap();
       // Load the sessions listing, or catch up on frames missed while
@@ -185,6 +200,30 @@ class WsCoordinator {
   private connectionClosed(): void {
     this.watches.disconnected();
     this.store.clearPostTurnActivity();
+    this.store.forgetAsks();
+    this.failWithdrawals("The connection to the agent dropped before it answered.");
+  }
+
+  /** A frame that answers a withdrawal: taken back, no longer waiting, or read. */
+  private settleWithdrawal(msg: ServerMessage): void {
+    if (
+      msg.type !== "message_withdrawn" &&
+      msg.type !== "queued_message_unavailable" &&
+      msg.type !== "user_message"
+    ) {
+      return;
+    }
+    const pending = this.withdrawals.get(msg.id);
+    if (pending === undefined) return;
+    this.withdrawals.delete(msg.id);
+    pending.resolve(msg.type === "message_withdrawn");
+  }
+
+  /** Every withdrawal still awaiting an answer will get none: it fails with `reason`. */
+  private failWithdrawals(reason: string): void {
+    const pending = [...this.withdrawals.values()];
+    this.withdrawals.clear();
+    for (const { reject } of pending) reject(new Error(reason));
   }
 
   // ── Agent binding ─────────────────────────────────────────────────
@@ -194,12 +233,15 @@ class WsCoordinator {
    * running is timed from when the hub says the agent became busy.
    */
   private createFeed(agent: string | null): FeedStore {
-    return new FeedStore(() => {
-      if (agent === null) return null;
-      const since = hub.activityOf(agent).busy_since;
-      const at = since === null ? Number.NaN : Date.parse(since);
-      return Number.isNaN(at) ? null : at;
-    });
+    return new FeedStore(
+      () => {
+        if (agent === null) return null;
+        const since = hub.activityOf(agent).busy_since;
+        const at = since === null ? Number.NaN : Date.parse(since);
+        return Number.isNaN(at) ? null : at;
+      },
+      () => (agent === null ? "The agent" : hub.shownName(agent)),
+    );
   }
 
   /**
@@ -222,10 +264,12 @@ class WsCoordinator {
    * with the agent already bound does nothing.
    */
   useAgent(name: string | null): void {
+    this.failWithdrawals("The chat moved to another agent before it answered.");
     if (name === this.agent) return;
     this.transport.reset();
     const store = this.createFeed(name);
     this.store = store;
+    this.historyError = null;
     this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
     this.catchUpOnConnect = false;
@@ -251,21 +295,38 @@ class WsCoordinator {
     const agent = this.agent;
     if (agent === null) return;
     const store = this.store;
+    this.historyError = null;
     let recent;
     try {
-      recent = await fetchChatHistory(agent);
+      recent = await this.fetchRecentHistory(agent, store);
     } catch (err) {
       if (store !== this.store) return;
-      notifications.surface(
-        "error",
-        userErrorMessage(err, { action: "Couldn't load the chat history." }),
-      );
+      this.historyError = userErrorReason(err, { action: "Couldn't load the chat history." });
       return;
     }
     if (store !== this.store) return;
     // A message sent before the history arrived keeps its turn on screen.
     store.reloadHistory(recent);
     await this.loadOlderHistory();
+  }
+
+  /**
+   * Read the main chat's Recent segment, and read it again whenever a turn
+   * ended while it was on its way: the read may have come before history
+   * recorded that turn, and applying it would take the turn off the feed.
+   * A read that follows the page hearing the turn end holds it, since history
+   * records a turn before its end goes out. It needs no cap: each further read
+   * needs another turn to end during the one before, and main turns run one
+   * at a time.
+   */
+  private async fetchRecentHistory(agent: string, store: FeedStore): Promise<RecentHistorySegment> {
+    let ended;
+    let recent;
+    do {
+      ended = store.turnsEndedLive;
+      recent = await fetchChatHistory(agent);
+    } while (store === this.store && store.turnsEndedLive !== ended);
+    return recent;
   }
 
   /**
@@ -303,7 +364,7 @@ class WsCoordinator {
     if (agent === null || !store.historyLoaded) return;
     let recent;
     try {
-      recent = await fetchChatHistory(agent);
+      recent = await this.fetchRecentHistory(agent, store);
     } catch (err) {
       if (store !== this.store) return;
       notifications.surface(
@@ -365,16 +426,42 @@ class WsCoordinator {
   }
 
   sendChat(content: string, images?: ImageAttachment[]): void {
-    this.msgCounter++;
-    const id = `web-${this.msgCounter}`;
+    const id = newMessageId();
     const msg: ClientMessage = {
       type: "send_message",
       id,
       content,
       ...(images !== undefined && images.length > 0 ? { images } : {}),
     };
+    const delivered = this.transport.status === "connected";
     this.transport.send(msg);
-    this.store.pushUserMessage(content, images);
+    this.store.pushUserMessage(content, images, id, delivered);
+  }
+
+  /**
+   * Have the waiting message `id` sent now: the turn in flight stops, and the
+   * message starts the next one.
+   */
+  sendWaitingNow(id: string): void {
+    this.store.askOfWaiting(id, "send-now");
+    this.store.askStop();
+    this.transport.send({ type: "send_queued_now", id });
+  }
+
+  /**
+   * Take back the waiting message `id` before the agent reads it. Resolves to
+   * whether it was taken back: `false` when the agent had already read it.
+   * Fails when the connection is down, or drops before the agent answers.
+   */
+  withdrawWaiting(id: string): Promise<boolean> {
+    if (this.transport.status !== "connected") {
+      return Promise.reject(new Error("The agent isn't connected right now."));
+    }
+    this.store.askOfWaiting(id, "withdraw");
+    return new Promise((resolve, reject) => {
+      this.withdrawals.set(id, { resolve, reject });
+      this.transport.send({ type: "withdraw_queued", id });
+    });
   }
 
   /**

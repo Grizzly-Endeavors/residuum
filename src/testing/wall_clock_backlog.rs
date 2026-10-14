@@ -1,0 +1,28 @@
+//! Test code that still waits on elapsed time, counted per file.
+//!
+//! `source_scan`'s `test_code_waits_on_events_not_elapsed_time` fails when a
+//! file's count differs from what is listed here, so the counts can only go
+//! down: converting a wait means lowering its file's entry, and a file at zero
+//! comes off the list. The pre-commit hook refuses a commit that adds an entry.
+
+/// Files whose test code waits on the clock, and how many such waits each has.
+pub(super) const BACKLOG: &[(&str, usize)] = &[];
+
+/// Test code where the clock is the stimulus rather than a guess, with why.
+pub(super) const ALLOWED: &[(&str, usize, &str)] = &[
+    (
+        "src/a2a/server_e2e_tests.rs",
+        1,
+        "the harness's `Drop` removes the workspace while detached session and checkpoint writers may still be finishing; teardown is synchronous, with nothing to await their end on, so the removal retries between short pauses",
+    ),
+    (
+        "src/inference/test_support.rs",
+        1,
+        "`Step::Pause` is a scripted network stall: the silence is the stimulus a stream's idle timeout is tested against",
+    ),
+    (
+        "tests/smoke.rs",
+        1,
+        "runs the real binary for a while to see that it starts without panicking; it has no event of its own to wait on",
+    ),
+];

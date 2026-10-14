@@ -6,7 +6,8 @@ use ts_rs::TS;
 
 use crate::agent::usage::SessionUsageTotals;
 use crate::background::registry::{SessionCategory, SessionState};
-use crate::inference::ImageData;
+use crate::bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
+use crate::inference::{ImageData, MessageSender};
 use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
 /// Messages sent from a WebSocket client to the server.
@@ -32,6 +33,10 @@ pub enum ClientMessage {
     },
     /// Keepalive ping.
     Ping,
+    /// Ask for everything the main agent's turn in flight has done so far,
+    /// answered with a `turn_snapshot` frame. Frames already received for
+    /// that turn are covered by the snapshot; the ones after it continue it.
+    ResyncTurn,
     /// Request the gateway to reload its configuration.
     Reload,
     /// A named server command (observe, reflect, context, etc.).
@@ -76,6 +81,21 @@ pub enum ClientMessage {
         /// Address of the session to stop.
         address: String,
     },
+    /// Have a message still waiting for the main agent sent now: the running
+    /// turn stops, and the message starts the next one instead of being folded
+    /// into it. Answered with `QueuedMessageUnavailable` when the message is
+    /// no longer waiting.
+    SendQueuedNow {
+        /// The waiting message's id.
+        id: String,
+    },
+    /// Take back a message still waiting for the main agent, so it is never
+    /// read. Answered with `MessageWithdrawn` (to every connection) or, when
+    /// the message is no longer waiting, `QueuedMessageUnavailable`.
+    WithdrawQueued {
+        /// The waiting message's id.
+        id: String,
+    },
     /// Replace this connection's watched workspace prefixes. `[]` stops
     /// watching; `""` watches the whole workspace. An invalid prefix is
     /// answered with an `Error` frame and leaves the set unchanged.
@@ -83,6 +103,26 @@ pub enum ClientMessage {
         /// Workspace-relative paths, matched by whole segments.
         prefixes: Vec<String>,
     },
+}
+
+/// A person's message waiting for the main agent to read it, carried by
+/// `MessageQueued` and a `TurnSnapshot`'s `queued`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueuedMessage {
+    /// The message's id: the id its sender gave it.
+    pub id: String,
+    /// The message text.
+    pub content: String,
+    /// Images attached to the message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageData>,
+    /// The person who sent it, for interfaces that identify one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sender: Option<MessageSender>,
+    /// Endpoint the message arrived on.
+    pub endpoint: String,
 }
 
 /// One run of an agent session, as listed in the web UI's Activity place
@@ -382,15 +422,45 @@ pub enum PostTurnActivityKind {
     Subconscious,
 }
 
+/// The main agent's turn in flight, as a `turn_snapshot` frame carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TurnInProgress {
+    /// Correlation ID of the turn.
+    pub reply_to: String,
+    /// When the turn began (RFC 3339, UTC).
+    pub started_at: String,
+    /// The server's clock when the snapshot was taken (RFC 3339, UTC), so a
+    /// client whose clock differs can place the other times on its own.
+    pub now: String,
+    /// The frames the turn has sent so far, in order, with each model call's
+    /// streamed pieces joined into one `text_delta` or `thinking_delta`.
+    pub frames: Vec<SnapshotFrame>,
+}
+
+/// One frame of a turn in flight and when it was sent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SnapshotFrame {
+    /// When the frame was sent (RFC 3339, UTC); for joined stream pieces,
+    /// when the first was.
+    pub at: String,
+    /// The frame, as it went out live.
+    pub frame: ServerMessage,
+}
+
 /// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum ServerMessage {
-    /// The agent began processing a queued message.
+    /// A turn of the main agent began, whatever started it: a message from
+    /// the web, a chat interface, or no person at all (a background turn).
     TurnStarted {
         /// Correlation ID of the message being processed.
         reply_to: String,
+        /// Where the turn came from.
+        origin: TurnOrigin,
     },
     /// The agent turn has finished (success or error), whether or not any
     /// response text was produced. Marks the end of a turn that a
@@ -431,6 +501,11 @@ pub enum ServerMessage {
     },
     /// A tool was invoked during the agent turn (verbose only).
     ToolCall {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call that requested it, counting from zero
+        /// within the turn.
+        call: u32,
         /// Unique tool call ID for correlating with results.
         id: String,
         /// Name of the tool.
@@ -444,6 +519,8 @@ pub enum ServerMessage {
     },
     /// A tool completed execution (verbose only).
     ToolResult {
+        /// Correlation ID of the turn.
+        reply_to: String,
         /// Correlation ID matching the original tool call.
         tool_call_id: String,
         /// Name of the tool.
@@ -457,10 +534,20 @@ pub enum ServerMessage {
         #[ts(optional)]
         auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
     },
-    /// The agent's final text response.
+    /// The agent's text response: the reply that ends a turn, or a message
+    /// the agent posted to this endpoint with `send_message` (an empty
+    /// `reply_to`).
     Response {
         /// Correlation ID of the original message.
         reply_to: String,
+        /// Index of the model call that produced the text, counting from
+        /// zero within the turn. Absent for text no model call wrote: the
+        /// notice that a limit ended the turn, or a `send_message` post.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        call: Option<u32>,
+        /// Endpoint the reply was delivered to; empty when it went nowhere.
+        endpoint: String,
         /// The response content.
         content: String,
     },
@@ -487,8 +574,74 @@ pub enum ServerMessage {
     },
     /// Intermediate text the agent emitted alongside tool calls.
     BroadcastResponse {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call that wrote the text, counting from zero
+        /// within the turn.
+        call: u32,
         /// The intermediate content.
         content: String,
+    },
+    /// A person's message entered the main conversation, from any channel
+    /// including the web: the message that started a turn, or one injected
+    /// into a turn already running. Not sent for one agent's message to
+    /// another. A client that sent the message recognizes the echo by `id`.
+    UserMessage {
+        /// The message's id: the id its sender gave it.
+        id: String,
+        /// Correlation ID of the turn the message started or joined.
+        turn_id: String,
+        /// The message text.
+        content: String,
+        /// Images attached to the message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageData>,
+        /// The person who sent it, for interfaces that identify one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        sender: Option<MessageSender>,
+        /// Endpoint the message arrived on.
+        endpoint: String,
+    },
+    /// More of a model call's text, as the provider produces it. The call's
+    /// `broadcast_response` or `response` frame carries the authoritative
+    /// text.
+    TextDelta {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
+        /// The new text.
+        text: String,
+    },
+    /// More of a model call's readable reasoning, as the provider produces
+    /// it. The call's `thinking` frame carries the complete reasoning.
+    ThinkingDelta {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
+        /// The new reasoning text.
+        text: String,
+    },
+    /// A model call's complete readable reasoning, sent once the call has
+    /// returned and before that call's `broadcast_response`, `response` and
+    /// `tool_call` frames. Only sent when the model produced some.
+    Thinking {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
+        /// The reasoning text.
+        content: String,
+    },
+    /// Everything streamed so far for a model call is void: the call is
+    /// being sent again, and what follows starts over from the beginning.
+    StreamRestart {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
     },
     /// An error related to a specific request.
     Error {
@@ -502,12 +655,52 @@ pub enum ServerMessage {
     },
     /// Keepalive pong.
     Pong,
+    /// The main agent's turn in flight as it has run so far, answering
+    /// `resync_turn`. It replaces whatever the client showed of that turn:
+    /// the frames that follow it on this connection continue from where it
+    /// ends.
+    TurnSnapshot {
+        /// The turn, or `null` when none is running.
+        turn: Option<TurnInProgress>,
+        /// People's messages waiting for the agent to read them, oldest first.
+        queued: Vec<QueuedMessage>,
+    },
+    /// A person's message reached the main agent while a turn ran, and waits
+    /// for it: until the turn's next checkpoint, or to start the turn after
+    /// it. Its `user_message` frame says when the agent read it;
+    /// `message_withdrawn` that it was taken back first.
+    MessageQueued {
+        /// The waiting message.
+        message: QueuedMessage,
+    },
+    /// A waiting message was taken back before the agent read it.
+    MessageWithdrawn {
+        /// The message's id.
+        id: String,
+    },
+    /// A `send_queued_now` or `withdraw_queued` named a message that is no
+    /// longer waiting: the agent already read it, or it was taken back.
+    /// Sent to the asking connection only.
+    QueuedMessageUnavailable {
+        /// The message's id.
+        id: String,
+    },
     /// The gateway is reloading its configuration.
     Reloading,
-    /// Result of a manual memory operation (observe or reflect).
+    /// A notice for the user: the result of a manual memory operation, a
+    /// settings reload's outcome, or any other operational report.
     Notice {
-        /// Human-readable result message.
+        /// Human-readable message, as the agent wrote it.
         message: String,
+        /// What a settings reload came to, when this notice reports one. The
+        /// web words the toast from it and keeps `message` as the detail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reload: Option<ReloadOutcome>,
+        /// Which files the reload read, beside `reload`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reload_of: Option<ReloadedFiles>,
     },
     /// Multi-line command output that should render inline in the chat
     /// stream rather than as a transient toast.
@@ -770,17 +963,148 @@ mod tests {
     fn server_message_serialize_response() {
         let msg = ServerMessage::Response {
             reply_to: "id-1".to_string(),
+            call: Some(2),
+            endpoint: "telegram".to_string(),
             content: "hello back".to_string(),
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(
-            json.contains("\"type\":\"response\""),
-            "should have type tag"
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "response",
+                "reply_to": "id-1",
+                "call": 2,
+                "endpoint": "telegram",
+                "content": "hello back",
+            })
         );
-        assert!(
-            json.contains("\"reply_to\":\"id-1\""),
-            "should have reply_to"
+    }
+
+    #[test]
+    fn a_response_no_model_call_wrote_has_no_call() {
+        let msg = ServerMessage::Response {
+            reply_to: String::new(),
+            call: None,
+            endpoint: "ws".to_string(),
+            content: "posted with send_message".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("call").is_none(), "{json}");
+    }
+
+    #[test]
+    fn server_message_serialize_turn_started_with_its_origin() {
+        let msg = ServerMessage::TurnStarted {
+            reply_to: "turn-1".to_string(),
+            origin: TurnOrigin {
+                endpoint: "telegram".to_string(),
+                sender: Some(MessageSender {
+                    name: "Bear".to_string(),
+                    id: "42".to_string(),
+                    interface: "telegram".to_string(),
+                    location: None,
+                }),
+                visibility: crate::memory::types::Visibility::User,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "turn_started",
+                "reply_to": "turn-1",
+                "origin": {
+                    "endpoint": "telegram",
+                    "sender": { "name": "Bear", "id": "42", "interface": "telegram" },
+                    "visibility": "user",
+                },
+            })
         );
+    }
+
+    #[test]
+    fn server_message_serialize_user_message() {
+        let msg = ServerMessage::UserMessage {
+            id: "m1".to_string(),
+            turn_id: "turn-1".to_string(),
+            content: "hello".to_string(),
+            images: Vec::new(),
+            sender: None,
+            endpoint: "ws".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "user_message",
+                "id": "m1",
+                "turn_id": "turn-1",
+                "content": "hello",
+                "endpoint": "ws",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_streaming_frames() {
+        let frames = [
+            (
+                ServerMessage::TextDelta {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                    text: "Hel".to_string(),
+                },
+                serde_json::json!({ "type": "text_delta", "reply_to": "t", "call": 1, "text": "Hel" }),
+            ),
+            (
+                ServerMessage::ThinkingDelta {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                    text: "hm".to_string(),
+                },
+                serde_json::json!({ "type": "thinking_delta", "reply_to": "t", "call": 1, "text": "hm" }),
+            ),
+            (
+                ServerMessage::Thinking {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                    content: "hmm, so".to_string(),
+                },
+                serde_json::json!({ "type": "thinking", "reply_to": "t", "call": 1, "content": "hmm, so" }),
+            ),
+            (
+                ServerMessage::StreamRestart {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                },
+                serde_json::json!({ "type": "stream_restart", "reply_to": "t", "call": 1 }),
+            ),
+        ];
+        for (frame, expected) in frames {
+            assert_eq!(serde_json::to_value(&frame).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn server_message_serialize_tool_frames_name_their_turn_and_call() {
+        let call = ServerMessage::ToolCall {
+            reply_to: "t".to_string(),
+            call: 3,
+            id: "tc".to_string(),
+            name: "exec".to_string(),
+            arguments: serde_json::json!({}),
+            server: None,
+        };
+        let result = ServerMessage::ToolResult {
+            reply_to: "t".to_string(),
+            tool_call_id: "tc".to_string(),
+            name: "exec".to_string(),
+            output: "ok".to_string(),
+            is_error: false,
+            auto_mode: None,
+        };
+        let call = serde_json::to_value(&call).unwrap();
+        let result = serde_json::to_value(&result).unwrap();
+        assert_eq!(call.get("reply_to"), Some(&serde_json::json!("t")));
+        assert_eq!(call.get("call"), Some(&serde_json::json!(3)));
+        assert_eq!(result.get("reply_to"), Some(&serde_json::json!("t")));
     }
 
     #[test]
@@ -881,6 +1205,8 @@ mod tests {
     fn server_message_serialize_notice() {
         let msg = ServerMessage::Notice {
             message: "observed successfully".to_string(),
+            reload: None,
+            reload_of: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"notice\""), "should have type tag");
@@ -888,11 +1214,41 @@ mod tests {
             json.contains("\"message\":\"observed successfully\""),
             "should have message field"
         );
+        assert!(
+            !json.contains("reload"),
+            "a plain notice carries no reload field"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_reload_notice() {
+        for (outcome, word) in [
+            (ReloadOutcome::Reloaded, "reloaded"),
+            (ReloadOutcome::Unchanged, "unchanged"),
+            (ReloadOutcome::Failed, "failed"),
+        ] {
+            let msg = ServerMessage::Notice {
+                message: "configuration reloaded: models".to_string(),
+                reload: Some(outcome),
+                reload_of: Some(ReloadedFiles::AgentConfig),
+            };
+            assert_eq!(
+                serde_json::to_value(&msg).unwrap(),
+                serde_json::json!({
+                    "type": "notice",
+                    "message": "configuration reloaded: models",
+                    "reload": word,
+                    "reload_of": "agent_config",
+                })
+            );
+        }
     }
 
     #[test]
     fn server_message_serialize_broadcast_response() {
         let msg = ServerMessage::BroadcastResponse {
+            reply_to: "id-1".to_string(),
+            call: 0,
             content: "checking that for you".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();

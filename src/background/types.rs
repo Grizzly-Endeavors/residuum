@@ -51,6 +51,9 @@ pub struct SubAgentConfig {
     /// spawn or resume; empty for every other trigger, which have no images
     /// of their own.
     pub images: Vec<ImageData>,
+    /// Main's saved conversation, for a fork of it. See
+    /// [`crate::bus::SpawnRequestEvent::carried_history`].
+    pub carried_history: Vec<crate::inference::Message>,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display

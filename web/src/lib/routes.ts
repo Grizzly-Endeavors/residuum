@@ -10,11 +10,13 @@
 //   /team/workbench[/:artifact]    the Workbench list, with an artifact's row selected
 //   /team/files                    Shared files
 //
-//   ?panel=session:<agent>:<runId> | file:<path> | size     the context panel
+//   ?panel=session:<agent>:<runId> | new-session:<agent> | file:<path> | size
+//                                                           the context panel
 //   ?settings=<agent | _all>[/<section>]                    the Settings modal
 //
-// Paths that older versions used redirect to these. Nothing here touches the
-// browser: the router applies what this module reads and formats.
+// Paths that older versions used redirect to these, and any other path is the
+// Not Found place, which keeps the address as it was typed. Nothing here
+// touches the browser: the router applies what this module reads and formats.
 
 import { isAgentSlug } from "./agent-name";
 import {
@@ -43,12 +45,15 @@ export type Place =
   | { kind: "inbox"; agent: string | null; tab: InboxTab; item: InboxItemRef | null }
   | { kind: AgentPlaceKind; agent: string }
   | { kind: "workbench"; artifact: string | null }
-  | { kind: "shared-files" };
+  | { kind: "shared-files" }
+  /** An address that leads nowhere in the app. `path` is the address's path as it arrived, still encoded. */
+  | { kind: "not-found"; path: string };
 
 export type AgentPlace = Extract<Place, { kind: AgentPlaceKind }>;
 
 export type Panel =
   | { kind: "session"; agent: string; runId: string }
+  | { kind: "new-session"; agent: string }
   | { kind: "file"; path: string }
   | { kind: "size" };
 
@@ -97,11 +102,17 @@ export function isAgentName(name: string): boolean {
   return isAgentSlug(name);
 }
 
-/** Whether a panel can show on a place: a session of the viewed agent, a file, or the conversation size. */
+/**
+ * Whether a panel can show on a place: a session of the viewed agent (or on
+ * the Workbench), a new session on the viewed agent, a file, or the
+ * conversation size.
+ */
 export function panelAllowed(place: Place, panel: Panel): boolean {
   switch (panel.kind) {
     case "session":
       return (isAgentPlace(place) && place.agent === panel.agent) || place.kind === "workbench";
+    case "new-session":
+      return isAgentPlace(place) && place.agent === panel.agent;
     case "file":
       return isAgentPlace(place) || place.kind === "shared-files";
     case "size":
@@ -151,6 +162,8 @@ function parsePanel(value: string): Panel | null {
   const kind = value.slice(0, colon);
   const rest = value.slice(colon + 1);
   if (kind === "file") return rest === "" ? null : { kind: "file", path: rest };
+  if (kind === "new-session")
+    return isAgentName(rest) ? { kind: "new-session", agent: rest } : null;
   if (kind === "session") {
     const split = rest.indexOf(":");
     if (split < 0) return null;
@@ -321,8 +334,8 @@ function parsePath(segments: string[], query: URLSearchParams): PathResult | nul
 /**
  * Read a URL into a location. Old paths are read as the place they redirect to;
  * the ones that resolve under the last-used agent wait (`needsLastUsed`) until
- * it is known. A panel that can't show on its place is dropped, and an unknown
- * path is Home.
+ * it is known. A panel that can't show on its place is dropped, and a path the
+ * app doesn't have, or can't read, is the Not Found place at that path.
  */
 export function parseUrl(pathname: string, search: string, context: ParseContext): ParsedUrl {
   const query = new URLSearchParams(search);
@@ -334,7 +347,9 @@ export function parseUrl(pathname: string, search: string, context: ParseContext
     if (segment === null) readable = false;
     else segments.push(segment);
   }
-  let path: PathResult = (readable ? parsePath(segments, query) : null) ?? { place: HOME };
+  let path: PathResult = (readable ? parsePath(segments, query) : null) ?? {
+    place: { kind: "not-found", path: pathname },
+  };
 
   if (path.underLastUsed !== undefined) {
     if (context.lastUsed === null) {
@@ -439,6 +454,8 @@ function formatPanel(panel: Panel): string {
       return `file:${panel.path}`;
     case "session":
       return `session:${panel.agent}:${panel.runId}`;
+    case "new-session":
+      return `new-session:${panel.agent}`;
   }
 }
 
@@ -464,6 +481,8 @@ function formatPlace(place: Place): { path: string; params: string[] } {
     }
     case "shared-files":
       return { path: "/team/files", params: [] };
+    case "not-found":
+      return { path: place.path, params: [] };
     case "chat":
       return { path: `/agent/${encodeURIComponent(place.agent)}`, params: [] };
     case "activity":

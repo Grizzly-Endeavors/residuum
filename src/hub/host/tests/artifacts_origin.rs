@@ -11,6 +11,9 @@ use crate::workbench::forward::HubApi;
 type PageSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// The web app's port the artifacts listener under test is told about.
+const GATEWAY_PORT: u16 = 7700;
+
 /// Serve the artifacts listener over a hub router built on `hub`, and return
 /// its address.
 async fn artifacts_port(hub: &Fixture) -> String {
@@ -26,7 +29,12 @@ async fn artifacts_port(hub: &Fixture) -> String {
     .unwrap();
     let api = HubApi::new();
     api.bind(app);
-    let router = crate::workbench::server::router(hub.root.path().join("team/workbench"), api);
+    let router = crate::workbench::server::router(
+        hub.root.path().join("team/workbench"),
+        api,
+        hub.services.pairing.clone(),
+        GATEWAY_PORT,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     crate::util::spawn_in_span(async move {
@@ -51,7 +59,7 @@ async fn send_frame(socket: &mut PageSocket, frame: &Value) {
 
 /// Read frames until one of type `kind` arrives, and return it.
 async fn next_frame_of(socket: &mut PageSocket, kind: &str) -> Value {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded(format_args!("a {kind} frame"), async {
         while let Some(frame) = socket.next().await {
             let WsMessage::Text(raw) = frame.unwrap() else {
                 continue;
@@ -64,12 +72,11 @@ async fn next_frame_of(socket: &mut PageSocket, kind: &str) -> Value {
         panic!("the socket closed before a {kind} frame arrived");
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for a {kind} frame"))
 }
 
 /// The next main turn the feed reports as ended.
 async fn next_turn(changes: &mut AgentChangeReceiver) -> MainTurnEnded {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded("a turn to end", async {
         loop {
             let change = changes.recv().await.expect("the feed stays open");
             if let AgentChangeKind::TurnEnded(turn) = change.kind {
@@ -78,7 +85,6 @@ async fn next_turn(changes: &mut AgentChangeReceiver) -> MainTurnEnded {
         }
     })
     .await
-    .expect("a turn ends within the timeout")
 }
 
 #[tokio::test]
@@ -176,9 +182,9 @@ async fn another_sites_requests_are_refused_on_the_artifacts_port() {
 #[tokio::test]
 async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
     let hub = Fixture::new(&["scout"], "").await;
-    // A slow model, so the client can leave before the reply is published.
-    hub.mock("scout").reset().await;
-    mount_reply(hub.mock("scout"), "scout here", Duration::from_millis(600)).await;
+    // The model holds its reply until the client has left, so the reply is
+    // published while no client is connected.
+    hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let artifacts = artifacts_port(&hub).await;
 
@@ -188,13 +194,15 @@ async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
         &json!({ "type": "send_message", "id": "m1", "content": "ping" }),
     )
     .await;
-    eventually("scout to be busy", || async {
-        hub.activity_of("scout").busy.then_some(())
-    })
-    .await;
+    hub.gate("scout").until_held(1).await;
     ui.close(None).await.unwrap();
     drop(ui);
-    eventually("the unread reply", || async {
+    wait::until("the client to leave", || async {
+        (hub.host.connected_clients("scout") == Some(0)).then_some(())
+    })
+    .await;
+    hub.gate("scout").open_all();
+    wait::until("the unread reply", || async {
         let activity = hub.activity_of("scout");
         (!activity.busy && activity.unread == 1).then_some(())
     })
@@ -212,7 +220,7 @@ async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
 
     // A client of the web UI still does.
     let _ui = connect(&hub.addr, "/api/agents/scout/ws").await;
-    eventually("the unread count to reset", || async {
+    wait::until("the unread count to reset", || async {
         (hub.activity_of("scout").unread == 0).then_some(())
     })
     .await;

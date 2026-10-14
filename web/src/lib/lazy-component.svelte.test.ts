@@ -2,6 +2,7 @@ import type { Component } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LazyComponent } from "./lazy-component.svelte";
 import { notifications } from "./notifications.svelte";
+import { waitFor } from "../test/wait";
 
 /** A stand-in for a component's compiled module; the test never mounts it. */
 const FAKE = (() => undefined) as unknown as Component<object>;
@@ -29,7 +30,7 @@ describe("LazyComponent", () => {
     const lazy = new LazyComponent(load, "Settings");
     lazy.ensure();
     lazy.ensure();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(lazy.component).toBe(FAKE);
     });
     lazy.ensure();
@@ -49,7 +50,7 @@ describe("LazyComponent", () => {
     lazy.ensure();
     expect(lazy.loading).toBe(true);
     arrive({ default: FAKE });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(lazy.loading).toBe(false);
     });
     expect(lazy.component).toBe(FAKE);
@@ -62,7 +63,7 @@ describe("LazyComponent", () => {
     );
     const onFailure = vi.fn();
     lazy.ensure(onFailure);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(onFailure).toHaveBeenCalledOnce();
     });
     expect(lazy.failed).toBe(true);
@@ -80,12 +81,12 @@ describe("LazyComponent", () => {
       .mockResolvedValueOnce({ default: FAKE });
     const lazy = new LazyComponent(load, "the file");
     lazy.ensure();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(lazy.failed).toBe(true);
     });
 
     lazy.ensure();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(lazy.component).toBe(FAKE);
     });
     expect(lazy.failed).toBe(false);

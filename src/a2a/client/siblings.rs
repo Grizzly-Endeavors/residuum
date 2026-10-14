@@ -1,10 +1,13 @@
-//! Sibling discovery: on every tunnel (re)connect, and every
-//! [`REFRESH_INTERVAL`] while it stays connected, fetch the relay's per-user
-//! A2A directory (`GET {origin}/a2a/agents`) and register every agent of every
-//! *other* instance of the same user as a `Sibling`-sourced agent in every
-//! hosted agent's [`A2aClientHub`], per `docs/systems-usage/a2a.md`. A
-//! sibling is named `<instance>/<agent>` and lives at
-//! `{origin}/a2a/{instance}/{agent}`.
+//! Sibling discovery: whenever the secure tunnel offers a directory address,
+//! and every [`REFRESH_INTERVAL`] after that, fetch the user's A2A directory
+//! and register agents of the user's *other* instances as `Sibling`-sourced
+//! agents in every hosted agent's [`A2aClientHub`], per
+//! `docs/systems-usage/a2a.md`. A sibling is named `<instance>/<agent>`.
+//!
+//! The directory is read at the apex address derived from the stored identity,
+//! only siblings that completed a join are registered, each at its locally
+//! derived host with the key exchanged in the join, and the directory's
+//! `card_url`s are ignored.
 //!
 //! Discovery runs once per hub process. [`SiblingFanout`] is the registry of
 //! the per-agent client hubs it fans each result out to. The hub's own
@@ -19,13 +22,13 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::sync::{Mutex, watch};
 
-use crate::tunnel::TunnelStatus;
+use crate::remote_access::siblings::discovery::SecureDiscovery;
 
 use super::hub::A2aClientHub;
 
-/// How often the discovery loop re-fetches the directory while the tunnel
-/// stays connected (it also re-fetches immediately on every reconnect, since
-/// the sibling token is minted fresh per connection).
+/// How often the discovery loop re-fetches the directory while the secure
+/// tunnel stays connected (it also re-fetches immediately whenever the tunnel
+/// publishes a new directory address or set of joined siblings).
 const REFRESH_INTERVAL: Duration = Duration::from_secs(600);
 /// Backoff bounds for a failed fetch, so a flaky relay doesn't wait a full
 /// [`REFRESH_INTERVAL`] for the next attempt, but also doesn't hammer it.
@@ -60,7 +63,7 @@ impl Default for DiscoveryTimings {
     }
 }
 
-/// One entry in the relay's `GET {origin}/a2a/agents` response: one agent of
+/// One entry in the relay's directory response: one agent of
 /// one instance. Only `instance` and `agent` are used; the other fields the
 /// relay sends (`slug`, `display_name`, `card_url`, `online`) aren't needed to
 /// register a sibling and are ignored by serde's default "extra fields are
@@ -74,35 +77,6 @@ struct DirectoryEntry {
 #[derive(Debug, Deserialize)]
 struct DirectoryResponse {
     agents: Vec<DirectoryEntry>,
-}
-
-/// The tunnel facts sibling discovery needs, extracted from
-/// [`TunnelStatus::Connected`]. Absent whenever any of the three is missing —
-/// e.g. an older relay that doesn't send `instance`/`a2a_token` yet — in
-/// which case discovery simply has nothing to do.
-#[derive(Clone, PartialEq, Eq)]
-struct Connection {
-    origin: String,
-    instance: String,
-    token: String,
-}
-
-fn connection_from(status: &TunnelStatus) -> Option<Connection> {
-    if let TunnelStatus::Connected {
-        origin: Some(origin),
-        instance: Some(instance),
-        a2a_token: Some(token),
-        ..
-    } = status
-    {
-        Some(Connection {
-            origin: origin.trim_end_matches('/').to_string(),
-            instance: instance.clone(),
-            token: token.clone(),
-        })
-    } else {
-        None
-    }
 }
 
 /// A slug shaped like the relay's own `validate_slug`: 1–24 lowercase
@@ -176,26 +150,29 @@ impl SiblingFanout {
 
 /// Spawn the background task that keeps every registered agent's sibling
 /// entries in sync with the relay directory. Runs for the process lifetime
-/// (it exits only if `tunnel_status_tx` is ever dropped, which happens at
-/// process shutdown); `fanout` and `tunnel_status_rx` survive a config
+/// (it exits only if the sender behind `secure_rx` is ever dropped, which
+/// happens at process shutdown); `fanout` and `secure_rx` survive a config
 /// reload, so one long-lived task spawned at gateway startup stays correct
 /// across reloads without needing to be respawned.
 pub(crate) fn spawn_sibling_discovery(
     fanout: Arc<SiblingFanout>,
-    tunnel_status_rx: watch::Receiver<TunnelStatus>,
+    secure_rx: watch::Receiver<Option<Arc<SecureDiscovery>>>,
 ) {
     crate::util::spawn_monitored("a2a-sibling-discovery", async move {
-        run(fanout, tunnel_status_rx, DiscoveryTimings::default()).await;
+        run(fanout, secure_rx, DiscoveryTimings::default()).await;
     });
 }
 
 async fn run(
     fanout: Arc<SiblingFanout>,
-    mut tunnel_status_rx: watch::Receiver<TunnelStatus>,
+    mut secure_rx: watch::Receiver<Option<Arc<SecureDiscovery>>>,
     timings: DiscoveryTimings,
 ) {
     let client = match reqwest::Client::builder()
         .timeout(timings.fetch_timeout)
+        // The sibling keys go to the address they were built for and nowhere a
+        // response points them.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(client) => client,
@@ -210,14 +187,21 @@ async fn run(
 
     let mut backoff = timings.min_backoff;
     let mut failing = false;
+    let mut had_directory = false;
 
     loop {
-        let current_connection = connection_from(&tunnel_status_rx.borrow());
-        let wait = if let Some(conn) = current_connection {
-            match discover_once(&client, &fanout, &conn).await {
+        let secure = secure_rx.borrow_and_update().clone();
+        if secure.is_none() && had_directory {
+            tracing::debug!(
+                "a2a sibling discovery has no directory to read; the siblings already found stay registered"
+            );
+        }
+        had_directory = secure.is_some();
+        let wait = match secure {
+            Some(secure) => match discover(&client, &fanout, &secure).await {
                 Ok(()) => {
                     if failing {
-                        tracing::info!(origin = %conn.origin, "a2a sibling discovery recovered");
+                        tracing::info!(directory = %secure.directory_url, "a2a sibling discovery recovered");
                     }
                     failing = false;
                     backoff = timings.min_backoff;
@@ -226,7 +210,7 @@ async fn run(
                 Err(e) => {
                     if !failing {
                         tracing::warn!(
-                            origin = %conn.origin,
+                            directory = %secure.directory_url,
                             error = %e,
                             "a2a sibling discovery failed, retrying with backoff"
                         );
@@ -236,14 +220,13 @@ async fn run(
                     backoff = (backoff * 2).min(timings.max_backoff);
                     this_wait
                 }
-            }
-        } else {
-            timings.refresh
+            },
+            None => timings.refresh,
         };
 
         tokio::select! {
             biased;
-            changed = tunnel_status_rx.changed() => {
+            changed = secure_rx.changed() => {
                 if changed.is_err() {
                     // The sender was dropped: the gateway is shutting down.
                     return;
@@ -254,27 +237,27 @@ async fn run(
     }
 }
 
-/// One fetch-and-register pass: `GET {origin}/a2a/agents` with the sibling
-/// bearer token, then replace every registered hub's sibling set with every
-/// agent except those of this instance (this hub's agents are teammates).
-async fn discover_once(
+/// One fetch-and-register pass: read the directory at the address derived from
+/// the stored identity, keep only agents of joined siblings, and point each at
+/// its derived host with the key the join exchanged. `card_url`s are ignored.
+async fn discover(
     client: &reqwest::Client,
     fanout: &SiblingFanout,
-    conn: &Connection,
+    secure: &SecureDiscovery,
 ) -> Result<(), String> {
-    let url = format!("{}/a2a/agents", conn.origin);
-    let response = client
-        .get(&url)
-        .bearer_auth(&conn.token)
+    let url = &secure.directory_url;
+    let mut request = client.get(url);
+    if let Some(token) = &secure.directory_token {
+        request = request.bearer_auth(token);
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| format!("request to {url} failed: {e}"))?;
-
     let status = response.status();
     if !status.is_success() {
         return Err(format!("{url} returned {status}"));
     }
-
     let body: DirectoryResponse = response
         .json()
         .await
@@ -283,7 +266,8 @@ async fn discover_once(
     let siblings = body
         .agents
         .into_iter()
-        .filter(|entry| entry.instance != conn.instance)
+        .filter(|entry| entry.instance != secure.own_slug)
+        .filter(|entry| secure.siblings.contains_key(&entry.instance))
         .filter_map(|entry| {
             if !is_valid_sibling_slug(&entry.instance) || !is_valid_sibling_slug(&entry.agent) {
                 tracing::warn!(
@@ -293,19 +277,17 @@ async fn discover_once(
                 );
                 return None;
             }
+            let key = secure.siblings.get(&entry.instance)?;
             let mut headers = HashMap::with_capacity(1);
-            headers.insert(
-                "Authorization".to_string(),
-                format!("Bearer {}", conn.token),
-            );
+            headers.insert("Authorization".to_string(), format!("Bearer {key}"));
+            let origin = (secure.origin_for)(&entry.instance);
             Some((
                 format!("{}/{}", entry.instance, entry.agent),
-                format!("{}/a2a/{}/{}", conn.origin, entry.instance, entry.agent),
+                format!("{}/a2a/{}", origin.trim_end_matches('/'), entry.agent),
                 headers,
             ))
         })
         .collect();
-
     fanout.set_siblings(siblings).await;
     Ok(())
 }
@@ -323,8 +305,7 @@ mod tests {
 
     use super::*;
     use crate::a2a::client::hub::{AgentSnapshot, AgentSource, AgentStatus};
-
-    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+    use crate::testing::wait;
 
     /// A fanout with `hub` registered as agent `solo`.
     async fn fanout_of(hub: &Arc<A2aClientHub>) -> Arc<SiblingFanout> {
@@ -351,9 +332,21 @@ mod tests {
         agents: Mutex<Vec<FakeEntry>>,
         card_auth_seen: Mutex<StdHashMap<String, String>>,
         card_fetch_should_fail: Mutex<bool>,
+        /// The `Authorization` header of every directory request.
+        directory_auth_seen: Mutex<Vec<String>>,
     }
 
-    async fn directory_handler(State(relay): State<Arc<FakeRelay>>) -> impl IntoResponse {
+    async fn directory_handler(
+        State(relay): State<Arc<FakeRelay>>,
+        headers: HeaderMap,
+    ) -> impl IntoResponse {
+        relay.directory_auth_seen.lock().unwrap().push(
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+        );
         let entries = relay.agents.lock().unwrap().clone();
         let agents: Vec<serde_json::Value> = entries
             .into_iter()
@@ -412,11 +405,14 @@ mod tests {
             agents: Mutex::new(initial_agents),
             card_auth_seen: Mutex::new(StdHashMap::new()),
             card_fetch_should_fail: Mutex::new(false),
+            directory_auth_seen: Mutex::new(Vec::new()),
         });
         let app = Router::new()
             .route("/a2a/agents", get(directory_handler))
+            // Where a sibling's own host answers: the test origin of a sibling
+            // is `{origin}/i/{slug}`.
             .route(
-                "/a2a/{instance}/{agent}/.well-known/agent-card.json",
+                "/i/{instance}/a2a/{agent}/.well-known/agent-card.json",
                 get(card_handler),
             )
             .with_state(Arc::clone(&relay));
@@ -428,81 +424,139 @@ mod tests {
         (format!("http://{addr}"), relay)
     }
 
-    fn connected(origin: &str, instance: &str, token: &str) -> TunnelStatus {
-        TunnelStatus::Connected {
-            user_id: "u1".to_string(),
-            origin: Some(origin.to_string()),
-            workbench_origin: None,
-            instance: Some(instance.to_string()),
-            a2a_token: Some(token.to_string()),
-        }
+    /// Poll `hub.snapshot()` until `pred` matches.
+    async fn wait_for(hub: &A2aClientHub, pred: impl Fn(&[AgentSnapshot]) -> bool) {
+        let pred = &pred;
+        wait::until("the hub snapshot to match", || async move {
+            pred(&hub.snapshot().await).then_some(())
+        })
+        .await;
     }
 
-    /// Poll `hub.snapshot()` until `pred` matches, bounded by
-    /// [`TEST_TIMEOUT`].
-    async fn wait_for(hub: &A2aClientHub, pred: impl Fn(&[AgentSnapshot]) -> bool) {
-        tokio::time::timeout(TEST_TIMEOUT, async {
-            loop {
-                let snap = hub.snapshot().await;
-                if pred(&snap) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+    fn sibling_names(snap: &[AgentSnapshot]) -> Vec<&str> {
+        let mut names: Vec<&str> = snap.iter().map(|a| a.name.as_str()).collect();
+        names.sort_unstable();
+        names
+    }
+
+    fn secure(origin: &str, own: &str, joined: &[(&str, &str)]) -> Arc<SecureDiscovery> {
+        let base = origin.to_string();
+        Arc::new(SecureDiscovery {
+            own_slug: own.to_string(),
+            directory_url: format!("{origin}/a2a/agents"),
+            directory_token: Some("rsa_directory".to_string()),
+            siblings: joined
+                .iter()
+                .map(|(slug, key)| ((*slug).to_string(), (*key).to_string()))
+                .collect(),
+            origin_for: Arc::new(move |slug| format!("{base}/i/{slug}")),
         })
-        .await
-        .expect("condition was never met within the timeout");
+    }
+
+    /// Start discovery over `fanout` and return the sender that feeds it.
+    fn start(
+        fanout: Arc<SiblingFanout>,
+    ) -> (
+        watch::Sender<Option<Arc<SecureDiscovery>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (tx, rx) = watch::channel(None);
+        let task = crate::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
+        (tx, task)
     }
 
     #[tokio::test]
-    async fn connect_registers_siblings_excluding_self_with_the_token_header() {
+    async fn only_joined_siblings_are_registered_at_derived_hosts_with_their_keys() {
+        // The directory lists a joined sibling, an unjoined one and this instance.
         let (origin, relay) = spawn_fake_relay(vec![
             ("alpha", "scout"),
-            ("alpha", "writer"),
             ("beta", "atlas"),
             ("gamma", "nova"),
         ])
         .await;
         let hub = Arc::new(A2aClientHub::new());
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
+        let (tx, task) = start(fanout_of(&hub).await);
 
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
-
+        tx.send(Some(secure(
+            &origin,
+            "alpha",
+            &[("beta", "rsdm_sib_beta_key")],
+        )))
+        .ok();
         wait_for(&hub, |snap| {
-            snap.len() == 2 && snap.iter().all(|a| matches!(a.status, AgentStatus::Ok(_)))
+            snap.len() == 1 && snap.iter().all(|a| matches!(a.status, AgentStatus::Ok(_)))
         })
         .await;
 
         let snap = hub.snapshot().await;
-        assert_eq!(sibling_names(&snap), ["beta/atlas", "gamma/nova"]);
+        assert_eq!(
+            sibling_names(&snap),
+            ["beta/atlas"],
+            "gamma never joined and alpha is this instance"
+        );
         assert!(snap.iter().all(|a| a.source == AgentSource::Sibling));
-
+        // The agent lives at the derived host, not at the directory's `card_url`
+        // (which points at `http://ignored`), and gets that sibling's own key.
         let seen = relay.card_auth_seen.lock().unwrap().clone();
         assert_eq!(
             seen.get("beta/atlas").map(String::as_str),
-            Some("Bearer tok1")
-        );
-        assert_eq!(
-            seen.get("gamma/nova").map(String::as_str),
-            Some("Bearer tok1")
+            Some("Bearer rsdm_sib_beta_key")
         );
         assert!(
             !seen.keys().any(|slug| slug.starts_with("alpha/")),
             "the hub's own agents must never be fetched: {seen:?}"
         );
-
+        assert!(!seen.contains_key("gamma/nova"));
+        // The directory is read with the relay's directory token, only for visibility.
+        assert!(
+            relay
+                .directory_auth_seen
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|auth| auth == "Bearer rsa_directory")
+        );
         task.abort();
     }
 
     #[tokio::test]
-    async fn reconnect_with_a_new_token_updates_the_header() {
+    async fn nobody_is_registered_until_a_join_exists_and_a_removed_sibling_is_dropped() {
+        let (origin, relay) = spawn_fake_relay(vec![("beta", "atlas")]).await;
+        let hub = Arc::new(A2aClientHub::new());
+        let (tx, task) = start(fanout_of(&hub).await);
+
+        tx.send(Some(secure(&origin, "alpha", &[]))).ok();
+        // A second read of the directory starts only after the first pass is done.
+        wait::until_true("discovery to read the directory twice", || {
+            relay.directory_auth_seen.lock().unwrap().len() >= 2
+        })
+        .await;
+        assert!(
+            hub.snapshot().await.is_empty(),
+            "an unjoined sibling is ignored"
+        );
+
+        tx.send(Some(secure(
+            &origin,
+            "alpha",
+            &[("beta", "rsdm_sib_beta_key")],
+        )))
+        .ok();
+        wait_for(&hub, |snap| snap.len() == 1).await;
+
+        tx.send(Some(secure(&origin, "alpha", &[]))).ok();
+        wait_for(&hub, <[AgentSnapshot]>::is_empty).await;
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_new_key_for_a_sibling_updates_the_header() {
         let (origin, relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
+        let (tx, task) = start(fanout_of(&hub).await);
 
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        tx.send(Some(secure(&origin, "alpha", &[("beta", "key1")])))
+            .ok();
         wait_for(&hub, |snap| {
             snap.iter()
                 .any(|a| a.name == "beta/atlas" && matches!(a.status, AgentStatus::Ok(_)))
@@ -515,27 +569,21 @@ mod tests {
                 .unwrap()
                 .get("beta/atlas")
                 .cloned(),
-            Some("Bearer tok1".to_string())
+            Some("Bearer key1".to_string())
         );
 
-        tx.send(connected(&origin, "alpha", "tok2")).ok();
-        tokio::time::timeout(TEST_TIMEOUT, async {
-            loop {
-                if relay
-                    .card_auth_seen
-                    .lock()
-                    .unwrap()
-                    .get("beta/atlas")
-                    .map(String::as_str)
-                    == Some("Bearer tok2")
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        tx.send(Some(secure(&origin, "alpha", &[("beta", "key2")])))
+            .ok();
+        wait::until_true("the sibling's card request to carry the new key", || {
+            relay
+                .card_auth_seen
+                .lock()
+                .unwrap()
+                .get("beta/atlas")
+                .map(String::as_str)
+                == Some("Bearer key2")
         })
-        .await
-        .expect("header was never updated to the new token");
+        .await;
 
         task.abort();
     }
@@ -547,7 +595,7 @@ mod tests {
 
         // A config entry under the sibling's name already exists before
         // discovery ever runs.
-        let config_url = format!("{origin}/a2a/beta/atlas");
+        let config_url = format!("{origin}/i/beta/a2a/atlas");
         hub.register_external(
             "beta/atlas".to_string(),
             config_url.clone(),
@@ -556,9 +604,9 @@ mod tests {
         )
         .await;
 
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        let (tx, task) = start(fanout_of(&hub).await);
+        tx.send(Some(secure(&origin, "alpha", &[("beta", "key1")])))
+            .ok();
 
         wait_for(&hub, |snap| {
             snap.iter()
@@ -583,14 +631,28 @@ mod tests {
     #[tokio::test]
     async fn directory_failure_does_not_panic_and_retries() {
         let hub = Arc::new(A2aClientHub::new());
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
+        let (tx, task) = start(fanout_of(&hub).await);
 
-        // An address nothing listens on: every fetch fails immediately.
-        tx.send(connected("http://127.0.0.1:1", "alpha", "tok1"))
+        // A directory that hangs up on every request: each fetch fails, and
+        // each attempt is counted.
+        let refusing = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", refusing.local_addr().unwrap());
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&attempts);
+        crate::util::spawn_in_span(async move {
+            while let Ok((connection, _)) = refusing.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                drop(connection);
+            }
+        });
+        tx.send(Some(secure(&address, "alpha", &[("beta", "key1")])))
             .ok();
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // A second attempt means the loop came through the first failure.
+        wait::until_true("discovery to try the directory again", || {
+            attempts.load(std::sync::atomic::Ordering::SeqCst) >= 2
+        })
+        .await;
         assert!(
             !task.is_finished(),
             "the discovery task must not panic or exit on failure"
@@ -604,17 +666,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disconnect_keeps_previously_registered_siblings() {
+    async fn losing_the_directory_address_keeps_previously_registered_siblings() {
         let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
+        let log = crate::hub::test_support::EventLog::default();
+        let _capture = log.capture();
+        let (tx, task) = start(fanout_of(&hub).await);
 
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        tx.send(Some(secure(&origin, "alpha", &[("beta", "key1")])))
+            .ok();
         wait_for(&hub, |snap| !snap.is_empty()).await;
 
-        tx.send(TunnelStatus::Disconnected).ok();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(None).ok();
+        wait::until_true("discovery to notice the directory is gone", || {
+            !log.matching("no directory to read").is_empty()
+        })
+        .await;
 
         assert!(
             !hub.snapshot().await.is_empty(),
@@ -622,12 +689,6 @@ mod tests {
         );
 
         task.abort();
-    }
-
-    fn sibling_names(snap: &[AgentSnapshot]) -> Vec<&str> {
-        let mut names: Vec<&str> = snap.iter().map(|a| a.name.as_str()).collect();
-        names.sort_unstable();
-        names
     }
 
     #[tokio::test]
@@ -647,9 +708,13 @@ mod tests {
         fanout.register("scout", Arc::clone(&scout)).await;
         fanout.register("writer", Arc::clone(&writer)).await;
 
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        let (tx, task) = start(fanout);
+        tx.send(Some(secure(
+            &origin,
+            "alpha",
+            &[("alpha", "own"), ("beta", "k1"), ("gamma", "k2")],
+        )))
+        .ok();
 
         let expected = ["beta/atlas", "beta/ledger", "gamma/nova"];
         wait_for(&scout, |snap| snap.len() == 3).await;
@@ -666,9 +731,9 @@ mod tests {
         let early = Arc::new(A2aClientHub::new());
         let fanout = fanout_of(&early).await;
 
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(Arc::clone(&fanout), rx, FAST_TIMINGS));
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        let (tx, task) = start(Arc::clone(&fanout));
+        tx.send(Some(secure(&origin, "alpha", &[("beta", "k1")])))
+            .ok();
         wait_for(&early, |snap| snap.len() == 1).await;
 
         let late = Arc::new(A2aClientHub::new());
@@ -688,9 +753,9 @@ mod tests {
         fanout.register("running", Arc::clone(&running)).await;
         fanout.unregister("stopped").await;
 
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        let (tx, task) = start(fanout);
+        tx.send(Some(secure(&origin, "alpha", &[("beta", "k1")])))
+            .ok();
         wait_for(&running, |snap| snap.len() == 1).await;
 
         assert!(stopped.snapshot().await.is_empty());
@@ -707,9 +772,18 @@ mod tests {
         ])
         .await;
         let hub = Arc::new(A2aClientHub::new());
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        let (tx, task) = start(fanout_of(&hub).await);
+        tx.send(Some(secure(
+            &origin,
+            "alpha",
+            &[
+                ("beta", "k1"),
+                ("Bad-Caps", "k2"),
+                ("gamma", "k3"),
+                ("delta", "k4"),
+            ],
+        )))
+        .ok();
 
         wait_for(&hub, |snap| !snap.is_empty()).await;
         assert_eq!(sibling_names(&hub.snapshot().await), ["beta/atlas"]);
@@ -718,12 +792,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_sibling_url_addresses_the_agent_under_its_instance() {
+    async fn the_sibling_is_callable_by_its_full_name() {
         let (origin, _relay) = spawn_fake_relay(vec![("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
-        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
-        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        let (tx, task) = start(fanout_of(&hub).await);
+        tx.send(Some(secure(&origin, "alpha", &[("beta", "k1")])))
+            .ok();
 
         wait_for(&hub, |snap| {
             snap.iter().any(|a| matches!(a.status, AgentStatus::Ok(_)))

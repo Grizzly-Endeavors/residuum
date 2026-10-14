@@ -291,27 +291,62 @@ fn created_deleted_and_restored_agents_name_who_did_it_only_when_it_was_an_agent
 }
 
 #[test]
-fn a_hub_notice_is_told_at_its_own_level_and_a_reload_frame_is_not() {
+fn a_hub_notice_is_told_at_its_own_level() {
     let mut recorder = recorder();
     recorder.on_hub_event(HubEvent::Notice {
         level: NoticeLevel::Warn,
         message: "gateway rebind failed:\nthe port is taken".to_string(),
         agent: None,
+        kind: Some(crate::hub::types::HubNoticeKind::GatewayRebindFailed),
     });
-    recorder.on_hub_event(HubEvent::Notice {
-        level: NoticeLevel::Error,
-        message: "scout's Teams adapter can't use port 3978".to_string(),
-        agent: Some("scout".to_string()),
-    });
-    recorder.on_hub_event(HubEvent::Notice {
-        level: NoticeLevel::Info,
-        message: "hub configuration reloaded: timezone".to_string(),
-        agent: None,
-    });
+    recorder.on_hub_event(HubEvent::notice(
+        NoticeLevel::Error,
+        "scout's Teams adapter can't use port 3978".to_string(),
+        Some("scout".to_string()),
+    ));
+
+    let told: Vec<_> = entries(&recorder)
+        .into_iter()
+        .map(|event| (event.kind, event.level, event.agent, event.summary))
+        .collect();
+    assert_eq!(
+        told,
+        [
+            (
+                TeamEventKind::HubNotice,
+                TeamEventLevel::Warn,
+                None,
+                "gateway rebind failed: the port is taken".to_string(),
+            ),
+            (
+                TeamEventKind::HubNotice,
+                TeamEventLevel::Error,
+                Some("scout".to_string()),
+                "scout's Teams adapter can't use port 3978".to_string(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_hub_config_reload_is_told_when_it_changed_something_or_failed() {
+    let mut recorder = recorder();
     recorder.on_hub_event(HubEvent::HubConfigReloaded {
         ok: true,
         changed: true,
         message: Some("hub configuration reloaded: timezone".to_string()),
+    });
+    recorder.on_hub_event(HubEvent::HubConfigReloaded {
+        ok: true,
+        changed: false,
+        message: None,
+    });
+    recorder.on_hub_event(HubEvent::HubConfigReloaded {
+        ok: false,
+        changed: false,
+        message: Some(
+            "hub config reload failed (keeping current hub config): bad toml".to_string(),
+        ),
     });
 
     let told: Vec<_> = entries(&recorder)
@@ -331,27 +366,20 @@ fn a_hub_notice_is_told_at_its_own_level_and_a_reload_frame_is_not() {
         [
             (
                 TeamEventKind::HubNotice,
-                TeamEventLevel::Warn,
-                None,
-                "gateway rebind failed: the port is taken".to_string(),
-                None
-            ),
-            (
-                TeamEventKind::HubNotice,
-                TeamEventLevel::Error,
-                Some("scout".to_string()),
-                "scout's Teams adapter can't use port 3978".to_string(),
-                None
-            ),
-            (
-                TeamEventKind::HubNotice,
                 TeamEventLevel::Info,
                 None,
                 "hub configuration reloaded: timezone".to_string(),
                 None
             ),
+            (
+                TeamEventKind::HubNotice,
+                TeamEventLevel::Warn,
+                None,
+                "hub config reload failed (keeping current hub config): bad toml".to_string(),
+                None
+            ),
         ],
-        "the reload frame repeats its notice and adds no entry of its own"
+        "a reload that found nothing new adds no entry"
     );
 }
 
@@ -743,7 +771,7 @@ fn the_start_of_the_hub_is_the_first_entry_and_points_nowhere() {
     assert_eq!((event.agent.as_deref(), &event.target), (None, &None));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
     let log = TeamEventLog::new("boot");
     let (events, _keep) = tokio::sync::broadcast::channel(16);
@@ -752,11 +780,11 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
     let mut entries_seen = log.subscribe();
 
     events
-        .send(HubEvent::Notice {
-            level: NoticeLevel::Info,
-            message: "hello".to_string(),
-            agent: None,
-        })
+        .send(HubEvent::notice(
+            NoticeLevel::Info,
+            "hello".to_string(),
+            None,
+        ))
         .unwrap();
     feed.publish(&change(
         "atlas",
@@ -767,10 +795,7 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
 
     let mut kinds = Vec::new();
     for _ in 0..2 {
-        let entry = tokio::time::timeout(std::time::Duration::from_secs(5), entries_seen.recv())
-            .await
-            .expect("an entry arrives")
-            .unwrap();
+        let entry = crate::testing::wait::next("a team event entry", &mut entries_seen).await;
         kinds.push(entry.kind);
     }
     kinds.sort_by_key(|kind| format!("{kind:?}"));
@@ -782,13 +807,15 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
     drop(recorder);
     tokio::task::yield_now().await;
     events
-        .send(HubEvent::Notice {
-            level: NoticeLevel::Info,
-            message: "after".to_string(),
-            agent: None,
-        })
+        .send(HubEvent::notice(
+            NoticeLevel::Info,
+            "after".to_string(),
+            None,
+        ))
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Nothing else can run on a paused clock, so once this returns the
+    // recorder has handled everything it was sent.
+    crate::testing::clock::elapse(std::time::Duration::from_millis(50)).await;
     assert_eq!(
         log.page(&PageQuery::default()).events.len(),
         2,

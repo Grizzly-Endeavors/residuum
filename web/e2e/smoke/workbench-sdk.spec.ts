@@ -6,13 +6,11 @@
 import type { Page, Request, Route } from "@playwright/test";
 import { ARTIFACT_REFUSAL_MESSAGE } from "../../mock/artifacts-origin";
 import type { Frame, Sdk } from "../../src/test/workbench-sdk";
-import { expect, test, type MockControls } from "../support/fixtures";
-import { devServer } from "../support/servers";
+import { artifactsOrigin, expect, test, type MockControls } from "../support/fixtures";
 
 /** The page's window, with what the SDK and the tests put on it. */
 type ProbeWindow = Window & { residuum: Sdk; seen: Frame[]; marker?: string };
 
-const ORIGIN = `http://localhost:${String(devServer.artifactsPort)}`;
 const PROBE = "sdk-probe";
 const PROBE_FILE = `team/workbench/${PROBE}.html`;
 
@@ -39,7 +37,7 @@ async function connected(page: Page): Promise<void> {
 /** Open the probe artifact on the artifacts origin, connected to Residuum. */
 async function openProbe(page: Page, mock: MockControls): Promise<void> {
   await writeProbe(mock);
-  await page.goto(`${ORIGIN}/${PROBE}/`);
+  await page.goto(`${artifactsOrigin()}/${PROBE}/`);
   await connected(page);
 }
 
@@ -58,7 +56,7 @@ const pathOf = (request: Request): string => new URL(request.url()).pathname;
 const onProbeOrigin =
   (path: string) =>
   (url: URL): boolean =>
-    url.origin === ORIGIN && url.pathname === path;
+    url.origin === artifactsOrigin() && url.pathname === path;
 
 /** What the page's handlers collected in `window.seen`. */
 async function seen(page: Page): Promise<Frame[]> {
@@ -99,7 +97,7 @@ test.describe("residuum.fetch", () => {
       "/api/team/workbench/artifacts",
     ]);
     for (const request of calls) {
-      expect(new URL(request.url()).origin).toBe(ORIGIN);
+      expect(new URL(request.url()).origin).toBe(artifactsOrigin());
       expect(request.headers()["x-residuum-artifact"]).toBe(PROBE);
     }
   });
@@ -168,49 +166,6 @@ test.describe("residuum.fetch", () => {
     for (const route of [...ordinary.slice(1), ...modelCalls.slice(1)]) {
       await route.fulfill({ json: {} });
     }
-  });
-
-  test("retries the relay's overloaded 503, and gives up after three retries", async ({
-    page,
-    mock,
-  }) => {
-    await page.clock.install();
-    await openProbe(page, mock);
-    let overloaded = 2;
-    let calls = 0;
-    await page.route(onProbeOrigin("/api/agents/atlas/status"), async (route) => {
-      calls += 1;
-      if (overloaded > 0) {
-        overloaded -= 1;
-        await route.fulfill({ status: 503, body: "agent overloaded" });
-      } else {
-        await route.continue();
-      }
-    });
-    const status = (): Promise<number> =>
-      page.evaluate(
-        async () =>
-          (await (window as unknown as ProbeWindow).residuum.fetch("/api/agents/atlas/status"))
-            .status,
-      );
-
-    const recovered = status();
-    for (const attempts of [1, 2]) {
-      await expect.poll(() => calls).toBe(attempts);
-      await page.clock.runFor(2500);
-    }
-    expect(await recovered).toBe(200);
-    expect(calls).toBe(3);
-
-    overloaded = Infinity;
-    calls = 0;
-    const gaveUp = status();
-    for (const attempts of [1, 2, 3]) {
-      await expect.poll(() => calls).toBe(attempts);
-      await page.clock.runFor(5000);
-    }
-    expect(await gaveUp).toBe(503);
-    expect(calls).toBe(4);
   });
 });
 
@@ -315,11 +270,18 @@ test.describe("residuum.on and residuum.watch", () => {
           };
         }),
     );
+    // Not the pieces the model's text and reasoning stream in as.
     await expect
-      .poll(async () => (await seen(page)).map((frame) => frame.type))
+      .poll(async () =>
+        (await seen(page))
+          .map((frame) => frame.type)
+          .filter((type) => type !== "text_delta" && type !== "thinking_delta"),
+      )
       .toEqual([
         "connection",
+        "user_message",
         "turn_started",
+        "thinking",
         "broadcast_response",
         "tool_call",
         "tool_result",
@@ -412,10 +374,11 @@ test.describe("residuum.sessions", () => {
     await page.routeWebSocket(/\/api\/hub\/ws$/, (ws) => {
       void ws.close();
     });
-    await page.clock.install();
+    // The page's ten seconds run only as the spec moves the mock's time.
+    await mock.manualTime();
     await writeProbe(mock);
     const sent = apiRequests(page);
-    await page.goto(`${ORIGIN}/${PROBE}/`);
+    await page.goto(`${artifactsOrigin()}/${PROBE}/`);
     const state = await page.evaluate(
       () =>
         new Promise<unknown>((resolve) => {
@@ -437,8 +400,7 @@ test.describe("residuum.sessions", () => {
           },
         ),
     );
-    await page.clock.runFor(9_000);
-    await page.clock.runFor(1_000);
+    await mock.advance(10_000);
     expect(await outcome).toMatch(/^no_live_connection: .*live connection isn't available/);
     expect(sent.filter((r) => r.method() === "POST")).toEqual([]);
   });

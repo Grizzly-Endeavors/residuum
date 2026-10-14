@@ -15,7 +15,7 @@ async fn overview_frame(
     what: &str,
     wanted: impl Fn(&AgentOverview) -> bool,
 ) -> AgentOverview {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded(what, async {
         loop {
             match frames.recv().await {
                 Ok(frame) if frame.name == agent && wanted(&frame) => return frame,
@@ -27,7 +27,6 @@ async fn overview_frame(
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 /// What `GET /api/hub/overview` says about `agent`.
@@ -45,7 +44,23 @@ async fn overview_of(hub: &Fixture, agent: &str) -> Value {
 /// Let the model behind `agent` answer every request with `text`.
 async fn answer_with(hub: &Fixture, agent: &str, text: &str) {
     hub.mock(agent).reset().await;
-    mount_reply(hub.mock(agent), text, Duration::ZERO).await;
+    mount_reply(hub.mock(agent), text).await;
+}
+
+/// Save an item in `agent`'s user inbox and announce it, as its
+/// `user_inbox_add` tool does.
+async fn file_inbox_item(hub: &Fixture, agent: &str, id: &str) {
+    hub.add_inbox_item(agent, id);
+    super::agent_watch::agent_bus(hub, agent)
+        .publisher()
+        .publish(
+            crate::bus::topics::UserInbox,
+            crate::bus::UserInboxAddedEvent {
+                item_id: id.to_string(),
+            },
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -82,9 +97,8 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
         .await
         .unwrap();
     loop {
-        let change = tokio::time::timeout(POLL_TIMEOUT, turns.recv())
+        let change = wait::guarded("the background turn to end", turns.recv())
             .await
-            .expect("the background turn ends")
             .unwrap();
         if matches!(change.kind, crate::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn) if turn.visibility == Visibility::Background)
         {
@@ -92,15 +106,36 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
         }
     }
 
-    // Wait out the window a frame would have come in.
-    tokio::time::sleep(OVERVIEW_WINDOW * 3).await;
-    let mut shown = Vec::new();
+    // An inbox item is filed after the background turn's end, so the frame
+    // that shows it is built from a tracker that has seen the turn.
+    hub.wait_for_file_watcher("scout").await;
+    file_inbox_item(&hub, "scout", "pelican").await;
+    let sentinel = overview_frame(
+        &mut frames,
+        "scout",
+        "the frame showing the inbox item",
+        |frame| frame.inbox_unread == 1,
+    )
+    .await;
+    let mut shown: Vec<String> = sentinel
+        .last_message
+        .iter()
+        .map(|message| message.preview.clone())
+        .collect();
     while let Ok(frame) = frames.try_recv() {
         shown.extend(frame.last_message.map(|message| message.preview));
     }
     assert!(
         !shown.iter().any(|preview| preview == "pulse chatter"),
         "the background reply was never the last message: {shown:?}"
+    );
+    assert_eq!(
+        sentinel
+            .last_message
+            .as_ref()
+            .map(|message| message.preview.as_str()),
+        Some("Sunny today"),
+        "the inbox item's frame still shows the last message the user was part of"
     );
     assert_eq!(
         overview_of(&hub, "scout").await["last_message"]["preview"],

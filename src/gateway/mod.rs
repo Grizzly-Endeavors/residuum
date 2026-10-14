@@ -1,6 +1,7 @@
 //! WebSocket gateway for multi-client access to the agent.
 
 mod actions;
+pub(crate) mod browser_landing;
 mod chat_adapters;
 pub(crate) mod cross_site;
 pub(crate) mod event_loop;
@@ -11,10 +12,12 @@ pub(crate) mod last_known_good;
 mod memory;
 pub(crate) mod post_turn;
 pub mod protocol;
+pub(crate) mod queued_messages;
 mod reload;
 pub(crate) mod remote_control_guard;
 pub(crate) mod sessions;
 pub(crate) mod startup;
+pub mod turn_journal;
 pub(crate) mod types;
 pub(crate) mod watcher;
 pub(crate) mod web;

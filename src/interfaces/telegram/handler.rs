@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
-use teloxide::Bot;
-use teloxide::payloads::GetUpdatesSetters;
-use teloxide::requests::Requester;
-use teloxide::types::{
+use teloxide_core::Bot;
+use teloxide_core::payloads::GetUpdatesSetters;
+use teloxide_core::requests::Requester;
+use teloxide_core::types::{
     Audio, BotCommand, ChatId, ChatMemberUpdated, Document, PhotoSize, UpdateKind, UserId, Video,
     Voice,
 };
@@ -27,6 +27,14 @@ use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOri
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
 
+/// How long each `getUpdates` call is asked to hold open when there is nothing new.
+const LONG_POLL_SECS: u32 = 30;
+
+/// Total timeout for every Bot API request. It must exceed `LONG_POLL_SECS`, or every
+/// empty poll is cut client-side. It is also generous because file uploads (up to 50 MB)
+/// share this client.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Shared gateway references threaded through telegram message dispatch.
 struct TelegramContext<'a> {
     state: &'a TelegramState,
@@ -35,6 +43,8 @@ struct TelegramContext<'a> {
     bot_id: UserId,
     publisher: &'a Publisher,
     inbox_dir: &'a Path,
+    /// Main's saved conversation, which `/multitask` forks.
+    main_conversation: &'a Path,
     reload_tx: &'a crate::gateway::types::ReloadSender,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
@@ -76,13 +86,17 @@ pub(super) async fn run_telegram_polling(
     // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
     // pool_idle_timeout evicts stale connections before they poison the pool.
     // Without these, long-poll requests reuse dead connections indefinitely.
-    let http_client = teloxide::net::default_reqwest_settings()
+    // teloxide's default total timeout (17 s) is shorter than the long poll, so it
+    // must be replaced here.
+    let http_client = teloxide_core::net::default_reqwest_settings()
+        .timeout(HTTP_TIMEOUT)
         .tcp_keepalive(Duration::from_mins(1))
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
     let bot = Bot::with_client(token, http_client);
-    let inbox_dir =
-        crate::workspace::layout::WorkspaceLayout::new(&workspace_dir).agent_inbox_dir();
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&workspace_dir);
+    let inbox_dir = layout.agent_inbox_dir();
+    let main_conversation = layout.recent_messages_json();
 
     // Verify the bot token is valid. A network blip or a momentary API
     // error here used to leave the adapter dead until a config reload;
@@ -122,7 +136,7 @@ pub(super) async fn run_telegram_polling(
 
     loop {
         let updates = tokio::select! {
-            result = bot.get_updates().offset(offset).timeout(30) => {
+            result = bot.get_updates().offset(offset).timeout(LONG_POLL_SECS) => {
                 match result {
                     Ok(updates) => {
                         if consecutive_errors > 0 {
@@ -162,6 +176,7 @@ pub(super) async fn run_telegram_polling(
             bot_id: me.id,
             publisher: &publisher,
             inbox_dir: &inbox_dir,
+            main_conversation: &main_conversation,
             reload_tx: &reload_tx,
             command_tx: &command_tx,
             stop_tx: &stop_tx,
@@ -267,8 +282,8 @@ async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
 /// the bot (see [`super::groups`]).
 async fn dispatch_message(
     bot: &Bot,
-    msg: &teloxide::types::Message,
-    from: &teloxide::types::User,
+    msg: &teloxide_core::types::Message,
+    from: &teloxide_core::types::User,
     ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
@@ -402,8 +417,8 @@ struct Addressed {
 /// later. An unaddressed group message is buffered as context instead, and
 /// `None` is returned.
 async fn addressed_to_agent(
-    msg: &teloxide::types::Message,
-    from: &teloxide::types::User,
+    msg: &teloxide_core::types::Message,
+    from: &teloxide_core::types::User,
     ctx: &TelegramContext<'_>,
 ) -> Option<Addressed> {
     let chat = &msg.chat;
@@ -458,7 +473,7 @@ async fn addressed_to_agent(
 fn buffer_unmentioned(
     ctx: &TelegramContext<'_>,
     chat_key: &str,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     text: &str,
 ) {
     if text.trim().is_empty() {
@@ -479,7 +494,7 @@ fn buffer_unmentioned(
 async fn admit_sender(
     bot: &Bot,
     chat_id: ChatId,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     state: &TelegramState,
 ) -> Option<Standing> {
     match state
@@ -500,7 +515,11 @@ async fn admit_sender(
 }
 
 /// Make the sender the owner if nobody is yet; only called for private chats.
-async fn claim_owner_if_unset(state: &TelegramState, from: &teloxide::types::User, dm_chat: &str) {
+async fn claim_owner_if_unset(
+    state: &TelegramState,
+    from: &teloxide_core::types::User,
+    dm_chat: &str,
+) {
     let owner = Owner {
         user_id: from.id.to_string(),
         name: build_sender_name(from),
@@ -522,7 +541,7 @@ async fn send_reply(bot: &Bot, chat_id: ChatId, text: &str) {
 }
 
 /// Build a display name from a Telegram user.
-fn build_sender_name(user: &teloxide::types::User) -> String {
+fn build_sender_name(user: &teloxide_core::types::User) -> String {
     match &user.last_name {
         Some(last) => format!("{} {last}", user.first_name),
         None => user.first_name.clone(),
@@ -533,7 +552,7 @@ fn build_sender_name(user: &teloxide::types::User) -> String {
 async fn handle_command(
     bot: &Bot,
     chat_id: ChatId,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     cmd_name: &str,
     cmd_args: Option<&str>,
     ctx: &TelegramContext<'_>,
@@ -547,6 +566,8 @@ async fn handle_command(
         session_registry: ctx.session_registry,
         inbox_dir: ctx.inbox_dir,
         tz: ctx.tz,
+        publisher: ctx.publisher,
+        main_conversation: ctx.main_conversation,
     };
     let response_text = crate::interfaces::run_chat_command(
         cmd_name,
@@ -615,11 +636,11 @@ fn video_as_meta(video: &Video) -> AttachmentMeta<'_> {
 /// Extract and process all attachment types from a Telegram message.
 async fn process_attachments(
     bot: &Bot,
-    msg: &teloxide::types::Message,
+    msg: &teloxide_core::types::Message,
     content: &mut String,
     images: &mut Vec<ImageData>,
     inbox_dir: &Path,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
 ) {
     if let Some(doc) = msg.document() {
@@ -688,13 +709,13 @@ async fn handle_attachment(
     images: &mut Vec<ImageData>,
     meta: &AttachmentMeta<'_>,
     inbox_dir: &Path,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
 ) {
     use crate::interfaces::attachment::{
         AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
     };
-    use teloxide::net::Download;
+    use teloxide_core::net::Download;
 
     let filename = meta.filename;
 
@@ -707,7 +728,7 @@ async fn handle_attachment(
     // Two-step Telegram download: get_file → download_file
     let download_result: Result<SavedAttachment, String> = async {
         let file = bot
-            .get_file(teloxide::types::FileId(meta.file_id.to_string()))
+            .get_file(teloxide_core::types::FileId(meta.file_id.to_string()))
             .await
             .map_err(|e| format!("failed to get file info for '{filename}': {e}"))?;
 
@@ -759,18 +780,26 @@ async fn handle_attachment(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::Duration as StdDuration;
 
     use super::*;
     use crate::bus::{MessageEvent, Subscriber, topics};
     use crate::interfaces::chat_state::ChatStateStore;
     use crate::interfaces::context_buffer::ContextBuffer;
     use crate::interfaces::reply_targets::ReplyTargets;
+    use crate::testing::wait;
 
     const BOT_USERNAME: &str = "resibot";
     const BOT_ID: UserId = UserId(9_999);
 
-    fn telegram_message(json: serde_json::Value) -> teloxide::types::Message {
+    #[test]
+    fn http_timeout_outlasts_long_poll() {
+        assert!(
+            HTTP_TIMEOUT > Duration::from_secs(u64::from(LONG_POLL_SECS)),
+            "client timeout {HTTP_TIMEOUT:?} must exceed the long-poll hold {LONG_POLL_SECS}s"
+        );
+    }
+
+    fn telegram_message(json: serde_json::Value) -> teloxide_core::types::Message {
         serde_json::from_value(json).expect("valid minimal telegram message fixture")
     }
 
@@ -807,6 +836,7 @@ mod tests {
         user_messages: Subscriber<MessageEvent>,
         publisher: Publisher,
         inbox_dir: PathBuf,
+        main_conversation: PathBuf,
         reload_tx: crate::gateway::types::ReloadSender,
         command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
@@ -820,6 +850,7 @@ mod tests {
         let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
         let state = Arc::new(TelegramState {
             respond_to_others,
+            deliver_intermediate: false,
             store: ChatStateStore::load(dir.path().join("telegram_state.json"))
                 .await
                 .unwrap()
@@ -834,6 +865,7 @@ mod tests {
             user_messages,
             publisher: bus.publisher(),
             inbox_dir: dir.path().to_path_buf(),
+            main_conversation: dir.path().join("recent_messages.json"),
             reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
             )
             .0,
@@ -851,6 +883,7 @@ mod tests {
             bot_id: BOT_ID,
             publisher: &h.publisher,
             inbox_dir: &h.inbox_dir,
+            main_conversation: &h.main_conversation,
             reload_tx: &h.reload_tx,
             command_tx: &h.command_tx,
             stop_tx: &h.stop_tx,
@@ -859,16 +892,16 @@ mod tests {
         }
     }
 
-    async fn deliver(h: &Harness, msg: &teloxide::types::Message) {
+    async fn deliver(h: &Harness, msg: &teloxide_core::types::Message) {
         let from = msg.from.clone().expect("fixture always sets a sender");
         dispatch_message(&h.bot, msg, &from, &context(h)).await;
     }
 
-    async fn next_user_message(h: &mut Harness) -> Option<MessageEvent> {
-        tokio::time::timeout(StdDuration::from_millis(200), h.user_messages.recv())
+    async fn next_user_message(h: &mut Harness, what: &str) -> MessageEvent {
+        wait::guarded(what, h.user_messages.recv())
             .await
-            .ok()
-            .map(|r| r.unwrap().unwrap())
+            .unwrap()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -876,7 +909,7 @@ mod tests {
         let mut h = harness(false, 10).await;
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hello"))).await;
 
-        let event = next_user_message(&mut h).await.expect("dm published");
+        let event = next_user_message(&mut h, "dm published").await;
         assert_eq!(event.content, "hello");
         assert_eq!(event.context, None, "no buffered context for a DM");
         let conversation = event
@@ -893,7 +926,7 @@ mod tests {
         let mut h = harness(true, 10).await;
         // Claim the owner via a DM first, so the group sender is a non-owner.
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &h,
@@ -907,11 +940,6 @@ mod tests {
             )),
         )
         .await;
-        assert!(
-            next_user_message(&mut h).await.is_none(),
-            "unmentioned chatter is buffered, not sent"
-        );
-
         deliver(
             &h,
             &telegram_message(group_json(
@@ -924,8 +952,12 @@ mod tests {
             )),
         )
         .await;
-        let event = next_user_message(&mut h).await.expect("mention published");
-        assert_eq!(event.content, "can you look?");
+        // Events arrive in publish order, so a published chatter would come before the mention.
+        let event = next_user_message(&mut h, "mention published").await;
+        assert_eq!(
+            event.content, "can you look?",
+            "unmentioned chatter is buffered, not sent"
+        );
         let context = event.context.expect("background context attached");
         assert!(context.contains("Sam: build is red"), "{context}");
         let conversation = event
@@ -948,7 +980,7 @@ mod tests {
             )),
         )
         .await;
-        let again = next_user_message(&mut h).await.expect("second mention");
+        let again = next_user_message(&mut h, "second mention").await;
         assert_eq!(
             again.context, None,
             "already-delivered chatter is not repeated"
@@ -959,7 +991,7 @@ mod tests {
     async fn context_buffer_is_bounded_by_context_messages() {
         let mut h = harness(true, 1).await;
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &h,
@@ -984,7 +1016,7 @@ mod tests {
             )),
         )
         .await;
-        let event = next_user_message(&mut h).await.expect("mention published");
+        let event = next_user_message(&mut h, "mention published").await;
         let context = event.context.expect("one buffered message fits");
         assert!(!context.contains("first"), "{context}");
         assert!(context.contains("second"), "{context}");

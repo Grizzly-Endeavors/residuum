@@ -8,6 +8,7 @@ import { agentLabel } from "../lib/agent-name";
 import { actionRegistry, HELP_GROUP, type AppAction } from "../lib/action-registry.svelte";
 import { displayState } from "../lib/agent-display-state";
 import { lifecycleApplies, type LifecycleAction } from "../lib/agent-lifecycle";
+import { startSession } from "../lib/api";
 import { CHAT_GROUP, chatActions } from "../lib/chat-actions";
 import { hub } from "../lib/hub.svelte";
 import type { InstallOffer } from "../lib/install";
@@ -21,6 +22,7 @@ import {
   ALL_SECTIONS,
   type SectionEntry,
 } from "../lib/settings-sections";
+import { openSessionByAddress } from "../lib/session-address";
 import { runIcon, runKind } from "../lib/session-format";
 import { ws } from "../lib/ws.svelte";
 import { AGENT_PLACES, stateWord } from "./rail-model";
@@ -200,8 +202,12 @@ function chat(shell: ShellActions): AppAction[] {
     stopReply: () => {
       ws.stop();
     },
-    surface: (kind, message) => {
-      notifications.surface(kind, message);
+    surface: (kind, message, action) => {
+      notifications.surface(kind, message, undefined, action);
+    },
+    startSession,
+    openSession: (name, address) => {
+      void openSessionByAddress(name, address, null);
     },
     showConversationSize: (name) => {
       const panel = { kind: "size" } as const;

@@ -85,8 +85,8 @@ describe("Runtime", () => {
 
     const length = box("Reply length");
     expect(length.value).toBe("");
-    expect(length.placeholder).toBe("8192");
-    expect(length).toHaveAccessibleDescription(/Default: 8,192 tokens\./);
+    expect(length.placeholder).toBe("16384");
+    expect(length).toHaveAccessibleDescription(/Default: 16,384 tokens\./);
     expect(box("First pause")).toHaveAccessibleDescription(/Default: 500 milliseconds\./);
     expect(box("Tool calls per turn").placeholder).toBe("No limit");
   });
@@ -150,7 +150,6 @@ describe("Runtime", () => {
 
     const channel = screen.getByLabelText("Send its updates to");
     expect([...channel.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
-      "Keep where it is",
       "This app",
       "Telegram",
       "Discord",
@@ -163,6 +162,32 @@ describe("Runtime", () => {
     await settle();
     await save(scope);
     expect(patches()).toEqual([{ idle: { idle_channel: "telegram" } }]);
+  });
+
+  it("shows the app as where updates go when the file names no idle channel", async () => {
+    const scope = await loaded("[idle]\ntimeout_minutes = 30\n");
+    render(Runtime, { scope, section: "runtime" });
+
+    const channel = screen.getByLabelText<HTMLSelectElement>("Send its updates to");
+    expect(channel.selectedOptions[0]?.textContent).toBe("This app");
+    expect([...channel.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
+      "This app",
+      "Telegram",
+      "Discord",
+      "Microsoft Teams",
+    ]);
+  });
+
+  it("moves updates from a chat back to the app", async () => {
+    const scope = await loaded('[idle]\nidle_channel = "telegram"\n');
+    render(Runtime, { scope, section: "runtime" });
+
+    await fireEvent.change(screen.getByLabelText("Send its updates to"), {
+      target: { value: "websocket" },
+    });
+    await settle();
+    await save(scope);
+    expect(patches()).toEqual([{ idle: { idle_channel: "websocket" } }]);
   });
 
   it("shows a problem the server places on a number under that number", async () => {

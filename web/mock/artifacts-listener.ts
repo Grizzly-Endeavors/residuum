@@ -9,6 +9,7 @@ import {
   type ArtifactsForwarding,
 } from "./artifacts-origin";
 import { WEB_ROOT } from "./assets";
+import { keepIdleConnectionsOpen } from "./http";
 import { MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
 import type { MockState } from "./state";
 import { discoverArtifacts, readArtifactFile } from "./workbench-files";
@@ -172,6 +173,7 @@ export function startArtifactsListener(
       serve(state, req, res);
     }
   });
+  keepIdleConnectionsOpen(server);
   server.on("upgrade", (req, socket, head) => {
     // Nothing but the API has a socket; refuse any other, as Node does for a server with no upgrade listener.
     if (isApiTarget(req.url)) forwardUpgrade(forwarding, req, socket, head);

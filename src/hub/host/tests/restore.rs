@@ -54,6 +54,18 @@ async fn restore_over_http(hub: &Fixture, body: Value) -> (u16, Value) {
     .await
 }
 
+/// Set when the deletion of `name` is recorded as having happened.
+fn pin_deletion_time(hub: &Fixture, name: &str, at: &str) {
+    let checkpoints_dir = hub.host.checkpoints_dir();
+    let path = crate::checkpoints::agent_repos_dir(&checkpoints_dir, name).join("deleted.json");
+    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    record
+        .as_object_mut()
+        .expect("a deletion record is a JSON object")
+        .insert("deleted_at".to_string(), json!(at));
+    std::fs::write(&path, record.to_string()).unwrap();
+}
+
 async fn deleted_names(hub: &Fixture) -> Vec<String> {
     let (status, body) =
         send_json(hub, reqwest::Method::GET, "/api/hub/agents/deleted", None).await;
@@ -359,8 +371,11 @@ async fn the_deleted_list_names_only_agents_without_a_directory_newest_first() {
     );
 
     delete_over_http(&hub, "nova").await;
-    tokio::time::sleep(Duration::from_millis(20)).await;
     delete_over_http(&hub, "kit").await;
+    // The list is ordered by when each deletion happened, so pin those times
+    // rather than let the order depend on the clock between the two requests.
+    pin_deletion_time(&hub, "nova", "2026-09-29T10:00:00Z");
+    pin_deletion_time(&hub, "kit", "2026-09-30T10:00:00Z");
 
     assert_eq!(deleted_names(&hub).await, ["kit", "nova"]);
     hub.host

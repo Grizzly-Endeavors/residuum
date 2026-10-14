@@ -1,8 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { NO_SECURE_ORIGIN_REASON } from "../../src/lib/workbench";
 import { expectNoAxeViolations } from "../support/axe";
-import { expect, test, type MockControls } from "../support/fixtures";
-import { devServer } from "../support/servers";
+import { artifactsOrigin, expect, test, type MockControls } from "../support/fixtures";
 
 /**
  * The Workbench, a launcher: the list and a selected row's detail, Open in a
@@ -12,7 +11,6 @@ import { devServer } from "../support/servers";
  * open. Nothing in the app embeds an artifact.
  */
 
-const ARTIFACTS_ORIGIN = `http://localhost:${String(devServer.artifactsPort)}`;
 /** The purpose of the mock's sample sessions that `wiki-graph` started, on atlas and on scout. */
 const WIKI_RUN = "Write a wiki page summarizing this week's notes on otters";
 
@@ -52,7 +50,7 @@ test("the list shows each page, and a row selected opens in place until Back", a
   await head.click();
   await expect.poll(() => address(page)).toBe("/team/workbench/tip-splitter");
   await expect(head).toHaveAttribute("aria-expanded", "true");
-  await expect(tip.getByText(`${ARTIFACTS_ORIGIN}/tip-splitter/`)).toBeVisible();
+  await expect(tip.getByText(`${artifactsOrigin()}/tip-splitter/`)).toBeVisible();
   await expect(tip.getByText("Nothing running.", { exact: false })).toBeVisible();
   await expect(page.locator("iframe")).toHaveCount(0);
   await expectNoAxeViolations(page);
@@ -67,7 +65,7 @@ test("Open opens the page on the artifacts origin in a new tab", async ({ page }
   const opened = page.waitForEvent("popup");
   await row(page, "Tip Splitter").getByRole("link", { name: "Open Tip Splitter" }).click();
   const tab = await opened;
-  expect(tab.url()).toBe(`${ARTIFACTS_ORIGIN}/tip-splitter/`);
+  expect(tab.url()).toBe(`${artifactsOrigin()}/tip-splitter/`);
   await expect(tab.getByRole("heading", { name: "Tip splitter" })).toBeVisible();
   // The app stays where it was.
   await expect.poll(() => address(page)).toBe("/team/workbench");
@@ -79,7 +77,7 @@ test("Copy link copies the page's address", async ({ page }) => {
   await row(page, "Tip Splitter").getByRole("button", { name: "Copy link" }).click();
   await expect(page.getByText("Copied the link to “Tip Splitter”.")).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-    `${ARTIFACTS_ORIGIN}/tip-splitter/`,
+    `${artifactsOrigin()}/tip-splitter/`,
   );
 
   // The row's menu offers it too.

@@ -436,11 +436,11 @@ mod tests {
             next,
             [
                 ("recent", Some("2099-01-01T13:00:00+00:00".to_string())),
-                ("never_run", Some("2099-01-01T12:20:00+00:00".to_string())),
+                ("never_run", Some("2099-01-01T13:20:00+00:00".to_string())),
                 ("quiet", Some("2099-01-02T09:00:00+00:00".to_string())),
                 ("disabled", None),
             ],
-            "a pulse due already is reported at the start of the minute, and 12:30 is after 12:00"
+            "a pulse that never ran is first seen at the start of the minute and runs an hour on, and 12:30 is after 12:00"
         );
     }
 

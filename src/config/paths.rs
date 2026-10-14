@@ -251,6 +251,22 @@ impl HubPaths {
         self.root.join("a2a-keys.lock")
     }
 
+    /// `hub/remote-access.json` — the paired devices (as hashes), the unused
+    /// recovery codes (as hashes) and the address Residuum Cloud announced
+    /// (mode 0600). Never checkpointed.
+    #[must_use]
+    pub fn remote_access_json(&self) -> PathBuf {
+        self.root.join("remote-access.json")
+    }
+
+    /// `hub/remote-access/` — end-to-end remote access state: the local
+    /// identity, the ACME account key, the certificate and its private key
+    /// (mode 0600 files). Never checkpointed.
+    #[must_use]
+    pub fn remote_access_dir(&self) -> PathBuf {
+        self.root.join("remote-access")
+    }
+
     /// `hub/push-vapid.key` — the Web Push signing key pair (a PKCS#8 P-256
     /// key, mode 0600). Never checkpointed.
     #[must_use]

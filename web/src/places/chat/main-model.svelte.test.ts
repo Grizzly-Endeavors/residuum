@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Models from "../../lib/models";
-import { MainModel, modelControlLabel } from "./main-model.svelte";
+import { MainModel, modelControlLabel, thinkingBadge } from "./main-model.svelte";
+import { waitFor } from "../../test/wait";
 
 // The coordinator writes a patch the server merges into the file; these tests
 // check the patch the control builds from the file as it is.
@@ -137,12 +138,12 @@ describe("the composer's model control", () => {
   it("reads the file again when it changes elsewhere, not after its own write", async () => {
     const main = new MainModel("atlas", vi.fn());
     const stop = main.follow();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(main.loaded).toBe(true);
     });
     disk.text = `[models]\nmain = "anthropic/claude-haiku-4-5"\n`;
     for (const listener of listeners) listener({ source: null });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(main.model).toBe("claude-haiku-4-5");
     });
     expect(main.thinking).toBe("");
@@ -158,5 +159,11 @@ describe("the control's words", () => {
       "Claude Sonnet 4.6, no extra thinking",
     );
     expect(modelControlLabel("Claude Sonnet 4.6", "high")).toBe("Claude Sonnet 4.6, high thinking");
+  });
+
+  it("gives the thinking level's word for the phone badge, or nothing when none is set", () => {
+    expect(thinkingBadge("")).toBe("");
+    expect(thinkingBadge("off")).toBe("Off");
+    expect(thinkingBadge("medium")).toBe("Medium");
   });
 });

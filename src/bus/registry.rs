@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::interfaces::conversations::ConversationDirectory;
+use crate::interfaces::types::WEB_UI_ENDPOINT;
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 use super::endpoint::EndpointCapabilities;
@@ -91,9 +92,9 @@ impl EndpointRegistry {
     fn config_entries(config: &Config, channels: &[ExternalChannelConfig]) -> Vec<EndpointEntry> {
         // WebSocket — always present
         let mut entries = vec![EndpointEntry {
-            id: EndpointId::from("ws"),
-            topic: TopicId::Endpoint(EndpointName::from("ws")),
-            capabilities: EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
+            id: EndpointId::from(WEB_UI_ENDPOINT),
+            topic: TopicId::Endpoint(EndpointName::from(WEB_UI_ENDPOINT)),
+            capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         }];
 
@@ -270,22 +271,19 @@ mod tests {
             },
             EndpointEntry {
                 display_name: "second".to_string(),
-                ..make_entry("ws", EndpointCapabilities::STREAMING)
+                ..make_entry("ws", EndpointCapabilities::NOTIFY_ONLY)
             },
         ]);
 
         let got = reg.get(&EndpointId::from("ws")).unwrap();
         assert_eq!(got.display_name, "second");
-        assert_eq!(got.capabilities, EndpointCapabilities::STREAMING);
+        assert_eq!(got.capabilities, EndpointCapabilities::NOTIFY_ONLY);
     }
 
     #[test]
     fn interactive_and_notify_partition_by_capability() {
         let reg = EndpointRegistry::from_entries([
-            make_entry(
-                "ws",
-                EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
-            ),
+            make_entry("ws", EndpointCapabilities::INTERACTIVE),
             EndpointEntry {
                 id: EndpointId::from("ntfy"),
                 topic: TopicId::Notification(NotifyName::from("ntfy")),
@@ -330,7 +328,6 @@ mod tests {
         let ws = reg.get(&EndpointId::from("ws")).unwrap();
         assert_eq!(ws.display_name, "WebSocket");
         assert!(ws.capabilities.contains(EndpointCapabilities::INTERACTIVE));
-        assert!(ws.capabilities.contains(EndpointCapabilities::STREAMING));
 
         // discord/telegram not present
         assert!(reg.get(&EndpointId::from("discord")).is_none());
@@ -344,6 +341,7 @@ mod tests {
             token: "test-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let reg = EndpointRegistry::from_config(&config, &[]);
@@ -368,6 +366,7 @@ mod tests {
             token: "added-on-reload".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         registry.refresh(&config, &[]);
         assert!(
@@ -395,6 +394,7 @@ mod tests {
             tenant_id: "tenant".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
             port: 7701,
         });
         let teams = reg_has_teams(&config).unwrap();

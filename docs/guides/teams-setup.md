@@ -63,7 +63,7 @@ Saving reloads the config. The log shows `teams interface listening` with the ad
 
 ## 3. Set the messaging endpoint
 
-With Residuum Cloud connected, **Settings → (agent) → Connections → Microsoft Teams** shows a **Messaging endpoint** like `https://<you>.agent-residuum.com/teams/<instance>/<agent>`. Copy it. In the Developer Portal bot page, set **Endpoint address** to that URL and save. The relay delivers messages to this agent while the cloud connection is up. Teams messages can't arrive through it while Residuum Cloud is disconnected.
+With Residuum Cloud connected, **Settings → (agent) → Connections → Microsoft Teams** shows a **Messaging endpoint** like `https://<instance>.<you>.agent-residuum.com/teams/<agent>`. Copy it. In the Developer Portal bot page, set **Endpoint address** to that URL and save. Residuum delivers messages to this agent while the cloud connection is up. Teams messages can't arrive through it while Residuum Cloud is disconnected.
 
 To reach the bot without Residuum Cloud, point a tunnel at the **Teams port (7701)** only (the **Listener port** in the same **Microsoft Teams** group). Never expose the gateway port (7700): it serves the configuration and secrets API without a login. Everything that reaches port 7701 has to carry a valid Microsoft-signed token, or it's rejected. The endpoint is then `https://…/api/teams/messages`.
 
@@ -111,8 +111,9 @@ Messages you send never reach the agent:
 - `rejected teams activity from a tenant other than the configured one`: `tenant_id` is wrong.
 - Nothing in the log at all: the tunnel isn't reaching port 7701, or the Developer Portal endpoint address is wrong. It must end in `/api/teams/messages`.
 
-The agent answers but replies never show up in Teams:
+The agent answers but replies never show up in Teams (the web UI shows an error saying replies to Microsoft Teams aren't getting through; its Details hold what Microsoft reported):
 
-- `could not get a bot token from Microsoft`: the client secret is wrong or expired, or `tenant_id` is wrong. Create a new secret in the Developer Portal and update it under **Client secret** in **Settings → (agent) → Connections → Microsoft Teams**.
+- `AADSTS7000229` in the details: the bot's app has no service principal in your tenant. Run `az ad sp create --id <app_id>` with your `app_id`, as someone with admin rights in the tenant, then message the bot again.
+- `could not get a bot token from Microsoft` with any other cause: the client secret is wrong or expired, or `tenant_id` is wrong. Create a new secret in the Developer Portal and update it under **Client secret** in **Settings → (agent) → Connections → Microsoft Teams**.
 
 The bot says it only takes requests from someone else: someone else DMed it first. See [who the agent answers](../systems-usage/teams.md#who-the-agent-answers) for how to reset the owner.

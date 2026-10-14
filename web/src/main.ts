@@ -4,7 +4,9 @@ import "./styles/ui-base.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { startServiceWorker } from "./lib/app-update.svelte";
+import { captureCloudHandoff } from "./lib/cloud-handoff";
 import { startConfigSync } from "./lib/config-sync";
+import { PAIRING_PATH } from "./lib/pairing";
 import { startInstallOffer } from "./shell/install-offer";
 import { startPushClient } from "./shell/push-client.svelte";
 
@@ -20,7 +22,15 @@ if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
   void import("./lib/ui/gallery/Gallery.svelte").then(({ default: Gallery }) =>
     mount(Gallery, { target }),
   );
+} else if (window.location.pathname === PAIRING_PATH) {
+  // An unpaired browser reaching Residuum through Residuum Cloud lands here.
+  // The page stands alone: nothing else in the app can load before pairing.
+  void import("./pairing/PairingPage.svelte").then(({ default: PairingPage }) =>
+    mount(PairingPage, { target }),
+  );
 } else {
+  // The Cloud sign-in's outcome, before the router drops it from the address.
+  captureCloudHandoff(window.location.search);
   // Config changes made outside this page reach the views that show them.
   startConfigSync();
   startInstallOffer();

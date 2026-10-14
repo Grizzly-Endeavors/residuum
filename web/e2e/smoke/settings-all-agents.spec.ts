@@ -44,6 +44,7 @@ test.describe("General", () => {
 
     await page.getByLabel("Timezone").selectOption("Europe/Berlin");
     await page.getByRole("button", { name: "More options" }).click();
+    await expect(page.getByLabel("Bind address")).toBeVisible();
     await page.getByLabel("Port", { exact: true }).fill("7711");
     await expect(saveBar(page)).toContainText("You have unsaved changes.");
     await expectNoAxeViolations(page, { within: OVERLAY });
@@ -89,7 +90,7 @@ test.describe("Residuum Cloud", () => {
     expect(await opened()).toEqual(["https://agent-residuum.com/connect?port=7700"]);
 
     await page.getByRole("button", { name: "More options" }).click();
-    await page.getByLabel("Relay URL").fill("ws://127.0.0.1:8080/tunnel/register");
+    await page.getByLabel("Relay URL").fill("ws://127.0.0.1:8080/tunnel/v2/register");
     await page.getByRole("button", { name: "Connect to Residuum Cloud" }).click();
     expect(await opened()).toEqual([
       "https://agent-residuum.com/connect?port=7700",
@@ -142,6 +143,48 @@ test.describe("Residuum Cloud", () => {
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
   });
 
+  test("the relay's hand-back lands in Settings, which follows the tunnel from Connecting to Connected", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/cloud", { data: { tunnel: "connecting" } });
+    await page.goto("/cloud/callback?token=rst_handed_back");
+    await expectSettingsOpen(page);
+    await expect.poll(() => new URL(page.url()).search).toBe("?settings=_all/cloud");
+    await expect(page.getByText("Connecting…")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Connection" }).getByRole("alert")).toBeHidden();
+    expect(await hubConfig(page)).toContain('token = "secret:cloud_token"');
+
+    // The tunnel comes up; the section, still looking while it connects, shows it.
+    await mock.post("/api/mock/cloud", { data: { tunnel: null } });
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    await expectNoAxeViolations(page, { within: OVERLAY });
+  });
+
+  test("a hand-back without a token lands in Settings with what to do next", async ({ page }) => {
+    await page.goto("/cloud/callback");
+    await expectSettingsOpen(page);
+    const problem = page.getByRole("region", { name: "Connection" }).getByRole("alert");
+    await expect(problem).toContainText("Try connecting again.");
+    await expect(page.getByText("Not connected")).toBeVisible();
+    await expectNoAxeViolations(page, { within: OVERLAY });
+    const opened = await recordOpenedTabs(page);
+
+    await problem.getByRole("button", { name: "Try connecting again" }).click();
+    expect(await opened()).toEqual(["https://agent-residuum.com/connect?port=7700"]);
+    await expect(problem).toBeHidden();
+  });
+
+  test("a sign-in the relay refuses offers to sign in again", async ({ page, mock }) => {
+    await mock.post("/api/mock/cloud-callback");
+    await mock.post("/api/mock/cloud", { data: { tunnel: "refused" } });
+    await openSection(page, "cloud");
+
+    await expect(page.getByText("Sign-in not accepted")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in again" })).toBeVisible();
+    await expectNoAxeViolations(page, { within: OVERLAY });
+  });
+
   test("seen through Residuum Cloud there is no Disconnect, and the page says why", async ({
     page,
     mock,
@@ -179,6 +222,9 @@ test.describe("Session limits and Diagnostics", () => {
     page,
   }) => {
     await openSection(page, "diagnostics");
+    await expect(
+      page.getByRole("switch", { name: "Redact content in trace exports" }),
+    ).toBeChecked();
     const report = page.getByRole("switch", { name: "Report errors automatically" });
     await expect(report).not.toBeChecked();
     await expectNoAxeViolations(page, { within: OVERLAY });

@@ -123,7 +123,7 @@ mod proactivity_integration {
     // ── Scheduler tests ──────────────────────────────────────────────────────
 
     #[test]
-    fn scheduler_due_on_first_run() {
+    fn scheduler_defers_first_run_by_one_schedule_duration() {
         let dir = tempdir().unwrap();
         let heartbeat_path = dir.path().join("HEARTBEAT.yml");
         std::fs::write(
@@ -134,8 +134,12 @@ mod proactivity_integration {
 
         let mut scheduler = PulseScheduler::new();
         let now = chrono::Utc::now().naive_utc();
-        let due = scheduler.due_pulses(now, &heartbeat_path);
-        assert_eq!(due.len(), 1, "pulse should fire on first run");
+        let first = scheduler.due_pulses(now, &heartbeat_path);
+        assert!(first.is_empty(), "pulse should not fire on the first tick");
+
+        let later = now + chrono::Duration::hours(1);
+        let due = scheduler.due_pulses(later, &heartbeat_path);
+        assert_eq!(due.len(), 1, "pulse should fire one schedule duration on");
     }
 
     #[test]
@@ -152,9 +156,13 @@ mod proactivity_integration {
         let now = chrono::Utc::now().naive_utc();
 
         let first = scheduler.due_pulses(now, &heartbeat_path);
-        assert_eq!(first.len(), 1, "first call should fire");
+        assert!(first.is_empty(), "first call only records the pulse");
 
-        let second = scheduler.due_pulses(now, &heartbeat_path);
+        let fire_time = now + chrono::Duration::hours(2);
+        let fired = scheduler.due_pulses(fire_time, &heartbeat_path);
+        assert_eq!(fired.len(), 1, "should fire after the schedule duration");
+
+        let second = scheduler.due_pulses(fire_time, &heartbeat_path);
         assert!(second.is_empty(), "same-time call should not refire");
     }
 

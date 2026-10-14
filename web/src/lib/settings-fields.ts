@@ -51,6 +51,7 @@ const PROVIDER_KEYS = {
   apiKey: "api_key",
   url: "url",
   keepAlive: "keep_alive",
+  models: "models",
 } as const satisfies Record<EntryField<SettingsProviderEntry>, string>;
 
 const MCP_KEYS = {

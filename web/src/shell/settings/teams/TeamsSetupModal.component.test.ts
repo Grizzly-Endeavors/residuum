@@ -13,6 +13,7 @@ import {
 import { fakeAgentConfig, type FakeAgentConfig } from "../../../test/fake-config";
 import ConnectionsSection from "../ConnectionsSection.svelte";
 import TeamsSetupModal from "./TeamsSetupModal.svelte";
+import { waitFor } from "../../../test/wait";
 
 let agent = "atlas";
 let server: FakeAgentConfig;
@@ -26,6 +27,11 @@ let cancelCalled = false;
 let retryCalled = false;
 let installAppCalled = false;
 let cleanupCalled = false;
+let cleanupRequestedWith: unknown = null;
+let cleanupResponse: { body: unknown; status: number } = {
+  body: { removed: ["project_files"], failed: [] },
+  status: 200,
+};
 let deleteJobCalled = false;
 let startJobCalledWith: unknown = null;
 let redirectSubmittedWith: string | null = null;
@@ -99,6 +105,8 @@ beforeEach(() => {
   retryCalled = false;
   installAppCalled = false;
   cleanupCalled = false;
+  cleanupRequestedWith = null;
+  cleanupResponse = { body: { removed: ["project_files"], failed: [] }, status: 200 };
   deleteJobCalled = false;
   startJobCalledWith = null;
   redirectSubmittedWith = null;
@@ -149,7 +157,8 @@ beforeEach(() => {
 
     if (url.includes(`/api/agents/${agent}/teams-setup/cleanup`) && method === "POST") {
       cleanupCalled = true;
-      return jsonResponse({ removed: ["manifest.zip"], failed: [] });
+      cleanupRequestedWith = JSON.parse(init?.body as string);
+      return jsonResponse(cleanupResponse.body, cleanupResponse.status);
     }
 
     if (url.includes(`/api/agents/${agent}/teams-setup/package`) && method === "GET") {
@@ -199,7 +208,7 @@ afterEach(() => {
 });
 
 async function waitForModalReady(): Promise<void> {
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(document.querySelector(".loading-state")).toBeNull();
   });
 }
@@ -249,6 +258,21 @@ describe("TeamsSetupModal", () => {
 
     await fireEvent.click(replaceCheckbox);
     expect(nextBtn).toBeDisabled();
+  });
+
+  it("deletes the Teams project files from the prereqs step when Teams is already configured", async () => {
+    currentPrereqs = fakePrereqs({ teams_already_configured: true });
+    render(TeamsSetupModal, { agent, open: true });
+    await waitForModalReady();
+
+    expect(screen.getByText(/delete the Teams project files first/i)).toBeTruthy();
+    const deleteBtn = screen.getByRole("button", { name: "Delete Teams project files" });
+    await fireEvent.click(deleteBtn);
+    await settle();
+
+    expect(cleanupRequestedWith).toEqual({ project_files: true, cli: false, sign_out: false });
+    const doneBtn = screen.getByRole("button", { name: "Teams project files deleted" });
+    expect(doneBtn).toBeDisabled();
   });
 
   // Scenario 4: consent required when CLI missing
@@ -555,6 +579,73 @@ describe("TeamsSetupModal", () => {
     expect(deleteJobCalled).toBe(true);
   });
 
+  function failedProvisionJob(): TeamsSetupJob {
+    return fakeJob({
+      state: "failed",
+      phase: "provision",
+      error: { phase: "provision", message: "Provisioning failed (exit code 1).", detail: null },
+    });
+  }
+
+  it("confirms the project files were deleted after Clean up on the failed step", async () => {
+    currentJob = failedProvisionJob();
+    render(TeamsSetupModal, { agent, open: true });
+    await waitForModalReady();
+
+    const cleanupBtn = screen.getByRole("button", { name: "Clean up" });
+    await fireEvent.click(cleanupBtn);
+    await settle();
+
+    expect(cleanupRequestedWith).toEqual({ project_files: true, cli: false, sign_out: false });
+    expect(screen.getByText(/Teams project files deleted\. Choose Start over/i)).toBeTruthy();
+    expect(cleanupBtn).toBeDisabled();
+  });
+
+  it("shows an error when Clean up could not delete the project files", async () => {
+    cleanupResponse = {
+      body: {
+        removed: [],
+        failed: [
+          {
+            item: "project_files",
+            message: "failed to remove /home/u/.residuum/atlas/teams-app: permission denied",
+          },
+        ],
+      },
+      status: 200,
+    };
+    currentJob = failedProvisionJob();
+    render(TeamsSetupModal, { agent, open: true });
+    await waitForModalReady();
+
+    const cleanupBtn = screen.getByRole("button", { name: "Clean up" });
+    await fireEvent.click(cleanupBtn);
+    await settle();
+
+    expect(
+      screen.getByText(/Couldn't delete the Teams project files\. Close any program/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Choose Start over to set up a new bot/i)).toBeNull();
+    expect(cleanupBtn).toBeEnabled();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Cleanup error details" }));
+    await settle();
+    expect(screen.getByText(/permission denied/i)).toBeTruthy();
+  });
+
+  it("shows an error when the Clean up request is rejected", async () => {
+    cleanupResponse = { body: { message: "Agent not found." }, status: 404 };
+    currentJob = failedProvisionJob();
+    render(TeamsSetupModal, { agent, open: true });
+    await waitForModalReady();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
+    await settle();
+
+    expect(screen.getByText("Agent not found.")).toBeTruthy();
+    expect(screen.queryByText(/Choose Start over to set up a new bot/i)).toBeNull();
+  });
+
   // Scenario 11: done view install/download
   it("shows complete view with bot details, install in Teams button, package download, DM owner reminder, and cleanup", async () => {
     currentJob = fakeJob({
@@ -702,7 +793,7 @@ describe("ConnectionsSection Teams integration", () => {
 
     // Click opens modal
     await fireEvent.click(setupBtn);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("dialog", { name: /Set up Microsoft Teams/i })).toBeTruthy();
     });
   });
@@ -720,7 +811,7 @@ describe("ConnectionsSection Teams integration", () => {
 
     // Click opens modal directly to progress
     await fireEvent.click(viewSetupBtn);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("dialog", { name: /Setting up Microsoft Teams/i })).toBeTruthy();
     });
   });

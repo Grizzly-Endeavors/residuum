@@ -75,9 +75,10 @@ async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<Work
             ui_origin: ui_origin.clone(),
             artifacts_origin: artifacts_origin.clone(),
         }),
-        TunnelStatus::Connected { .. } | TunnelStatus::Connecting | TunnelStatus::Disconnected => {
-            None
-        }
+        TunnelStatus::Connected { .. }
+        | TunnelStatus::Connecting
+        | TunnelStatus::Refused
+        | TunnelStatus::Disconnected => None,
     };
     Json(WorkbenchInfo {
         port,
@@ -224,7 +225,7 @@ mod tests {
             origin: Some("https://bear.agent-residuum.com".into()),
             workbench_origin: Some("https://bear.workbench.agent-residuum.com".into()),
             instance: None,
-            a2a_token: None,
+            instance_origin: None,
         };
         let resp = app(
             dir.path(),
@@ -469,12 +470,13 @@ mod tests {
                 .unwrap(),
         );
         tokio::pin!(deleting);
-        let early =
-            tokio::time::timeout(std::time::Duration::from_millis(150), &mut deleting).await;
-        assert!(
-            early.is_err(),
-            "the delete must wait for the data file's lock"
-        );
+        let data_file = workbench.join("chart.state.json");
+        tokio::select! {
+            _ = &mut deleting => panic!("the delete must wait for the data file's lock"),
+            () = crate::testing::wait::until_true("the delete to queue for the data file's lock", || {
+                hub.coordinator.lock_contenders(&data_file) == 2
+            }) => {}
+        }
         assert!(workbench.join("chart.html").exists());
 
         drop(held);

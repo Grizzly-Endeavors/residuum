@@ -30,19 +30,32 @@ export interface OpenTargetMessage {
   target: string;
 }
 
-export type WorkerMessage = OpenTargetMessage;
+/**
+ * A message the worker posts to every window of the app: `pushsubscriptionchange`
+ * fired, and the worker re-registered this browser's device under `endpoint`.
+ * Each page's own record of the device (kept in local storage) must follow,
+ * or the next check there would wrongly think the device was dropped.
+ */
+export interface EndpointChangedMessage {
+  type: "endpoint-changed";
+  endpoint: string;
+}
+
+export type WorkerMessage = OpenTargetMessage | EndpointChangedMessage;
 
 export function openTargetMessage(target: string): OpenTargetMessage {
   return { type: "open-target", target };
 }
 
+export function endpointChangedMessage(endpoint: string): EndpointChangedMessage {
+  return { type: "endpoint-changed", endpoint };
+}
+
 export function isWorkerMessage(data: unknown): data is WorkerMessage {
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    "type" in data &&
-    data.type === "open-target" &&
-    "target" in data &&
-    typeof data.target === "string"
-  );
+  if (typeof data !== "object" || data === null || !("type" in data)) return false;
+  if (data.type === "open-target") return "target" in data && typeof data.target === "string";
+  if (data.type === "endpoint-changed") {
+    return "endpoint" in data && typeof data.endpoint === "string";
+  }
+  return false;
 }

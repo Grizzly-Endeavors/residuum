@@ -183,46 +183,12 @@
     };
   }
 
-  // Residuum Cloud's relay refuses an instance's requests past 50 in flight
-  // (`503 agent overloaded`), so one page's bulk load stays well under that,
-  // and slow model calls get a lane of their own so they never hold up the
-  // page's other requests.
+  // Ordinary requests share one lane so a page's bulk load can't flood the
+  // instance, and slow model calls get a lane of their own so they never hold
+  // up the page's other requests.
   const requestLane = lane(8);
   const modelCallLane = lane(4);
   const MODEL_CALL_PATH = /^\/api\/agents\/[^/]+\/model\/complete$/;
-
-  const OVERLOADED_RETRIES = 3;
-  const RETRY_BASE_MS = 500;
-  const OVERLOADED_BODY = "agent overloaded";
-
-  // The relay's own overload refusal, not some other 503 Residuum returned.
-  async function isRelayOverloaded(resp) {
-    if (resp.status !== 503) return false;
-    try {
-      return (await resp.clone().text()).trim() === OVERLOADED_BODY;
-    } catch {
-      return false;
-    }
-  }
-
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  // The relay refuses an overloaded request before forwarding it, so sending
-  // it again never repeats a write.
-  async function sendWithRetry(url, init) {
-    for (let attempt = 1; ; attempt += 1) {
-      const resp = await nativeFetch(url, init);
-      if (!(await isRelayOverloaded(resp))) return resp;
-      if (attempt > OVERLOADED_RETRIES) {
-        console.warn(
-          `residuum.fetch: ${url} was refused as overloaded ${attempt} times; giving up`,
-        );
-        return resp;
-      }
-      const base = RETRY_BASE_MS * 2 ** (attempt - 1);
-      await sleep(base + Math.random() * base * 0.2);
-    }
-  }
 
   function fetchApi(path, init = {}) {
     if (typeof path !== "string") {
@@ -244,7 +210,7 @@
     headers.set(ARTIFACT_HEADER, ARTIFACT);
     const request = { ...init, method, headers, body, credentials: "same-origin" };
     const run = MODEL_CALL_PATH.test(resolved.url.split("?", 1)[0]) ? modelCallLane : requestLane;
-    return run(() => sendWithRetry(resolved.url, request)).catch((err) => {
+    return run(() => nativeFetch(resolved.url, request)).catch((err) => {
       if (err && err.name === "AbortError") throw err;
       console.error("residuum.fetch failed", method, resolved.url, err);
       throw new Error("Couldn't reach Residuum. Check that it's running, then try again.", {

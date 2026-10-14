@@ -1,10 +1,14 @@
 //! Reflector: compresses the observation log when it exceeds a token threshold.
 //!
 //! Sends the full observation log to an LLM which reorganizes and merges
-//! observations while preserving chronology.
+//! observations while preserving chronology. Compression ([`Reflector::compress`])
+//! only reads; [`replace_with_compressed`] writes the result back, carrying over
+//! anything appended to the log while the model was working.
 
 mod parse;
 mod prompt;
+
+use std::sync::Arc;
 
 use anyhow::Context;
 use chrono_tz::Tz;
@@ -40,8 +44,12 @@ impl Default for ReflectorConfig {
 }
 
 /// The reflector compresses observation logs via LLM-driven reorganization.
+///
+/// Cheap to clone (the provider is shared), so a caller can take a copy and
+/// run the model call without holding whatever lock guards the original.
+#[derive(Clone)]
 pub struct Reflector {
-    provider: Box<dyn InferenceProvider>,
+    provider: Arc<dyn InferenceProvider>,
     config: ReflectorConfig,
 }
 
@@ -49,7 +57,10 @@ impl Reflector {
     /// Create a new reflector with the given provider and config.
     #[must_use]
     pub fn new(provider: Box<dyn InferenceProvider>, config: ReflectorConfig) -> Self {
-        Self { provider, config }
+        Self {
+            provider: Arc::from(provider),
+            config,
+        }
     }
 
     /// Create a disabled reflector that never triggers.
@@ -59,7 +70,7 @@ impl Reflector {
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
-            provider: Box::new(crate::inference::providers::null::NullProvider),
+            provider: Arc::new(crate::inference::providers::null::NullProvider),
             config: ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 tz,
@@ -83,7 +94,7 @@ impl Reflector {
     /// Replace the model provider (e.g. after a provider config change).
     pub fn swap_provider(&mut self, provider: Box<dyn InferenceProvider>) {
         tracing::debug!("swapping reflector model provider");
-        self.provider = provider;
+        self.provider = Arc::from(provider);
     }
 
     /// Check whether the observation log exceeds the reflection threshold.
@@ -99,21 +110,19 @@ impl Reflector {
         estimate_tokens(&serialized) >= self.config.threshold_tokens
     }
 
-    /// Reflect on the observation log: compress and replace it.
-    ///
-    /// Sends the full log to the model for reorganization, then replaces
-    /// the observation log file with the compressed version.
+    /// Compress `log` into a reorganized, shorter log. Reads the reflector
+    /// guidance from disk but writes nothing; [`replace_with_compressed`]
+    /// stores the result.
     ///
     /// # Errors
-    /// Returns an error if the LLM call fails or file persistence fails.
+    /// Returns an error if the LLM call fails, its response can't be parsed,
+    /// or it returns no observations.
     #[tracing::instrument(skip_all, fields(operation = "reflect"))]
-    pub async fn reflect(&self, layout: &WorkspaceLayout) -> anyhow::Result<ObservationLog> {
-        let log = load_observation_log(&layout.observations_json()).await?;
-
-        if log.observations.is_empty() {
-            return Ok(log);
-        }
-
+    pub async fn compress(
+        &self,
+        layout: &WorkspaceLayout,
+        log: &ObservationLog,
+    ) -> anyhow::Result<ObservationLog> {
         // Load content guidance from disk, falling back to embedded constant.
         let content_guidance = match tokio::fs::read_to_string(layout.reflector_md()).await {
             Ok(s) if !s.trim().is_empty() => s,
@@ -160,26 +169,61 @@ impl Reflector {
             );
         }
 
-        // Backup observation log before replacement
-        let obs_path = layout.observations_json();
-        let backup_path = obs_path.with_extension("json.bak");
-        if let Err(e) = tokio::fs::copy(&obs_path, &backup_path).await {
-            tracing::warn!(error = %e, "failed to create observation log backup before reflection");
-        } else {
-            tracing::debug!(path = %backup_path.display(), "created observation log backup");
-        }
-
-        // Replace the observation log
-        save_observation_log(&obs_path, &compressed).await?;
-
-        tracing::info!(
-            original_observations = log.observations.len(),
-            compressed_observations = compressed.observations.len(),
-            "reflection complete"
-        );
-
         Ok(compressed)
     }
+}
+
+/// Replace the observation log on disk with `compressed`, the reflector's
+/// output for `reflected`, keeping every observation appended to the log
+/// since `reflected` was read.
+///
+/// The log only grows between reflections, so what was appended is whatever
+/// follows `reflected` as a prefix of the current file. If the current file
+/// doesn't start with `reflected`, something rewrote it while the model was
+/// working, and the log is left untouched rather than overwritten. The
+/// caller serializes this against every other write to the log. The
+/// pre-reflection file is copied to `observations.json.bak` first.
+///
+/// # Errors
+/// Returns an error if the log can't be read or written, or if it no longer
+/// starts with `reflected`.
+pub(crate) async fn replace_with_compressed(
+    layout: &WorkspaceLayout,
+    reflected: &ObservationLog,
+    compressed: ObservationLog,
+) -> anyhow::Result<ObservationLog> {
+    let obs_path = layout.observations_json();
+    let current = load_observation_log(&obs_path).await?;
+    let Some(appended) = current
+        .observations
+        .strip_prefix(reflected.observations.as_slice())
+    else {
+        anyhow::bail!(
+            "the observation log was rewritten while the reflector was compressing it; \
+             leaving it unchanged"
+        );
+    };
+
+    let mut replacement = compressed;
+    replacement.observations.extend_from_slice(appended);
+
+    let backup_path = obs_path.with_extension("json.bak");
+    if let Err(e) = tokio::fs::copy(&obs_path, &backup_path).await {
+        tracing::warn!(error = %e, "failed to create observation log backup before reflection");
+    } else {
+        tracing::debug!(path = %backup_path.display(), "created observation log backup");
+    }
+
+    save_observation_log(&obs_path, &replacement).await?;
+
+    tracing::info!(
+        original_observations = current.observations.len(),
+        compressed_observations = replacement.observations.len(),
+        carried_over = appended.len(),
+        "reflection complete"
+    );
+
+    Ok(replacement)
 }
 
 #[cfg(test)]
@@ -323,70 +367,138 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn reflect_replaces_observation_log() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path());
-
-        tokio::fs::create_dir_all(layout.memory_dir())
-            .await
-            .unwrap();
-
-        // Write initial log with 2 observations
-        let mut initial_log = ObservationLog::new();
-        initial_log.observations.push(sample_observation("ep-001"));
-        initial_log.observations.push(sample_observation("ep-002"));
-        save_observation_log(&layout.observations_json(), &initial_log)
-            .await
-            .unwrap();
-
-        let reflector = Reflector::new(
-            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
+    fn reflector_replying(response: &str) -> Reflector {
+        Reflector::new(
+            Box::new(MockMemoryProvider::new(response)),
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
                 role_overrides: None,
             },
-        );
+        )
+    }
 
-        // COMPRESSED_RESPONSE yields 2 observations
-        let result = reflector.reflect(&layout).await.unwrap();
+    async fn layout_with_log(
+        observations: Vec<Observation>,
+    ) -> (tempfile::TempDir, WorkspaceLayout) {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        save_observation_log(
+            &layout.observations_json(),
+            &ObservationLog { observations },
+        )
+        .await
+        .unwrap();
+        (dir, layout)
+    }
+
+    #[tokio::test]
+    async fn compress_and_replace_writes_the_compressed_log() {
+        let (_dir, layout) = layout_with_log(vec![
+            sample_observation("ep-001"),
+            sample_observation("ep-002"),
+        ])
+        .await;
+        let reflected = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+
+        let compressed = reflector_replying(COMPRESSED_RESPONSE)
+            .compress(&layout, &reflected)
+            .await
+            .unwrap();
+        let result = replace_with_compressed(&layout, &reflected, compressed)
+            .await
+            .unwrap();
         assert_eq!(
             result.observations.len(),
             2,
             "compressed log should have two observations"
         );
 
-        // Verify file was replaced
         let reloaded = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         assert_eq!(
-            reloaded.observations.len(),
-            2,
-            "file should contain compressed log"
+            reloaded.observations, result.observations,
+            "file should contain the compressed log"
         );
     }
 
     #[tokio::test]
-    async fn reflect_empty_log_is_noop() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path());
-
-        tokio::fs::create_dir_all(layout.memory_dir())
+    async fn replace_keeps_observations_appended_during_compression() {
+        let (_dir, layout) = layout_with_log(vec![sample_observation("ep-001")]).await;
+        let reflected = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        let compressed = reflector_replying(COMPRESSED_RESPONSE)
+            .compress(&layout, &reflected)
             .await
             .unwrap();
 
-        let reflector = Reflector::new(
-            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
-            ReflectorConfig::default(),
-        );
+        // A merge lands while the model is compressing.
+        crate::memory::log_store::append_observations(
+            &layout.observations_json(),
+            vec![sample_observation("ep-002")],
+        )
+        .await
+        .unwrap();
 
-        let result = reflector.reflect(&layout).await.unwrap();
-        assert!(
-            result.observations.is_empty(),
-            "empty log should return empty"
+        let result = replace_with_compressed(&layout, &reflected, compressed)
+            .await
+            .unwrap();
+        let contents: Vec<&str> = result
+            .observations
+            .iter()
+            .map(|o| o.content.as_str())
+            .collect();
+        assert_eq!(
+            contents,
+            [
+                "workspace uses flat layout",
+                "identity files loaded at startup",
+                "observation from ep-002",
+            ],
+            "the compressed log should be followed by what was appended meanwhile"
         );
+        let reloaded = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        assert_eq!(reloaded.observations, result.observations);
+    }
+
+    #[tokio::test]
+    async fn replace_refuses_a_log_rewritten_during_compression() {
+        let (_dir, layout) = layout_with_log(vec![sample_observation("ep-001")]).await;
+        let reflected = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        let compressed = reflector_replying(COMPRESSED_RESPONSE)
+            .compress(&layout, &reflected)
+            .await
+            .unwrap();
+
+        let rewritten = ObservationLog {
+            observations: vec![sample_observation("ep-009")],
+        };
+        save_observation_log(&layout.observations_json(), &rewritten)
+            .await
+            .unwrap();
+
+        let result = replace_with_compressed(&layout, &reflected, compressed).await;
+        assert!(result.is_err(), "a rewritten log should not be replaced");
+        let reloaded = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        assert_eq!(
+            reloaded.observations.first().map(|o| o.content.as_str()),
+            Some("observation from ep-009"),
+            "the rewritten log should be left as it is"
+        );
+        assert_eq!(reloaded.observations.len(), 1);
     }
 
     #[test]
@@ -428,39 +540,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reflect_creates_backup() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path());
-
-        tokio::fs::create_dir_all(layout.memory_dir())
-            .await
-            .unwrap();
-
-        let mut initial_log = ObservationLog::new();
-        initial_log.observations.push(sample_observation("ep-001"));
-        initial_log.observations.push(sample_observation("ep-002"));
-        save_observation_log(&layout.observations_json(), &initial_log)
-            .await
-            .unwrap();
-
+    async fn replace_creates_backup() {
+        let (_dir, layout) = layout_with_log(vec![
+            sample_observation("ep-001"),
+            sample_observation("ep-002"),
+        ])
+        .await;
         let original_content = tokio::fs::read_to_string(&layout.observations_json())
             .await
             .unwrap();
+        let reflected = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
 
-        let reflector = Reflector::new(
-            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
-            ReflectorConfig {
-                threshold_tokens: 10,
-                tz: chrono_tz::UTC,
-                role_overrides: None,
-            },
-        );
-
-        reflector.reflect(&layout).await.unwrap();
+        let compressed = reflector_replying(COMPRESSED_RESPONSE)
+            .compress(&layout, &reflected)
+            .await
+            .unwrap();
+        replace_with_compressed(&layout, &reflected, compressed)
+            .await
+            .unwrap();
 
         let backup_path = layout.observations_json().with_extension("json.bak");
-        assert!(backup_path.exists(), "backup file should exist");
-
         let backup_content = tokio::fs::read_to_string(&backup_path).await.unwrap();
         assert_eq!(
             backup_content, original_content,
@@ -469,42 +570,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reflect_rejects_empty_llm_response() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path());
-
-        tokio::fs::create_dir_all(layout.memory_dir())
+    async fn compress_rejects_empty_llm_response() {
+        let (_dir, layout) = layout_with_log(vec![sample_observation("ep-001")]).await;
+        let reflected = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
 
-        let mut initial_log = ObservationLog::new();
-        initial_log.observations.push(sample_observation("ep-001"));
-        save_observation_log(&layout.observations_json(), &initial_log)
-            .await
-            .unwrap();
-
-        let empty_array = "[]";
-        let reflector = Reflector::new(
-            Box::new(MockMemoryProvider::new(empty_array)),
-            ReflectorConfig {
-                threshold_tokens: 10,
-                tz: chrono_tz::UTC,
-                role_overrides: None,
-            },
-        );
-
-        let result = reflector.reflect(&layout).await;
+        let result = reflector_replying("[]").compress(&layout, &reflected).await;
         assert!(result.is_err(), "empty array response should error");
-
-        // Original log should be preserved
-        let preserved = load_observation_log(&layout.observations_json())
-            .await
-            .unwrap();
-        assert_eq!(
-            preserved.observations.len(),
-            1,
-            "original observation log should be preserved"
-        );
     }
 
     #[test]
@@ -536,26 +609,12 @@ mod tests {
 
     #[tokio::test]
     async fn swap_provider_changes_model() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path());
-        tokio::fs::create_dir_all(layout.memory_dir())
+        let (_dir, layout) = layout_with_log(vec![sample_observation("ep-001")]).await;
+        let reflected = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
 
-        let mut initial_log = ObservationLog::new();
-        initial_log.observations.push(sample_observation("ep-001"));
-        save_observation_log(&layout.observations_json(), &initial_log)
-            .await
-            .unwrap();
-
-        let mut reflector = Reflector::new(
-            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
-            ReflectorConfig {
-                threshold_tokens: 10,
-                ..ReflectorConfig::default()
-            },
-        );
-
+        let mut reflector = reflector_replying(COMPRESSED_RESPONSE);
         let new_response = r#"{
             "observations": [
                 {"content": "from new provider", "timestamp": "2026-02-21T14:30", "visibility": "user"}
@@ -563,7 +622,7 @@ mod tests {
         }"#;
         reflector.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
 
-        let result = reflector.reflect(&layout).await.unwrap();
+        let result = reflector.compress(&layout, &reflected).await.unwrap();
         assert_eq!(
             result.observations.len(),
             1,

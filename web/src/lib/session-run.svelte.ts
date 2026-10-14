@@ -22,7 +22,7 @@ import type { HubClientMessage, HubServerMessage } from "./hub-types";
 import { ObservedTurns, type TurnEnding } from "./observed-turns.svelte";
 import { deliveryOutcomeText, runOutcomeText } from "./session-format";
 import { isSessionFrame, type RunFrame, type SessionFrame } from "./sessions.svelte";
-import { isoNow } from "./time";
+import { isoNow, localTimestamp } from "./time";
 import type { FeedItem, SessionSummary, ToolCallState } from "./types";
 
 /** The hub socket, as far as a run follows its session through it. */
@@ -170,7 +170,15 @@ export class SessionRun {
     this.sending = true;
     this.draft = "";
     this.turnStart ??= this.items.length;
-    this.items.push({ id: nextFeedId(), kind: "user", content });
+    // With a turn running, the session takes the message into it at its next checkpoint.
+    const running = this.activeTurnId;
+    this.items.push({
+      id: nextFeedId(),
+      kind: "user",
+      timestamp: localTimestamp(),
+      content,
+      ...(running === null ? {} : { turnId: running, midTurn: true }),
+    });
     // The new run a finished session starts can announce itself before the reply.
     this.followNextRun = true;
     try {
@@ -289,6 +297,7 @@ export class SessionRun {
         this.items.push({
           id: nextFeedId(),
           kind: "assistant",
+          timestamp: localTimestamp(),
           content: frame.content,
           ...(this.activeTurnId === null ? {} : { turnId: this.activeTurnId }),
         });

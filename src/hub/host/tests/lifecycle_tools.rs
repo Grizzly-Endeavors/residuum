@@ -60,7 +60,7 @@ async fn agent_create_briefs_a_running_teammate_that_inherits_the_creators_setti
         "the teammate takes the creator's visibility"
     );
     assert_eq!(providers_of(&hub, "nova"), providers_of(&hub, "scout"));
-    eventually("the description to reach the new agent", || async {
+    wait::until("the description to reach the new agent", || async {
         model_was_told(hub.mock("scout"), "keeps the wiki tidy")
             .await
             .then_some(())
@@ -171,7 +171,7 @@ async fn an_agent_can_delete_itself_and_the_delete_completes_after_the_call_retu
 
     assert!(!result.is_error, "{}", result.output);
     assert!(result.output.contains("restore"), "{}", result.output);
-    eventually("the self-delete to finish", || async {
+    wait::until("the self-delete to finish", || async {
         matches!(hub.host.summary("scout"), Err(LifecycleError::NotFound(_))).then_some(())
     })
     .await;

@@ -363,13 +363,13 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn with_a_configured_timeout_a_slow_call_is_cut_off() {
         // A short "60s-equivalent" timeout standing in for a real server
         // that never answers: with a call configured to time out, a future
         // slower than that timeout is cut off and reports how long it ran.
         let slow = async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            crate::testing::clock::elapse(Duration::from_millis(200)).await;
             "unreachable"
         };
         let result = run_with_optional_timeout(Some(Duration::from_millis(20)), slow).await;
@@ -380,14 +380,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn with_no_timeout_configured_a_slow_call_still_completes() {
         // No `timeout_secs` set (the default): the same slow future that
         // would have been cut off above now runs to completion, proving
         // there is no hidden fixed cutoff standing in for the removed
         // default 60s timeout.
         let slow = async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            crate::testing::clock::elapse(Duration::from_millis(50)).await;
             "done"
         };
         let result = run_with_optional_timeout(None, slow).await;
@@ -443,12 +443,11 @@ mod tests {
 
         // With the tools PATH the binary spawns; the handshake then fails,
         // proving the command resolved against the injected PATH.
-        let connected = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+        let connected = crate::testing::wait::guarded(
+            "the spawned fake server to fail its handshake",
             McpClient::connect(&entry, Some(path.as_os_str()), None),
         )
-        .await
-        .unwrap();
+        .await;
         let err = connected.unwrap_err().to_string();
         assert!(
             err.contains("handshake failed"),
@@ -492,12 +491,11 @@ mod tests {
         // stdout once it exits); the bound is just a safety net against a
         // hang, so give it generous headroom for a contended scheduler
         // rather than racing real process spawn/exit timing.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+        let result = crate::testing::wait::guarded(
+            "the spawned fake server to fail its handshake",
             McpClient::connect(&entry, None, Some(&workspace)),
         )
-        .await
-        .unwrap();
+        .await;
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("handshake failed"),

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { matchActions, type AppAction } from "./action-registry.svelte";
+import { waitFor } from "../test/wait";
 import { chatActions, type ChatActionContext } from "./chat-actions";
 
 function context(overrides: Partial<ChatActionContext> = {}): ChatActionContext {
@@ -12,6 +13,8 @@ function context(overrides: Partial<ChatActionContext> = {}): ChatActionContext 
     send: vi.fn(),
     stopReply: vi.fn(),
     surface: vi.fn(),
+    startSession: vi.fn(() => Promise.resolve("spawned-multitask-1a2b")),
+    openSession: vi.fn(),
     showConversationSize: vi.fn(),
     askForInboxNote: vi.fn(),
     showConnectionStatus: vi.fn(),
@@ -34,6 +37,7 @@ describe("the former slash commands", () => {
     ["/stop", "Stop reply"],
     ["/inbox", "Add a note to atlas's inbox"],
     ["/status", "Show connection status"],
+    ["/multitask", "Fork this conversation into a session"],
   ])("are found by their old name: %s is %s", (command, label) => {
     expect(matchActions(chatActions(context()), command).map((a) => a.label)).toEqual([label]);
   });
@@ -83,13 +87,64 @@ describe("the former slash commands", () => {
   });
 });
 
+describe("forking the conversation", () => {
+  it("starts a fork with the task, and names it with Open session", async () => {
+    const ctx = context();
+    byId(chatActions(ctx), "chat:multitask").run("  price out the paint ");
+    await waitFor(() => {
+      expect(ctx.surface).toHaveBeenCalledOnce();
+    });
+    expect(ctx.startSession).toHaveBeenCalledWith("atlas", {
+      prompt: "price out the paint",
+      fork: true,
+    });
+    const [kind, message, action] = vi.mocked(ctx.surface).mock.calls[0] ?? [];
+    expect([kind, message]).toEqual([
+      "system",
+      "Forked into spawned-multitask-1a2b. Its replies show there, not in this chat.",
+    ]);
+    expect(action?.label).toBe("Open session");
+    action?.onClick();
+    expect(ctx.openSession).toHaveBeenCalledWith("atlas", "spawned-multitask-1a2b");
+    expect(ctx.send).not.toHaveBeenCalled();
+  });
+
+  it("asks for the task instead of starting without one", () => {
+    const ctx = context();
+    byId(chatActions(ctx), "chat:multitask").run("   ");
+    expect(ctx.startSession).not.toHaveBeenCalled();
+    expect(ctx.surface).toHaveBeenCalledWith(
+      "notice",
+      'Add the task after /multitask, like "/multitask compare the three quotes".',
+    );
+  });
+
+  it("says in plain words why the fork couldn't start", async () => {
+    const ctx = context({ startSession: vi.fn(() => Promise.reject(new TypeError("offline"))) });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    byId(chatActions(ctx), "chat:multitask").run("price out the paint");
+    await waitFor(() => {
+      expect(ctx.surface).toHaveBeenCalledWith(
+        "error",
+        "Couldn't fork the conversation. Residuum isn't reachable. Check that it's running, then try again.",
+      );
+    });
+  });
+});
+
 describe("disabled reasons", () => {
   const reasons = (ctx: ChatActionContext): Record<string, string | undefined> =>
     Object.fromEntries(chatActions(ctx).map((a) => [a.id, a.disabled]));
 
   it("ask for the agent to be started when it isn't running", () => {
     const disabled = reasons(context({ state: "stopped" }));
-    for (const id of ["chat:observe", "chat:reflect", "chat:reload", "chat:inbox"]) {
+    for (const id of [
+      "chat:observe",
+      "chat:reflect",
+      "chat:reload",
+      "chat:inbox",
+      "chat:multitask",
+    ]) {
       expect(disabled[id], id).toBe("Start atlas first");
     }
     expect(disabled["chat:stop"]).toBe("Start atlas first");

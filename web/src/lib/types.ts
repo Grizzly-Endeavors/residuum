@@ -2,6 +2,7 @@
 
 import type {
   ImageAttachment as _ImageAttachment,
+  MessageSender,
   SessionSummary as _SessionSummary,
   RepoStats as _RepoStats,
 } from "./generated/protocol";
@@ -9,7 +10,12 @@ import type { AutoModeVerdict } from "./generated/AutoModeVerdict";
 export type {
   ClientMessage,
   ServerMessage,
+  TurnInProgress,
+  SnapshotFrame,
   PostTurnActivityKind,
+  MessageSender,
+  TurnOrigin,
+  Visibility,
   ImageAttachment,
   OutboundA2aTaskSummary,
   SessionCategory,
@@ -88,19 +94,16 @@ export interface ToolCallRecord {
   server?: string | null;
 }
 
-/** Person behind a user message that arrived on a chat interface. */
-export interface MessageSender {
-  name: string;
-  id: string;
-  interface: string;
-  location?: string;
-}
-
 export interface RecentMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
   tool_calls?: ToolCallRecord[];
   tool_call_id?: string;
+  /**
+   * The model's readable reasoning behind an assistant message, one entry per
+   * block that has text; absent when it produced none.
+   */
+  thinking?: string[];
   timestamp: string;
   visibility: "user" | "background";
   sender?: MessageSender;
@@ -324,7 +327,8 @@ export interface UpdateStatusResponse {
   unverified_update: UnverifiedUpdateResponse | null;
 }
 
-export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
+/** The tunnel as the hub reports it. `refused`: the relay turned the saved token away. */
+export type CloudTunnelStatus = "disconnected" | "connecting" | "refused" | "connected";
 
 export interface CloudStatusResponse {
   status: CloudTunnelStatus;
@@ -333,10 +337,12 @@ export interface CloudStatusResponse {
   enabled: boolean;
   /** True when this response was served to a browser viewing the gateway through the tunnel. */
   viewed_via_tunnel: boolean;
-  /** Public origin of this hub through the relay, while connected and announced. */
+  /** Public origin of this user's web UI through the relay, while connected. */
   origin?: string | null;
-  /** This hub's instance slug on the relay, while connected and announced. */
+  /** This hub's instance slug on the relay, while connected. */
   instance?: string | null;
+  /** The instance's own public origin, such as `https://laptop.bear.agent-residuum.com`, while connected. */
+  instance_origin?: string;
 }
 
 export interface SettingsProviderEntry {
@@ -345,6 +351,21 @@ export interface SettingsProviderEntry {
   apiKey: string;
   url: string;
   keepAlive: string;
+  /** The models with their own settings under this provider (`[providers.<name>.models.<model>]`). */
+  models: SettingsProviderModel[];
+}
+
+/**
+ * Whether a model takes images, from its `input` list: `image` when the list
+ * has it, `text` when it leaves it out, and `""` when the model has no list.
+ */
+export type ModelImageInput = "" | "image" | "text";
+
+/** One model's settings under its provider. */
+export interface SettingsProviderModel {
+  /** The model's name, as it appears after the provider's slash. */
+  name: string;
+  images: ModelImageInput;
 }
 
 export interface RoleOverrides {
@@ -529,6 +550,10 @@ export interface ToolCallState {
   server?: string | null;
   /** Auto Mode's verdict, from the live result; history doesn't keep it. */
   autoMode?: AutoModeVerdict;
+  /** `Date.now()` when the page saw the call start; history doesn't keep it. */
+  startedAt?: number;
+  /** `Date.now()` when the page saw the call end, or the turn settle it. */
+  endedAt?: number;
 }
 
 interface FeedItemBase {
@@ -539,6 +564,19 @@ interface FeedItemBase {
    * the live turn it arrived in. Episodes carry none.
    */
   turnId?: string;
+  /**
+   * A user or agent message that reached the agent while its turn ran, so it
+   * belongs inside that turn's block. Every other user or agent message
+   * starts a turn, even when its `turnId` repeats an earlier turn's.
+   */
+  midTurn?: boolean;
+  /**
+   * When a message was sent, as a local date and time ("2026-10-09T10:05:00"):
+   * from history, or from the moment its frame reached the page. Absent where
+   * it isn't known, as for an archived episode (every message carries its
+   * date) and a session's transcript (every message carries the run's start).
+   */
+  timestamp?: string;
 }
 
 /**
@@ -560,17 +598,72 @@ export interface UserFeedItem extends FeedItemBase {
   images?: ImageAttachment[];
   sender?: MessageSender;
   turn?: TurnRef;
+  /** The message's id, for one that arrived live: a turn snapshot names the messages it holds by it. */
+  messageId?: string;
+}
+
+/**
+ * A person's message waiting for the agent to read it: sent while a turn ran,
+ * it goes to the agent at the turn's next checkpoint, or starts the turn
+ * after it. It joins the conversation once the agent reads it.
+ */
+export interface WaitingMessage {
+  /** The message's id, which its `user_message` frame names once the agent reads it. */
+  id: string;
+  content: string;
+  images?: ImageAttachment[];
+  sender?: MessageSender;
+  /** Where it arrived: `ws` for the web, or a chat interface. */
+  endpoint: string;
+  /**
+   * The connection, counted from the page's first, it went out on (the next
+   * one, for a message held while the page was offline). A snapshot on a
+   * later connection that doesn't list it means the agent read it, or it was
+   * taken back, while the page was away.
+   */
+  connection: number;
+  /** What was asked of it and not answered yet: sending it now, or taking it back. */
+  asked?: "send-now" | "withdraw";
 }
 
 export interface AssistantFeedItem extends FeedItemBase {
   kind: "assistant";
   content: string;
+  /** The model call that wrote it, counting from zero within its turn, for text the agent sent on the live socket. */
+  call?: number;
+  /** The text is still arriving: `content` is what has so far. */
+  streaming?: boolean;
+  /** The turn ended before the text was complete, because the user stopped it or the agent did. */
+  cut?: "stopped" | "interrupted";
+  /** The chat interface the reply was delivered to, when that wasn't this page. */
+  deliveredTo?: string;
+}
+
+/**
+ * The agent's reasoning for one model call, which shows as a step of an
+ * activity line. Live it streams in; history keeps only the readable text.
+ */
+export interface ThinkingFeedItem extends FeedItemBase {
+  kind: "thinking";
+  content: string;
+  /** The model call that thought it, counting from zero within its turn, for reasoning from the live socket. */
+  call?: number;
+  /** The reasoning is still arriving. */
+  streaming?: boolean;
+  /** `Date.now()` when the page saw it start, and when it ended; history doesn't keep them. */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface DividerFeedItem extends FeedItemBase {
   kind: "divider";
+  /** The divider's text as it read when made; a divider with a `date` is named from it again as days pass. */
   label: string;
   variant?: "episode" | "day";
+  /** The day the divider stands for ("YYYY-MM-DD", or a timestamp on it), named relative to today. */
+  date?: string;
+  /** The episode that follows the divider, for an episode divider. */
+  episode?: string;
 }
 
 export interface CompressedMarkerFeedItem extends FeedItemBase {
@@ -580,6 +673,8 @@ export interface CompressedMarkerFeedItem extends FeedItemBase {
 export interface ToolGroupFeedItem extends FeedItemBase {
   kind: "tool-group";
   calls: ToolCallState[];
+  /** The model call that made these tool calls, for calls from the live socket. */
+  call?: number;
 }
 
 export interface FileAttachmentFeedItem extends FeedItemBase {
@@ -631,7 +726,27 @@ export interface StatusFeedItem extends FeedItemBase {
   details?: string;
 }
 
+/**
+ * The end of a turn that couldn't finish, kept in the feed after its toast is
+ * gone: what went wrong in plain words, the technical detail behind a
+ * toggle, and a way to send the user's message again.
+ */
+export interface TurnFailureFeedItem extends FeedItemBase {
+  kind: "turn-failure";
+  /** The agent's plain-language account of what went wrong. */
+  message: string;
+  /** The full technical cause chain, when there is one. */
+  details?: string;
+  /**
+   * What the user sent to start the turn, for Try again. Absent when the page
+   * doesn't hold that message or it wasn't the user's own.
+   */
+  retry?: { content: string; images?: ImageAttachment[] };
+}
+
 export type FeedItem =
+  | ThinkingFeedItem
+  | TurnFailureFeedItem
   | AgentMessageFeedItem
   | StatusFeedItem
   | UserFeedItem

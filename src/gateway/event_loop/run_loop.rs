@@ -403,19 +403,33 @@ fn build_api_states(
     }
 }
 
+/// What `spawn_agent_tasks` built for the agent's routes before their state.
+struct RouteParts<'a> {
+    file_registry: &'a crate::gateway::file_server::FileRegistry,
+    webhooks: &'a crate::interfaces::webhook::WebhookTable,
+    workspace_watch_health: &'a tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    turn_journal: crate::gateway::turn_journal::TurnJournal,
+}
+
 /// Build the `GatewayState` the agent's routes share, bundling the pieces
 /// `spawn_agent_tasks` has already built or spawned by this point — split
 /// out purely to keep that function under the line-count lint.
 fn build_gateway_state(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
-    file_registry: &crate::gateway::file_server::FileRegistry,
-    webhooks: &crate::interfaces::webhook::WebhookTable,
-    workspace_watch_health: &tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    routes: RouteParts<'_>,
     services: &HubServices,
     activity: &Arc<ActivityTracker>,
 ) -> GatewayState {
+    let RouteParts {
+        file_registry,
+        webhooks,
+        workspace_watch_health,
+        turn_journal,
+    } = routes;
     GatewayState {
+        turn_journal,
+        queued: Arc::clone(&core.queued),
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
         stop_tx: core.stop_tx.clone(),
@@ -512,12 +526,23 @@ async fn spawn_agent_tasks(
         workspace: change_feed_handle,
         health: workspace_watch_health,
     } = spawn_change_feed_tasks(core, &parts.layout, &services.team_feed).await;
+    let turn_journal = crate::gateway::turn_journal::TurnJournal::spawn(&core.bus_handle)
+        .await
+        .unwrap_or_else(|e| {
+            // The agent still runs for its other interfaces; the web chat's
+            // connections close at once and keep retrying.
+            tracing::error!(error = %e, "failed to start the turn journal; the web chat can't connect");
+            crate::gateway::turn_journal::TurnJournal::closed()
+        });
     let state = build_gateway_state(
         core,
         parts,
-        &file_registry,
-        &webhooks,
-        &workspace_watch_health,
+        RouteParts {
+            file_registry: &file_registry,
+            webhooks: &webhooks,
+            workspace_watch_health: &workspace_watch_health,
+            turn_journal,
+        },
         services,
         activity,
     );
@@ -721,6 +746,11 @@ async fn build_runtime(
         .send_replace(a2a.as_ref().map(|agent| agent.router.clone()));
 
     let tracing_service = Arc::clone(&channels.services.tracing_service);
+    // Each reply is counted read or unread as it reaches the main
+    // conversation, while the reader who saw it is still connected.
+    parts
+        .agent
+        .set_reply_audience(Arc::clone(&channels.activity) as Arc<dyn crate::agent::ReplyAudience>);
     Ok(AgentRuntime {
         name: channels.name,
         services: channels.services,
@@ -733,14 +763,13 @@ async fn build_runtime(
         learning_state: Arc::new(std::sync::Mutex::new(
             crate::subconscious::LearningState::default(),
         )),
-        post_turn_observe: crate::gateway::post_turn::ObserveWorker::new(
-            post_turn_result_tx.clone(),
-        ),
+        memory_worker: crate::gateway::post_turn::MemoryWorker::new(post_turn_result_tx.clone()),
         post_turn_subconscious: crate::gateway::post_turn::SubconsciousWorker::new(
             post_turn_result_tx,
         ),
         post_turn_result_rx,
         deferred_inbound: std::collections::VecDeque::new(),
+        queued: Arc::clone(&core.queued),
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
@@ -800,10 +829,32 @@ async fn build_runtime(
     })
 }
 
+/// How one workspace file's reload went: a plain-language note, and whether
+/// it failed. `handle_workspace_reload` joins the notes into its one notice.
+struct WorkspaceReloadNote {
+    failed: bool,
+    note: String,
+}
+
+impl WorkspaceReloadNote {
+    fn ok(note: impl Into<String>) -> Self {
+        Self {
+            failed: false,
+            note: note.into(),
+        }
+    }
+
+    fn failed(note: impl Into<String>) -> Self {
+        Self {
+            failed: true,
+            note: note.into(),
+        }
+    }
+}
+
 /// Reload MCP servers from `mcp.json`, returning a plain-language outcome
-/// note — for the agent's own transcript when this reload was triggered by
-/// its own write (see `handle_workspace_reload`).
-async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> String {
+/// note (see `handle_workspace_reload`).
+async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     match crate::workspace::config::load_mcp_servers(&rt.layout.mcp_json()) {
         Ok(servers) => {
             let report = rt
@@ -817,14 +868,16 @@ async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> String {
                 stopped = report.stopped,
                 "MCP servers reconciled"
             );
-            format!(
+            WorkspaceReloadNote::ok(format!(
                 "mcp.json reloaded ({} started, {} stopped)",
                 report.started, report.stopped
-            )
+            ))
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload mcp.json, keeping current servers");
-            format!("mcp.json failed to reload, keeping current servers: {e}")
+            WorkspaceReloadNote::failed(format!(
+                "mcp.json failed to reload, keeping current servers: {e}"
+            ))
         }
     }
 }
@@ -833,7 +886,7 @@ async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> String {
 /// plain-language outcome note. Parses the new file before touching
 /// anything running: a parse failure must leave the current subscribers in
 /// place rather than aborting them and spawning nothing.
-async fn reload_channels_note(rt: &mut AgentRuntime) -> String {
+async fn reload_channels_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     match crate::workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
         Ok(configs) => {
             for h in rt.notify_handles.drain(..) {
@@ -850,24 +903,21 @@ async fn reload_channels_note(rt: &mut AgentRuntime) -> String {
             rt.notify_handles = new_handles;
             rt.endpoint_registry.refresh(&rt.cfg, &configs);
             rt.channel_configs = configs;
-            "channels.toml reloaded".to_string()
+            WorkspaceReloadNote::ok("channels.toml reloaded")
         }
         Err(e) => {
-            let message = format!(
-                "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
-            );
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
-            crate::gateway::helpers::publish_notice(&rt.publisher, message.clone()).await;
-            message
+            WorkspaceReloadNote::failed(format!(
+                "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
+            ))
         }
     }
 }
 
 /// Reload the agent card, if A2A is enabled, returning a failure note (the
-/// listener keeps serving the last good card either way, but the operator —
-/// and, when this reload was agent-triggered, the agent — still need to
-/// know).
-async fn reload_agent_card_note(rt: &mut AgentRuntime) -> Option<String> {
+/// listener keeps serving the last good card either way, but the user and,
+/// when this reload was agent-triggered, the agent still need to know).
+fn reload_agent_card_note(rt: &AgentRuntime) -> Option<WorkspaceReloadNote> {
     let a2a = rt.a2a.as_ref()?;
     let relay_base = a2a.relay_base();
     let card_runtime = crate::a2a::CardRuntime::from_config(
@@ -882,23 +932,10 @@ async fn reload_agent_card_note(rt: &mut AgentRuntime) -> Option<String> {
     else {
         return None;
     };
-    let message = format!("agent-card.json failed to reload, still serving the previous card: {e}");
     tracing::warn!(error = %e, "failed to reload agent-card.json, keeping the last good card");
-    if let Err(publish_err) = rt
-        .publisher
-        .publish(
-            crate::bus::topics::Notification(crate::bus::NotifyName::from(
-                crate::bus::SYSTEM_CHANNEL,
-            )),
-            crate::bus::NoticeEvent {
-                message: message.clone(),
-            },
-        )
-        .await
-    {
-        tracing::warn!(error = %publish_err, "failed to publish agent card reload notice");
-    }
-    Some(message)
+    Some(WorkspaceReloadNote::failed(format!(
+        "agent-card.json failed to reload, still serving the previous card: {e}"
+    )))
 }
 
 /// Handle a workspace config reload (mcp.json or channels.toml changed).
@@ -908,13 +945,12 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
     // Consumed once, up front: whether this specific reload is the one the
     // agent's own `write_file`/`edit_file` call to mcp.json/channels.toml/
     // a2a.json caused — see `ConfigWriteWatch`. Collects a plain-language
-    // line per subsystem below (mirroring the wording already logged or
-    // published as a user notice) so, if `true`, one summary reaches the
-    // agent's own transcript too.
+    // line per subsystem below into one notice for the user, which, if
+    // `true`, reaches the agent's own transcript too.
     let deliver_to_agent = rt
         .config_reload_tracker
         .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Workspace);
-    let mut agent_notes: Vec<String> = vec![
+    let mut notes = vec![
         reload_mcp_servers_note(rt).await,
         reload_channels_note(rt).await,
     ];
@@ -927,15 +963,25 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
         .reload_from_file(&rt.layout.a2a_agents_json(), &rt.agent_keys)
         .await;
 
-    if let Some(note) = reload_agent_card_note(rt).await {
-        agent_notes.push(note);
+    if let Some(note) = reload_agent_card_note(rt) {
+        notes.push(note);
     }
 
+    let outcome = if notes.iter().any(|note| note.failed) {
+        crate::bus::ReloadOutcome::Failed
+    } else {
+        crate::bus::ReloadOutcome::Reloaded
+    };
+    let message = format!(
+        "workspace configuration reloaded: {}",
+        notes
+            .iter()
+            .map(|note| note.note.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
     if deliver_to_agent {
-        rt.agent.inject_system_message(format!(
-            "workspace configuration reloaded: {}",
-            agent_notes.join("; ")
-        ));
+        rt.agent.inject_system_message(message.clone());
     }
 
     if let Err(e) = rt
@@ -944,9 +990,7 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
             crate::bus::topics::Notification(crate::bus::NotifyName::from(
                 crate::bus::SYSTEM_CHANNEL,
             )),
-            crate::bus::NoticeEvent {
-                message: "workspace configuration reloaded".to_string(),
-            },
+            crate::bus::NoticeEvent::reload(outcome, crate::bus::ReloadedFiles::Workspace, message),
         )
         .await
     {
@@ -1000,6 +1044,12 @@ async fn check_and_run_due_actions(rt: &mut AgentRuntime) {
 /// startup recovery.
 const SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum time to wait for the automatic checkpoints still being written
+/// during graceful shutdown. A stop, restart, delete or restore that follows
+/// would otherwise race them over the agent's repositories; one cut short
+/// here is logged, and the next turn's checkpoint records what it missed.
+const CHECKPOINT_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Maximum time to wait for an in-flight post-turn background cycle
 /// (observe or subconscious) to finish during graceful shutdown before
 /// giving up on it — its own writes are already atomic, so a cycle cut
@@ -1027,7 +1077,11 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // (message_agent, the web UI) were already told delivery succeeded.
     // Drained before the bus infrastructure is aborted further down, while
     // this subscriber can still see what is queued for it.
-    let mut undelivered: Vec<_> = rt.deferred_inbound.drain(..).collect();
+    let mut undelivered: Vec<_> = rt
+        .deferred_inbound
+        .drain(..)
+        .filter(|message| rt.queued.claim_turn_start(&message.id))
+        .collect();
     undelivered.extend(rt.agent_subscriber.drain());
     super::turns::inject_undelivered_messages(
         &mut rt.agent,
@@ -1040,9 +1094,7 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // Before sessions: a post-turn cycle may itself be about to publish a
     // notice or spawn a learner, which still needs the bus infrastructure
     // (aborted further down) alive to land.
-    rt.post_turn_observe
-        .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
-        .await;
+    rt.memory_worker.shutdown(POST_TURN_SHUTDOWN_TIMEOUT).await;
     rt.post_turn_subconscious
         .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
         .await;
@@ -1050,6 +1102,17 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // router included) are still running, so their results are recorded and
     // delivered rather than left for startup recovery on the next boot.
     rt.session_runtime.shutdown(SESSION_SHUTDOWN_TIMEOUT).await;
+    // After the sessions, which take checkpoints of their own.
+    if tokio::time::timeout(CHECKPOINT_SETTLE_TIMEOUT, rt.checkpoints.settled())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            pending = rt.checkpoints.pending_checkpoints(),
+            timeout_secs = CHECKPOINT_SETTLE_TIMEOUT.as_secs(),
+            "stopping without waiting longer for checkpoints still being written"
+        );
+    }
     for h in rt.notify_handles.drain(..) {
         h.abort();
     }
@@ -1091,6 +1154,11 @@ async fn apply_post_turn_result(
         PostTurnResult::ObservationReady => {
             crate::gateway::memory::apply_observation_reload(&mut rt.agent, &rt.layout).await;
         }
+        PostTurnResult::ReflectionReady => {
+            if let Err(e) = rt.agent.reload_observations(&rt.layout).await {
+                tracing::warn!(error = %e, "failed to reload observations after reflection");
+            }
+        }
         PostTurnResult::IdleObservationReady {
             reload_needed,
             continuation,
@@ -1111,14 +1179,8 @@ async fn apply_post_turn_result(
 
 /// Run the memory observation pipeline.
 fn run_observation(rt: &AgentRuntime) {
-    let mem = crate::gateway::memory::MemorySubsystems {
-        observer: Arc::clone(&rt.observer),
-        merge_writer: Arc::clone(&rt.merge_writer),
-        layout: rt.layout.clone(),
-        tz: rt.tz,
-        publisher: rt.publisher.clone(),
-    };
-    rt.post_turn_observe.trigger(mem);
+    let mem = crate::gateway::memory::MemorySubsystems::from_runtime(rt);
+    rt.memory_worker.trigger(mem);
 }
 
 /// Await a `JoinHandle` if present, or pend forever if `None`.
@@ -1338,6 +1400,24 @@ pub(crate) fn spawn_agent_loop(runtime: AgentRuntime) -> tokio::task::JoinHandle
     )
 }
 
+/// The message waiting in `deferred_inbound` to run next: one the person asked
+/// to send now goes ahead of the rest. A message withdrawn while it waited
+/// is dropped here, and the next one taken instead.
+fn next_deferred_message(rt: &mut AgentRuntime) -> Option<crate::bus::MessageEvent> {
+    loop {
+        let next = rt
+            .deferred_inbound
+            .iter()
+            .position(|message| rt.queued.is_send_now(&message.id))
+            .unwrap_or(0);
+        let message = rt.deferred_inbound.remove(next)?;
+        if rt.queued.claim_turn_start(&message.id) {
+            return Some(message);
+        }
+        tracing::info!(msg_id = %message.id, "dropped a message withdrawn before the agent read it");
+    }
+}
+
 /// Run the agent's main event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -1357,7 +1437,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
         // Messages that arrived after the last turn's final checkpoint run
         // first: their senders are waiting on a reply, and anything queued
         // on the bus arrived after them.
-        if let Some(message) = rt.deferred_inbound.pop_front() {
+        if let Some(message) = next_deferred_message(&mut rt) {
             if let Some(exit) = apply_bus_event(
                 Ok(Some(message)),
                 &mut rt,

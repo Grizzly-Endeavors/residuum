@@ -502,7 +502,7 @@ describe("hub socket", () => {
     });
     expect(snapshot.stopping).toEqual(["atlas"]);
     expect(await socket.quietFrames()).toEqual([]);
-    expect(socket.frames.map((f) => f.type)).toEqual([
+    expect(socket.frames.map((f) => f.type).filter((type) => type !== "pong")).toEqual([
       "hub_boot",
       "system_one_status",
       "agents_snapshot",
@@ -579,6 +579,12 @@ describe("hub socket", () => {
     async function refusal(frame: object | string): Promise<Frame | undefined> {
       return (await answer(frame)).find((f) => f.type === "notice");
     }
+
+    it("answers a ping with a pong, after the frames sent before it", async () => {
+      socket.send({ type: "watch_team", prefixes: ["team"] });
+      socket.send({ type: "ping" });
+      expect(await socket.next()).toEqual({ type: "pong" });
+    });
 
     it("accepts team paths quietly", async () => {
       expect(await answer({ type: "watch_team", prefixes: ["team", "team/wiki"] })).toEqual([]);
@@ -747,7 +753,7 @@ describe("hub config reload", () => {
 
   const notices = (): Frame[] => socket.frames.filter((f) => f.type === "notice");
 
-  it("reports what changed, beside the notice that says so", async () => {
+  it("reports what changed in its frame, with no separate notice", async () => {
     const before = await currentConfig();
     await writeConfig(before.replace("port = 7700", "port = 7701"));
 
@@ -758,7 +764,7 @@ describe("hub config reload", () => {
       changed: true,
       message,
     });
-    expect(notices()).toEqual([{ type: "notice", level: "info", message }]);
+    expect(notices()).toEqual([]);
   });
 
   it("says nothing changed when the file differs only in how it is written", async () => {
@@ -781,7 +787,7 @@ describe("hub config reload", () => {
     expect(failed).toMatchObject({ type: "hub_config_reloaded", ok: false, changed: false });
     const message = failed.message as string;
     expect(message).toMatch(/^hub config reload failed \(keeping current hub config\): \S/);
-    expect(notices()).toEqual([{ type: "notice", level: "warn", message }]);
+    expect(notices()).toEqual([]);
 
     await writeConfig(working);
     expect(await socket.nextOfType("hub_config_reloaded")).toEqual({

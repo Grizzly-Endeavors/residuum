@@ -20,7 +20,11 @@ describe("FeedStore turn usage", () => {
   it("sets a live turn clock and resets token and tool-call progress on turn_started", () => {
     const store = new FeedStore();
     const before = Date.now();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     expect(store.observed.get("t1")?.startedAt).toBeGreaterThanOrEqual(before);
     expect(store.turnOutputTokens).toBe(0);
     expect(store.turnHasUsage).toBe(false);
@@ -29,7 +33,11 @@ describe("FeedStore turn usage", () => {
 
   it("updates turn progress from turn_usage without a session total", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({
       type: "turn_usage",
       reply_to: "t1",
@@ -46,7 +54,11 @@ describe("FeedStore turn usage", () => {
 
   it("updates cumulative session totals from turn_usage when present", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({
       type: "turn_usage",
       reply_to: "t1",
@@ -60,7 +72,11 @@ describe("FeedStore turn usage", () => {
 
   it("a provider with no usage still ticks the indicator without a token count", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({
       type: "turn_usage",
       reply_to: "t1",
@@ -76,7 +92,11 @@ describe("FeedStore turn usage", () => {
 
   it("keeps counting tool calls across a batch that carried zero of them", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({
       type: "turn_usage",
       reply_to: "t1",
@@ -100,7 +120,11 @@ describe("FeedStore turn usage", () => {
 
   it("stops the turn clock on turn_ended but keeps the session totals", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.setSessionUsage(totals(50, 10, 50));
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
     expect(store.observed.get("t1")?.endedAt).not.toBeNull();

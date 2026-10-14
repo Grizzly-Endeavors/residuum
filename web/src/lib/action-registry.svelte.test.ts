@@ -52,21 +52,24 @@ describe("readCommandLine", () => {
 
   it("names the action and passes the rest of the line as its text", () => {
     const line = readCommandLine(commands, "/inbox  check the  wiki ");
-    expect(line?.action?.id).toBe("inbox");
+    expect(line?.action.id).toBe("inbox");
     expect(line?.text).toBe("check the  wiki");
   });
 
   it("matches the command whatever its case, and reads plain messages as none", () => {
-    expect(readCommandLine(commands, "/OBSERVE")?.action?.id).toBe("observe");
+    expect(readCommandLine(commands, "/OBSERVE")?.action.id).toBe("observe");
     expect(readCommandLine(commands, "hello /observe")).toBeNull();
   });
 
-  it("keeps an unknown command's name, with no action", () => {
-    expect(readCommandLine(commands, "/verbos on")).toEqual({
-      name: "verbos",
-      action: null,
-      text: "on",
-    });
+  it("reads a line whose first word is no command as a message", () => {
+    expect(readCommandLine(commands, "/verbos on")).toBeNull();
+    expect(readCommandLine(commands, "/")).toBeNull();
+    expect(readCommandLine(commands, "/ observe")).toBeNull();
+  });
+
+  it("reads a pasted path as a message, even one that starts with a command's name", () => {
+    expect(readCommandLine(commands, "/home/bear/logs/app.log has the error")).toBeNull();
+    expect(readCommandLine(commands, "/observe/notes.md changed")).toBeNull();
   });
 });
 

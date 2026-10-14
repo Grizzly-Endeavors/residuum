@@ -147,8 +147,12 @@ test.describe("the service worker", { tag: "@preview" }, () => {
   test("opens the shell and the hub banner on a reload with no network", async ({
     page,
     context,
+    mock,
   }) => {
     await openWithWorker(page);
+    // Manual time holds the socket's own reconnect timer, which would otherwise
+    // race the click below once the network is back, so only Retry can reconnect it.
+    await mock.manualTime();
 
     await context.setOffline(true);
     await page.reload();
@@ -159,8 +163,10 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     await expectNoAxeViolations(page);
 
     // Back online, Retry reconnects and the banner goes.
+    const retry = banner.getByRole("button", { name: "Retry" });
+    await expect(retry).not.toHaveAttribute("aria-busy", "true");
     await context.setOffline(false);
-    await banner.getByRole("button", { name: "Retry" }).click();
+    await retry.click();
     await expect(banner).toBeHidden();
   });
 
@@ -175,6 +181,20 @@ test.describe("the service worker", { tag: "@preview" }, () => {
       page.getByRole("status").filter({ hasText: "Can't reach Residuum." }),
     ).toBeVisible();
     expect(new URL(page.url()).pathname).toBe("/agent/atlas/files");
+  });
+
+  test("shows Not Found for a page load of a file that isn't cached, with no network", async ({
+    page,
+    context,
+  }) => {
+    await openWithWorker(page);
+    await context.setOffline(true);
+    await page.goto("/foo.json");
+    await expect(
+      page.getByRole("status").filter({ hasText: "Can't reach Residuum." }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Page not found", level: 1 })).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/foo.json");
   });
 });
 

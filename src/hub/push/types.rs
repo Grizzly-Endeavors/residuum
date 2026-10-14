@@ -380,6 +380,14 @@ pub struct PutPushDeviceRequest {
     #[serde(default)]
     #[ts(optional)]
     pub preferences: Option<PushPreferencesPatch>,
+    /// The endpoint this browser's device was last registered under, when
+    /// `subscription.endpoint` is a rotated replacement for it (the
+    /// browser's `pushsubscriptionchange`). Matching on this instead of the
+    /// new endpoint updates that device in place, keeping its id, label and
+    /// preferences, rather than registering a second device.
+    #[serde(default)]
+    #[ts(optional)]
+    pub previous_endpoint: Option<String>,
 }
 
 /// Body of `PATCH /api/hub/push/devices/{id}`.

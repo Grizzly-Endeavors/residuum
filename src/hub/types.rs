@@ -277,26 +277,58 @@ pub enum HubEvent {
         activity: AgentActivity,
     },
     /// A hub notice for the user. Never used for created, deleted, or
-    /// failed events, which travel in their own frames.
+    /// failed events, which travel in their own frames, nor for the outcome
+    /// of a `hub/config.toml` reload, which is `HubConfigReloaded`.
     Notice {
         level: NoticeLevel,
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent: Option<String>,
+        /// What the notice reports, when the web words it itself; `message`
+        /// is then the detail behind that wording.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        kind: Option<HubNoticeKind>,
     },
     /// The hub finished an attempt to reload `hub/config.toml`. Sent after
-    /// every attempt, beside the notice that tells the user about it.
+    /// every attempt; it is the hub's only report of the outcome.
     HubConfigReloaded {
         /// The file loaded, so the running config now matches it. False when
         /// the load failed and the previous config stays in effect.
         ok: bool,
         /// The loaded config differs from the one that was running.
         changed: bool,
-        /// The text of the notice sent beside this frame: what changed, or
-        /// why the reload failed. Null when nothing changed.
+        /// The hub's own account of the outcome: what changed, or why the
+        /// reload failed. Null when nothing changed.
         message: Option<String>,
     },
+}
+
+impl HubEvent {
+    /// A notice whose text is all there is to it.
+    #[must_use]
+    pub fn notice(level: NoticeLevel, message: String, agent: Option<String>) -> Self {
+        Self::Notice {
+            level,
+            message,
+            agent,
+            kind: None,
+        }
+    }
+}
+
+/// What a [`HubEvent::Notice`] reports, for the notices the web words itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum HubNoticeKind {
+    /// The HTTP listener couldn't bind the address a reloaded config names,
+    /// so it keeps serving on the old one.
+    GatewayRebindFailed,
+    /// `background.max_concurrent` changed; the new limit applies from the
+    /// next restart.
+    BackgroundLimitAfterRestart,
 }
 
 /// Severity of a [`HubEvent::Notice`].
@@ -355,6 +387,8 @@ pub struct DeletedAgentListResponse {
 pub enum HubSocketFrame {
     /// The first frame of every connection: which hub process answered.
     HubBoot { boot_id: String },
+    /// The answer to a client's `ping`.
+    Pong,
     /// The agents with their activity, sent after `hub_boot` and again
     /// whenever the connection fell behind and lost events.
     AgentsSnapshot(AgentListResponse),
@@ -440,6 +474,10 @@ pub enum HubClientMessage {
     SubscribeArtifactSessions { artifact: String },
     /// Stop following an artifact's sessions.
     UnsubscribeArtifactSessions { artifact: String },
+    /// Answered with `pong`. The socket handles a connection's messages in
+    /// order, so a `pong` also confirms that everything sent before the
+    /// `ping` (a `watch_team`, say) has taken effect.
+    Ping,
 }
 
 /// Why a lifecycle or lookup call failed. The HTTP layer maps these to

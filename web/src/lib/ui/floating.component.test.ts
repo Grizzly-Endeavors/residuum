@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { render, screen } from "../../test/component";
 import FloatingHarness from "../../test/ui/FloatingHarness.svelte";
 import { router } from "../router.svelte";
+import { waitFor } from "../../test/wait";
 
 beforeAll(() => {
   router.startForOverlays();
@@ -16,7 +17,7 @@ afterAll(() => {
 afterEach(async () => {
   vi.useRealTimers();
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
 });
@@ -272,6 +273,21 @@ describe("Tooltips", () => {
     expect(screen.getByRole("tooltip")).toBeInTheDocument();
     await user.unhover(settings);
     expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("keeps Tab inside a dialog while a tooltip shows on its last control", async () => {
+    const user = userEvent.setup();
+    render(FloatingHarness);
+    screen.getByRole("button", { name: "Open dialog" }).focus();
+    await user.keyboard("{Enter}");
+    // The tooltip is a layer above the dialog, but holds no focus: Tab is still the dialog's.
+    expect(screen.getByRole("button", { name: "Reload" })).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Reload");
+
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Reload" })).toHaveFocus();
   });
 
   it("takes the first Esc, before the dialog under it", async () => {

@@ -41,6 +41,8 @@ pub(super) struct DiscordHandler {
     pub(super) state: Arc<DiscordState>,
     pub(super) publisher: Publisher,
     pub(super) inbox_dir: PathBuf,
+    /// Main's saved conversation, which `/multitask` forks.
+    pub(super) main_conversation: PathBuf,
     pub(super) reload_tx: crate::gateway::types::ReloadSender,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
@@ -199,6 +201,8 @@ impl EventHandler for DiscordHandler {
             session_registry: &self.session_registry,
             inbox_dir: &self.inbox_dir,
             tz: self.tz,
+            publisher: &self.publisher,
+            main_conversation: &self.main_conversation,
         };
         let response_text = crate::interfaces::run_chat_command(
             cmd.data.name.as_str(),
@@ -412,6 +416,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = Arc::new(DiscordState {
             respond_to_others: false,
+            deliver_intermediate: false,
             store: ChatStateStore::load(dir.path().join("discord_state.json"))
                 .await
                 .unwrap()
@@ -430,6 +435,7 @@ mod tests {
             state,
             publisher: crate::bus::spawn_broker().publisher(),
             inbox_dir: std::env::temp_dir(),
+            main_conversation: std::env::temp_dir().join("recent_messages.json"),
             reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
             )
             .0,

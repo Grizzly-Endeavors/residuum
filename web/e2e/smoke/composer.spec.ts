@@ -1,5 +1,6 @@
 import type { Locator, Page, WebSocketRoute } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
+import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -19,7 +20,7 @@ const PNG = Buffer.from(
 );
 
 function box(page: Page, agent = "atlas"): Locator {
-  return page.getByRole("textbox", { name: `Message ${agent}` });
+  return page.getByRole("combobox", { name: `Message ${agent}` });
 }
 
 async function openChat(page: Page): Promise<void> {
@@ -60,13 +61,29 @@ test.describe("the / menu", () => {
     await page.keyboard.press("Tab");
     await expect(box(page)).toHaveValue("/inbox ");
     await page.keyboard.type("water the plants");
-    await page.keyboard.press("Enter");
+    await sendFromComposer(box(page));
     // One message: the agent's own, once the note is in its inbox.
     await expect(page.getByText("[inbox] item added")).toBeVisible();
+  });
 
-    await page.keyboard.type("/nope");
-    await page.keyboard.press("Enter");
-    await expect(page.getByText(/There's no \/nope\./)).toBeVisible();
+  test("a pasted path is a message, and an action that can't run keeps the line", async ({
+    page,
+  }) => {
+    await openChat(page);
+    const conversation = page.getByRole("region", { name: "Conversation with atlas" });
+    await box(page).click();
+    await page.keyboard.type("/home/bear/logs/app.log has the error");
+    await sendFromComposer(box(page));
+    await expect(conversation.getByText("/home/bear/logs/app.log has the error")).toBeVisible();
+    await expect(box(page)).toHaveValue("");
+
+    // Stop reply names an action, which can't run while atlas isn't replying.
+    await page.keyboard.type("/stop now");
+    await sendFromComposer(box(page));
+    await expect(
+      page.getByText(/^Couldn't run \/stop: atlas isn't replying right now\./),
+    ).toBeVisible();
+    await expect(box(page)).toHaveValue("/stop now");
   });
 
   test("the button opens every action, and Esc closes the menu without stopping anything", async ({
@@ -98,15 +115,16 @@ test.describe("images", () => {
     await expectNoAxeViolations(page);
 
     await box(page).fill("Here's the screenshot");
-    await box(page).press("Enter");
+    await sendFromComposer(box(page));
     const conversation = page.getByRole("region", { name: "Conversation with atlas" });
     await expect(conversation.getByRole("img", { name: "Attached image 1" })).toBeVisible();
     await expect(attached).toHaveCount(0);
   });
 
-  test("attach by drop, with the composer marked while a file is over it", async ({ page }) => {
+  test("attach by drop anywhere on the chat, with an overlay while a file is over it", async ({
+    page,
+  }) => {
     await openChat(page);
-    const composer = page.locator("form.composer");
     const files = await page.evaluateHandle(
       (bytes) => {
         const transfer = new DataTransfer();
@@ -116,14 +134,61 @@ test.describe("images", () => {
       },
       [...PNG],
     );
-    await composer.dispatchEvent("dragover", { dataTransfer: files });
-    await expect(composer).toHaveAttribute("data-dragging");
-    await composer.dispatchEvent("drop", { dataTransfer: files });
-    await expect(composer).not.toHaveAttribute("data-dragging");
+    const overlay = page.getByText("Drop images to attach");
+    await expect(overlay).toHaveCount(0);
+
+    // Over the conversation, nowhere near the composer.
+    const feed = page.getByRole("region", { name: "Conversation with atlas" });
+    await feed.dispatchEvent("dragover", { dataTransfer: files });
+    await expect(overlay).toBeVisible();
+    // The overlay covers the whole place, the header too.
+    const place = await page.locator(".chat-place").boundingBox();
+    const covering = await overlay.locator("xpath=..").boundingBox();
+    if (!place || !covering) throw new Error("the chat place or its overlay isn't laid out");
+    expect(covering.x + covering.width / 2).toBeCloseTo(place.x + place.width / 2, 0);
+    expect(covering.y + covering.height / 2).toBeCloseTo(place.y + place.height / 2, 0);
+    await feed.dispatchEvent("drop", { dataTransfer: files });
+    await expect(overlay).toHaveCount(0);
     await expect(page.getByRole("img", { name: "Image 1" })).toBeVisible();
-    await expect(composer.getByRole("alert")).toContainText(
+    await expect(page.locator("form.composer").getByRole("alert")).toContainText(
       "notes.txt can't be attached. Attach a JPEG, PNG, GIF or WebP image.",
     );
+
+    // Over the header, where nothing used to take files.
+    await page.getByRole("heading", { level: 1, name: "atlas" }).dispatchEvent("dragover", {
+      dataTransfer: files,
+    });
+    await expect(overlay).toBeVisible();
+    await page.getByRole("heading", { level: 1, name: "atlas" }).dispatchEvent("drop", {
+      dataTransfer: files,
+    });
+    await expect(page.getByRole("img", { name: "Image 2" })).toBeVisible();
+  });
+
+  test("a file dropped where nothing takes it doesn't make the browser leave the app", async ({
+    page,
+  }) => {
+    await openChat(page);
+    // The shell around the chat takes no files: its drop must be cancelled, or the browser opens the file.
+    const refused = await page.evaluate(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["x"], "stray.png", { type: "image/png" }));
+      const over = new DragEvent("dragover", {
+        dataTransfer: transfer,
+        bubbles: true,
+        cancelable: true,
+      });
+      const drop = new DragEvent("drop", {
+        dataTransfer: transfer,
+        bubbles: true,
+        cancelable: true,
+      });
+      document.querySelector(".shell")?.dispatchEvent(over);
+      document.querySelector(".shell")?.dispatchEvent(drop);
+      return { over: over.defaultPrevented, drop: drop.defaultPrevented };
+    });
+    expect(refused).toEqual({ over: true, drop: true });
+    await expect(page).toHaveURL(/\/agent\/atlas$/);
   });
 });
 
@@ -140,7 +205,7 @@ test("a draft is kept for its agent across navigation and reload", async ({ page
   await page.reload();
   await expect(box(page)).toHaveValue("Half a thought for atlas");
 
-  await box(page).press("Enter");
+  await sendFromComposer(box(page));
   await expect(box(page)).toHaveValue("");
   await page.reload();
   await expect(box(page)).toHaveValue("");
@@ -165,7 +230,12 @@ test("the model control switches the model and keeps its failover list", async (
   expect(put.ok()).toBe(true);
   await openChat(page);
 
-  await page.getByRole("button", { name: "Model: Claude Sonnet 4.6, low thinking" }).click();
+  const trigger = page.getByRole("button", { name: "Model: Claude Sonnet 4.6, low thinking" });
+  if (isMobile) {
+    // The model name may truncate on a phone; the thinking level keeps its badge.
+    await expect(trigger.getByText("Low", { exact: true })).toBeVisible();
+  }
+  await trigger.click();
   const chooser = page.getByRole("dialog", { name: "Model for atlas" });
   await expect(chooser).toBeVisible();
   await expect(chooser.getByRole("button", { name: "Claude Sonnet 4.6" })).toHaveAttribute(
@@ -194,7 +264,7 @@ test("the model control switches the model and keeps its failover list", async (
   expect(raw).not.toContain("thinking");
 });
 
-test("messages wait while the connection is down, and say so", async ({ page }) => {
+test("messages wait while the connection is down, and say so", async ({ page, mock }) => {
   let online = true;
   const open: WebSocketRoute[] = [];
   await page.routeWebSocket(/\/api\/agents\/atlas\/ws$/, (socket) => {
@@ -206,20 +276,27 @@ test("messages wait while the connection is down, and say so", async ({ page }) 
     open.push(socket);
   });
   await openChat(page);
-  await expect(page.getByRole("status").filter({ hasText: "Reconnecting" })).toHaveCount(0);
+  await expect(reconnectingLine(page)).toHaveCount(0);
+  await mock.manualTime();
 
   online = false;
   for (const socket of open.splice(0)) await socket.close();
   await expect(page.getByText(/^Reconnecting — messages you send now/)).toBeVisible();
   await box(page).fill("Are you there?");
-  await box(page).press("Enter");
+  await sendFromComposer(box(page));
   await expect(
     page.getByText("Reconnecting — 1 message will send once back online."),
   ).toBeVisible();
 
+  // The page tries again once its backoff has run out on the mock's time, and connects.
   online = true;
-  await expect(page.getByText(/^Reconnecting/)).toHaveCount(0, { timeout: 20_000 });
-  await expect(page.getByText("I've looked into that and here's what I found:")).toBeVisible();
+  await mock.advance(FIRST_RECONNECT_MS);
+  await expect(reconnectingLine(page)).toHaveCount(0);
+  // The queued message reaches the mock on reconnect, and its turn's start shows; then time runs on.
+  const feed = page.getByRole("region", { name: "Conversation with atlas" });
+  await expect(feed.getByText("Working")).toBeVisible();
+  await mock.advance(60_000);
+  await expect(feed.getByText("I've looked into that and here's what I found:")).toBeVisible();
 });
 
 test.describe("the conversation size", () => {
@@ -240,13 +317,14 @@ test.describe("the conversation size", () => {
     const panel = await sizePanel(page, isMobile);
     await expect(panel).toContainText("About 14,000 words go to the model each time atlas replies");
     await expect(panel).toContainText("37 times");
+    await expect(panel.getByText("Tools used", { exact: true })).toBeVisible();
     await panel.getByRole("button", { name: "Token counts" }).click();
     await expect(panel.getByText("412,880")).toBeVisible();
     await expectNoAxeViolations(page, isMobile ? { within: OVERLAYS } : {});
 
     if (!isMobile) {
       await box(page).fill("Check the wiki index");
-      await box(page).press("Enter");
+      await sendFromComposer(box(page));
       await expect(panel).toContainText("40 times");
     }
   });
@@ -281,13 +359,20 @@ test.describe("the conversation size", () => {
 });
 
 test("the memory work after a reply shows under it until it's done", async ({ page, mock }) => {
-  await mock.post("/api/mock/delays", { data: { scale: 1 } });
   await openChat(page);
+  await mock.manualTime();
+  // The reply waits before its end, so the memory work starts when the spec lets the turn finish.
+  await mock.post("/api/mock/turn-hold", { data: { held: "reply" } });
   await box(page).fill("remember that the plants need water");
-  await box(page).press("Enter");
+  await sendFromComposer(box(page));
+  const feed = page.getByRole("region", { name: "Conversation with atlas" });
+  await expect(feed.getByText("Working")).toBeVisible();
+  await mock.advance(60_000);
+
+  await mock.post("/api/mock/turn-hold", { data: { held: false } });
   const status = page.getByRole("status").filter({ hasText: "Noting what matters" });
-  await expect(status).toHaveText("Noting what matters from this conversation", {
-    timeout: 15_000,
-  });
-  await expect(status).toHaveCount(0, { timeout: 15_000 });
+  await expect(status).toHaveText("Noting what matters from this conversation");
+  // The memory work is done two seconds of simulated time after the reply ends.
+  await mock.advance(2_000);
+  await expect(status).toHaveCount(0);
 });

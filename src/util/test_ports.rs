@@ -33,8 +33,9 @@ static NEXT_SLOT: AtomicU16 = AtomicU16::new(0);
 /// binds the same port number.
 pub(crate) struct ReservedPort {
     port: u16,
-    /// Never read; held only so dropping this value frees the port.
-    _listener: std::net::TcpListener,
+    /// Held open so the port stays reserved until this value is dropped or
+    /// converted with [`ReservedPort::into_tokio_listener`].
+    listener: std::net::TcpListener,
 }
 
 impl ReservedPort {
@@ -42,6 +43,21 @@ impl ReservedPort {
     #[must_use]
     pub(crate) fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The reserved socket as a tokio listener on the same port. The port
+    /// stays bound throughout, so no other process can take it on the way to
+    /// the component that serves on it.
+    ///
+    /// # Panics
+    /// Panics outside a tokio runtime, or if the socket can't go non-blocking.
+    #[must_use]
+    pub(crate) fn into_tokio_listener(self) -> tokio::net::TcpListener {
+        self.listener
+            .set_nonblocking(true)
+            .expect("a reserved port can go non-blocking");
+        tokio::net::TcpListener::from_std(self.listener)
+            .expect("a reserved port converts to a tokio listener")
     }
 }
 
@@ -82,6 +98,18 @@ pub(crate) fn free_port() -> u16 {
     probe_free_port().0
 }
 
+/// A port in the gap that follows `port`, a port handed out here, that no
+/// probe in any test process ever picks, for a test that moves a running
+/// component to a new port. The component binds the new port only after
+/// work the test can't hold a reservation across (a config watcher noticing
+/// a change), and another process's probe could take a released reservation
+/// in that time. The port sits halfway up the gap, so it stays out of reach
+/// of the workbench's upward scan from `port` itself.
+#[must_use]
+pub(crate) fn unprobed_port_after(port: u16) -> u16 {
+    port + STRIDE / 2
+}
+
 /// Reserve a loopback port the same way [`free_port`] does, but keep holding
 /// it open so the caller can do other setup — writing config files, starting
 /// unrelated mock servers — without another test process taking the port out
@@ -93,8 +121,5 @@ pub(crate) fn free_port() -> u16 {
 #[must_use]
 pub(crate) fn reserve_port() -> ReservedPort {
     let (port, listener) = probe_free_port();
-    ReservedPort {
-        port,
-        _listener: listener,
-    }
+    ReservedPort { port, listener }
 }

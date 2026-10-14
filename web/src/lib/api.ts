@@ -75,6 +75,7 @@ import type { PushDeviceResponse } from "./generated/PushDeviceResponse";
 import type { PushKeyResponse } from "./generated/PushKeyResponse";
 import { cachedFetch, invalidate } from "./cache";
 import { agentBase, agentPath, hubPath, requireAgent, teamPath } from "./paths";
+import { isDeviceRequiredBody, redirectToPairing } from "./pairing";
 
 // ── Cache keys ──────────────────────────────────────────────────────
 //
@@ -223,6 +224,9 @@ async function patchValidated(
 async function checkOk(resp: Response): Promise<Response> {
   if (!resp.ok) {
     const body = await resp.text();
+    // Through Residuum Cloud, a browser the gateway hasn't paired is sent to
+    // the pairing page; the call still fails for whoever made it.
+    if (resp.status === 401 && isDeviceRequiredBody(body)) redirectToPairing();
     throw new ApiError(resp.status, resp.statusText, body);
   }
   return resp;
@@ -275,8 +279,9 @@ export async function fetchUsageTotals(agent: string): Promise<SessionUsageTotal
 }
 
 /**
- * Fetch an episode segment by cursor. Episodes are immutable, so the result
- * is cached for the life of the browser session (and across reloads).
+ * Fetch an episode segment by cursor. Not cached: an episode id names a
+ * different conversation on another instance behind the same address, or
+ * after an agent is created again under the same name.
  *
  * Throws `ApiError` on failure — callers must decide how to surface the
  * error. A 404 (episode not found) is surfaced the same as any other
@@ -286,11 +291,9 @@ export async function fetchChatSegment(
   agent: string,
   episodeId: string,
 ): Promise<EpisodeHistorySegment> {
-  // Built inline rather than as a CACHE_KEY_* constant because it's per-episode.
-  // The key string must match the url string exactly — if you change one, change
-  // the other, or cache lookups will miss.
-  const url = agentPath(agent, `/chat/history?episode=${encodeURIComponent(episodeId)}`);
-  const segment = await cachedFetch(`GET ${url}`, () => apiFetch<ChatHistorySegment>(url));
+  const segment = await apiFetch<ChatHistorySegment>(
+    agentPath(agent, `/chat/history?episode=${encodeURIComponent(episodeId)}`),
+  );
   if (segment.kind === "episode") return segment;
   throw new Error(
     `unexpected chat history kind "${segment.kind}" — server must return Episode for ?episode=`,
@@ -754,6 +757,37 @@ export async function fetchSessionTranscript(
   return apiFetch<SessionTranscriptResponse>(
     agentPath(agent, `/sessions/runs/${encodeURIComponent(runId)}/transcript`),
   );
+}
+
+/** Which of the agent's models a session runs on. */
+export type SessionModelSize = "small" | "medium" | "large";
+
+/** What the owner starts a session with. */
+export interface StartSessionRequest {
+  /** The task, the session's first message. */
+  prompt: string;
+  /** The agent's medium model when left out. */
+  model?: SessionModelSize;
+  /** Start from the main conversation (`/multitask`) instead of clean. */
+  fork?: boolean;
+}
+
+/**
+ * Start a session of the owner's own on `agent`: a clean one, or with `fork`
+ * a fork of the main conversation. Resolves to its address as soon as the
+ * agent takes the request; the run announces itself with `session_started`.
+ *
+ * Throws `ApiError` with `{ error }`: `400` for a blank prompt or a bad
+ * model, `500` when a fork couldn't read the main conversation, `503` while
+ * Residuum shuts down.
+ */
+export async function startSession(agent: string, request: StartSessionRequest): Promise<string> {
+  const reply = await apiFetch<{ address: string }>(agentPath(agent, "/sessions"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return reply.address;
 }
 
 /**

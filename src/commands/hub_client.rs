@@ -32,6 +32,28 @@ impl HubClient {
         })
     }
 
+    /// Send a request that answers with no body when it succeeds.
+    ///
+    /// Failures are reported as [`Self::send`] reports them.
+    pub(super) async fn send_no_content(
+        &self,
+        method: Method,
+        path: &str,
+    ) -> Result<(), FatalError> {
+        self.execute(method, path, None).await.map(drop)
+    }
+
+    /// Send a request with a JSON body that answers with no body when it
+    /// succeeds.
+    pub(super) async fn send_no_content_with(
+        &self,
+        method: Method,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), FatalError> {
+        self.execute(method, path, Some(body)).await.map(drop)
+    }
+
     /// Send a request and decode the JSON response body.
     ///
     /// Non-success statuses become an error carrying the server's message
@@ -42,6 +64,22 @@ impl HubClient {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<T, FatalError> {
+        let response = self.execute(method, path, body).await?;
+        response.json::<T>().await.map_err(|e| {
+            tracing::error!(error = %e, path, "failed to decode hub response");
+            user_error(
+                "Residuum sent a response this version of the CLI doesn't understand. Update the CLI and the daemon to the same version."
+                    .to_string(),
+            )
+        })
+    }
+
+    async fn execute(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response, FatalError> {
         let url = format!("http://{}{path}", self.addr);
         let mut request = self.http.request(method.clone(), &url);
         if let Some(body) = body {
@@ -84,14 +122,7 @@ impl HubClient {
                 ),
             }));
         }
-
-        response.json::<T>().await.map_err(|e| {
-            tracing::error!(error = %e, path, "failed to decode hub response");
-            user_error(
-                "Residuum sent a response this version of the CLI doesn't understand. Update the CLI and the daemon to the same version."
-                    .to_string(),
-            )
-        })
+        Ok(response)
     }
 }
 

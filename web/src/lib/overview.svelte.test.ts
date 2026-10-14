@@ -14,6 +14,7 @@ import type {
 import { notifications } from "./notifications.svelte";
 import { OverviewStore } from "./overview.svelte";
 import { toast } from "./toast.svelte";
+import { waitFor } from "../test/wait";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -146,7 +147,7 @@ const eventRequests = (): string[] => requests.filter((r) => r.includes("/events
 describe("OverviewStore on connect", () => {
   it("fetches the overview and the team events when the hub socket connects", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
       expect(store.eventsLoaded).toBe(true);
     });
@@ -157,14 +158,14 @@ describe("OverviewStore on connect", () => {
 
   it("keeps what it holds when the same hub reconnects, and asks only for newer events", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     answers.events = () => ({ boot_id: BOOT, events: [teamEvent(3)], next_before: null });
 
     connect();
     expect(store.loaded).toBe(true);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.id)).toEqual([3, 2, 1]);
     });
     expect(eventRequests().at(-1)).toBe("GET /api/hub/events?after=2&limit=50");
@@ -173,7 +174,7 @@ describe("OverviewStore on connect", () => {
 
   it("drops everything from the old hub process when the boot id changes", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     answers.overview = { boot_id: "boot-2", agents: [overviewOf("atlas", { inbox_unread: 0 })] };
@@ -188,7 +189,7 @@ describe("OverviewStore on connect", () => {
     expect(store.loaded).toBe(false);
     expect(store.events).toEqual([]);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.summary)).toEqual(["fresh"]);
     });
     expect(Object.keys(store.overviews)).toEqual(["atlas"]);
@@ -198,10 +199,10 @@ describe("OverviewStore on connect", () => {
   it("ignores an overview answered by a different hub process than the socket announced", async () => {
     answers.overview = { boot_id: "boot-old", agents: [overviewOf("atlas")] };
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(overviewRequests()).toBe(1);
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     expect(store.loaded).toBe(false);
@@ -212,7 +213,7 @@ describe("OverviewStore on connect", () => {
 describe("OverviewStore after lag", () => {
   it("refetches the overview and the newer events after a snapshot sent in place of lost frames", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     expect(overviewRequests()).toBe(1);
@@ -224,7 +225,7 @@ describe("OverviewStore after lag", () => {
     answers.events = () => ({ boot_id: BOOT, events: [teamEvent(5)], next_before: null });
     hub.handleFrame(snapshot([agent("atlas"), agent("scout")]));
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.id)).toEqual([5, 2, 1]);
     });
     expect(overviewRequests()).toBe(2);
@@ -233,7 +234,7 @@ describe("OverviewStore after lag", () => {
 
   it("doesn't refetch for the snapshot every connection starts with", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
     });
     expect(overviewRequests()).toBe(1);
@@ -244,7 +245,7 @@ describe("OverviewStore after lag", () => {
 describe("OverviewStore frames", () => {
   it("replaces an agent's overview with each frame, and forgets a deleted agent", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
     });
     const busier = overviewOf("atlas", {
@@ -273,14 +274,14 @@ describe("OverviewStore frames", () => {
       release = resolve;
     });
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(overviewRequests()).toBe(1);
     });
     const framed = overviewOf("atlas", { inbox_unread: 3 });
     hub.handleFrame({ type: "agent_overview", overview: framed });
 
     release();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
     });
     expect(store.overviewOf("atlas")).toEqual(framed);
@@ -289,7 +290,7 @@ describe("OverviewStore frames", () => {
 
   it("adds each team event once, newest first", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     hub.handleFrame({ type: "team_event", boot_id: BOOT, event: teamEvent(3) });
@@ -299,12 +300,12 @@ describe("OverviewStore frames", () => {
 
   it("starts the events over when one comes from another hub process", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     hub.handleFrame({ type: "team_event", boot_id: "boot-other", event: teamEvent(9) });
     expect(store.events).toEqual([]);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.id)).toEqual([2, 1]);
     });
     expect(eventRequests().at(-1)).toBe("GET /api/hub/events?limit=50");
@@ -328,7 +329,7 @@ describe("OverviewStore inbox items", () => {
             next_cursor: "cursor-2",
           };
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.unreadItems.map((i) => i.id)).toEqual(["a", "c", "d", "e", "f"]);
     });
     expect(requests.filter((r) => r.includes("/inbox"))).toEqual([
@@ -342,7 +343,7 @@ describe("OverviewStore inbox items", () => {
     hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 6 }) });
     const asked = requests.length;
     hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 0 }) });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.unreadItems).toEqual([]);
     });
     expect(requests).toHaveLength(asked);
@@ -354,7 +355,7 @@ describe("OverviewStore inbox items", () => {
       throw new Error("down");
     };
     connect(BOOT, [agent("atlas")]);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.unreadItemsError).toContain("Couldn't load your newest inbox items");
     });
     expect(store.needsYou.count).toBe(2);
@@ -375,7 +376,7 @@ describe("OverviewStore outbound tasks", () => {
       agents: [overviewOf("atlas", { outbound_problems: [STUCK] })],
     };
     connect(BOOT, [agent("atlas")]);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.needsYou.items).toHaveLength(1);
     });
   });

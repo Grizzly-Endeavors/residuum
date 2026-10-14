@@ -15,7 +15,7 @@ async function openGallery(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Primitives", level: 1 })).toBeVisible();
 }
 
-test.describe("modal overlays in the gallery", () => {
+test.describe("modal overlays in the gallery", { tag: "@dev" }, () => {
   test("the gallery itself passes the accessibility scan", async ({ page }) => {
     await openGallery(page);
     await expectNoAxeViolations(page);

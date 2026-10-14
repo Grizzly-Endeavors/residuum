@@ -14,6 +14,10 @@
 //!   content-hash `ETag` and gets a bodyless 304 when nothing changed.
 //! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
 //!   accepts it. HTML and images are not.
+//! - HTML documents carry the app shell's Content-Security-Policy
+//!   ([`APP_SHELL_CSP`]), which keeps the app from loading images, media,
+//!   plug-ins or frames from anywhere but the hub, and from posting a form
+//!   anywhere else.
 
 use axum::Router;
 use axum::body::Body;
@@ -21,13 +25,14 @@ use axum::http::header;
 use axum::http::{
     Extensions, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version,
 };
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tower_http::compression::{CompressionLayer, CompressionLevel};
 use tracing::warn;
 
 use super::WebAssets;
+use crate::gateway::browser_landing::is_top_level_navigation;
 
 /// Directory of build output whose file names carry a content hash.
 const HASHED_ASSET_DIR: &str = "assets/";
@@ -38,6 +43,20 @@ const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 /// `no-cache` lets a browser keep the file but makes it check before each use.
 /// With an `ETag` that check is a 304; without one it is a full fetch.
 const REVALIDATE_CACHE_CONTROL: &str = "no-cache";
+
+/// The app shell's Content-Security-Policy. The app shows agents' replies, and
+/// a reply can be steered by what its model read into naming a URL on someone
+/// else's server that carries the conversation in it. The web app renders such
+/// an image as a link (`web/src/lib/markdown.ts`); this policy is the browser's
+/// own refusal if anything gets past that. Images and media load only from the
+/// hub, where the agents' files are, or from `data:` and `blob:` URIs the app
+/// builds itself. The app embeds no plug-ins or frames: workbench artifacts
+/// open in their own tab, on their own origin. Scripts, styles, fonts and
+/// connections are left to the browser's defaults.
+///
+/// The policy is the one line of `web/app-shell-csp.txt`, which the web app's
+/// mock servers send too, so the end-to-end suite runs under it.
+const APP_SHELL_CSP: &str = include_str!("../../../web/app-shell-csp.txt").trim_ascii();
 
 /// Brotli quality and gzip level for compressing on the fly. The encoder's
 /// default brotli quality (11) takes about 0.7 s per request on the 566 kB
@@ -56,8 +75,12 @@ pub(crate) fn static_assets() -> Router {
 
 /// Serves the file at the requested URI path, falling back to `index.html`
 /// for the web UI's client-side routes (paths without file extensions).
-/// Unknown API and WebSocket paths get a 404 rather than the app shell, so a
-/// client calling a missing endpoint sees the failure instead of HTML.
+///
+/// A missing file is a 404 in the form its asker reads: a browser loading a
+/// page gets the app shell with the 404 status, so the app's Not Found page
+/// shows; a script, image or other subresource gets a plain 404. Unknown API
+/// and WebSocket paths get the API's JSON error, so a client calling a missing
+/// endpoint sees the failure instead of HTML.
 async fn static_handler(method: Method, uri: Uri, request_headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
 
@@ -66,23 +89,44 @@ async fn static_handler(method: Method, uri: Uri, request_headers: HeaderMap) ->
         return resp;
     }
 
-    if is_client_route(path)
+    if is_api_path(path) {
+        return api_not_found();
+    }
+
+    if !path.contains('.')
         && let Some(resp) = serve_embedded("index.html", &method, &request_headers)
     {
         return resp;
     }
 
+    if is_top_level_navigation(&method, &request_headers)
+        && let Some(mut resp) = serve_embedded("index.html", &method, &request_headers)
+    {
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        return resp;
+    }
+
     Response::builder()
         .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Body::from("not found"))
         .unwrap_or_default()
 }
 
-/// Whether `path` (without its leading slash) is a web UI route that the
-/// client-side router handles, rather than a missing asset or server endpoint.
-fn is_client_route(path: &str) -> bool {
+/// Whether `path` (without its leading slash) is under the hub's API or its
+/// socket, which answer for themselves and never with the app shell.
+fn is_api_path(path: &str) -> bool {
     let first_segment = path.split('/').next().unwrap_or_default();
-    !path.contains('.') && first_segment != "api" && first_segment != "ws"
+    first_segment == "api" || first_segment == "ws"
+}
+
+/// The API's `{ "error" }` 404 for a path no endpoint serves.
+fn api_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({ "error": "no API endpoint at this path" })),
+    )
+        .into_response()
 }
 
 /// Serve an embedded file by path, returning `None` if it doesn't exist.
@@ -112,11 +156,8 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
         HeaderValue::from_static(cache_control),
     );
 
-    // An HTML document has no `ETag`, so a browser's revalidation is a full
-    // fetch, never a 304. Residuum Cloud's relay rewrites top-level HTML on
-    // the way out, adding an instance switcher that shows which instances are
-    // connected at that moment, and the browser caches the rewritten body. A
-    // 304 would keep showing that switcher's old state.
+    // An HTML document gets no `ETag`, so a browser's revalidation of it is
+    // always a full fetch, never a 304.
     if !hashed && !is_html(mime.essence_str()) {
         let etag = format!(
             "\"{}\"",
@@ -131,6 +172,10 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
             *resp.headers_mut() = headers;
             return Some(resp);
         }
+    }
+
+    if is_html(mime.essence_str()) {
+        set_header(&mut headers, header::CONTENT_SECURITY_POLICY, APP_SHELL_CSP);
     }
 
     set_header(&mut headers, header::CONTENT_TYPE, mime.as_ref());
@@ -173,13 +218,9 @@ fn is_html(essence: &str) -> bool {
     essence == "text/html"
 }
 
-/// Whether a response with this media type (no parameters) is worth
-/// compressing.
+/// Whether a response with this media type (no parameters) is compressed.
 ///
-/// HTML is left out on purpose. Residuum Cloud's relay inserts its instance
-/// switcher before the `</body>` of a top-level page, and it finds that tag by
-/// searching the body as text. In a compressed body it finds nothing and sends
-/// the page without a switcher. Images are already compressed.
+/// HTML is not compressed, and images are compressed already.
 fn is_compressible(essence: &str) -> bool {
     matches!(
         essence,
@@ -401,6 +442,145 @@ mod tests {
             );
             assert!(resp.headers().get("etag").is_none(), "{path}");
             assert!(resp.headers().get("content-encoding").is_none(), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_api_and_socket_paths_answer_the_apis_json_error() {
+        for path in ["/api/nope", "/api", "/ws/extra"] {
+            for asker in [&[][..], &[("sec-fetch-dest", "document")][..]] {
+                let resp = get(path, asker).await;
+                assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
+                assert_eq!(
+                    header_of(&resp, "content-type"),
+                    Some("application/json"),
+                    "{path}"
+                );
+                let body: serde_json::Value = serde_json::from_slice(&body_of(resp).await).unwrap();
+                assert!(
+                    body.get("error").is_some_and(serde_json::Value::is_string),
+                    "{path}: {body}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_load_of_a_missing_file_gets_the_app_shell_as_a_404() {
+        let index_body = embedded_bytes("index.html");
+        for asker in [
+            &[("sec-fetch-dest", "document")][..],
+            &[("accept", "text/html,application/xhtml+xml,*/*;q=0.8")][..],
+        ] {
+            for path in [
+                "/does-not-exist.txt",
+                "/agent/atlas/notes.md",
+                "/old/page.html",
+            ] {
+                let resp = get(path, asker).await;
+                assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path} {asker:?}");
+                assert_eq!(
+                    header_of(&resp, "content-type"),
+                    Some("text/html"),
+                    "{path}"
+                );
+                assert_eq!(
+                    header_of(&resp, "cache-control"),
+                    Some("no-cache"),
+                    "{path}"
+                );
+                assert_eq!(body_of(resp).await, index_body, "{path} is the app shell");
+            }
+        }
+    }
+
+    /// The directives of a Content-Security-Policy, by name, as the browser reads them.
+    fn csp_directives(policy: &str) -> std::collections::HashMap<&str, Vec<&str>> {
+        policy
+            .split(';')
+            .filter_map(|directive| {
+                let mut words = directive.split_whitespace();
+                Some((words.next()?, words.collect()))
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_app_shell_loads_images_media_and_frames_only_from_the_hub() {
+        let page_load = [("sec-fetch-dest", "document")];
+        for (path, asker) in [
+            ("/", &[][..]),
+            ("/index.html", &[][..]),
+            ("/agent/atlas/files", &[][..]),
+            ("/old/page.html", &page_load[..]),
+        ] {
+            let resp = get(path, asker).await;
+            assert_eq!(
+                header_of(&resp, "content-type"),
+                Some("text/html"),
+                "{path}"
+            );
+            let policy = header_of(&resp, "content-security-policy")
+                .unwrap_or_else(|| panic!("{path} has no content-security-policy"));
+            let directives = csp_directives(policy);
+            for (name, sources) in [
+                ("img-src", vec!["'self'", "data:", "blob:"]),
+                ("media-src", vec!["'self'", "blob:"]),
+                ("object-src", vec!["'none'"]),
+                ("frame-src", vec!["'none'"]),
+                ("form-action", vec!["'self'"]),
+            ] {
+                assert_eq!(
+                    directives.get(name),
+                    Some(&sources),
+                    "{path}: {name} in {policy}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn files_other_than_html_carry_no_content_security_policy() {
+        for path in [
+            hashed_asset(".js"),
+            "/manifest.webmanifest".to_string(),
+            "/favicon.svg".to_string(),
+        ] {
+            let path = if path.starts_with('/') {
+                path
+            } else {
+                format!("/{path}")
+            };
+            let resp = get(&path, &[]).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+            assert!(
+                resp.headers().get("content-security-policy").is_none(),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_subresource_that_is_missing_gets_a_plain_404() {
+        for asker in [
+            &[][..],
+            &[("sec-fetch-dest", "script"), ("accept", "*/*")][..],
+            &[
+                ("sec-fetch-dest", "image"),
+                ("accept", "image/avif,image/*"),
+            ][..],
+            // An iframe or fetch that asks for HTML is still not a page load.
+            &[("sec-fetch-dest", "iframe"), ("accept", "text/html")][..],
+            &[("accept", "application/json")][..],
+        ] {
+            let resp = get("/assets/missing-abc123.js", asker).await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{asker:?}");
+            assert_eq!(
+                header_of(&resp, "content-type"),
+                Some("text/plain; charset=utf-8"),
+                "{asker:?}"
+            );
+            assert_eq!(body_of(resp).await, b"not found", "{asker:?}");
         }
     }
 
@@ -632,8 +812,8 @@ mod tests {
         assert_eq!(header_of(&plain, "etag"), header_of(&gzip, "etag"));
     }
 
-    /// The Residuum Cloud tunnel forwards requests with a `reqwest` client
-    /// that doesn't decompress, and hands the relay the raw body and headers.
+    /// A `reqwest` client that doesn't decompress gets the raw encoded body and
+    /// headers.
     #[tokio::test]
     async fn a_client_that_does_not_decompress_receives_the_encoded_body_and_headers() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

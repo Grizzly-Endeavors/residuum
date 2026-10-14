@@ -23,7 +23,8 @@ use std::path::PathBuf;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, Uri, header};
+use axum::http::request::Parts;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use tokio_util::io::ReaderStream;
@@ -32,6 +33,8 @@ use super::forward::{self, HubApi};
 use super::{
     ArtifactBody, ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file,
 };
+use crate::gateway::browser_landing::{self, AppNotice, Landing};
+use crate::pairing::HANDOFF_PAGE_PATH;
 
 /// How many ports after the gateway's are tried before giving up.
 const PORT_SEARCH_ATTEMPTS: u16 = 10;
@@ -45,19 +48,9 @@ pub enum WorkbenchServing {
     Unavailable { reason: String },
 }
 
-impl WorkbenchServing {
-    /// The listener's port, when it is running.
-    #[must_use]
-    pub(crate) fn port(&self) -> Option<u16> {
-        match self {
-            Self::Running { port } => Some(*port),
-            Self::Unavailable { .. } => None,
-        }
-    }
-}
-
 /// Start the artifacts listener for `dir` beside the gateway on `bind`. Returns
-/// whether it is serving and, when it is, the switch that stops it. `api` is
+/// whether it is serving, the switch that stops it and its router (so another
+/// transport can serve the same pages in-process) when it is. `api` is
 /// where `/api` requests go once the hub router is bound to it.
 ///
 /// Failing to bind is not fatal: Residuum runs without the workbench and the
@@ -69,7 +62,12 @@ pub(crate) async fn start(
     reserved: &[u16],
     dir: PathBuf,
     api: HubApi,
-) -> (WorkbenchServing, Option<tokio::sync::watch::Sender<bool>>) {
+    pairing: crate::pairing::DevicePairing,
+) -> (
+    WorkbenchServing,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<Router>,
+) {
     let (listener, port) = match bind_listener(bind, gateway_port, reserved).await {
         Ok(bound) => bound,
         Err(reason) => {
@@ -81,15 +79,17 @@ pub(crate) async fn start(
                     ),
                 },
                 None,
+                None,
             );
         }
     };
     tracing::info!(addr = %format!("{bind}:{port}"), "workbench artifacts listening");
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let app = router(dir, api);
+    let app = router(dir, api, pairing, gateway_port);
+    let served = app.clone();
     crate::util::spawn_monitored("workbench-listener", async move {
-        if let Err(e) = axum::serve(listener, app)
+        if let Err(e) = axum::serve(listener, served)
             .with_graceful_shutdown(async move {
                 shutdown_rx.wait_for(|stop| *stop).await.ok();
             })
@@ -98,7 +98,11 @@ pub(crate) async fn start(
             tracing::error!(error = %e, "workbench artifacts listener failed");
         }
     });
-    (WorkbenchServing::Running { port }, Some(shutdown_tx))
+    (
+        WorkbenchServing::Running { port },
+        Some(shutdown_tx),
+        Some(app),
+    )
 }
 
 /// Bind the artifacts listener on the first free port after `gateway_port`,
@@ -137,56 +141,267 @@ pub(crate) async fn bind_listener(
 }
 
 /// Router for the artifacts listener, serving artifacts from `dir` and
-/// forwarding `/api` to the hub router bound to `api`.
-pub(crate) fn router(dir: PathBuf, api: HubApi) -> Router {
+/// forwarding `/api` to the hub router bound to `api`. `gateway_port` is the
+/// web app's port on this machine, so a browser that lands here by mistake
+/// can be sent to the app on the same host.
+pub(crate) fn router(
+    dir: PathBuf,
+    api: HubApi,
+    pairing: crate::pairing::DevicePairing,
+    gateway_port: u16,
+) -> Router {
+    let ui = UiAddress::new(pairing.clone(), gateway_port);
+    let state = ArtifactsState {
+        dir,
+        ui: ui.clone(),
+    };
     let artifacts = Router::new()
         .route("/", get(home))
+        .route(HANDOFF_PAGE_PATH, get(handoff_page))
         .route("/{name}", get(artifact_root))
         .route("/{name}/", get(artifact_index))
         .route("/{name}/{*rest}", get(artifact_file))
-        .with_state(dir)
-        .fallback(|| async { not_found("Nothing here.") });
-    forward::forwarding(artifacts, api).layer(axum::middleware::from_fn(
-        crate::gateway::cross_site::reject_cross_site_requests,
-    ))
+        .fallback(nothing_here)
+        .with_state(state);
+    forward::forwarding(artifacts, api, ui)
+        .layer(axum::middleware::from_fn(
+            crate::gateway::cross_site::reject_cross_site_requests,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            crate::pairing::GateState {
+                pairing,
+                surface: crate::pairing::Surface::Workbench,
+            },
+            crate::pairing::device_gate,
+        ))
 }
 
-async fn home() -> Response {
-    page(
+#[derive(Clone)]
+struct ArtifactsState {
+    dir: PathBuf,
+    ui: UiAddress,
+}
+
+/// Where the web app is, as seen from a browser on the artifacts host.
+#[derive(Clone)]
+pub(crate) struct UiAddress {
+    pairing: crate::pairing::DevicePairing,
+    gateway_port: u16,
+}
+
+impl UiAddress {
+    /// The app as `pairing` knows it through Residuum Cloud, and on
+    /// `gateway_port` locally.
+    pub(crate) fn new(pairing: crate::pairing::DevicePairing, gateway_port: u16) -> Self {
+        Self {
+            pairing,
+            gateway_port,
+        }
+    }
+
+    /// The web app's origin for the browser that sent `request`: through
+    /// Residuum Cloud the UI host Cloud announced, and locally the host the
+    /// browser used, on the gateway's port. `None` when neither is known.
+    pub(crate) fn origin_for(&self, request: &Parts) -> Option<String> {
+        if crate::pairing::remote::remote_context(&request.extensions).is_some() {
+            return self.pairing.origin_of(crate::pairing::Surface::Ui);
+        }
+        let host = request.headers.get(header::HOST)?.to_str().ok()?;
+        let authority: axum::http::uri::Authority = host.parse().ok()?;
+        Some(format!("http://{}:{}", authority.host(), self.gateway_port))
+    }
+}
+
+/// The Workbench place in the app.
+const WORKBENCH_APP_PATH: &str = "/team/workbench";
+
+/// Answer a request that found nothing to serve. A tab goes to `app_target`
+/// in the app when the app's address is known; a frame, or a browser with no
+/// app to go to, gets the fallback page (linking there when it can); anything
+/// else gets the words as text.
+fn land(
+    request: &Parts,
+    ui: &UiAddress,
+    status: StatusCode,
+    app_target: &str,
+    landing: Landing,
+) -> Response {
+    let origin = ui.origin_for(request);
+    if browser_landing::is_top_level_navigation(&request.method, &request.headers)
+        && let Some(origin) = &origin
+    {
+        return browser_landing::redirect_to_app_origin(origin, app_target);
+    }
+    let link = origin.map(|origin| format!("{origin}{app_target}"));
+    let landing = landing.with_app_link(link.as_deref(), "Open the Workbench");
+    browser_landing::page_or_text(&request.method, &request.headers, status, &landing)
+}
+
+/// The Workbench's address in the app, with a notice that there's no
+/// artifact at the address the browser opened (named when the name could be
+/// an artifact's).
+fn missing_artifact_target(name: Option<&str>) -> String {
+    let notice = ("notice", AppNotice::ArtifactMissing.code());
+    match name.filter(|name| is_valid_artifact_name(name)) {
+        Some(name) => browser_landing::app_path(WORKBENCH_APP_PATH, &[notice, ("artifact", name)]),
+        None => browser_landing::app_path(WORKBENCH_APP_PATH, &[notice]),
+    }
+}
+
+fn missing_artifact(request: &Parts, ui: &UiAddress, name: &str) -> Response {
+    land(
+        request,
+        ui,
+        StatusCode::NOT_FOUND,
+        &missing_artifact_target(Some(name)),
+        Landing::new(
+            "No such artifact",
+            format!(
+                "There's no workbench artifact named \"{name}\". It may have been renamed or deleted."
+            ),
+        ),
+    )
+}
+
+/// The page a paired browser lands on to bring its credential to this host.
+///
+/// The UI host mints a single-use token and sends the browser here with the
+/// token and the page to open next in the URL fragment, which the browser
+/// never sends anywhere. The script posts the token to this host, which
+/// answers with this host's own device cookie, then opens the page. It is
+/// served before the gate asks for a credential, since getting one is its
+/// whole purpose.
+async fn handoff_page(State(state): State<ArtifactsState>, request: Parts) -> Response {
+    let actions = state
+        .ui
+        .origin_for(&request)
+        .map_or_else(String::new, |origin| {
+            format!(
+                r#"<p class="actions" id="actions" hidden><a href="{}">Open the Workbench</a></p>"#,
+                browser_landing::escape(&format!("{origin}{WORKBENCH_APP_PATH}"))
+            )
+        });
+    let body = format!(
+        r#"<h1 id="title">Opening the workbench</h1><p id="message" role="status">Opening the workbench in this browser…</p>{actions}"#
+    );
+    let mut resp = browser_landing::html_response(
         StatusCode::OK,
-        "Workbench artifacts open from the Workbench in Residuum.",
+        "Opening the workbench",
+        &body,
+        Some(HANDOFF_SCRIPT),
+    );
+    resp.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    resp
+}
+
+const HANDOFF_SCRIPT: &str = r#"
+(function () {
+  var title = document.getElementById("title");
+  var message = document.getElementById("message");
+  var actions = document.getElementById("actions");
+  function fail(text) {
+    title.textContent = "The workbench didn't open";
+    message.textContent = text;
+    if (actions) actions.hidden = false;
+  }
+  var params = new URLSearchParams(location.hash.slice(1));
+  var token = params.get("token");
+  var next = params.get("next") || "/";
+  history.replaceState(null, "", location.pathname);
+  if (!token) {
+    fail("This link is missing its token. Open the workbench again from Residuum.");
+    return;
+  }
+  if (!/^\/[A-Za-z0-9._~\/-]*$/.test(next) || next.indexOf("//") === 0) next = "/";
+  fetch("/api/hub/pairing/handoff", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: token })
+  }).then(function (response) {
+    if (response.ok) { location.replace(next); return; }
+    return response.json().then(function (body) {
+      fail(body && body.error ? body.error : "The workbench couldn't be opened. Open it again from Residuum.");
+    }, function () {
+      fail("The workbench couldn't be opened. Open it again from Residuum.");
+    });
+  }, function () {
+    fail("Couldn't reach Residuum. Check your connection, then open the workbench again.");
+  });
+})();
+"#;
+
+async fn home(State(state): State<ArtifactsState>, request: Parts) -> Response {
+    land(
+        &request,
+        &state.ui,
+        StatusCode::OK,
+        WORKBENCH_APP_PATH,
+        Landing::new(
+            "Workbench artifacts",
+            "Workbench artifacts open from the Workbench in Residuum.",
+        ),
+    )
+}
+
+async fn nothing_here(State(state): State<ArtifactsState>, request: Parts) -> Response {
+    land(
+        &request,
+        &state.ui,
+        StatusCode::NOT_FOUND,
+        &missing_artifact_target(None),
+        Landing::new(
+            "Nothing here",
+            "Nothing is served at this address. Workbench artifacts open from the Workbench in Residuum.",
+        ),
     )
 }
 
 /// `/{artifact}` → `/{artifact}/`, so relative URLs in the artifact resolve inside it.
-async fn artifact_root(State(dir): State<PathBuf>, Path(name): Path<String>, uri: Uri) -> Response {
+async fn artifact_root(
+    State(state): State<ArtifactsState>,
+    Path(name): Path<String>,
+    request: Parts,
+) -> Response {
     let exists = is_valid_artifact_name(&name)
-        && discover_artifacts(&dir)
+        && discover_artifacts(&state.dir)
             .await
             .is_ok_and(|artifacts| artifacts.iter().any(|t| t.name == name));
     if !exists {
-        return not_found(&format!("There's no workbench artifact named \"{name}\"."));
+        return missing_artifact(&request, &state.ui, &name);
     }
-    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = request
+        .uri
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     Redirect::permanent(&format!("/{name}/{query}")).into_response()
 }
 
-async fn artifact_index(State(dir): State<PathBuf>, Path(name): Path<String>) -> Response {
-    serve(&dir, &name, "").await
+async fn artifact_index(
+    State(state): State<ArtifactsState>,
+    Path(name): Path<String>,
+    request: Parts,
+) -> Response {
+    serve(&state, &request, &name, "").await
 }
 
 async fn artifact_file(
-    State(dir): State<PathBuf>,
+    State(state): State<ArtifactsState>,
     Path((name, rest)): Path<(String, String)>,
+    request: Parts,
 ) -> Response {
-    serve(&dir, &name, &rest).await
+    serve(&state, &request, &name, &rest).await
 }
 
-async fn serve(dir: &std::path::Path, name: &str, rest: &str) -> Response {
+async fn serve(state: &ArtifactsState, request: &Parts, name: &str, rest: &str) -> Response {
     if !is_valid_artifact_name(name) {
-        return not_found(&format!("There's no workbench artifact named \"{name}\"."));
+        return missing_artifact(request, &state.ui, name);
     }
-    match read_artifact_file(dir, name, rest).await {
+    match read_artifact_file(&state.dir, name, rest).await {
         Ok(served) => {
             let body = match served.body {
                 ArtifactBody::Bytes(bytes) => Body::from(bytes),
@@ -207,41 +422,40 @@ async fn serve(dir: &std::path::Path, name: &str, rest: &str) -> Response {
             );
             response
         }
-        Err(ArtifactFileError::NoSuchArtifact(_)) => {
-            not_found(&format!("There's no workbench artifact named \"{name}\"."))
-        }
-        Err(ArtifactFileError::NotFound { .. }) => {
-            not_found(&format!("The artifact \"{name}\" has no file \"{rest}\"."))
-        }
+        Err(ArtifactFileError::NoSuchArtifact(_)) => missing_artifact(request, &state.ui, name),
+        Err(ArtifactFileError::NotFound { .. }) => land(
+            request,
+            &state.ui,
+            StatusCode::NOT_FOUND,
+            &browser_landing::app_path(
+                &format!("{WORKBENCH_APP_PATH}/{name}"),
+                &[("notice", AppNotice::ArtifactFileMissing.code())],
+            ),
+            Landing::new(
+                "File not found",
+                format!(
+                    "The artifact \"{name}\" has no file \"{rest}\". It may have been moved or removed."
+                ),
+            ),
+        ),
         Err(e @ ArtifactFileError::Io { .. }) => {
             tracing::error!(artifact = %name, path = %rest, error = %e, "failed to serve workbench artifact file");
-            page(
+            let link = state
+                .ui
+                .origin_for(request)
+                .map(|origin| format!("{origin}{WORKBENCH_APP_PATH}"));
+            browser_landing::page_or_text(
+                &request.method,
+                &request.headers,
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Couldn't read this artifact's files. Residuum's logs have the details.",
+                &Landing::new(
+                    "Couldn't open this artifact",
+                    "Couldn't read this artifact's files. Try again, and if it keeps happening, Residuum's logs have the details.",
+                )
+                .with_app_link(link.as_deref(), "Open the Workbench"),
             )
         }
     }
-}
-
-fn not_found(message: &str) -> Response {
-    page(StatusCode::NOT_FOUND, message)
-}
-
-/// A minimal HTML page, since these responses land in the artifact frame.
-fn page(status: StatusCode, message: &str) -> Response {
-    let escaped = message
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    let body = format!(
-        "<!doctype html><meta charset=utf-8><title>Workbench</title><body style=\"font:14px sans-serif;color:#a8a29e;background:#12100e;padding:2rem\"><p>{escaped}</p></body>"
-    );
-    let mut resp = (status, body).into_response();
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    resp
 }
 
 #[cfg(test)]
@@ -252,6 +466,11 @@ mod tests {
 
     use super::*;
 
+    /// Pairing state in a throwaway directory, so nothing remote is paired.
+    fn test_pairing(dir: &std::path::Path) -> crate::pairing::DevicePairing {
+        crate::pairing::DevicePairing::open(dir)
+    }
+
     fn write(path: &std::path::Path, content: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -260,7 +479,7 @@ mod tests {
     }
 
     async fn get_path(dir: &std::path::Path, path: &str) -> Response {
-        router(dir.to_path_buf(), HubApi::new())
+        router(dir.to_path_buf(), HubApi::new(), test_pairing(dir), 7700)
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
             .unwrap()
@@ -288,7 +507,7 @@ mod tests {
     fn listener(dir: &std::path::Path) -> Router {
         let api = HubApi::new();
         api.bind(stand_in_hub());
-        router(dir.to_path_buf(), api)
+        router(dir.to_path_buf(), api, test_pairing(dir), 7700)
     }
 
     async fn send(app: Router, request: Request<Body>) -> (StatusCode, String) {
@@ -327,6 +546,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifact_pages_carry_no_app_shell_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("graph/index.html"),
+            "<head></head><img src=https://cdn.example/a.png>",
+        );
+        write(&dir.path().join("graph/app.js"), "console.log(1)");
+        write(&dir.path().join("chart.html"), "<head></head>");
+
+        for path in ["/graph/", "/graph/app.js", "/chart/"] {
+            let resp = get_path(dir.path(), path).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+            assert!(
+                resp.headers()
+                    .get(header::CONTENT_SECURITY_POLICY)
+                    .is_none(),
+                "{path} must load what its author put in it"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn bare_artifact_path_redirects_to_its_folder() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("chart.html"), "<head></head>");
@@ -353,10 +594,15 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
         }
 
-        let post = router(dir.path().to_path_buf(), HubApi::new())
-            .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let post = router(
+            dir.path().to_path_buf(),
+            HubApi::new(),
+            test_pairing(dir.path()),
+            7700,
+        )
+        .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
@@ -470,6 +716,185 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{path}");
             assert!(body.contains(content), "{path}");
         }
+    }
+
+    /// A request as a browser on this machine sends it to `localhost:7702`:
+    /// opening a tab, loading a frame, or fetching from a script.
+    fn browser_request(path: &str, dest: &str) -> Request<Body> {
+        let mut builder = Request::get(path)
+            .header(header::HOST, "localhost:7702")
+            .header("sec-fetch-dest", dest);
+        if dest == "empty" {
+            builder = builder.header(header::ACCEPT, "*/*");
+        } else {
+            builder = builder
+                .header("sec-fetch-mode", "navigate")
+                .header(header::ACCEPT, "text/html,*/*;q=0.8");
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    async fn location_of(dir: &std::path::Path, request: Request<Body>) -> String {
+        let resp = listener(dir).oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER, "redirected");
+        resp.headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_tab_that_finds_nothing_goes_to_the_workbench_on_the_same_host() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("graph/index.html"), "<head></head>");
+        for (path, expected) in [
+            ("/", "http://localhost:7700/team/workbench"),
+            (
+                "/gone/",
+                "http://localhost:7700/team/workbench?notice=artifact-missing&artifact=gone",
+            ),
+            (
+                "/gone",
+                "http://localhost:7700/team/workbench?notice=artifact-missing&artifact=gone",
+            ),
+            (
+                "/Bad.Name/",
+                "http://localhost:7700/team/workbench?notice=artifact-missing",
+            ),
+            (
+                "/graph/missing.js",
+                "http://localhost:7700/team/workbench/graph?notice=artifact-file-missing",
+            ),
+        ] {
+            assert_eq!(
+                location_of(dir.path(), browser_request(path, "document")).await,
+                expected,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_gets_the_fallback_page_and_a_script_gets_text() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let frame = listener(dir.path())
+            .oneshot(browser_request("/gone/", "iframe"))
+            .await
+            .unwrap();
+        assert_eq!(frame.status(), StatusCode::NOT_FOUND, "a frame: not found");
+        let page = body_text(frame).await;
+        assert!(page.contains("<h1>No such artifact</h1>"), "{page}");
+        assert!(
+            page.contains(r#"href="http://localhost:7700/team/workbench?notice=artifact-missing&amp;artifact=gone""#),
+            "links to the Workbench: {page}"
+        );
+
+        let fetch = listener(dir.path())
+            .oneshot(browser_request("/gone/app.js", "empty"))
+            .await
+            .unwrap();
+        assert_eq!(fetch.status(), StatusCode::NOT_FOUND, "a script: not found");
+        assert_eq!(
+            fetch.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8",
+            "as text"
+        );
+        assert!(
+            body_text(fetch)
+                .await
+                .contains("no workbench artifact named \"gone\""),
+            "saying why"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_host_a_tab_gets_the_fallback_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let request = Request::get("/")
+            .header("sec-fetch-dest", "document")
+            .header("sec-fetch-mode", "navigate")
+            .body(Body::empty())
+            .unwrap();
+        let resp = listener(dir.path()).oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "the listener's own page");
+        let page = body_text(resp).await;
+        assert!(
+            page.contains("Workbench artifacts open from the Workbench in Residuum."),
+            "{page}"
+        );
+        assert!(!page.contains("<a "), "no link to an unknown app: {page}");
+    }
+
+    #[tokio::test]
+    async fn the_handoff_page_is_the_fallback_page_with_its_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let resp = get_path(dir.path(), HANDOFF_PAGE_PATH).await;
+        assert_eq!(resp.status(), StatusCode::OK, "served");
+        assert_eq!(
+            resp.headers().get(header::REFERRER_POLICY).unwrap(),
+            "no-referrer",
+            "the token never leaves in a referrer"
+        );
+        let page = body_text(resp).await;
+        assert!(page.contains("--color-stone-0"), "styled from the tokens");
+        assert!(
+            page.contains("/api/hub/pairing/handoff"),
+            "carries the script"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_redirect_from_the_api_is_pointed_at_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = HubApi::new();
+        api.bind(Router::new().route(
+            "/api/agents/scout/files/x",
+            get(|| async {
+                browser_landing::app_redirect(
+                    "/agent/scout?notice=file-link-expired",
+                    browser_landing::Fallback {
+                        title: "Expired",
+                        message: "This file link has expired.",
+                    },
+                )
+            }),
+        ));
+        let app = router(
+            dir.path().to_path_buf(),
+            api,
+            test_pairing(dir.path()),
+            7700,
+        );
+        let resp = app
+            .clone()
+            .oneshot(browser_request("/api/agents/scout/files/x", "document"))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers().get(header::LOCATION).unwrap(),
+            "http://localhost:7700/agent/scout?notice=file-link-expired",
+            "to the app's origin"
+        );
+
+        let no_host = Request::get("/api/agents/scout/files/x")
+            .header("sec-fetch-dest", "document")
+            .body(Body::empty())
+            .unwrap();
+        let fallback = app.oneshot(no_host).await.unwrap();
+        assert_eq!(
+            fallback.status(),
+            StatusCode::NOT_FOUND,
+            "nowhere to send it"
+        );
+        assert!(
+            body_text(fallback)
+                .await
+                .contains("This file link has expired."),
+            "so the fallback says why"
+        );
     }
 
     #[tokio::test]

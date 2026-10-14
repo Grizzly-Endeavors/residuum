@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use a2a::*;
 use a2a_server::*;
@@ -27,12 +26,10 @@ use crate::background::registry::{
 use crate::background::store::SessionStore;
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::BackgroundModelTier;
+use crate::testing::wait;
 use crate::tools::Tool;
 use crate::tools::background::StopAgentTool;
 use crate::tools::message_agent::MessageAgentTool;
-
-/// Longest a test waits for an expected delivery before failing.
-const RECV_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Test executor: a fresh task goes `WORKING` then
 /// `INPUT_REQUIRED`; a follow-up (the task already exists) completes with an
@@ -92,10 +89,9 @@ impl AgentExecutor for TestExecutor {
             .ok();
             if text.contains("hold") {
                 // Never completes on its own — only a cancel moves it on.
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                std::future::pending::<()>().await;
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
             if followup {
                 tx.send(Ok(StreamResponse::ArtifactUpdate(
                     TaskArtifactUpdateEvent {
@@ -288,18 +284,18 @@ async fn wait_until_remote_working(f: &Fixture, sender: &str, agent: &str) {
         history_length: None,
         tenant: None,
     };
-    tokio::time::timeout(RECV_TIMEOUT, async {
-        loop {
-            if let Ok(task) = client.get_task(&request).await
-                && task.status.state == TaskState::Working
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for remote task {task_id} to reach WORKING"));
+    let (client, request) = (&client, &request);
+    wait::until(
+        format!("the remote task {task_id} to report WORKING"),
+        || async move {
+            client
+                .get_task(request)
+                .await
+                .ok()
+                .filter(|task| task.status.state == TaskState::Working)
+        },
+    )
+    .await;
 }
 
 /// The delivered text if `interrupt` is an `AgentMessage`, or a placeholder
@@ -359,9 +355,8 @@ async fn send_and_stream_watch_delivers_result_to_sender() {
         sent_result.output
     );
 
-    let first_interrupt = tokio::time::timeout(RECV_TIMEOUT, interrupt_rx.recv())
+    let first_interrupt = wait::guarded("an interrupt delivery", interrupt_rx.recv())
         .await
-        .expect("timed out waiting for the input_required delivery")
         .unwrap();
     let first_content = agent_message_content(&first_interrupt);
     assert!(
@@ -379,9 +374,8 @@ async fn send_and_stream_watch_delivers_result_to_sender() {
         .unwrap();
     assert!(!followup_result.is_error, "got: {}", followup_result.output);
 
-    let second_interrupt = tokio::time::timeout(RECV_TIMEOUT, interrupt_rx.recv())
+    let second_interrupt = wait::guarded("an interrupt delivery", interrupt_rx.recv())
         .await
-        .expect("timed out waiting for the completed delivery")
         .unwrap();
     let second_content = agent_message_content(&second_interrupt);
     assert!(
@@ -435,9 +429,8 @@ async fn poll_fallback_when_card_declares_no_streaming() {
         .unwrap();
     assert!(!sent_result.is_error, "got: {}", sent_result.output);
 
-    let first_interrupt = tokio::time::timeout(RECV_TIMEOUT, interrupt_rx.recv())
+    let first_interrupt = wait::guarded("an interrupt delivery", interrupt_rx.recv())
         .await
-        .expect("timed out waiting for the input_required delivery via polling")
         .unwrap();
     assert!(agent_message_content(&first_interrupt).contains("input_required"));
 
@@ -447,9 +440,8 @@ async fn poll_fallback_when_card_declares_no_streaming() {
         .unwrap();
     assert!(!followup_result.is_error, "got: {}", followup_result.output);
 
-    let second_interrupt = tokio::time::timeout(RECV_TIMEOUT, interrupt_rx.recv())
+    let second_interrupt = wait::guarded("an interrupt delivery", interrupt_rx.recv())
         .await
-        .expect("timed out waiting for the completed delivery via polling")
         .unwrap();
     assert!(agent_message_content(&second_interrupt).contains("completed"));
 }
@@ -481,6 +473,9 @@ async fn stop_agent_cancels_the_open_task_exactly_once() {
         Arc::clone(&f.hub),
         Arc::clone(&f.tracker),
     );
+    // The task's watcher holds the tracker while it runs; this many holders
+    // means it has stopped.
+    let holders_without_watchers = Arc::strong_count(&f.tracker);
     let sent_result = message_tool
         .execute(serde_json::json!({ "to": "a2a:agent1", "message": "hold this open" }))
         .await
@@ -506,19 +501,22 @@ async fn stop_agent_cancels_the_open_task_exactly_once() {
         stop_result.output
     );
 
-    let interrupt = tokio::time::timeout(RECV_TIMEOUT, interrupt_rx.recv())
+    let interrupt = wait::guarded("an interrupt delivery", interrupt_rx.recv())
         .await
-        .expect("timed out waiting for the canceled delivery")
         .unwrap();
     assert!(agent_message_content(&interrupt).contains("canceled"));
 
-    // The background watcher may have observed the same cancellation
-    // independently; `notified_this_turn` must stop it from delivering a
-    // second time for this turn.
-    let second = tokio::time::timeout(Duration::from_secs(2), interrupt_rx.recv()).await;
+    // The background watcher observes the same cancellation independently;
+    // `notified_this_turn` must stop it from delivering a second time for
+    // this turn. Once it has stopped, anything it delivered is queued.
+    drop(stop_tool);
+    wait::until_true("the task's watcher to stop", || {
+        Arc::strong_count(&f.tracker) == holders_without_watchers
+    })
+    .await;
     assert!(
-        second.is_err(),
-        "expected exactly one delivery (a timeout), but a second one arrived"
+        interrupt_rx.try_recv().is_err(),
+        "expected exactly one delivery, but a second one arrived"
     );
 }
 
@@ -576,12 +574,11 @@ async fn a_direct_message_reply_is_returned_as_the_tool_result() {
         Arc::clone(&f.tracker),
     );
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
+    let result = wait::guarded(
+        "the direct reply",
         tool.execute(serde_json::json!({ "to": "a2a:agent1", "message": "direct please" })),
     )
     .await
-    .expect("a direct reply must not hang the tool")
     .unwrap();
     assert!(!result.is_error, "got: {}", result.output);
     assert!(

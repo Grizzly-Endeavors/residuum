@@ -5,7 +5,7 @@ use crate::gateway::types::AgentRuntime;
 use crate::gateway::types::ServerCommand;
 
 use super::turns::load_prompt_context_strings;
-use crate::gateway::memory::{MemorySubsystems, run_forced_observe, run_forced_reflect};
+use crate::gateway::memory::MemorySubsystems;
 
 /// Dispatch a named server command from any client channel.
 #[tracing::instrument(skip_all, fields(command = %cmd.name))]
@@ -17,21 +17,12 @@ pub async fn handle_server_command(
     match cmd.name.as_str() {
         "observe" => {
             *observe_deadline = None;
-            let mem = MemorySubsystems {
-                observer: std::sync::Arc::clone(&rt.observer),
-                merge_writer: std::sync::Arc::clone(&rt.merge_writer),
-                layout: rt.layout.clone(),
-                tz: rt.tz,
-                publisher: rt.publisher.clone(),
-            };
-            // Waits out a background cycle already in flight, so the two
-            // never observe the same recent messages.
-            let observe_worker = std::sync::Arc::clone(&rt.post_turn_observe);
-            let _cycle = observe_worker.lock_cycle().await;
-            run_forced_observe(&mem, &mut rt.agent, &rt.publisher).await;
+            rt.memory_worker
+                .force_observe(MemorySubsystems::from_runtime(rt));
         }
         "reflect" => {
-            run_forced_reflect(&rt.merge_writer, &rt.layout, &mut rt.agent, &rt.publisher).await;
+            rt.memory_worker
+                .force_reflect(MemorySubsystems::from_runtime(rt));
         }
         "context" => {
             let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
@@ -76,7 +67,7 @@ pub async fn handle_server_command(
                 .publisher
                 .publish(
                     topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    NoticeEvent { message: reason },
+                    NoticeEvent::new(reason),
                 )
                 .await
             {

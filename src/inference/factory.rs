@@ -4,6 +4,7 @@ use crate::config::{ProviderKind, ProviderSpec};
 use crate::util::FatalError;
 
 use super::failover::FailoverProvider;
+use super::image_input::{ImageInputGuard, LearnedTextOnly};
 use super::providers::anthropic::AnthropicClient;
 use super::providers::gemini::GeminiClient;
 use super::providers::ollama::OllamaClient;
@@ -11,12 +12,32 @@ use super::providers::openai::{OpenAiClient, OpenAiDialect};
 use super::retry::RetryConfig;
 use super::{InferenceProvider, SharedHttpClient};
 
-/// Build a model provider from a resolved `ProviderSpec`.
+/// Build a model provider from a resolved `ProviderSpec`, wrapped so images
+/// never reach a model that can't take them (see [`ImageInputGuard`]).
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the API key is missing for providers
 /// that require it.
 pub(crate) fn build_provider_from_provider_spec(
+    spec: &ProviderSpec,
+    max_tokens: u32,
+    http: SharedHttpClient,
+    retry: RetryConfig,
+) -> Result<Box<dyn InferenceProvider>, FatalError> {
+    let client = build_provider_client(spec, max_tokens, http, retry)?;
+    Ok(Box::new(ImageInputGuard::new(
+        client,
+        spec,
+        LearnedTextOnly::shared(),
+    )))
+}
+
+/// Build the client that speaks `spec`'s provider protocol.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the API key is missing for providers
+/// that require it.
+fn build_provider_client(
     spec: &ProviderSpec,
     max_tokens: u32,
     http: SharedHttpClient,
@@ -274,6 +295,7 @@ mod tests {
             api_key: api_key.map(String::from),
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         }
     }
 

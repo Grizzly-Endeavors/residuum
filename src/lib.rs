@@ -17,9 +17,13 @@ pub mod interfaces;
 pub mod mcp;
 pub mod memory;
 pub mod notify;
+pub mod pairing;
 pub mod pulse;
+pub mod remote_access;
 pub mod skills;
 pub mod subconscious;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod time;
 pub mod tools;
 pub mod tracing_service;

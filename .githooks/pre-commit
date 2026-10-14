@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 #
-# Pre-commit gate: format, lint, test, audit, then block two specific things
-# from entering the history.
+# Pre-commit gate: the fast checks, on what is staged. It formats the staged
+# files, audits the dependencies when a manifest changes, and blocks a few
+# things outright from entering the history.
+#
+# The slow checks (clippy, the whole test suite with its source scans, the
+# generated-types check, and the web lint, type check and tests) run once per
+# push in pre-push. They recompile the crate or the web app, which costs minutes
+# on every commit and pushes authors to commit less often or to route around the
+# hook.
 #
 # Bypassing this hook with --no-verify is forbidden. If it fails, fix the
 # underlying issue — a hook you route around is a hook that isn't there.
@@ -18,24 +25,80 @@ fail() {
 }
 
 # Only the paths that were actually staged. Captured before formatting, because
-# the formatters rewrite the whole tree and we need to know what to put back.
-STAGED_RUST="$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')"
+# cargo fmt rewrites the whole tree and we need to know what to put back.
+# ACMR, not ACM: a renamed file that was also edited is staged as R, and it must
+# still be formatted and checked.
+STAGED_RUST="$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')"
 # Cargo.lock belongs here alongside the manifests: a lockfile-only commit is a
 # dependency bump, which is the change most likely to pull in a new advisory.
 # Matching on '*.toml' alone would let it through the gate unaudited.
-STAGED_MANIFEST="$(git diff --cached --name-only --diff-filter=ACM -- '*.toml' 'Cargo.lock')"
-# Anything under web/ can break the web checks: the app, its mock server, the
-# config files, the lockfile. A deletion counts too, since the file may still be
-# imported.
-STAGED_WEB="$(git diff --cached --name-only --diff-filter=ACDMR -- 'web/')"
+STAGED_MANIFEST="$(git diff --cached --name-only --diff-filter=ACMR -- '*.toml' 'Cargo.lock')"
+# The staged web files Prettier formats: the globs of the "format" script in
+# web/package.json, which is what CI's format check covers. Formatting a file
+# outside them (vite.config.ts, the README) would churn files nobody checks.
+# The case lives in a function: bash 3.2 cannot parse a case with `)` patterns
+# inside a command substitution.
+is_web_format_path() {
+    case "${1#web/}" in
+    src/*.ts | src/*.svelte | src/*.js | src/*.json | src/*.css | build/*.ts | mock/*.ts | e2e/*.ts | playwright.config.ts)
+        return 0
+        ;;
+    esac
+    return 1
+}
+STAGED_WEB_FORMAT="$(git diff --cached --name-only --diff-filter=ACMR -- 'web/' | while IFS= read -r file; do
+    if is_web_format_path "$file"; then echo "$file"; fi
+done)"
+# The CI log parser behind `just ci-failures`, its script and its fixtures.
+STAGED_CI_FAILURES="$(git diff --cached --name-only --diff-filter=ACDMR -- 'scripts/ci-failures*')"
 
-if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB" ]; then
+# Git hands hooks its repository variables. In a linked worktree they point at
+# the worktree, and cargo-deny's advisory-db refresh inherits them: its
+# `git reset --hard FETCH_HEAD` ran against the worktree, not the advisory-db
+# clone, and moved the committing agent's branch mid-commit. The hook keeps the
+# values for its own git calls and runs every other process without them.
+GIT_HOOK_ENV=()
+for git_var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR; do
+    if [ -n "${!git_var+set}" ]; then
+        GIT_HOOK_ENV+=("$git_var=${!git_var}")
+        unset "$git_var"
+    fi
+done
+
+# Runs a command with git's repository variables restored.
+with_git_env() {
+    env ${GIT_HOOK_ENV[@]+"${GIT_HOOK_ENV[@]}"} "$@"
+}
+
+if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB_FORMAT" ] && [ -z "$STAGED_CI_FAILURES" ]; then
     exit 0
 fi
 
+# A staged file that also has unstaged edits. Restaging it after formatting would
+# stage those edits too, so it is left out of the restage. The formatter must not
+# change it: if it does, the commit fails and the author decides what to stage.
+partially_staged() {
+    local unstaged
+    unstaged="$(with_git_env git diff --name-only)"
+    [ -n "$1" ] && [ -n "$unstaged" ] || return 0
+    grep -Fxf <(printf '%s\n' "$unstaged") <<<"$1" || true
+}
+PARTIAL="$(partially_staged "$STAGED_RUST")"$'\n'"$(partially_staged "$STAGED_WEB_FORMAT")"
+
+# Checksums of the working-tree content of the paths in $1, one per line as
+# "checksum<TAB>path".
+content_sums() {
+    local file
+    while IFS= read -r file; do
+        if [ -z "$file" ] || [ ! -e "$file" ]; then continue; fi
+        printf '%s\t%s\n' "$(cksum <"$file")" "$file"
+    done <<<"$1"
+}
+PARTIAL_BEFORE="$(content_sums "$PARTIAL")"
+
 # Re-stage a formatter's edits to files that were already staged.
 #
-# `git add -u` is the obvious thing here and it is wrong: the formatter rewrites
+# `git add -u` is the obvious thing here and it is wrong: cargo fmt rewrites
 # the whole tree, not just the staged paths, so `-u` also sweeps unrelated
 # working-tree edits the author deliberately left out of this commit. Passing
 # the captured paths keeps the commit to what was actually staged.
@@ -43,41 +106,45 @@ restage() {
     [ -n "$1" ] || return 0
     while IFS= read -r file; do
         # A deleted file has nothing for a formatter to rewrite.
-        [ -n "$file" ] && [ -e "$file" ] && git add -- "$file"
+        if [ -z "$file" ] || [ ! -e "$file" ]; then continue; fi
+        # A partially staged file is left as the author staged it; the check before
+        # these restage calls has already confirmed the formatter did not change it.
+        grep -qFx -- "$file" <<<"$PARTIAL" && continue
+        with_git_env git add -- "$file"
     done <<<"$1"
 }
 
-if [ -n "$STAGED_RUST" ] || [ -n "$STAGED_MANIFEST" ]; then
+if [ -n "$STAGED_RUST" ]; then
     echo "Formatting..."
     cargo fmt --all || fail "ERROR: cargo fmt failed."
-    restage "$STAGED_RUST"
+fi
 
-    echo "Linting..."
-    cargo clippy --all-targets --all-features -- -D warnings \
-        || fail "ERROR: clippy found issues. Fix them, or use #[expect(lint, reason = \"...\")] with a real reason."
+if [ -n "$STAGED_WEB_FORMAT" ]; then
+    echo "Formatting web..."
+    [ -x web/node_modules/.bin/prettier ] \
+        || fail "ERROR: web/node_modules is missing. Run 'npm ci' in web/ (or 'just web-install') and commit again."
+    # Prettier runs from web/ so it picks up web/.prettierrc and skips what
+    # web/.prettierignore lists, even when the path is named explicitly.
+    web_files=()
+    while IFS= read -r file; do
+        web_files+=("${file#web/}")
+    done <<<"$STAGED_WEB_FORMAT"
+    (cd web && node_modules/.bin/prettier --write --log-level warn -- "${web_files[@]}") \
+        || fail "ERROR: the web formatter failed."
+fi
 
-    echo "Testing..."
-    # Scope to the modules touched by this commit. residuum's full suite is slow
-    # enough that running all of it per commit pushes authors toward --no-verify,
-    # which costs more than the coverage it buys. CI runs everything.
-    CHANGED_MODULES="$(sed -n 's|^src/\([^/]*\).*\.rs$|\1|p' <<<"$STAGED_RUST" | sed 's|\.rs$||' | sort -u)"
-    if [ -n "$CHANGED_MODULES" ]; then
-        for mod in $CHANGED_MODULES; do
-            cargo test --quiet "${mod}::" || fail "ERROR: tests failed in ${mod}::."
-        done
-    else
-        cargo test --quiet || fail "ERROR: tests failed."
-    fi
+# The lines of content_sums whose checksum moved: the formatter rewrote them.
+CHANGED_PARTIAL="$(grep -vxFf <(printf '%s\n' "$PARTIAL_BEFORE") <<<"$(content_sums "$PARTIAL")" || true)"
+if [ -n "$CHANGED_PARTIAL" ]; then
+    echo -e "${RED}ERROR: the formatter changed files that also have unstaged edits:${NC}" >&2
+    cut -f2- <<<"$CHANGED_PARTIAL" | sed 's/^/  /' >&2
+    fail "Stage the whole file with git add, or stash its unstaged edits, then commit again."
+fi
 
-    # The web app's protocol types are generated from the Rust types, so a
-    # commit that changes Rust has to carry the regenerated files. The script
-    # compares what the Rust types generate now with the index.
-    if [ -n "$STAGED_RUST" ]; then
-        echo "Checking generated types..."
-        scripts/check-generated-types.sh \
-            || fail "ERROR: web/src/lib/generated is out of date with the Rust types. Run 'just types', stage the result, and commit again."
-    fi
+restage "$STAGED_RUST"
+restage "$STAGED_WEB_FORMAT"
 
+if [ -n "$STAGED_MANIFEST" ]; then
     if command -v cargo-deny >/dev/null 2>&1; then
         echo "Auditing dependencies..."
         cargo deny check || fail "ERROR: cargo deny found issues."
@@ -87,24 +154,14 @@ if [ -n "$STAGED_RUST" ] || [ -n "$STAGED_MANIFEST" ]; then
     fi
 fi
 
-if [ -n "$STAGED_WEB" ]; then
-    echo "Formatting web..."
-    (cd web && npm run format >/dev/null 2>&1) || fail "ERROR: web formatter failed."
-    restage "$STAGED_WEB"
-
-    echo "Linting web..."
-    (cd web && npm run lint) || fail "ERROR: ESLint or the style lint found issues."
-
-    echo "Type-checking web..."
-    (cd web && npm run check) || fail "ERROR: svelte-check found issues."
-
-    echo "Testing web..."
-    (cd web && npm test) || fail "ERROR: web unit tests failed."
+if [ -n "$STAGED_CI_FAILURES" ]; then
+    echo "Checking the CI log parser..."
+    scripts/ci-failures-test.sh || fail "ERROR: the ci-failures log parser no longer matches a fixture. The fixture named above is the one that differs."
 fi
 
 # Content gates on the staged diff. These catch the two things clippy cannot:
 # a dbg! that survives a rebase, and a suppression style that never goes stale.
-DIFF="$(git diff --cached --diff-filter=ACM -- '*.rs')"
+DIFF="$(with_git_env git diff --cached --diff-filter=ACM -- '*.rs')"
 
 if grep -qE '^\+.*\bdbg!\(' <<<"$DIFF"; then
     echo -e "${RED}ERROR: Found dbg!() in staged changes.${NC}" >&2
@@ -119,4 +176,33 @@ if grep -qE '^\+.*#\[allow\(' <<<"$DIFF"; then
     exit 1
 fi
 
-echo -e "${GREEN}All checks passed.${NC}"
+# The wall-clock backlog only shrinks. A new entry, a raised count, or a new
+# allowed file would let a test go back to waiting on the clock; convert the
+# wait instead. The commit that creates the file is the one that sets it.
+BACKLOG=src/testing/wall_clock_backlog.rs
+BACKLOG_GROWTH=""
+with_git_env git cat-file -e "HEAD:$BACKLOG" 2>/dev/null && BACKLOG_GROWTH="$(with_git_env git diff --cached -U0 -- "$BACKLOG" | awk '
+    /^-[^-]/ && match($0, /"[^"]+\.rs"/) {
+        path = substr($0, RSTART, RLENGTH)
+        count = $0; sub(/.*"[^"]+\.rs", */, "", count); sub(/[^0-9].*/, "", count)
+        removed[path] = (count == "" ? -1 : count + 0)
+    }
+    /^\+[^+]/ && match($0, /"[^"]+\.rs"/) {
+        path = substr($0, RSTART, RLENGTH)
+        count = $0; sub(/.*"[^"]+\.rs", */, "", count); sub(/[^0-9].*/, "", count)
+        added[path] = (count == "" ? -1 : count + 0); line[path] = $0
+    }
+    END {
+        for (path in added) {
+            if (!(path in removed) || (added[path] >= 0 && removed[path] >= 0 && added[path] > removed[path])) print line[path]
+        }
+    }
+')"
+if [ -n "$BACKLOG_GROWTH" ]; then
+    echo -e "${RED}ERROR: $BACKLOG may only shrink.${NC}" >&2
+    echo "Make the test wait on the event it checks instead (CONTRIBUTING.md, \"Waiting in tests\"):" >&2
+    echo "$BACKLOG_GROWTH" >&2
+    exit 1
+fi
+
+echo -e "${GREEN}Pre-commit checks passed. Clippy, the tests (with the source scans), the generated types and the web checks run on push.${NC}"

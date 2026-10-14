@@ -325,7 +325,7 @@ mod tests {
         let releaser = {
             let to = to.clone();
             crate::util::spawn_in_span(async move {
-                tokio::time::sleep(release_after).await;
+                crate::testing::clock::elapse(release_after).await;
                 tokio::fs::remove_dir_all(&to).await.unwrap();
             })
         };
@@ -343,9 +343,13 @@ mod tests {
         (renamed, waited, root)
     }
 
+    /// Windows answers a rename onto a directory that is mid-deletion with
+    /// `ERROR_ACCESS_DENIED` rather than "not empty", so the moment the
+    /// releaser removes the occupant counts as still occupied.
     fn occupied(error: &io::Error) -> bool {
         error.kind() == io::ErrorKind::DirectoryNotEmpty
             || error.kind() == io::ErrorKind::AlreadyExists
+            || is_held_open(error)
     }
 
     fn never_held(_error: &io::Error) -> bool {

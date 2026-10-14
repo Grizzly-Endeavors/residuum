@@ -203,10 +203,26 @@ class OverlayStack {
       event.preventDefault();
       event.stopPropagation();
       top.dismiss();
-    } else if (event.key === "Tab" && top.kind === "modal") {
-      this.wrapFocus(top.element, event);
+    } else if (event.key === "Tab") {
+      const modal = this.trappingModal();
+      if (modal !== undefined) this.wrapFocus(modal.element, event);
     }
   };
+
+  /**
+   * The modal that holds Tab: the topmost one, unless focus is in a float
+   * above it (a menu or a popover, which carry Tab on themselves). A float
+   * that never takes focus, such as the tooltip a focused button shows,
+   * doesn't count, or Tab past the modal's last control would leave it.
+   */
+  private trappingModal(): Layer | undefined {
+    const active = focusedElement();
+    const holdsFocus = this.topFloats().some(
+      (layer) => active !== null && layer.element.contains(active),
+    );
+    if (holdsFocus) return undefined;
+    return this.layers.findLast((layer) => layer.kind === "modal");
+  }
 
   /** Tab past either end of a modal comes round to the other end. */
   private wrapFocus(container: HTMLElement, event: KeyboardEvent): void {

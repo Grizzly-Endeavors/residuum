@@ -4,6 +4,7 @@ import type { EntryState } from "./history-entry";
 import type { AppLocation, Panel, Place } from "./routes";
 
 import type { router as routerInstance } from "./router.svelte";
+import { waitFor } from "../test/wait";
 
 type Router = typeof routerInstance;
 
@@ -148,12 +149,19 @@ describe("opening the app", () => {
     ["/team/workbench/tip-splitter?full", "/team/workbench/tip-splitter"],
     ["/workbench", "/team/workbench"],
     ["/team", "/home"],
-    ["/nowhere", "/home"],
   ])("redirects %s to %s by replace", async (from, to) => {
     const page = await boot(from);
     expect(page.url()).toBe(to);
     expect(page.replaces).toEqual([to]);
     expect(page.pushes).toEqual([]);
+  });
+
+  it("shows an address the app doesn't have as Not Found, leaving the address and history alone", async () => {
+    const page = await boot("/nowhere/at/all");
+    expect(page.router.place).toEqual({ kind: "not-found", path: "/nowhere/at/all" });
+    expect(page.url()).toBe("/nowhere/at/all");
+    expect(page.pushes).toEqual([]);
+    expect(page.notices).toEqual([]);
   });
 
   it("tells the user about a settings scope that can't exist", async () => {
@@ -233,6 +241,42 @@ describe("agents that don't exist", () => {
     expect(page.url()).toBe("/team/workbench");
     expect(page.replaces).toContain("/team/workbench");
     expect(page.notices).toEqual([`There's no workbench page named "ghost".`]);
+  });
+});
+
+describe("links the backend redirected here", () => {
+  it("says why the link landed here, and drops the notice from the address", async () => {
+    const page = await boot("/agent/scout?notice=file-link-expired");
+    expect(page.router.place).toEqual(chat("scout"));
+    expect(page.notices).toEqual(["That file link has expired. Ask scout to send the file again."]);
+    expect(page.url()).toBe("/agent/scout");
+    expect(page.replaces).toEqual(["/agent/scout"]);
+  });
+
+  it("keeps the rest of the address", async () => {
+    const page = await boot("/agent/scout?settings=scout%2Fconnections&notice=webhook-address");
+    expect(page.url()).toBe("/agent/scout?settings=scout/connections");
+    expect(page.router.settings).toEqual({ scope: "scout", section: "connections" });
+    expect(page.notices).toHaveLength(1);
+    expect(page.notices[0]).toContain("webhook");
+  });
+
+  it("names the missing artifact on the Workbench", async () => {
+    const page = await boot("/team/workbench?notice=artifact-missing&artifact=tip-splitter");
+    expect(page.url()).toBe("/team/workbench");
+    expect(page.notices).toEqual([
+      `There's no workbench artifact named "tip-splitter". It may have been renamed or deleted.`,
+    ]);
+  });
+
+  it("doesn't say it again on Back", async () => {
+    const page = await boot("/inbox?item=scout%3Aitem-1&notice=inbox-attachment-missing");
+    expect(page.notices).toHaveLength(1);
+    await page.router.openPlace(home);
+    window.history.back();
+    await settle();
+    expect(page.router.place.kind).toBe("inbox");
+    expect(page.notices).toHaveLength(1);
   });
 });
 
@@ -1008,7 +1052,7 @@ describe("the unsaved-edit guard", () => {
     expect(page.router.place).toEqual(files("scout"));
     expect(page.entry()).toEqual({ idx: 1 });
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(page.router.place).toEqual(chat("scout"));
     });
   });
@@ -1042,7 +1086,7 @@ describe("the unsaved-edit guard", () => {
     page.router.guard.setConfirm(confirmOnOverlay(page.router, true));
     page.router.guard.register(() => "unsaved changes");
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(page.router.place).toEqual(chat("scout"));
       expect(page.url()).toBe("/agent/scout");
       expect(page.entry().idx).toBe(0);
@@ -1074,12 +1118,12 @@ describe("following overlay entries only", () => {
     router.openOverlay(first);
     router.openOverlay(second);
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(second).toHaveBeenCalledTimes(1);
     });
     expect(first).not.toHaveBeenCalled();
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(first).toHaveBeenCalledTimes(1);
     });
     expect(url()).toBe("/dev/gallery");

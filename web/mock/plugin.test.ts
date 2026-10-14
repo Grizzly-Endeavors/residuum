@@ -1,4 +1,11 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  Agent,
+  createServer,
+  get,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Plugin } from "vite";
@@ -8,6 +15,7 @@ import { WebSocket } from "ws";
 import { mockServerPlugin } from "./plugin";
 import { frameText } from "./sockets";
 import { fetchJson } from "./test-support";
+import { waitFor } from "../src/test/wait";
 
 type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
 
@@ -85,6 +93,30 @@ function firstHubFrames(url: string): Promise<string[]> {
   });
 }
 
+/**
+ * The connection headers of a GET of `url` on a kept-alive connection. Node
+ * answers `Keep-Alive: timeout=N` when it will close the connection after N
+ * idle seconds, and leaves the header out when it never will.
+ */
+function keepAliveHeaders(url: string): Promise<{ connection?: string; keepAlive?: string }> {
+  const agent = new Agent({ keepAlive: true });
+  return new Promise((resolve, reject) => {
+    get(url, { agent }, (res) => {
+      res.resume();
+      res.on("end", () => {
+        agent.destroy();
+        resolve({
+          connection: res.headers.connection,
+          keepAlive: res.headers["keep-alive"]?.toString(),
+        });
+      });
+    }).on("error", (err) => {
+      agent.destroy();
+      reject(err);
+    });
+  });
+}
+
 describe("the mock server plugin", () => {
   const running: Server[] = [];
 
@@ -142,7 +174,7 @@ describe("the mock server plugin", () => {
 
   it("starts the artifacts listener, and reports its port through the workbench info", async () => {
     const dev = await start();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       expect((info.body as WorkbenchInfo).port).not.toBeNull();
     });
@@ -158,7 +190,7 @@ describe("the mock server plugin", () => {
   it("closes the artifacts listener with the dev server", async () => {
     const dev = await start();
     let port: number | null = null;
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       port = (info.body as WorkbenchInfo).port;
       expect(port).not.toBeNull();
@@ -172,6 +204,32 @@ describe("the mock server plugin", () => {
     await expect(fetch(`http://127.0.0.1:${String(port)}/tip-splitter/`)).rejects.toThrow();
   });
 
+  // A client that keeps connections with no idle limit of its own, as Playwright's request
+  // context does, fails with "socket hang up" when it sends on one the server is closing.
+  it("keeps an idle connection open until the client closes it, on the dev and the preview server", async () => {
+    for (const kind of ["configureServer", "configurePreviewServer"] as const) {
+      const server = await start(kind);
+      expect(await keepAliveHeaders(`${server.baseUrl}/api/hub/status`), kind).toEqual({
+        connection: "keep-alive",
+        keepAlive: undefined,
+      });
+    }
+  });
+
+  it("keeps an idle connection open until the client closes it on the artifacts port", async () => {
+    const dev = await start();
+    await waitFor(async () => {
+      const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
+      expect((info.body as WorkbenchInfo).port).not.toBeNull();
+    });
+    const { port } = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
+      .body as WorkbenchInfo;
+    expect(await keepAliveHeaders(`http://127.0.0.1:${String(port)}/tip-splitter/`)).toEqual({
+      connection: "keep-alive",
+      keepAlive: undefined,
+    });
+  });
+
   it("serves the same mock from the preview server of a production build", async () => {
     const preview = await start("configurePreviewServer");
     const agents = await fetchJson(`${preview.baseUrl}/api/hub/agents`);
@@ -183,7 +241,7 @@ describe("the mock server plugin", () => {
     ]);
     // The preview server's own middleware, the built app, answers what isn't /api.
     expect((await fetch(`${preview.baseUrl}/index.html`)).status).toBe(404);
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = (await fetchJson(`${preview.baseUrl}/api/team/workbench/info`))
         .body as WorkbenchInfo;
       expect(info.port).not.toBeNull();
@@ -197,7 +255,7 @@ describe("the mock server plugin", () => {
 
   it("forwards the API and the hub socket on the artifacts port, except what artifacts are refused", async () => {
     const dev = await start();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       expect((info.body as WorkbenchInfo).port).not.toBeNull();
     });
@@ -232,7 +290,7 @@ describe("the mock server plugin", () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
       vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
       const dev = await start();
-      await vi.waitFor(async () => {
+      await waitFor(async () => {
         const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
           .body as WorkbenchInfo;
         expect(info.port).toBe(port);
@@ -251,7 +309,7 @@ describe("the mock server plugin", () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
       vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
       const dev = await start();
-      await vi.waitFor(() => {
+      await waitFor(() => {
         expect(
           dev.logged.some((line) => line.includes(`can't listen on port ${String(port)}`)),
         ).toBe(true);

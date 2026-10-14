@@ -31,7 +31,7 @@ fn of_kind(hub: &Fixture, kind: TeamEventKind) -> Vec<TeamEvent> {
 
 /// Wait for an entry of `kind` about `agent` (any agent when `None`).
 async fn entry(hub: &Fixture, kind: TeamEventKind, agent: Option<&str>) -> TeamEvent {
-    eventually(&format!("a {kind:?} entry"), || async {
+    wait::until(&format!("a {kind:?} entry"), || async {
         of_kind(hub, kind)
             .into_iter()
             .find(|event| agent.is_none() || event.agent.as_deref() == agent)
@@ -75,7 +75,7 @@ async fn starting_and_stopping_an_agent_are_each_told_once() {
         .unwrap();
     hub.host.start("scout").await.unwrap();
     entry(&hub, TeamEventKind::AgentStopped, Some("scout")).await;
-    eventually("the second start", || async {
+    wait::until("the second start", || async {
         (of_kind(&hub, TeamEventKind::AgentStarted).len() == 2).then_some(())
     })
     .await;
@@ -234,9 +234,8 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
         .await
         .unwrap();
     loop {
-        let change = tokio::time::timeout(POLL_TIMEOUT, changes.recv())
+        let change = wait::guarded("the background turn to end", changes.recv())
             .await
-            .expect("the background turn ends")
             .unwrap();
         if matches!(change.kind, AgentChangeKind::TurnEnded(ref turn) if turn.visibility == crate::memory::types::Visibility::Background)
         {
@@ -247,7 +246,7 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
     // The feed is ordered, so once the second user turn is told, the
     // background turn before it has been read too.
     hub.chat("scout", "second question").await;
-    eventually("the second reply", || async {
+    wait::until("the second reply", || async {
         (of_kind(&hub, TeamEventKind::AgentReplied).len() >= 2).then_some(())
     })
     .await;
@@ -292,7 +291,7 @@ async fn an_item_the_inbox_tool_saved_is_told_and_a_hand_placed_file_is_not() {
     );
     // Later entries from the same agent arrive after the file changes did.
     hub.chat("scout", "anything else").await;
-    eventually("the later reply", || async {
+    wait::until("the later reply", || async {
         (of_kind(&hub, TeamEventKind::AgentReplied).len() >= 2).then_some(())
     })
     .await;

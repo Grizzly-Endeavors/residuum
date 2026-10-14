@@ -91,10 +91,16 @@ impl PulseScheduler {
     /// A pulse is due when all of the following hold:
     /// - `enabled == true`
     /// - Its schedule duration can be parsed
-    /// - Either it has never run, or `now - last_run >= schedule duration`
+    /// - `now - last_run >= schedule duration`
     /// - If `active_hours` is set, `now` falls within the window
     ///
-    /// Due pulses have their `last_run` updated to `now` and persisted (if a state path is set).
+    /// A pulse with no `last_run` yet (a new install, or a pulse just added
+    /// to HEARTBEAT.yml) is not due: it is recorded as seen at `now` and first
+    /// runs one schedule duration later. A pulse outside its `active_hours`
+    /// window is not recorded until it is evaluated inside the window.
+    ///
+    /// Due and first-seen pulses have their `last_run` set to `now` and
+    /// persisted (if a state path is set).
     #[must_use]
     #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
@@ -119,6 +125,7 @@ impl PulseScheduler {
         let pruned = self.prune_removed_pulses(&current_pulse_names);
 
         let mut due = Vec::new();
+        let mut first_seen = false;
 
         for pulse in heartbeat.pulses {
             if !pulse.enabled {
@@ -173,13 +180,21 @@ impl PulseScheduler {
                 continue;
             }
 
-            // Check if due: fire immediately if never run, otherwise after the schedule duration
-            let is_due = match self.last_run.get(&pulse.name) {
-                None => true,
-                Some(last) => (now - *last) >= duration,
+            // A pulse seen for the first time (new install, or added to
+            // HEARTBEAT.yml mid-session) starts its clock now, so its first
+            // run comes one schedule duration later rather than immediately.
+            let Some(last) = self.last_run.get(&pulse.name) else {
+                tracing::debug!(
+                    pulse = %pulse.name,
+                    schedule = %pulse.schedule,
+                    "pulse seen for the first time, deferring first run by one schedule duration"
+                );
+                self.last_run.insert(pulse.name.clone(), now);
+                first_seen = true;
+                continue;
             };
 
-            if is_due {
+            if (now - *last) >= duration {
                 tracing::debug!(pulse = %pulse.name, "pulse due, queuing execution");
                 self.last_run.insert(pulse.name.clone(), now);
                 due.push(pulse);
@@ -188,13 +203,13 @@ impl PulseScheduler {
 
         self.record_heartbeat_problems(problems);
 
-        if (pruned || !due.is_empty())
+        if (pruned || first_seen || !due.is_empty())
             && let Err(e) = self.save_state()
         {
             tracing::warn!(
                 pulses = ?due.iter().map(|p| &p.name).collect::<Vec<_>>(),
                 error = %e,
-                "failed to persist pulse state; these pulses may re-fire on restart"
+                "failed to persist pulse state; first-run deferral and fired pulses may be lost on restart"
             );
         }
 
@@ -353,7 +368,7 @@ pulses:
 "#;
 
     #[test]
-    fn due_pulses_fires_immediately_when_never_run() {
+    fn due_pulses_defers_first_run_by_one_schedule_duration() {
         let dir = tempdir().unwrap();
         let path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
         let mut scheduler = PulseScheduler::new();
@@ -361,9 +376,104 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path);
-        assert_eq!(due.len(), 1, "should fire on first run");
+        let first = scheduler.due_pulses(now, &path);
+        assert!(first.is_empty(), "a first-seen pulse should not fire");
+
+        let almost = now + chrono::Duration::minutes(59);
+        assert!(
+            scheduler.due_pulses(almost, &path).is_empty(),
+            "should not fire before one schedule duration has passed"
+        );
+
+        let due = scheduler.due_pulses(now + chrono::Duration::hours(1), &path);
+        assert_eq!(due.len(), 1, "should fire once first_seen + 1h is reached");
         assert_eq!(due.first().unwrap().name, "test_pulse", "name should match");
+    }
+
+    #[test]
+    fn due_pulses_defers_first_run_of_a_long_schedule_pulse() {
+        let yaml = r#"
+pulses:
+  - name: reflection
+    enabled: true
+    schedule: "7d"
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        assert!(
+            scheduler.due_pulses(now, &path).is_empty(),
+            "a new install must not fire a 7d pulse on the first tick"
+        );
+        assert!(
+            scheduler
+                .due_pulses(now + chrono::Duration::days(6), &path)
+                .is_empty(),
+            "still not due after 6 days"
+        );
+        assert_eq!(
+            scheduler
+                .due_pulses(now + chrono::Duration::days(7), &path)
+                .len(),
+            1,
+            "due once 7 days have passed since first seen"
+        );
+    }
+
+    #[test]
+    fn due_pulses_defers_a_pulse_added_mid_session() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let initial_due = scheduler.due_pulses(now, &path);
+        assert!(
+            initial_due.is_empty(),
+            "test_pulse is deferred on first tick"
+        );
+
+        let added = r#"
+pulses:
+  - name: test_pulse
+    enabled: true
+    schedule: "1h"
+    tasks: []
+  - name: late_pulse
+    enabled: true
+    schedule: "2h"
+    tasks: []
+"#;
+        std::fs::write(&path, added).unwrap();
+
+        let added_at = now + chrono::Duration::minutes(90);
+        let due_at_add = scheduler.due_pulses(added_at, &path);
+        let names_at_add: Vec<_> = due_at_add.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names_at_add,
+            vec!["test_pulse"],
+            "the new pulse should be deferred while the existing one fires"
+        );
+
+        let before_late = added_at + chrono::Duration::minutes(119);
+        let due_before_late = scheduler.due_pulses(before_late, &path);
+        assert!(
+            due_before_late.iter().all(|p| p.name != "late_pulse"),
+            "late_pulse should not fire before its own schedule duration"
+        );
+
+        let due_at_late = scheduler.due_pulses(added_at + chrono::Duration::hours(2), &path);
+        assert!(
+            due_at_late.iter().any(|p| p.name == "late_pulse"),
+            "late_pulse should fire once first_seen + 2h is reached"
+        );
     }
 
     #[test]
@@ -376,15 +486,19 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        // First run marks it as run
-        let first = scheduler.due_pulses(now, &path);
-        assert_eq!(first.len(), 1, "should fire on first run");
+        // First tick only records the pulse as seen.
+        assert!(scheduler.due_pulses(now, &path).is_empty());
 
-        // 30 minutes later — not yet due (schedule is 1h)
-        let later = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
-            .unwrap()
-            .and_hms_opt(12, 30, 0)
-            .unwrap();
+        // One schedule duration later it fires.
+        let first_fire = now + chrono::Duration::hours(1);
+        assert_eq!(
+            scheduler.due_pulses(first_fire, &path).len(),
+            1,
+            "should fire after the schedule duration"
+        );
+
+        // 30 minutes after that — not yet due (schedule is 1h)
+        let later = first_fire + chrono::Duration::minutes(30);
         let due = scheduler.due_pulses(later, &path);
         assert!(due.is_empty(), "should not refire within schedule period");
     }
@@ -432,6 +546,50 @@ pulses:
     }
 
     #[test]
+    fn due_pulses_does_not_record_a_pulse_as_seen_outside_active_hours() {
+        let yaml = r#"
+pulses:
+  - name: daytime_pulse
+    enabled: true
+    schedule: "1h"
+    active_hours: "09:00-17:00"
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let state_path = dir.path().join("pulse_state.json");
+        let mut scheduler = PulseScheduler::with_state_path(&state_path);
+        let night = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(22, 0, 0)
+            .unwrap();
+        assert!(scheduler.due_pulses(night, &path).is_empty());
+        assert!(
+            !scheduler.last_run.contains_key("daytime_pulse"),
+            "a pulse outside its window should not be recorded as seen"
+        );
+        assert!(
+            !state_path.exists(),
+            "nothing was recorded, so nothing should be persisted"
+        );
+
+        // First evaluated inside the window the next morning: recorded, not fired.
+        let morning = chrono::NaiveDate::from_ymd_opt(2026, 2, 20)
+            .unwrap()
+            .and_hms_opt(9, 30, 0)
+            .unwrap();
+        assert!(scheduler.due_pulses(morning, &path).is_empty());
+        assert_eq!(
+            scheduler.last_run.get("daytime_pulse"),
+            Some(&morning),
+            "first evaluation inside the window records the pulse as seen"
+        );
+
+        let due = scheduler.due_pulses(morning + chrono::Duration::hours(1), &path);
+        assert_eq!(due.len(), 1, "fires one schedule duration after first seen");
+    }
+
+    #[test]
     fn due_pulses_respects_active_hours_inside_window() {
         let yaml = r#"
 pulses:
@@ -449,7 +607,11 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(day, &path);
+        assert!(
+            scheduler.due_pulses(day, &path).is_empty(),
+            "first-seen pulse is deferred even inside active hours"
+        );
+        let due = scheduler.due_pulses(day + chrono::Duration::hours(1), &path);
         assert_eq!(due.len(), 1, "pulse should fire inside active hours");
     }
 
@@ -526,23 +688,55 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        // First scheduler fires and persists
+        // First scheduler records first-seen and fires one duration later
         {
             let mut sched = PulseScheduler::with_state_path(&state_path);
-            let due = sched.due_pulses(now, &hb_path);
-            assert_eq!(due.len(), 1, "should fire on first run");
+            assert!(sched.due_pulses(now, &hb_path).is_empty());
+            let due = sched.due_pulses(now + chrono::Duration::hours(1), &hb_path);
+            assert_eq!(due.len(), 1, "should fire after the schedule duration");
         }
 
         // Second scheduler loads persisted state — should NOT re-fire
         {
             let mut sched = PulseScheduler::with_state_path(&state_path);
-            let thirty_min_later = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
-                .unwrap()
-                .and_hms_opt(12, 30, 0)
-                .unwrap();
-            let due = sched.due_pulses(thirty_min_later, &hb_path);
+            let ninety_min_later = now + chrono::Duration::minutes(90);
+            let due = sched.due_pulses(ninety_min_later, &hb_path);
             assert!(due.is_empty(), "should not re-fire from persisted state");
         }
+    }
+
+    #[test]
+    fn first_seen_timestamp_survives_a_restart() {
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
+        let state_path = dir.path().join("pulse_state.json");
+        let first_seen = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        {
+            let mut sched = PulseScheduler::with_state_path(&state_path);
+            assert!(
+                sched.due_pulses(first_seen, &hb_path).is_empty(),
+                "nothing fires on the first tick"
+            );
+        }
+
+        // Restart: a fresh scheduler reloads the first-seen time from disk.
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        assert!(
+            sched
+                .due_pulses(first_seen + chrono::Duration::minutes(59), &hb_path)
+                .is_empty(),
+            "a restart must not push the first run back or pull it forward"
+        );
+        let due = sched.due_pulses(first_seen + chrono::Duration::hours(1), &hb_path);
+        assert_eq!(
+            due.len(),
+            1,
+            "pulse should fire at first_seen + duration, not later"
+        );
     }
 
     #[test]
@@ -557,10 +751,13 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
         let due = sched.due_pulses(now, &hb_path);
-        assert_eq!(
-            due.len(),
-            1,
-            "missing state file means empty state, pulse should fire"
+        assert!(
+            due.is_empty(),
+            "missing state file means empty state, pulse is first-seen and deferred"
+        );
+        assert!(
+            state_path.exists(),
+            "the first-seen timestamp should be persisted immediately"
         );
     }
 
@@ -577,10 +774,13 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
         let due = sched.due_pulses(now, &hb_path);
-        assert_eq!(
-            due.len(),
-            1,
-            "corrupt state file should recover to empty state, pulse should fire"
+        assert!(
+            due.is_empty(),
+            "corrupt state file should recover to empty state, pulse is first-seen and deferred"
+        );
+        assert!(
+            sched.last_run.contains_key("test_pulse"),
+            "the pulse should be recorded as seen after recovery"
         );
     }
 
@@ -965,7 +1165,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
         let due = scheduler.due_pulses(now, &path);
-        assert_eq!(due.len(), 1, "the valid pulse should still fire normally");
+        assert!(due.is_empty(), "a first-seen valid pulse is deferred");
         assert!(
             scheduler.take_problem_notice().is_none(),
             "a valid HEARTBEAT.yml should never queue a rejection notice"
@@ -995,7 +1195,14 @@ pulses:
             .unwrap();
 
         let due = scheduler.due_pulses(now, &path);
-        assert_eq!(due.len(), 1, "the surviving 'dup' pulse should still fire");
+        assert!(
+            due.is_empty(),
+            "the surviving 'dup' pulse is first-seen, so deferred"
+        );
+        assert!(
+            scheduler.last_run.contains_key("dup"),
+            "the surviving 'dup' pulse should still be scheduled"
+        );
         let notice = scheduler.take_problem_notice();
         assert!(
             notice.is_some(),
@@ -1018,19 +1225,22 @@ pulses:
             .unwrap();
 
         let first_due = scheduler.due_pulses(now, &path);
-        assert_eq!(first_due.len(), 1, "the surviving 'dup' pulse should fire");
+        assert!(
+            first_due.is_empty(),
+            "the surviving 'dup' pulse is deferred"
+        );
         assert!(
             scheduler.take_problem_notice().is_some(),
             "first tick should queue a notice"
         );
 
         // The surviving 'dup' pulse has a 1h schedule, so it won't be due
-        // again on these later ticks — only the duplicate-name problem is
+        // on these later ticks — only the duplicate-name problem is
         // under test here, and it should stay silent while nothing changes.
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
             let later_due = scheduler.due_pulses(later, &path);
-            assert!(later_due.is_empty(), "not due again within the 1h schedule");
+            assert!(later_due.is_empty(), "not due within the 1h schedule");
             assert!(
                 scheduler.take_problem_notice().is_none(),
                 "tick {minute} over an unchanged duplicate should not requeue the notice"
@@ -1049,7 +1259,10 @@ pulses:
             .unwrap();
 
         let first_due = scheduler.due_pulses(now, &path);
-        assert_eq!(first_due.len(), 1, "the surviving 'dup' pulse should fire");
+        assert!(
+            first_due.is_empty(),
+            "the surviving 'dup' pulse is deferred"
+        );
         assert!(scheduler.take_problem_notice().is_some());
 
         let later = now + chrono::Duration::minutes(1);
@@ -1083,10 +1296,13 @@ pulses:
         std::fs::write(&path, edited).unwrap();
         let even_later = now + chrono::Duration::minutes(2);
         let third_due = scheduler.due_pulses(even_later, &path);
-        assert_eq!(
-            third_due.len(),
-            1,
-            "the new 'also-dup' survivor should fire for the first time"
+        assert!(
+            third_due.is_empty(),
+            "the new 'also-dup' survivor is first-seen, so deferred"
+        );
+        assert!(
+            scheduler.last_run.contains_key("also-dup"),
+            "the new 'also-dup' survivor should be recorded as seen"
         );
         let notice = scheduler.take_problem_notice();
         assert!(
@@ -1183,9 +1399,9 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        // First tick loads the valid file and fires the pulse once.
+        // First tick loads the valid file and records the pulse as seen.
         let first_due = scheduler.due_pulses(now, &path);
-        assert_eq!(first_due.len(), 1, "test_pulse should fire on first run");
+        assert!(first_due.is_empty(), "test_pulse is deferred on first tick");
         assert!(
             scheduler.take_problem_notice().is_none(),
             "a valid file should queue no notice"

@@ -614,7 +614,7 @@ mod tests {
         std::fs::create_dir_all(&hub_dir).expect("hub dir");
         std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").expect("hub config");
         let model = wiremock::MockServer::start().await;
-        mount_reply(&model, "scout here", std::time::Duration::ZERO).await;
+        mount_reply(&model, "scout here").await;
         write_agent(hub_root.path(), "scout", &model.uri());
         let hub_cfg = crate::config::HubConfig::load_at(&hub_dir).expect("hub config loads");
         let services =

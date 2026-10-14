@@ -66,6 +66,9 @@ pub enum CommandSideEffect {
     StopSession(String),
     /// List every live session (running, idle, or forking) — `/sessions`.
     ListSessions,
+    /// Fork the main conversation into a session that works on the given
+    /// task — `/multitask <task>`.
+    Multitask(String),
 }
 
 struct CommandDef {
@@ -161,6 +164,22 @@ static COMMANDS: &[CommandDef] = &[
         effect: |_, _, _| CommandResult {
             response: String::new(),
             side_effect: Some(CommandSideEffect::ListSessions),
+        },
+    },
+    CommandDef {
+        names: &["multitask"],
+        help: "fork this conversation into a session that works on a task (/multitask <task>)",
+        takes_arg: true,
+        arg_required: true,
+        effect: |arg, _, _| match arg.map(str::trim) {
+            Some(task) if !task.is_empty() => CommandResult {
+                response: String::new(),
+                side_effect: Some(CommandSideEffect::Multitask(task.to_string())),
+            },
+            _ => CommandResult {
+                response: "usage: /multitask <task>".to_string(),
+                side_effect: None,
+            },
         },
     },
     CommandDef {

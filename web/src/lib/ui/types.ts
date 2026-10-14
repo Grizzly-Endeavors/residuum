@@ -58,8 +58,8 @@ export interface FieldControl {
   readonly invalid: boolean;
 }
 
-/** Where a modal layer sits: hung below the top edge, hung higher for a search, a bottom sheet, or a left drawer. */
-export type ModalFrame = "center" | "top" | "bottom" | "left";
+/** Where a modal layer sits: hung below the top edge, hung higher for a search, a bottom sheet, a left drawer, or centered in the view for a picture. */
+export type ModalFrame = "center" | "top" | "bottom" | "left" | "viewer";
 
 /** Dialog widths: 400, 480 and 640px. */
 export type DialogSize = "sm" | "md" | "lg";

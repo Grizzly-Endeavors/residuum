@@ -42,6 +42,14 @@ impl ChatOutbound for DiscordOutbound {
         "discord"
     }
 
+    fn delivers_intermediate(&self) -> bool {
+        self.state.deliver_intermediate
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Discord"
+    }
+
     fn unknown_conversation_reason(&self) -> &'static str {
         "that is not a Discord channel ID"
     }
@@ -60,10 +68,6 @@ impl ChatOutbound for DiscordOutbound {
 
     async fn conversation_target(&self, conversation_id: &str) -> Option<ChannelId> {
         parse_channel_id(conversation_id)
-    }
-
-    async fn owner(&self) -> Option<ChannelId> {
-        self.state.owner_dm().await
     }
 
     async fn describe(&self, _conversation_id: &str, target: &ChannelId) -> String {

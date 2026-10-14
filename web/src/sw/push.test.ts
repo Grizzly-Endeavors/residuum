@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appTarget, clickTarget, notificationFor } from "./push";
+import { appTarget, clickTarget, notificationFor, rotationRequest } from "./push";
 
 describe("appTarget", () => {
   it("keeps a path in the app", () => {
@@ -57,6 +57,33 @@ describe("notificationFor", () => {
       title: "Residuum",
       options: { body: "From atlas." },
     });
+  });
+});
+
+describe("rotationRequest", () => {
+  const subscription = {
+    endpoint: "https://push.example/new",
+    keys: { p256dh: "p256dh-key", auth: "auth-key" },
+  };
+
+  it("carries the new subscription and the endpoint it replaces", () => {
+    expect(rotationRequest(subscription, "https://push.example/old")).toEqual({
+      subscription: { endpoint: subscription.endpoint, keys: subscription.keys },
+      previous_endpoint: "https://push.example/old",
+    });
+  });
+
+  it("carries no previous endpoint when there was none", () => {
+    expect(rotationRequest(subscription, undefined)).toEqual({
+      subscription: { endpoint: subscription.endpoint, keys: subscription.keys },
+      previous_endpoint: undefined,
+    });
+  });
+
+  it("is null when the new subscription has no keys", () => {
+    expect(rotationRequest({ endpoint: subscription.endpoint }, "https://push.example/old")).toBe(
+      null,
+    );
   });
 });
 

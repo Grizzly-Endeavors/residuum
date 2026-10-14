@@ -9,7 +9,16 @@ import type {
 } from "../src/lib/generated/protocol";
 import type { RecentMessage, SessionTranscriptResponse } from "../src/lib/types";
 import { untrackedRunFields } from "./data/sessions";
-import { artifactIdentity, json, parseJsonObject, readBody, stringField, text } from "./http";
+import {
+  artifactIdentity,
+  hasArtifactHeader,
+  json,
+  parseJsonObject,
+  readBody,
+  stringField,
+  text,
+  type JsonObject,
+} from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState } from "./state";
 
@@ -29,8 +38,8 @@ export type SessionReply = (frame: ServerMessage) => void;
 type SessionMessage = Pick<RecentMessage, "role" | "content"> & Partial<RecentMessage>;
 
 // Session lifecycle helpers shared by the WebSocket command handlers and the
-// REST endpoints that start, stop, and message sessions on an artifact's
-// behalf (`POST /api/sessions` and friends) — both need to mutate the same
+// REST endpoints that start, stop, and message sessions for the owner or an
+// artifact (`POST /api/sessions` and friends) — both need to mutate the same
 // in-memory sessions and announce it over the same broadcast channel.
 
 function recordMessage(state: MockState, session: SessionSummary, message: SessionMessage): void {
@@ -326,31 +335,95 @@ async function sessionTranscript(ctx: RouteContext): Promise<void> {
   } satisfies SessionTranscriptResponse);
 }
 
-// POST /api/sessions — start an artifact session, the endpoint
-// `residuum.sessions.start` calls through the bridge.
-async function startArtifactSession(ctx: RouteContext): Promise<void> {
+/** The fields a session start takes. Any other is refused, as the backend refuses it. */
+const START_FIELDS = new Set(["prompt", "context", "skill", "model", "fork"]);
+const MODEL_SIZES = new Set(["small", "medium", "large"]);
+const MALFORMED_START = 'the body must be JSON like {"prompt": "..."}';
+
+/** A session start's prompt and fork flag, or the backend's reason it can't be read. */
+function readStartRequest(raw: string): { prompt: string; fork: boolean } | { error: string } {
+  let body: JsonObject;
+  try {
+    body = parseJsonObject(raw || "{}");
+  } catch {
+    return { error: MALFORMED_START };
+  }
+  const unknown = Object.keys(body).find((key) => !START_FIELDS.has(key));
+  if (unknown !== undefined) return { error: `${MALFORMED_START}: unknown field \`${unknown}\`` };
+  const { prompt, fork = false, model = null, context = null, skill = null } = body;
+  const optionalText = [model, context, skill].every((v) => v === null || typeof v === "string");
+  if (typeof prompt !== "string" || typeof fork !== "boolean" || !optionalText) {
+    return { error: MALFORMED_START };
+  }
+  if (!prompt.trim()) return { error: "prompt must not be empty" };
+  if (typeof model === "string" && !MODEL_SIZES.has(model)) {
+    return { error: `invalid model tier '${model}': must be small, medium, or large` };
+  }
+  return { prompt, fork };
+}
+
+/** Who a session started over HTTP is: its identity, and the framing its first message carries. */
+type StartedSession = Pick<SessionSummary, "address" | "run_id" | "category" | "source_label"> & {
+  framing: string;
+};
+
+/** The owner's own session: a clean one, or with `fork` a fork of the main conversation. */
+function ownerSession(state: MockState, fork: boolean): StartedSession {
+  const n = state.sessions.runCounter;
+  return {
+    address: `spawned-${fork ? "multitask" : "session"}-${(0xa000 + n).toString(16)}`,
+    run_id: `run-owner-${n}`,
+    category: "spawned",
+    source_label: fork ? "owner:multitask" : "owner:session",
+    framing: fork
+      ? "[You are a fork of the main conversation: the messages before this one are that conversation. The owner started you with /multitask to work on the task below while the main conversation carries on separately. Main doesn't see your responses; the owner does.]"
+      : "[This session was started by the owner. Your responses are shown to them, not to the main conversation.]",
+  };
+}
+
+function artifactSession(state: MockState, artifactName: string): StartedSession {
+  const n = state.sessions.runCounter;
+  return {
+    address: `artifact-${artifactName}-${(0x1000 + n).toString(16)}`,
+    run_id: `run-artifact-${n}`,
+    category: "artifact",
+    source_label: `artifact:${artifactName}`,
+    framing: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]`,
+  };
+}
+
+// POST /api/sessions — start a session at depth 1 with no spawner, so
+// nothing it says reaches the main chat. With the artifact identity header
+// it is the artifact session `residuum.sessions.start` asks for through the
+// bridge; without it, the owner's own `spawned` session, clean or (with
+// `fork`, `/multitask`) a fork of the main conversation.
+async function startSession(ctx: RouteContext): Promise<void> {
   const { req, res, state } = ctx;
   const artifactName = artifactIdentity(req);
-  if (!artifactName) {
+  if (artifactName === null && hasArtifactHeader(req)) {
     json(res, 400, {
-      error:
-        "starting a session needs the X-Residuum-Artifact header: sessions are started by workbench artifacts, through residuum.sessions.start",
+      error: 'the x-residuum-artifact header must name an artifact, like "wiki-graph"',
     });
     return;
   }
-  const body = parseJsonObject((await readBody(req)) || "{}");
-  const prompt = stringField(body, "prompt") ?? "";
-  if (!prompt.trim()) {
-    json(res, 400, { error: "prompt must not be empty" });
+  const request = readStartRequest(await readBody(req));
+  if ("error" in request) {
+    json(res, 400, request);
+    return;
+  }
+  const { prompt, fork } = request;
+  if (artifactName !== null && fork) {
+    json(res, 400, {
+      error: "fork is the owner's /multitask: a workbench artifact's session starts clean",
+    });
     return;
   }
   const { sessions } = state;
   sessions.runCounter++;
+  const { framing, ...identity } =
+    artifactName === null ? ownerSession(state, fork) : artifactSession(state, artifactName);
   const session: SessionSummary = {
-    address: `artifact-${artifactName}-${(0x1000 + sessions.runCounter).toString(16)}`,
-    run_id: `run-artifact-${sessions.runCounter}`,
-    category: "artifact",
-    source_label: `artifact:${artifactName}`,
+    ...identity,
     state: "forking",
     spawner: null,
     depth: 1,
@@ -362,10 +435,7 @@ async function startArtifactSession(ctx: RouteContext): Promise<void> {
     ...untrackedRunFields(),
   };
   sessions.live.unshift(session);
-  recordMessage(state, session, {
-    role: "user",
-    content: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]\n\n${prompt}`,
-  });
+  recordMessage(state, session, { role: "user", content: `${framing}\n\n${prompt}` });
   state.broadcast({ type: "session_started", session });
   state.env.after(400, () => {
     runSessionTurn(state, session, `Working on it: ${prompt.slice(0, 80)}.`);
@@ -444,7 +514,7 @@ export const sessionRoutes: readonly Route[] = [
     pattern: /^\/api\/sessions\/runs\/([^/]+)\/transcript$/,
     handler: sessionTranscript,
   },
-  { method: "POST", pattern: "/api/sessions", handler: startArtifactSession },
+  { method: "POST", pattern: "/api/sessions", handler: startSession },
   { method: "POST", pattern: /^\/api\/sessions\/([^/]+)\/stop$/, handler: stopSessionRoute },
   {
     method: "POST",

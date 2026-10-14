@@ -63,6 +63,13 @@ const DRAWINGS = {
   close: [{ path: "M6.5 6.5l11 11M17.5 6.5l-11 11" }],
   check: [{ path: "m5 12.5 4.5 4.5L19 7.5" }],
   send: [{ path: "M12 19V5M6.5 10.5 12 5l5.5 5.5" }],
+  fork: [
+    { circle: [7, 5, 2] },
+    { circle: [17, 5, 2] },
+    { circle: [12, 19, 2] },
+    { path: "M7 7v2.5A2.5 2.5 0 0 0 9.5 12h5A2.5 2.5 0 0 0 17 9.5V7M12 12v5" },
+  ],
+  "arrow-down": [{ path: "M12 5v14M6.5 13.5 12 19l5.5-5.5" }],
   stop: [{ rect: [7, 7, 10, 10, 1.8], solid: true }],
   play: [{ path: "M8 5.5v13l10.5-6.5z" }],
   pause: [{ path: "M9 6v12M15 6v12" }],

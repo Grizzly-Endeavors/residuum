@@ -1,0 +1,34 @@
+2026-10-12T19:09:58.0000000Z ##[group]Run cargo test --quiet
+2026-10-12T19:10:10.0000000Z running 2 tests
+2026-10-12T19:10:11.0000000Z test hub::host::tests::main_conversation::a_web_message_sent ... FAILED
+2026-10-12T19:10:11.0000000Z test hub::other::tests::fine ... ok
+2026-10-12T19:10:12.0000000Z
+2026-10-12T19:10:12.0000000Z failures:
+2026-10-12T19:10:12.0000000Z
+2026-10-12T19:10:12.0000000Z ---- hub::host::tests::main_conversation::a_web_message_sent stdout ----
+2026-10-12T19:10:12.0000000Z thread 'hub::host::tests::main_conversation::a_web_message_sent' (4242) panicked at src/hub/host/tests/main_conversation.rs:88:9:
+2026-10-12T19:10:12.0000000Z assertion `left == right` failed: the web message appears between the tool result and the reply
+2026-10-12T19:10:12.0000000Z  left: ["a"]
+2026-10-12T19:10:12.0000000Z right: ["b"]
+2026-10-12T19:10:12.0000000Z thread 'tokio-runtime-worker' (4300) panicked at src/hub/host/mod.rs:10:5:
+2026-10-12T19:10:12.0000000Z spawned task failed
+2026-10-12T19:10:12.0000000Z
+2026-10-12T19:10:12.0000000Z failures:
+2026-10-12T19:10:12.0000000Z     hub::host::tests::main_conversation::a_web_message_sent
+2026-10-12T19:10:12.0000000Z
+2026-10-12T19:10:12.0000000Z test result: FAILED. 1 passed; 1 failed
+2026-10-12T19:10:13.0000000Z ##[error]Process completed with exit code 101.
+2026-10-12T19:10:13.0000000Z ##[group]Run scripts/check-generated-types.sh
+2026-10-12T19:10:20.0000000Z Generated types differ from the committed ones:
+2026-10-12T19:10:20.0000000Z --- web/src/lib/generated/protocol.ts
+2026-10-12T19:10:20.0000000Z +++ /dev/stdin
+2026-10-12T19:10:20.0000000Z -export type Foo = string;
+2026-10-12T19:10:20.0000000Z +export type Foo = number;
+2026-10-12T19:10:20.0000000Z ##[error]Process completed with exit code 1.
+2026-10-12T19:10:21.0000000Z ##[group]Run npm --prefix web run lint:rest
+2026-10-12T19:10:30.0000000Z
+2026-10-12T19:10:30.0000000Z /home/runner/_work/residuum/residuum/web/src/lib/a.ts
+2026-10-12T19:10:30.0000000Z   3:7  warning  'x' is assigned a value but never used  @typescript-eslint/no-unused-vars
+2026-10-12T19:10:30.0000000Z
+2026-10-12T19:10:30.0000000Z ✖ 1 problem (0 errors, 1 warning)
+2026-10-12T19:10:31.0000000Z ##[group]Post job cleanup.

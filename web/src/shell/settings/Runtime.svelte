@@ -17,19 +17,22 @@
   const agent = $derived(scope.agent);
   const guarding = $derived(scope.config.agent_repeat_call_guard_enabled);
 
+  // With no idle_channel in the file, updates go to the app, so the app is what an unset file shows.
+  const APP_CHANNEL = "websocket";
   const CHANNELS: readonly Choice[] = [
-    { value: "", label: "Keep where it is" },
-    { value: "websocket", label: "This app" },
+    { value: APP_CHANNEL, label: "This app" },
     { value: "telegram", label: "Telegram" },
     { value: "discord", label: "Discord" },
     { value: "teams", label: "Microsoft Teams" },
   ];
 
+  const idleChannel = $derived(scope.config.idle_channel || APP_CHANNEL);
+
   // A channel the file names that the list doesn't (`ws` is another name for the app) still shows.
   const channels = $derived(
-    CHANNELS.some((choice) => choice.value === scope.config.idle_channel)
+    CHANNELS.some((choice) => choice.value === idleChannel)
       ? CHANNELS
-      : [...CHANNELS, { value: scope.config.idle_channel, label: scope.config.idle_channel }],
+      : [...CHANNELS, { value: idleChannel, label: idleChannel }],
   );
 </script>
 
@@ -54,7 +57,7 @@
       field="max_tokens"
       label="Reply length"
       unit="tokens"
-      fallback={8192}
+      fallback={16384}
       min={1}
       hint="The most the model can write in one go. A token is about three quarters of a word."
     />
@@ -181,7 +184,7 @@
       error={fieldError(scope, { kind: "config", field: "idle_channel" })}
       hint="Where messages {agent} starts on its own go once you're away."
       bind:value={
-        () => scope.config.idle_channel,
+        () => idleChannel,
         (next) => {
           scope.config.idle_channel = next;
         }

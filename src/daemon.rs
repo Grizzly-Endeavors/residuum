@@ -500,7 +500,15 @@ mod tests {
 
     #[test]
     fn nonexistent_pid_is_not_running() {
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        // Windows has no `true` outside Git's usr\bin, so exit through cmd.
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit 0"])
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("true").spawn().unwrap()
+        };
         let pid = child.id();
         child.wait().unwrap();
         assert!(!is_process_running(pid));

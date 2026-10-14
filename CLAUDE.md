@@ -12,21 +12,22 @@
 
 Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
-**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the marketing landing page — it lives in a separate repository, not this one.
+**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the agent-residuum.com site (marketing pages, Cloud sign-in and the account dashboard) — it lives in a separate repository, not this one.
 
 ## Build & Quality Gates
 
-### Pre-Commit Hooks
+### Git Hooks
 
-Pre-commit hooks enforce quality gates:
-- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When the commit touches Rust it also runs `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types from the Rust types and fails on any difference from the staged files. When any file under `web/` is staged (the app, its mock server, its configuration) it also runs the web formatter, ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
+The git hooks in `.githooks/` (installed with `.githooks/install.sh` or `just hooks`) enforce the quality gates in two stages: the fast checks on every commit, the slow ones once per push.
+- **pre-commit**: formats what is staged, re-staging only the paths already staged: `cargo fmt --all` when Rust is staged, Prettier on the staged web files. It refuses a formatter change to a file that also has unstaged edits, so the author stages the whole file or stashes the rest. When a manifest (`*.toml`, `Cargo.lock`) is staged it also runs `cargo deny check`. It blocks three things outright in the staged diff: a `dbg!()` call, an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn), and growth of `src/testing/wall_clock_backlog.rs`. When any `scripts/ci-failures*` file is staged it runs the `just ci-failures` log parser's fixtures (`scripts/ci-failures-test.sh`).
+- **pre-push**: checks each pushed commit as it would be merged with the current `main`. It fetches `origin/main`. A commit is checked in place only when it is the checkout's HEAD, already contains `origin/main`, and the working tree has no uncommitted or untracked changes; any other commit, and any branch that is behind `main`, is checked in a temporary worktree, merged with `main` when the branch is behind it (sharing this checkout's `web/node_modules`), and a merge conflict fails the push until `main` is merged into the branch. Every check builds into `target/pre-push`, which is separate from the checkout's own `target/`; sccache shares the dependency builds. When the pushed commits change what the Rust checks run on (the paths `.github/workflows/rust-pr.yml` triggers on: `src/`, `tests/`, `assets/`, the Cargo, clippy, rustfmt and deny configuration, `build.rs`, the generated web types and the scripts and workflows those checks use), it runs `cargo clippy --all-targets --all-features -- -D warnings`, the whole test suite (`cargo test --quiet --no-fail-fast`, which includes the source scans, `testing::source_scan`) and `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types into a scratch directory and fails on any difference from the index. The suite's type export also goes to a scratch directory, so a push never rewrites `web/src/lib/generated`. When they change `web/`, the Rust checks rebuild `web/dist` first, and the hook runs ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). Every check runs even after one fails, and a summary at the end lists what failed. A push that only deletes a branch, or changes neither Rust nor `web/`, runs no checks.
 - **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
 
-Bypass is **FORBIDDEN**.
+Bypassing a hook with `--no-verify` is **FORBIDDEN**, on `git push` as on `git commit`.
 
 ### Local Tasks
 
-The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`), `just test <filter>` runs `cargo test --quiet <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
+The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`, then actionlint over the workflows; a failing check does not stop the others, and the failures are listed at the end), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). In CI the visual comparisons run in a job of their own that never fails a pull request or a release, and report changed shots in one pull request comment. Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
 
 ### Cross-Platform Targets
 
@@ -37,9 +38,11 @@ Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon)
 
 CI does not cross-compile by default; when it does, it runs clippy with `-D warnings` for each target and the test suite on a Windows runner. For platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(windows)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), add the `cross-compile` label to the PR, or run `gh workflow run cross-compile.yml --ref <branch>`. PRs that change `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` cross-compile automatically. See CONTRIBUTING.md.
 
+To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
+
 ### Rust Toolchain
 
-The Rust version is pinned in `rust-toolchain.toml` so the pre-commit hook, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
+The Rust version is pinned in `rust-toolchain.toml` so the git hooks, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
 
 ### Lint Rules
 
@@ -53,7 +56,7 @@ The lint set is kept in parity with the `rust-toolkit` reference project. `print
 
 The root `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` for code inside `#[cfg(test)]` modules and `#[test]`-attributed functions, so test code may freely use unwrap/expect/panic/dbg for readability with no suppression header needed. Adding an `#[expect(clippy::unwrap_used, ...)]` (or `expect_used`/`panic`/`dbg_macro`) to a test file is an error, not belt-and-braces — the lint is already exempt there, so the expectation never fires and becomes an unfulfilled-expectation hard error under `-D warnings`. `clippy::tests_outside_test_module` is the one exception: it is not controllable from `clippy.toml` and stays denied project-wide, so integration tests under `tests/` (which live outside a `#[cfg(test)]` module) still need an explicit `#[expect(clippy::tests_outside_test_module, reason = "...")]`. Plain helper functions at the top level of a `tests/*.rs` file (not wrapped in `#[cfg(test)]` and not themselves `#[test]`-attributed) are also not covered by the `clippy.toml` exemption and still need their own suppression if they use unwrap/expect/panic/dbg.
 
-DO NOT, under any circumstance, change this config without explicit approval from the user.
+Changing a lint, a lint level, or a clippy or deny setting needs explicit approval from the user. Editing a comment in these files to keep it accurate does not.
 
 ### Testing
 
@@ -61,6 +64,8 @@ Testing is a first-class operation — NEVER skip test implementation.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
 - Unit tests: `#[cfg(test)] mod tests` at file bottom
 - Integration tests: `tests/` directory
+- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. CI runs the whole suite that way in the Stress step of the Rust tests. The end-to-end specs get the same check: `just web-stress` runs the spec files a branch adds or changes, each test repeatedly with the browser's CPU throttled (`web/CONTRIBUTING.md`, "CI"), and CI's Web Stress job runs them on every pull request; a red Web Stress step blocks the merge like a red Stress step. A test or spec that fails only under load (the Stress step's "failed under load only" list, or a red Web Stress step) waits on time: fix the wait, never rerun past it. A test under its "also failed in the Tests step" list is an ordinary failure. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
+- After a red CI run, run `just ci-failures` (or `just ci-failures <pr-number|branch>`) and fix every listed failure before pushing again, except one marked `likely flake` (not `touched`, but `seen elsewhere`). That one may be a flake or a breakage other branches share: check whether `main` fails the same way, and file or add to an `investigate` issue rather than chasing it in this PR. The stress rule above still applies to a red Stress or Web Stress step. Every other failure, `touched` or not, is this change's to fix until you show otherwise.
 
 ## Code Style
 
@@ -115,7 +120,7 @@ The failure this section exists to prevent is a guard built around a failure nob
 - A comment justifying a guard records what an agent believed when it wrote it; it is not an authority. If it names no observed failure, it is a ghost: replace it with visibility and intervention rather than preserving it.
 - A gap is missing visibility or intervention, not behavior you would have designed differently. If a behavior is visible and the user can stop or undo it, how it behaves is a product decision: leave it, and raise it only when it carries genuine risk or cost.
 - Document product behavior in `docs/systems-usage/` as a plain description of how the system works. Only the user decides what is intentional; agents describe what is. Skip "by design", "intentional", and "do not change": the doc records current behavior, not a case for keeping it.
-- This governs product behavior, not code correctness. Lints, pre-commit hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
+- This governs product behavior, not code correctness. Lints, git hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
 
 ## Error Handling & Observability
 
@@ -170,7 +175,7 @@ Single-branch model: all work lands on `main`.
 ### Day-to-Day Work
 
 1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
-2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests. Commit especially often during large multi-phase tasks.
+2. **Commit frequently** — the pre-commit hook formats and audits what is staged; clippy, the tests, the generated-types check and the web checks run once per push. Commit especially often during large multi-phase tasks.
 3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
 4. **Push the branch** and merge into `main`
 
@@ -188,4 +193,4 @@ Use prefixed branch names:
 
 ### Releases
 
-Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs full CI checks before building artifacts.
+Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs the full CI checks alongside the artifact builds and publishes nothing unless both pass. Pull requests run the Rust checks when they change Rust code and the web checks when they change `web/`.
