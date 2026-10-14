@@ -550,17 +550,16 @@ async fn notice_images_omitted(
 }
 
 /// The notice for reasoning the provider dropped from a request.
-const THINKING_DROPPED_NOTICE: &str = "Some of the model's earlier reasoning couldn't be reused \
-    after the tools changed, so it continued without it.";
+const THINKING_DROPPED_NOTICE: &str =
+    "Some of the model's earlier reasoning couldn't be reused, so it continued without it.";
 
 /// Tell the user, once per turn, that the provider dropped some of the
 /// model's earlier reasoning from a request instead of reading it, because
-/// the system prompt or tools changed since it was written (an MCP server
-/// connecting or changing its tools mid-exchange). The turn carries on; the
-/// model just answers without that reasoning. Every later request in the
-/// exchange resends the same blocks and has them dropped again, so only the
-/// first report of a turn is raised. `noticed` records that this turn
-/// already has.
+/// what came before that reasoning changed since it was written. The turn
+/// carries on; the model just answers without that reasoning. Every later
+/// request in the exchange resends the same blocks and has them dropped
+/// again, so only the first report of a turn is raised. `noticed` records
+/// that this turn already has.
 async fn notice_thinking_dropped(
     response: &InferenceResponse,
     events: &EventContext<'_>,
@@ -571,7 +570,7 @@ async fn notice_thinking_dropped(
     }
     tracing::warn!(
         blocks = response.thinking_dropped,
-        "the provider dropped replayed reasoning because the system prompt or tools changed mid-exchange; the model continued without it"
+        "the provider dropped replayed reasoning because what preceded it in the request changed; the model continued without it"
     );
     if let Err(e) = events
         .publisher
