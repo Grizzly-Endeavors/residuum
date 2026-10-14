@@ -20,6 +20,7 @@ pub(super) fn cloud_routes(hub: &HubHttpState) -> Router {
         reload_tx: hub.reload_tx.clone(),
         tunnel_status_rx: hub.tunnel_status_rx.clone(),
         secret_lock: Arc::clone(&hub.secret_lock),
+        checkpoints: Arc::clone(&hub.checkpoints),
         sign_ins: web::cloud_sign_in::PendingSignIns::default(),
     };
     Router::new()
