@@ -42,11 +42,9 @@ immediately). Setting `timeout_secs` on a server opts that server's calls
 into a fixed timeout instead; a call that runs past it returns a plain-language
 error naming the tool, the server, and the number of seconds.
 
-To give a server a credential without writing it into `mcp.json`, reference
-an agent key: `"env": { "GITHUB_TOKEN": "${agent-key:github_token}" }` or
-`"headers": { "Authorization": "Bearer ${agent-key:remote_api}" }`. It is
-resolved when the server connects; an unknown key fails that server's
-connection. See [agent-keys](agent-keys.md).
+To give a server a credential without writing it into `mcp.json`, reference an agent key: `"env": { "GITHUB_TOKEN": "${agent-key:github_token}" }` or `"headers": { "Authorization": "Bearer ${agent-key:remote_api}" }`. It is resolved when the server connects; an unknown key fails that server's connection. See [agent-keys](agent-keys.md).
+
+A value that is exactly `secret:<name>` resolves from the hub's secret store (where provider keys and chat tokens live) when the server connects, e.g. `"env": { "TAVILY_API_KEY": "secret:mcp_tavily_tavily_api_key" }`. It must be the whole value, not part of one; a name the store doesn't hold fails that server's connection. The setup wizard stores the tool server keys it asks for this way, as `mcp_<server>_<variable>`. A key written in plain text still works and reaches the server unchanged.
 
 ## Tools
 
