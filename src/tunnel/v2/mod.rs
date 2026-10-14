@@ -43,6 +43,25 @@ pub(crate) fn register_url(relay_url: &str) -> Option<String> {
     Some(url.to_string())
 }
 
+/// The web origin of the relay in `[cloud] relay_url`, where its account
+/// dashboard is: `wss` becomes `https` and `ws` becomes `http`, keeping the
+/// host and any port. `None` when the URL isn't a `ws://` or `wss://` address.
+#[must_use]
+pub(crate) fn web_origin(relay_url: &str) -> Option<String> {
+    let url = url::Url::parse(relay_url).ok()?;
+    let scheme = match url.scheme() {
+        "wss" => "https",
+        "ws" => "http",
+        _ => return None,
+    };
+    let host = url.host_str()?;
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!("{scheme}://{host}{port}"))
+}
+
 /// A browser connection the relay handed to this instance.
 pub(crate) struct IncomingStream {
     /// The host the browser asked for, normalized by the relay.
@@ -119,7 +138,33 @@ pub(crate) trait SessionHandler: Send + Sync {
 
 #[cfg(test)]
 mod url_tests {
-    use super::register_url;
+    use super::{register_url, web_origin};
+
+    #[test]
+    fn the_web_origin_swaps_the_relay_scheme_and_keeps_the_host() {
+        assert_eq!(
+            web_origin("wss://agent-residuum.com/tunnel/v2/register").as_deref(),
+            Some("https://agent-residuum.com")
+        );
+        assert_eq!(
+            web_origin("ws://127.0.0.1:8080/tunnel/register?x=1").as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
+    }
+
+    #[test]
+    fn the_web_origin_drops_a_default_port() {
+        assert_eq!(
+            web_origin("wss://relay.example.com:443/tunnel/v2/register").as_deref(),
+            Some("https://relay.example.com")
+        );
+    }
+
+    #[test]
+    fn a_url_that_isnt_a_websocket_address_has_no_web_origin() {
+        assert_eq!(web_origin("https://relay.example.com"), None);
+        assert_eq!(web_origin("not a url"), None);
+    }
 
     #[test]
     fn the_registration_path_is_used_as_is() {
