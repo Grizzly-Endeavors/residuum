@@ -236,7 +236,7 @@ rust-check: _web-dist
 # Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist, so a broken web build stops rust-check before its checks run. Runs every check and lists the failures.
 [group('check')]
 check: _web-deps
-    {{ quote(just_executable()) }} _run-parts {{ web_checks }} rust-check
+    {{ quote(just_executable()) }} _run-parts {{ web_checks }} rust-check actionlint
 
 # Format Rust and web sources
 [group('check')]
@@ -247,15 +247,17 @@ fmt: rust-fmt web-fmt
 fmt-check:
     {{ quote(just_executable()) }} _run-parts rust-fmt-check web-fmt-check
 
-# Lint the GitHub Actions workflows with actionlint, at the version CI pins in .github/workflows/actionlint.yml
+# Lint the GitHub Actions workflows with actionlint and shellcheck, at the versions CI pins in .github/workflows/actionlint.yml
 [group('check')]
 actionlint:
     #!/usr/bin/env bash
     set -euo pipefail
     pinned="$(sed -n 's/^ *ACTIONLINT_VERSION: \(.*\)$/\1/p' .github/workflows/actionlint.yml)"
+    shellcheck_pinned="$(sed -n 's/^ *SHELLCHECK_VERSION: \(.*\)$/\1/p' .github/workflows/actionlint.yml)"
     command -v actionlint >/dev/null || { echo "actionlint is not installed: get v${pinned} from https://github.com/rhysd/actionlint/releases" >&2; exit 1; }
     installed="$(actionlint -version | sed -n 1p)"
     [ "$installed" = "$pinned" ] || { echo "actionlint ${installed} is installed; CI pins ${pinned}" >&2; exit 1; }
+    command -v shellcheck >/dev/null || { echo "shellcheck is not installed, so actionlint would skip its shell checks: install it (apt install shellcheck, or v${shellcheck_pinned} from https://github.com/koalaman/shellcheck/releases)" >&2; exit 1; }
     actionlint
 
 # Every failing test in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags

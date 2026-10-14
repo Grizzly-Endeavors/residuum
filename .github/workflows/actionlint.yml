@@ -1,18 +1,23 @@
 name: Workflow Lint
 
-# actionlint over every workflow, with the shellcheck findings in run blocks,
-# on each pull request that changes a workflow or the runner-label config
+# actionlint over every workflow, with shellcheck over the run blocks, on each
+# pull request that changes a workflow or the runner-label config
 # (.github/actionlint.yaml). A bad runner label or a quoting mistake in a run
 # block then fails the pull request that introduced it, not the release.
 #
-# The version is pinned here and in the `actionlint` recipe in the justfile
-# reads it from this file, so the two cannot drift apart.
+# Both tools are pinned here and checksum-verified before they run. The
+# `actionlint` recipe in the justfile reads the pinned versions from this file,
+# so the local check and this job cannot drift apart.
 on:
   pull_request:
     paths:
       - ".github/workflows/**"
       - ".github/actionlint.yaml"
   workflow_dispatch:
+
+concurrency:
+  group: actionlint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   actionlint:
@@ -25,34 +30,51 @@ jobs:
 
     env:
       ACTIONLINT_VERSION: 1.7.12
+      SHELLCHECK_VERSION: 0.11.0
 
     steps:
       - uses: actions/checkout@v7
 
-      # The release archive is checked against the published checksums before
-      # it is unpacked, so the run uses exactly the pinned build.
-      - name: Install actionlint
+      # Each archive is checked against its pinned sha256 before it is
+      # unpacked, so the run uses exactly the pinned builds. actionlint
+      # publishes a checksums file; shellcheck does not, so its digests are
+      # pinned here, taken from the GitHub release asset digests.
+      - name: Install actionlint and shellcheck
         run: |
           case "$(uname -m)" in
-            x86_64) arch=amd64 ;;
-            aarch64) arch=arm64 ;;
-            *) echo "no actionlint build for $(uname -m)" >&2; exit 1 ;;
+            x86_64)
+              arch=amd64
+              shellcheck_arch=x86_64
+              shellcheck_sha=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+              ;;
+            aarch64)
+              arch=arm64
+              shellcheck_arch=aarch64
+              shellcheck_sha=68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc
+              ;;
+            *) echo "no actionlint or shellcheck build for $(uname -m)" >&2; exit 1 ;;
           esac
-          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_${arch}.tar.gz"
-          checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
-          work="$RUNNER_TEMP/actionlint"
+          work="$RUNNER_TEMP/lint-tools"
           mkdir -p "$work/bin"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$archive" "$base/$archive"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$checksums" "$base/$checksums"
-          (cd "$work" && grep " $archive\$" "$checksums" | sha256sum -c -)
-          tar -xzf "$work/$archive" -C "$work/bin" actionlint
+
+          actionlint_base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          actionlint_archive="actionlint_${ACTIONLINT_VERSION}_linux_${arch}.tar.gz"
+          actionlint_checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$actionlint_archive" "$actionlint_base/$actionlint_archive"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$actionlint_checksums" "$actionlint_base/$actionlint_checksums"
+          (cd "$work" && grep " $actionlint_archive\$" "$actionlint_checksums" | sha256sum -c -)
+          tar -xzf "$work/$actionlint_archive" -C "$work/bin" actionlint
+
+          shellcheck_archive="shellcheck-v${SHELLCHECK_VERSION}.linux.${shellcheck_arch}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$shellcheck_archive" "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$shellcheck_archive"
+          echo "$shellcheck_sha  $work/$shellcheck_archive" | sha256sum -c -
+          tar -xzf "$work/$shellcheck_archive" -C "$work"
+          mv "$work/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "$work/bin/"
+
           echo "$work/bin" >> "$GITHUB_PATH"
 
-      # actionlint runs shellcheck over the run blocks only when it is on PATH;
-      # without it the shell findings would silently go unreported.
-      - name: Check shellcheck is available
-        run: command -v shellcheck >/dev/null || { echo "shellcheck is not installed on this runner; actionlint would skip its shell checks" >&2; exit 1; }
-
+      # actionlint runs shellcheck over the run blocks only when it is on PATH,
+      # and skips the shell findings silently without it, so the job reports
+      # both versions and fails before linting if either is missing.
       - name: Lint workflows
-        run: actionlint -version && actionlint
+        run: actionlint -version && shellcheck --version && actionlint
