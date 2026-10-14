@@ -1,6 +1,6 @@
 //! The per-agent routes that only read and write the agent's files (chat
 //! history and usage, the user inbox, the raw A2A client settings, and the
-//! workspace file links), and the state they run on.
+//! file links: workspace links and token links), and the state they run on.
 //!
 //! The state holds no open checkpoint repositories. The one handler that
 //! takes a checkpoint, the raw A2A settings write, opens them when it runs,
@@ -62,28 +62,39 @@ pub struct AgentFilesState {
     pub reload_tx: Option<ReloadSender>,
     /// The agent's checkpoint repositories.
     pub checkpoints: CheckpointAccess,
+    /// The registry the file links are served from: the running agent's
+    /// own, or one over the links it saved while it is stopped
+    /// ([`FileRegistry::for_agent`]).
+    pub file_registry: FileRegistry,
 }
 
-impl From<&ConfigApiState> for AgentFilesState {
-    fn from(state: &ConfigApiState) -> Self {
+impl AgentFilesState {
+    /// The state of a running agent, over its open state and its live file
+    /// registry.
+    #[must_use]
+    pub fn running(state: &ConfigApiState, file_registry: FileRegistry) -> Self {
         Self {
             agent_name: state.agent_name.clone(),
             workspace_dir: state.workspace_dir.clone(),
             memory_dir: state.memory_dir.clone(),
             reload_tx: state.reload_tx.clone(),
             checkpoints: CheckpointAccess::Open(Arc::clone(&state.checkpoints)),
+            file_registry,
         }
     }
-}
 
-impl AgentFilesState {
     /// A state over `workspace_dir` with throwaway checkpoint repositories
     /// and no one listening for reloads.
     #[cfg(test)]
     pub(crate) fn for_test(workspace_dir: impl Into<PathBuf>, memory_dir: Option<PathBuf>) -> Self {
+        let workspace_dir = workspace_dir.into();
         Self {
             agent_name: "test-agent".to_string(),
-            workspace_dir: workspace_dir.into(),
+            file_registry: FileRegistry::for_agent(
+                "test-agent",
+                &crate::workspace::layout::WorkspaceLayout::new(&workspace_dir),
+            ),
+            workspace_dir,
             memory_dir,
             reload_tx: None,
             checkpoints: CheckpointAccess::Open(crate::checkpoints::test_engine()),
@@ -113,21 +124,18 @@ impl AgentFilesState {
 
 /// The routes that read and write an agent's files and nothing of its live
 /// state: chat history, session usage, the user inbox, the raw A2A client
-/// settings, and the workspace file links the web app hands out.
+/// settings, and the file links the agent hands out.
 pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
-    // A link serves a file under the workspace root by its path, so the route
-    // needs the root and the agent's name for the browser landings, and no
-    // live state. The registry is built here, from the same root the running
-    // agent's file registry uses.
-    let workspace_files: axum::Router = axum::Router::new()
+    // A workspace link serves a file under the workspace root by its path,
+    // and a token link the file its saved registration names, so both answer
+    // from the registry whether or not the agent is running.
+    let file_links: axum::Router = axum::Router::new()
         .route(
             "/api/files/workspace",
             get(file_server::serve_workspace_file),
         )
-        .with_state(
-            FileRegistry::new(state.agent_name.clone())
-                .with_workspace_root(state.workspace_dir.clone()),
-        );
+        .route("/api/files/{id}", get(file_server::serve_file))
+        .with_state(state.file_registry.clone());
     axum::Router::new()
         .route("/api/chat/history", get(chat::api_chat_history))
         .route("/api/usage", get(chat::api_usage))
@@ -143,5 +151,5 @@ pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
             get(inbox::api_inbox_attachment),
         )
         .with_state(state)
-        .merge(workspace_files)
+        .merge(file_links)
 }

@@ -600,6 +600,7 @@ mod tests {
             thinking: Vec::new(),
             stop_reason: None,
             images_omitted: None,
+            thinking_dropped: 0,
         }
     }
 

@@ -169,6 +169,14 @@ impl FakeDirectory {
         *self.primed.lock().unwrap() = Some(rx);
     }
 
+    /// A file registry over the agent's saved links, as the hub builds it.
+    fn file_registry(&self, name: &str) -> crate::gateway::file_server::FileRegistry {
+        crate::gateway::file_server::FileRegistry::for_agent(
+            name,
+            &WorkspaceLayout::new(self.root.join(name)),
+        )
+    }
+
     fn config_state(&self, name: &str, live: bool) -> ConfigApiState {
         let agent_dir = self.root.join(name);
         let team = TeamWriteCoordinator::new(&TeamPaths::new(self.root.join("team")));
@@ -212,7 +220,7 @@ fn running_agent_router(name: &str) -> Router {
             }),
         )
         .route(
-            "/api/files/{id}",
+            "/api/echo/{id}",
             get(|uri: axum::http::Uri| async move { uri.to_string() }),
         )
         .route(
@@ -267,8 +275,9 @@ impl AgentDirectory for FakeDirectory {
             });
         }
         Ok(
-            running_agent_router(name).merge(agent_files_router(AgentFilesState::from(
+            running_agent_router(name).merge(agent_files_router(AgentFilesState::running(
                 &self.config_state(name, true),
+                self.file_registry(name),
             ))),
         )
     }
@@ -297,7 +306,7 @@ impl AgentDirectory for FakeDirectory {
                     Ok(crate::checkpoints::test_engine())
                 }
             }),
-            ..AgentFilesState::from(&config)
+            ..AgentFilesState::running(&config, self.file_registry(name))
         }))
     }
 
@@ -1068,10 +1077,10 @@ async fn agent_requests_reach_the_agents_router_without_the_hub_prefix() {
     );
 
     // The path moves under `/api` in the agent's table and the query survives.
-    let file_uri = h
-        .get_expect("/api/agents/scout/files/abc?x=1&y=two", StatusCode::OK)
+    let echoed_uri = h
+        .get_expect("/api/agents/scout/echo/abc?x=1&y=two", StatusCode::OK)
         .await;
-    assert_eq!(file_uri, json!("/api/files/abc?x=1&y=two"));
+    assert_eq!(echoed_uri, json!("/api/echo/abc?x=1&y=two"));
 }
 
 #[tokio::test]
@@ -1512,7 +1521,6 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
             (Method::GET, "a2a/card"),
             (Method::GET, "a2a/outbound"),
             (Method::GET, "memory/search"),
-            (Method::GET, "files/abc"),
         ] {
             let uri = format!("/api/agents/{name}/{route}");
             let refused = h
@@ -1715,7 +1723,7 @@ async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() 
     let h = Harness::new();
     for (uri, expected) in [
         (
-            "/api/agents/quiet/files/abc",
+            "/api/agents/quiet/sessions",
             "/agent/quiet?notice=agent-stopped",
         ),
         ("/api/agents/ghost/files/abc", "/agent/ghost"),
@@ -1725,7 +1733,7 @@ async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() 
         assert_eq!(headers["location"], expected, "{uri}");
     }
     // A script still gets the contract errors.
-    h.get_expect("/api/agents/quiet/files/abc", StatusCode::CONFLICT)
+    h.get_expect("/api/agents/quiet/sessions", StatusCode::CONFLICT)
         .await;
 }
 
@@ -1799,6 +1807,61 @@ async fn a_workspace_file_link_opened_in_a_tab_on_a_stopped_agent_shows_the_file
     assert_eq!(
         missing_headers["location"],
         "/agent/quiet/files?panel=file%3Anotes%2Fgone.md"
+    );
+}
+
+#[tokio::test]
+async fn a_token_link_the_agent_saved_is_served_while_it_is_stopped_or_failed() {
+    let h = Harness::new();
+    h.add_failed_agent();
+    // The attachment sits outside every agent's workspace.
+    let outside = h.root.path().join("outside");
+    tokio::fs::create_dir_all(&outside).await.unwrap();
+    let opens = || h.directory.checkpoint_opens.load(Ordering::SeqCst);
+
+    for name in EVERY_STATE {
+        tokio::fs::create_dir_all(h.agent_dir(name)).await.unwrap();
+        let file = outside.join(format!("{name}.html"));
+        tokio::fs::write(&file, format!("<p>report of {name}</p>"))
+            .await
+            .unwrap();
+        // The registry that registered the link is gone; the link lives on
+        // in the registrations it saved.
+        let id = h
+            .directory
+            .file_registry(name)
+            .register(file, "text/html".to_string(), format!("{name}.html"))
+            .await;
+        let link = format!("/api/agents/{name}/files/{id}");
+
+        let (status, headers, body) = h.send(tab(&link)).await;
+        assert_eq!(status, StatusCode::OK, "{link}");
+        assert_eq!(
+            body,
+            format!("<p>report of {name}</p>").into_bytes(),
+            "{link}"
+        );
+        assert_eq!(
+            headers["content-security-policy"],
+            "sandbox allow-scripts allow-popups allow-downloads",
+            "{link}"
+        );
+        assert_eq!(headers["x-content-type-options"], "nosniff", "{link}");
+
+        let unknown = format!("/api/agents/{name}/files/not-a-token");
+        let (landing_status, landing_headers, _) = h.send(tab(&unknown)).await;
+        assert_eq!(landing_status, StatusCode::SEE_OTHER, "{unknown}");
+        assert_eq!(
+            landing_headers["location"],
+            format!("/agent/{name}?notice=file-link-expired"),
+            "{unknown}"
+        );
+        h.get_expect(&unknown, StatusCode::NOT_FOUND).await;
+    }
+    assert_eq!(
+        opens(),
+        0,
+        "serving a token link never opens the repositories"
     );
 }
 

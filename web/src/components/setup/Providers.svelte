@@ -10,9 +10,11 @@
     wizardState: SetupWizardState;
     onNext: () => void;
     onBack: () => void;
+    /** The wizard was restored from a draft, which never keeps keys. */
+    restoredDraft?: boolean;
   }
 
-  let { wizardState = $bindable(), onNext, onBack }: Props = $props();
+  let { wizardState = $bindable(), onNext, onBack, restoredDraft = false }: Props = $props();
 
   const details: Record<ProviderKey, { desc: string; keyEnv?: string; keyPlaceholder?: string }> = {
     anthropic: { desc: "Claude models: Sonnet, Haiku and Opus.", keyEnv: "ANTHROPIC_API_KEY" },
@@ -54,7 +56,9 @@
           source={NO_SECRET}
           bind:value={cfg.apiKey}
           placeholder={p.keyPlaceholder ?? "sk-..."}
-          hint="Or set the {p.keyEnv} environment variable instead."
+          hint={restoredDraft && cfg.apiKey === ""
+            ? `Keys aren't kept in the draft, so enter this one again, or set the ${p.keyEnv} environment variable instead.`
+            : `Or set the ${p.keyEnv} environment variable instead.`}
         />
       {/if}
       {#if isSelected && key === "openai"}

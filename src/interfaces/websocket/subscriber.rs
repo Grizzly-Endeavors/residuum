@@ -34,6 +34,7 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
             content,
             images,
             sender,
+            agent_sender,
             endpoint,
         } => ServerMessage::UserMessage {
             id,
@@ -41,6 +42,7 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
             content,
             images,
             sender,
+            agent_sender,
             endpoint,
         },
         MainConversationEvent::MessageQueued {
@@ -550,6 +552,68 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn a_teammates_message_reaches_the_socket_with_its_sender_live_and_in_a_snapshot() {
+        let (handle, mut subs) = subscribed().await;
+        let teammate = crate::inference::AgentSender {
+            address: "agent:atlas".into(),
+            category: "teammate".into(),
+        };
+        publish_main(
+            &handle,
+            MainConversationEvent::UserMessage {
+                id: "bg-1".into(),
+                turn_id: "bg-1".into(),
+                content: "[Message from teammate agent:atlas, not the user.]\nstatus?".into(),
+                images: Vec::new(),
+                sender: None,
+                agent_sender: Some(teammate.clone()),
+                endpoint: "background".into(),
+            },
+        )
+        .await;
+        publish_main(
+            &handle,
+            MainConversationEvent::TurnStarted {
+                turn_id: "bg-1".into(),
+                origin: origin("background"),
+            },
+        )
+        .await;
+
+        let live = subs.recv().await.unwrap();
+        assert!(
+            matches!(
+                &live,
+                ServerMessage::UserMessage { id, agent_sender: Some(sender), .. }
+                    if id == "bg-1" && *sender == teammate
+            ),
+            "the message goes out live with its sender, got {live:?}"
+        );
+        assert!(matches!(
+            subs.recv().await.unwrap(),
+            ServerMessage::TurnStarted { .. }
+        ));
+
+        // A page that opens now is shown it too.
+        subs.resync_requests().send(()).unwrap();
+        let ServerMessage::TurnSnapshot {
+            turn: Some(turn), ..
+        } = subs.recv().await.unwrap()
+        else {
+            panic!("expected a snapshot of the running turn");
+        };
+        let opening = turn.frames.first().map(|f| &f.frame);
+        assert!(
+            matches!(
+                opening,
+                Some(ServerMessage::UserMessage { id, agent_sender: Some(sender), .. })
+                    if id == "bg-1" && *sender == teammate
+            ),
+            "the snapshot opens with the teammate's message and its sender, got {opening:?}"
+        );
+    }
+
     async fn publish_main(handle: &crate::bus::BusHandle, event: MainConversationEvent) {
         handle
             .publisher()
@@ -576,6 +640,7 @@ mod tests {
                 content: "what time is it".into(),
                 images: Vec::new(),
                 sender: None,
+                agent_sender: None,
                 endpoint: "telegram".into(),
             },
             MainConversationEvent::TurnStarted {

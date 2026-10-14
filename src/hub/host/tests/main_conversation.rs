@@ -56,15 +56,16 @@ async fn frames_until_turn_ends(ws: &mut AgentSocket, turn_id: Option<&str>) -> 
     }
 }
 
-/// The `type` of each frame, without the usage ticks that come and go with
-/// each model call, or the `artifact_updated` frames, which come from the
-/// workbench on its own timing and are not part of a turn's ordering.
-fn kinds(frames: &[Value]) -> Vec<&str> {
-    frames
+/// Assert the `type` of each frame, without the usage ticks that come and go
+/// with each model call. A failure shows every frame, so an unexpected one is
+/// seen with its payload.
+fn assert_kinds(frames: &[Value], expected: &[&str], context: &str) {
+    let kinds: Vec<&str> = frames
         .iter()
         .map(|frame| str_at(frame, "type"))
-        .filter(|kind| !matches!(*kind, "turn_usage" | "artifact_updated"))
-        .collect()
+        .filter(|kind| *kind != "turn_usage")
+        .collect();
+    assert_eq!(kinds, expected, "{context}; the frames were {frames:?}");
 }
 
 fn frame_of<'a>(frames: &'a [Value], kind: &str) -> &'a Value {
@@ -128,10 +129,10 @@ async fn a_turn_that_started_on_telegram_reaches_the_web_with_its_origin() {
     deliver(&hub, "scout", telegram_message("tg-1", "status?")).await;
     let frames = frames_until_turn_ends(&mut ws, Some("tg-1")).await;
 
-    assert_eq!(
-        kinds(&frames),
-        ["user_message", "turn_started", "response", "turn_ended"],
-        "the web follows a turn that never touched the web endpoint"
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the web follows a turn that never touched the web endpoint",
     );
     let message = frame_of(&frames, "user_message");
     assert_eq!(str_at(message, "id"), "tg-1");
@@ -164,9 +165,10 @@ async fn a_message_from_the_web_starts_its_own_turn_and_is_echoed_under_its_id()
     .await;
     let frames = frames_until_turn_ends(&mut ws, Some("web-1")).await;
 
-    assert_eq!(
-        kinds(&frames),
-        ["user_message", "turn_started", "response", "turn_ended"]
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the web follows its own message's turn",
     );
     let message = frame_of(&frames, "user_message");
     assert_eq!(str_at(message, "id"), "web-1");
@@ -253,9 +255,9 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
     hub.gate("scout").open_all();
     frames.extend(frames_until_turn_ends(&mut ws, Some("tg-2")).await);
 
-    assert_eq!(
-        kinds(&frames),
-        [
+    assert_kinds(
+        &frames,
+        &[
             "user_message",
             "turn_started",
             "message_queued",
@@ -266,7 +268,7 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
             "response",
             "turn_ended",
         ],
-        "the web message appears between the tool result and the reply, where the model reads it"
+        "the web message appears between the tool result and the reply, where the model reads it",
     );
     let joined = frames
         .iter()
@@ -300,10 +302,10 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
     message_from_teammate(&hub, "scout", "status check").await;
     let frames = frames_until_turn_ends(&mut ws, None).await;
 
-    assert_eq!(
-        kinds(&frames),
-        ["turn_started", "response", "turn_ended"],
-        "no person's message started it"
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the teammate's message is announced ahead of the turn it starts",
     );
     let started = frame_of(&frames, "turn_started");
     assert_eq!(started["origin"]["endpoint"], "background");
@@ -312,6 +314,22 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 
     let turn_id = str_at(started, "reply_to");
+    let announced = frame_of(&frames, "user_message");
+    assert_eq!(str_at(announced, "turn_id"), turn_id);
+    assert_eq!(str_at(announced, "endpoint"), "background");
+    assert_eq!(
+        announced["agent_sender"],
+        json!({ "address": "agent:guest", "category": "teammate" }),
+        "the frame names the teammate, so the web shows its card live: {announced}"
+    );
+    assert!(
+        announced.get("sender").is_none(),
+        "no person sent it: {announced}"
+    );
+    assert!(
+        str_at(announced, "content").ends_with("status check"),
+        "{announced}"
+    );
     // The turn is written to history before `turn_ended` goes out, so a page
     // that reloads history on `turn_ended` finds it there.
     let (status, body) = hub.get("/api/agents/scout/chat/history").await;
@@ -343,7 +361,11 @@ async fn a_background_turn_with_no_endpoint_to_follow_still_reaches_the_web() {
     message_from_teammate(&hub, "scout", "status check").await;
     let frames = frames_until_turn_ends(&mut ws, None).await;
 
-    assert_eq!(kinds(&frames), ["turn_started", "response", "turn_ended"]);
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "a teammate's turn with no endpoint",
+    );
     assert_eq!(
         str_at(frame_of(&frames, "response"), "endpoint"),
         "",

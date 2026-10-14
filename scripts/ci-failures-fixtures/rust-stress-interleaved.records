@@ -1,0 +1,1 @@
+rust	rust|commands::update_watchdog::tests::roll_back_restores_previous_binary_and_writes_notice	commands::update_watchdog::tests::roll_back_restores_previous_binary_and_writes_notice		1		failed 1 of 2 copies under load only: the test waits on time, so fix the wait
