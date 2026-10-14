@@ -230,7 +230,12 @@ test("the model control switches the model and keeps its failover list", async (
   expect(put.ok()).toBe(true);
   await openChat(page);
 
-  await page.getByRole("button", { name: "Model: Claude Sonnet 4.6, low thinking" }).click();
+  const trigger = page.getByRole("button", { name: "Model: Claude Sonnet 4.6, low thinking" });
+  if (isMobile) {
+    // The model name may truncate on a phone; the thinking level keeps its badge.
+    await expect(trigger.getByText("Low", { exact: true })).toBeVisible();
+  }
+  await trigger.click();
   const chooser = page.getByRole("dialog", { name: "Model for atlas" });
   await expect(chooser).toBeVisible();
   await expect(chooser.getByRole("button", { name: "Claude Sonnet 4.6" })).toHaveAttribute(

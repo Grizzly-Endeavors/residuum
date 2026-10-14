@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Models from "../../lib/models";
-import { MainModel, modelControlLabel } from "./main-model.svelte";
+import { MainModel, modelControlLabel, thinkingBadge } from "./main-model.svelte";
 import { waitFor } from "../../test/wait";
 
 // The coordinator writes a patch the server merges into the file; these tests
@@ -159,5 +159,11 @@ describe("the control's words", () => {
       "Claude Sonnet 4.6, no extra thinking",
     );
     expect(modelControlLabel("Claude Sonnet 4.6", "high")).toBe("Claude Sonnet 4.6, high thinking");
+  });
+
+  it("gives the thinking level's word for the phone badge, or nothing when none is set", () => {
+    expect(thinkingBadge("")).toBe("");
+    expect(thinkingBadge("off")).toBe("Off");
+    expect(thinkingBadge("medium")).toBe("Medium");
   });
 });

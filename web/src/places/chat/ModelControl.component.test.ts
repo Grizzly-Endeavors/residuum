@@ -6,7 +6,9 @@ import { notifications } from "../../lib/notifications.svelte";
 import { router } from "../../lib/router.svelte";
 import { toast } from "../../lib/toast.svelte";
 import { ws } from "../../lib/ws.svelte";
+import { within } from "@testing-library/svelte";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
+import { PHONE_QUERY } from "../../styles/breakpoints";
 import ModelControl from "./ModelControl.svelte";
 import { waitFor } from "../../test/wait";
 
@@ -168,5 +170,44 @@ describe("the model and thinking popover", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Model: Model" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read atlas's model.");
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+});
+
+describe("the trigger's text", () => {
+  it("shows the whole label on a desktop", async () => {
+    render(ModelControl, { agent: "atlas" });
+    const trigger = await screen.findByRole("button", {
+      name: "Model: Claude Sonnet 4.6, low thinking",
+    });
+    expect(trigger).toHaveTextContent("Claude Sonnet 4.6, low thinking");
+    expect(within(trigger).queryByText("Low")).toBeNull();
+  });
+
+  describe("on a phone", () => {
+    beforeEach(() => {
+      vi.stubGlobal("matchMedia", (media: string) => ({
+        matches: media === PHONE_QUERY,
+        media,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+    });
+
+    it("keeps the thinking level in its own badge, with the whole label still the name", async () => {
+      render(ModelControl, { agent: "atlas" });
+      const trigger = await screen.findByRole("button", {
+        name: "Model: Claude Sonnet 4.6, low thinking",
+      });
+      expect(within(trigger).getByText("Claude Sonnet 4.6")).toBeInTheDocument();
+      expect(within(trigger).getByText("Low")).toBeInTheDocument();
+    });
+
+    it("shows only the model when no level is set", async () => {
+      disk = `[models.main]\nmodel = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]\n`;
+      render(ModelControl, { agent: "atlas" });
+      const trigger = await screen.findByRole("button", { name: "Model: Claude Sonnet 4.6" });
+      expect(within(trigger).getByText("Claude Sonnet 4.6")).toBeInTheDocument();
+      expect(within(trigger).queryByText(/^(Off|Low|Medium|High)$/)).toBeNull();
+    });
   });
 });
