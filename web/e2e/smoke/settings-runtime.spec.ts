@@ -111,6 +111,7 @@ test("Runtime: a limit and the idle channel are saved and read back from disk", 
 
   await page.getByLabel("Reply length").fill("4096");
   await page.getByLabel("Tool calls per turn").fill("40");
+  await expect(page.getByLabel("Send its updates to")).toHaveValue("websocket");
   await page.getByLabel("Send its updates to").selectOption("telegram");
   await saveChanges(page);
   await reloadFromDisk(page);

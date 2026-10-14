@@ -240,7 +240,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
         }
     } else {
         EventTarget::Endpoint {
-            output_endpoint: Some(&ep),
+            output_endpoint: crate::agent::turn::TurnOutput::Fixed(Some(&ep)),
             correlation_id: TURN,
         }
     };

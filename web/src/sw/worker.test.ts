@@ -329,6 +329,30 @@ describe("page loads", () => {
     }
   });
 
+  it("takes a dotted path to the network first and falls back to the cached shell when it fails", async () => {
+    const dotted = { url: `${ORIGIN}/foo.json`, mode: "navigate" } as const;
+    const live = await installed(() => Promise.resolve(ok("not found page", { status: 404 })));
+    const found = await live.fetchEvent(dotted);
+    expect([found?.status, await found?.text()]).toEqual([404, "not found page"]);
+
+    const offline = await installed(() => Promise.reject(new TypeError("Failed to fetch")));
+    expect(await (await offline.fetchEvent(dotted))?.text()).toBe("network /index.html");
+  });
+
+  it("answers a page load of a precached dotted path from the cache without asking the network", async () => {
+    const asked: string[] = [];
+    const worker = await loadWorker({ network: serving(asked) });
+    await worker.fire("install");
+    asked.length = 0;
+    vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
+    const answer = await worker.fetchEvent({
+      url: `${ORIGIN}/icons/icon-192.png`,
+      mode: "navigate",
+    });
+    expect(await answer?.text()).toBe("network /icons/icon-192.png");
+    expect(asked).toEqual([]);
+  });
+
   it("never stores the live page", async () => {
     const worker = await installed(() => Promise.resolve(ok("live page with a switcher")));
     await worker.fetchEvent(navigation);

@@ -1,0 +1,1 @@
+img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; frame-src 'none'; form-action 'self'

@@ -176,8 +176,9 @@ async fn api_checkpoints_diff(
 }
 
 /// `GET /api/checkpoints/{id}/file?repo=&path=` — a file's raw content at
-/// a checkpoint. `404` if the path doesn't exist there or names a
-/// directory.
+/// a checkpoint, marked as a file an agent wrote
+/// ([`crate::gateway::file_server::mark_agent_file`]). `404` if the path
+/// doesn't exist there or names a directory.
 async fn api_checkpoints_file(
     State(state): State<CheckpointApiState>,
     Path(id): Path<String>,
@@ -198,12 +199,14 @@ async fn api_checkpoints_file(
     let content_type = mime_guess::from_path(&query.path)
         .first_or_octet_stream()
         .to_string();
-    Ok((
+    let mut response = (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, content_type)],
+        [(axum::http::header::CONTENT_TYPE, content_type.clone())],
         bytes,
     )
-        .into_response())
+        .into_response();
+    crate::gateway::file_server::mark_agent_file(response.headers_mut(), &content_type);
+    Ok(response)
 }
 
 /// Body for `POST /api/checkpoints/{id}/restore`.
@@ -314,6 +317,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_checkpointed_page_is_sandboxed_away_from_the_hubs_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("page.html"), "<script></script>").unwrap();
+        let engine = Arc::new(
+            CheckpointEngine::new(
+                "test-agent",
+                workspace,
+                &crate::config::paths::TeamPaths::new(dir.path().join("team")),
+                dir.path().join("agent-config"),
+                dir.path().join("hub"),
+                &dir.path().join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        );
+        let id = engine
+            .checkpoint_workspace_id_before_action(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreAction,
+                "test checkpoint",
+            ))
+            .await
+            .unwrap();
+
+        let resp = app(engine)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/checkpoints/{id}/file?repo=workspace&path=page.html"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let headers = resp.headers();
+        assert_eq!(
+            headers
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .unwrap(),
+            "sandbox allow-scripts allow-popups allow-downloads"
+        );
+        assert_eq!(
+            headers
+                .get(axum::http::header::X_CONTENT_TYPE_OPTIONS)
+                .unwrap(),
+            "nosniff"
+        );
     }
 
     #[tokio::test]

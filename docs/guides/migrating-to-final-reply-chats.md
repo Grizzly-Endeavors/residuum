@@ -22,3 +22,5 @@ deliver_intermediate = true
 The same key works under `[discord]` and `[teams]`. Each interface is set on its own, so you can keep Telegram quiet and still see progress in a Teams channel. Saving restarts that interface's connection.
 
 See [Telegram](../systems-usage/telegram.md#where-replies-go), [Discord](../systems-usage/discord.md#where-replies-go), and [Teams](../systems-usage/teams.md#where-replies-go) for where each kind of output goes.
+
+Which turns reach a chat at all is a separate setting: once you have been idle, turns the agent starts on its own go to the web app unless `idle_channel` names a chat. See [Migrating to web-only updates while you're away](migrating-to-web-idle-updates.md). This guide covers what a chat shows of the turns that do reach it.

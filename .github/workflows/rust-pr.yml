@@ -22,6 +22,7 @@ on:
       - "deny.toml"
       - "web/src/lib/generated/**"
       - "web/src/styles/tokens.css"
+      - "web/app-shell-csp.txt"
       - "scripts/check-generated-types.sh"
       - "scripts/export-generated-types.sh"
       - ".github/workflows/quality-checks.yml"

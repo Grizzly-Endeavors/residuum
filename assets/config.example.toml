@@ -190,6 +190,16 @@ enabled = true
 # Urgency is decided by the sub-agent that ran the task, so it is steered by
 # how a pulse's prompt is worded rather than by configuration here.
 
+# ── When you're away (optional) ──────────────────────────────────────────────
+# After timeout_minutes without a message from you, the agent saves the
+# conversation to memory and starts the next one fresh. From then until you
+# write again, turns the agent starts itself (a session's result, a teammate's
+# message) go to idle_channel: the web app unless you name a chat here.
+#
+# [idle]
+# timeout_minutes = 30       # 0 turns this off (default: 30)
+# idle_channel = "telegram"  # "websocket" (default), "telegram", "discord", or "teams"
+
 # ── Agent ability gates and turn limits (optional) ───────────────────────────
 # Controls what the agent can modify at runtime, and how long a turn's tool
 # loop may run.

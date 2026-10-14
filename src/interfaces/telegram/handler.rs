@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
-use teloxide::Bot;
-use teloxide::payloads::GetUpdatesSetters;
-use teloxide::requests::Requester;
-use teloxide::types::{
+use teloxide_core::Bot;
+use teloxide_core::payloads::GetUpdatesSetters;
+use teloxide_core::requests::Requester;
+use teloxide_core::types::{
     Audio, BotCommand, ChatId, ChatMemberUpdated, Document, PhotoSize, UpdateKind, UserId, Video,
     Voice,
 };
@@ -88,7 +88,7 @@ pub(super) async fn run_telegram_polling(
     // Without these, long-poll requests reuse dead connections indefinitely.
     // teloxide's default total timeout (17 s) is shorter than the long poll, so it
     // must be replaced here.
-    let http_client = teloxide::net::default_reqwest_settings()
+    let http_client = teloxide_core::net::default_reqwest_settings()
         .timeout(HTTP_TIMEOUT)
         .tcp_keepalive(Duration::from_mins(1))
         .pool_idle_timeout(Duration::from_secs(90))
@@ -282,8 +282,8 @@ async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
 /// the bot (see [`super::groups`]).
 async fn dispatch_message(
     bot: &Bot,
-    msg: &teloxide::types::Message,
-    from: &teloxide::types::User,
+    msg: &teloxide_core::types::Message,
+    from: &teloxide_core::types::User,
     ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
@@ -417,8 +417,8 @@ struct Addressed {
 /// later. An unaddressed group message is buffered as context instead, and
 /// `None` is returned.
 async fn addressed_to_agent(
-    msg: &teloxide::types::Message,
-    from: &teloxide::types::User,
+    msg: &teloxide_core::types::Message,
+    from: &teloxide_core::types::User,
     ctx: &TelegramContext<'_>,
 ) -> Option<Addressed> {
     let chat = &msg.chat;
@@ -473,7 +473,7 @@ async fn addressed_to_agent(
 fn buffer_unmentioned(
     ctx: &TelegramContext<'_>,
     chat_key: &str,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     text: &str,
 ) {
     if text.trim().is_empty() {
@@ -494,7 +494,7 @@ fn buffer_unmentioned(
 async fn admit_sender(
     bot: &Bot,
     chat_id: ChatId,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     state: &TelegramState,
 ) -> Option<Standing> {
     match state
@@ -515,7 +515,11 @@ async fn admit_sender(
 }
 
 /// Make the sender the owner if nobody is yet; only called for private chats.
-async fn claim_owner_if_unset(state: &TelegramState, from: &teloxide::types::User, dm_chat: &str) {
+async fn claim_owner_if_unset(
+    state: &TelegramState,
+    from: &teloxide_core::types::User,
+    dm_chat: &str,
+) {
     let owner = Owner {
         user_id: from.id.to_string(),
         name: build_sender_name(from),
@@ -537,7 +541,7 @@ async fn send_reply(bot: &Bot, chat_id: ChatId, text: &str) {
 }
 
 /// Build a display name from a Telegram user.
-fn build_sender_name(user: &teloxide::types::User) -> String {
+fn build_sender_name(user: &teloxide_core::types::User) -> String {
     match &user.last_name {
         Some(last) => format!("{} {last}", user.first_name),
         None => user.first_name.clone(),
@@ -548,7 +552,7 @@ fn build_sender_name(user: &teloxide::types::User) -> String {
 async fn handle_command(
     bot: &Bot,
     chat_id: ChatId,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     cmd_name: &str,
     cmd_args: Option<&str>,
     ctx: &TelegramContext<'_>,
@@ -632,11 +636,11 @@ fn video_as_meta(video: &Video) -> AttachmentMeta<'_> {
 /// Extract and process all attachment types from a Telegram message.
 async fn process_attachments(
     bot: &Bot,
-    msg: &teloxide::types::Message,
+    msg: &teloxide_core::types::Message,
     content: &mut String,
     images: &mut Vec<ImageData>,
     inbox_dir: &Path,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
 ) {
     if let Some(doc) = msg.document() {
@@ -705,13 +709,13 @@ async fn handle_attachment(
     images: &mut Vec<ImageData>,
     meta: &AttachmentMeta<'_>,
     inbox_dir: &Path,
-    from: &teloxide::types::User,
+    from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
 ) {
     use crate::interfaces::attachment::{
         AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
     };
-    use teloxide::net::Download;
+    use teloxide_core::net::Download;
 
     let filename = meta.filename;
 
@@ -724,7 +728,7 @@ async fn handle_attachment(
     // Two-step Telegram download: get_file → download_file
     let download_result: Result<SavedAttachment, String> = async {
         let file = bot
-            .get_file(teloxide::types::FileId(meta.file_id.to_string()))
+            .get_file(teloxide_core::types::FileId(meta.file_id.to_string()))
             .await
             .map_err(|e| format!("failed to get file info for '{filename}': {e}"))?;
 
@@ -795,7 +799,7 @@ mod tests {
         );
     }
 
-    fn telegram_message(json: serde_json::Value) -> teloxide::types::Message {
+    fn telegram_message(json: serde_json::Value) -> teloxide_core::types::Message {
         serde_json::from_value(json).expect("valid minimal telegram message fixture")
     }
 
@@ -888,7 +892,7 @@ mod tests {
         }
     }
 
-    async fn deliver(h: &Harness, msg: &teloxide::types::Message) {
+    async fn deliver(h: &Harness, msg: &teloxide_core::types::Message) {
         let from = msg.from.clone().expect("fixture always sets a sender");
         dispatch_message(&h.bot, msg, &from, &context(h)).await;
     }

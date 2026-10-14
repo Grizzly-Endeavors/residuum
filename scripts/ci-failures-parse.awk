@@ -29,6 +29,7 @@ BEGIN {
     cur_test = ""
     collect = 0
     in_stress = 0
+    stress_kind = ""
     pwleft = 0
     vtleft = 0
     esl_file = ""
@@ -138,6 +139,7 @@ line ~ /^##\[group\]Run / || line ~ /^Post job cleanup\.$/ {
     cur_test = ""
     collect = 0
     in_stress = 0
+    stress_kind = ""
     pwleft = 0
     vtleft = 0
     esl_file = ""
@@ -221,9 +223,14 @@ collect > 0 {
     }
 }
 
-# Stress: the names that failed in one of the concurrent copies.
+# Stress: the names that failed in one of the concurrent copies. With the Tests
+# step's log to compare against, the summary splits them under headings: a test
+# that failed only under load waits on time, one that also failed in the Tests step
+# is an ordinary failure, and a binary that exited without naming a test crashed.
+# Without it the summary is one unheaded list.
 line ~ /^Failures \(count out of / {
     in_stress = 1
+    stress_kind = ""
     copies = line
     sub(/^Failures \(count out of /, "", copies)
     copies = copies + 0
@@ -233,10 +240,34 @@ in_stress && line ~ /^error:/ {
     in_stress = 0
     next
 }
-in_stress && line ~ /^ +[0-9]+ [^ ]+$/ {
+in_stress && line ~ /^Failed under load only/ {
+    stress_kind = "load"
+    next
+}
+in_stress && line ~ /^Also failed in the Tests step/ {
+    stress_kind = "both"
+    next
+}
+in_stress && line ~ /^Exited without naming a failed test/ {
+    stress_kind = "crashed"
+    next
+}
+in_stress && line ~ /^ *[0-9]+ [^ ]+ \(exited [0-9]+ without naming a failed test\)$/ {
     split(trim(line), parts, " ")
     i = rustrec(parts[2])
-    addmsg(i, "failed " parts[1] " of " copies " copies under load")
+    addmsg(i, "exited " parts[4] " without naming a failed test, in " parts[1] " of " copies " copies under load")
+    next
+}
+in_stress && line ~ /^ *[0-9]+ [^ ]+$/ {
+    split(trim(line), parts, " ")
+    i = rustrec(parts[2])
+    msg = "failed " parts[1] " of " copies " copies under load"
+    if (stress_kind == "load") {
+        msg = msg " only: the test waits on time, so fix the wait"
+    } else if (stress_kind == "both") {
+        msg = msg " and in the Tests step: an ordinary failure"
+    }
+    addmsg(i, msg)
     next
 }
 

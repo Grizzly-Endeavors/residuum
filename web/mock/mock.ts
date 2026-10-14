@@ -1,5 +1,6 @@
 import type { PreviewServer, ViteDevServer } from "vite";
 import { apiRoutes } from "./api-routes";
+import { appShellPolicy } from "./app-shell-policy";
 import { startArtifactsListener } from "./artifacts-listener";
 import { createCloudCallbackHandler } from "./cloud";
 import { createMockEnv } from "./env";
@@ -51,6 +52,7 @@ export type MockHost = Pick<ViteDevServer | PreviewServer, "httpServer" | "middl
 
 /**
  * Start the mock on a Vite server: the hub with its agents and sockets, the
+ * hub's Content-Security-Policy on the app's HTML (`app-shell-policy.ts`), the
  * API behind the server's middleware, and the artifacts listener, which closes
  * with the server and forwards its own `/api` to the same API and sockets. The
  * dev server and the preview server both serve the whole mock this way.
@@ -73,6 +75,7 @@ export function startMock(
     // With no agents the web UI shows the setup wizard, and finishing it creates the first one.
     seed: options.setup ? undefined : seedAgents,
   });
+  host.middlewares.use(appShellPolicy);
   const api = createApiHandler({ hub, routes: apiRoutes });
   const appOrigin = firstToHandle(api, createCloudCallbackHandler(hub));
   host.middlewares.use(
