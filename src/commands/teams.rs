@@ -89,10 +89,6 @@ pub(super) struct AtkScaffoldArgs {
     #[arg(long)]
     pub dir: Option<PathBuf>,
 
-    /// Overwrite existing files in the project directory
-    #[arg(long)]
-    pub force: bool,
-
     /// Bot display name (defaults to agent name)
     #[arg(long)]
     pub bot_name: Option<String>,
@@ -259,7 +255,6 @@ async fn handle_atk_scaffold(
         agent_name: args.agent.clone(),
         endpoint,
         project_dir: args.dir.clone(),
-        force: args.force,
         bot_name: args.bot_name.clone(),
         developer_name: args.developer_name.clone(),
         developer_url: args.developer_url.clone(),
@@ -437,7 +432,6 @@ mod tests {
             agent: "scout".to_string(),
             endpoint: Some("https://example.com/teams".to_string()),
             dir: None,
-            force: false,
             bot_name: Some("Scout Bot".to_string()),
             developer_name: None,
             developer_url: None,

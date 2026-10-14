@@ -5,7 +5,7 @@
 //! outputs, store the decrypted secret in Residuum's [`SecretStore`], and configure
 //! the agent's `[teams]` section via the checkpointed config path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -464,8 +464,6 @@ pub struct AtkScaffoldOptions {
     pub endpoint: String,
     /// Custom project directory (defaults to `<agent>/teams-app`).
     pub project_dir: Option<PathBuf>,
-    /// Allow overwriting existing files.
-    pub force: bool,
     /// Bot display name (defaults to `agent_name`).
     pub bot_name: Option<String>,
     /// Developer name for manifest (defaults to "Residuum").
@@ -543,7 +541,9 @@ async fn resolve_icon_bytes(
     }
 }
 
-fn build_scaffold_env(options: &AtkScaffoldOptions) -> Result<String, FatalError> {
+fn build_scaffold_env_entries(
+    options: &AtkScaffoldOptions,
+) -> Result<Vec<(&'static str, String)>, FatalError> {
     let bot_display = options.bot_name.as_deref().unwrap_or(&options.agent_name);
     let dev_name = options.developer_name.as_deref().unwrap_or("Residuum");
     let dev_url = options
@@ -567,66 +567,80 @@ fn build_scaffold_env(options: &AtkScaffoldOptions) -> Result<String, FatalError
         .as_deref()
         .unwrap_or("Personal AI agent gateway integration with Microsoft Teams");
 
-    let lines = [
-        "TEAMSFX_ENV=residuum".to_string(),
-        format!(
-            "BOT_DISPLAY_NAME={}",
-            format_dotenv_val("BOT_DISPLAY_NAME", bot_display)?
+    Ok(vec![
+        ("TEAMSFX_ENV", "residuum".to_string()),
+        (
+            "BOT_DISPLAY_NAME",
+            format_dotenv_val("BOT_DISPLAY_NAME", bot_display)?,
         ),
-        format!(
-            "TEAMS_APP_NAME={}",
-            format_dotenv_val("TEAMS_APP_NAME", bot_display)?
+        (
+            "TEAMS_APP_NAME",
+            format_dotenv_val("TEAMS_APP_NAME", bot_display)?,
         ),
-        format!(
-            "BOT_ENDPOINT={}",
-            format_dotenv_val("BOT_ENDPOINT", &options.endpoint)?
+        (
+            "BOT_ENDPOINT",
+            format_dotenv_val("BOT_ENDPOINT", &options.endpoint)?,
         ),
-        format!(
-            "DEVELOPER_NAME={}",
-            format_dotenv_val("DEVELOPER_NAME", dev_name)?
+        (
+            "DEVELOPER_NAME",
+            format_dotenv_val("DEVELOPER_NAME", dev_name)?,
         ),
-        format!(
-            "DEVELOPER_URL={}",
-            format_dotenv_val("DEVELOPER_URL", dev_url)?
+        (
+            "DEVELOPER_URL",
+            format_dotenv_val("DEVELOPER_URL", dev_url)?,
         ),
-        format!(
-            "PRIVACY_URL={}",
-            format_dotenv_val("PRIVACY_URL", priv_url)?
+        ("PRIVACY_URL", format_dotenv_val("PRIVACY_URL", priv_url)?),
+        ("TERMS_URL", format_dotenv_val("TERMS_URL", terms_url)?),
+        (
+            "SHORT_DESCRIPTION",
+            format_dotenv_val("SHORT_DESCRIPTION", short_desc)?,
         ),
-        format!("TERMS_URL={}", format_dotenv_val("TERMS_URL", terms_url)?),
-        format!(
-            "SHORT_DESCRIPTION={}",
-            format_dotenv_val("SHORT_DESCRIPTION", short_desc)?
+        (
+            "LONG_DESCRIPTION",
+            format_dotenv_val("LONG_DESCRIPTION", long_desc)?,
         ),
-        format!(
-            "LONG_DESCRIPTION={}",
-            format_dotenv_val("LONG_DESCRIPTION", long_desc)?
-        ),
-    ];
-    Ok(format!("{}\n", lines.join("\n")))
+    ])
 }
 
-fn check_overwrite_safety(
-    project_dir: &Path,
-    target_files: &[PathBuf],
-    force: bool,
-) -> Result<(), FatalError> {
-    if force {
-        return Ok(());
+/// Render `.env.residuum` from the scaffold's own settings, keeping every other key.
+///
+/// `existing` is the current file content of a project that was already scaffolded.
+/// Lines for keys the scaffold sets (display name, endpoint, developer details) are replaced in
+/// place with the new values, and scaffold keys that are not in the file yet are appended. Every
+/// other line is kept as it is: `ATK` writes `BOT_ID`, `BOT_OBJECT_ID`, `TEAMS_APP_ID` and
+/// `TEAMS_APP_TENANT_ID` there when it provisions the bot, and dropping them would orphan the
+/// registration it created in the tenant.
+fn merge_scaffold_env(existing: Option<&str>, entries: &[(&'static str, String)]) -> String {
+    let mut written: HashSet<&str> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+
+    for line in existing.unwrap_or_default().lines() {
+        let trimmed = line.trim();
+        let scaffold_entry = if trimmed.is_empty() || trimmed.starts_with('#') {
+            None
+        } else {
+            trimmed
+                .split_once('=')
+                .and_then(|(k, _)| entries.iter().find(|(name, _)| *name == k.trim()))
+        };
+        match scaffold_entry {
+            // A key listed twice keeps its first line, so the file has one value per key.
+            Some((name, value)) => {
+                if written.insert(name) {
+                    out.push(format!("{name}={value}"));
+                }
+            }
+            None => out.push(line.to_string()),
+        }
     }
-    let existing: Vec<_> = target_files.iter().filter(|p| p.exists()).collect();
-    if existing.is_empty() {
-        return Ok(());
+
+    for (name, value) in entries {
+        if written.insert(name) {
+            out.push(format!("{name}={value}"));
+        }
     }
-    let names = existing
-        .iter()
-        .map(|p| p.file_name().unwrap_or_default().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(FatalError::Config(format!(
-        "refusing to overwrite existing ATK project files in '{}' ({names}); pass --force to overwrite",
-        project_dir.display()
-    )))
+
+    format!("{}\n", out.join("\n"))
 }
 
 struct ScaffoldPayload<'a> {
@@ -679,13 +693,17 @@ async fn write_scaffold_project(
 /// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
 ///
 /// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
-/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
-/// that existing files are not overwritten unless `force` is set.
+/// generates `.env.residuum` with properly escaped values, and validates PNG icons.
+///
+/// A project directory that already exists is reused: the template-derived files
+/// (`m365agents.yml`, `appPackage/manifest.json`, the icons) are rewritten, and `.env.residuum`
+/// keeps every key the scaffold does not set, so the bot registration that provisioning wrote
+/// there survives running the scaffold again.
 ///
 /// # Errors
 ///
 /// Returns [`FatalError::Config`] if the agent name is invalid, the agent directory does not exist,
-/// files already exist without `force`, icon dimensions are invalid, or writes fail.
+/// icon dimensions are invalid, an existing `.env.residuum` cannot be read, or writes fail.
 pub async fn scaffold_atk_project(
     residuum_root: &Path,
     options: &AtkScaffoldOptions,
@@ -704,18 +722,6 @@ pub async fn scaffold_atk_project(
         .project_dir
         .clone()
         .unwrap_or_else(|| agent_path.join("teams-app"));
-
-    check_overwrite_safety(
-        &project_dir,
-        &[
-            project_dir.join("m365agents.yml"),
-            project_dir.join("appPackage/manifest.json"),
-            project_dir.join("appPackage/color.png"),
-            project_dir.join("appPackage/outline.png"),
-            project_dir.join("env/.env.residuum"),
-        ],
-        options.force,
-    )?;
 
     let team_templates = team_dir(residuum_root)
         .join("skills")
@@ -754,7 +760,19 @@ pub async fn scaffold_atk_project(
     )
     .await?;
 
-    let env_content = build_scaffold_env(options)?;
+    let env_entries = build_scaffold_env_entries(options)?;
+    let env_path = project_dir.join("env/.env.residuum");
+    let existing_env = match tokio::fs::read_to_string(&env_path).await {
+        Ok(content) => Some(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(FatalError::Config(format!(
+                "failed to read existing {}: {e}",
+                env_path.display()
+            )));
+        }
+    };
+    let env_content = merge_scaffold_env(existing_env.as_deref(), &env_entries);
 
     write_scaffold_project(
         &project_dir,
@@ -1245,7 +1263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scaffold_atk_project_basic_and_overwrite_refusal() {
+    async fn scaffold_atk_project_basic_and_rescaffold() {
         let temp = tempfile::tempdir().unwrap();
         let residuum_root = temp.path().to_path_buf();
         let agent_path = residuum_root.join("scout");
@@ -1255,7 +1273,6 @@ mod tests {
             agent_name: "scout".to_string(),
             endpoint: "https://relay.example.com/teams/inst1/scout".to_string(),
             project_dir: None,
-            force: false,
             bot_name: Some("Scout Assistant".to_string()),
             developer_name: Some("Grizzly Endeavors".to_string()),
             developer_url: None,
@@ -1288,23 +1305,164 @@ mod tests {
         );
         assert!(env_content.contains("DEVELOPER_NAME=\"Grizzly Endeavors\""));
 
-        // Overwrite without force fails
-        let err = scaffold_atk_project(&residuum_root, &options)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("refusing to overwrite"));
-
-        // Overwrite with force succeeds
-        let mut force_opts = options.clone();
-        force_opts.force = true;
-        force_opts.bot_name = Some("Updated Scout".to_string());
-        let res2 = scaffold_atk_project(&residuum_root, &force_opts)
+        // Scaffolding again reuses the project and refreshes the settings it owns
+        let mut renamed = options.clone();
+        renamed.bot_name = Some("Updated Scout".to_string());
+        let res2 = scaffold_atk_project(&residuum_root, &renamed)
             .await
             .unwrap();
+        assert_eq!(res2.project_dir, res.project_dir);
         let env2 = tokio::fs::read_to_string(res2.project_dir.join("env/.env.residuum"))
             .await
             .unwrap();
         assert!(env2.contains("BOT_DISPLAY_NAME=\"Updated Scout\""));
+        assert!(!env2.contains("Scout Assistant"));
+        assert_eq!(env2.matches("BOT_DISPLAY_NAME=").count(), 1);
+    }
+
+    fn rescaffold_options(bot_name: &str, endpoint: &str) -> AtkScaffoldOptions {
+        AtkScaffoldOptions {
+            agent_name: "scout".to_string(),
+            endpoint: endpoint.to_string(),
+            project_dir: None,
+            bot_name: Some(bot_name.to_string()),
+            developer_name: None,
+            developer_url: None,
+            privacy_url: None,
+            terms_url: None,
+            short_description: None,
+            long_description: None,
+            color_icon: None,
+            outline_icon: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rescaffold_keeps_provisioned_env_and_refreshes_templates() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        tokio::fs::create_dir_all(residuum_root.join("scout"))
+            .await
+            .unwrap();
+
+        let first = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://old.example.com/teams"),
+        )
+        .await
+        .unwrap();
+
+        // Provisioning appends its own keys and the user secrets file appears.
+        let env_path = first.project_dir.join("env/.env.residuum");
+        let scaffolded = tokio::fs::read_to_string(&env_path).await.unwrap();
+        tokio::fs::write(
+            &env_path,
+            format!(
+                "{scaffolded}# written by ATK\nBOT_ID=bot-guid-123\nTEAMS_APP_TENANT_ID=tenant-guid-456\nTEAMS_APP_ID=app-guid-789\nBOT_OBJECT_ID=obj-guid-000\n"
+            ),
+        )
+        .await
+        .unwrap();
+        let user_env_path = first.project_dir.join("env/.env.residuum.user");
+        tokio::fs::write(&user_env_path, "SECRET_BOT_PASSWORD=crypto_abc\n")
+            .await
+            .unwrap();
+
+        // Template-derived files are stale: damage them so a refresh is observable.
+        let m365_path = first.project_dir.join("m365agents.yml");
+        let manifest_path = first.project_dir.join("appPackage/manifest.json");
+        let color_path = first.project_dir.join("appPackage/color.png");
+        tokio::fs::write(&m365_path, "stale").await.unwrap();
+        tokio::fs::write(&manifest_path, "stale").await.unwrap();
+        tokio::fs::write(&color_path, b"stale").await.unwrap();
+
+        let second = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout Two", "https://new.example.com/teams"),
+        )
+        .await
+        .unwrap();
+
+        let env = tokio::fs::read_to_string(second.project_dir.join("env/.env.residuum"))
+            .await
+            .unwrap();
+        let parsed = parse_env_file(&second.project_dir.join("env/.env.residuum")).unwrap();
+        for (key, value) in [
+            ("BOT_ID", "bot-guid-123"),
+            ("TEAMS_APP_TENANT_ID", "tenant-guid-456"),
+            ("TEAMS_APP_ID", "app-guid-789"),
+            ("BOT_OBJECT_ID", "obj-guid-000"),
+            ("BOT_DISPLAY_NAME", "Scout Two"),
+            ("TEAMS_APP_NAME", "Scout Two"),
+            ("BOT_ENDPOINT", "https://new.example.com/teams"),
+            ("TEAMSFX_ENV", "residuum"),
+        ] {
+            assert_eq!(
+                parsed.get(key).map(String::as_str),
+                Some(value),
+                "{key} in:\n{env}"
+            );
+        }
+        assert!(env.contains("# written by ATK"));
+        assert!(!env.contains("old.example.com"));
+        assert_eq!(env.matches("BOT_ENDPOINT=").count(), 1);
+
+        assert_eq!(
+            tokio::fs::read_to_string(&user_env_path).await.unwrap(),
+            "SECRET_BOT_PASSWORD=crypto_abc\n"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&m365_path).await.unwrap(),
+            TEAMS_SETUP_M365AGENTS_YML
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&manifest_path).await.unwrap(),
+            TEAMS_SETUP_MANIFEST_JSON
+        );
+        assert_eq!(
+            tokio::fs::read(&color_path).await.unwrap(),
+            TEAMS_SETUP_COLOR_PNG
+        );
+    }
+
+    #[test]
+    fn merge_scaffold_env_replaces_owned_keys_and_appends_missing_ones() {
+        let entries = [("A", "\"new\"".to_string()), ("B", "\"b\"".to_string())];
+        let merged = merge_scaffold_env(
+            Some("A=\"old\"\nBOT_ID=keep\nA=\"dup\"\n# note\n"),
+            &entries,
+        );
+        assert_eq!(merged, "A=\"new\"\nBOT_ID=keep\n# note\nB=\"b\"\n");
+
+        assert_eq!(merge_scaffold_env(None, &entries), "A=\"new\"\nB=\"b\"\n");
+    }
+
+    #[tokio::test]
+    async fn rescaffold_fails_visibly_when_existing_env_is_unreadable() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        tokio::fs::create_dir_all(residuum_root.join("scout"))
+            .await
+            .unwrap();
+        let first = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://example.com/teams"),
+        )
+        .await
+        .unwrap();
+
+        let env_path = first.project_dir.join("env/.env.residuum");
+        let invalid_utf8 = [b'B', b'O', b'T', b'_', b'I', b'D', b'=', 0xff, 0xfe, b'\n'];
+        tokio::fs::write(&env_path, invalid_utf8).await.unwrap();
+
+        let err = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://example.com/teams"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to read existing"), "{err}");
+        assert_eq!(tokio::fs::read(&env_path).await.unwrap(), invalid_utf8);
     }
 
     #[tokio::test]
@@ -1324,7 +1482,6 @@ mod tests {
             agent_name: "scout".to_string(),
             endpoint: "https://example.com/teams".to_string(),
             project_dir: None,
-            force: false,
             bot_name: None,
             developer_name: None,
             developer_url: None,
@@ -1363,7 +1520,6 @@ mod tests {
             agent_name: "scout".to_string(),
             endpoint: "https://example.com/teams".to_string(),
             project_dir: None,
-            force: false,
             bot_name: None,
             developer_name: None,
             developer_url: None,

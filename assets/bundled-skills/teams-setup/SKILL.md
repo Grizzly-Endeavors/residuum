@@ -75,7 +75,7 @@ Because agent tool execution via `exec` runs synchronously and waits for command
    - If Residuum Cloud is not connected or using a custom tunnel, specify `--endpoint <URL>`.
    - Templates are copied from `team/skills/teams-setup/templates/`, falling back to embedded templates.
    - Icon dimensions (192x192 color PNG, 32x32 outline PNG) and dotenv variable escaping are strictly validated.
-   - Existing project files are protected against accidental overwriting (pass `--force` to overwrite).
+   - An existing project is reused: the template files are refreshed and the provisioned keys in `env/.env.residuum` (such as `BOT_ID` and `TEAMS_APP_TENANT_ID`) are kept.
 
 ## 5. Provision Resources
 

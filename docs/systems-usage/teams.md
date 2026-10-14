@@ -130,7 +130,7 @@ The Microsoft 365 Agents Toolkit authentication cache (`~/.fx/account/`) is user
 
 Setup jobs are held in daemon memory. If the Residuum daemon restarts while a setup job is running or waiting:
 - The in-memory job state is lost, but files created on disk (`<agent>/teams-app/`) remain intact.
-- Calling the setup API or asking the agent to retry resumes the workflow: existing tools and signed-in status are detected immediately, and already-scaffolded files are preserved unless `replace_existing` is specified.
+- Calling the setup API or asking the agent to retry resumes the workflow: existing tools and signed-in status are detected immediately, and the scaffold step reuses the existing `<agent>/teams-app/` project: it rewrites the template-derived files (`m365agents.yml`, `appPackage/manifest.json`, the icons) and updates the settings it owns in `env/.env.residuum` (display name, endpoint, developer details), while every other key there, such as the `BOT_ID` and `TEAMS_APP_TENANT_ID` that provisioning wrote, is kept. This is also what happens after "Start over" in Settings, which clears the in-memory job but leaves the project files in place.
 
 ### Cleanup Endpoint
 
@@ -146,7 +146,7 @@ The `residuum teams` subcommands provide terminal access to toolkit management a
 - `residuum teams import-atk --agent <agent> [--dir <dir>]`: Securely decrypts bot credentials from `<dir>/env/.env.residuum.user`, stores the password in the encrypted secret store under secret `teams`, and updates `[teams]` in the agent's `config.toml`.
 - `residuum teams forward-redirect "<url>"`: Forwards an OAuth callback redirect URL (`http://localhost:<port>/?code=...`) to the local listener during remote sign-in.
 - `residuum teams atk-login --agent <agent> [--status] [--cancel]`: Manages detached Microsoft 365 sign-in. Starts the login process in the background and prints the browser authorization URL, inspects running sign-in status, or cancels an active login.
-- `residuum teams atk-scaffold --agent <agent> [--endpoint <url>] [--dir <dir>] [--force] [--bot-name <name>] ...`: Scaffolds the ATK project files (`m365agents.yml`, `appPackage/manifest.json`, icons) in `<agent>/teams-app/`, using the derived cloud endpoint or an explicit messaging endpoint.
+- `residuum teams atk-scaffold --agent <agent> [--endpoint <url>] [--dir <dir>] [--bot-name <name>] ...`: Scaffolds the ATK project files (`m365agents.yml`, `appPackage/manifest.json`, icons) in `<agent>/teams-app/`, using the derived cloud endpoint or an explicit messaging endpoint. Running it on an existing project refreshes the template-derived files and keeps the provisioned keys in `env/.env.residuum`.
 - `residuum teams atk-paths --agent <agent> [--json]`: Resolves standard project directory, ATK binary, package zip, and environment file paths.
 - `residuum teams cleanup --agent <agent> [--project-files] [--cli] [--sign-out] [--json]`: Selectively removes local project files, the hub-level ATK CLI installation, or signs out of Microsoft 365.
 
