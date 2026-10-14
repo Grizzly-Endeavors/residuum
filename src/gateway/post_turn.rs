@@ -50,7 +50,9 @@ use crate::subconscious::{
 pub(crate) struct IdleContinuation {
     pub timeout_mins: u64,
     pub total_skills: usize,
-    pub idle_channel: Option<String>,
+    /// Where agent-started turns go from the transition on, named in the
+    /// continuity message.
+    pub idle_endpoint: crate::bus::EndpointName,
 }
 
 /// What the main loop needs to apply from a finished background cycle.

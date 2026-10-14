@@ -546,6 +546,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifact_pages_carry_no_app_shell_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("graph/index.html"),
+            "<head></head><img src=https://cdn.example/a.png>",
+        );
+        write(&dir.path().join("graph/app.js"), "console.log(1)");
+        write(&dir.path().join("chart.html"), "<head></head>");
+
+        for path in ["/graph/", "/graph/app.js", "/chart/"] {
+            let resp = get_path(dir.path(), path).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+            assert!(
+                resp.headers()
+                    .get(header::CONTENT_SECURITY_POLICY)
+                    .is_none(),
+                "{path} must load what its author put in it"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn bare_artifact_path_redirects_to_its_folder() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("chart.html"), "<head></head>");

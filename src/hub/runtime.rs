@@ -359,15 +359,37 @@ fn spawn_a2a_listener(
     if let Some(bound) = bound {
         listener = listener.with_bound_listener(bound);
     }
+    let host = Arc::clone(host);
+    let port = hub.a2a.port;
     let handle = crate::util::spawn_monitored("a2a", async move {
         if let Err(e) = listener.start().await {
-            tracing::error!(error = %e, "a2a interface failed");
+            tracing::error!(error = %e, port, "a2a interface failed");
+            host.notice(NoticeLevel::Warn, a2a_failure_message(port, &e), None);
         }
     });
     A2aListenerTask {
         handle,
         shutdown_tx,
     }
+}
+
+/// The user's notice for an A2A listener that could not serve on `port`. The
+/// reason comes from the io error under `error`, put in plain words.
+fn a2a_failure_message(port: u16, error: &anyhow::Error) -> String {
+    let reason = match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map(std::io::Error::kind)
+    {
+        Some(std::io::ErrorKind::AddrInUse) => {
+            "the port is already in use. Choose another port in settings or stop the program using it."
+        }
+        Some(std::io::ErrorKind::PermissionDenied) => {
+            "the system doesn't allow residuum to use that port. Choose another port in settings."
+        }
+        _ => "something went wrong while starting it. Check the logs for details.",
+    };
+    format!("The agent-to-agent listener couldn't start on port {port}: {reason}")
 }
 
 /// Stop a task by its switch and wait up to five seconds for it to finish.
@@ -1471,6 +1493,86 @@ mod tests {
         .await;
         let mut hub = hub;
         hub.gateway_port = new_port;
+        hub.shut_down().await;
+    }
+
+    #[test]
+    fn an_a2a_bind_failure_is_worded_by_its_io_cause() {
+        let port = crate::util::test_ports::free_port();
+        let in_use = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::AddrInUse))
+            .context(format!(
+                "failed to bind the A2A listener on 127.0.0.1:{port}"
+            ));
+        assert_eq!(
+            a2a_failure_message(port, &in_use),
+            format!(
+                "The agent-to-agent listener couldn't start on port {port}: the port is already in use. Choose another port in settings or stop the program using it."
+            )
+        );
+
+        let denied =
+            anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                .context(format!(
+                    "failed to bind the A2A listener on 127.0.0.1:{port}"
+                ));
+        assert_eq!(
+            a2a_failure_message(port, &denied),
+            format!(
+                "The agent-to-agent listener couldn't start on port {port}: the system doesn't allow residuum to use that port. Choose another port in settings."
+            )
+        );
+
+        let other = anyhow::anyhow!("a2a listener failed");
+        assert_eq!(
+            a2a_failure_message(port, &other),
+            format!(
+                "The agent-to-agent listener couldn't start on port {port}: something went wrong while starting it. Check the logs for details."
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn moving_the_a2a_listener_onto_a_taken_port_warns_the_user() {
+        let mut hub = RunningHub::start().await;
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
+            .await;
+        // The reservation holds the port, so the listener's bind fails.
+        let taken = reserve_port();
+        let taken_port = taken.port();
+        std::fs::write(
+            hub.hub_config_path(),
+            format!(
+                "timezone = \"UTC\"\n[gateway]\nport = {}\n[a2a]\nport = {taken_port}\n",
+                hub.gateway_port
+            ),
+        )
+        .unwrap();
+
+        let notice = crate::testing::wait::next_matching(
+            "the hub to warn that the A2A listener couldn't start",
+            &mut hub.events,
+            |event| {
+                matches!(
+                    event,
+                    HubEvent::Notice {
+                        level: NoticeLevel::Warn,
+                        message,
+                        ..
+                    } if message.contains(&format!("start on port {taken_port}"))
+                )
+            },
+        )
+        .await;
+        let HubEvent::Notice { message, .. } = notice else {
+            unreachable!("the predicate only matches notices");
+        };
+        assert_eq!(
+            message,
+            format!(
+                "The agent-to-agent listener couldn't start on port {taken_port}: the port is already in use. Choose another port in settings or stop the program using it."
+            )
+        );
+        drop(taken);
         hub.shut_down().await;
     }
 

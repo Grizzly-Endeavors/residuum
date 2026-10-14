@@ -216,21 +216,7 @@ pub(super) async fn api_inbox_attachment(
     };
 
     let mime_type = crate::interfaces::attachment::detect_mime_type(&resolved);
-    let safe_filename: String = file_name
-        .chars()
-        .filter(|c| *c != '"' && *c != '\\')
-        .collect();
-    let disposition = format!("inline; filename=\"{safe_filename}\"");
-
-    let mut response = bytes.into_response();
-    let headers = response.headers_mut();
-    if let Ok(v) = axum::http::HeaderValue::from_str(&mime_type) {
-        headers.insert(axum::http::header::CONTENT_TYPE, v);
-    }
-    if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
-        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
-    }
-    response
+    crate::gateway::file_server::respond_with_file(bytes, &mime_type, &file_name)
 }
 
 /// The answer for an attachment that is gone: a browser that opened the link

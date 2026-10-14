@@ -506,7 +506,7 @@ pub(super) struct RetryConfigFile {
 pub(super) struct IdleConfigFile {
     /// Inactivity timeout in minutes (0 = disabled).
     pub(super) timeout_minutes: Option<u64>,
-    /// Interface to switch notifications to when idle.
+    /// Interface agent-started main turns go to when idle; unset means the web UI.
     pub(super) idle_channel: Option<String>,
 }
 

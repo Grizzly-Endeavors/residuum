@@ -19,7 +19,7 @@ Most values that are missing or invalid fall into one of two buckets:
 **Skip-with-notice — an independent, optional feature degrades on its own:**
 - A webhook entry (`[webhooks.<name>]`) with an invalid `routing`/`format` string, or an empty `content_fields` entry: that one webhook is dropped, the rest still load.
 - `[teams]` present but missing `app_id`, `tenant_id`, or the app password: Teams is disabled, everything else starts normally.
-- `idle.idle_channel` naming an unknown or unconfigured interface: idle switching stays disabled (falls back to no idle channel) rather than failing the config.
+- `idle.idle_channel` naming an unknown or unconfigured interface: it resolves to the web UI, the same as leaving it unset, rather than failing the config.
 - `[a2a]` `visibility` set to anything other than `"public"`/`"private"`: falls back to the default visibility.
 - The secret store (`secrets.toml.enc`) missing its key file, or failing to decrypt or parse: degrades to an empty store, so only entries that actually reference `secret:<name>` are affected (they resolve as if the secret were simply absent) — everything else in `config.toml`/`providers.toml` never touches the store and loads normally.
 

@@ -519,15 +519,16 @@ impl AutoModeConfig {
 pub struct IdleConfig {
     /// Inactivity timeout. `Duration::ZERO` means disabled.
     pub timeout: Duration,
-    /// Interface to switch to when idle. `None` = keep current. (Phase 2)
-    pub idle_channel: Option<String>,
+    /// Endpoint that agent-started main turns go to once the owner is idle:
+    /// `ws` (the web UI) unless the config names a chat interface.
+    pub idle_channel: String,
 }
 
 impl Default for IdleConfig {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_MINUTES * 60),
-            idle_channel: None,
+            idle_channel: crate::interfaces::types::WEB_UI_ENDPOINT.to_string(),
         }
     }
 }
