@@ -54,7 +54,8 @@ if [ ! -f "$target" ]; then
 fi
 exec "$target" "$@"
 SHIM
-    chmod +x "$tmp"
+    # mktemp creates the file 0600, and bash must be able to read a script to run it.
+    chmod 755 "$tmp"
     mv -f "$tmp" "$HOOK_DIR/$hook"
     echo "installed $hook"
 done
