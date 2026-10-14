@@ -2,9 +2,15 @@
 //!
 //! Provides utilities to spawn processes in their own process groups, kill process trees
 //! across Unix and Windows, safely handle Windows `.cmd` batch file invocations with argv,
-//! and track process liveness.
+//! track process liveness, and run a shell command under a timeout and a stop.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Output, Stdio};
+use std::time::Duration;
+
+use tokio::io::AsyncReadExt;
+use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
 use nix::sys::signal::{Signal, kill, killpg};
@@ -192,6 +198,172 @@ pub fn create_argv_command(program: &Path, args: &[&str]) -> tokio::process::Com
     cmd.args(&target_args);
     configure_process_group(&mut cmd);
     cmd
+}
+
+/// Build the platform shell invocation for `command`: `sh -c` on Unix,
+/// `cmd /S /C` on Windows.
+#[must_use]
+pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
+    #[cfg(unix)]
+    {
+        let mut c = tokio::process::Command::new("sh");
+        c.arg("-c").arg(command);
+        // Puts the shell (pid == pgid) in its own process group instead of
+        // inheriting residuum's, so killing the group on a timeout or a
+        // stop (see `kill_process_tree`) only ever reaches this command's
+        // own tree, never residuum's process group.
+        c.process_group(0);
+        c
+    }
+    // Passed raw because cmd.exe doesn't parse the backslash-escaped quotes
+    // that normal argument quoting produces. `/S` strips only the outer pair
+    // of quotes, so the command runs exactly as written, including one that
+    // starts with a quoted path.
+    #[cfg(windows)]
+    {
+        let mut c = tokio::process::Command::new("cmd");
+        c.args(["/S", "/C"]).raw_arg(format!("\"{command}\""));
+        c
+    }
+}
+
+/// How a spawned command's run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunOutcome {
+    /// The command exited on its own before the timeout or a stop.
+    Finished,
+    /// The timeout elapsed; the process tree was killed.
+    TimedOut,
+    /// The caller's cancellation token fired while the command was running;
+    /// the process tree was killed.
+    Cancelled,
+}
+
+/// How the race in [`run_with_timeout_and_cancel`] resolved, before the
+/// process tree has necessarily been killed or reaped yet.
+enum Wait {
+    Exited(ExitStatus),
+    TimedOut,
+    Cancelled,
+}
+
+/// Spawn `cmd`, race it against `timeout` and `cancel`, and return whatever
+/// output it produced along with how the run ended.
+///
+/// Each pipe keeps at most `capture_limit` bytes; anything past that is
+/// still read, so the command never blocks on a full pipe, and discarded.
+/// A caller that needs to know whether output was cut asks for one byte
+/// more than it will show and checks the length.
+///
+/// On a timeout or a stop, [`kill_process_tree`] kills the whole process
+/// tree rather than only the immediate shell, and whatever stdout/stderr the
+/// command had already produced is still returned — the pipes reach EOF
+/// once every process holding their write end has exited, which the kill
+/// guarantees, so draining them afterward always yields whatever was
+/// captured before the command ended, partial or not.
+///
+/// # Errors
+/// Returns an error when the command can't be spawned, its exit status
+/// can't be read, or a pipe read fails.
+pub(crate) async fn run_with_timeout_and_cancel(
+    mut cmd: tokio::process::Command,
+    timeout: Duration,
+    cancel: &CancellationToken,
+    capture_limit: usize,
+) -> io::Result<(RunOutcome, Output)> {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    // Guards the window between spawn and the point below where the
+    // process tree has already been killed or the child already reaped —
+    // covers the case where this future itself is dropped (not cancelled
+    // through the `select!` below), e.g. the caller's turn future being
+    // dropped while this is still suspended awaiting the child.
+    let mut tree_guard = ProcessTreeGuard::new(pid);
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("spawned command's stdout was not piped"))?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("spawned command's stderr was not piped"))?;
+
+    // Drained on their own tasks, running concurrently with the wait below
+    // for as long as it takes — a command that writes more than the OS
+    // pipe buffer holds would otherwise block on that write forever, since
+    // nothing would be reading until after `child.wait()` resolves.
+    let stdout_task = spawn_pipe_reader(stdout_pipe, capture_limit);
+    let stderr_task = spawn_pipe_reader(stderr_pipe, capture_limit);
+
+    let wait = tokio::select! {
+        biased;
+        () = cancel.cancelled() => Wait::Cancelled,
+        () = tokio::time::sleep(timeout) => Wait::TimedOut,
+        status = child.wait() => Wait::Exited(status?),
+    };
+
+    let (outcome, status) = match wait {
+        Wait::Exited(status) => {
+            // The child already exited on its own; nothing left to kill.
+            tree_guard.disarm();
+            (RunOutcome::Finished, status)
+        }
+        Wait::TimedOut => {
+            kill_process_tree(pid).await;
+            tree_guard.disarm();
+            (RunOutcome::TimedOut, child.wait().await?)
+        }
+        Wait::Cancelled => {
+            kill_process_tree(pid).await;
+            tree_guard.disarm();
+            (RunOutcome::Cancelled, child.wait().await?)
+        }
+    };
+
+    Ok((
+        outcome,
+        Output {
+            status,
+            stdout: join_pipe_reader(stdout_task).await?,
+            stderr: join_pipe_reader(stderr_task).await?,
+        },
+    ))
+}
+
+/// Spawn a task that reads a child's pipe to EOF, keeping the first `keep`
+/// bytes and discarding the rest.
+fn spawn_pipe_reader<R>(mut pipe: R, keep: usize) -> tokio::task::JoinHandle<io::Result<Vec<u8>>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    crate::util::spawn_in_span(async move {
+        let mut buf = Vec::new();
+        let mut chunk = vec![0_u8; 8 * 1024];
+        loop {
+            let read = pipe.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            let room = keep.saturating_sub(buf.len());
+            if let Some(kept) = chunk.get(..read.min(room)) {
+                buf.extend_from_slice(kept);
+            }
+        }
+        Ok(buf)
+    })
+}
+
+/// Await a [`spawn_pipe_reader`] task, surfacing a task panic as an I/O
+/// error the same way a read failure would be.
+async fn join_pipe_reader(
+    task: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
+) -> io::Result<Vec<u8>> {
+    task.await
+        .map_err(|e| io::Error::other(format!("pipe reader task failed: {e}")))?
 }
 
 #[cfg(test)]

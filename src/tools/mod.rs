@@ -64,6 +64,18 @@ pub(crate) const CANCELLED_BEFORE_START: &str =
 /// MCP stdio spawner so config reloads take effect without rebuilding registries.
 pub type SharedToolsPath = Arc<RwLock<Option<OsString>>>;
 
+/// Give `cmd` the configured tools `PATH`, read live so a config reload
+/// applies to the next spawn. Leaves the inherited `PATH` alone when no
+/// override is configured.
+pub(crate) async fn apply_tools_path(
+    cmd: &mut tokio::process::Command,
+    tools_path: &SharedToolsPath,
+) {
+    if let Some(path) = tools_path.read().await.as_ref() {
+        cmd.env("PATH", path);
+    }
+}
+
 /// Errors from tool execution.
 #[derive(Error, Debug, PartialEq)]
 pub enum ToolError {
