@@ -1,0 +1,1 @@
+rust	rust|gateway::startup::memory::tests::deleted_episode_prunes_its_vector_rows_on_resync	gateway::startup::memory::tests::deleted_episode_prunes_its_vector_rows_on_resync		1		failed 1 of 2 copies under load only: the test waits on time, so fix the wait
