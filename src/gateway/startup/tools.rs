@@ -55,6 +55,10 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub hub_dir: &'a std::path::Path,
     /// How `agent_create`/`agent_delete` reach the hub.
     pub lifecycle: &'a crate::tools::LifecycleAccess,
+    /// The live catalog `subagent_spawn` and `schedule_action` check an
+    /// explicit model against — the same instance sessions fork with and
+    /// config reloads update.
+    pub model_catalog: &'a crate::config::SharedModelCatalog,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -77,6 +81,32 @@ pub(super) struct CreateAgentArgs {
 }
 
 /// Build the tool registry with all default and domain-specific tools.
+/// Main's tools for managing sessions and teammates: `stop_agent`,
+/// `list_agents`, `subagent_spawn`, and the teammate lifecycle tools.
+fn register_main_session_tools(
+    tools: &mut ToolRegistry,
+    cfg: &Config,
+    deps: &ToolRegistryDeps<'_>,
+) {
+    tools.register_background_tools(
+        Arc::clone(deps.session_registry),
+        SessionAddress::from(MAIN_ADDRESS),
+        Arc::clone(deps.a2a_hub),
+        Arc::clone(deps.a2a_tracker),
+        deps.agent_messenger.team().clone(),
+    );
+    tools.register_spawn_tool(crate::tools::background::SpawnToolDeps {
+        publisher: deps.publisher.clone(),
+        skill_state: Arc::clone(deps.skill_state),
+        spawner_address: SessionAddress::from(MAIN_ADDRESS),
+        depth: MAIN_DEPTH,
+        depth_cap: cfg.background.subagent_depth_cap,
+        hop_counter: deps.hop_counter.clone(),
+        models: Arc::clone(deps.model_catalog),
+    });
+    tools.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
+}
+
 pub(super) fn init_tool_registry(
     cfg: &Config,
     layout: &WorkspaceLayout,
@@ -119,6 +149,7 @@ pub(super) fn init_tool_registry(
     tools.register_action_tools(
         Arc::clone(deps.action_store),
         Arc::clone(deps.action_notify),
+        Arc::clone(deps.model_catalog),
         tz,
     );
     tools.register_skill_tools(Arc::clone(deps.skill_state));
@@ -129,23 +160,7 @@ pub(super) fn init_tool_registry(
         layout.user_inbox_attachments_dir(),
         tz,
     );
-    tools.register_background_tools(
-        Arc::clone(deps.session_registry),
-        SessionAddress::from(MAIN_ADDRESS),
-        Arc::clone(deps.a2a_hub),
-        Arc::clone(deps.a2a_tracker),
-        deps.agent_messenger.team().clone(),
-    );
-    tools.register_spawn_tool(
-        deps.publisher.clone(),
-        Arc::clone(deps.skill_state),
-        SessionAddress::from(MAIN_ADDRESS),
-        MAIN_DEPTH,
-        cfg.background.subagent_depth_cap,
-        deps.hop_counter.clone(),
-    );
-
-    tools.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
+    register_main_session_tools(&mut tools, cfg, deps);
 
     tools.register_send_message_tool(
         deps.endpoint_registry.clone(),
@@ -351,6 +366,7 @@ mod tests {
             },
             tracing: TracingConfig::default(),
             role_overrides: HashMap::new(),
+            model_catalog: crate::config::ModelCatalog::default(),
             config_dir: dir.to_path_buf(),
             load_notices: vec![],
         }
@@ -524,6 +540,7 @@ mod tests {
             a2a_tracker: Arc::clone(&h.a2a_tracker),
             checkpoints: Arc::clone(&h.checkpoints),
             lifecycle: h.lifecycle.clone(),
+            model_catalog: crate::config::ModelCatalog::default().into_shared(),
         })
     }
 
@@ -553,6 +570,7 @@ mod tests {
             crate::config::AutoModeConfig::default(),
             crate::inference::system_one::SystemOneService::new(None),
         );
+        let model_catalog = crate::config::ModelCatalog::default().into_shared();
         let deps = ToolRegistryDeps {
             action_store: &h.action_store,
             action_notify: &h.action_notify,
@@ -574,6 +592,7 @@ mod tests {
             config_reload_tracker: &h.config_reload_tracker,
             hub_dir: &h.hub_dir,
             lifecycle: &h.lifecycle,
+            model_catalog: &model_catalog,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();

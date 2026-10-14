@@ -6,15 +6,13 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
-use std::str::FromStr;
 
 use crate::config::types::{BackgroundModelsConfig, RoleOverrides};
 use crate::util::FatalError;
 
-use super::super::deserialize::{
-    InputModalityFile, ModelAssignment, ModelsConfigFile, ProviderEntryFile,
-};
-use super::super::provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
+use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
+use super::super::model_catalog::{NamedProvider, implicit_provider_spec, split_model_id};
+use super::super::provider::{ProviderKind, ProviderSpec};
 use super::super::secrets::SecretStore;
 
 /// Resolved model provider specs for all roles.
@@ -136,90 +134,12 @@ fn resolve_model_string(
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
 ) -> Result<ProviderSpec, FatalError> {
-    let (provider_part, model_name) = model_str.split_once('/').ok_or_else(|| {
-        FatalError::Config(format!(
-            "expected 'provider/model' format, got '{model_str}'"
-        ))
-    })?;
-
-    if model_name.is_empty() {
-        return Err(FatalError::Config("model name cannot be empty".to_string()));
+    let (provider_part, model_name) = split_model_id(model_str).map_err(FatalError::Config)?;
+    match providers_map.and_then(|p| p.get(provider_part)) {
+        Some(entry) => NamedProvider::from_entry(entry, secrets).spec(provider_part, model_name),
+        None => implicit_provider_spec(provider_part, model_name),
     }
-
-    // Check if provider_part matches a named [providers] entry
-    if let Some(entry) = providers_map.and_then(|p| p.get(provider_part)) {
-        let kind = ProviderKind::from_str(&entry.kind).map_err(|e| {
-            FatalError::Config(format!(
-                "provider '{provider_part}' has invalid type '{}': {e}",
-                entry.kind
-            ))
-        })?;
-
-        let provider_url = entry
-            .url
-            .clone()
-            .unwrap_or_else(|| kind.default_url().to_string());
-
-        let api_key = entry
-            .api_key
-            .as_deref()
-            .and_then(|raw| super::resolve_secret_value(raw, secrets))
-            .or_else(|| provider_api_key_env(kind));
-
-        return Ok(ProviderSpec {
-            name: provider_part.to_owned(),
-            model: ModelSpec {
-                kind,
-                model: model_name.to_owned(),
-            },
-            provider_url,
-            api_key,
-            keep_alive: entry.keep_alive.clone(),
-            session_affinity: None,
-            image_input: declared_image_input(entry, model_name),
-        });
-    }
-
-    // Treat provider_part as an implicit ProviderKind
-    let kind = ProviderKind::from_str(provider_part).map_err(|_parse_err| {
-        FatalError::Config(format!(
-            "'{provider_part}' is not a known provider name or type \
-             (expected one of: anthropic, fireworks, gemini, ollama, openai, \
-             or a key from [providers])"
-        ))
-    })?;
-
-    let provider_url = kind.default_url().to_string();
-
-    let api_key = provider_api_key_env(kind);
-
-    Ok(ProviderSpec {
-        name: provider_part.to_owned(),
-        model: ModelSpec {
-            kind,
-            model: model_name.to_owned(),
-        },
-        provider_url,
-        api_key,
-        keep_alive: None,
-        session_affinity: None,
-        image_input: ImageInput::Undeclared,
-    })
-}
-
-/// Whether `model_name` takes images, from its `input` list under the
-/// provider entry's `models` table.
-fn declared_image_input(entry: &ProviderEntryFile, model_name: &str) -> ImageInput {
-    let input = entry
-        .models
-        .as_ref()
-        .and_then(|models| models.get(model_name))
-        .and_then(|model| model.input.as_ref());
-    match input {
-        None => ImageInput::Undeclared,
-        Some(kinds) if kinds.contains(&InputModalityFile::Image) => ImageInput::Accepted,
-        Some(_) => ImageInput::TextOnly,
-    }
+    .map_err(FatalError::Config)
 }
 
 /// Resolve a `ModelAssignment` into a `Vec<ProviderSpec>` (failover chain).
@@ -327,6 +247,13 @@ pub(super) fn scope_all_session_affinity(
     }
 }
 
+/// A role's session-affinity key: `residuum-<role>-<hash of the workspace path>`.
+pub(in crate::config) fn session_affinity_key(workspace_dir: &Path, role: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    workspace_dir.hash(&mut hasher);
+    format!("residuum-{role}-{:016x}", hasher.finish())
+}
+
 /// Stamp every spec in a role's chain with that role's session-affinity key.
 ///
 /// The key hashes the workspace path so no filesystem detail leaves the
@@ -334,22 +261,9 @@ pub(super) fn scope_all_session_affinity(
 /// prompt prefix. Runs after role resolution because roles without their own
 /// assignment clone the main chain, including main's key.
 fn scope_session_affinity(specs: &mut [ProviderSpec], workspace_dir: &Path, role: &str) {
-    let mut hasher = DefaultHasher::new();
-    workspace_dir.hash(&mut hasher);
-    let key = format!("residuum-{role}-{:016x}", hasher.finish());
+    let key = session_affinity_key(workspace_dir, role);
     for spec in specs {
         spec.session_affinity = Some(key.clone());
-    }
-}
-
-/// Get the provider-specific API key from environment variables.
-fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
-    match kind {
-        ProviderKind::Anthropic => std::env::var("ANTHROPIC_API_KEY").ok(),
-        ProviderKind::Fireworks => std::env::var("FIREWORKS_API_KEY").ok(),
-        ProviderKind::Gemini => std::env::var("GEMINI_API_KEY").ok(),
-        ProviderKind::OpenAi => std::env::var("OPENAI_API_KEY").ok(),
-        ProviderKind::Ollama => std::env::var("OLLAMA_API_KEY").ok(),
     }
 }
 
@@ -364,6 +278,7 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
 )]
 mod tests {
     use super::super::super::constants::DEFAULT_ANTHROPIC_URL;
+    use super::super::super::provider::ImageInput;
     use super::super::from_file_and_env;
     use super::super::test_helpers::*;
     use super::*;

@@ -2,6 +2,7 @@
 //!
 //! Uses atomic write (temp file + rename) to prevent corruption on crash.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -15,6 +16,10 @@ use super::types::ScheduledAction;
 pub struct ActionStore {
     actions: Vec<ScheduledAction>,
     path: PathBuf,
+    /// Pending actions whose model can't run, by id, with the reason last
+    /// reported for each — see [`Self::record_model_problems`]. In memory
+    /// only.
+    model_problems: HashMap<String, String>,
 }
 
 impl ActionStore {
@@ -51,7 +56,15 @@ impl ActionStore {
                 Ok(mut actions) => {
                     let rejected = reject_agent_main(&mut actions);
                     debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
-                    Ok((Self { actions, path }, rejected, None))
+                    Ok((
+                        Self {
+                            actions,
+                            path,
+                            model_problems: HashMap::new(),
+                        },
+                        rejected,
+                        None,
+                    ))
                 }
                 Err(parse_err) => {
                     let moved_to = move_aside_corrupt_file(&path).await.with_context(|| {
@@ -72,6 +85,7 @@ impl ActionStore {
                         Self {
                             actions: Vec::new(),
                             path,
+                            model_problems: HashMap::new(),
                         },
                         Vec::new(),
                         Some(moved_to),
@@ -82,6 +96,7 @@ impl ActionStore {
                 Self {
                     actions: Vec::new(),
                     path,
+                    model_problems: HashMap::new(),
                 },
                 Vec::new(),
                 None,
@@ -153,6 +168,7 @@ impl ActionStore {
         Self {
             actions: Vec::new(),
             path,
+            model_problems: HashMap::new(),
         }
     }
 
@@ -209,6 +225,38 @@ impl ActionStore {
             .filter(|a| a.run_at <= now)
             .cloned()
             .collect()
+    }
+
+    /// Replace the set of pending actions whose model can't run (`id` →
+    /// reason) and return the ones that are new or whose reason changed since
+    /// the last call, as `(name, id, reason)`, so a caller checking on every
+    /// tick reports each problem once rather than on every tick.
+    pub fn record_model_problems(
+        &mut self,
+        problems: HashMap<String, String>,
+    ) -> Vec<(String, String, String)> {
+        let fresh = problems
+            .iter()
+            .filter(|(id, reason)| self.model_problems.get(*id) != Some(*reason))
+            .filter_map(|(id, reason)| {
+                let action = self.actions.iter().find(|a| &a.id == id)?;
+                Some((action.name.clone(), id.clone(), reason.clone()))
+            })
+            .collect();
+        for id in self.model_problems.keys() {
+            if !problems.contains_key(id) {
+                debug!(id = %id, "scheduled action's model problem resolved or action gone");
+            }
+        }
+        self.model_problems = problems;
+        fresh
+    }
+
+    /// Whether the action with this id is held back because its model can't
+    /// run (see [`Self::record_model_problems`]).
+    #[must_use]
+    pub fn has_model_problem(&self, id: &str) -> bool {
+        self.model_problems.contains_key(id)
     }
 
     /// Path to the backing JSON file.

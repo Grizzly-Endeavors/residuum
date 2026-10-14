@@ -1036,7 +1036,8 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
 
 /// Fork sessions for every due scheduled action.
 async fn check_and_run_due_actions(rt: &mut AgentRuntime) {
-    actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
+    let models = rt.spawn_context.model_catalog.read().await.clone();
+    actions::spawn_due_actions(&rt.action_store, &rt.publisher, &models).await;
 }
 
 /// Maximum time to wait for live sessions to stop and finish recording their

@@ -524,6 +524,7 @@ async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
         new_cfg.timezone,
         Arc::clone(&rt.action_store),
         Arc::clone(&rt.action_notify),
+        Arc::clone(&rt.spawn_context.model_catalog),
         &rt.layout,
     );
     if new_cfg.discord.is_some() {
@@ -587,6 +588,7 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.http_client = http_client.clone();
 
     reload_providers(rt, new_cfg, http_client.clone()).await;
+    reload_model_catalog(rt, new_cfg).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
     // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
     // /api/agents/{name}/model/complete` resolves providers from this reload without the
@@ -641,6 +643,9 @@ fn build_spawn_context(
     Arc::new(SpawnContext {
         background_config: new_cfg.background.clone(),
         main_provider_specs: new_cfg.main.clone(),
+        // The same live catalog as before the reload, which the tools hold
+        // too; `reload_model_catalog` has already replaced its contents.
+        model_catalog: Arc::clone(&rt.spawn_context.model_catalog),
         http_client,
         max_tokens: new_cfg.max_tokens,
         retry_config: new_cfg.retry.clone(),
@@ -862,6 +867,14 @@ async fn reload_skills(rt: &mut AgentRuntime) {
     }
 }
 
+/// Replace the live model catalog's contents from the new config, so
+/// sessions, `subagent_spawn`, `schedule_action`, and the pulse and action
+/// checks resolve explicit models against the reloaded `providers.toml`.
+async fn reload_model_catalog(rt: &AgentRuntime, new_cfg: &Config) {
+    *rt.spawn_context.model_catalog.write().await = new_cfg.model_catalog.clone();
+    tracing::debug!("model catalog updated from new config");
+}
+
 /// Update the shared tools-`PATH` handle from the new config.
 ///
 /// The `exec` tool and the MCP stdio spawner read this handle at spawn time, so
@@ -1078,6 +1091,7 @@ mod tests {
             web_search: crate::config::WebSearchConfig::default(),
             tracing: crate::config::TracingConfig::default(),
             role_overrides: std::collections::HashMap::new(),
+            model_catalog: crate::config::ModelCatalog::default(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
             load_notices: vec![],
         }

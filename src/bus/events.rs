@@ -7,7 +7,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::bus::types::{SessionAddress, SkillName};
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::inference::{ImageData, Message, MessageSender};
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::types::MessageOrigin;
@@ -552,8 +552,8 @@ pub struct SpawnRequestEvent {
     pub context: Option<String>,
     /// What triggered this spawn request.
     pub source: EventTrigger,
-    /// Model tier to run the session at.
-    pub model_tier: BackgroundModelTier,
+    /// The model tier or explicit model to run the session on.
+    pub model: ModelSelector,
     /// The agent that requested this spawn: `Some(address)` for a `spawned`
     /// session an agent started (main or another session), `None` for one the
     /// owner started and for `scheduled`, `external`, and `artifact`

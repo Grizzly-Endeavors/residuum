@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use crate::bus::MessageEvent;
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 
 use super::messaging::{AgentMessenger, ConversationSpawn};
 use super::registry::conversation_session_address;
@@ -23,10 +23,10 @@ use super::registry::conversation_session_address;
 /// label and handing delivery to [`AgentMessenger::deliver_conversation`].
 pub struct ConversationRouter {
     messenger: Arc<AgentMessenger>,
-    /// Model tier a conversation session runs at. Fixed at `Medium`, matching
+    /// Model a conversation session runs on. Fixed at the `medium` tier, matching
     /// the webhook `external` session precedent — there is no per-conversation
     /// configuration surface for this today.
-    model_tier: BackgroundModelTier,
+    model: ModelSelector,
 }
 
 impl ConversationRouter {
@@ -35,7 +35,7 @@ impl ConversationRouter {
     pub fn new(messenger: Arc<AgentMessenger>) -> Self {
         Self {
             messenger,
-            model_tier: BackgroundModelTier::Medium,
+            model: ModelSelector::MEDIUM,
         }
     }
 
@@ -67,7 +67,7 @@ impl ConversationRouter {
             .unwrap_or_else(|| conversation.id.clone());
         let spawn = ConversationSpawn {
             source_label: format!("{}:{label}", message.origin.endpoint),
-            model_tier: self.model_tier,
+            model: self.model.clone(),
             skill: None,
         };
 
@@ -236,7 +236,8 @@ mod tests {
             depth: 1,
             purpose: "chat".to_string(),
             agent_skill: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
+            model: crate::config::ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: Some(crate::bus::ConversationTarget {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-1".to_string(),
@@ -320,7 +321,8 @@ mod tests {
             depth: 1,
             purpose: "chat".to_string(),
             agent_skill: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
+            model: crate::config::ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: Some(crate::bus::ConversationTarget {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-2".to_string(),

@@ -11,7 +11,7 @@ use crate::a2a::{A2aClientHub, AgentSource, AgentStatus, RemoteTaskTracker};
 use crate::agent::HopCounter;
 use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
-use crate::config::BackgroundModelTier;
+use crate::config::{ModelSelector, SharedModelCatalog};
 use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
@@ -272,44 +272,38 @@ impl Tool for ListAgentsTool {
 
 // ─── SubagentSpawnTool ──────────────────────────────────────────────────────
 
-/// Tool for forking sessions on demand.
-pub struct SubagentSpawnTool {
-    publisher: crate::bus::Publisher,
+/// What a `subagent_spawn` tool needs, grouped to keep its constructor short.
+pub(crate) struct SpawnToolDeps {
+    pub(crate) publisher: crate::bus::Publisher,
     /// Main agent skill state — read to validate a requested skill name.
-    skill_state: SharedSkillState,
+    pub(crate) skill_state: SharedSkillState,
     /// The caller's own address, recorded as the spawner of any session this
     /// tool forks (`main`, or a session's own address).
-    spawner_address: SessionAddress,
+    pub(crate) spawner_address: SessionAddress,
     /// The caller's own depth from the main agent (main = 0).
-    depth: u32,
+    pub(crate) depth: u32,
     /// Maximum depth a spawned session may have. Spawning is refused once
     /// `depth + 1` would exceed this.
-    depth_cap: u32,
+    pub(crate) depth_cap: u32,
     /// This agent's current-turn hop counter — the new session's first turn
     /// carries one more than the highest hop count among the inputs driving
     /// this (the spawning) turn.
-    hop_counter: HopCounter,
+    pub(crate) hop_counter: HopCounter,
+    /// The live catalog an explicit `model` is checked against before the
+    /// spawn is published.
+    pub(crate) models: SharedModelCatalog,
+}
+
+/// Tool for forking sessions on demand.
+pub struct SubagentSpawnTool {
+    deps: SpawnToolDeps,
 }
 
 impl SubagentSpawnTool {
     /// Create a new `SubagentSpawnTool`.
     #[must_use]
-    pub(crate) fn new(
-        publisher: crate::bus::Publisher,
-        skill_state: SharedSkillState,
-        spawner_address: SessionAddress,
-        depth: u32,
-        depth_cap: u32,
-        hop_counter: HopCounter,
-    ) -> Self {
-        Self {
-            publisher,
-            skill_state,
-            spawner_address,
-            depth,
-            depth_cap,
-            hop_counter,
-        }
+    pub(crate) fn new(deps: SpawnToolDeps) -> Self {
+        Self { deps }
     }
 }
 
@@ -344,8 +338,7 @@ impl Tool for SubagentSpawnTool {
                     },
                     "model": {
                         "type": "string",
-                        "enum": ["small", "medium", "large"],
-                        "description": "Model tier for the session (default: \"medium\")."
+                        "description": "The model the session runs on: a tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form, such as \"anthropic/claude-haiku-4-5\" (the format providers.toml uses). An explicit model runs that one model with no failover. Default: \"medium\"."
                     }
                 },
                 "required": ["task"]
@@ -375,7 +368,7 @@ impl Tool for SubagentSpawnTool {
 
             // Validate against the in-memory skill index so an unknown name fails
             // here, rather than surfacing later as a failed session result.
-            let state = self.skill_state.lock().await;
+            let state = self.deps.skill_state.lock().await;
             if state.index().find_by_name(name).is_none() {
                 let available: Vec<&str> = state
                     .index()
@@ -390,19 +383,19 @@ impl Tool for SubagentSpawnTool {
             }
         }
 
-        let model_tier = match arguments.get("model").and_then(Value::as_str) {
-            Some(s) => parse_model_tier(s)?,
-            None => BackgroundModelTier::Medium,
+        let model = match arguments.get("model").and_then(Value::as_str) {
+            Some(raw) => parse_model(raw, &self.deps.models).await?,
+            None => ModelSelector::MEDIUM,
         };
 
-        let new_depth = self.depth + 1;
-        if new_depth > self.depth_cap {
+        let new_depth = self.deps.depth + 1;
+        if new_depth > self.deps.depth_cap {
             return Ok(ToolResult::error(format!(
                 "cannot spawn: nesting depth cap ({}) reached at depth {} — handle this task \
                  directly instead of spawning further, or have a shallower agent spawn it. \
                  Raise the `subagent_depth_cap` setting under `[background]` in config.toml to \
                  allow deeper nesting",
-                self.depth_cap, self.depth
+                self.deps.depth_cap, self.deps.depth
             )));
         }
 
@@ -416,10 +409,10 @@ impl Tool for SubagentSpawnTool {
             prompt: task_prompt.to_string(),
             context: None,
             source: trigger,
-            model_tier,
-            spawner: Some(self.spawner_address.clone()),
+            model,
+            spawner: Some(self.deps.spawner_address.clone()),
             depth: new_depth,
-            hop_count: self.hop_counter.outgoing(),
+            hop_count: self.deps.hop_counter.outgoing(),
             sender: None,
             conversation: None,
             inbound: None,
@@ -428,7 +421,7 @@ impl Tool for SubagentSpawnTool {
             carried_history: Vec::new(),
         };
 
-        self.publisher
+        self.deps.publisher
             .publish(crate::bus::topics::Background, spawn_event)
             .await
             .map_err(|err| {
@@ -443,9 +436,21 @@ impl Tool for SubagentSpawnTool {
     }
 }
 
-fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
-    s.parse::<BackgroundModelTier>()
-        .map_err(ToolError::InvalidArguments)
+/// Parse a `model` argument and check that it can run.
+///
+/// # Errors
+/// Returns `ToolError::InvalidArguments` naming the value when it is neither
+/// a tier nor a `provider/model` id, or names a model that doesn't resolve.
+async fn parse_model(raw: &str, models: &SharedModelCatalog) -> Result<ModelSelector, ToolError> {
+    let model = raw
+        .parse::<ModelSelector>()
+        .map_err(ToolError::InvalidArguments)?;
+    models
+        .read()
+        .await
+        .check(&model)
+        .map_err(ToolError::InvalidArguments)?;
+    Ok(model)
 }
 
 #[cfg(test)]
@@ -461,36 +466,75 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        SubagentSpawnTool::new(
+        SubagentSpawnTool::new(SpawnToolDeps {
             publisher,
             skill_state,
-            SessionAddress::from(spawner),
+            spawner_address: SessionAddress::from(spawner),
             depth,
             depth_cap,
-            HopCounter::new(0),
-        )
+            hop_counter: HopCounter::new(0),
+            models: crate::config::ModelCatalog::default().into_shared(),
+        })
     }
 
-    #[test]
-    fn model_tier_parsing_valid() {
-        assert!(matches!(
-            parse_model_tier("small"),
-            Ok(BackgroundModelTier::Small)
-        ));
-        assert!(matches!(
-            parse_model_tier("medium"),
-            Ok(BackgroundModelTier::Medium)
-        ));
-        assert!(matches!(
-            parse_model_tier("large"),
-            Ok(BackgroundModelTier::Large)
-        ));
+    #[tokio::test]
+    async fn model_accepts_a_tier_or_an_explicit_id() {
+        let models = crate::config::ModelCatalog::default().into_shared();
+        assert_eq!(
+            parse_model("small", &models).await,
+            Ok(ModelSelector::SMALL)
+        );
+        assert_eq!(
+            parse_model("anthropic/claude-haiku-4-5", &models).await,
+            Ok(ModelSelector::Explicit(
+                "anthropic/claude-haiku-4-5".to_string()
+            ))
+        );
     }
 
-    #[test]
-    fn model_tier_parsing_invalid() {
-        assert!(parse_model_tier("invalid").is_err());
-        assert!(parse_model_tier("SMALL").is_err());
+    #[tokio::test]
+    async fn model_rejects_a_bad_value_or_unknown_provider() {
+        let models = crate::config::ModelCatalog::default().into_shared();
+        for (raw, expected) in [
+            ("SMALL", "'SMALL'"),
+            ("lagre", "'lagre'"),
+            ("nowhere/some-model", "not a known provider"),
+        ] {
+            let err = parse_model(raw, &models).await.unwrap_err().to_string();
+            assert!(err.contains(expected), "{raw}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_carries_an_explicit_model_and_refuses_an_unknown_one() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut subscriber = bus_handle
+            .subscribe(crate::bus::topics::Background)
+            .await
+            .unwrap();
+        let tool = SubagentSpawnTool::new(SpawnToolDeps {
+            publisher: bus_handle.publisher(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            spawner_address: SessionAddress::from(MAIN_ADDRESS),
+            depth: 0,
+            depth_cap: 2,
+            hop_counter: HopCounter::new(0),
+            models: crate::config::ModelCatalog::default().into_shared(),
+        });
+
+        let refused = tool
+            .execute(serde_json::json!({ "task": "t", "model": "nowhere/x" }))
+            .await;
+        assert!(refused.is_err(), "an unknown provider is refused up front");
+
+        tool.execute(serde_json::json!({ "task": "t", "model": "openai/gpt-4o" }))
+            .await
+            .unwrap();
+        let event: crate::bus::SpawnRequestEvent = subscriber.recv().await.unwrap().unwrap();
+        assert_eq!(
+            event.model,
+            ModelSelector::Explicit("openai/gpt-4o".to_string())
+        );
     }
 
     #[tokio::test]
@@ -602,14 +646,15 @@ mod tests {
         let index = SkillIndex::scan(&dirs).await.unwrap();
 
         let bus_handle = crate::bus::spawn_broker();
-        let tool = SubagentSpawnTool::new(
-            bus_handle.publisher(),
-            SkillState::new_shared(index, dirs),
-            SessionAddress::from(MAIN_ADDRESS),
-            0,
-            2,
-            HopCounter::new(0),
-        );
+        let tool = SubagentSpawnTool::new(SpawnToolDeps {
+            publisher: bus_handle.publisher(),
+            skill_state: SkillState::new_shared(index, dirs),
+            spawner_address: SessionAddress::from(MAIN_ADDRESS),
+            depth: 0,
+            depth_cap: 2,
+            hop_counter: HopCounter::new(0),
+            models: crate::config::ModelCatalog::default().into_shared(),
+        });
 
         let res = tool
             .execute(serde_json::json!({
@@ -642,14 +687,15 @@ mod tests {
         let publisher = bus_handle.publisher();
         let skill_state =
             SkillState::new_shared(index, vec![crate::skills::SkillDir::agent(dir.path())]);
-        let tool = SubagentSpawnTool::new(
+        let tool = SubagentSpawnTool::new(SpawnToolDeps {
             publisher,
             skill_state,
-            SessionAddress::from(MAIN_ADDRESS),
-            0,
-            2,
-            HopCounter::new(0),
-        );
+            spawner_address: SessionAddress::from(MAIN_ADDRESS),
+            depth: 0,
+            depth_cap: 2,
+            hop_counter: HopCounter::new(0),
+            models: crate::config::ModelCatalog::default().into_shared(),
+        });
 
         let res = tool
             .execute(serde_json::json!({
@@ -711,14 +757,15 @@ mod tests {
             .await
             .unwrap();
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let tool = SubagentSpawnTool::new(
+        let tool = SubagentSpawnTool::new(SpawnToolDeps {
             publisher,
             skill_state,
-            SessionAddress::from("spawned-parent-0001"),
-            1,
-            2,
-            HopCounter::new(3),
-        );
+            spawner_address: SessionAddress::from("spawned-parent-0001"),
+            depth: 1,
+            depth_cap: 2,
+            hop_counter: HopCounter::new(3),
+            models: crate::config::ModelCatalog::default().into_shared(),
+        });
 
         tool.execute(serde_json::json!({ "task": "do something" }))
             .await
@@ -836,7 +883,8 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
-            model_tier: BackgroundModelTier::Medium,
+            model: ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals {

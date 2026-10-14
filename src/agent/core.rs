@@ -204,12 +204,14 @@ impl Agent {
         tz: chrono_tz::Tz,
         action_store: std::sync::Arc<tokio::sync::Mutex<crate::actions::store::ActionStore>>,
         action_notify: std::sync::Arc<tokio::sync::Notify>,
+        models: crate::config::SharedModelCatalog,
         layout: &crate::workspace::layout::WorkspaceLayout,
     ) {
         self.tz = tz;
         self.tools.reload_timezone_tools(
             action_store,
             action_notify,
+            models,
             layout.user_inbox_dir(),
             layout.user_inbox_attachments_dir(),
             tz,

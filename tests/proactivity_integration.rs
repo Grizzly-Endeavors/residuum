@@ -134,11 +134,19 @@ mod proactivity_integration {
 
         let mut scheduler = PulseScheduler::new();
         let now = chrono::Utc::now().naive_utc();
-        let first = scheduler.due_pulses(now, &heartbeat_path);
+        let first = scheduler.due_pulses(
+            now,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert!(first.is_empty(), "pulse should not fire on the first tick");
 
         let later = now + chrono::Duration::hours(1);
-        let due = scheduler.due_pulses(later, &heartbeat_path);
+        let due = scheduler.due_pulses(
+            later,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert_eq!(due.len(), 1, "pulse should fire one schedule duration on");
     }
 
@@ -155,14 +163,26 @@ mod proactivity_integration {
         let mut scheduler = PulseScheduler::new();
         let now = chrono::Utc::now().naive_utc();
 
-        let first = scheduler.due_pulses(now, &heartbeat_path);
+        let first = scheduler.due_pulses(
+            now,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert!(first.is_empty(), "first call only records the pulse");
 
         let fire_time = now + chrono::Duration::hours(2);
-        let fired = scheduler.due_pulses(fire_time, &heartbeat_path);
+        let fired = scheduler.due_pulses(
+            fire_time,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert_eq!(fired.len(), 1, "should fire after the schedule duration");
 
-        let second = scheduler.due_pulses(fire_time, &heartbeat_path);
+        let second = scheduler.due_pulses(
+            fire_time,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert!(second.is_empty(), "same-time call should not refire");
     }
 

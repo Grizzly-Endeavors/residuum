@@ -362,6 +362,7 @@ struct StartupSpawnContextInputs<'a> {
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
     lifecycle: &'a crate::tools::LifecycleAccess,
+    model_catalog: &'a crate::config::SharedModelCatalog,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup.
@@ -370,6 +371,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
     Arc::new(SpawnContext {
         background_config: inputs.cfg.background.clone(),
         main_provider_specs: inputs.cfg.main.clone(),
+        model_catalog: Arc::clone(inputs.model_catalog),
         http_client: inputs.http_client,
         max_tokens: inputs.cfg.max_tokens,
         retry_config: inputs.cfg.retry.clone(),
@@ -875,6 +877,7 @@ struct MainAgentInputs<'a> {
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
     lifecycle: &'a crate::tools::LifecycleAccess,
+    model_catalog: &'a crate::config::SharedModelCatalog,
     /// See `ToolsAndAgentInputs::degradations`.
     degradations: &'a mut Vec<String>,
     /// See `ToolRegistryDeps::config_reload_tracker`.
@@ -922,6 +925,7 @@ async fn build_main_agent(
             config_reload_tracker: inputs.config_reload_tracker,
             hub_dir: inputs.hub_dir,
             lifecycle: inputs.lifecycle,
+            model_catalog: inputs.model_catalog,
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,
@@ -982,6 +986,9 @@ async fn build_spawn_context_and_agent(
 ) {
     let lifecycle =
         crate::tools::LifecycleAccess::new(inputs.directory.clone(), inputs.cfg.agent_name.clone());
+    // One live catalog shared by every session and every tool that checks an
+    // explicit model; config reloads replace its contents in place.
+    let model_catalog = inputs.cfg.model_catalog.clone().into_shared();
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg: inputs.cfg,
         hub_dir: inputs.hub_dir,
@@ -1011,6 +1018,7 @@ async fn build_spawn_context_and_agent(
         a2a_tracker: inputs.a2a_tracker,
         checkpoints: inputs.checkpoints,
         lifecycle: &lifecycle,
+        model_catalog: &model_catalog,
     });
 
     let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
@@ -1037,6 +1045,7 @@ async fn build_spawn_context_and_agent(
         a2a_tracker: inputs.a2a_tracker,
         checkpoints: inputs.checkpoints,
         lifecycle: &lifecycle,
+        model_catalog: &model_catalog,
         degradations: inputs.degradations,
         config_reload_tracker: inputs.config_reload_tracker,
     })

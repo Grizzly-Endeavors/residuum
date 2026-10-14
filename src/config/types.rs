@@ -743,6 +743,86 @@ impl std::str::FromStr for BackgroundModelTier {
     }
 }
 
+/// Which model a background session runs on: one of the `[background.models]`
+/// tiers, or one explicit `provider/model` id.
+///
+/// Written and stored as a plain string: `small`, `medium`, or `large` names
+/// a tier, and anything of the form `provider/model` (the format
+/// `providers.toml`'s `[models]` uses, where `provider` is a `[providers]`
+/// entry or a provider type) names a model. A tier resolves to its failover
+/// chain; an explicit model runs that one model with no failover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelSelector {
+    /// A configured background tier.
+    Tier(BackgroundModelTier),
+    /// An explicit `provider/model` id.
+    Explicit(String),
+}
+
+impl ModelSelector {
+    /// The `small` tier.
+    pub const SMALL: Self = Self::Tier(BackgroundModelTier::Small);
+    /// The `medium` tier.
+    pub const MEDIUM: Self = Self::Tier(BackgroundModelTier::Medium);
+    /// The `large` tier.
+    pub const LARGE: Self = Self::Tier(BackgroundModelTier::Large);
+}
+
+impl Default for ModelSelector {
+    fn default() -> Self {
+        Self::MEDIUM
+    }
+}
+
+impl From<BackgroundModelTier> for ModelSelector {
+    fn from(tier: BackgroundModelTier) -> Self {
+        Self::Tier(tier)
+    }
+}
+
+impl fmt::Display for ModelSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tier(tier) => tier.fmt(f),
+            Self::Explicit(id) => f.write_str(id),
+        }
+    }
+}
+
+impl std::str::FromStr for ModelSelector {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(tier) = s.parse::<BackgroundModelTier>() {
+            return Ok(Self::Tier(tier));
+        }
+        let looks_like_model_id = s.split_once('/').is_some_and(|(provider, model)| {
+            !provider.is_empty() && !model.is_empty() && !s.contains(char::is_whitespace)
+        });
+        if looks_like_model_id {
+            Ok(Self::Explicit(s.to_string()))
+        } else {
+            Err(format!(
+                "invalid model '{s}': use a tier (small, medium, or large) or a model id in \
+                 provider/model form, such as anthropic/claude-haiku-4-5"
+            ))
+        }
+    }
+}
+
+impl Serialize for ModelSelector {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelSelector {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Per-role overrides for temperature and thinking.
 ///
 /// When set, these override the global `temperature` / `thinking` values
@@ -966,6 +1046,9 @@ pub struct Config {
     pub tracing: TracingConfig,
     /// Per-role overrides for temperature and thinking.
     pub role_overrides: HashMap<String, RoleOverrides>,
+    /// The providers an explicit `provider/model` id (a pulse's or scheduled
+    /// action's `model_tier`, `subagent_spawn`'s `model`) resolves against.
+    pub model_catalog: super::model_catalog::ModelCatalog,
     /// Directory this config was loaded from (`<agent>/config`).
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while
@@ -1017,6 +1100,7 @@ impl fmt::Debug for Config {
             .field("web_search", &self.web_search)
             .field("tracing", &self.tracing)
             .field("role_overrides", &self.role_overrides)
+            .field("model_catalog", &self.model_catalog)
             .field("config_dir", &self.config_dir)
             .field("load_notices", &self.load_notices)
             .finish()
@@ -1026,6 +1110,51 @@ impl fmt::Debug for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_selector_parses_tiers() {
+        assert_eq!("small".parse(), Ok(ModelSelector::SMALL));
+        assert_eq!("medium".parse(), Ok(ModelSelector::MEDIUM));
+        assert_eq!("large".parse(), Ok(ModelSelector::LARGE));
+    }
+
+    #[test]
+    fn model_selector_parses_explicit_ids() {
+        assert_eq!(
+            "anthropic/claude-haiku-4-5".parse(),
+            Ok(ModelSelector::Explicit(
+                "anthropic/claude-haiku-4-5".to_string()
+            ))
+        );
+        assert_eq!(
+            "router/meta-llama/llama-3".parse(),
+            Ok(ModelSelector::Explicit(
+                "router/meta-llama/llama-3".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn model_selector_rejects_anything_else_naming_the_value() {
+        for bad in ["smal", "SMALL", "", "/model", "provider/", "a b/c"] {
+            let err = bad.parse::<ModelSelector>().unwrap_err();
+            assert!(err.contains(&format!("'{bad}'")), "{err}");
+        }
+    }
+
+    #[test]
+    fn model_selector_round_trips_as_a_plain_string() {
+        for selector in [
+            ModelSelector::LARGE,
+            ModelSelector::Explicit("local/qwen3:8b".to_string()),
+        ] {
+            let json = serde_json::to_string(&selector).unwrap();
+            assert_eq!(json, format!("\"{selector}\""));
+            let back: ModelSelector = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, selector);
+        }
+        assert!(serde_json::from_str::<ModelSelector>("\"huge\"").is_err());
+    }
 
     #[test]
     fn effective_path_empty_dirs_is_none() {

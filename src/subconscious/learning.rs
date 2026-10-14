@@ -184,7 +184,7 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         prompt,
         context: None,
         source: trigger,
-        model_tier: crate::config::BackgroundModelTier::Large,
+        model: crate::config::ModelSelector::LARGE,
         // The learner is part of the main agent's own subconscious, not
         // something a session spawned, so it runs at main's own spawn depth.
         spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
@@ -234,10 +234,7 @@ mod tests {
         assert!(spawn.prompt.contains("User prefers bullets."));
         assert!(spawn.prompt.contains("Worked around a 502."));
         assert!(spawn.prompt.contains("recent_messages.json"));
-        assert!(matches!(
-            spawn.model_tier,
-            crate::config::BackgroundModelTier::Large
-        ));
+        assert!(matches!(spawn.model, crate::config::ModelSelector::LARGE));
         assert!(spawn.address.as_ref().starts_with("spawned-learner-"));
 
         // A second call inside the window is suppressed.

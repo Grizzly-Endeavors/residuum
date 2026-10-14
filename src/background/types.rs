@@ -8,7 +8,7 @@ use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
 use crate::bus::MessageEvent;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::inference::{ImageData, MessageSender};
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -26,8 +26,12 @@ pub struct SubAgentConfig {
     pub prompt: String,
     /// Additional context to prepend to the session's prompt.
     pub context: Option<String>,
-    /// Which model tier to use.
-    pub model_tier: BackgroundModelTier,
+    /// The model tier or explicit model to run on.
+    pub model: ModelSelector,
+    /// The `provider/model` id the run started on: the first model of the
+    /// tier's failover chain, or the explicit model. `None` for a run started
+    /// without building a provider (tests).
+    pub resolved_model: Option<String>,
     /// Hop count of this run's first turn: `0` for a `scheduled`/`external`
     /// trigger, one more than the spawning turn's highest input hop count
     /// for an agent-initiated spawn, or the hop count of the message that
@@ -170,6 +174,9 @@ pub struct SubAgentBuildConfig {
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     /// How the session's `agent_create`/`agent_delete` reach the hub.
     pub lifecycle: crate::tools::LifecycleAccess,
+    /// The live catalog an explicit model resolves against, for the
+    /// session's own `subagent_spawn`/`schedule_action`.
+    pub model_catalog: crate::config::SharedModelCatalog,
 }
 
 #[cfg(test)]
@@ -179,8 +186,8 @@ mod tests {
     #[test]
     fn model_tier_default_is_medium() {
         assert_eq!(
-            BackgroundModelTier::default(),
-            BackgroundModelTier::Medium,
+            ModelSelector::default(),
+            ModelSelector::MEDIUM,
             "default tier should be medium"
         );
     }

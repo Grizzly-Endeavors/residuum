@@ -25,9 +25,13 @@ pub struct PulseDef {
     /// activated. `"main"` is rejected at load — see [`validate_pulse`].
     #[serde(default)]
     pub agent: Option<String>,
-    /// Model tier for the session. Defaults to `small`.
+    /// The session's model: a tier (`small`, `medium`, `large`) or an
+    /// explicit `provider/model` id. Defaults to `small`. A value that is
+    /// neither fails this pulse's load; an explicit id whose provider isn't
+    /// configured is reported by `PulseScheduler::due_pulses`, which skips
+    /// the pulse until it resolves.
     #[serde(default)]
-    pub model_tier: Option<String>,
+    pub model_tier: Option<crate::config::ModelSelector>,
     /// Name of another pulse whose most recent delivered output (a
     /// completed run that isn't `HEARTBEAT_OK`; a failed run doesn't count)
     /// should be injected into this pulse's prompt at fire time. Single-hop

@@ -25,7 +25,7 @@ use crate::background::registry::{
 };
 use crate::background::store::SessionStore;
 use crate::bus::{EventTrigger, SessionAddress};
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::testing::wait;
 use crate::tools::Tool;
 use crate::tools::background::StopAgentTool;
@@ -261,7 +261,8 @@ fn sample_info(address: &str) -> SessionInfo {
         depth: 1,
         purpose: "test".to_string(),
         agent_skill: None,
-        model_tier: BackgroundModelTier::Medium,
+        model: ModelSelector::MEDIUM,
+        resolved_model: None,
         conversation_target: None,
         started_at: chrono::Utc::now(),
         usage: crate::agent::usage::SessionUsageTotals::default(),
