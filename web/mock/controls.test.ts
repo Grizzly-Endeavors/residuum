@@ -157,9 +157,18 @@ describe("test controls", () => {
 
       await control("teammate-message?agent=atlas");
 
-      // A turn no person started: it opens, the reply streams in and arrives whole, it ends.
+      // The teammate's message is announced with its sender, then the turn it starts: no person
+      // started it, the reply streams in and arrives whole, and it ends.
+      const announced = await socket.nextOfType("user_message");
+      const turnId = announced.turn_id;
+      expect(announced).toMatchObject({
+        id: turnId,
+        agent_sender: { address: "agent:scout", category: "teammate" },
+        endpoint: "background",
+      });
+      expect(announced.content).toMatch(/^\[Message from teammate agent:scout, not the user\./);
       const started = await socket.nextOfType("turn_started");
-      const turnId = started.reply_to;
+      expect(started.reply_to).toBe(turnId);
       expect(turnId).not.toBe("teammate");
       expect(started.origin).toEqual({ endpoint: "background", visibility: "background" });
       const text = await socket.nextOfType("text_delta");
@@ -176,8 +185,6 @@ describe("test controls", () => {
         reply_to: turnId,
       });
       await socket.settled();
-      // The message that started the turn has no frame: the backend announces only a person's.
-      expect(socket.frames.some((frame) => frame.type === "user_message")).toBe(false);
       expect(harness.hub.agents.get("atlas")?.unread).toBe(0);
 
       // History holds both messages under the turn's id.
