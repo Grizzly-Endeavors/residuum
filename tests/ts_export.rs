@@ -3,8 +3,8 @@
 //! Running `cargo test` produces `.ts` files in `web/src/lib/generated/`.
 //! These files are committed to git so the frontend can import them directly.
 //! `RESIDUUM_TS_EXPORT_DIR` writes them somewhere else instead, which is how
-//! `scripts/check-generated-types.sh` compares a fresh export without touching
-//! the checkout.
+//! `scripts/export-generated-types.sh` exports into a scratch directory for
+//! `scripts/check-generated-types.sh` and `scripts/update-generated-types.sh`.
 
 #[expect(
     clippy::tests_outside_test_module,

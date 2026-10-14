@@ -23,6 +23,7 @@ on:
       - "web/src/lib/generated/**"
       - "web/src/styles/tokens.css"
       - "scripts/check-generated-types.sh"
+      - "scripts/export-generated-types.sh"
       - ".github/workflows/quality-checks.yml"
       - ".github/workflows/rust-pr.yml"
       - ".github/workflows/release.yml"

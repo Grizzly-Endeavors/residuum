@@ -189,23 +189,23 @@ line ~ /has been running for over/ {
 line ~ /panicked at / {
     # A panic inside a test's stdout block belongs to that test, including one on
     # a thread the test spawned. Outside a block, the thread name is the only hint.
-    # Only the test's own thread names the file under test; a spawned thread's
-    # panic is in production code, so it does not count toward the test's file.
+    # The file a panic was raised in counts toward the test's file whichever thread
+    # raised it, because a panic in code the change edits can be what broke the
+    # test. Windows prints backslashes in the location, so they become slashes.
     name = cur_test
-    own = 1
     if (line ~ /thread '/) {
         thread = line
         sub(/^.*thread '/, "", thread)
         sub(/'.*$/, "", thread)
         if (name == "") name = thread
-        own = (thread == name)
     }
     f = line
     sub(/^.*panicked at /, "", f)
     sub(/:[0-9]+:[0-9]+:?$/, "", f)
+    gsub(/\\/, "/", f)
     if (name != "") {
         i = rustrec(name)
-        if (own && f ~ /\.rs$/) addfile(i, f)
+        if (f ~ /\.rs$/) addfile(i, f)
         collect = i
         ncollect = 0
     }
@@ -283,6 +283,10 @@ line ~ /^ *FAIL +[^ ]/ {
     if (s ~ /^\|[^|]*\| +/) {
         sub(/^\|[^|]*\| +/, "", s)
     } else if (s ~ /^[A-Za-z0-9_-]+ +[^ ]*\//) {
+        sub(/^[A-Za-z0-9_-]+ +/, "", s)
+    } else if (s ~ /^[A-Za-z0-9_-]+ +[^ ]+\.(ts|tsx|js|jsx|mjs|svelte)( |$)/) {
+        # A root-level file has no slash, so only its test file extension tells it
+        # from the label.
         sub(/^[A-Za-z0-9_-]+ +/, "", s)
     }
     file = s

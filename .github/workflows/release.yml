@@ -34,10 +34,12 @@ jobs:
 
       - name: Build summary
         run: |
-          echo '## Release Version' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tag:** ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '## Release Version'
+            echo ''
+            echo "**Tag:** ${{ steps.version.outputs.tag }}"
+            echo "**Version:** ${{ steps.version.outputs.version }}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # The visual comparisons report on pull requests and never gate a release.
   quality:
@@ -106,10 +108,13 @@ jobs:
 
       - name: Stage artifact
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARTIFACT: ${{ matrix.artifact }}
         run: |
-          SRC="target/${{ matrix.target }}/release/residuum"
-          if [[ "${{ matrix.target }}" == *-windows-* ]]; then SRC="${SRC}.exe"; fi
-          cp "$SRC" "${{ matrix.artifact }}"
+          SRC="target/$TARGET/release/residuum"
+          if [[ "$TARGET" == *-windows-* ]]; then SRC="${SRC}.exe"; fi
+          cp "$SRC" "$ARTIFACT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -312,13 +317,15 @@ jobs:
       - name: Build summary
         if: always()
         run: |
-          echo '## Release Results' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tag:** ${{ needs.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** ${{ needs.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo '| Artifact | Status |' >> "$GITHUB_STEP_SUMMARY"
-          echo '|----------|--------|' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '## Release Results'
+            echo ''
+            echo "**Tag:** ${{ needs.version.outputs.tag }}"
+            echo "**Version:** ${{ needs.version.outputs.version }}"
+            echo ''
+            echo '| Artifact | Status |'
+            echo '|----------|--------|'
+          } >> "$GITHUB_STEP_SUMMARY"
           for name in residuum-linux-x86_64 residuum-linux-aarch64 residuum-macos-aarch64 residuum-windows-x86_64.exe Residuum-macos; do
             if [ -d "release-artifacts/$name" ]; then
               echo "| $name | uploaded |" >> "$GITHUB_STEP_SUMMARY"

@@ -14,12 +14,7 @@ dir=web/src/lib/generated
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# cargo runs git subprocesses (cargo-deny's advisory-db refresh among them) that
-# must not inherit the repository variables a hook exports. See .githooks/pre-commit.
-(
-    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
-    RESIDUUM_TS_EXPORT_DIR="$work/generated" cargo test --quiet --test ts_export
-)
+scripts/export-generated-types.sh "$work/generated"
 
 # The index's copies of the directory. checkout-index with a prefix writes them
 # out without touching the index or the working tree.
