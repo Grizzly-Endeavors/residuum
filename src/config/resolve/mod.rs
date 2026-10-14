@@ -1391,7 +1391,48 @@ app_password = "s"
             "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();
-        assert_eq!(cfg.idle.idle_channel.as_deref(), Some("teams"));
+        assert_eq!(cfg.idle.idle_channel, "teams");
+    }
+
+    #[test]
+    fn idle_channel_unset_or_named_for_the_web_resolves_to_the_web_ui() {
+        let providers = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        for toml in [
+            "",
+            "[idle]\ntimeout_minutes = 10\n",
+            "[idle]\nidle_channel = \"websocket\"\n",
+            "[idle]\nidle_channel = \"ws\"\n",
+        ] {
+            let cfg = resolve_test(toml, providers).unwrap();
+            assert_eq!(cfg.idle.idle_channel, "ws", "config: {toml:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_idle_channel_resolves_to_the_web_ui_with_notice() {
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let providers = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        for (named, toml) in [
+            ("telegram", "[idle]\nidle_channel = \"telegram\"\n"),
+            (
+                "carrier-pigeon",
+                "[idle]\nidle_channel = \"carrier-pigeon\"\n",
+            ),
+        ] {
+            let cfg = resolve_test(toml, providers).unwrap();
+            assert_eq!(cfg.idle.idle_channel, "ws", "config: {toml:?}");
+            assert_eq!(cfg.load_notices.len(), 1, "{:?}", cfg.load_notices);
+            let notice = cfg.load_notices.first().unwrap();
+            assert!(
+                notice.contains(named),
+                "notice should name {named}: {notice}"
+            );
+            assert!(
+                notice.contains("web app"),
+                "notice should say where updates go: {notice}"
+            );
+        }
     }
 
     // ── A2A config: enabled/port/public_url are hub-owned, visibility is agent-owned ──

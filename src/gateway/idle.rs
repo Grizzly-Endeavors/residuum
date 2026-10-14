@@ -9,9 +9,11 @@
 //! the sequence once that background cycle's result comes back on the main
 //! loop.
 
+use crate::bus::EndpointName;
 use crate::gateway::memory::MemorySubsystems;
 use crate::gateway::post_turn::IdleContinuation;
 use crate::gateway::types::AgentRuntime;
+use crate::interfaces::types::WEB_UI_ENDPOINT;
 
 /// Run the idle transition's synchronous steps and trigger its observe
 /// cycle in the background; [`apply_idle_continuation`] finishes the rest
@@ -45,46 +47,53 @@ pub(super) async fn execute_idle_transition(
 }
 
 /// Finish an idle transition once its background observe cycle's result
-/// arrives: clear the in-memory message buffer, switch the notification
-/// interface, and inject the continuity system message. Called from
+/// arrives: clear the in-memory message buffer, switch where agent-started
+/// turns go, and inject the continuity system message. Called from
 /// `run_loop`'s `apply_post_turn_result`.
 pub(super) fn apply_idle_continuation(rt: &mut AgentRuntime, continuation: &IdleContinuation) {
     rt.agent.clear_messages();
 
-    if let Some(channel_name) = &continuation.idle_channel {
-        switch_idle_interface(rt, channel_name);
-    }
+    rt.last_output_endpoint = Some(idle_output_endpoint(
+        &rt.endpoint_registry,
+        &continuation.idle_channel,
+    ));
 
     let summary = format_idle_summary(continuation.timeout_mins, continuation.total_skills);
     rt.agent.inject_system_message(&summary);
 }
 
-/// Switch `last_output_topic` to the configured idle channel.
-///
-/// Validates the endpoint exists in the registry and has interactive capability
-/// before switching. Falls back to current topic if the endpoint is not found.
-fn switch_idle_interface(rt: &mut AgentRuntime, channel_name: &str) {
-    let endpoint_id = crate::bus::EndpointId::from(channel_name);
-    match rt.endpoint_registry.get(&endpoint_id) {
+/// Where agent-started main turns go once the owner is idle: the configured
+/// idle channel when the registry has it as an interactive endpoint, else
+/// the web UI, which is always registered. Falling back to the web rather
+/// than leaving output where the owner last spoke keeps it off a chat the
+/// owner did not choose for this.
+pub(super) fn idle_output_endpoint(
+    registry: &crate::bus::EndpointRegistry,
+    channel_name: &str,
+) -> EndpointName {
+    let web = || EndpointName::from(WEB_UI_ENDPOINT);
+    match registry.get(&crate::bus::EndpointId::from(channel_name)) {
         Some(entry)
             if entry
                 .capabilities
                 .contains(crate::bus::EndpointCapabilities::INTERACTIVE) =>
         {
-            rt.last_output_endpoint = Some(crate::bus::EndpointName::from(channel_name));
             tracing::info!(channel = %channel_name, "switched to idle interface");
+            EndpointName::from(channel_name)
         }
         Some(_) => {
             tracing::warn!(
                 channel = %channel_name,
-                "idle channel exists but is not interactive, keeping current output topic"
+                "idle channel exists but is not interactive, sending idle output to the web UI"
             );
+            web()
         }
         None => {
             tracing::warn!(
                 channel = %channel_name,
-                "idle channel not found in endpoint registry, keeping current output topic"
+                "idle channel not found in endpoint registry, sending idle output to the web UI"
             );
+            web()
         }
     }
 }
@@ -131,6 +140,49 @@ fn format_idle_summary(timeout_mins: u64, skill_count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::{EndpointCapabilities, EndpointEntry, EndpointId, EndpointRegistry, TopicId};
+
+    fn entry(id: &str, capabilities: EndpointCapabilities) -> EndpointEntry {
+        EndpointEntry {
+            id: EndpointId::from(id),
+            topic: TopicId::Endpoint(EndpointName::from(id)),
+            capabilities,
+            display_name: id.to_string(),
+        }
+    }
+
+    fn registry_with_telegram() -> EndpointRegistry {
+        EndpointRegistry::from_entries([
+            entry(WEB_UI_ENDPOINT, EndpointCapabilities::INTERACTIVE),
+            entry("telegram", EndpointCapabilities::INTERACTIVE),
+            entry("ntfy", EndpointCapabilities::empty()),
+        ])
+    }
+
+    #[test]
+    fn idle_output_goes_to_the_configured_interactive_channel() {
+        let registry = registry_with_telegram();
+        assert_eq!(
+            idle_output_endpoint(&registry, "telegram"),
+            EndpointName::from("telegram")
+        );
+        assert_eq!(
+            idle_output_endpoint(&registry, WEB_UI_ENDPOINT),
+            EndpointName::from(WEB_UI_ENDPOINT)
+        );
+    }
+
+    #[test]
+    fn idle_output_falls_back_to_the_web_ui_for_a_missing_or_non_interactive_channel() {
+        let registry = registry_with_telegram();
+        for channel in ["discord", "ntfy"] {
+            assert_eq!(
+                idle_output_endpoint(&registry, channel),
+                EndpointName::from(WEB_UI_ENDPOINT),
+                "{channel} must not leave idle output on a chat"
+            );
+        }
+    }
 
     #[test]
     fn format_idle_summary_with_skills() {

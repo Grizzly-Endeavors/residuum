@@ -871,23 +871,25 @@ async fn defer_late_messages(rt: &mut AgentRuntime, leftovers: Vec<Interrupt>, s
 }
 
 /// Where a turn's replies go. Background turns go wherever `switch_endpoint`
-/// last pointed them, else the user's last endpoint; user turns derive from
-/// the origin and become the new last endpoint.
+/// last pointed them, else `last_output_endpoint` (the user's last endpoint,
+/// or the idle channel once the idle transition has run); user turns derive
+/// from the origin and become the new last endpoint.
 fn resolve_output_endpoint(
-    rt: &mut AgentRuntime,
+    last_output_endpoint: &mut Option<EndpointName>,
+    output_topic_override_tx: &tokio::sync::watch::Sender<Option<EndpointName>>,
     origin: &MessageOrigin,
     is_background: bool,
 ) -> Option<EndpointName> {
     if is_background {
         return background_output_endpoint(
-            rt.output_topic_override_tx.borrow().clone(),
-            rt.last_output_endpoint.as_ref(),
+            output_topic_override_tx.borrow().clone(),
+            last_output_endpoint.as_ref(),
         );
     }
     // Clear any switch_endpoint override so responses follow the user's endpoint.
-    rt.output_topic_override_tx.send_replace(None);
+    output_topic_override_tx.send_replace(None);
     let ep = EndpointName::from(origin.endpoint.as_str());
-    rt.last_output_endpoint = Some(ep.clone());
+    *last_output_endpoint = Some(ep.clone());
     Some(ep)
 }
 
@@ -914,7 +916,12 @@ pub async fn handle_inbound_message(
         Visibility::User
     };
 
-    let output_endpoint = resolve_output_endpoint(rt, &origin, is_background);
+    let output_endpoint = resolve_output_endpoint(
+        &mut rt.last_output_endpoint,
+        &rt.output_topic_override_tx,
+        &origin,
+        is_background,
+    );
 
     // Held for the whole turn, so the rail and Home show it busy until it
     // ends, however the turn ends.
@@ -1120,6 +1127,151 @@ mod tests {
             Some(endpoint())
         );
         assert_eq!(background_output_endpoint(None, None), None);
+    }
+
+    fn web() -> EndpointName {
+        EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT)
+    }
+
+    /// The web UI and Telegram, both interactive, as a hub with Telegram
+    /// configured registers them.
+    fn registry_with_telegram() -> crate::bus::EndpointRegistry {
+        let interactive = |id: &str| crate::bus::EndpointEntry {
+            id: crate::bus::EndpointId::from(id),
+            topic: crate::bus::TopicId::Endpoint(EndpointName::from(id)),
+            capabilities: crate::bus::EndpointCapabilities::INTERACTIVE,
+            display_name: id.to_string(),
+        };
+        crate::bus::EndpointRegistry::from_entries([
+            interactive(crate::interfaces::types::WEB_UI_ENDPOINT),
+            interactive("telegram"),
+        ])
+    }
+
+    fn origin_on(endpoint: &str) -> MessageOrigin {
+        MessageOrigin {
+            endpoint: endpoint.to_string(),
+            sender: None,
+            conversation: None,
+            agent_sender: None,
+        }
+    }
+
+    /// An agent-started main turn: a teammate's or session's message to main.
+    fn agent_started() -> MessageOrigin {
+        crate::bus::MessageEvent::from_background(String::new()).origin
+    }
+
+    /// The owner talks on Telegram and goes quiet; with no `idle_channel`
+    /// set, the idle transition sends agent-started turns to the web, so the
+    /// Telegram adapter is handed none of such a turn's events. Once the
+    /// owner speaks on Telegram again, routing follows them as before.
+    #[tokio::test]
+    async fn after_idle_with_the_default_channel_an_agent_started_turn_reaches_only_the_web() {
+        let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
+        let mut last = None;
+
+        let owner = resolve_output_endpoint(&mut last, &override_tx, &origin_on("telegram"), false);
+        assert_eq!(owner, Some(endpoint()), "the owner's turn replies in place");
+        assert_eq!(
+            resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true),
+            Some(endpoint()),
+            "before the idle period an agent-started turn follows the owner"
+        );
+
+        let idle_channel = crate::config::IdleConfig::default().idle_channel;
+        last = Some(crate::gateway::idle::idle_output_endpoint(
+            &registry_with_telegram(),
+            &idle_channel,
+        ));
+        let after_idle = resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true);
+        assert_eq!(after_idle, Some(web()));
+
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut chat_responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut chat_lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut chat_errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut main: Subscriber<MainConversationEvent> =
+            handle.subscribe(topics::MainConversation).await.unwrap();
+
+        publish_turn_started_to_chat_interface(&publisher, after_idle.as_ref(), "bg-1").await;
+        publish_turn_outcome(
+            Ok(vec!["the session finished".into()]),
+            &publisher,
+            after_idle.as_ref(),
+            "bg-1",
+            TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
+        )
+        .await;
+
+        let ended = main.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&ended, MainConversationEvent::TurnEnded { turn_id } if turn_id == "bg-1"),
+            "the web's main conversation carries the turn: {ended:?}"
+        );
+        assert_no_event(&handle, &mut chat_responses).await;
+        assert_no_event(&handle, &mut chat_lifecycle).await;
+        assert_no_event(&handle, &mut chat_errors).await;
+
+        assert_eq!(
+            resolve_output_endpoint(&mut last, &override_tx, &origin_on("telegram"), false),
+            Some(endpoint()),
+            "the owner's next message still replies in place"
+        );
+        assert_eq!(
+            resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true),
+            Some(endpoint()),
+            "and agent-started turns follow the owner again until the next idle period"
+        );
+    }
+
+    /// An `idle_channel` naming a chat is the owner's choice to have
+    /// agent-started turns reach that chat while they are away.
+    #[tokio::test]
+    async fn after_idle_an_explicit_chat_channel_receives_agent_started_turns() {
+        let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
+        let mut last = None;
+        resolve_output_endpoint(&mut last, &override_tx, &origin_on("ws"), false);
+
+        last = Some(crate::gateway::idle::idle_output_endpoint(
+            &registry_with_telegram(),
+            "telegram",
+        ));
+        let after_idle = resolve_output_endpoint(&mut last, &override_tx, &agent_started(), true);
+        assert_eq!(after_idle, Some(endpoint()));
+
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut chat_responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        publish_turn_outcome(
+            Ok(vec!["the session finished".into()]),
+            &publisher,
+            after_idle.as_ref(),
+            "bg-2",
+            TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
+        )
+        .await;
+
+        let response = chat_responses.recv().await.unwrap().unwrap();
+        assert_eq!(response.content, "the session finished");
+        assert_eq!(response.correlation_id, "bg-2");
     }
 
     /// Assert `sub` was sent nothing. A bus barrier proves every event published

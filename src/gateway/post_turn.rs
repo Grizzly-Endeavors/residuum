@@ -50,7 +50,7 @@ use crate::subconscious::{
 pub(crate) struct IdleContinuation {
     pub timeout_mins: u64,
     pub total_skills: usize,
-    pub idle_channel: Option<String>,
+    pub idle_channel: String,
 }
 
 /// What the main loop needs to apply from a finished background cycle.
