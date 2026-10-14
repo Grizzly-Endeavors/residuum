@@ -233,13 +233,16 @@ mod tests {
         let mut pulse = sample_pulse();
         pulse.model_tier = Some(crate::config::ModelSelector::LARGE);
         assert_eq!(
-            build_pulse_execution(&pulse, None, None).model,
+            build_pulse_execution(&pulse, None, None, &[]).model,
             crate::config::ModelSelector::LARGE
         );
 
         let explicit = crate::config::ModelSelector::Explicit("local/qwen3:8b".to_string());
         pulse.model_tier = Some(explicit.clone());
-        assert_eq!(build_pulse_execution(&pulse, None, None).model, explicit);
+        assert_eq!(
+            build_pulse_execution(&pulse, None, None, &[]).model,
+            explicit
+        );
     }
 
     #[test]
