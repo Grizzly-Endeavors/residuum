@@ -15,13 +15,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::paths::{agent_dir, hub_dir};
 use crate::interfaces::teams::atk::{
-    ATK_CLI_VERSION, AtkScaffoldOptions, import_atk_project, resolve_atk_paths,
+    ATK_CLI_VERSION, AtkScaffoldOptions, ScaffoldAtkResult, import_atk_project, resolve_atk_paths,
     scaffold_atk_project, validate_png_dimensions,
 };
 use crate::interfaces::teams::atk_runner::{
     AtkRunnerOverrides, BoundedLog, check_signed_in, detect_prereqs,
-    forward_redirect_with_port_check, install_cli, map_install_app_error, parse_login_url_and_port,
-    run_command_streaming,
+    forward_redirect_with_port_check, install_cli, map_install_app_error, map_provision_error,
+    parse_login_url_and_port, run_command_streaming,
 };
 use crate::interfaces::teams::setup_types::{
     CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogStream, SetupError,
@@ -62,7 +62,6 @@ struct JobSession {
     result: Option<SetupResult>,
     app_installed: bool,
     form: TeamsSetupForm,
-    replace_existing: bool,
     active_cancel: CancellationToken,
     login_pid: Option<u32>,
 }
@@ -200,7 +199,6 @@ impl TeamsSetupJobManager {
             result: None,
             app_installed: false,
             form: req.form,
-            replace_existing: req.replace_existing,
             active_cancel: cancel_token.clone(),
             login_pid: None,
         }));
@@ -278,7 +276,7 @@ impl TeamsSetupJobManager {
         }
         if prereqs.teams_already_configured && !req.replace_existing {
             return Err(SetupJobError::BadRequest(
-                "replace_existing is required: Microsoft Teams is already configured. Confirm replacing the existing bot to continue."
+                "Microsoft Teams is already configured for this agent. Confirm that setup should update the existing configuration to continue."
                     .to_string(),
             ));
         }
@@ -598,6 +596,15 @@ impl TeamsSetupJobManager {
             }
         }
 
+        for failure in &failed {
+            tracing::warn!(
+                agent = %agent,
+                item = %failure.item,
+                error = %failure.message,
+                "teams setup cleanup could not remove an item"
+            );
+        }
+
         CleanupResult { removed, failed }
     }
 
@@ -844,9 +851,9 @@ impl TeamsSetupJobManager {
         agent: &str,
         session: &Arc<Mutex<JobSession>>,
     ) -> Result<(), SetupError> {
-        let (form, replace_existing, log) = {
+        let (form, log) = {
             let lock = session.lock().await;
-            (lock.form.clone(), lock.replace_existing, lock.log.clone())
+            (lock.form.clone(), lock.log.clone())
         };
 
         log.push(
@@ -916,7 +923,6 @@ impl TeamsSetupJobManager {
             agent_name: agent.to_string(),
             endpoint: form.messaging_endpoint,
             project_dir: None,
-            force: replace_existing,
             bot_name: Some(form.bot_name),
             developer_name: Some(form.developer_name),
             developer_url: Some(form.developer_url),
@@ -928,13 +934,15 @@ impl TeamsSetupJobManager {
             outline_icon,
         };
 
-        scaffold_atk_project(&self.residuum_root, &options)
+        let scaffolded = scaffold_atk_project(&self.residuum_root, &options)
             .await
             .map_err(|e| SetupError {
                 phase: TeamsSetupPhase::Scaffold,
                 message: format!("Failed to scaffold project: {e}"),
                 detail: Some(e.to_string()),
             })?;
+
+        log_reused_bot(agent, &scaffolded, &log);
 
         log.push(
             LogStream::Info,
@@ -1000,13 +1008,10 @@ impl TeamsSetupJobManager {
                 Ok(())
             }
             Ok(out) => {
-                let err_msg = format!(
-                    "Provisioning failed (exit code {}).",
-                    out.exit_code.unwrap_or(-1)
-                );
+                let combined = format!("{}\n{}", out.stdout, out.stderr);
                 Err(SetupError {
                     phase: TeamsSetupPhase::Provision,
-                    message: err_msg,
+                    message: map_provision_error(out.exit_code, &combined),
                     detail: Some(out.stderr),
                 })
             }
@@ -1107,6 +1112,22 @@ impl TeamsSetupJobManager {
         );
         Ok(())
     }
+}
+
+/// Tell the user and the logs when provisioning will update a bot registration that is already
+/// recorded in the project instead of creating a new one.
+fn log_reused_bot(agent: &str, scaffolded: &ScaffoldAtkResult, log: &BoundedLog) {
+    let Some(bot_id) = &scaffolded.reused_bot_id else {
+        return;
+    };
+    tracing::info!(agent = %agent, bot_id = %bot_id, "teams setup reusing the existing bot registration");
+    log.push(
+        LogStream::Info,
+        format!(
+            "Reusing the existing bot registration ({bot_id}) from {}; its name and endpoint will be updated.",
+            scaffolded.project_dir.display()
+        ),
+    );
 }
 
 fn next_phase(current: TeamsSetupPhase) -> Option<TeamsSetupPhase> {
@@ -1894,6 +1915,96 @@ exit 0
         })
         .await;
         assert_eq!(retried.created.bot_id.as_deref(), Some("bot-mock-1234"));
+    }
+
+    #[tokio::test]
+    async fn test_start_over_after_failure_reuses_project_and_keeps_provisioned_env() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, mut overrides) = setup_mock_env(&temp);
+
+        let ext = if cfg!(windows) { ".cmd" } else { "" };
+        let atk = root.join(format!("bin/swap_atk{ext}"));
+        make_fail_atk_script(&atk);
+        overrides.atk_bin = Some(atk.clone());
+
+        let mgr = TeamsSetupJobManager::with_overrides(root.clone(), overrides);
+        tokio::fs::create_dir_all(root.join("hub")).await.unwrap();
+        tokio::fs::create_dir_all(root.join("agent-1"))
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("hub/config.toml"), "timezone = \"UTC\"\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            root.join("agent-1/config.toml"),
+            "[agent]\nname = \"agent-1\"\n",
+        )
+        .await
+        .unwrap();
+
+        // First run: provisioning records a bot and then fails.
+        mgr.start_job("agent-1", sample_start_form()).await.unwrap();
+        let failed = wait::until("the first job to fail", || async {
+            mgr.get_job("agent-1", None)
+                .await
+                .filter(|j| j.state == TeamsSetupState::Failed)
+        })
+        .await;
+        assert_eq!(failed.phase, TeamsSetupPhase::Provision);
+        let env_path = root.join("agent-1/teams-app/env/.env.residuum");
+        let mut provisioned = tokio::fs::read_to_string(&env_path).await.unwrap();
+        provisioned.push_str("TEAMS_APP_TENANT_ID=tenant-partial-5555\n");
+        tokio::fs::write(&env_path, provisioned).await.unwrap();
+
+        // Start over: the leftover project files stay on disk.
+        mgr.delete_job("agent-1").await.unwrap();
+        assert!(mgr.get_job("agent-1", None).await.is_none());
+
+        // Second run: provisioning stays in flight, so the files on disk are what the
+        // scaffold step left behind.
+        make_slow_atk_script(&atk);
+        let mut req = sample_start_form();
+        req.form.bot_name = "Renamed Bot".to_string();
+        mgr.start_job("agent-1", req).await.unwrap();
+        let pid_file = root.join("agent-1/teams-app/grandchild.pid");
+        let pid = wait::until("the second run to reach provisioning", || async {
+            let j = mgr.get_job("agent-1", None).await?;
+            assert!(
+                j.state != TeamsSetupState::Failed,
+                "second run failed: {:?}",
+                j.error
+            );
+            if j.phase != TeamsSetupPhase::Provision {
+                return None;
+            }
+            let content = tokio::fs::read_to_string(&pid_file).await.ok()?;
+            content.trim().parse::<u32>().ok()
+        })
+        .await;
+
+        let env = tokio::fs::read_to_string(&env_path).await.unwrap();
+        assert!(env.contains("BOT_ID=partial-bot-id-4444"), "{env}");
+        assert!(
+            env.contains("TEAMS_APP_TENANT_ID=tenant-partial-5555"),
+            "{env}"
+        );
+        assert!(env.contains("BOT_DISPLAY_NAME=\"Renamed Bot\""), "{env}");
+
+        let reuse_notice = mgr
+            .get_job("agent-1", None)
+            .await
+            .unwrap()
+            .log
+            .into_iter()
+            .find(|line| line.text.contains("Reusing the existing bot registration"))
+            .expect("the log should say the existing bot registration is reused");
+        assert!(reuse_notice.text.contains("partial-bot-id-4444"));
+
+        mgr.cancel_job("agent-1").await.unwrap();
+        wait::until_true("the provisioning process tree to terminate", || {
+            !crate::util::process::is_process_running(pid)
+        })
+        .await;
     }
 
     #[tokio::test]

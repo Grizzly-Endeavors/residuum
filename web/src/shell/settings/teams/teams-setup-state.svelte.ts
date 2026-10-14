@@ -97,6 +97,8 @@ export class TeamsSetupState {
   installError = $state<string | null>(null);
   cleanupLoading = $state(false);
   cleanupSuccess = $state(false);
+  cleanupError = $state<string | null>(null);
+  cleanupFailureDetails = $state<string[]>([]);
 
   private pollingActive = false;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -435,6 +437,7 @@ export class TeamsSetupState {
       }
       this.lastSuccessfulUpdate = Date.now();
       this.lostContact = false;
+      this.resetCleanup();
       this.currentStep = "progress";
     } catch (err: unknown) {
       this.formError = this.extractError(err, "Couldn't start Teams setup.");
@@ -498,6 +501,7 @@ export class TeamsSetupState {
       }
       this.lastSuccessfulUpdate = Date.now();
       this.lostContact = false;
+      this.resetCleanup();
       this.currentStep = "progress";
     } catch (err: unknown) {
       this.prereqsError = this.extractError(err, "Couldn't retry setup.");
@@ -544,17 +548,30 @@ export class TeamsSetupState {
     }
   }
 
+  private resetCleanup(): void {
+    this.cleanupSuccess = false;
+    this.cleanupError = null;
+    this.cleanupFailureDetails = [];
+  }
+
   async handleCleanup(): Promise<void> {
     this.cleanupLoading = true;
+    this.resetCleanup();
     try {
-      await cleanupTeamsSetup(this.agent, {
+      const result = await cleanupTeamsSetup(this.agent, {
         project_files: true,
         cli: false,
         sign_out: false,
       });
-      this.cleanupSuccess = true;
-    } catch {
-      // Ignored
+      if (result.failed.length === 0) {
+        this.cleanupSuccess = true;
+      } else {
+        this.cleanupError =
+          "Couldn't delete the Teams project files. Close any program using the agent's teams-app folder and try again.";
+        this.cleanupFailureDetails = result.failed.map((failure) => failure.message);
+      }
+    } catch (err) {
+      this.cleanupError = this.extractError(err, "Couldn't delete the Teams project files.");
     } finally {
       this.cleanupLoading = false;
     }
@@ -571,6 +588,7 @@ export class TeamsSetupState {
     this.lastSeq = 0;
     this.trimmedLogsCount = 0;
     this.lostContact = false;
+    this.resetCleanup();
     this.currentStep = "prereqs";
     void this.loadInitial();
   }
