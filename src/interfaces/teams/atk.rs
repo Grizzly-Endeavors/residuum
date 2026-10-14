@@ -256,7 +256,10 @@ fn parse_env_file(path: &Path) -> Result<HashMap<String, String>, FatalError> {
             path.display()
         ))
     })?;
+    Ok(parse_env_content(&content))
+}
 
+fn parse_env_content(content: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in content.lines() {
         let trimmed = line.trim();
@@ -275,7 +278,16 @@ fn parse_env_file(path: &Path) -> Result<HashMap<String, String>, FatalError> {
             map.insert(key, val.to_string());
         }
     }
-    Ok(map)
+    map
+}
+
+/// The top-level `projectId` in `m365agents.yml` text, if the text is YAML and has one.
+fn project_id_from_yaml_text(content: &str) -> Result<Option<String>, serde_yaml_ng::Error> {
+    let value: serde_json::Value = serde_yaml_ng::from_str(content)?;
+    Ok(value
+        .get("projectId")
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string))
 }
 
 /// Read optional `projectId` from `m365agents.yml` if present.
@@ -285,8 +297,59 @@ fn read_project_id_from_yaml(project_dir: &Path) -> Option<String> {
         return None;
     }
     let content = std::fs::read_to_string(yml_path).ok()?;
-    let value: serde_json::Value = serde_yaml_ng::from_str(&content).ok()?;
-    value.get("projectId")?.as_str().map(ToString::to_string)
+    project_id_from_yaml_text(&content).ok().flatten()
+}
+
+/// Add the `projectId` the toolkit recorded in the project's current `m365agents.yml` to the
+/// refreshed template text.
+///
+/// `ATK` writes `projectId` into `m365agents.yml` on the first provision, and uses it to decrypt
+/// secrets and to identify the project, so the refresh keeps it. A template that already sets its
+/// own `projectId` wins. A current file that is not valid YAML is replaced without a carry-over,
+/// with a warning.
+async fn carry_over_project_id(
+    template_text: String,
+    existing_path: &Path,
+) -> Result<String, FatalError> {
+    let existing = match tokio::fs::read_to_string(existing_path).await {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(template_text),
+        Err(e) => {
+            return Err(FatalError::Config(format!(
+                "failed to read existing {}: {e}",
+                existing_path.display()
+            )));
+        }
+    };
+    let project_id = match project_id_from_yaml_text(&existing) {
+        Ok(Some(id)) => id,
+        Ok(None) => return Ok(template_text),
+        Err(e) => {
+            tracing::warn!(
+                path = %existing_path.display(),
+                error = %e,
+                "existing m365agents.yml is not valid YAML; refreshing it without carrying over projectId"
+            );
+            return Ok(template_text);
+        }
+    };
+    if matches!(project_id_from_yaml_text(&template_text), Ok(Some(_))) {
+        return Ok(template_text);
+    }
+    let rendered = serde_yaml_ng::to_string(&project_id).map_err(|e| {
+        FatalError::Config(format!(
+            "failed to keep the projectId from {}: {e}",
+            existing_path.display()
+        ))
+    })?;
+    let mut out = template_text;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("projectId: ");
+    out.push_str(rendered.trim_end());
+    out.push('\n');
+    Ok(out)
 }
 
 /// Read and decrypt the ATK project environment files.
@@ -497,6 +560,9 @@ pub struct ScaffoldAtkResult {
     pub env_file: PathBuf,
     /// Bot endpoint configured in `.env.residuum`.
     pub endpoint: String,
+    /// `BOT_ID` of a bot registration already recorded in `.env.residuum`, which provisioning
+    /// updates instead of creating a new bot.
+    pub reused_bot_id: Option<String>,
 }
 
 async fn resolve_template_text(
@@ -698,12 +764,14 @@ async fn write_scaffold_project(
 /// A project directory that already exists is reused: the template-derived files
 /// (`m365agents.yml`, `appPackage/manifest.json`, the icons) are rewritten, and `.env.residuum`
 /// keeps every key the scaffold does not set, so the bot registration that provisioning wrote
-/// there survives running the scaffold again.
+/// there survives running the scaffold again. The `projectId` the toolkit recorded in the
+/// existing `m365agents.yml` is kept too.
 ///
 /// # Errors
 ///
 /// Returns [`FatalError::Config`] if the agent name is invalid, the agent directory does not exist,
-/// icon dimensions are invalid, an existing `.env.residuum` cannot be read, or writes fail.
+/// icon dimensions are invalid, an existing `.env.residuum` or `m365agents.yml` cannot be read,
+/// or writes fail.
 pub async fn scaffold_atk_project(
     residuum_root: &Path,
     options: &AtkScaffoldOptions,
@@ -728,12 +796,14 @@ pub async fn scaffold_atk_project(
         .join("teams-setup")
         .join("templates");
 
-    let m365_content = resolve_template_text(
+    let m365_template = resolve_template_text(
         &team_templates.join("m365agents.yml"),
         TEAMS_SETUP_M365AGENTS_YML,
         "m365agents.yml",
     )
     .await?;
+    let m365_content =
+        carry_over_project_id(m365_template, &project_dir.join("m365agents.yml")).await?;
 
     let manifest_content = resolve_template_text(
         &team_templates.join("appPackage").join("manifest.json"),
@@ -773,6 +843,9 @@ pub async fn scaffold_atk_project(
         }
     };
     let env_content = merge_scaffold_env(existing_env.as_deref(), &env_entries);
+    let reused_bot_id = parse_env_content(&env_content)
+        .remove("BOT_ID")
+        .filter(|id| !id.trim().is_empty());
 
     write_scaffold_project(
         &project_dir,
@@ -798,6 +871,7 @@ pub async fn scaffold_atk_project(
         package_zip,
         env_file: project_dir.join("env/.env.residuum"),
         endpoint: options.endpoint.clone(),
+        reused_bot_id,
     })
 }
 
@@ -1372,7 +1446,13 @@ mod tests {
         let m365_path = first.project_dir.join("m365agents.yml");
         let manifest_path = first.project_dir.join("appPackage/manifest.json");
         let color_path = first.project_dir.join("appPackage/color.png");
-        tokio::fs::write(&m365_path, "stale").await.unwrap();
+        let project_id = "11111111-2222-3333-4444-555555555555";
+        tokio::fs::write(
+            &m365_path,
+            format!("# stale header\nversion: v0.0\nprojectId: {project_id}\n"),
+        )
+        .await
+        .unwrap();
         tokio::fs::write(&manifest_path, "stale").await.unwrap();
         tokio::fs::write(&color_path, b"stale").await.unwrap();
 
@@ -1411,10 +1491,17 @@ mod tests {
             tokio::fs::read_to_string(&user_env_path).await.unwrap(),
             "SECRET_BOT_PASSWORD=crypto_abc\n"
         );
+        let m365 = tokio::fs::read_to_string(&m365_path).await.unwrap();
         assert_eq!(
-            tokio::fs::read_to_string(&m365_path).await.unwrap(),
-            TEAMS_SETUP_M365AGENTS_YML
+            m365,
+            format!("{TEAMS_SETUP_M365AGENTS_YML}projectId: {project_id}\n")
         );
+        assert_eq!(m365.matches("projectId:").count(), 1);
+        assert_eq!(
+            read_project_id_from_yaml(&second.project_dir).as_deref(),
+            Some(project_id)
+        );
+        assert_eq!(second.reused_bot_id.as_deref(), Some("bot-guid-123"));
         assert_eq!(
             tokio::fs::read_to_string(&manifest_path).await.unwrap(),
             TEAMS_SETUP_MANIFEST_JSON
@@ -1435,6 +1522,88 @@ mod tests {
         assert_eq!(merged, "A=\"new\"\nBOT_ID=keep\n# note\nB=\"b\"\n");
 
         assert_eq!(merge_scaffold_env(None, &entries), "A=\"new\"\nB=\"b\"\n");
+    }
+
+    #[tokio::test]
+    async fn first_scaffold_has_no_reused_bot_and_no_project_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        tokio::fs::create_dir_all(residuum_root.join("scout"))
+            .await
+            .unwrap();
+        let res = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://example.com/teams"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.reused_bot_id, None);
+        assert_eq!(
+            tokio::fs::read_to_string(res.project_dir.join("m365agents.yml"))
+                .await
+                .unwrap(),
+            TEAMS_SETUP_M365AGENTS_YML
+        );
+    }
+
+    #[tokio::test]
+    async fn rescaffold_replaces_unparseable_m365agents_yml_with_the_template() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        tokio::fs::create_dir_all(residuum_root.join("scout"))
+            .await
+            .unwrap();
+        let first = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://example.com/teams"),
+        )
+        .await
+        .unwrap();
+
+        let m365_path = first.project_dir.join("m365agents.yml");
+        tokio::fs::write(&m365_path, "projectId: [unclosed\n  - : :\n")
+            .await
+            .unwrap();
+
+        scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://example.com/teams"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&m365_path).await.unwrap(),
+            TEAMS_SETUP_M365AGENTS_YML
+        );
+    }
+
+    #[tokio::test]
+    async fn rescaffold_fails_visibly_when_existing_m365agents_yml_is_unreadable() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        tokio::fs::create_dir_all(residuum_root.join("scout"))
+            .await
+            .unwrap();
+        let first = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://example.com/teams"),
+        )
+        .await
+        .unwrap();
+
+        // A directory where the file should be cannot be read as text.
+        let m365_path = first.project_dir.join("m365agents.yml");
+        tokio::fs::remove_file(&m365_path).await.unwrap();
+        tokio::fs::create_dir(&m365_path).await.unwrap();
+
+        let err = scaffold_atk_project(
+            &residuum_root,
+            &rescaffold_options("Scout", "https://example.com/teams"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to read existing"), "{err}");
+        assert!(m365_path.is_dir());
     }
 
     #[tokio::test]

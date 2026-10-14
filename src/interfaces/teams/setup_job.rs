@@ -15,13 +15,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::paths::{agent_dir, hub_dir};
 use crate::interfaces::teams::atk::{
-    ATK_CLI_VERSION, AtkScaffoldOptions, import_atk_project, resolve_atk_paths,
+    ATK_CLI_VERSION, AtkScaffoldOptions, ScaffoldAtkResult, import_atk_project, resolve_atk_paths,
     scaffold_atk_project, validate_png_dimensions,
 };
 use crate::interfaces::teams::atk_runner::{
     AtkRunnerOverrides, BoundedLog, check_signed_in, detect_prereqs,
-    forward_redirect_with_port_check, install_cli, map_install_app_error, parse_login_url_and_port,
-    run_command_streaming,
+    forward_redirect_with_port_check, install_cli, map_install_app_error, map_provision_error,
+    parse_login_url_and_port, run_command_streaming,
 };
 use crate::interfaces::teams::setup_types::{
     CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogStream, SetupError,
@@ -276,7 +276,7 @@ impl TeamsSetupJobManager {
         }
         if prereqs.teams_already_configured && !req.replace_existing {
             return Err(SetupJobError::BadRequest(
-                "replace_existing is required: Microsoft Teams is already configured. Confirm replacing the existing bot to continue."
+                "Microsoft Teams is already configured for this agent. Confirm that setup should update the existing configuration to continue."
                     .to_string(),
             ));
         }
@@ -925,13 +925,15 @@ impl TeamsSetupJobManager {
             outline_icon,
         };
 
-        scaffold_atk_project(&self.residuum_root, &options)
+        let scaffolded = scaffold_atk_project(&self.residuum_root, &options)
             .await
             .map_err(|e| SetupError {
                 phase: TeamsSetupPhase::Scaffold,
                 message: format!("Failed to scaffold project: {e}"),
                 detail: Some(e.to_string()),
             })?;
+
+        log_reused_bot(agent, &scaffolded, &log);
 
         log.push(
             LogStream::Info,
@@ -997,13 +999,10 @@ impl TeamsSetupJobManager {
                 Ok(())
             }
             Ok(out) => {
-                let err_msg = format!(
-                    "Provisioning failed (exit code {}).",
-                    out.exit_code.unwrap_or(-1)
-                );
+                let combined = format!("{}\n{}", out.stdout, out.stderr);
                 Err(SetupError {
                     phase: TeamsSetupPhase::Provision,
-                    message: err_msg,
+                    message: map_provision_error(out.exit_code, &combined),
                     detail: Some(out.stderr),
                 })
             }
@@ -1104,6 +1103,22 @@ impl TeamsSetupJobManager {
         );
         Ok(())
     }
+}
+
+/// Tell the user and the logs when provisioning will update a bot registration that is already
+/// recorded in the project instead of creating a new one.
+fn log_reused_bot(agent: &str, scaffolded: &ScaffoldAtkResult, log: &BoundedLog) {
+    let Some(bot_id) = &scaffolded.reused_bot_id else {
+        return;
+    };
+    tracing::info!(agent = %agent, bot_id = %bot_id, "teams setup reusing the existing bot registration");
+    log.push(
+        LogStream::Info,
+        format!(
+            "Reusing the existing bot registration ({bot_id}) from {}; its name and endpoint will be updated.",
+            scaffolded.project_dir.display()
+        ),
+    );
 }
 
 fn next_phase(current: TeamsSetupPhase) -> Option<TeamsSetupPhase> {
@@ -1968,6 +1983,16 @@ exit 0
             "{env}"
         );
         assert!(env.contains("BOT_DISPLAY_NAME=\"Renamed Bot\""), "{env}");
+
+        let reuse_notice = mgr
+            .get_job("agent-1", None)
+            .await
+            .unwrap()
+            .log
+            .into_iter()
+            .find(|line| line.text.contains("Reusing the existing bot registration"))
+            .expect("the log should say the existing bot registration is reused");
+        assert!(reuse_notice.text.contains("partial-bot-id-4444"));
 
         mgr.cancel_job("agent-1").await.unwrap();
         wait::until_true("the provisioning process tree to terminate", || {

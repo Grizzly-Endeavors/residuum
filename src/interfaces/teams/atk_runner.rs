@@ -244,6 +244,26 @@ pub fn map_install_app_error(output_text: &str) -> String {
     }
 }
 
+/// Map ATK provisioning failures into plain-language explanations.
+///
+/// `output_text` is the toolkit's combined output. A project that was provisioned in one
+/// Microsoft 365 tenant fails with `M365TenantIdNotMatchError` when setup runs again signed in to
+/// another tenant; the way out is to start from a fresh project.
+#[must_use]
+pub fn map_provision_error(exit_code: Option<i32>, output_text: &str) -> String {
+    if output_text
+        .to_ascii_lowercase()
+        .contains("m365tenantidnotmatch")
+    {
+        "This project was set up in a different Microsoft 365 tenant than the account you are signed in with. Choose Clean up, then Start over, to create a new bot in this tenant, or sign in with the original account.".to_string()
+    } else {
+        format!(
+            "Provisioning failed (exit code {}).",
+            exit_code.unwrap_or(-1)
+        )
+    }
+}
+
 /// Optional path overrides for injected test executables without global PATH modification.
 #[derive(Debug, Clone, Default)]
 pub struct AtkRunnerOverrides {
@@ -916,6 +936,26 @@ mod tests {
 
         let err_normal = map_install_app_error("Zip file corrupt");
         assert!(err_normal.contains("Failed to install app in Microsoft Teams: Zip file corrupt"));
+    }
+
+    #[test]
+    fn map_provision_error_patterns() {
+        let tenant = map_provision_error(
+            Some(1),
+            "Error: M365TenantIdNotMatchError: The current tenant does not match. Clear BOT_ID, TEAMS_APP_ID in env/.env.residuum",
+        );
+        assert!(tenant.contains("different Microsoft 365 tenant"));
+        assert!(tenant.contains("Clean up, then Start over"));
+        assert!(!tenant.contains("BOT_ID"));
+
+        assert_eq!(
+            map_provision_error(Some(3), "fatal provisioning error"),
+            "Provisioning failed (exit code 3)."
+        );
+        assert_eq!(
+            map_provision_error(None, ""),
+            "Provisioning failed (exit code -1)."
+        );
     }
 
     #[tokio::test]

@@ -88,8 +88,9 @@
     {#if state.prereqs.teams_already_configured}
       <div class="checkbox-container">
         <Banner tone="warn">
-          Teams is already configured for this agent. Setting up a new bot replaces the current
-          Teams connection (old registrations stay in your tenant).
+          Teams is already configured for this agent. Setup updates the bot registration saved in
+          this agent's Teams project, or creates a new one if there is none. To start with a
+          brand-new bot, clean up the project files first.
         </Banner>
         <label class="checkbox-row">
           <input type="checkbox" class="checkbox-input" bind:checked={state.replaceExisting} />
