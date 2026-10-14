@@ -5,11 +5,12 @@ Telegram, Discord, and Microsoft Teams now get only each turn's final reply. Wha
 ## What behaves differently
 
 - **Chats get the final reply only.** This covers the main agent's turns in your own direct messages and every conversation session's turns in group chats, channels, and other people's direct messages.
+- **The final reply is the text after the turn's last tool call.** An answer the agent wrote before a trailing tool call, such as saving a note, reaches the chat only with `deliver_intermediate` on. The agent's system prompt tells it to put the full answer in its final reply.
 - **The web UI is unchanged.** It still shows the agent's text, tool calls, and reply as the turn runs, including turns started from a chat.
 - **Errors and `send_message` are unchanged.** A failed turn still sends its plain-language error to the chat that started it, and a message the agent sends with `send_message` still goes out when it is sent.
 - **The typing indicator runs for the whole turn**, through every tool call, and stops when the turn ends.
 
-## Getting the old behaviour back
+## Getting the old behavior back
 
 Turn on **Post updates while working** for the interface in Settings → (agent) → Connections, and choose **Save changes**. Or set it in the agent's `config.toml`:
 

@@ -125,7 +125,7 @@
   }
 </script>
 
-{#snippet reach(channel: Channel, othersHint: string, contextHint: string)}
+{#snippet chatOptions(channel: Channel, othersHint: string, contextHint: string)}
   <ConfigToggle
     {scope}
     field={`${channel}_respond_to_others`}
@@ -181,7 +181,7 @@
       placeholder="Paste the token from the Discord developer portal"
       error={configFieldError(scope, "discord_token")}
     />
-    {@render reach(
+    {@render chatOptions(
       "discord",
       `Off: only you, the first person to message the bot. On: anyone who can message the bot can talk to ${agent}.`,
       `When someone mentions ${agent} in a server channel, it reads this many earlier messages first.`,
@@ -206,7 +206,7 @@
       placeholder="Paste the token from @BotFather"
       error={configFieldError(scope, "telegram_token")}
     />
-    {@render reach(
+    {@render chatOptions(
       "telegram",
       `Off: only you, the first person to message the bot. On: anyone who can message the bot can talk to ${agent}.`,
       `In groups, ${agent} reads this many earlier messages when it's mentioned. Needs privacy mode turned off in @BotFather, or the bot made a group admin.`,
@@ -300,7 +300,7 @@
         port. Teams messages through Residuum Cloud can't arrive until it is connected.
       </Banner>
     {/if}
-    {@render reach(
+    {@render chatOptions(
       "teams",
       `Off: only you, the first person to message the bot. On: coworkers can mention or message ${agent} too.`,
       `When someone mentions ${agent} in a group chat, it reads this many earlier messages first.`,
