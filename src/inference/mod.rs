@@ -5,6 +5,7 @@ mod error;
 pub(crate) mod factory;
 pub(crate) mod failover;
 mod http;
+pub(crate) mod image_input;
 pub(crate) mod providers;
 mod reply;
 pub(crate) mod retry;
@@ -22,6 +23,7 @@ pub(crate) use factory::{
     build_provider_chain_with_shared_notices,
 };
 pub use http::{HttpClientConfig, SharedHttpClient};
+pub use image_input::ImagesOmitted;
 pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
     MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,

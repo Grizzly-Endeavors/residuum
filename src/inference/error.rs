@@ -87,7 +87,38 @@ impl InferenceError {
     pub(crate) fn cause_phrase(&self) -> &'static str {
         self.category().cause_phrase()
     }
+
+    /// Whether the provider turned the request down because it carried
+    /// image content the model can't take. Matches only the rejections
+    /// listed in [`IMAGE_INPUT_REJECTIONS`]; any other error, a `400`
+    /// included, is not one.
+    #[must_use]
+    pub(crate) fn rejects_image_input(&self) -> bool {
+        let Self::Api(msg) = self else {
+            return false;
+        };
+        let lower = msg.to_lowercase();
+        IMAGE_INPUT_REJECTIONS
+            .iter()
+            .any(|rejection| lower.contains(rejection))
+    }
 }
+
+/// Lowercased error text a provider returns when a request carries image
+/// content its model can't take. Each entry is a rejection a real provider
+/// returned, named beside it; add a shape only once it has been seen.
+const IMAGE_INPUT_REJECTIONS: &[&str] = &[
+    // Z.ai's OpenAI-compatible API serving the text-only glm-5.3, reported
+    // in issue #463: `messages.content.type is invalid`.
+    "messages.content.type is invalid",
+    // OpenAI Chat Completions with a model that has no vision: `Invalid
+    // content type. image_url is only supported by certain models.`
+    "image_url is only supported by certain models",
+    // DeepSeek's API, whose content parts are text only: `Failed to
+    // deserialize the JSON body into the target type: messages[1]: unknown
+    // variant `image_url`, expected `text``.
+    "unknown variant `image_url`",
+];
 
 /// Whether a lowercased provider error names a server-side failure by its
 /// error type rather than an HTTP status. A streaming response reports a
@@ -390,5 +421,38 @@ mod tests {
             .is_retryable(),
             "a rejected request is not retryable"
         );
+    }
+
+    #[test]
+    fn image_input_rejections_are_recognised() {
+        for body in [
+            r#"400 Bad Request: {"error":{"code":"1214","message":"messages.content.type is invalid"}}"#,
+            r#"400 Bad Request: {"error":{"message":"Invalid content type. image_url is only supported by certain models.","type":"invalid_request_error"}}"#,
+            "400 Bad Request: Failed to deserialize the JSON body into the target type: \
+             messages[1]: unknown variant `image_url`, expected `text` at line 1 column 312",
+        ] {
+            assert!(
+                InferenceError::Api(body.to_string()).rejects_image_input(),
+                "should recognise an image rejection: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_errors_are_not_image_rejections() {
+        for err in [
+            InferenceError::Api(
+                r#"400 Bad Request: {"error":{"message":"Invalid value for 'temperature'"}}"#
+                    .to_string(),
+            ),
+            InferenceError::Api("400 Bad Request: prompt is too long".to_string()),
+            InferenceError::Parse("messages.content.type is invalid".to_string()),
+            InferenceError::Timeout(30),
+        ] {
+            assert!(
+                !err.rejects_image_input(),
+                "should not be taken for an image rejection: {err}"
+            );
+        }
     }
 }

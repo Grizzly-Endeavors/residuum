@@ -599,6 +599,7 @@ mod tests {
             usage: Some(usage),
             thinking: Vec::new(),
             stop_reason: None,
+            images_omitted: None,
         }
     }
 

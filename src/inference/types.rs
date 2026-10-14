@@ -516,6 +516,8 @@ pub struct InferenceResponse {
     pub thinking: Vec<ThinkingBlock>,
     /// Why generation ended, if the provider reports it.
     pub stop_reason: Option<StopReason>,
+    /// Images left out of the request because the model can't take them.
+    pub images_omitted: Option<super::ImagesOmitted>,
 }
 
 impl InferenceResponse {
@@ -528,6 +530,7 @@ impl InferenceResponse {
             usage: None,
             thinking: Vec::new(),
             stop_reason: None,
+            images_omitted: None,
         }
     }
 
