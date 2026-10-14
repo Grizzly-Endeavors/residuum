@@ -15,8 +15,9 @@
 //! `source_scan` holds the tests that keep it that way: test code may not
 //! call `sleep`, `timeout` or wiremock's `set_delay` outside this module, and
 //! the waits that predate the rule are counted in `wall_clock_backlog`, where
-//! the counts only go down. `CONTRIBUTING.md` ("Waiting in tests") describes
-//! which wait fits which situation.
+//! the counts only go down. Test code may not make a file executable itself
+//! either; it writes scripts through [`script`]. `CONTRIBUTING.md` ("Waiting
+//! in tests") describes which wait fits which situation.
 
 pub(crate) mod clock;
 pub(crate) mod gate;
