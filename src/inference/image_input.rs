@@ -148,7 +148,8 @@ impl ImageInputGuard {
 
     /// Send the request, keeping images from a model that can't take them.
     /// `image_fallback` says a later hop of the chain takes images, so an
-    /// image rejection goes back to the chain instead of being retried here.
+    /// image rejection goes back to the chain, with the model remembered as
+    /// text-only, instead of being retried here.
     async fn run(
         &self,
         messages: &[Message],
@@ -171,12 +172,20 @@ impl ImageInputGuard {
             Ok(response) => return Ok(response),
             Err(err) => err,
         };
-        if image_fallback || self.declared != ImageInput::Undeclared || !err.rejects_image_input() {
+        if self.declared != ImageInput::Undeclared || !err.rejects_image_input() {
             return Err(err);
         }
         let Some(stripped) = strip_images(messages) else {
             return Err(err);
         };
+        if image_fallback {
+            // A later hop takes images, so a wrong verdict here only sends
+            // image requests there: remember it now, and the chain passes
+            // this hop over for every later request with images instead of
+            // paying a refused request each time.
+            self.learn(&err);
+            return Err(err);
+        }
         if let Some(sink) = sink {
             sink.restart_if_needed();
         }
@@ -185,15 +194,20 @@ impl ImageInputGuard {
         let response = self
             .send_without_images(&stripped, tools, options, sink, true)
             .await?;
+        self.learn(&err);
+        Ok(response)
+    }
+
+    /// Remember the model as text-only, logging it the first time.
+    fn learn(&self, rejection: &InferenceError) {
         if self.learned.insert(&self.learned_key) {
             tracing::warn!(
                 model = self.inner.model_name(),
-                error = %err,
-                "provider turned down a request with images and took it without them; \
+                error = %rejection,
+                "provider turned down a request for its images; \
                  sending this model no images for the rest of the run"
             );
         }
-        Ok(response)
     }
 }
 
@@ -683,7 +697,10 @@ mod tests {
 
         assert!(err.rejects_image_input());
         assert_eq!(requests.lock().unwrap().len(), 1, "no retry without images");
-        assert!(guard.takes_images(), "nothing learned from it");
+        assert!(
+            !guard.takes_images(),
+            "the rejection marks the model text-only, so the chain passes it over"
+        );
     }
 
     /// Streams a piece of its answer before turning down a request with

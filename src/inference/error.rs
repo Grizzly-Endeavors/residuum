@@ -36,8 +36,8 @@ impl InferenceError {
     /// - Request/Timeout/Stalled/StreamInterrupted: transient network failures
     /// - Parse: permanent -- malformed response won't improve
     /// - Api: by its HTTP status when the message names one (a timeout, a
-    ///   rate limit or a server error); otherwise when the message indicates
-    ///   rate-limiting, overload or a server-side failure
+    ///   rate limit, Groq's capacity refusal or a server error); otherwise when
+    ///   the message indicates rate-limiting, overload or a server-side failure
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -48,7 +48,8 @@ impl InferenceError {
             Self::Api(msg) => {
                 let lower = msg.to_lowercase();
                 if let Some(status) = http_status(&lower) {
-                    return status == 408 || status == 429 || status >= 500;
+                    // 498 is Groq's "Flex Tier Capacity Exceeded", a transient refusal.
+                    return matches!(status, 408 | 429 | 498) || status >= 500;
                 }
                 lower.contains("rate")
                     || lower.contains("limit")
@@ -483,6 +484,10 @@ mod tests {
             ("503 Service Unavailable: try later", true),
             ("529 <unknown status code>: overloaded", true),
             ("408 Request Timeout: took too long", true),
+            (
+                "498 <unknown status code>: Flex Tier Capacity Exceeded",
+                true,
+            ),
             ("anthropic api error 500 Internal Server Error: oops", true),
             ("Error 429: too many requests", true),
             ("400 Bad Request: the limit on tools is 128", false),

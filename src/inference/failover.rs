@@ -171,6 +171,10 @@ impl FailoverProvider {
         // this call, captured only if that specific provider fails again
         // this time — the reason a fallback notice names.
         let mut active_provider_cause: Option<&'static str> = None;
+        // Which providers failed this call for a reason other than turning
+        // down its images. Only a switch past providers that all failed is a
+        // failover worth telling the user about.
+        let mut failed = vec![false; self.providers.len()];
 
         for (position, &(idx, image_fallback)) in order.iter().enumerate() {
             let Some(provider) = self.providers.get(idx) else {
@@ -181,11 +185,11 @@ impl FailoverProvider {
                 .complete_as_hop(messages, tools, options, hop_sink, image_fallback)
                 .await;
             match attempt {
-                Ok(response) if position == 0 && idx > 0 => {
-                    // Earlier providers were passed over only because they
-                    // can't take this request's images, not because they
-                    // failed: nothing to tell the user, and the chain hasn't
-                    // moved off the provider it was on.
+                Ok(response) if failed.iter().take(idx).any(|&earlier| !earlier) => {
+                    // A provider ahead of this one was passed over for this
+                    // request's images (it can't take them, or just turned
+                    // them down) rather than failing: nothing to tell the
+                    // user, and the chain stays on the provider it was on.
                     debug!(
                         answered_by = provider.model_name(),
                         "request with images answered by a provider that takes them"
@@ -206,17 +210,27 @@ impl FailoverProvider {
                     return Ok(response);
                 }
                 Err(err) => {
-                    let remaining = total - position - 1;
-                    if remaining > 0 {
-                        warn!(
+                    if image_fallback && err.rejects_image_input() {
+                        debug!(
                             provider = provider.model_name(),
-                            error = %err,
-                            remaining,
-                            "provider failed, trying next in failover chain"
+                            "provider turned down this request's images; trying one that takes them"
                         );
-                    }
-                    if idx == previously_active {
-                        active_provider_cause = Some(err.cause_phrase());
+                    } else {
+                        let remaining = total - position - 1;
+                        if remaining > 0 {
+                            warn!(
+                                provider = provider.model_name(),
+                                error = %err,
+                                remaining,
+                                "provider failed, trying next in failover chain"
+                            );
+                        }
+                        if idx == previously_active {
+                            active_provider_cause = Some(err.cause_phrase());
+                        }
+                        if let Some(slot) = failed.get_mut(idx) {
+                            *slot = true;
+                        }
                     }
                     if let Some(sink) = sink {
                         sink.restart_if_needed();
@@ -1149,6 +1163,18 @@ mod tests {
                 ))
             }
 
+            /// Streams a first piece, then answers as `complete` does.
+            async fn complete_streaming(
+                &self,
+                messages: &[Message],
+                tools: &[ToolDefinition],
+                options: &CompletionOptions,
+                sink: &dyn StreamSink,
+            ) -> Result<InferenceResponse, InferenceError> {
+                sink.push(StreamDelta::Text(format!("{} starts", self.name)));
+                self.complete(messages, tools, options).await
+            }
+
             fn model_name(&self) -> &str {
                 self.name
             }
@@ -1237,10 +1263,16 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn an_image_rejection_fails_over_to_a_hop_that_takes_images() {
+        async fn an_image_rejection_passes_the_hop_over_for_one_that_takes_images() {
+            let bus_handle = crate::bus::spawn_broker();
+            let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
+                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+                .await
+                .unwrap();
             let (primary, primary_requests) = hop("glm-5.3", ImageInput::Undeclared, true);
             let (fallback, fallback_requests) = hop("gpt-4o", ImageInput::Accepted, false);
-            let chain = FailoverProvider::new(vec![primary, fallback]);
+            let chain = FailoverProvider::new(vec![primary, fallback])
+                .with_notices(bus_handle.publisher(), "main model");
 
             let response = chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1255,6 +1287,7 @@ mod tests {
                 "the primary is tried once with the image and not retried without it"
             );
             assert_eq!(sent_images(&fallback_requests), vec![1]);
+            assert_no_notice(&bus_handle, &mut notices).await;
 
             chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1262,8 +1295,73 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 sent_images(&primary_requests),
-                vec![1, 1],
-                "a rejection that failed over teaches nothing: the primary is tried again"
+                vec![1],
+                "the rejection is remembered: the next image request skips the primary"
+            );
+            assert_eq!(sent_images(&fallback_requests), vec![1, 1]);
+
+            let text = chain
+                .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                text.content, "answer from glm-5.3",
+                "text turns stay on the primary"
+            );
+            assert_no_notice(&bus_handle, &mut notices).await;
+        }
+
+        #[tokio::test]
+        async fn a_failing_vision_hop_behind_a_skipped_primary_raises_no_notice() {
+            let bus_handle = crate::bus::spawn_broker();
+            let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
+                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+                .await
+                .unwrap();
+            let (primary, primary_requests) = hop("glm-5.3", ImageInput::TextOnly, false);
+            let down: Box<dyn InferenceProvider> = Box::new(FailProvider { name: "vision-a" });
+            let (last, last_requests) = hop("vision-b", ImageInput::Accepted, false);
+            let chain = FailoverProvider::new(vec![primary, down, last])
+                .with_notices(bus_handle.publisher(), "main model");
+
+            let response = chain
+                .complete(&with_image(), &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(response.content, "answer from vision-b");
+            assert_eq!(sent_images(&last_requests), vec![1]);
+            assert!(sent_images(&primary_requests).is_empty());
+            assert_no_notice(&bus_handle, &mut notices).await;
+
+            let text = chain
+                .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(text.content, "answer from glm-5.3");
+            assert_no_notice(&bus_handle, &mut notices).await;
+        }
+
+        #[tokio::test]
+        async fn a_streamed_image_rejection_is_voided_before_the_next_hop_streams() {
+            let (primary, _) = hop("glm-5.3", ImageInput::Undeclared, true);
+            let (fallback, _) = hop("gpt-4o", ImageInput::Accepted, false);
+            let chain = FailoverProvider::new(vec![primary, fallback]);
+            let sink = RecordingSink::default();
+
+            let response = chain
+                .complete_streaming(&with_image(), &[], &CompletionOptions::default(), &sink)
+                .await
+                .unwrap();
+
+            assert_eq!(response.content, "answer from gpt-4o");
+            assert_eq!(
+                sink.deltas(),
+                vec![
+                    StreamDelta::Text("glm-5.3 starts".to_string()),
+                    StreamDelta::Restart,
+                    StreamDelta::Text("gpt-4o starts".to_string()),
+                ],
+                "the refused hop's text is voided once, before the next hop's"
             );
         }
 
