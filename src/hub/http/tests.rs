@@ -2341,12 +2341,118 @@ async fn the_cross_site_guard_covers_the_embedded_app() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+/// Start a sign-in the way Connect does, and return the `state` the hub put
+/// in the relay's sign-in address.
+async fn start_cloud_sign_in(h: &Harness) -> String {
+    let (status, body) = h
+        .call(
+            Method::POST,
+            "/api/hub/cloud/connect",
+            Some(json!({ "relay_url": "", "port": "7700" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let url = url::Url::parse(body["url"].as_str().unwrap()).unwrap();
+    url.query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .unwrap()
+}
+
+/// Whether the hub has saved a cloud sign-in: the token secret, or `[cloud]`.
+fn cloud_sign_in_saved(h: &Harness) -> bool {
+    let hub_dir = h.root.path().join("hub");
+    let store = crate::config::secrets::SecretStore::load(&hub_dir).unwrap();
+    let config = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+    store.get("cloud_token").is_some() || config.contains("[cloud]")
+}
+
 #[tokio::test]
-async fn the_cloud_callback_saves_the_sign_in_and_hands_off_to_settings() {
+async fn connect_answers_with_the_relays_sign_in_address_and_a_fresh_state() {
+    let h = Harness::new();
+    let (status, body) = h
+        .call(
+            Method::POST,
+            "/api/hub/cloud/connect",
+            Some(json!({ "relay_url": "ws://127.0.0.1:8080/tunnel/v2/register", "port": "7701" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let url = url::Url::parse(body["url"].as_str().unwrap()).unwrap();
+    assert_eq!(url.origin().ascii_serialization(), "http://127.0.0.1:8080");
+    assert_eq!(url.path(), "/connect");
+    let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    let [(port_key, port), (state_key, state)] = query.as_slice() else {
+        panic!("expected port and state, got {query:?}");
+    };
+    assert_eq!((port_key.as_str(), port.as_str()), ("port", "7701"));
+    assert_eq!(state_key, "state");
+    assert!(
+        regex::Regex::new("^[A-Za-z0-9_-]{16,128}$")
+            .unwrap()
+            .is_match(state),
+        "{state}"
+    );
+
+    let (_, defaults) = h
+        .call(Method::POST, "/api/hub/cloud/connect", Some(json!({})))
+        .await;
+    let again = url::Url::parse(defaults["url"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        again.origin().ascii_serialization(),
+        "https://agent-residuum.com"
+    );
+    assert_eq!(
+        again
+            .query_pairs()
+            .find(|(key, _)| key == "port")
+            .unwrap()
+            .1,
+        "7700"
+    );
+    assert_ne!(
+        again
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1,
+        state.as_str()
+    );
+}
+
+#[tokio::test]
+async fn connect_refuses_a_relay_or_port_it_cannot_build_an_address_from() {
+    let h = Harness::new();
+    for body in [
+        json!({ "relay_url": "relay.example.com" }),
+        json!({ "relay_url": "https://relay.example.com" }),
+        json!({ "port": "seventy-seven" }),
+        json!({ "port": "0" }),
+    ] {
+        let (status, answer) = h
+            .call(Method::POST, "/api/hub/cloud/connect", Some(body.clone()))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(answer["error"].as_str().is_some(), "{answer}");
+    }
+}
+
+#[tokio::test]
+async fn connect_is_refused_to_another_site() {
+    let h = Harness::new();
+    let status = h
+        .status(cross_site(Method::POST, "/api/hub/cloud/connect"))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_cloud_callback_saves_a_sign_in_connect_started_and_hands_off_to_settings() {
     let mut h = Harness::new();
+    let state = start_cloud_sign_in(&h).await;
     let (status, headers, _) = h
         .send(
-            Request::get("/cloud/callback?token=rst_signed_in")
+            Request::get(format!("/cloud/callback?token=rst_signed_in&state={state}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2370,23 +2476,85 @@ async fn the_cloud_callback_saves_the_sign_in_and_hands_off_to_settings() {
 }
 
 #[tokio::test]
+async fn a_cloud_callback_without_a_state_connect_started_saves_nothing() {
+    let mut h = Harness::new();
+    let open = start_cloud_sign_in(&h).await;
+    for uri in [
+        "/cloud/callback?token=rst_attacker".to_string(),
+        "/cloud/callback?token=rst_attacker&state=".to_string(),
+        "/cloud/callback?token=rst_attacker&state=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            .to_string(),
+        format!("/cloud/callback?token=rst_attacker&state={open}x"),
+    ] {
+        let (status, headers, _) = h
+            .send(Request::get(&uri).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(
+            headers["location"], "/home?settings=_all/cloud&cloud=not-started-here",
+            "{uri}"
+        );
+    }
+    assert!(!cloud_sign_in_saved(&h));
+    assert!(h.reload_rx.try_recv().is_err());
+
+    // The sign-in that was open is still there for the real callback.
+    let (_, headers, _) = h
+        .send(
+            Request::get(format!("/cloud/callback?token=rst_mine&state={open}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        headers["location"],
+        "/home?settings=_all/cloud&cloud=connecting"
+    );
+}
+
+#[tokio::test]
+async fn a_cloud_callback_state_works_once() {
+    let mut h = Harness::new();
+    let state = start_cloud_sign_in(&h).await;
+    let first = format!("/cloud/callback?token=rst_first&state={state}");
+    let (_, first_answer, _) = h
+        .send(Request::get(&first).body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(
+        first_answer["location"],
+        "/home?settings=_all/cloud&cloud=connecting"
+    );
+    assert!(matches!(h.reload_rx.try_recv(), Ok(ReloadSignal::Hub)));
+
+    let replay = format!("/cloud/callback?token=rst_replayed&state={state}");
+    let (_, replay_answer, _) = h
+        .send(Request::get(&replay).body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(
+        replay_answer["location"],
+        "/home?settings=_all/cloud&cloud=not-started-here"
+    );
+    let store = crate::config::secrets::SecretStore::load(&h.root.path().join("hub")).unwrap();
+    assert_eq!(store.get("cloud_token"), Some("rst_first"));
+    assert!(h.reload_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn a_cloud_callback_without_a_usable_token_hands_off_to_settings() {
     let mut h = Harness::new();
-    for uri in [
-        "/cloud/callback",
-        "/cloud/callback?token=",
-        "/cloud/callback?token&token",
-        "/cloud/callback?%zz=%",
-    ] {
-        let (status, headers, _) = h.send(Request::get(uri).body(Body::empty()).unwrap()).await;
+    for query in ["", "&token=", "&token&token", "&%zz=%"] {
+        let state = start_cloud_sign_in(&h).await;
+        let uri = format!("/cloud/callback?state={state}{query}");
+        let (status, headers, _) = h
+            .send(Request::get(&uri).body(Body::empty()).unwrap())
+            .await;
         assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
         assert_eq!(
             headers["location"], "/home?settings=_all/cloud&cloud=missing-token",
             "{uri}"
         );
     }
-    let config = std::fs::read_to_string(h.root.path().join("hub/config.toml")).unwrap();
-    assert!(!config.contains("[cloud]"), "{config}");
+    assert!(!cloud_sign_in_saved(&h));
     assert!(h.reload_rx.try_recv().is_err());
 }
 

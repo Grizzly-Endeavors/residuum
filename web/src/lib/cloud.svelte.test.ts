@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   accountDashboardUrl,
   accountTarget,
-  connectTarget,
   phaseOf,
+  signInTarget,
   teamsMessagingEndpoint,
 } from "./cloud.svelte";
 import type { CloudStatusResponse } from "./types";
@@ -76,32 +76,36 @@ describe("accountDashboardUrl", () => {
   });
 });
 
-describe("connectTarget", () => {
+describe("signInTarget", () => {
   it("signs in at Residuum Cloud's relay when no relay is set", () => {
-    expect(connectTarget("", "")).toEqual({
-      url: "https://agent-residuum.com/connect?port=7700",
+    expect(signInTarget("", "")).toEqual({
+      relayUrl: "",
+      port: "7700",
       host: "agent-residuum.com",
     });
   });
 
   it("follows the relay URL, so a relay on this machine is signed in to there", () => {
-    expect(connectTarget("ws://127.0.0.1:8080/tunnel/v2/register", "7701")).toEqual({
-      url: "http://127.0.0.1:8080/connect?port=7701",
+    expect(signInTarget("ws://127.0.0.1:8080/tunnel/v2/register", "7701")).toEqual({
+      relayUrl: "ws://127.0.0.1:8080/tunnel/v2/register",
+      port: "7701",
       host: "127.0.0.1:8080",
     });
-    expect(connectTarget(" wss://relay.example.com/tunnel/v2/register ", "7700")?.url).toBe(
-      "https://relay.example.com/connect?port=7700",
-    );
+    expect(signInTarget(" wss://relay.example.com/tunnel/v2/register ", "7700")).toEqual({
+      relayUrl: "wss://relay.example.com/tunnel/v2/register",
+      port: "7700",
+      host: "relay.example.com",
+    });
   });
 
   it("falls back to the default gateway port when the field is empty or blank", () => {
-    expect(connectTarget("", "  ")?.url).toContain("port=7700");
+    expect(signInTarget("", "  ")?.port).toBe("7700");
   });
 
   it("has nowhere to sign in for an address that isn't a ws or wss one", () => {
-    expect(connectTarget("not-a-url", "7700")).toBeNull();
-    expect(connectTarget("https://relay.example.com", "7700")).toBeNull();
-    expect(connectTarget("ws://", "7700")).toBeNull();
+    expect(signInTarget("not-a-url", "7700")).toBeNull();
+    expect(signInTarget("https://relay.example.com", "7700")).toBeNull();
+    expect(signInTarget("ws://", "7700")).toBeNull();
   });
 });
 

@@ -18,6 +18,7 @@ mod assets;
 pub(super) mod chat;
 pub mod checkpoints;
 pub mod cloud;
+pub(crate) mod cloud_sign_in;
 pub mod config;
 pub mod inbox;
 pub(crate) mod memory;

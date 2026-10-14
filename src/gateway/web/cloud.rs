@@ -30,6 +30,9 @@ pub(crate) struct CloudApiState {
     /// The hub's checkpoint repositories, so the `config.toml` writes here
     /// can be undone from History like every other Settings save.
     pub checkpoints: Arc<CheckpointEngine>,
+    /// The sign-ins `POST /api/hub/cloud/connect` started, which the callback
+    /// checks its `state` against.
+    pub sign_ins: super::cloud_sign_in::PendingSignIns,
 }
 
 /// The tunnel's status as `GET /api/hub/cloud/status` and the `tunnel` field
@@ -153,6 +156,9 @@ enum CallbackOutcome {
     MissingToken,
     /// The token or the `[cloud]` switch couldn't be saved.
     SaveFailed,
+    /// The callback's `state` names no sign-in Connect started here recently,
+    /// so its token was not used.
+    NotStartedHere,
 }
 
 impl CallbackOutcome {
@@ -161,6 +167,7 @@ impl CallbackOutcome {
             Self::Connecting => "connecting",
             Self::MissingToken => "missing-token",
             Self::SaveFailed => "save-failed",
+            Self::NotStartedHere => "not-started-here",
         }
     }
 
@@ -193,13 +200,15 @@ async fn prepare_tunnel_switch(
     .await
 }
 
-/// `GET /cloud/callback?token=...` — where the relay sends the browser after
-/// sign-in.
+/// `GET /cloud/callback?token=...&state=...` — where the relay sends the
+/// browser after sign-in.
 ///
-/// Stores the token in the secret store, switches the tunnel on in the hub's
-/// `config.toml`, triggers a config reload, and hands the browser to Settings
-/// → Residuum Cloud, which follows the tunnel from there. Every outcome is a
-/// redirect into the app; a failure is logged here and named by `cloud=`.
+/// Refuses a callback whose `state` isn't one Connect started here (see
+/// `cloud_sign_in`), saving nothing. Otherwise stores the token in the secret
+/// store, switches the tunnel on in the hub's `config.toml`, triggers a config
+/// reload, and hands the browser to Settings → Residuum Cloud, which follows
+/// the tunnel from there. Every outcome is a redirect into the app; a failure
+/// is logged here and named by `cloud=`.
 ///
 /// The `config.toml` switch is validated before anything is written. The
 /// `cloud sign-in` checkpoint is taken under the secret lock before the token
@@ -208,6 +217,9 @@ pub(crate) async fn cloud_callback(
     State(state): State<CloudApiState>,
     RawQuery(query): RawQuery,
 ) -> Response {
+    if !state.sign_ins.callback_started_here(query.as_deref()) {
+        return CallbackOutcome::NotStartedHere.hand_off();
+    }
     let Some(token) = token_from_query(query.as_deref()) else {
         tracing::warn!("the cloud sign-in callback arrived without a token");
         return CallbackOutcome::MissingToken.hand_off();
@@ -393,6 +405,8 @@ token = "secret:cloud_token"
         std::fs::create_dir(hub_dir.path().join("config.toml")).unwrap();
         let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
         let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
+        let sign_ins = super::super::cloud_sign_in::PendingSignIns::default();
+        let sign_in_state = sign_ins.start().unwrap();
         let app = axum::Router::new()
             .route("/cloud/callback", axum::routing::get(cloud_callback))
             .with_state(CloudApiState {
@@ -401,13 +415,16 @@ token = "secret:cloud_token"
                 tunnel_status_rx,
                 secret_lock: Arc::new(tokio::sync::Mutex::new(())),
                 checkpoints: crate::checkpoints::test_engine(),
+                sign_ins,
             });
 
         let resp = app
             .oneshot(
-                axum::http::Request::get("/cloud/callback?token=rst_x")
-                    .body(Body::empty())
-                    .unwrap(),
+                axum::http::Request::get(format!(
+                    "/cloud/callback?token=rst_x&state={sign_in_state}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -430,6 +447,7 @@ token = "secret:cloud_token"
             tunnel_status_rx,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
+            sign_ins: super::super::cloud_sign_in::PendingSignIns::default(),
         }
     }
 
@@ -482,16 +500,25 @@ enabled = false
             tunnel_status_rx,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints,
+            sign_ins: super::super::cloud_sign_in::PendingSignIns::default(),
         };
         (state, reload_rx)
+    }
+
+    /// The callback query the relay sends back for `token` after a sign-in
+    /// Connect started on `state`.
+    fn started_sign_in(state: &CloudApiState, token: &str) -> String {
+        let sign_in_state = state.sign_ins.start().unwrap();
+        format!("token={token}&state={sign_in_state}")
     }
 
     #[tokio::test]
     async fn cloud_sign_in_keeps_comments_and_keys_it_does_not_model() {
         let (_root, hub_dir, checkpoints) = hub_with_config(CONFIG_WITH_CLOUD_NOTES);
         let (state, mut reload_rx) = state_over(&hub_dir, checkpoints);
+        let query = started_sign_in(&state, "rst_signed_in");
 
-        let resp = cloud_callback(State(state), RawQuery(Some("token=rst_signed_in".into()))).await;
+        let resp = cloud_callback(State(state), RawQuery(Some(query))).await;
         assert_eq!(
             hand_off_target(&resp),
             "/home?settings=_all/cloud&cloud=connecting"
@@ -532,8 +559,9 @@ enabled = false
         let secrets_before = std::fs::read(hub_dir.join(crate::config::secrets::ENCRYPTED_FILE))
             .expect("seeding a secret should write the secret store");
         let (state, _reload_rx) = state_over(&hub_dir, Arc::clone(&checkpoints));
+        let query = started_sign_in(&state, "rst_signed_in");
 
-        cloud_callback(State(state), RawQuery(Some("token=rst_signed_in".into()))).await;
+        cloud_callback(State(state), RawQuery(Some(query))).await;
 
         let id = newest_checkpoint_id(&checkpoints, "cloud sign-in").await;
         let stored_config = checkpoints
@@ -571,8 +599,9 @@ enabled = false
         let raw = "timezone = \"Not/AZone\"\n";
         let (_root, hub_dir, checkpoints) = hub_with_config(raw);
         let (state, mut reload_rx) = state_over(&hub_dir, Arc::clone(&checkpoints));
+        let query = started_sign_in(&state, "rst_signed_in");
 
-        let resp = cloud_callback(State(state), RawQuery(Some("token=rst_signed_in".into()))).await;
+        let resp = cloud_callback(State(state), RawQuery(Some(query))).await;
 
         assert_eq!(
             hand_off_target(&resp),

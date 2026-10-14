@@ -4,8 +4,8 @@
     CloudConnection,
     DEFAULT_RELAY_URL,
     accountTarget,
-    connectTarget,
     phaseOf,
+    signInTarget,
   } from "../../lib/cloud.svelte";
   import { handoffProblem, takeCloudHandoff } from "../../lib/cloud-handoff";
   import { Icon } from "../../lib/icons";
@@ -50,7 +50,7 @@
   const removing = $derived(baseline.cloud_token !== "" && scope.config.cloud_token === "");
   const relayUnsaved = $derived(scope.config.cloud_relay_url !== baseline.cloud_relay_url);
   // The sign-in page sends the browser back to the gateway's port as it is now, so the saved one; the relay is the one being typed.
-  const signIn = $derived(connectTarget(scope.config.cloud_relay_url, baseline.gateway_port));
+  const signIn = $derived(signInTarget(scope.config.cloud_relay_url, baseline.gateway_port));
   // The account the saved token belongs to is on the saved relay.
   const account = $derived(accountTarget(baseline.cloud_relay_url));
 
@@ -65,8 +65,7 @@
   function openSignIn(): void {
     if (signIn === null) return;
     handoffError = null;
-    window.open(signIn.url, "_blank", "noopener");
-    cloud.expectChange();
+    void cloud.signIn(signIn);
   }
 
   async function connectWithToken(): Promise<void> {
@@ -188,6 +187,7 @@
           variant="primary"
           icon="external-link"
           disabled={signIn === null}
+          loading={cloud.busy === "sign-in"}
           onclick={openSignIn}
         >
           Sign in again
@@ -225,6 +225,7 @@
           variant="primary"
           icon="external-link"
           disabled={signIn === null}
+          loading={cloud.busy === "sign-in"}
           onclick={openSignIn}
         >
           Connect to Residuum Cloud

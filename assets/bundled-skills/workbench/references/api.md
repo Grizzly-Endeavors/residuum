@@ -51,11 +51,13 @@ The same file routes exist for each agent's own folder under `/api/agents/<agent
 
 ## Blocked Routes
 
-These answer `403` with `{ "error": "<reason>" }`, whatever the method: shutting Residuum down, stopping every agent, updating it, and finishing setup stay with the Residuum app.
+These answer `403` with `{ "error": "<reason>" }`, whatever the method: shutting Residuum down, stopping every agent, updating it, finishing setup, signing in to or switching off Residuum Cloud, pairing and managing browsers, and setting up remote access stay with the Residuum app.
 
 - `/api/hub/shutdown` and `/api/hub/stop-all`.
 - `/api/hub/update/check`, `/api/hub/update/apply`, and `/api/hub/update/restart`.
 - `/api/hub/config/complete-setup`.
+- `/api/hub/cloud/connect` and `/api/hub/cloud/disconnect`.
+- `/api/hub/devices` and `/api/hub/remote-access`, and every path below them.
 
 Everything else the web UI can call, an artifact can call, including starting or stopping one agent and writing config. Two kinds of path are answered by `residuum.fetch` itself with `400`, without being sent: one that belongs to an agent but names none (`POST /api/sessions` included: start sessions with `residuum.sessions.start({ agent, prompt })`), and one outside `/api/`.
 

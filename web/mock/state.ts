@@ -364,7 +364,7 @@ export function createState(
     agentInbox: [],
     scheduled: { pulses: [], actions: [] },
     update: { latest: null, lastChecked: null },
-    cloud: { tunnel: null, viaTunnel: false },
+    cloud: { tunnel: null, viaTunnel: false, signIns: [], signInsStarted: 0 },
     pushDevices: [],
     pairing: emptyPairing(),
     remoteAccess: defaultRemoteAccess(),
