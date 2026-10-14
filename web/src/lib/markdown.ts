@@ -73,9 +73,9 @@ const FORBIDDEN_TAGS = [
   // Content placed over the page or moving on its own.
   "dialog",
   "marquee",
-  // Media and image maps. A source on another server is fetched as soon as
-  // the element is shown, so a reply could send what it read to that server
-  // in the URL; images get their own handling in `fitToPage`.
+  // Media and image maps. A source is fetched as soon as the element is
+  // shown, so a reply could send what it read to another server in the URL;
+  // images get their own handling in `fitToPage`.
   "video",
   "audio",
   "source",
@@ -94,50 +94,58 @@ const FORBIDDEN_TAGS = [
  */
 const FORBIDDEN_ATTRS = ["style", "popover", "srcset", "background", "poster"];
 
-/** What a remote image's link says it stands for, before its alt text or URL. */
-export const REMOTE_IMAGE_KIND = "Image";
+/** What an image shown as a link says it stands for, before its alt text or URL. */
+export const IMAGE_LINK_KIND = "Image";
 
 /**
- * Whether an image source is served by the app itself: a `data:` or `blob:`
- * URI, or a URL on the page's own origin, such as an agent's file under
- * `/api/agents/{name}/files/`. Anything else is a request to another server.
+ * An agent's file on the hub: `/api/agents/{name}/files/{id}`, or
+ * `/api/agents/{name}/files/workspace?path=…` for a workspace file, the URLs
+ * the gateway hands out for files an agent shares.
  */
-function isAppImageSource(src: string): boolean {
+const AGENT_FILE_PATH = /^\/api\/agents\/[^/]+\/files\/[^/]/;
+
+/**
+ * Whether an image source is a file the reply may show: a `data:` or `blob:`
+ * URI, or an agent's file on the page's own origin. Loading any other URL is
+ * a request the reply chose, to another server or to one of the hub's own
+ * routes, and some hub routes change state on a plain `GET`.
+ */
+function isShownImageSource(src: string): boolean {
   let url: URL;
   try {
     url = new URL(src, window.location.href);
   } catch {
     return false;
   }
-  return (
-    url.protocol === "data:" || url.protocol === "blob:" || url.origin === window.location.origin
-  );
+  if (url.protocol === "data:" || url.protocol === "blob:") return true;
+  return url.origin === window.location.origin && AGENT_FILE_PATH.test(url.pathname);
 }
 
 /**
- * Replace each image that would load from another server with a link to it.
- * A reply is text a model wrote, and a model can be steered by what it read
- * into writing an image whose URL carries the conversation to someone else's
- * server; the browser would send it the moment the reply is shown. A link
- * sends nothing until the user follows it. It reads `Image`, then the alt
- * text, or the URL when there is none. An image already inside a link becomes
- * that text, since a link can't hold another.
+ * Replace each image that isn't an agent's file or a `data:` or `blob:` URI
+ * with a link to it. A reply is text a model wrote, and a model can be steered
+ * by what it read into writing an image whose URL carries the conversation to
+ * someone else's server, or calls one of the hub's own routes; the browser
+ * would send the request the moment the reply is shown. A link sends nothing
+ * until the user follows it. It reads `Image`, then the alt text, or the URL
+ * when there is none. An image already inside a link becomes that text, since
+ * a link can't hold another.
  */
-function unloadRemoteImages(fragment: DocumentFragment): void {
+function linkUnshownImages(fragment: DocumentFragment): void {
   const doc = fragment.ownerDocument;
 
   for (const image of fragment.querySelectorAll("img")) {
     const src = image.getAttribute("src");
-    if (src === null || isAppImageSource(src)) continue;
+    if (src === null || isShownImageSource(src)) continue;
 
     const kind = doc.createElement("span");
-    kind.className = "prose-remote-image-kind";
-    kind.textContent = REMOTE_IMAGE_KIND;
+    kind.className = "prose-image-link-kind";
+    kind.textContent = IMAGE_LINK_KIND;
     const label = image.getAttribute("alt")?.trim() || src;
 
     const inLink = image.closest("a") !== null;
     const stand = doc.createElement(inLink ? "span" : "a");
-    stand.className = "prose-remote-image";
+    stand.className = "prose-image-link";
     if (!inLink) stand.setAttribute("href", src);
     stand.append(kind, ` ${label}`);
     image.replaceWith(stand);
@@ -160,15 +168,16 @@ export const COPY_NAME = "Copy code";
  * What a reply's HTML needs after the sanitizer and before the page: headings
  * moved below the page's own, each table inside a scroller the keyboard can
  * reach, links that open beside the app rather than over it, a link in place
- * of each image from another server, and a Copy button on each code block. These are DOM changes, not Markdown renderers, because
- * they have to hold for the raw HTML a reply can carry as well, the sanitizer
+ * of each image that isn't an agent's file, and a Copy button on each code
+ * block. These are DOM changes, not Markdown renderers, because they have to
+ * hold for the raw HTML a reply can carry as well, the sanitizer
  * drops `target`, and it drops buttons: the Copy button is made here, after it.
  */
 function fitToPage(fragment: DocumentFragment): void {
   const doc = fragment.ownerDocument;
 
-  // Before the links below, so a remote image's link opens in a new tab too.
-  unloadRemoteImages(fragment);
+  // Before the links below, so an image's link opens in a new tab too.
+  linkUnshownImages(fragment);
 
   for (const block of fragment.querySelectorAll(".prose-code")) {
     const copy = doc.createElement("button");
@@ -216,10 +225,11 @@ function fitToPage(fragment: DocumentFragment): void {
  * view showing the nodes handles their clicks. A task list item leads with a
  * `.prose-check` that names its state to assistive technology. Headings sit
  * two levels below the page's own, tables scroll in a labelled group the
- * keyboard can focus, and links outside the app open in a new tab. An image
- * from another server is shown as a link to it (`.prose-remote-image`), so
- * showing a reply never makes the browser contact a server the reply names;
- * images the app serves and `data:` images show as images. Raw HTML in the
+ * keyboard can focus, and links outside the app open in a new tab. Only an
+ * agent's file (`/api/agents/{name}/files/…` on this origin) or a `data:` or
+ * `blob:` image shows as an image; any other image is a link to it
+ * (`.prose-image-link`), so showing a reply never makes the browser request a
+ * URL the reply chose. Raw HTML in the
  * reply keeps its text but loses styles, forms, frames, media and the other
  * elements and attributes in `FORBIDDEN_TAGS` and `FORBIDDEN_ATTRS`.
  */

