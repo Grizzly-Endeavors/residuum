@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateProvidersToml } from "./toml";
+import { generateMcpJson, generateProvidersToml } from "./toml";
 import type { ProviderKey, SetupWizardState } from "./types";
 
 function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
@@ -106,5 +106,39 @@ describe("generateProvidersToml", () => {
 
     expect(toml).toContain("[providers.ollama]");
     expect(toml).not.toContain("api_key");
+  });
+});
+
+describe("generateMcpJson", () => {
+  const tavily = {
+    name: "tavily",
+    command: "npx",
+    args: ["tavily"],
+    env: { TAVILY_API_KEY: "tvly-plain" },
+    secretEnvKeys: ["TAVILY_API_KEY"],
+  };
+
+  it("writes a stored tool server key as its secret reference", () => {
+    const json = generateMcpJson(
+      wizard({
+        mcpServers: [tavily],
+        secretRefs: { mcp_tavily_tavily_api_key: "secret:mcp_tavily_tavily_api_key" },
+      }),
+    );
+
+    expect(json).not.toContain("tvly-plain");
+    expect(JSON.parse(json)).toMatchObject({
+      mcpServers: { tavily: { env: { TAVILY_API_KEY: "secret:mcp_tavily_tavily_api_key" } } },
+    });
+  });
+
+  it("keeps an empty key empty, so a server saved without one is plain to see", () => {
+    const json = generateMcpJson(
+      wizard({ mcpServers: [{ ...tavily, env: { TAVILY_API_KEY: "" } }] }),
+    );
+
+    expect(JSON.parse(json)).toMatchObject({
+      mcpServers: { tavily: { env: { TAVILY_API_KEY: "" } } },
+    });
   });
 });

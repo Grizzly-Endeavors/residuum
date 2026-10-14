@@ -8,6 +8,8 @@
   } from "../../lib/toml";
   import { storeSecret, completeSetup } from "../../lib/api";
   import { userErrorMessage } from "../../lib/errors";
+  import { isStoredReference } from "../../lib/secrets";
+  import { keylessEntries, mcpSecretName } from "../../lib/setup-keys";
   import { Banner } from "../../lib/ui";
   import { providerName } from "./providers";
   import SetupGroup from "./SetupGroup.svelte";
@@ -39,6 +41,9 @@
       teamsComplete ? "Microsoft Teams" : "",
     ].filter(Boolean),
   );
+
+  const keyless = $derived(keylessEntries(wizardState));
+  const keylessNames = $derived([...keyless.providers.map(providerName), ...keyless.servers]);
 
   async function storeAllSecrets(): Promise<void> {
     wizardState.secretRefs = {};
@@ -77,6 +82,20 @@
           wizardState.secretRefs["teams"] = res.reference;
         }),
       );
+    }
+
+    // Tool server keys, which mcp.json references as secret:<name>
+    for (const srv of wizardState.mcpServers) {
+      for (const key of srv.secretEnvKeys ?? []) {
+        const value = (srv.env[key] ?? "").trim();
+        if (value === "" || isStoredReference(value)) continue;
+        const name = mcpSecretName(srv.name, key);
+        promises.push(
+          storeSecret(name, value).then((res) => {
+            wizardState.secretRefs[name] = res.reference;
+          }),
+        );
+      }
     }
 
     await Promise.all(promises);
@@ -168,6 +187,20 @@
     {/if}
   </dl>
 </SetupGroup>
+
+{#if keylessNames.length > 0 && outcome?.tone !== "saved"}
+  <Banner tone="warn">
+    {keylessNames.join(", ")}
+    {keylessNames.length === 1 ? "has" : "have"} no key and will be saved without one.
+    {#if keyless.providers.length > 0}
+      A provider without a key uses its environment variable if one is set.
+    {/if}
+    {#if keyless.servers.length > 0}
+      A tool server without its key won't work until you add the key in Settings.
+    {/if}
+    Go back to enter {keylessNames.length === 1 ? "it" : "them"} now.
+  </Banner>
+{/if}
 
 {#if outcome?.tone === "saved"}
   <Banner tone="info" icon="check">{outcome.message}</Banner>

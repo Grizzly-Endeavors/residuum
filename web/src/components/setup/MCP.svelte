@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SetupWizardState, McpCatalogEntry } from "../../lib/types";
   import { Badge, Banner, Button, EmptyState, Skeleton, TextField } from "../../lib/ui";
+  import { missingServerKeys } from "../../lib/setup-keys";
   import SetupGroup from "./SetupGroup.svelte";
   import SetupNav from "./SetupNav.svelte";
 
@@ -83,14 +84,31 @@
       env[envKeyOf(req.field)] = (pendingInputs[req.field] ?? "").trim();
     }
 
-    wizardState.mcpServers.push({
+    const entry = {
       name: srv.name,
       command: srv.command,
       args: [...(srv.args || [])],
       env: env as Record<string, string>,
       secretEnvKeys: srv.requires_input.map((req) => envKeyOf(req.field)),
-    });
+    };
+    // A server restored from a draft is already added, without its key.
+    const existsIdx = wizardState.mcpServers.findIndex((s) => s.name === srv.name);
+    if (existsIdx >= 0) wizardState.mcpServers[existsIdx] = entry;
+    else wizardState.mcpServers.push(entry);
     pendingIdx = null;
+  }
+
+  function missingKey(name: string): boolean {
+    const added = wizardState.mcpServers.find((s) => s.name === name);
+    return added !== undefined && missingServerKeys(added).length > 0;
+  }
+
+  function handleEnterKey(idx: number) {
+    const srv = catalog[idx];
+    if (!srv) return;
+    pendingIdx = idx;
+    pendingInputs = Object.fromEntries(srv.requires_input.map((req) => [req.field, ""]));
+    inputErrors = {};
   }
 
   function handleCancel() {
@@ -119,14 +137,31 @@
       {#each catalog as srv, i (srv.name)}
         {@const added = isAdded(srv.name)}
         {@const isPending = pendingIdx === i}
+        {@const needsKey = missingKey(srv.name)}
         <li class="setup-server">
           <div class="setup-server-row">
             <div class="setup-server-text">
               <code class="setup-server-name">{srv.name}</code>
               <span class="setup-server-desc">{srv.description}</span>
+              {#if needsKey && !isPending}
+                <span class="setup-server-desc"
+                  >Keys aren't kept in the draft, so enter this server's key again.</span
+                >
+              {/if}
             </div>
             {#if added}
-              <Badge tone="positive" dot>Added</Badge>
+              {#if needsKey}
+                <Badge tone="danger" dot>Needs its key</Badge>
+                {#if !isPending}
+                  <Button
+                    size="sm"
+                    aria-label="Enter the key for {srv.name}"
+                    onclick={() => handleEnterKey(i)}>Enter key</Button
+                  >
+                {/if}
+              {:else}
+                <Badge tone="positive" dot>Added</Badge>
+              {/if}
               <Button
                 variant="quiet"
                 size="sm"
@@ -155,7 +190,7 @@
               {/each}
               <div class="setup-server-actions">
                 <Button variant="primary" size="sm" onclick={() => handleConfirm(i)}>
-                  Add {srv.name}
+                  {added ? "Save key" : `Add ${srv.name}`}
                 </Button>
                 <Button variant="quiet" size="sm" onclick={handleCancel}>Cancel</Button>
               </div>

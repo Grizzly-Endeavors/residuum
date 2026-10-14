@@ -60,10 +60,10 @@
   // Setup is the highest-stakes form in the app (hand-typed API keys across
   // up to 6 steps) with no undo — a refresh or crashed tab must not throw
   // away everything the user just entered. We keep a draft in localStorage
-  // and restore it on mount, but never persist raw provider API keys or
-  // integration tokens (matching the convention in Review.svelte, which
-  // only ever sends those to the backend via storeSecret(), never stores
-  // them client-side as plain text).
+  // and restore it on mount, but never persist raw provider API keys, tool
+  // server keys or chat-app tokens (matching the convention in Review.svelte,
+  // which only ever sends those to the backend via storeSecret(), never
+  // stores them client-side as plain text).
   const STORAGE_KEY = "residuum-setup-draft";
 
   interface PersistedWizard {
@@ -266,7 +266,12 @@
       {#if step === 0}
         <Welcome bind:wizardState onNext={next} />
       {:else if step === 1}
-        <Providers bind:wizardState onNext={next} onBack={back} />
+        <Providers
+          bind:wizardState
+          onNext={next}
+          onBack={back}
+          restoredDraft={persisted !== null}
+        />
       {:else if step === 2}
         <Roles bind:wizardState onNext={next} onBack={back} />
       {:else if step === 3}

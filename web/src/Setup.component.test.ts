@@ -6,6 +6,15 @@ import { waitFor } from "./test/wait";
 
 const DRAFT_KEY = "residuum-setup-draft";
 
+/** Tavily as a draft stores it: added, with its key stripped. */
+const TAVILY_WITHOUT_KEY = {
+  name: "tavily",
+  command: "npx",
+  args: ["tavily"],
+  env: { TAVILY_API_KEY: "" },
+  secretEnvKeys: ["TAVILY_API_KEY"],
+};
+
 describe("Setup wizard", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -100,22 +109,22 @@ describe("Setup wizard", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
-    await vi.waitFor(() => screen.getByRole("button", { name: "Add tavily" }));
+    await waitFor(() => screen.getByRole("button", { name: "Add tavily" }));
 
     await user.click(screen.getByRole("button", { name: "Add tavily" }));
     await user.type(screen.getByLabelText("Tavily API key"), "tvly-secret");
     await user.click(screen.getByRole("button", { name: "Add tavily" }));
 
-    await vi.waitFor(
-      () => {
-        expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")).toMatchObject({ step: 3 });
-      },
-      { interval: 100, timeout: 5000 },
-    );
-    const stored = localStorage.getItem(DRAFT_KEY) ?? "";
-    expect(stored).not.toContain("tvly-secret");
-    const parsed = JSON.parse(stored) as { wizardState: { mcpServers: unknown[] } };
-    expect(parsed.wizardState.mcpServers).toEqual([
+    // An earlier draft from this step may already be stored; wait for the one with the server.
+    const servers = await waitFor(() => {
+      const draft = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null") as {
+        wizardState: { mcpServers: unknown[] };
+      } | null;
+      expect(draft?.wizardState.mcpServers).toHaveLength(1);
+      return draft?.wizardState.mcpServers;
+    });
+    expect(localStorage.getItem(DRAFT_KEY)).not.toContain("tvly-secret");
+    expect(servers).toEqual([
       {
         name: "tavily",
         command: "npx",
@@ -124,6 +133,59 @@ describe("Setup wizard", () => {
         secretEnvKeys: ["TAVILY_API_KEY"],
       },
     ]);
+  });
+
+  it("asks for a restored provider's and tool server's keys again", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        step: 1,
+        wizardState: {
+          selectedProviders: ["anthropic"],
+          mcpServers: [TAVILY_WITHOUT_KEY],
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(Setup, { onComplete: () => {} });
+    await settle();
+
+    expect(screen.getByText(/so enter this one again, or set the ANTHROPIC_API_KEY/)).toBeTruthy();
+    await user.type(screen.getByLabelText("Anthropic API key"), "sk-again");
+    expect(screen.queryByText(/so enter this one again/)).toBeNull();
+
+    // Providers -> Roles -> Tool servers
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => screen.getByRole("button", { name: "Enter the key for tavily" }));
+    expect(screen.getByText("Needs its key")).toBeTruthy();
+    expect(screen.getByText(/enter this server's key again/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Enter the key for tavily" }));
+    await user.type(screen.getByLabelText("Tavily API key"), "tvly-again");
+    await user.click(screen.getByRole("button", { name: "Save key" }));
+    expect(screen.queryByText("Needs its key")).toBeNull();
+    expect(screen.getByText("Added")).toBeTruthy();
+  });
+
+  it("lists on the Save step what a restored draft would save without a key", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        step: 5,
+        wizardState: {
+          selectedProviders: ["anthropic", "ollama"],
+          mcpServers: [TAVILY_WITHOUT_KEY],
+        },
+      }),
+    );
+    render(Setup, { onComplete: () => {} });
+    await settle();
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Save and start");
+    expect(
+      screen.getByText(/Anthropic, tavily have no key and will be saved without one/),
+    ).toBeTruthy();
   });
 
   it("drops a draft save still waiting when the wizard closes", async () => {
