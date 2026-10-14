@@ -40,6 +40,8 @@ import type {
 import type { ToastAction } from "./toast.svelte";
 import { normalizeTeamWatchPrefix } from "./workspace-watch";
 import { WatchRegistry } from "./watch-registry";
+import { hubNoticeText } from "./hub-notices";
+import { hubReloadNotice } from "./reload-notices";
 
 /** How many notices the store keeps for recall. */
 const MAX_NOTICES = 50;
@@ -51,7 +53,18 @@ export interface HubNotice {
   message: string;
   /** The agent it concerns, if any. */
   agent?: string;
+  /** The hub's own words, when `message` is the page's wording of them. */
+  details?: string;
   at: Date;
+}
+
+/** What else a hub notice carries beside its level and text. */
+interface NoticeExtras {
+  /** The agent it concerns. */
+  agent?: string;
+  /** The hub's own words, when the page reworded them. */
+  details?: string;
+  action?: ToastAction;
 }
 
 /** Who acted, as a sentence subject: "You" for the user, else the teammate's name. */
@@ -341,10 +354,12 @@ export class HubStore {
         const label = gone === undefined ? msg.name : agentLabel(gone);
         this.removeAgent(msg.name);
         this.deletedListChanged();
-        this.addNotice("info", `${actorLabel(msg.by)} deleted ${label}.`, undefined, {
-          label: "Undo",
-          onClick: () => {
-            void this.restoreAgent(msg.name);
+        this.addNotice("info", `${actorLabel(msg.by)} deleted ${label}.`, {
+          action: {
+            label: "Undo",
+            onClick: () => {
+              void this.restoreAgent(msg.name);
+            },
           },
         });
         break;
@@ -355,9 +370,20 @@ export class HubStore {
           [msg.name]: { busy: msg.busy, busy_since: msg.busy_since, unread: msg.unread },
         };
         break;
-      case "notice":
-        this.addNotice(msg.level, msg.message, msg.agent);
+      case "notice": {
+        const { message, details } = hubNoticeText(msg.kind, msg.message);
+        this.addNotice(msg.level, message, { agent: msg.agent, details });
         break;
+      }
+      case "hub_config_reloaded": {
+        const notice = hubReloadNotice(msg);
+        if (notice !== null) {
+          this.addNotice(notice.kind === "error" ? "error" : "info", notice.message, {
+            details: notice.details,
+          });
+        }
+        break;
+      }
       case "workspace_watch_unavailable":
         this.addNotice("warn", msg.message);
         break;
@@ -368,7 +394,6 @@ export class HubStore {
         // The answer to a `ping`, which the app itself never sends.
         break;
       case "hub_boot":
-      case "hub_config_reloaded":
       case "team_event":
       case "agent_overview":
       case "artifact_updated":
@@ -395,11 +420,9 @@ export class HubStore {
     if (next.state !== "failed") return;
     if (this.agent(next.name)?.state === "failed") return;
     const reason = next.last_error?.message;
-    this.addNotice(
-      "error",
-      reason ? `${next.name} failed: ${reason}` : `${next.name} failed.`,
-      next.name,
-    );
+    this.addNotice("error", reason ? `${next.name} failed: ${reason}` : `${next.name} failed.`, {
+      agent: next.name,
+    });
   }
 
   /** Take a whole list: the socket's snapshot, or the same three fields fetched over HTTP. */
@@ -430,17 +453,16 @@ export class HubStore {
   private addNotice(
     level: NoticeLevel,
     message: string,
-    agent?: string,
-    action?: ToastAction,
+    { agent, details, action }: NoticeExtras = {},
   ): void {
     // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a timestamp, never mutated
     const at = new Date();
-    const notice: HubNotice = { id: ++this.noticeCounter, level, message, agent, at };
+    const notice: HubNotice = { id: ++this.noticeCounter, level, message, agent, details, at };
     this.notices = [notice, ...this.notices].slice(0, MAX_NOTICES);
     notifications.surface(
       level === "error" ? "error" : "notice",
       agent && !message.startsWith(agent) ? `${agent}: ${message}` : message,
-      undefined,
+      details,
       action,
     );
   }

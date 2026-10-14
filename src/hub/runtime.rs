@@ -33,7 +33,7 @@ use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
 use super::team_events::{TeamEventLog, TeamEventRecorder, record_hub_started};
-use super::types::{HubEvent, NoticeLevel};
+use super::types::{HubEvent, HubNoticeKind, NoticeLevel};
 
 /// How often the hub checks for a newer version.
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(6);
@@ -772,13 +772,12 @@ impl HubRuntime {
             Ok(hub) => hub,
             Err(err) => {
                 tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
-                let message =
-                    format!("hub config reload failed (keeping current hub config): {err}");
-                self.host.notice(NoticeLevel::Warn, message.clone(), None);
                 self.host.publish(HubEvent::HubConfigReloaded {
                     ok: false,
                     changed: false,
-                    message: Some(message),
+                    message: Some(format!(
+                        "hub config reload failed (keeping current hub config): {err}"
+                    )),
                 });
                 return;
             }
@@ -834,10 +833,10 @@ impl HubRuntime {
         }
         if old.background.max_concurrent != new_hub.background.max_concurrent {
             changed.push("background limits");
-            self.host.notice(
+            self.host.notice_of_kind(
                 NoticeLevel::Info,
+                HubNoticeKind::BackgroundLimitAfterRestart,
                 "background.max_concurrent changed in hub/config.toml — this takes effect on the next restart, not immediately.".to_string(),
-                None,
             );
         } else if old.background != new_hub.background {
             changed.push("background limits");
@@ -847,12 +846,10 @@ impl HubRuntime {
         last_known_good::hub::save(&self.hub_dir);
         let summary = changed.join(", ");
         tracing::info!(changes = %summary, "hub configuration reloaded successfully");
-        let message = format!("hub configuration reloaded: {summary}");
-        self.host.notice(NoticeLevel::Info, message.clone(), None);
         self.host.publish(HubEvent::HubConfigReloaded {
             ok: true,
             changed: true,
-            message: Some(message),
+            message: Some(format!("hub configuration reloaded: {summary}")),
         });
     }
 
@@ -863,13 +860,13 @@ impl HubRuntime {
             Ok(listener) => listener,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to bind to the new gateway address, keeping the current server");
-                self.host.notice(
+                self.host.notice_of_kind(
                     NoticeLevel::Warn,
+                    HubNoticeKind::GatewayRebindFailed,
                     format!(
                         "gateway rebind failed ({}): {e} — keeping the current server",
                         new_hub.gateway.addr()
                     ),
-                    None,
                 );
                 return;
             }
@@ -1129,7 +1126,8 @@ mod tests {
         ok: bool,
         changed: bool,
         message: Option<String>,
-        /// The notices sent before the `hub_config_reloaded` frame.
+        /// The notices sent before the `hub_config_reloaded` frame. The frame
+        /// is the reload's report, so a notice here came from something else.
         notices: Vec<String>,
     }
 
@@ -1594,10 +1592,10 @@ mod tests {
         let message = reload.message.expect("a failed reload says why");
         assert!(message.starts_with("hub config reload failed"), "{message}");
         assert!(message.contains("keeping current hub config"), "{message}");
-        assert_eq!(
-            reload.notices,
-            [message],
-            "the notice says what the frame says"
+        assert!(
+            reload.notices.is_empty(),
+            "the frame is the only report: {:?}",
+            reload.notices
         );
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
@@ -1623,7 +1621,11 @@ mod tests {
             reload.message.as_deref(),
             Some("hub configuration reloaded: timezone")
         );
-        assert_eq!(reload.notices, ["hub configuration reloaded: timezone"]);
+        assert!(
+            reload.notices.is_empty(),
+            "the frame is the only report: {:?}",
+            reload.notices
+        );
         hub.shut_down().await;
     }
 
@@ -1656,7 +1658,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_hub_config_reload_that_finds_nothing_new_says_so_without_a_notice() {
+    async fn a_hub_config_reload_that_finds_nothing_new_says_so_in_its_frame() {
         let mut hub = RunningHub::start().await;
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
