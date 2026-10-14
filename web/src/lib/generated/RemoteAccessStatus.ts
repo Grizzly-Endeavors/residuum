@@ -55,6 +55,12 @@ join: JoinProgress | null,
  */
 pending_joins: Array<PendingJoinInfo>, 
 /**
+ * The web origin of the Residuum Cloud relay this instance signs in to,
+ * from `[cloud] relay_url`; the account dashboard is on this origin.
+ * Absent when that URL isn't a ws or wss address.
+ */
+relay_origin?: string, 
+/**
  * When Residuum last finished checking this instance's remote access,
  * failed checks included (RFC 3339, UTC, to the millisecond). Absent
  * until the first check ends. A retry has run once this moves.

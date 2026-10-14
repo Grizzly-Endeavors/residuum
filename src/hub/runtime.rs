@@ -297,6 +297,7 @@ fn start_remote_access(
             pairing: wiring.pairing.clone(),
             tunnel_status: Arc::clone(inputs.status_tx),
             status: wiring.slot.status_sender(),
+            relay_origin: crate::tunnel::v2::web_origin(&cloud.relay_url),
             notify: Arc::clone(&wiring.notify),
             siblings: wiring.slot.sibling_keys(),
             discovery: wiring.slot.discovery_sender(),
