@@ -13,6 +13,15 @@
 # every non-visual project to the container's browser as well. When Docker is
 # unavailable too, it fails and names both problems.
 #
+# The time limit comes from `timeout`, or `gtimeout` where coreutils is installed
+# under that name (macOS: `brew install coreutils`). With neither, the install runs
+# without a limit and the script says so. Ctrl-C (or SIGTERM) during the install
+# stops it and exits, with no fallback.
+#
+# With E2E_ALL_IN_CONTAINER=1 already set, the script skips the install and goes
+# straight to the container (which reports a missing Docker itself), so a machine that can't download Chromium doesn't wait
+# for the limit on every run: `E2E_ALL_IN_CONTAINER=1 just web-e2e-fast`.
+#
 # --visual marks a command that needs the container even when Chromium installs
 # (the visual comparisons render there): the script then starts the container
 # itself, with E2E_ALL_IN_CONTAINER=1 only when the install failed. Without it the
@@ -38,9 +47,47 @@ if ! [[ "$limit" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
-# --kill-after: a download that ignores the first TERM must not hold the recipe.
+if [ "${E2E_ALL_IN_CONTAINER:-}" = "1" ]; then
+    exec "$wrapper" "$@"
+fi
+
+limiter=""
+if command -v timeout >/dev/null 2>&1; then
+    limiter=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    limiter=gtimeout
+else
+    echo "note: neither timeout nor gtimeout is installed, so the Chromium install runs without a time limit (macOS: brew install coreutils)." >&2
+fi
+
+# The install runs in the background so Ctrl-C reaches this script (the limiter
+# starts its own process group); the trap stops the install and the script exits
+# instead of falling back to the container. --kill-after: a download that ignores
+# the first TERM must not hold the recipe.
+interrupted=0
+install_pid=""
+stop_install() {
+    interrupted=$1
+    if [ -n "$install_pid" ]; then
+        kill -TERM "$install_pid" 2>/dev/null || true
+    fi
+}
+trap 'stop_install 130' INT
+trap 'stop_install 143' TERM
+if [ -n "$limiter" ]; then
+    (cd web && exec "$limiter" --kill-after=10 "$limit" npx playwright install chromium) &
+else
+    (cd web && exec npx playwright install chromium) &
+fi
+install_pid=$!
 install_status=0
-(cd web && timeout --kill-after=10 "$limit" npx playwright install chromium) || install_status=$?
+wait "$install_pid" || install_status=$?
+if [ "$interrupted" -ne 0 ]; then
+    wait "$install_pid" 2>/dev/null || true
+    echo "interrupted: the Chromium install was stopped." >&2
+    exit "$interrupted"
+fi
+trap - INT TERM
 if [ "$install_status" -eq 0 ]; then
     if [ "$visual" -eq 1 ]; then
         exec "$wrapper" "$@"
@@ -67,5 +114,5 @@ if [ -n "$docker_problem" ]; then
     exit 1
 fi
 
-echo "Switching to the Playwright container for this run: every non-visual project uses its browser (E2E_ALL_IN_CONTAINER=1). The first run pulls the image, about a gigabyte." >&2
+echo "Switching to the Playwright container for this run: every non-visual project uses its browser (E2E_ALL_IN_CONTAINER=1; set it up front to skip the Chromium attempt). The first run pulls the image, about a gigabyte." >&2
 E2E_ALL_IN_CONTAINER=1 exec "$wrapper" "$@"
