@@ -31,6 +31,18 @@
 # [providers.local-ollama]
 # type = "ollama"
 # keep_alive = "5m"
+#
+# Per-model settings go under the provider, keyed by the model name after the
+# slash. `input` says what a model can take in: a model whose list leaves out
+# "image" gets a short placeholder in place of each image, so a text-only
+# model never sees (or rejects) one. Unset, images are sent; if the provider
+# turns them down, Residuum leaves them out for the rest of the run and says so.
+# [providers.zai]
+# type = "openai"
+# url = "https://api.z.ai/api/paas/v4"
+#
+# [providers.zai.models."glm-5.3"]
+# input = ["text"]              # or ["text", "image"] for a vision model
 
 # ── Models (role assignments) ─────────────────────────────────────────────────
 # Format: "provider_or_type/model_name"

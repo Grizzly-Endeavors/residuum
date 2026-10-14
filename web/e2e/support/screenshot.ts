@@ -62,11 +62,13 @@ export async function expectScreenshot(
  * `name`, for a component whose parts do not share one element: a reply's hover
  * details sit outside the reply's box, so no locator's box holds both. The parts
  * are measured after the page settles, so the rectangle is where they are when
- * the shot is taken.
+ * the shot is taken. `options.mask` paints over regions that change from run to
+ * run, as in `expectScreenshot`.
  */
 export async function expectClipScreenshot(
   parts: readonly [Locator, ...Locator[]],
   name: string,
+  options: ScreenshotOptions = {},
 ): Promise<void> {
   const [first] = parts;
   const page = first.page();
@@ -82,5 +84,6 @@ export async function expectClipScreenshot(
     animations: "disabled",
     caret: "hide",
     clip: { x: left, y: top, width: right - left, height: bottom - top },
+    mask: options.mask ? [...options.mask] : [],
   });
 }

@@ -978,6 +978,7 @@ describe("typed secrets", () => {
       apiKey: "sk-123",
       url: "",
       keepAlive: "",
+      models: [],
     });
     scope.providers.push({
       name: "local",
@@ -985,6 +986,7 @@ describe("typed secrets", () => {
       apiKey: "not-a-secret",
       url: "",
       keepAlive: "",
+      models: [],
     });
 
     await scope.save(keepMine);

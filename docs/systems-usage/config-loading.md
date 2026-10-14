@@ -31,7 +31,7 @@ Every skip pushes a human-readable notice (`Config.load_notices`) naming what wa
 
 ## Reload
 
-A change to the agent's `config.toml`/`providers.toml`, or to `hub/config.toml`, picked up by the file watcher reloads that config in place: it loads the new files, diffs them against the running config, and rebuilds only the subsystems that actually changed. The hub and the agent reload independently (see [Config Files](config.md#reload)). A load failure — the new files don't parse or resolve — leaves the running config and files on disk untouched, and publishes a notice naming the error. A load that succeeds but changes nothing publishes a "no changes detected" notice. `channels.toml` (external notification channels) reloads on its own path alongside `mcp.json`; see [Notifications](notifications.md#channelstoml) for its parse-first behavior.
+A change to the agent's `config.toml`/`providers.toml`, or to `hub/config.toml`, picked up by the file watcher reloads that config in place: it loads the new files, diffs them against the running config, and rebuilds only the subsystems that actually changed. The hub and the agent reload independently (see [Config Files](config.md#reload)). A load failure — the new files don't parse or resolve — leaves the running config and files on disk untouched, and publishes a notice naming the error. An agent's reload that succeeds but changes nothing publishes a "no changes detected" notice; the hub reports its own reloads, this case included, in a `hub_config_reloaded` event (see [Hub](hub.md#hub-config-reloads)). `channels.toml` (external notification channels) reloads on its own path alongside `mcp.json`; see [Notifications](notifications.md#channelstoml) for its parse-first behavior.
 
 ## Last-known-good fallback
 

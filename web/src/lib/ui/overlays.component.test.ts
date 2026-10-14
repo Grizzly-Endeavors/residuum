@@ -1,7 +1,7 @@
 import { act, cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { render, screen } from "../../test/component";
+import { render, screen, settle } from "../../test/component";
 import { htmlSnippet } from "../../test/snippets";
 import OverlayHarness from "../../test/ui/OverlayHarness.svelte";
 import { router } from "../router.svelte";
@@ -10,11 +10,6 @@ import ModalLayer from "./ModalLayer.svelte";
 import ConfirmHost from "./ConfirmHost.svelte";
 import { confirmations, confirmLeave } from "./confirm.svelte";
 import { waitFor } from "../../test/wait";
-
-/** Let the history traversals an overlay started land. */
-async function settleHistory(): Promise<void> {
-  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
-}
 
 function scrim(): HTMLElement {
   const scrims = document.querySelectorAll<HTMLElement>("[data-overlay-scrim]");
@@ -56,7 +51,7 @@ afterEach(async () => {
   await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
-  await settleHistory();
+  await settle();
 });
 
 describe("Dialog", () => {

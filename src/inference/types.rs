@@ -517,6 +517,8 @@ pub struct InferenceResponse {
     pub thinking: Vec<ThinkingBlock>,
     /// Why generation ended, if the provider reports it.
     pub stop_reason: Option<StopReason>,
+    /// Images left out of the request because the model can't take them.
+    pub images_omitted: Option<super::ImagesOmitted>,
 }
 
 impl InferenceResponse {
@@ -529,6 +531,7 @@ impl InferenceResponse {
             usage: None,
             thinking: Vec::new(),
             stop_reason: None,
+            images_omitted: None,
         }
     }
 
@@ -673,6 +676,38 @@ pub trait InferenceProvider: Send + Sync {
     ) -> Result<InferenceResponse, InferenceError> {
         let _ = sink;
         self.complete(messages, tools, options).await
+    }
+
+    /// Answer as one hop of a failover chain: streaming into `sink` when
+    /// there is one. `image_fallback` is true when a later hop takes images,
+    /// so a provider that would retry an image rejection without the images
+    /// returns the error instead and lets the chain move on. A provider with
+    /// no such retry keeps this default.
+    ///
+    /// # Errors
+    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
+    async fn complete_as_hop(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: Option<&dyn StreamSink>,
+        image_fallback: bool,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let _ = image_fallback;
+        match sink {
+            Some(sink) => {
+                self.complete_streaming(messages, tools, options, sink)
+                    .await
+            }
+            None => self.complete(messages, tools, options).await,
+        }
+    }
+
+    /// Whether requests reach the model with their images: false once its
+    /// model is declared or found text-only.
+    fn takes_images(&self) -> bool {
+        true
     }
 
     /// Get the model identifier.

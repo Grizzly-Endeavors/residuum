@@ -154,7 +154,7 @@ async fn handle_spawn_failure(
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message: notice },
+            NoticeEvent::new(notice),
         )
         .await
     {
@@ -176,7 +176,7 @@ async fn notify_owner_start_failed(
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message: notice },
+            NoticeEvent::new(notice),
         )
         .await
     {

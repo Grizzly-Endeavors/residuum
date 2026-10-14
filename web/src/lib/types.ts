@@ -336,6 +336,21 @@ export interface SettingsProviderEntry {
   apiKey: string;
   url: string;
   keepAlive: string;
+  /** The models with their own settings under this provider (`[providers.<name>.models.<model>]`). */
+  models: SettingsProviderModel[];
+}
+
+/**
+ * Whether a model takes images, from its `input` list: `image` when the list
+ * has it, `text` when it leaves it out, and `""` when the model has no list.
+ */
+export type ModelImageInput = "" | "image" | "text";
+
+/** One model's settings under its provider. */
+export interface SettingsProviderModel {
+  /** The model's name, as it appears after the provider's slash. */
+  name: string;
+  images: ModelImageInput;
 }
 
 export interface RoleOverrides {

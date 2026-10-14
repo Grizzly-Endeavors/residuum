@@ -489,7 +489,7 @@ async fn handle_output_truncated(
         .publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message: notice },
+            NoticeEvent::new(notice),
         )
         .await
     {
@@ -501,6 +501,73 @@ async fn handle_output_truncated(
          incomplete. Continue from where it left off if that's still useful, or start fresh."
     ));
     push_and_record(recent_messages, resources.transcript_sink, note).await;
+}
+
+/// Tell the user, once per turn, that images this turn brought in (the
+/// triggering message, an interrupt, a tool result) were left out because
+/// the model can't take them. Images from earlier turns are left out of every
+/// request too, quietly: the user heard about them when they arrived.
+/// `noticed` records that this turn already has.
+async fn notice_images_omitted(
+    response: &InferenceResponse,
+    turn_messages: &[Message],
+    events: &EventContext<'_>,
+    noticed: &mut bool,
+) {
+    let Some(omitted) = &response.images_omitted else {
+        return;
+    };
+    let new_images: usize = turn_messages
+        .iter()
+        .map(|message| message.images.len())
+        .sum();
+    if new_images == 0 {
+        tracing::debug!(
+            model = %omitted.model,
+            images = omitted.count,
+            "left earlier turns' images out of a request to a model that can't take them"
+        );
+        return;
+    }
+    if std::mem::replace(noticed, true) {
+        return;
+    }
+    tracing::warn!(
+        model = %omitted.model,
+        images = new_images,
+        learned = omitted.learned,
+        "left this turn's images out of a request to a model that can't take them"
+    );
+    if let Err(e) = events
+        .publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent {
+                message: images_omitted_notice(omitted, new_images),
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish images-omitted notice");
+    }
+}
+
+/// The plain-language notice for images a request left out.
+fn images_omitted_notice(omitted: &crate::inference::ImagesOmitted, count: usize) -> String {
+    let count = match count {
+        1 => "1 image was".to_string(),
+        n => format!("{n} images were"),
+    };
+    let notice = format!("This model can't see images, so {count} left out of the request.");
+    if !omitted.learned {
+        return notice;
+    }
+    format!(
+        "{notice} Its provider turned images down, so they're left out until Residuum \
+         restarts. To skip that failed first try, mark {} as text only under its provider in \
+         Settings → Model.",
+        omitted.model
+    )
 }
 
 /// Push a message onto the turn's history and, when a sink is configured,
@@ -748,6 +815,7 @@ pub(crate) async fn execute_turn(
     // progress. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
     let mut turn_usage = TurnUsage::default();
     let mut repeat_guard = RepeatCallGuard::new();
+    let mut images_noticed = false;
 
     let mut iteration: usize = 0;
     loop {
@@ -801,6 +869,13 @@ pub(crate) async fn execute_turn(
                 }
             };
         settle_response(&mut response, events, call).await;
+        notice_images_omitted(
+            &response,
+            recent_messages.messages_since(turn_start),
+            events,
+            &mut images_noticed,
+        )
+        .await;
 
         if response.was_truncated() {
             handle_output_truncated(&response, resources, events, recent_messages).await;
@@ -3644,5 +3719,148 @@ mod tests {
             5,
             "the 6th identical call must never actually run"
         );
+    }
+
+    /// Answers every call as if images were left out of the request (nine,
+    /// counted over the whole history): a tool call first, then text. From
+    /// the fourth call on, the model's text-only verdict is a learned one.
+    struct ImagesOmittedProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ImagesOmittedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut response = if call == 0 {
+                InferenceResponse::new(String::new(), vec![counting_tool_call("c1")])
+            } else {
+                InferenceResponse::new("done".to_string(), vec![])
+            };
+            response.images_omitted = Some(crate::inference::ImagesOmitted {
+                model: "glm-5.3".to_string(),
+                count: 9,
+                learned: call >= 3,
+            });
+            Ok(response)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "glm-5.3"
+        }
+    }
+
+    fn png() -> crate::inference::ImageData {
+        crate::inference::ImageData {
+            media_type: "image/png".to_string(),
+            data: "iVBORw0KGgo=".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_images_a_turn_brings_in_are_noticed_once_per_turn() {
+        let provider = ImagesOmittedProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Endpoint {
+                output_endpoint: TurnOutput::Fixed(None),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+
+        // A turn with one new image and two model requests, a turn with only
+        // that old image in history, and a turn with two new images.
+        let turns = [
+            Message::user_with_images("look at this", vec![png()]),
+            Message::user("and again"),
+            Message::user_with_images("two more", vec![png(), png()]),
+        ];
+        for (n, turn) in turns.into_iter().enumerate() {
+            recent.push(turn);
+            execute_turn(
+                &resources,
+                &MemoryContext {
+                    observations: None,
+                    recent_context: None,
+                },
+                &PromptContext::default(),
+                &mut recent,
+                &events,
+                None,
+                &mut interrupt_rx,
+                None,
+            )
+            .await
+            .unwrap();
+            let message = format!("end of turn {n}");
+            let end = topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
+            publisher
+                .publish(end, NoticeEvent { message })
+                .await
+                .unwrap();
+        }
+
+        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        assert_eq!(
+            next().await,
+            "This model can't see images, so 1 image was left out of the request.",
+            "the turn's own image is counted, not the history's"
+        );
+        assert_eq!(next().await, "end of turn 0", "one notice for two requests");
+        assert_eq!(
+            next().await,
+            "end of turn 1",
+            "an image from an earlier turn is left out quietly"
+        );
+        let third = next().await;
+        assert!(
+            third.starts_with("This model can't see images, so 2 images were left out"),
+            "{third}"
+        );
+        assert!(
+            third.contains("mark glm-5.3 as text only"),
+            "a learned verdict suggests declaring it: {third}"
+        );
+        assert_eq!(next().await, "end of turn 2");
     }
 }

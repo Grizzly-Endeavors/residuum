@@ -211,7 +211,7 @@ pub(super) async fn publish_notice(publisher: Option<&crate::bus::Publisher>, me
             crate::bus::topics::Notification(crate::bus::NotifyName::from(
                 crate::bus::SYSTEM_CHANNEL,
             )),
-            crate::bus::NoticeEvent { message },
+            crate::bus::NoticeEvent::new(message),
         )
         .await
     {

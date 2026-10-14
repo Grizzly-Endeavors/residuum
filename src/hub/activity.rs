@@ -182,11 +182,7 @@ impl ActivityTracker {
     /// Tell the user something about this agent as a hub notice.
     pub fn hub_notice(&self, level: NoticeLevel, message: String) {
         self.events
-            .send(HubEvent::Notice {
-                level,
-                message,
-                agent: Some(self.name.clone()),
-            })
+            .send(HubEvent::notice(level, message, Some(self.name.clone())))
             .ok();
     }
 

@@ -581,6 +581,7 @@ mod tests {
                 tenant_id: TENANT.to_string(),
                 respond_to_others,
                 context_messages: 10,
+                deliver_intermediate: false,
                 port: 0,
             },
             validator: TokenValidator::with_test_key(APP_ID),

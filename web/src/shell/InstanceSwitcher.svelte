@@ -2,7 +2,7 @@
   import { Icon } from "../lib/icons";
   import { instanceName } from "../lib/instance-slug";
   import { remoteAccess, type RemoteAccessStore } from "../lib/remote-access.svelte";
-  import { Menu, MenuItem, VisuallyHidden } from "../lib/ui";
+  import { Menu, MenuItem, MenuSeparator, VisuallyHidden } from "../lib/ui";
 
   // Which of the user's instances the shared address goes to, and a way to
   // move it. It shows only when Residuum Cloud lists more than one instance.
@@ -52,6 +52,10 @@
           onselect={() => void store.activate(instance.slug)}
         />
       {/each}
+      {#if store.accountUrl !== null}
+        <MenuSeparator />
+        <MenuItem label="Manage instances…" icon="external-link" href={store.accountUrl} />
+      {/if}
     </Menu>
     <VisuallyHidden>
       <span role="status">{store.switching === null ? "" : "Switching…"}</span>

@@ -183,6 +183,12 @@ pub struct RemoteAccessStatus {
     pub join: Option<JoinProgress>,
     /// Instances waiting for this one to approve them.
     pub pending_joins: Vec<PendingJoinInfo>,
+    /// The web origin of the Residuum Cloud relay this instance signs in to,
+    /// from `[cloud] relay_url`; the account dashboard is on this origin.
+    /// Absent when that URL isn't a ws or wss address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub relay_origin: Option<String>,
     /// When Residuum last finished checking this instance's remote access,
     /// failed checks included (RFC 3339, UTC, to the millisecond). Absent
     /// until the first check ends. A retry has run once this moves.
@@ -210,6 +216,7 @@ impl RemoteAccessStatus {
             siblings: Vec::new(),
             join: None,
             pending_joins: Vec::new(),
+            relay_origin: None,
             checked_at: None,
         }
     }

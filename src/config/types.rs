@@ -168,6 +168,9 @@ pub struct DiscordConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -176,6 +179,7 @@ impl std::fmt::Debug for DiscordConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -189,6 +193,9 @@ pub struct TelegramConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -197,6 +204,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -214,6 +222,9 @@ pub struct TeamsConfig {
     pub respond_to_others: bool,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
     /// Port for the dedicated messaging listener (bound on the gateway's address).
     ///
     /// Kept separate from the gateway port so a public tunnel pointed at it
@@ -229,6 +240,7 @@ impl std::fmt::Debug for TeamsConfig {
             .field("tenant_id", &self.tenant_id)
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .field("port", &self.port)
             .finish()
     }
@@ -1141,54 +1153,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolve_tier_tests() {
+    fn dummy_spec(tier: &str) -> ProviderSpec {
         use super::super::provider::{ModelSpec, ProviderKind};
 
-        let p_small = ProviderSpec {
-            name: "dummy-small".to_string(),
+        ProviderSpec {
+            name: format!("dummy-{tier}"),
             model: ModelSpec {
                 kind: ProviderKind::OpenAi,
-                model: "small-model".to_string(),
+                model: format!("{tier}-model"),
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-        };
-        let p_medium = ProviderSpec {
-            name: "dummy-medium".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "medium-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_large = ProviderSpec {
-            name: "dummy-large".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "large-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_main = ProviderSpec {
-            name: "dummy-main".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "main-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
+            image_input: crate::config::ImageInput::Undeclared,
+        }
+    }
+
+    #[test]
+    fn resolve_tier_tests() {
+        let p_small = dummy_spec("small");
+        let p_medium = dummy_spec("medium");
+        let p_large = dummy_spec("large");
+        let p_main = dummy_spec("main");
 
         let main_slice = std::slice::from_ref(&p_main);
 
@@ -1267,6 +1254,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_medium = ProviderSpec {
             name: "dummy-medium".to_string(),
@@ -1278,6 +1266,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_main = ProviderSpec {
             name: "dummy-main".to_string(),
@@ -1289,6 +1278,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
 
         let main_slice = std::slice::from_ref(&p_main);

@@ -218,6 +218,20 @@ describe("Connections", () => {
     expect(patches()).toEqual([{ telegram: { context_messages: 30 } }]);
   });
 
+  it("posts only finished replies to a chat until updates while working are turned on", async () => {
+    await open("connections", { config: "[discord]\ndeliver_intermediate = true\n" });
+    const updates = (channel: string): HTMLElement =>
+      group(channel).getByRole("switch", { name: /Post updates while working/ });
+    expect(updates("Discord")).toBeChecked();
+    expect(updates("Telegram")).not.toBeChecked();
+    expect(updates("Microsoft Teams")).not.toBeChecked();
+
+    await fireEvent.click(updates("Telegram"));
+    await settle();
+    await save();
+    expect(patches()).toEqual([{ telegram: { deliver_intermediate: true } }]);
+  });
+
   it("warns while Teams is half filled, and clears when it is complete or empty", async () => {
     await open("connections");
     const teams = group("Microsoft Teams");

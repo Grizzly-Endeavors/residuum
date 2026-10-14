@@ -150,9 +150,22 @@ export function loadSdk(artifact = "chart"): LoadedSdk {
   };
 }
 
-/** Let the SDK's promise chains and queued microtasks run. */
-export async function settle(): Promise<void> {
-  for (let i = 0; i < 30; i += 1) await Promise.resolve();
+/**
+ * The real `setImmediate`, taken before any test installs fake timers, which
+ * replace the global one.
+ */
+const realSetImmediate = setImmediate;
+
+/**
+ * Let the SDK's promise chains and queued microtasks run. An immediate runs
+ * only once the microtask queue is empty, so waiting for one lets every chain
+ * finish however many turns it takes. It is the real one, so it also works
+ * under fake timers, and it moves no fake clock.
+ */
+export function settle(): Promise<void> {
+  return new Promise((resolve) => {
+    realSetImmediate(resolve);
+  });
 }
 
 /** The newest request the SDK sent. */
