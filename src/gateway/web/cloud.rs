@@ -20,6 +20,9 @@ pub(crate) struct CloudApiState {
     pub reload_tx: crate::gateway::types::ReloadSender,
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The sign-ins `POST /api/hub/cloud/connect` started, which the callback
+    /// checks its `state` against.
+    pub sign_ins: super::cloud_sign_in::PendingSignIns,
 }
 
 /// The tunnel's status as `GET /api/hub/cloud/status` and the `tunnel` field
@@ -143,6 +146,9 @@ enum CallbackOutcome {
     MissingToken,
     /// The token or the `[cloud]` switch couldn't be saved.
     SaveFailed,
+    /// The callback's `state` names no sign-in Connect started here recently,
+    /// so its token was not used.
+    NotStartedHere,
 }
 
 impl CallbackOutcome {
@@ -151,6 +157,7 @@ impl CallbackOutcome {
             Self::Connecting => "connecting",
             Self::MissingToken => "missing-token",
             Self::SaveFailed => "save-failed",
+            Self::NotStartedHere => "not-started-here",
         }
     }
 
@@ -169,10 +176,11 @@ fn token_from_query(query: Option<&str>) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// `GET /cloud/callback?token=...` — where the relay sends the browser after
-/// sign-in.
+/// `GET /cloud/callback?token=...&state=...` — where the relay sends the
+/// browser after sign-in.
 ///
-/// Stores the token in the secret store, switches the tunnel on in the hub's
+/// Refuses a callback whose `state` isn't one Connect started here (see
+/// `cloud_sign_in`), saving nothing. Otherwise stores the token in the secret store, switches the tunnel on in the hub's
 /// `config.toml`, triggers a config reload, and hands the browser to Settings
 /// → Residuum Cloud, which follows the tunnel from there. Every outcome is a
 /// redirect into the app; a failure is logged here and named by `cloud=`.
@@ -180,6 +188,9 @@ pub(crate) async fn cloud_callback(
     State(state): State<CloudApiState>,
     RawQuery(query): RawQuery,
 ) -> Response {
+    if !state.sign_ins.callback_started_here(query.as_deref()) {
+        return CallbackOutcome::NotStartedHere.hand_off();
+    }
     let Some(token) = token_from_query(query.as_deref()) else {
         tracing::warn!("the cloud sign-in callback arrived without a token");
         return CallbackOutcome::MissingToken.hand_off();
@@ -482,6 +493,8 @@ token = "secret:discord"
         std::fs::create_dir(hub_dir.path().join("config.toml")).unwrap();
         let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
         let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
+        let sign_ins = super::super::cloud_sign_in::PendingSignIns::default();
+        let sign_in_state = sign_ins.start().unwrap();
         let app = axum::Router::new()
             .route("/cloud/callback", axum::routing::get(cloud_callback))
             .with_state(CloudApiState {
@@ -489,13 +502,16 @@ token = "secret:discord"
                 reload_tx,
                 tunnel_status_rx,
                 secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+                sign_ins,
             });
 
         let resp = app
             .oneshot(
-                axum::http::Request::get("/cloud/callback?token=rst_x")
-                    .body(Body::empty())
-                    .unwrap(),
+                axum::http::Request::get(format!(
+                    "/cloud/callback?token=rst_x&state={sign_in_state}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -517,6 +533,7 @@ token = "secret:discord"
             reload_tx,
             tunnel_status_rx,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            sign_ins: super::super::cloud_sign_in::PendingSignIns::default(),
         }
     }
 

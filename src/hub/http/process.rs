@@ -11,17 +11,23 @@ use crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect;
 use crate::gateway::web;
 
 /// Cloud connection routes. Disconnect is refused over the tunnel, since a
-/// remote disconnect leaves no way to reconnect. The relay's OAuth callback
-/// stays at the root because the relay redirects the browser to it.
+/// remote disconnect leaves no way to reconnect. The relay's sign-in callback
+/// stays at the root because the relay redirects the browser to it, and it
+/// takes a token only for a sign-in that connect started.
 pub(super) fn cloud_routes(hub: &HubHttpState) -> Router {
     let state = web::cloud::CloudApiState {
         hub_dir: hub.hub_dir.clone(),
         reload_tx: hub.reload_tx.clone(),
         tunnel_status_rx: hub.tunnel_status_rx.clone(),
         secret_lock: Arc::clone(&hub.secret_lock),
+        sign_ins: web::cloud_sign_in::PendingSignIns::default(),
     };
     Router::new()
         .route("/api/hub/cloud/status", get(web::cloud::api_cloud_status))
+        .route(
+            "/api/hub/cloud/connect",
+            post(web::cloud_sign_in::api_cloud_connect),
+        )
         .route("/cloud/callback", get(web::cloud::cloud_callback))
         .with_state(state.clone())
         .merge(

@@ -31,7 +31,7 @@ pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 pub(super) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
 
 /// Default gateway port.
-pub(super) const DEFAULT_GATEWAY_PORT: u16 = 7700;
+pub(crate) const DEFAULT_GATEWAY_PORT: u16 = 7700;
 
 /// Default upstream endpoint for bug-report and feedback submissions.
 /// Points at the relay; the relay attaches the upstream auth header.
@@ -144,7 +144,7 @@ pub(crate) const DEFAULT_TEAMS_PORT: u16 = 7701;
 pub(crate) const DEFAULT_A2A_PORT: u16 = 7702;
 
 /// Default relay WebSocket URL.
-pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/v2/register";
+pub(crate) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/v2/register";
 
 /// Default consecutive identical tool-call count at which the repeat-call
 /// guard appends a steering note to the tool's result.
