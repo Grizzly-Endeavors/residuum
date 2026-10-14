@@ -21,14 +21,22 @@ async function openSection(page: Page, section: string): Promise<void> {
   await expectSettingsOpen(page);
 }
 
-/** Record what the page opens in a new tab, since the relay's sign-in page can't load here. */
+/**
+ * Record where the page sends the tabs it opens, since the relay's sign-in
+ * page can't load here. Each `window.open` gets a stand-in tab, and the
+ * address the page sends it to (`location.replace`) is what is recorded.
+ */
 async function recordOpenedTabs(page: Page): Promise<() => Promise<string[]>> {
   await page.evaluate(() => {
     const opened: string[] = [];
     Object.assign(window, { openedTabs: opened });
-    window.open = (url) => {
-      opened.push(String(url));
-      return null;
+    window.open = () => {
+      const tab = {
+        opener: window,
+        location: { replace: (url: string | URL) => opened.push(String(url)) },
+        close: () => undefined,
+      };
+      return tab as unknown as Window;
     };
   });
   return () => page.evaluate(() => (window as unknown as { openedTabs: string[] }).openedTabs);

@@ -110,6 +110,10 @@ const ACTION_FAILED: Readonly<Record<CloudAction, string>> = {
   token: "Couldn't connect with that token.",
 };
 
+/** What to say when the browser won't let the page open the sign-in tab. */
+export const SIGN_IN_TAB_BLOCKED =
+  "Your browser blocked the Residuum Cloud sign-in tab. Allow pop-ups for this page (your browser offers it in or beside the address bar), then try again.";
+
 /** The gateway refuses to disconnect for someone viewing it through the tunnel (`remote_control_guard`); its 403 says so, where `userErrorMessage` would say to reload. */
 function problemOf(kind: CloudAction, err: unknown): string {
   if (err instanceof Refused) return `${ACTION_FAILED[kind]} ${err.message}`;
@@ -175,11 +179,28 @@ export class CloudConnection {
   /**
    * Open the relay's sign-in page in a new tab. The hub hands out the page's
    * address, with the `state` that ties the sign-in to this install.
+   *
+   * Call it straight from a click. The tab opens before the request to the
+   * hub, while the click still lets the page open one: a tab opened after an
+   * await can be dropped by a pop-up blocker, and with `noopener` the page
+   * couldn't tell. A blocked tab is reported, and a request that fails closes
+   * the tab it opened.
    */
   async signIn(target: SignInTarget): Promise<void> {
+    const tab = window.open("about:blank", "_blank");
+    if (tab === null) {
+      this.problem = SIGN_IN_TAB_BLOCKED;
+      return;
+    }
     await this.act("sign-in", async () => {
-      const url = await startCloudSignIn(target.relayUrl, target.port);
-      window.open(url, "_blank", "noopener");
+      try {
+        const url = await startCloudSignIn(target.relayUrl, target.port);
+        tab.opener = null;
+        tab.location.replace(url);
+      } catch (err) {
+        tab.close();
+        throw err;
+      }
     });
   }
 
