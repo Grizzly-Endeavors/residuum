@@ -233,7 +233,7 @@ test.describe("Notifications", () => {
     {
       tag: "@dev",
     },
-    async ({ page }) => {
+    async ({ browserName, page }) => {
       await page.request.put("/api/hub/push/devices", {
         data: {
           subscription: {
@@ -244,7 +244,12 @@ test.describe("Notifications", () => {
         },
       });
       await openSection(page, "notifications");
-      await expect(thisDevice(page)).toContainText("background worker isn't running");
+      // The WebKit project is an iPhone, where this device first needs the app on its Home Screen.
+      await expect(thisDevice(page)).toContainText(
+        browserName === "webkit"
+          ? "only in the app on your Home Screen"
+          : "background worker isn't running",
+      );
       const others = page.getByRole("list", { name: "Other devices" });
       await expect(others).toContainText("Old tablet");
       await expect(others).toContainText("No notifications sent yet.");
