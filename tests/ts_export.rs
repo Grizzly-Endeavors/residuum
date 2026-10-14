@@ -120,12 +120,12 @@ mod ts_export {
         AgentListResponse::export_all(&cfg).unwrap();
         DeletedAgentListResponse::export_all(&cfg).unwrap();
         // The hub WebSocket: `HubEvent` is every frame the hub forwards from
-        // its bus (with `Actor` and `NoticeLevel`), `HubSocketFrame` the two it
-        // sends on its own (`hub_boot` and `agents_snapshot`), and
-        // `HubClientMessage` the one message a client sends. The team change
-        // frames are the agent protocol's `ServerMessage` variants. The client
-        // message is exported under this name so it doesn't collide with the
-        // agent protocol's `ClientMessage`.
+        // its bus (with `Actor`, `NoticeLevel` and `HubNoticeKind`),
+        // `HubSocketFrame` the two it sends on its own (`hub_boot` and
+        // `agents_snapshot`), and `HubClientMessage` the one message a client
+        // sends. The team change frames are the agent protocol's
+        // `ServerMessage` variants. The client message is exported under this
+        // name so it doesn't collide with the agent protocol's `ClientMessage`.
         HubEvent::export_all(&cfg).unwrap();
         HubSocketFrame::export_all(&cfg).unwrap();
         HubClientMessage::export_all(&cfg).unwrap();

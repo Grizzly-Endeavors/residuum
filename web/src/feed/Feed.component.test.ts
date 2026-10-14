@@ -1,4 +1,3 @@
-import { act } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, settle } from "../test/component";
 import { htmlSnippet } from "../test/snippets";
@@ -208,7 +207,7 @@ describe("Feed", () => {
     await waitFor(() => {
       expect(loadOlder).toHaveBeenCalled();
     });
-    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    await settle();
     // The observer and the history's change each try once; a failure doesn't chain into more.
     expect(loadOlder.mock.calls.length).toBeGreaterThan(0);
     expect(loadOlder.mock.calls.length).toBeLessThanOrEqual(2);

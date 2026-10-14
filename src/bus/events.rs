@@ -652,6 +652,65 @@ impl SpawnRequestEvent {
 pub struct NoticeEvent {
     /// Human-readable notice message.
     pub message: String,
+    /// What a settings reload came to, and which files it read, when this
+    /// notice reports one. The web words the toast from it and keeps
+    /// `message` as the detail.
+    pub reload: Option<ReloadReport>,
+}
+
+/// A settings reload's outcome and the files it read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReloadReport {
+    pub outcome: ReloadOutcome,
+    pub of: ReloadedFiles,
+}
+
+impl NoticeEvent {
+    /// A notice that reports nothing structured: its text is all there is.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reload: None,
+        }
+    }
+
+    /// A notice reporting how a reload of the files `of` went.
+    #[must_use]
+    pub fn reload(outcome: ReloadOutcome, of: ReloadedFiles, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reload: Some(ReloadReport { outcome, of }),
+        }
+    }
+}
+
+/// What an attempt to reload settings files came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReloadOutcome {
+    /// The files loaded and something in them changed, which is now in effect.
+    Reloaded,
+    /// The files loaded and matched what was already running.
+    Unchanged,
+    /// The files couldn't be loaded; the settings already running stay in effect.
+    Failed,
+}
+
+/// Which files an agent's reload read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReloadedFiles {
+    /// The agent's own `config.toml` and `providers.toml`.
+    AgentConfig,
+    /// `hub/config.toml`, which the agent reloads after the hub has; the hub
+    /// reports its own reload on the hub socket.
+    HubConfig,
+    /// The agent's workspace files: `mcp.json`, `channels.toml`,
+    /// `agent-card.json`, `a2a.json`, and the team's `AGENTS.md` and `USER.md`.
+    Workspace,
 }
 
 /// Which background post-turn cycle (see `crate::gateway::post_turn`) an

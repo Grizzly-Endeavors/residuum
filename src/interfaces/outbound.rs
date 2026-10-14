@@ -696,12 +696,7 @@ mod tests {
         let system = || topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
 
         publisher
-            .publish(
-                system(),
-                NoticeEvent {
-                    message: "Config reloaded".to_string(),
-                },
-            )
+            .publish(system(), NoticeEvent::new("Config reloaded"))
             .await
             .unwrap();
         publisher

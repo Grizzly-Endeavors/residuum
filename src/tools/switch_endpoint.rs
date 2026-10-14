@@ -107,12 +107,10 @@ impl Tool for SwitchEndpointTool {
             .publisher
             .publish(
                 topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                NoticeEvent {
-                    message: format!(
-                        "Background output now goes to {} until your next message.",
-                        entry.display_name
-                    ),
-                },
+                NoticeEvent::new(format!(
+                    "Background output now goes to {} until your next message.",
+                    entry.display_name
+                )),
             )
             .await
         {

@@ -20,7 +20,9 @@
 import { parse as parseToml } from "smol-toml";
 import type {
   McpServerEntry,
+  ModelImageInput,
   SettingsProviderEntry,
+  SettingsProviderModel,
   SettingsModelAssignments,
   ModelRoleKey,
   RoleOverrides,
@@ -552,6 +554,18 @@ export function defaultModels(): SettingsModelAssignments {
   };
 }
 
+/** A provider's `models` table: each model's settings, by the model's name. */
+function parseProviderModels(raw: unknown): SettingsProviderModel[] {
+  if (!isTable(raw)) return [];
+  return Object.entries(raw).map(([name, model]) => ({ name, images: imagesOf(model) }));
+}
+
+/** A model's image setting, from the `input` list in its table. */
+function imagesOf(model: unknown): ModelImageInput {
+  if (!isTable(model) || !Array.isArray(model.input)) return "";
+  return stringList(model.input).includes("image") ? "image" : "text";
+}
+
 export function parseProvidersToml(raw: string): ProvidersFormState {
   const result: ProvidersFormState = { providers: [], models: defaultModels() };
   if (!raw.trim()) return result;
@@ -572,6 +586,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
         apiKey: str(entry.api_key),
         url: str(entry.url),
         keepAlive: str(entry.keep_alive),
+        models: parseProviderModels(entry.models),
       });
     }
   }
@@ -1258,11 +1273,44 @@ function diffModels(
   }
 }
 
+/** The `input` list a model's image setting writes. */
+function inputList(images: ModelImageInput): string[] | null {
+  if (images === "image") return ["text", "image"];
+  if (images === "text") return ["text"];
+  return null;
+}
+
+/** A provider's models as the patch value of its `models` table: a model with no setting has no entry. */
+function providerModelsJson(models: readonly SettingsProviderModel[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const model of models) {
+    const input = inputList(model.images);
+    if (input !== null) out[model.name] = { input };
+  }
+  return out;
+}
+
+/** What changed among a provider's models; a model whose setting was cleared is removed. */
+function diffProviderModels(
+  base: readonly SettingsProviderModel[],
+  current: readonly SettingsProviderModel[],
+): Record<string, unknown> {
+  const before = providerModelsJson(base);
+  const after = providerModelsJson(current);
+  const out: Record<string, unknown> = {};
+  for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!jsonEqual(before[name], after[name])) out[name] = after[name] ?? null;
+  }
+  return out;
+}
+
 function providerToJson(p: SettingsProviderEntry): Record<string, unknown> {
   const out: Record<string, unknown> = { type: p.type };
   if (p.apiKey) out.api_key = p.apiKey;
   if (p.url) out.url = p.url;
   if (p.keepAlive) out.keep_alive = p.keepAlive;
+  const models = providerModelsJson(p.models);
+  if (Object.keys(models).length > 0) out.models = models;
   return out;
 }
 
@@ -1284,6 +1332,9 @@ function diffProviderFields(
   const keepAliveBefore = base.keepAlive || null;
   const keepAliveAfter = current.keepAlive || null;
   if (keepAliveBefore !== keepAliveAfter) out.keep_alive = keepAliveAfter;
+
+  const models = diffProviderModels(base.models, current.models);
+  if (Object.keys(models).length > 0) out.models = models;
 
   return out;
 }

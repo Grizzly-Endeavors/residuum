@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Icon } from "../../../lib/icons";
   import { Badge, Banner, Button, Spinner, VisuallyHidden } from "../../../lib/ui";
+  import TeamsCleanupError from "./TeamsCleanupError.svelte";
   import type { TeamsSetupState } from "./teams-setup-state.svelte";
 
   interface Props {
@@ -88,9 +89,22 @@
     {#if state.prereqs.teams_already_configured}
       <div class="checkbox-container">
         <Banner tone="warn">
-          Teams is already configured for this agent. Setting up a new bot replaces the current
-          Teams connection (old registrations stay in your tenant).
+          Teams is already configured for this agent. Setup updates the bot registration saved in
+          this agent's Teams project, or creates a new one if there is none. To start with a
+          brand-new bot, delete the Teams project files first.
         </Banner>
+        <div class="cleanup-row">
+          <Button
+            variant="quiet"
+            size="sm"
+            loading={state.cleanupLoading}
+            disabled={state.cleanupSuccess}
+            onclick={() => void state.handleCleanup()}
+          >
+            {state.cleanupSuccess ? "Teams project files deleted" : "Delete Teams project files"}
+          </Button>
+        </div>
+        <TeamsCleanupError {state} />
         <label class="checkbox-row">
           <input type="checkbox" class="checkbox-input" bind:checked={state.replaceExisting} />
           <span>Replace existing Teams configuration for {state.agent}</span>
@@ -181,6 +195,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-8);
+  }
+
+  .cleanup-row {
+    display: flex;
   }
 
   .checkbox-row {

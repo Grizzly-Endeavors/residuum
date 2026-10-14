@@ -631,9 +631,7 @@ impl RemoteTaskTracker {
             .publisher()
             .publish(
                 topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                NoticeEvent {
-                    message: message.to_string(),
-                },
+                NoticeEvent::new(message.to_string()),
             )
             .await
         {
