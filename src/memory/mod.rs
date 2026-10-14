@@ -5,6 +5,7 @@
 
 pub(crate) mod chunk_extractor;
 pub mod episode_store;
+mod fork_safe_directory;
 pub mod log_store;
 pub mod merge_writer;
 pub(crate) mod merged_run_log;
