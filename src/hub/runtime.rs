@@ -224,7 +224,7 @@ fn spawn_tunnel(
     let wiring = inputs.remote;
     let tunnel = wiring
         .slot
-        .start_tunnel(crate::remote_access::TunnelStart {
+        .start_tunnel(crate::remote_access::slot::TunnelStart {
             cloud: cloud.clone(),
             hub_dir: hub.config_dir.clone(),
             a2a_port: hub.a2a.enabled.then_some(hub.a2a.port),

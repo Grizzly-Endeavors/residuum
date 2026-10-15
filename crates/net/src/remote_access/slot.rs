@@ -174,7 +174,7 @@ impl RemoteAccessSlot {
     }
 
     /// Forget the running instance and report remote access as `state`.
-    pub(crate) fn clear(&self, state: RemoteAccessState, detail: &str) {
+    fn clear(&self, state: RemoteAccessState, detail: &str) {
         *self.current.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.discovery.send_replace(None);
         self.status.send_replace(RemoteAccessStatus {

@@ -3,7 +3,7 @@
 //! door, a fake pin service and (for the issuance tests) a Pebble ACME CA.
 //!
 //! The Pebble tests need Docker and are `#[ignore]`d; run them with
-//! `cargo test --quiet system -- --ignored`.
+//! `cargo test --quiet -p residuum-net --lib system_tests -- --ignored`.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};

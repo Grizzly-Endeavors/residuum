@@ -17,8 +17,7 @@ use serde::Serialize;
 
 use crate::gateway::protocol::{WorkbenchInfo, WorkbenchRelayOrigins};
 use crate::tunnel::TunnelStatus;
-use crate::workbench::WorkbenchServing;
-use crate::workbench::{self, ArtifactDeleteError, ArtifactSummary};
+use crate::workbench::{self, ArtifactDeleteError, ArtifactSummary, WorkbenchServing};
 
 #[derive(Clone)]
 pub(crate) struct WorkbenchApiState {
