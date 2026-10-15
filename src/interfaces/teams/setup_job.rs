@@ -718,10 +718,10 @@ impl TeamsSetupJobManager {
         session: &Arc<Mutex<JobSession>>,
         cancel: &CancellationToken,
     ) -> Result<(), SetupError> {
-        let (prereqs, log) = {
-            let lock = session.lock().await;
-            (self.get_prereqs(agent).await, lock.log.clone())
-        };
+        // The prerequisite probes run child processes, so they run outside the session lock:
+        // holding it would stall every status read of the job until they finish.
+        let log = session.lock().await.log.clone();
+        let prereqs = self.get_prereqs(agent).await;
 
         if prereqs.atk.installed {
             log.push(
@@ -1311,6 +1311,11 @@ TEAMS_APP_ID=app-mock-9999
 exit 0
 "#;
 
+    // The provisioning grandchild outlives the hang guard, so it is still there whenever
+    // the test looks: provisioning stays in flight until the test cancels it, and a cancel
+    // that fails to kill the tree can't pass because the grandchild exited on its own. If
+    // the test panics first, dropping the runtime drops the job's command, whose guard
+    // kills the tree.
     const SLOW_ATK_UNIX: &str = r#"#!/bin/sh
 cmd="$1"
 sub="$2"
@@ -1321,7 +1326,7 @@ if [ "$cmd" = "provision" ]; then
     while [ "$#" -gt 0 ]; do
         if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
     done
-    sleep 30 &
+    sleep 3600 &
     echo $! > "$folder/grandchild.pid"
     wait
     exit 0
@@ -1341,7 +1346,7 @@ if ($cmd -eq "provision") {
             break
         }
     }
-    $p = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -PassThru
+    $p = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 3600' -PassThru
     [System.IO.File]::WriteAllText((Join-Path $folder 'grandchild.pid'), $p.Id.ToString())
     Wait-Process -Id $p.Id
     exit 0
@@ -1551,6 +1556,42 @@ exit 0
         (root, overrides)
     }
 
+    /// Wait for agent-1's job to be provisioning with the slow atk's grandchild running,
+    /// and return the grandchild's pid.
+    ///
+    /// A job that stops running first can never get there, so the wait fails at once with
+    /// the job's phase, error and log instead of sitting out the hang guard.
+    async fn wait_for_provisioning_grandchild(
+        mgr: &TeamsSetupJobManager,
+        root: &Path,
+        what: &str,
+    ) -> u32 {
+        let pid_file = root.join("agent-1/teams-app/grandchild.pid");
+        wait::until(what, || async {
+            let j = mgr.get_job("agent-1", None).await?;
+            if j.state != TeamsSetupState::Running {
+                let log: Vec<String> = j
+                    .log
+                    .iter()
+                    .map(|line| format!("{} {:?} {}", line.at, line.stream, line.text))
+                    .collect();
+                panic!(
+                    "job stopped before provisioning was in flight: state {:?}, phase {:?}, error {:?}\nlog:\n{}",
+                    j.state,
+                    j.phase,
+                    j.error,
+                    log.join("\n")
+                );
+            }
+            if j.phase != TeamsSetupPhase::Provision {
+                return None;
+            }
+            let content = tokio::fs::read_to_string(&pid_file).await.ok()?;
+            content.trim().parse::<u32>().ok()
+        })
+        .await
+    }
+
     fn sample_start_form() -> TeamsSetupStart {
         TeamsSetupStart {
             form: TeamsSetupForm {
@@ -1717,17 +1758,8 @@ exit 0
         let req = sample_start_form();
         mgr.start_job("agent-1", req).await.unwrap();
 
-        // Wait until it reaches Provision phase and grandchild.pid exists
-        let pid_file = root.join("agent-1/teams-app/grandchild.pid");
-        let pid = wait::until("the grandchild to write its pid", || async {
-            let j = mgr.get_job("agent-1", None).await?;
-            if j.phase != TeamsSetupPhase::Provision {
-                return None;
-            }
-            let content = tokio::fs::read_to_string(&pid_file).await.ok()?;
-            content.trim().parse::<u32>().ok()
-        })
-        .await;
+        let pid =
+            wait_for_provisioning_grandchild(&mgr, &root, "the grandchild to write its pid").await;
         assert!(crate::util::process::is_process_running(pid));
 
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
@@ -1929,21 +1961,9 @@ exit 0
         let mut req = sample_start_form();
         req.form.bot_name = "Renamed Bot".to_string();
         mgr.start_job("agent-1", req).await.unwrap();
-        let pid_file = root.join("agent-1/teams-app/grandchild.pid");
-        let pid = wait::until("the second run to reach provisioning", || async {
-            let j = mgr.get_job("agent-1", None).await?;
-            assert!(
-                j.state != TeamsSetupState::Failed,
-                "second run failed: {:?}",
-                j.error
-            );
-            if j.phase != TeamsSetupPhase::Provision {
-                return None;
-            }
-            let content = tokio::fs::read_to_string(&pid_file).await.ok()?;
-            content.trim().parse::<u32>().ok()
-        })
-        .await;
+        let pid =
+            wait_for_provisioning_grandchild(&mgr, &root, "the second run to reach provisioning")
+                .await;
 
         let env = tokio::fs::read_to_string(&env_path).await.unwrap();
         assert!(env.contains("BOT_ID=partial-bot-id-4444"), "{env}");
