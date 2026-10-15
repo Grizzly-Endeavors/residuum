@@ -147,6 +147,13 @@ http-body-util = "0.1"
 hyper = { version = "1.12", features = ["client"] }
 jsonschema = { version = "0.58.6", default-features = false }
 
+# Line tables keep backtraces at file:line; full debug info is most of the link time and target/ size.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Lint configuration
 #
 # These rules are intentionally strict. This project is primarily developed
