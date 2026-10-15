@@ -94,7 +94,15 @@ classify_range() {
     # --no-renames lists both sides of a move, so the module a file left counts
     # as changed too.
     # core.quotePath=false keeps non-ASCII paths unquoted, so they match the arms below.
-    CHANGED_PATHS="$(git -c core.quotePath=false diff --name-only --no-renames "$base" "$local_sha")"
+    # A diff that fails says nothing about what changed, so it runs every check,
+    # as a range with no base does.
+    if ! CHANGED_PATHS="$(git -c core.quotePath=false diff --name-only --no-renames "$base" "$local_sha")"; then
+        note "WARNING: couldn't list the files changed since $base; running every check."
+        CHANGED_PATHS=""
+        TOUCHES_RUST=1
+        TOUCHES_WEB=1
+        return
+    fi
     CHANGED_KNOWN=1
     grep -qE "$RUST_PATHS_RE" <<<"$CHANGED_PATHS" && TOUCHES_RUST=1
     grep -q '^web/' <<<"$CHANGED_PATHS" && TOUCHES_WEB=1
