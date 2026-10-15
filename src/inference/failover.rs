@@ -504,7 +504,7 @@ mod tests {
             Box::new(FailProvider { name: "primary" }),
             Box::new(SuccessProvider { name: "fallback" }),
         ])
-        .with_notices(notices.clone(), "main model");
+        .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
         let result = provider
             .complete(&[], &[], &CompletionOptions::default())
@@ -530,7 +530,7 @@ mod tests {
             Box::new(FailProvider { name: "primary" }),
             Box::new(SuccessProvider { name: "fallback" }),
         ])
-        .with_notices(notices.clone(), "main model");
+        .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
         // First call: transition to the fallback, one notice.
         provider
@@ -561,7 +561,7 @@ mod tests {
             }),
             Box::new(SuccessProvider { name: "fallback" }),
         ])
-        .with_notices(notices.clone(), "main model");
+        .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
         // First call: primary fails once, fallback serves — fallover notice.
         provider
@@ -597,7 +597,10 @@ mod tests {
             Box::new(SuccessProvider { name: "fallback" }),
         ])
         .with_shared_active_index(Arc::clone(&shared_index))
-        .with_notices(notices.clone(), "background sessions (large tier)");
+        .with_notices(
+            Arc::clone(&notices) as Arc<dyn NoticeSink>,
+            "background sessions (large tier)",
+        );
         first
             .complete(&[], &[], &CompletionOptions::default())
             .await
@@ -613,7 +616,10 @@ mod tests {
             Box::new(SuccessProvider { name: "fallback" }),
         ])
         .with_shared_active_index(Arc::clone(&shared_index))
-        .with_notices(notices.clone(), "background sessions (large tier)");
+        .with_notices(
+            Arc::clone(&notices) as Arc<dyn NoticeSink>,
+            "background sessions (large tier)",
+        );
         second
             .complete(&[], &[], &CompletionOptions::default())
             .await
@@ -826,7 +832,7 @@ mod tests {
                 fails: false,
             }),
         ])
-        .with_notices(notices.clone(), "main model");
+        .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
         provider
             .complete_streaming(
@@ -1221,7 +1227,7 @@ mod tests {
             let (primary, primary_requests) = hop("glm-5.3", ImageInput::TextOnly, false);
             let (fallback, fallback_requests) = hop("gpt-4o", ImageInput::Accepted, false);
             let chain = FailoverProvider::new(vec![primary, fallback])
-                .with_notices(notices.clone(), "main model");
+                .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
             let response = chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1251,7 +1257,7 @@ mod tests {
             let (primary, primary_requests) = hop("glm-5.3", ImageInput::Undeclared, true);
             let (fallback, fallback_requests) = hop("gpt-4o", ImageInput::Accepted, false);
             let chain = FailoverProvider::new(vec![primary, fallback])
-                .with_notices(notices.clone(), "main model");
+                .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
             let response = chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1297,7 +1303,7 @@ mod tests {
             let down: Box<dyn InferenceProvider> = Box::new(FailProvider { name: "vision-a" });
             let (last, last_requests) = hop("vision-b", ImageInput::Accepted, false);
             let chain = FailoverProvider::new(vec![primary, down, last])
-                .with_notices(notices.clone(), "main model");
+                .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
             let response = chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
