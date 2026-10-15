@@ -451,8 +451,12 @@ mod tests {
                 });
                 if !enabled {
                     problems.push(format!(
-                        "{}: `[{}]` `{}` depends on `{}`, which has a `test-support` feature; enable it in `[dev-dependencies]`",
-                        manifest.display, dep.table, dep.key, dep.package
+                        "{}: `{}` depends on `{}` (`[{}]` entry `{}`), which has a `test-support` feature; enable it in `[dev-dependencies]`",
+                        manifest.display,
+                        package_name(manifest),
+                        dep.package,
+                        dep.table,
+                        dep.key
                     ));
                 }
             }
@@ -637,7 +641,7 @@ mod tests {
             "rule 8",
             &test_support_in_dev_dependency_problems(&broken),
             &[
-                "crates/a/Cargo.toml: `[dev-dependencies]` `residuum-core` depends on `residuum-core`",
+                "crates/a/Cargo.toml: `residuum-a` depends on `residuum-core` (`[dev-dependencies]` entry `residuum-core`), which has a `test-support` feature; enable it in `[dev-dependencies]`",
             ],
         );
     }
