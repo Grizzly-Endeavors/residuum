@@ -30,10 +30,10 @@ NC='\033[0m'
 
 ZERO_SHA=0000000000000000000000000000000000000000
 MAIN_REF=refs/remotes/origin/main
-# The paths that run the Rust checks. This mirrors the `paths` list of
-# .github/workflows/rust-pr.yml, which triggers the same checks in CI; change
-# both together.
-RUST_PATHS_RE='^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/(check|export)-generated-types\.sh|\.github/workflows/(quality-checks|rust-pr|release)\.yml)$'
+# The paths that run the Rust checks. This is the RUST_PATHS_RE of the
+# `changes` job in .github/workflows/ci.yml, which decides when CI runs the same
+# checks; change both together.
+RUST_PATHS_RE='^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/(check|export)-generated-types\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
 
 note() { echo -e "${YELLOW}$1${NC}" >&2; }
 
@@ -105,7 +105,7 @@ classify_range() {
     fi
     CHANGED_KNOWN=1
     grep -qE "$RUST_PATHS_RE" <<<"$CHANGED_PATHS" && TOUCHES_RUST=1
-    grep -q '^web/' <<<"$CHANGED_PATHS" && TOUCHES_WEB=1
+    grep -v '^web/.*\.md$' <<<"$CHANGED_PATHS" | grep -q '^web/' && TOUCHES_WEB=1
 }
 
 # Every check runs and its result is recorded; nothing exits early.

@@ -1,0 +1,19 @@
+2026-10-12T14:30:37.7378267Z ##[group]Run scripts/stress-tests.sh
+2026-10-12T14:30:37.7378657Z [36;1mscripts/stress-tests.sh[0m
+2026-10-12T14:30:37.7391111Z shell: /usr/bin/bash -e {0}
+2026-10-12T14:30:37.7391408Z ##[endgroup]
+2026-10-12T14:30:39.8137555Z Stress: 15 test binaries, 2 copies at once, 20 CPU burners, 3 round(s), on 20 CPUs.
+2026-10-12T14:32:18.4325912Z Round 3 done. Load: 69.39 32.10 15.20. inotify instances in use mid-run: 0 of 128.
+2026-10-12T14:32:18.4665794Z Failures (count out of 6 runs of each test):
+2026-10-12T14:32:18.4684529Z       2 gateway::flood::tests::case_01
+2026-10-12T14:32:18.4684530Z       2 gateway::flood::tests::case_02
+2026-10-12T14:32:18.4684531Z       2 gateway::flood::tests::case_03
+2026-10-12T14:32:18.4684532Z       2 gateway::flood::tests::case_04
+2026-10-12T14:32:18.4684533Z       2 gateway::flood::tests::case_05
+2026-10-12T14:32:18.4684534Z       2 gateway::flood::tests::case_06
+2026-10-12T14:32:18.4684535Z       2 gateway::flood::tests::case_07
+2026-10-12T14:32:18.4684536Z       2 gateway::flood::tests::case_08
+2026-10-12T14:32:18.4684537Z       2 gateway::flood::tests::case_09
+2026-10-12T14:32:18.4684538Z       2 gateway::flood::tests::case_10
+2026-10-12T14:32:18.4685980Z error: tests failed under load. Logs are in target/stress/; make each test wait on the event it checks (CONTRIBUTING.md, "Waiting in tests").
+2026-10-12T14:32:18.4710436Z ##[error]Process completed with exit code 1.

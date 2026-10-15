@@ -1,29 +1,22 @@
 name: Workflow Lint
 
-# actionlint over every workflow, with shellcheck over the run blocks, on each
-# pull request that changes a workflow or the runner-label config
-# (.github/actionlint.yaml). A bad runner label or a quoting mistake in a run
-# block then fails the pull request that introduced it, not the release.
+# actionlint over every workflow, with shellcheck over the run blocks. ci.yml
+# calls it for each pull request and merge queue batch that changes a workflow
+# or the runner-label config (.github/actionlint.yaml), as part of the CI gate,
+# so a bad runner label or a quoting mistake in a run block fails the pull
+# request that introduced it, not the release. It is also runnable by hand from
+# the Actions tab.
 #
 # Both tools are pinned here and checksum-verified before they run. The
 # `actionlint` recipe in the justfile reads the pinned versions from this file,
 # so the local check and this job cannot drift apart.
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/**"
-      - ".github/actionlint.yaml"
+  workflow_call:
   workflow_dispatch:
-
-concurrency:
-  group: actionlint-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   actionlint:
     name: Actionlint
-    # The runners are self-hosted, so a fork's code never runs on them.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: lab-runners-light
     permissions:
       contents: read
