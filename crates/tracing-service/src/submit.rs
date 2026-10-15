@@ -12,7 +12,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use opentelemetry_sdk::trace::SpanData;
 use serde::Serialize;
 
-use crate::util::telemetry::CompletedSpan;
+use residuum_core::util::telemetry::CompletedSpan;
 
 use super::{
     BugReport, ClientContext, Feedback, FeedbackClient, Severity, SubmissionReceipt, otel,

@@ -4,6 +4,9 @@
 //! content sanitization, and error reporting. Called by both CLI (via HTTP to
 //! the daemon) and web API handlers.
 
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;
 mod otel;
 mod sanitize;
 mod submit;
@@ -21,8 +24,8 @@ use opentelemetry_sdk::trace::SpanExporter;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::config::{OtelEndpoint, TracingConfig};
-use crate::util::telemetry::{CompletedSpan, SpanBufferHandle};
+use residuum_config::{OtelEndpoint, TracingConfig};
+use residuum_core::util::telemetry::{CompletedSpan, SpanBufferHandle};
 
 /// Runtime tracing state that can diverge from persisted config.
 ///
@@ -247,14 +250,14 @@ pub struct TracingService {
     state: Arc<RwLock<TracingState>>,
     span_buffer: SpanBufferHandle,
     /// Source of the agent-key redactor applied to every export.
-    agent_keys: Option<crate::agent_keys::SharedAgentKeys>,
+    agent_keys: Option<residuum_config::agent_keys::SharedAgentKeys>,
     /// Rate limiter guarding [`Self::on_error`] submissions.
     error_report_limiter: Mutex<ErrorReportLimiter>,
 }
 
 /// Replace agent-key values in `spans` using `agent_keys`' current redactor.
 async fn redact_with(
-    agent_keys: Option<&crate::agent_keys::SharedAgentKeys>,
+    agent_keys: Option<&residuum_config::agent_keys::SharedAgentKeys>,
     spans: &mut [CompletedSpan],
 ) {
     if let Some(keys) = agent_keys {
@@ -280,7 +283,10 @@ impl TracingService {
 
     /// Redact agent-key values from every span this service exports.
     #[must_use]
-    pub fn with_agent_keys(mut self, agent_keys: crate::agent_keys::SharedAgentKeys) -> Self {
+    pub fn with_agent_keys(
+        mut self,
+        agent_keys: residuum_config::agent_keys::SharedAgentKeys,
+    ) -> Self {
         self.agent_keys = Some(agent_keys);
         self
     }
@@ -459,7 +465,7 @@ impl TracingService {
         let service_state = Arc::clone(&self.state);
         let agent_keys = self.agent_keys.clone();
 
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             tracing::info!("trace streaming task started");
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {

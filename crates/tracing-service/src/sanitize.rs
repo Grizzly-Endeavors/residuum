@@ -4,8 +4,8 @@
 //! tool call arguments) from spans before they are exported to external
 //! endpoints. Controlled by the `sanitize_content` config flag.
 
-use crate::agent_keys::Redactor;
-use crate::util::telemetry::CompletedSpan;
+use residuum_config::agent_keys::Redactor;
+use residuum_core::util::telemetry::CompletedSpan;
 
 /// Field names whose values should be redacted in trace exports.
 const SENSITIVE_FIELDS: &[&str] = &[
@@ -84,7 +84,7 @@ fn sanitize_fields(fields: &mut [(String, String)]) {
 )]
 mod tests {
     use super::*;
-    use crate::util::telemetry::SpanEvent;
+    use residuum_core::util::telemetry::SpanEvent;
     use std::time::{Duration, SystemTime};
 
     fn make_span(fields: Vec<(&str, &str)>, events: Vec<SpanEvent>) -> CompletedSpan {
@@ -92,7 +92,7 @@ mod tests {
             span_id: 1,
             parent_id: None,
             name: "test_span".to_string(),
-            target: "residuum::test".to_string(),
+            target: "residuum_tracing_service::test".to_string(),
             level: tracing::Level::INFO,
             start: SystemTime::now(),
             duration: Duration::from_millis(10),

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::config::{SkillDir, SkillSource};
-use crate::util::xml_escape;
+use residuum_config::{SkillDir, SkillSource};
+use residuum_core::util::xml_escape;
 
 use super::{parser::parse_skill_md, types::SkillIndexEntry};
 
@@ -296,7 +296,7 @@ mod tests {
 
     use super::super::types::SkillIndexEntry;
     use super::SkillIndex;
-    use crate::config::{SkillDir, SkillSource};
+    use residuum_config::{SkillDir, SkillSource};
 
     // ── SkillIndex ───────────────────────────────────────────────────────────
 

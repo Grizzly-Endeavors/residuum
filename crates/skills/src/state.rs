@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 
-use crate::config::SkillDir;
+use residuum_config::SkillDir;
 
 use super::{index::SkillIndex, parser::parse_skill_md, types::ActiveSkill};
 
@@ -228,7 +228,7 @@ impl SkillState {
 mod tests {
     use super::super::index::SkillIndex;
     use super::SkillState;
-    use crate::config::SkillDir;
+    use residuum_config::SkillDir;
 
     // ── SkillState ───────────────────────────────────────────────────────────
 
@@ -244,7 +244,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[residuum_config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
         let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
@@ -287,7 +287,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[residuum_config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
         let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
@@ -318,7 +318,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[residuum_config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
         let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
@@ -348,7 +348,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[residuum_config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
         let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
@@ -435,7 +435,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[residuum_config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
         let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
@@ -477,7 +477,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[residuum_config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
         let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);

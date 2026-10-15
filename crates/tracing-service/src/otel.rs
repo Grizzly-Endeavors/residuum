@@ -12,8 +12,8 @@ use opentelemetry::trace::{
 use opentelemetry::{InstrumentationScope, KeyValue};
 use opentelemetry_sdk::trace::{SpanData, SpanEvents, SpanLinks};
 
-use crate::config::OtelEndpoint;
-use crate::util::telemetry::CompletedSpan;
+use residuum_config::OtelEndpoint;
+use residuum_core::util::telemetry::CompletedSpan;
 
 /// Service name reported in OTEL traces.
 const SERVICE_NAME: &str = "residuum";
@@ -176,7 +176,7 @@ mod tests {
             span_id: 42,
             parent_id: Some(1),
             name: "test_operation".to_string(),
-            target: "residuum::test".to_string(),
+            target: "residuum_tracing_service::test".to_string(),
             level: tracing::Level::INFO,
             start: SystemTime::now(),
             duration: Duration::from_millis(100),
@@ -184,7 +184,7 @@ mod tests {
                 ("key1".to_string(), "value1".to_string()),
                 ("key2".to_string(), "value2".to_string()),
             ],
-            events: vec![crate::util::telemetry::SpanEvent {
+            events: vec![residuum_core::util::telemetry::SpanEvent {
                 timestamp: SystemTime::now(),
                 level: tracing::Level::WARN,
                 message: "something happened".to_string(),

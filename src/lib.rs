@@ -6,6 +6,8 @@ pub(crate) use residuum_net::{
     browser_landing, cross_site, remote_control_guard, tunnel, workbench,
 };
 pub use residuum_net::{pairing, remote_access};
+pub use residuum_skills as skills;
+pub use residuum_tracing_service as tracing_service;
 
 pub mod a2a;
 pub mod actions;
@@ -28,11 +30,9 @@ pub mod notify;
 pub mod process;
 pub mod pulse;
 pub mod setup_wizard;
-pub mod skills;
 pub mod subconscious;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod tools;
-pub mod tracing_service;
 pub mod update;
 pub mod workspace;

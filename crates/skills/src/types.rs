@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::config::SkillSource;
+use residuum_config::SkillSource;
 
 /// YAML frontmatter deserialized from a `SKILL.md` file.
 #[derive(Debug, Deserialize)]
