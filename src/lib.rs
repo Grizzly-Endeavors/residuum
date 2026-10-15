@@ -2,6 +2,7 @@ pub use residuum_config as config;
 pub use residuum_config::agent_keys;
 pub use residuum_core::{diagnostics, time, util};
 pub use residuum_inference as inference;
+pub use residuum_mcp as mcp;
 pub use residuum_memory as memory;
 pub(crate) use residuum_net::{
     browser_landing, cross_site, remote_control_guard, tunnel, workbench,
@@ -25,7 +26,6 @@ pub mod hub;
 pub mod inbox;
 pub mod interfaces;
 pub mod logging;
-pub mod mcp;
 pub mod notify;
 pub mod process;
 pub mod pulse;

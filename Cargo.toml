@@ -28,6 +28,7 @@ residuum-tracing-service = { path = "crates/tracing-service", version = "0.1.0" 
 residuum-inference = { path = "crates/inference", version = "0.1.0" }
 residuum-memory = { path = "crates/memory", version = "0.1.0" }
 residuum-net = { path = "crates/net", version = "0.1.0" }
+residuum-mcp = { path = "crates/mcp", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
@@ -162,6 +163,7 @@ residuum-config = { workspace = true }
 residuum-inference = { workspace = true }
 residuum-memory = { workspace = true }
 residuum-net = { workspace = true }
+residuum-mcp = { workspace = true }
 residuum-skills = { workspace = true }
 residuum-tracing-service = { workspace = true }
 tokio = { workspace = true }
@@ -184,11 +186,9 @@ hex = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 tantivy = { workspace = true }
-http = { workspace = true }
 regex = { workspace = true }
 globset = { workspace = true }
 pulldown-cmark = { workspace = true }
-rmcp = { workspace = true }
 serde_yaml_ng = { workspace = true }
 tokio-util = { workspace = true }
 fd-lock = { workspace = true }

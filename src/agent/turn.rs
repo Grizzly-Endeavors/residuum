@@ -815,7 +815,7 @@ async fn finish_turn_with_notice(
 /// fall back to MCP servers when no built-in tool matches. Name collisions are
 /// resolved by the MCP registry before this merge: a built-in always wins and
 /// the colliding MCP tool is dropped from the union, so the model is never
-/// offered two definitions under one name. See `src/mcp/CLAUDE.md`.
+/// offered two definitions under one name. See `crates/mcp/CLAUDE.md`.
 ///
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are published through `events` as they are
@@ -873,7 +873,7 @@ pub(crate) async fn execute_turn(
         // Merge MCP tool definitions from all connected servers. The registry
         // has already dropped any MCP tool whose name collides with a built-in
         // or with an earlier server, so this union never carries a duplicate
-        // name (collision policy: src/mcp/CLAUDE.md).
+        // name (collision policy: crates/mcp/CLAUDE.md).
         let mcp_guard = resources.mcp_registry.read().await;
         tool_definitions.extend(mcp_guard.tool_definitions());
         drop(mcp_guard);
@@ -1386,7 +1386,7 @@ async fn dispatch_tool_call(
         // Try built-in tools first, fall back to MCP servers. This ordering
         // is the dispatch half of the collision policy: a built-in always
         // wins its name, and the registry has already hidden any shadowed
-        // MCP tool from the model (src/mcp/CLAUDE.md), so the fallback only
+        // MCP tool from the model (crates/mcp/CLAUDE.md), so the fallback only
         // ever reaches genuinely MCP-owned names.
         Err(ToolError::NotFound(_)) => {
             tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");

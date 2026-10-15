@@ -10,10 +10,10 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::agent_keys::SharedAgentKeys;
-use crate::config::SharedToolsPath;
-use crate::inference::ToolDefinition;
-use crate::inference::{ToolError, ToolResult};
+use residuum_config::SharedToolsPath;
+use residuum_config::agent_keys::SharedAgentKeys;
+use residuum_inference::ToolDefinition;
+use residuum_inference::{ToolError, ToolResult};
 
 use super::client::{McpClient, McpClientHandle};
 use super::types::McpServerEntry;
@@ -116,7 +116,7 @@ pub struct McpRegistry {
     /// excluded from [`tool_definitions`](Self::tool_definitions) and never
     /// reachable. Set once by the gateway after the tool registry is built via
     /// [`set_reserved_tool_names`](Self::set_reserved_tool_names); empty in
-    /// bare registries (tests). See `src/mcp/CLAUDE.md` for the full policy.
+    /// bare registries (tests). See `crates/mcp/CLAUDE.md` for the full policy.
     reserved_tool_names: HashSet<String>,
     /// The agent's workspace root, passed to every spawned stdio server as
     /// its `current_dir` (see [`McpClient::connect`]) instead of the
@@ -185,7 +185,7 @@ impl McpRegistry {
             .env
             .values()
             .chain(entry.headers.values())
-            .any(|v| crate::agent_keys::has_references(v));
+            .any(|v| residuum_config::agent_keys::has_references(v));
         if !referenced {
             return Ok(std::borrow::Cow::Borrowed(entry));
         }
@@ -201,7 +201,7 @@ impl McpRegistry {
         let expand = |map: &std::collections::HashMap<String, String>, kind: &str| {
             map.iter()
                 .map(|(k, v)| {
-                    crate::agent_keys::expand_references(v, &snapshot.store)
+                    residuum_config::agent_keys::expand_references(v, &snapshot.store)
                         .map(|expanded| (k.clone(), expanded))
                         .map_err(|e| {
                             anyhow::anyhow!(
@@ -248,8 +248,8 @@ impl McpRegistry {
                 entry.name
             );
         };
-        let store = crate::util::spawn_blocking_in_span(move || {
-            crate::config::secrets::SecretStore::load(&dir)
+        let store = residuum_core::util::spawn_blocking_in_span(move || {
+            residuum_config::secrets::SecretStore::load(&dir)
         })
         .await
         .map_err(|e| anyhow::anyhow!("mcp server '{}': secret store task failed: {e}", entry.name))?
@@ -533,7 +533,7 @@ impl McpRegistry {
     /// colliding tools are therefore shadowed — excluded from
     /// [`tool_definitions`](Self::tool_definitions) and never dispatched to.
     /// The winner and this server's non-colliding tools keep working. See
-    /// `src/mcp/CLAUDE.md`.
+    /// `crates/mcp/CLAUDE.md`.
     fn warn_shadowed_tools(&self, server_name: &str, tools: &[ToolDefinition]) {
         for tool in tools {
             if self.reserved_tool_names.contains(&tool.name) {
@@ -582,7 +582,7 @@ impl McpRegistry {
     /// once, matching what [`call_tool`](Self::call_tool) will dispatch to:
     /// names reserved by a built-in tool are excluded (the built-in wins), and
     /// when two MCP servers expose the same name only the first-registered
-    /// running server's definition is kept. See `src/mcp/CLAUDE.md`.
+    /// running server's definition is kept. See `crates/mcp/CLAUDE.md`.
     #[must_use]
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         let mut seen: HashSet<&str> = HashSet::new();
@@ -732,7 +732,7 @@ mod tests {
             command: command.to_string(),
             args: vec![],
             env: std::collections::HashMap::new(),
-            transport: crate::mcp::types::McpTransport::default(),
+            transport: crate::types::McpTransport::default(),
             headers: std::collections::HashMap::new(),
             timeout_secs: None,
         }
@@ -1131,12 +1131,12 @@ mod tests {
     #[tokio::test]
     async fn agent_key_references_resolve_from_the_agent_store() {
         let dir = tempfile::tempdir().unwrap();
-        let keys = crate::agent_keys::AgentKeys::new_shared(dir.path());
+        let keys = residuum_config::agent_keys::AgentKeys::new_shared(dir.path());
         keys.set(
             "gh",
             "ghp_mcp_value_1",
             None,
-            crate::agent_keys::KeyCreator::User,
+            residuum_config::agent_keys::KeyCreator::User,
         )
         .await
         .unwrap();
@@ -1182,7 +1182,7 @@ mod tests {
     #[tokio::test]
     async fn secret_references_resolve_from_the_hub_secret_store() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = crate::config::secrets::SecretStore::load(dir.path()).unwrap();
+        let mut store = residuum_config::secrets::SecretStore::load(dir.path()).unwrap();
         store
             .set("mcp_tavily_api_key", "tvly-real-value", dir.path())
             .unwrap();

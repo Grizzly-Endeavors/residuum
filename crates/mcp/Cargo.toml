@@ -1,0 +1,30 @@
+[package]
+name = "residuum-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+residuum-core = { workspace = true }
+residuum-config = { workspace = true }
+residuum-inference = { workspace = true }
+anyhow = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+rmcp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
+residuum-config = { workspace = true, features = ["test-support"] }
+residuum-inference = { workspace = true, features = ["test-support"] }
+ctor = { workspace = true }
+rustls = { workspace = true }
+tempfile = { workspace = true }
