@@ -25,7 +25,7 @@ use tokio::time::Instant;
 
 use super::directory::AgentDirectory;
 use super::types::{A2aVisibility, AgentState, AgentSummary, HubEvent};
-use crate::tunnel::v2::frames::AgentInfo;
+use crate::tunnel::AgentInfo;
 
 /// How long a burst of changes is allowed to gather before one update goes
 /// out. Creating an agent publishes a creation and then a start-up state

@@ -17,8 +17,7 @@ mod ts_export {
         CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
     };
     use residuum::gateway::protocol::{
-        ActionInfo, ArtifactSummary, ClientMessage, PulseInfo, ServerMessage, SessionListResponse,
-        WorkbenchInfo,
+        ActionInfo, ClientMessage, PulseInfo, ServerMessage, SessionListResponse, WorkbenchInfo,
     };
     use residuum::gateway::teams_setup::types::{
         AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine,
@@ -54,6 +53,7 @@ mod ts_export {
         CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,
         RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
     };
+    use residuum_net::workbench::ArtifactSummary;
 
     #[test]
     #[expect(

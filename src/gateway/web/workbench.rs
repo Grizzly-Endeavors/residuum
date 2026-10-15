@@ -2,9 +2,9 @@
 //! where they are served.
 //!
 //! Artifacts themselves are never served here. They run on the artifacts
-//! listener (`crate::workbench::server`), a separate origin from the web UI,
+//! listener (net's `workbench::server`), a separate origin from the web UI,
 //! so an agent-written page never shares the UI's origin. The listener
-//! forwards `/api` to the hub router (`crate::workbench::forward`), refusing
+//! forwards `/api` to the hub router (net's `workbench::forward`), refusing
 //! the few calls only the Residuum app makes.
 
 use std::path::PathBuf;
@@ -15,10 +15,10 @@ use axum::response::Json;
 use axum::routing::{delete, get};
 use serde::Serialize;
 
-use crate::gateway::protocol::{ArtifactSummary, WorkbenchInfo, WorkbenchRelayOrigins};
+use crate::gateway::protocol::{WorkbenchInfo, WorkbenchRelayOrigins};
 use crate::tunnel::TunnelStatus;
-use crate::workbench::server::WorkbenchServing;
-use crate::workbench::{self, ArtifactDeleteError};
+use crate::workbench::WorkbenchServing;
+use crate::workbench::{self, ArtifactDeleteError, ArtifactSummary};
 
 #[derive(Clone)]
 pub(crate) struct WorkbenchApiState {

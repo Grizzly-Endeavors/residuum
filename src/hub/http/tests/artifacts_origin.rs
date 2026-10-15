@@ -2,7 +2,7 @@
 //! they are refused, and what a client can't fake.
 
 use super::*;
-use crate::workbench::forward::ArtifactsOrigin;
+use crate::workbench::ArtifactsOrigin;
 
 /// The routes a request through the artifacts origin is refused.
 const BLOCKED: [&str; 8] = [

@@ -17,7 +17,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 use super::error::json_error;
-use crate::workbench::forward::ArtifactsOrigin;
+use crate::workbench::ArtifactsOrigin;
 
 /// The hub routes a page on the artifacts origin is refused, whatever the
 /// method: shutdown, stop-all, update check, apply and restart, setup

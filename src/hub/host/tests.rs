@@ -1322,7 +1322,7 @@ where
 fn is_hub_level(event: &CapturedEvent) -> bool {
     [
         "residuum::hub",
-        "residuum::tunnel",
+        "residuum_net::tunnel",
         "residuum::update",
         "residuum::daemon",
     ]
@@ -2802,9 +2802,9 @@ async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
 /// Waits until the relay-facing list satisfies `check`, so a test doesn't
 /// depend on how the settle window lines up with the lifecycle call.
 async fn relay_list_where(
-    rx: &mut tokio::sync::watch::Receiver<Vec<crate::tunnel::v2::frames::AgentInfo>>,
-    check: impl Fn(&[crate::tunnel::v2::frames::AgentInfo]) -> bool,
-) -> Vec<crate::tunnel::v2::frames::AgentInfo> {
+    rx: &mut tokio::sync::watch::Receiver<Vec<crate::tunnel::AgentInfo>>,
+    check: impl Fn(&[crate::tunnel::AgentInfo]) -> bool,
+) -> Vec<crate::tunnel::AgentInfo> {
     wait::watch_until(
         "the relay's agent list to reach the expected state",
         rx,
@@ -2821,7 +2821,7 @@ async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
         true,
     );
     let mut rx = relay_agents.subscribe();
-    let enabled = |list: &[crate::tunnel::v2::frames::AgentInfo], name: &str| {
+    let enabled = |list: &[crate::tunnel::AgentInfo], name: &str| {
         list.iter().find(|a| a.name == name).map(|a| a.a2a_enabled)
     };
 

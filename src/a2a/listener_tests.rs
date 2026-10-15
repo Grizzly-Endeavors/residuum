@@ -417,7 +417,7 @@ async fn a_private_agent_is_404_on_every_route_without_a_key_and_served_with_one
 
 #[tokio::test]
 async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_not() {
-    use crate::remote_access::siblings::keys::{NewSibling, issue_key};
+    use crate::remote_access::siblings::{NewSibling, issue_key};
     let fx = fixture();
     let inbound = issue_key();
     fx.siblings

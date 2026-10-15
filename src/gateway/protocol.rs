@@ -389,22 +389,6 @@ pub enum SessionCommandErrorCode {
     DeliveryFailed,
 }
 
-/// One artifact in `GET /api/team/workbench/artifacts`.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct ArtifactSummary {
-    /// Artifact name, as used in `/workbench/{name}`.
-    pub name: String,
-    /// The page's `<title>`, or the name when it has none.
-    pub title: String,
-    /// When the page was last modified (RFC 3339, UTC).
-    #[ts(type = "string")]
-    pub modified_at: DateTime<Utc>,
-    /// Page size in bytes.
-    #[ts(type = "number")]
-    pub size: u64,
-}
-
 /// `GET /api/team/workbench/info`: where workbench artifacts are served.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

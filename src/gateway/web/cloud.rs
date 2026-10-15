@@ -119,7 +119,7 @@ pub(crate) async fn api_cloud_status(
     Json(CloudStatusResponse::current(
         &state.hub_dir,
         &state.tunnel_status_rx,
-        crate::pairing::remote::remote_context(&parts.extensions).is_some(),
+        crate::pairing::remote_context(&parts.extensions).is_some(),
     ))
 }
 
@@ -691,7 +691,7 @@ enabled = false
         use tower::ServiceExt;
 
         let req = axum::http::Request::get("/api/cloud/status")
-            .extension(crate::pairing::remote::RemoteTransport::default())
+            .extension(crate::pairing::RemoteTransport::default())
             .body(Body::empty())
             .unwrap();
         let resp = status_router().oneshot(req).await.unwrap();
