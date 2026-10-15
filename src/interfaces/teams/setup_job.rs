@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::paths::{agent_dir, hub_dir};
@@ -64,6 +64,9 @@ struct JobSession {
     form: TeamsSetupForm,
     active_cancel: CancellationToken,
     login_pid: Option<u32>,
+    /// `true` while no runner task drives the job; set to `false` when one is spawned and
+    /// back to `true` when it returns.
+    runner_idle: watch::Sender<bool>,
 }
 
 impl JobSession {
@@ -201,20 +204,13 @@ impl TeamsSetupJobManager {
             form: req.form,
             active_cancel: cancel_token.clone(),
             login_pid: None,
+            runner_idle: watch::channel(false).0,
         }));
 
         jobs_guard.insert(agent.to_string(), Arc::clone(&session));
         drop(jobs_guard);
 
-        // Spawn runner task
-        let manager_clone = self.clone();
-        let agent_name = agent.to_string();
-        let session_clone = Arc::clone(&session);
-        crate::util::spawn_in_span(async move {
-            manager_clone
-                .drive_job(&agent_name, session_clone, cancel_token)
-                .await;
-        });
+        self.spawn_runner(agent, Arc::clone(&session), cancel_token);
 
         let lock = session.lock().await;
         Ok(lock.to_external(None))
@@ -381,15 +377,9 @@ impl TeamsSetupJobManager {
             LogStream::Info,
             format!("Retrying Teams setup job from phase '{:?}'...", lock.phase),
         );
+        lock.runner_idle.send_replace(false);
 
-        let manager_clone = self.clone();
-        let agent_name = agent.to_string();
-        let session_clone = Arc::clone(&session);
-        crate::util::spawn_in_span(async move {
-            manager_clone
-                .drive_job(&agent_name, session_clone, cancel_token)
-                .await;
-        });
+        self.spawn_runner(agent, Arc::clone(&session), cancel_token);
 
         Ok(lock.to_external(None))
     }
@@ -608,6 +598,24 @@ impl TeamsSetupJobManager {
         CleanupResult { removed, failed }
     }
 
+    /// Spawn the runner task for a job whose `runner_idle` the caller has set to `false`,
+    /// and set it back to `true` when the runner returns.
+    fn spawn_runner(
+        &self,
+        agent: &str,
+        session: Arc<Mutex<JobSession>>,
+        cancel: CancellationToken,
+    ) {
+        let manager_clone = self.clone();
+        let agent_name = agent.to_string();
+        crate::util::spawn_in_span(async move {
+            manager_clone
+                .drive_job(&agent_name, Arc::clone(&session), cancel)
+                .await;
+            session.lock().await.runner_idle.send_replace(true);
+        });
+    }
+
     /// Background runner task driving the job through its phases.
     async fn drive_job(
         &self,
@@ -641,6 +649,16 @@ impl TeamsSetupJobManager {
                 TeamsSetupPhase::Import => self.step_import(agent, &session).await,
                 TeamsSetupPhase::InstallApp => Ok(()),
             };
+
+            // A cancel during a step makes the step fail with its own message ("command
+            // execution was cancelled"). That message describes the stop, not a failure,
+            // so the job settles as cancelled instead of recording it.
+            if cancel.is_cancelled() {
+                let mut lock = session.lock().await;
+                lock.state = TeamsSetupState::Cancelled;
+                tracing::info!(agent = %agent, phase = ?phase, "teams setup job cancelled by user");
+                return;
+            }
 
             match step_result {
                 Ok(()) => {
@@ -1326,7 +1344,7 @@ if [ "$cmd" = "provision" ]; then
     while [ "$#" -gt 0 ]; do
         if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
     done
-    sleep 3600 &
+    sleep 600 &
     echo $! > "$folder/grandchild.pid"
     wait
     exit 0
@@ -1346,7 +1364,7 @@ if ($cmd -eq "provision") {
             break
         }
     }
-    $p = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 3600' -PassThru
+    $p = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 600' -PassThru
     [System.IO.File]::WriteAllText((Join-Path $folder 'grandchild.pid'), $p.Id.ToString())
     Wait-Process -Id $p.Id
     exit 0
@@ -1592,6 +1610,52 @@ exit 0
         .await
     }
 
+    /// Wait until the job's runner task has returned, and return the job as it settled.
+    async fn wait_for_runner_to_settle(mgr: &TeamsSetupJobManager, agent: &str) -> TeamsSetupJob {
+        let session = mgr
+            .jobs
+            .read()
+            .await
+            .get(agent)
+            .cloned()
+            .expect("the job exists");
+        let mut idle = session.lock().await.runner_idle.subscribe();
+        wait::watch_until("the job's runner to return", &mut idle, |idle| *idle).await;
+        mgr.get_job(agent, None).await.expect("the job exists")
+    }
+
+    /// Lay out the hub and agent config a job needs to run its steps.
+    async fn write_job_config(root: &Path) {
+        tokio::fs::create_dir_all(root.join("hub")).await.unwrap();
+        tokio::fs::create_dir_all(root.join("agent-1"))
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("hub/config.toml"), "timezone = \"UTC\"\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            root.join("agent-1/config.toml"),
+            "[agent]\nname = \"agent-1\"\n",
+        )
+        .await
+        .unwrap();
+    }
+
+    /// A fake npm that answers the `--version` probe at once, and for an install writes
+    /// `marker` and then runs for ten minutes. A cancel that fails to stop the install
+    /// leaves it running past the test.
+    fn make_slow_npm_script(path: &Path, marker: &Path) {
+        let unix = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '10.2.4'; exit 0; fi\ntouch '{}'\nsleep 600\nexit 0\n",
+            marker.display()
+        );
+        let win = format!(
+            "@echo off\nif \"%~1\"==\"--version\" ( echo 10.2.4 & exit /b 0 )\ntype nul > \"{}\"\nping -n 600 127.0.0.1 >nul\nexit /b 0\n",
+            marker.display()
+        );
+        make_script(path, if cfg!(windows) { &win } else { &unix });
+    }
+
     fn sample_start_form() -> TeamsSetupStart {
         TeamsSetupStart {
             form: TeamsSetupForm {
@@ -1765,6 +1829,16 @@ exit 0
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
 
+        // The step fails with the cancel, and the job must still settle as cancelled.
+        let settled = wait_for_runner_to_settle(&mgr, "agent-1").await;
+        assert_eq!(settled.state, TeamsSetupState::Cancelled);
+        assert_eq!(settled.phase, TeamsSetupPhase::Provision);
+        assert!(
+            settled.error.is_none(),
+            "a cancel is not a failure: {:?}",
+            settled.error
+        );
+
         // Verify that the grandchild process tree is actually gone
         wait::until_true("the grandchild process tree to terminate", || {
             !crate::util::process::is_process_running(pid)
@@ -1773,6 +1847,42 @@ exit 0
         assert!(
             !crate::util::process::is_process_running(pid),
             "grandchild process tree should be terminated after cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_job_cancel_during_cli_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, mut overrides) = setup_mock_env(&temp);
+
+        // The atk path does not exist, so the prerequisite probe reports the CLI as missing
+        // and the job goes on to install it.
+        overrides.atk_bin = Some(root.join("bin/missing_atk"));
+        let ext = if cfg!(windows) { ".cmd" } else { "" };
+        let marker = root.join("npm-started");
+        let slow_npm = root.join(format!("bin/slow_npm{ext}"));
+        make_slow_npm_script(&slow_npm, &marker);
+        overrides.npm_bin = Some(slow_npm);
+
+        let mgr = TeamsSetupJobManager::with_overrides(root.clone(), overrides);
+        write_job_config(&root).await;
+
+        mgr.start_job("agent-1", sample_start_form()).await.unwrap();
+        wait::until("the npm install to start", || async {
+            marker.exists().then_some(())
+        })
+        .await;
+
+        let cancelled = mgr.cancel_job("agent-1").await.unwrap();
+        assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
+
+        let settled = wait_for_runner_to_settle(&mgr, "agent-1").await;
+        assert_eq!(settled.state, TeamsSetupState::Cancelled);
+        assert_eq!(settled.phase, TeamsSetupPhase::InstallCli);
+        assert!(
+            settled.error.is_none(),
+            "a cancel is not a failure: {:?}",
+            settled.error
         );
     }
 
