@@ -1,0 +1,239 @@
+name: Nightly Stress
+
+# The suites under load, every night on main: the Rust tests as two concurrent
+# copies with every CPU busy, three rounds (scripts/stress-tests.sh), and every
+# end-to-end spec repeated with the browser's CPU throttled, split across four
+# runners (scripts/web-stress.sh). A test that passes on an idle runner and
+# fails here waits on elapsed time instead of the event it checks.
+#
+# Nothing here gates a merge. Each failing test is filed as an `investigate`
+# issue titled "Nightly stress: <test>", or added as a comment to the open
+# issue with that title (scripts/stress-issues.sh). Run it by hand from the
+# Actions tab, or with `gh workflow run nightly-stress.yml`, to check a fix.
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+# A run that is still going when the next one starts finishes first.
+concurrency:
+  group: nightly-stress-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rust-stress:
+    name: Rust Stress
+    runs-on: lab-runners-fast
+    timeout-minutes: 240
+
+    env:
+      STRESS_ROUNDS: '3'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Install the version pinned in rust-toolchain.toml as its own toolchain;
+      # the runner image's baked-in toolchain can't be updated in place.
+      - name: Install pinned Rust toolchain
+        id: toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      # build.rs refuses to compile without web/dist, which gets embedded in the binary
+      - name: Build web assets
+        id: web_assets
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cd web && npm ci && npm run build
+
+      - name: Build test binaries
+        id: build_tests
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
+        run: cargo test --quiet --no-run
+
+      # The suite once, unloaded, so the Stress step can tell a test that waits
+      # on time (fails only under load) from an ordinary failure.
+      - name: Tests
+        id: test
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          cargo test --quiet --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/rust-tests.log"
+
+      # Reuses the binaries the Build test binaries step built, and runs whether
+      # or not the Tests step passed.
+      - name: Stress
+        id: stress
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        env:
+          STRESS_TESTS_LOG: ${{ runner.temp }}/rust-tests.log
+        run: |
+          set -o pipefail
+          scripts/stress-tests.sh 2>&1 | tee "$RUNNER_TEMP/rust-stress.log"
+
+      # The issue filer reads the logs of the steps that failed.
+      - name: Keep the logs of the failed steps
+        if: always()
+        env:
+          TESTS: ${{ steps.test.outcome }}
+          STRESS: ${{ steps.stress.outcome }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/stress-failures"
+          if [ "$TESTS" = failure ]; then cp "$RUNNER_TEMP/rust-tests.log" "$RUNNER_TEMP/stress-failures/"; fi
+          if [ "$STRESS" = failure ]; then cp "$RUNNER_TEMP/rust-stress.log" "$RUNNER_TEMP/stress-failures/"; fi
+
+      - name: Upload the logs of the failed steps
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stress-failures-rust
+          path: ${{ runner.temp }}/stress-failures
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload the copy logs
+        if: always() && steps.stress.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-stress-copy-logs
+          path: target/stress
+          retention-days: 14
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Rust Stress Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Web assets | ${{ steps.web_assets.outcome }} |"
+            echo "| Test binaries | ${{ steps.build_tests.outcome }} |"
+            echo "| Tests (unloaded) | ${{ steps.test.outcome }} |"
+            echo "| Stress (2 copies under load, $STRESS_ROUNDS rounds) | ${{ steps.stress.outcome }} |"
+            echo ''
+            if [ -s target/stress/summary.txt ]; then
+              echo '### Stress failures (count, test)'
+              echo ''
+              echo '```'
+              cat target/stress/summary.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Every non-visual spec in the Playwright container, as the Web End-to-End
+  # shards of web-checks.yml run them, with each test repeated and every
+  # page's CPU throttled. The budget is per shard and above a shard's test
+  # instances times the repeats, so every test runs WEB_STRESS_REPEAT times.
+  web-stress:
+    name: Web Stress (${{ matrix.shard }}/4)
+    runs-on: lab-runners-wide
+    timeout-minutes: 240
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    env:
+      E2E_ALL_IN_CONTAINER: '1'
+      PLAYWRIGHT_IMAGE_REGISTRY: registry.registry.svc.cluster.local:5000/mcr
+      WEB_STRESS_ALL: '1'
+      WEB_STRESS_REPEAT: '3'
+      WEB_STRESS_BUDGET: '1200'
+      WEB_STRESS_WORKERS: '4'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The node's CPU pressure is counted from here (scripts/ci-cpu-report.sh).
+      - name: Start the CPU report
+        run: scripts/ci-cpu-report.sh start
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Web stress
+        id: web_stress
+        run: |
+          set -o pipefail
+          scripts/with-playwright-container.sh scripts/web-stress.sh --shard=${{ matrix.shard }}/4 2>&1 | tee "$RUNNER_TEMP/web-stress-${{ matrix.shard }}.log"
+
+      - name: CPU report
+        if: always()
+        run: scripts/ci-cpu-report.sh report | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the log of the failed step
+        if: always() && steps.web_stress.outcome == 'failure'
+        run: |
+          mkdir -p "$RUNNER_TEMP/stress-failures"
+          cp "$RUNNER_TEMP/web-stress-${{ matrix.shard }}.log" "$RUNNER_TEMP/stress-failures/"
+
+      - name: Upload the log of the failed step
+        if: always() && steps.web_stress.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: stress-failures-web-${{ matrix.shard }}
+          path: ${{ runner.temp }}/stress-failures
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright report and traces
+        if: always() && steps.web_stress.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-stress-report-${{ matrix.shard }}
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 14
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "## Web Stress Results (shard ${{ matrix.shard }} of 4)"
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Every spec, repeated with CPU throttled | ${{ steps.web_stress.outcome }}: ${{ steps.web_stress.outputs.summary || 'not reached' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Files each failure as an issue. Runs when a stress job failed, not when it
+  # was cancelled: a cancelled run says nothing about the tests.
+  file-issues:
+    name: File the failures as issues
+    needs: [rust-stress, web-stress]
+    if: ${{ !cancelled() && (needs.rust-stress.result == 'failure' || needs.web-stress.result == 'failure') }}
+    runs-on: lab-runners-light
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # A job that failed before any test ran uploads no log, and the filer
+      # files that as a failure that names no test, so a missing artifact is
+      # not an error here.
+      - name: Download the logs of the failed steps
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: stress-failures-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/stress-failures
+
+      - name: File the failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUST_RESULT: ${{ needs.rust-stress.result }}
+          WEB_RESULT: ${{ needs.web-stress.result }}
+        run: |
+          shopt -s nullglob
+          logs="$RUNNER_TEMP/stress-failures"
+          status=0
+          scripts/stress-issues.sh Rust "$RUST_RESULT" "$logs"/rust-*.log || status=1
+          scripts/stress-issues.sh Web "$WEB_RESULT" "$logs"/web-stress-*.log || status=1
+          exit "$status"

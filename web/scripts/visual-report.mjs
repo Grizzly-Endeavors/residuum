@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Turns the Playwright JSON report of the web visual comparisons into a status
-// and the Markdown of the pull request comment (.github/workflows/quality-checks.yml,
-// job `web-visual`; .github/workflows/web-pr.yml, job `visual-report`).
+// and the Markdown of the pull request comment (.github/workflows/web-checks.yml,
+// job `web-visual`; .github/workflows/ci.yml, job `visual-report`).
 //
 //   web/scripts/visual-report.mjs classify <playwright-json> <classification-json>
 //   web/scripts/visual-report.mjs render <classification-json> <markdown-file>

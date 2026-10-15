@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# Runs the end-to-end specs that a branch adds or changes, repeatedly and with the
-# browser's CPU throttled: the web counterpart of the Rust Stress step. A race in a
-# new spec then fails on the pull request that adds it, instead of flaking on some
-# later, unrelated pull request. CI's Web Stress job runs it on pull requests
-# (.github/workflows/quality-checks.yml), and `just web-stress` runs it here.
+# Runs end-to-end specs repeatedly with the browser's CPU throttled: the web
+# counterpart of scripts/stress-tests.sh. By default it runs the specs a branch adds
+# or changes, so a race in a new spec shows up before the branch merges; `just
+# web-stress` runs it that way. With WEB_STRESS_ALL=1 it runs every spec, which is
+# how the nightly stress run (.github/workflows/nightly-stress.yml) runs it, split
+# across runners with Playwright's --shard.
 #
 # Selected: the spec files under web/e2e that differ from the merge base with the
 # base branch, including uncommitted and new files. Deleted specs drop out. Harness,
 # mock and config changes (web/e2e/support, the mock, the Playwright config) select
-# nothing here: the regular end-to-end run covers them.
+# nothing here: the regular end-to-end run covers them. With WEB_STRESS_ALL=1, every
+# spec, and no merge base is needed.
 #
 # Projects: the ones `npm run e2e:fast` runs. The visual projects are left out, and
 # the visual comparisons cover them.
 #
-# Budget: each selected spec runs WEB_STRESS_REPEAT times, lowered when the test
-# instances times the repeats would exceed 400 instance-runs, so one wide change
-# cannot make the job run for hours. The job's timeout-minutes is the backstop.
+# Budget: each selected test runs WEB_STRESS_REPEAT times, lowered when the test
+# instances times the repeats would exceed WEB_STRESS_BUDGET instance-runs, so one
+# wide change cannot make the run take hours. The count is taken after any --shard,
+# so the budget is per shard. The job's timeout-minutes is the backstop.
 #
 # Load: every page's CPU runs WEB_STRESS_CPU_THROTTLE times slower (Chromium's
 # Emulation.setCPUThrottlingRate, applied by web/e2e/support/fixtures.ts while
@@ -23,27 +26,32 @@
 # the runner's own load never reaches it; the throttle is what slows it.
 #
 # Arguments go to `playwright test` after the selected specs, so a --grep narrows
-# the run: `just web-stress --grep "tab is titled"`.
+# the run (`just web-stress --grep "tab is titled"`), a spec path narrows a
+# WEB_STRESS_ALL=1 run to that spec, and --shard=<n>/<total> takes one share.
 #
 # Environment:
+#   WEB_STRESS_ALL            1 runs every spec instead of the changed ones (default unset)
 #   WEB_STRESS_BASE           branch whose merge base the changes are taken against (default origin/main)
 #   WEB_STRESS_REPEAT         most times each selected test runs (default 5)
+#   WEB_STRESS_BUDGET         most instance-runs, test instances times repeats (default 400)
 #   WEB_STRESS_WORKERS        workers, as E2E_WORKERS (default 2). Playwright's --workers
 #                             flag is not used: each worker starts its own mock servers, and
 #                             the config reads E2E_WORKERS to start them.
 #   WEB_STRESS_CPU_THROTTLE   CPU slow-down factor for every page; 1 is no slow-down (default 4)
 #
-# A failure is listed in Playwright's list output, which scripts/ci-failures.sh
-# reads. A spec that fails only here is waiting on time instead of the event it
-# checks: fix the wait (web/CONTRIBUTING.md, "Writing a spec"), never rerun past it.
+# A failure is listed in Playwright's list output, which scripts/ci-failures.sh and
+# scripts/stress-issues.sh read. A spec that fails only here is waiting on time
+# instead of the event it checks: fix the wait (web/CONTRIBUTING.md, "Writing a
+# spec"), never rerun past it.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+all="${WEB_STRESS_ALL:-}"
 base_ref="${WEB_STRESS_BASE:-origin/main}"
 repeat_cap="${WEB_STRESS_REPEAT:-5}"
+instance_budget="${WEB_STRESS_BUDGET:-400}"
 workers="${WEB_STRESS_WORKERS:-2}"
 throttle="${WEB_STRESS_CPU_THROTTLE:-4}"
-instance_budget=400
 
 require_whole() {
     local name="$1" value="$2"
@@ -53,21 +61,13 @@ require_whole() {
     fi
 }
 require_whole WEB_STRESS_REPEAT "$repeat_cap"
+require_whole WEB_STRESS_BUDGET "$instance_budget"
 require_whole WEB_STRESS_WORKERS "$workers"
 require_whole WEB_STRESS_CPU_THROTTLE "$throttle"
-
-cd "$repo"
-base="$(git merge-base "$base_ref" HEAD)" || {
-    echo "error: no merge base with $base_ref. Fetch it (git fetch origin main), or set WEB_STRESS_BASE." >&2
+if [ -n "$all" ] && [ "$all" != 1 ]; then
+    echo "error: WEB_STRESS_ALL must be 1 or unset, got \"$all\"." >&2
     exit 1
-}
-
-# Git prints paths from the repository root, Playwright takes them from web/. The
-# first pathspec needs a directory between web/e2e/ and the spec; the second also
-# matches a spec directly under web/e2e/.
-edited="$(git diff --name-only --diff-filter=d "$base" -- 'web/e2e/**/*.spec.ts' 'web/e2e/*.spec.ts')"
-added="$(git ls-files --others --exclude-standard -- 'web/e2e/**/*.spec.ts' 'web/e2e/*.spec.ts')"
-changed="$(printf '%s\n%s\n' "$edited" "$added" | sed -e '/^$/d' -e 's|^web/||' | sort -u)"
+fi
 
 # The workflow's job summary row reads this step output, so it can say what ran.
 record() {
@@ -76,18 +76,36 @@ record() {
     fi
 }
 
+cd "$repo"
 specs=()
-if [ -n "$changed" ]; then
-    mapfile -t specs <<<"$changed"
+if [ "$all" = 1 ]; then
+    echo "Every spec (WEB_STRESS_ALL=1)."
+    spec_list="every spec"
+else
+    base="$(git merge-base "$base_ref" HEAD)" || {
+        echo "error: no merge base with $base_ref. Fetch it (git fetch origin main), set WEB_STRESS_BASE, or set WEB_STRESS_ALL=1 to run every spec." >&2
+        exit 1
+    }
+
+    # Git prints paths from the repository root, Playwright takes them from web/. The
+    # first pathspec needs a directory between web/e2e/ and the spec; the second also
+    # matches a spec directly under web/e2e/.
+    edited="$(git diff --name-only --diff-filter=d "$base" -- 'web/e2e/**/*.spec.ts' 'web/e2e/*.spec.ts')"
+    added="$(git ls-files --others --exclude-standard -- 'web/e2e/**/*.spec.ts' 'web/e2e/*.spec.ts')"
+    changed="$(printf '%s\n%s\n' "$edited" "$added" | sed -e '/^$/d' -e 's|^web/||' | sort -u)"
+
+    if [ -n "$changed" ]; then
+        mapfile -t specs <<<"$changed"
+    fi
+    if [ "${#specs[@]}" -eq 0 ]; then
+        echo "No changed specs against $base_ref: nothing to repeat."
+        record "no changed specs against $base_ref"
+        exit 0
+    fi
+    echo "Changed specs against $base_ref (merge base $base):"
+    printf '  %s\n' "${specs[@]}"
+    spec_list="$(printf '%s, ' "${specs[@]}" | sed 's/, $//')"
 fi
-if [ "${#specs[@]}" -eq 0 ]; then
-    echo "No changed specs against $base_ref: nothing to repeat."
-    record "no changed specs against $base_ref"
-    exit 0
-fi
-echo "Changed specs against $base_ref (merge base $base):"
-printf '  %s\n' "${specs[@]}"
-spec_list="$(printf '%s, ' "${specs[@]}" | sed 's/, $//')"
 
 cd "$repo/web"
 
@@ -108,7 +126,7 @@ if [ "$list_status" -ne 0 ]; then
         fi
     done
     printf '%s\n' "$listing" >&2
-    echo "error: Playwright could not load the changed specs (status $list_status). Failed to load: ${broken:-not identified, see the output above}. Fix the error the output shows; the step fails until the listing succeeds." >&2
+    echo "error: Playwright could not load the selected specs (status $list_status). Failed to load: ${broken:-not identified, see the output above}. Fix the error the output shows; the step fails until the listing succeeds." >&2
     exit "$list_status"
 fi
 instances="$(sed -n 's/^Total: \([0-9]*\) tests\{0,1\} in .*$/\1/p' <<<"$listing")"
@@ -118,8 +136,8 @@ if ! [[ "$instances" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 if [ "$instances" -eq 0 ]; then
-    echo "The changed specs have no tests in these projects: nothing to repeat."
-    record "changed specs have no tests in these projects"
+    echo "The selected specs have no tests in these projects: nothing to repeat."
+    record "the selected specs have no tests in these projects"
     exit 0
 fi
 
@@ -143,4 +161,4 @@ if [ "$status" -ne 0 ]; then
     echo "error: the stress run failed ($repeat run(s) each, $workers workers, CPU throttled ${throttle}x): a spec failed under load, or the run did not start. The failures and the report (web/playwright-report) are above. A spec that fails only under load is waiting on time instead of the event it checks: fix the wait (web/CONTRIBUTING.md, \"Writing a spec\"), never rerun past it." >&2
     exit "$status"
 fi
-echo "No failures in $repeat run(s) of each changed spec."
+echo "No failures in $repeat run(s) of each selected test."
