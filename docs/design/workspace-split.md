@@ -487,7 +487,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
 
 - `[lints.rust]` and `[lints.clippy]` move verbatim, comments included, to `[workspace.lints.rust]` and `[workspace.lints.clippy]`. The root and every member set `[lints] workspace = true` (`manifest_scan` rule 1).
 - Clippy and rustfmt find `clippy.toml` and `rustfmt.toml` by searching up from each crate's directory, so the root files apply to every member. E1 checks this directly: in a scratch commit, an `unwrap()` in a core unit test passes clippy (the test exemption is read), a `TempDir::keep()` in core fails it (`disallowed-methods` is read), and `cargo fmt --all --check` reports a misformatted core file.
-- `#[expect(unsafe_code, reason = …)]` sites move with their code: `src/memory/vector_store.rs:83`, `src/mcp/client.rs:359`, the env-var setting in `src/config/resolve/{mod,models,hub}.rs`. `src/daemon.rs:259,309` and `src/notify/macos/bridge.rs:4` stay in the root.
+- `#[expect(unsafe_code, reason = …)]` sites move with their code: `crates/memory/src/vector_store.rs:83`, `crates/core/src/util/env_expand.rs:31`, the env-var setting in `crates/config/src/resolve/{mod,models,hub}.rs`. `src/daemon.rs:259,309` and `src/notify/macos/bridge.rs:4` stay in the root.
 - `pub(in crate::…)` paths in moved code are rewritten for the new crate root (`pub(in crate::config::resolve)` becomes `pub(in crate::resolve)`).
 - The pre-commit hook's `dbg!` and `#[allow]` checks read the staged diff, so they cover every crate unchanged.
 
