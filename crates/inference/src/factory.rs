@@ -215,7 +215,7 @@ pub fn build_provider_chain(
 
 /// Build the main model's provider chain, with a user notice wired to
 /// `role` on a fallback/recovery transition (see
-/// [`FailoverProvider::with_notices`]). Single-provider specs have nothing
+/// `FailoverProvider::with_notices`). Single-provider specs have nothing
 /// to fail over to, so `notices`/`role` are simply unused in that case.
 /// Like [`build_provider_chain`], an unbuildable fallback is dropped
 /// rather than failing the whole chain.
