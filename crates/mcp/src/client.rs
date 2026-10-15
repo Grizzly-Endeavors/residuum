@@ -20,10 +20,10 @@ use rmcp::transport::streamable_http_client::{
 };
 use serde_json::Value;
 
-use crate::inference::ToolDefinition;
-use crate::inference::{ToolError, ToolResult};
-use crate::mcp::types::{McpServerEntry, McpTransport};
-use crate::util::expand_env_vars;
+use crate::types::{McpServerEntry, McpTransport};
+use residuum_core::util::expand_env_vars;
+use residuum_inference::ToolDefinition;
+use residuum_inference::{ToolError, ToolResult};
 
 /// A live connection to a single MCP server process.
 pub struct McpClient {

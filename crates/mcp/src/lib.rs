@@ -9,3 +9,7 @@ pub use registry::{
     SharedMcpRegistry,
 };
 pub use types::{McpServerEntry, McpTransport};
+
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;

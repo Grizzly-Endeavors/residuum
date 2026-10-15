@@ -4994,7 +4994,6 @@ dependencies = [
  "gix",
  "globset",
  "hex",
- "http",
  "hyper",
  "iana-time-zone",
  "jsonschema",
@@ -5012,11 +5011,11 @@ dependencies = [
  "residuum-config",
  "residuum-core",
  "residuum-inference",
+ "residuum-mcp",
  "residuum-net",
  "residuum-skills",
  "residuum-tracing-service",
  "ring",
- "rmcp",
  "rpassword",
  "rusqlite",
  "rust-embed",
@@ -5119,6 +5118,26 @@ dependencies = [
  "ts-rs",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "residuum-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ctor",
+ "http",
+ "reqwest 0.13.3",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "rmcp",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

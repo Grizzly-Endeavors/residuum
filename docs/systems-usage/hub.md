@@ -181,6 +181,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_inference`: `inference`, so `RUST_LOG=residuum_inference=trace`, or `RUST_LOG=residuum_inference::providers::anthropic=trace` for one provider.
 - `residuum_net`: `tunnel`, `remote_access`, `pairing`, `workbench`, `browser_landing`, `cross_site` and `remote_control_guard`, so `RUST_LOG=residuum_net::tunnel=trace` for the relay tunnel and `RUST_LOG=residuum_net::remote_access=trace` for the secure tunnel's certificates and pins.
 - `residuum_skills`: `skills`, so `RUST_LOG=residuum_skills=trace`.
+- `residuum_mcp`: `mcp`, so `RUST_LOG=residuum_mcp=trace`.
 - `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
 - `residuum`: every other module, so `RUST_LOG=residuum::memory=trace`.
 

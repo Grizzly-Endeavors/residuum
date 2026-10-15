@@ -12,7 +12,7 @@ silently.
 
 **Precedence (which tool keeps the name):**
 1. A **built-in** tool always wins. It is dispatched first in the turn loop
-   (`agent/turn.rs::execute_tool`), so a colliding MCP tool could never be
+   (`src/agent/turn.rs::execute_tool`), so a colliding MCP tool could never be
    reached anyway.
 2. Among MCP servers, the **first-registered running server** wins (matches the
    iteration order in `call_tool`).
@@ -25,7 +25,7 @@ model and never dispatched to. The winner and the losing server's *other*
 server, and the winner. The log fires at server-connect time (or when the
 built-in namespace is first reserved), not per turn, to avoid log spam.
 
-### Where this lives (`registry.rs`)
+### Where this lives (`crates/mcp/src/registry.rs`)
 
 - `set_reserved_tool_names` — the gateway calls this once after the built-in
   tool registry is built, handing over the built-in names so MCP tools that
@@ -37,13 +37,13 @@ built-in namespace is first reserved), not per turn, to avoid log spam.
 - `resolve_tool` — resolves a name to the first running server owning it,
   consistent with the de-duplication above, and returns a cheap-to-clone
   `McpClientHandle` that doesn't borrow the registry. This is what
-  `agent/turn.rs::execute_mcp_tool` calls while holding the registry's read
+  `src/agent/turn.rs::execute_mcp_tool` calls while holding the registry's read
   lock, dropping that guard before awaiting the call on the handle — so a
   slow or hung MCP server never holds the lock for the call's duration.
   `call_tool` is a `resolve_tool` + await convenience wrapper for callers
   that aren't holding the registry behind a lock they need to release
   first (tests, and any other owned-registry caller).
 
-Because the registry hands `agent/turn.rs` an already-clean union, the turn
+Because the registry hands `src/agent/turn.rs` an already-clean union, the turn
 loop's merge and built-in-first dispatch need no collision logic of their own —
 this module is the single source of truth for the policy.
