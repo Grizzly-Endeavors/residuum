@@ -21,8 +21,8 @@ use rmcp::transport::streamable_http_client::{
 use serde_json::Value;
 
 use crate::inference::ToolDefinition;
+use crate::inference::{ToolError, ToolResult};
 use crate::mcp::types::{McpServerEntry, McpTransport};
-use crate::tools::{ToolError, ToolResult};
 use crate::util::expand_env_vars;
 
 /// A live connection to a single MCP server process.

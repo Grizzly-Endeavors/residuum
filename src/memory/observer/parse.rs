@@ -48,7 +48,7 @@ pub(super) fn parse_observer_response(
     tz: Tz,
 ) -> anyhow::Result<ObserverParseResult> {
     let content = response.content.trim();
-    let json_str = crate::memory::strip_code_fences(content);
+    let json_str = crate::inference::strip_code_fences(content);
 
     // Fast path: try typed deserialization (structured output)
     if let Ok(typed) = serde_json::from_str::<ObserverJsonResponse>(json_str) {

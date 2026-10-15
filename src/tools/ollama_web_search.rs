@@ -8,7 +8,8 @@ use tracing::debug;
 
 use crate::inference::ToolDefinition;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 /// Default number of search results to return.
 const DEFAULT_MAX_RESULTS: u64 = 5;

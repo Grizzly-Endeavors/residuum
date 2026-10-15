@@ -29,7 +29,7 @@ struct ReflectorItem {
 /// Returns an error if the response cannot be parsed.
 pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result<ObservationLog> {
     let trimmed = content.trim();
-    let json_str = crate::memory::strip_code_fences(trimmed);
+    let json_str = crate::inference::strip_code_fences(trimmed);
 
     // Fast path: try typed deserialization (structured output object format)
     if let Ok(typed) = serde_json::from_str::<ReflectorJsonResponse>(json_str) {

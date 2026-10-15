@@ -15,11 +15,10 @@ use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, StreamSink, ToolCall,
     ToolDefinition, joined_thinking_text,
 };
+use crate::inference::{ToolError, ToolResult};
 use crate::interfaces::types::chat_interface_endpoint;
 use crate::mcp::SharedMcpRegistry;
-use crate::tools::{
-    CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolError, ToolRegistry, ToolResult,
-};
+use crate::tools::{CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 

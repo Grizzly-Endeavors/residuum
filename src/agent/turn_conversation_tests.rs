@@ -23,8 +23,9 @@ use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     MessageSender, Role, StreamDelta, StreamSink, ThinkingBlock, ToolCall, ToolDefinition,
 };
+use crate::inference::{ToolError, ToolResult};
 use crate::interfaces::types::MessageOrigin;
-use crate::tools::{Tool, ToolError, ToolRegistry, ToolResult};
+use crate::tools::{Tool, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 /// What a scripted provider does while a model call is in flight.

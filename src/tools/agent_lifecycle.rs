@@ -15,7 +15,8 @@ use crate::hub::{
 };
 use crate::inference::ToolDefinition;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 /// How an agent's tools reach the hub: the directory, and the name the hub
 /// knows this agent by.

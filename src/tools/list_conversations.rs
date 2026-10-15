@@ -7,7 +7,8 @@ use crate::bus::EndpointRegistry;
 use crate::inference::ToolDefinition;
 use crate::interfaces::types::ConversationKind;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 /// Tool for listing reachable DMs, group chats, and channels per chat interface.
 pub struct ListConversationsTool {

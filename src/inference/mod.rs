@@ -14,6 +14,7 @@ mod stream;
 pub mod system_one;
 #[cfg(test)]
 mod test_support;
+mod tool;
 mod types;
 
 pub(crate) use embedding::build_embedding_provider;
@@ -26,8 +27,10 @@ pub(crate) use factory::{
 pub use failover::NoticeSink;
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use image_input::ImagesOmitted;
+pub use reply::strip_code_fences;
 pub use retry::with_retry;
 pub use role_options::completion_options_for_role;
+pub use tool::{ToolError, ToolResult};
 pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
     MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,

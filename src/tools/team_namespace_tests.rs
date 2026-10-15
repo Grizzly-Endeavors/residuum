@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::{FileTracker, PathPolicy, ToolRegistry, ToolResult};
+use super::{FileTracker, PathPolicy, ToolRegistry};
 use crate::diagnostics_dispatch::DiagnosticsPaths;
+use crate::inference::ToolResult;
 use crate::workspace::team_files::{TeamWriteCoordinator, TeamWriter};
 
 /// A hub directory with a team directory and any number of agent directories.

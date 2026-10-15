@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, ToolError, ToolResult, publish_notice};
+use super::{Tool, publish_notice};
 use crate::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };
@@ -18,6 +18,7 @@ use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::config::{SharedToolsPath, apply_tools_path};
 use crate::inference::ToolDefinition;
+use crate::inference::{ToolError, ToolResult};
 use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// Maximum output size from a command (100KB).

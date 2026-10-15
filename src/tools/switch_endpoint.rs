@@ -10,7 +10,8 @@ use crate::bus::{
 };
 use crate::inference::ToolDefinition;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 /// Tool for switching the agent's output endpoint.
 pub struct SwitchEndpointTool {

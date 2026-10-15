@@ -23,16 +23,6 @@ pub mod wiki_index;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
-/// Strip markdown code fences (```` ```json ... ``` ````) from LLM responses.
-///
-/// Returns the inner content trimmed, or the original string if no fences found.
-pub(crate) fn strip_code_fences(s: &str) -> &str {
-    s.strip_prefix("```json")
-        .or_else(|| s.strip_prefix("```"))
-        .and_then(|inner| inner.strip_suffix("```"))
-        .map_or(s, str::trim)
-}
-
 /// Truncate a string at a char boundary, appending "...(truncated)" if truncated.
 pub(crate) fn truncate_at_char_boundary(s: &str, max: usize) -> String {
     if s.len() <= max {

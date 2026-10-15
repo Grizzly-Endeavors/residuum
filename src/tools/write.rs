@@ -3,12 +3,13 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::Tool;
 use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
-use super::{Tool, ToolError, ToolResult};
 use crate::diagnostics_dispatch::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
+use crate::inference::{ToolError, ToolResult};
 use crate::workspace::team_files::{TeamFiles, TeamPathGuard};
 
 /// Tool that writes content to files, enforcing read-before-overwrite.
