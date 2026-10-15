@@ -297,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn list_then_delete_operate_on_the_team_workbench() {
         let root = tempfile::tempdir().unwrap();
-        let workbench = crate::workspace::layout::WorkspaceLayout::new(root.path().join("scout"))
+        let workbench = crate::config::WorkspaceLayout::new(root.path().join("scout"))
             .team()
             .workbench_dir();
         assert_eq!(workbench, root.path().join("team").join("workbench"));

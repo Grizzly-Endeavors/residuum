@@ -20,9 +20,9 @@ use serde::Deserialize;
 
 use crate::config::{
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    WorkspaceLayout,
 };
 use crate::inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
-use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_subconscious_response;
 use prompt::{
     DEFAULT_SUBCONSCIOUS_PROMPT, build_eval_prompt, format_turn_transcript,

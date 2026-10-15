@@ -16,6 +16,7 @@ use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
 use crate::config::{
     BackgroundConfig, BackgroundModelTier, ModelCatalog, ModelSelector, SharedModelCatalog,
+    WorkspaceLayout,
 };
 use crate::inference::retry::RetryConfig;
 use crate::inference::{
@@ -27,7 +28,6 @@ use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::messaging::AgentMessenger;
 use super::subagent::{SubAgentResources, build_subagent_resources};

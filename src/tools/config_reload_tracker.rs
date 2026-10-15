@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::workspace::layout::WorkspaceLayout;
+use crate::config::WorkspaceLayout;
 
 /// Which reload pathway a recognized config path funnels into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

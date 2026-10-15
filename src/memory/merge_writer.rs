@@ -29,6 +29,7 @@ use anyhow::Context;
 use chrono_tz::Tz;
 use tokio::sync::Mutex;
 
+use crate::config::WorkspaceLayout;
 use crate::inference::EmbeddingProvider;
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{
@@ -46,7 +47,6 @@ use crate::memory::types::{
 };
 use crate::memory::vector_store::VectorStore;
 use crate::time::now_local;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// The outcome of a successful merge: what would previously have been
 /// returned by `Observer::observe`, plus whether the reflector fired.

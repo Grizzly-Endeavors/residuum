@@ -10,9 +10,9 @@ use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::BusHandle;
 use crate::config::A2aConfig;
+use crate::config::WorkspaceLayout;
 use crate::skills::SharedSkillState;
 use crate::tunnel::TunnelStatus;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::card::{CardRuntime, CardState, SharedCardState};
 use super::executor::SessionExecutor;

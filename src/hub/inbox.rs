@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{AgentDirectory, AgentFiles, LifecycleError};
+use crate::config::WorkspaceLayout;
 use crate::inbox::{InboxAttachment, InboxItem};
-use crate::workspace::layout::WorkspaceLayout;
 
 /// How many items a page holds when the request names no limit.
 pub const DEFAULT_PAGE_SIZE: usize = 50;

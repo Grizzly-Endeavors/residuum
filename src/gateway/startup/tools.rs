@@ -11,10 +11,10 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
 
 use crate::bus::{EndpointRegistry, SessionAddress};
+use crate::config::WorkspaceLayout;
 use crate::skills::SharedSkillState;
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::memory::MemoryComponents;
 

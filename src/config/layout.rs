@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::paths::{TeamPaths, team_dir};
+use super::paths::{TeamPaths, team_dir};
 
 /// Workspace directory layout with path helpers for identity files and storage.
 #[derive(Debug, Clone)]

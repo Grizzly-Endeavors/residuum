@@ -16,7 +16,7 @@ use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
-use crate::config::{Config, HubConfig};
+use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::hub::services::HubServices;
 use crate::hub::team::TeamLink;
 use crate::inference::SharedHttpClient;
@@ -30,7 +30,6 @@ use crate::tools::SharedToolsPath;
 use crate::util::FatalError;
 use crate::workspace::bootstrap::ensure_workspace_labeled;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 
 use crate::background::spawn_context::SpawnContext;

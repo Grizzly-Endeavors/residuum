@@ -104,7 +104,7 @@ pub struct TeamWriteCoordinator {
 
 impl TeamWriteCoordinator {
     /// A coordinator for the team directory `team` names. Callers take
-    /// `team` from their [`crate::workspace::layout::WorkspaceLayout`], so the
+    /// `team` from their [`crate::config::WorkspaceLayout`], so the
     /// directory is located the same way everywhere.
     #[must_use]
     pub fn new(team: &TeamPaths) -> Self {

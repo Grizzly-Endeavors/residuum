@@ -473,7 +473,7 @@ struct PanicRecoveryEnv {
 struct PanicMemoryExtras {
     observer: Arc<crate::memory::observer::Observer>,
     merge_writer: Arc<crate::memory::merge_writer::MemoryMergeWriter>,
-    layout: crate::workspace::layout::WorkspaceLayout,
+    layout: crate::config::WorkspaceLayout,
     episode_skip_token_floor: usize,
     /// The run's hop counter at the moment it panicked, cloned so a panicked
     /// spawned session's relay to its spawner (see [`relay_result_to_spawner`])
@@ -2968,7 +2968,7 @@ mod tests {
     /// completion memory pipeline actually ran over the backfilled
     /// transcript rather than always reporting no episode.
     fn eager_panic_mem_extras(dir: &std::path::Path) -> PanicMemoryExtras {
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir);
+        let layout = crate::config::WorkspaceLayout::new(dir);
         let search_index = Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );
@@ -3834,10 +3834,9 @@ mod tests {
     /// messages always cross the force threshold and get staged.
     fn make_sequenced_resources_with_eager_observer(
         responses: Vec<&str>,
-    ) -> (SubAgentResources, crate::workspace::layout::WorkspaceLayout) {
+    ) -> (SubAgentResources, crate::config::WorkspaceLayout) {
         let dir = tempfile::tempdir().unwrap();
-        let layout =
-            crate::workspace::layout::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
+        let layout = crate::config::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
         let search_index = Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );

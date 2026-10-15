@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 
 use super::types::OutboundProblem;
 use crate::a2a::client::tracker::read_open_tasks;
+use crate::config::WorkspaceLayout;
 use crate::hub::AgentFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// What reading an agent's outbound tasks found.
 pub(super) struct OutboundRead {

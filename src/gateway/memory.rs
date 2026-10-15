@@ -14,6 +14,7 @@ use std::sync::Arc;
 use super::helpers::{publish_error, publish_notice};
 use crate::agent::Agent;
 use crate::bus::Publisher;
+use crate::config::WorkspaceLayout;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -21,7 +22,6 @@ use crate::memory::recent_messages::{
     append_recent_messages, load_recent_messages, remove_observed_recent_messages,
 };
 use crate::memory::types::{SourceTag, Visibility};
-use crate::workspace::layout::WorkspaceLayout;
 
 /// Persist new messages and check whether observation thresholds are met.
 ///

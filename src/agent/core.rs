@@ -24,7 +24,7 @@ pub struct AgentConfig {
     ///
     /// `None` pins the agent to the identity snapshot passed at construction
     /// (used by tests that don't touch the filesystem).
-    pub layout: Option<crate::workspace::layout::WorkspaceLayout>,
+    pub layout: Option<crate::config::WorkspaceLayout>,
 }
 
 /// The agent runtime that processes user messages through the model.
@@ -55,7 +55,7 @@ pub struct Agent {
     tz: chrono_tz::Tz,
     /// Workspace layout for per-turn identity reloads. `None` pins identity to
     /// the construction-time snapshot (test constructors).
-    layout: Option<crate::workspace::layout::WorkspaceLayout>,
+    layout: Option<crate::config::WorkspaceLayout>,
     /// The agent's handle on the hub's team router, read for the `TEAM`
     /// roster at each turn entry. `None` leaves the prompt without a roster.
     team: Option<crate::hub::team::TeamLink>,
@@ -97,7 +97,7 @@ impl Agent {
         let usage_totals_path = config
             .layout
             .as_ref()
-            .map(crate::workspace::layout::WorkspaceLayout::usage_totals_json);
+            .map(crate::config::WorkspaceLayout::usage_totals_json);
         Self {
             provider,
             tools,
@@ -205,7 +205,7 @@ impl Agent {
         action_store: std::sync::Arc<tokio::sync::Mutex<crate::actions::store::ActionStore>>,
         action_notify: std::sync::Arc<tokio::sync::Notify>,
         models: crate::config::SharedModelCatalog,
-        layout: &crate::workspace::layout::WorkspaceLayout,
+        layout: &crate::config::WorkspaceLayout,
     ) {
         self.tz = tz;
         self.tools.reload_timezone_tools(
@@ -265,7 +265,7 @@ impl Agent {
     /// Returns an error if the file exists but cannot be read or parsed.
     pub async fn reload_observations(
         &mut self,
-        layout: &crate::workspace::layout::WorkspaceLayout,
+        layout: &crate::config::WorkspaceLayout,
     ) -> anyhow::Result<()> {
         self.observations =
             super::context::loading::load_observations(&layout.observations_json()).await?;
@@ -278,7 +278,7 @@ impl Agent {
     /// Returns an error if the file exists but cannot be parsed.
     pub async fn reload_recent_context(
         &mut self,
-        layout: &crate::workspace::layout::WorkspaceLayout,
+        layout: &crate::config::WorkspaceLayout,
     ) -> anyhow::Result<()> {
         self.recent_context =
             super::context::loading::load_recent_context_narrative(&layout.recent_context_json())
@@ -1813,7 +1813,7 @@ mod tests {
     #[tokio::test]
     async fn turn_picks_up_identity_edits_from_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         tokio::fs::write(layout.soul_md(), "SOUL_MARKER_V1")
             .await
             .unwrap();
@@ -1899,7 +1899,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_disappears_after_deletion() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         tokio::fs::write(layout.bootstrap_md(), "BOOTSTRAP_MARKER")
             .await
             .unwrap();
@@ -1979,7 +1979,7 @@ mod tests {
     #[tokio::test]
     async fn identity_read_failure_falls_back_to_cache() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         // A directory named SOUL.md makes read_to_string return a non-NotFound
         // error, so IdentityFiles::load fails and the reload falls back.
         tokio::fs::create_dir(layout.soul_md()).await.unwrap();

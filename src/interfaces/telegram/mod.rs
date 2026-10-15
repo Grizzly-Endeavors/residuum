@@ -127,7 +127,7 @@ impl TelegramInterface {
     /// permissions problem, not corrupt content), the bot still can't
     /// connect after retrying, or the bus subscription fails.
     pub(crate) async fn start(self) -> anyhow::Result<()> {
-        let layout = crate::workspace::layout::WorkspaceLayout::new(&self.workspace_dir);
+        let layout = crate::config::WorkspaceLayout::new(&self.workspace_dir);
         let (chat_store, chat_state_notice) =
             ChatStateStore::load(layout.telegram_state_json()).await?;
         if let Some(notice) = chat_state_notice {

@@ -150,7 +150,7 @@ pub struct SubAgentResources {
     pub(crate) recent_context: Option<String>,
     /// Workspace layout, for the completion memory pipeline (episode
     /// storage, observer guidance files).
-    pub(crate) layout: crate::workspace::layout::WorkspaceLayout,
+    pub(crate) layout: crate::config::WorkspaceLayout,
     /// This session's own observer instance, for per-run threshold checks
     /// and extraction.
     pub(crate) observer: Arc<Observer>,
@@ -501,12 +501,12 @@ pub(crate) async fn execute_subagent(
 /// with `runtime`'s tests, which also build `SubAgentResources`.
 #[cfg(test)]
 pub(crate) fn test_memory_extras() -> (
-    crate::workspace::layout::WorkspaceLayout,
+    crate::config::WorkspaceLayout,
     Arc<Observer>,
     Arc<MemoryMergeWriter>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
+    let layout = crate::config::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
     let search_index = Arc::new(
         crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
     );

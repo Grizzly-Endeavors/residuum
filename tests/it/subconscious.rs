@@ -11,13 +11,12 @@
 
 use async_trait::async_trait;
 
-use residuum::config::{Config, HubConfig};
+use residuum::config::{Config, HubConfig, WorkspaceLayout};
 use residuum::inference::{
     CompletionOptions, HttpClientConfig, InferenceError, InferenceProvider, InferenceResponse,
     Message, SharedHttpClient, ToolDefinition,
 };
 use residuum::subconscious::{EvalPhase, FindingKind, Severity, Subconscious, SubconsciousConfig};
-use residuum::workspace::layout::WorkspaceLayout;
 
 /// Mock provider returning a fixed response; records whether it was called.
 struct CountingProvider {

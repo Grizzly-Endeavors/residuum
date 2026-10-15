@@ -94,7 +94,7 @@ pub(super) async fn run_telegram_polling(
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
     let bot = Bot::with_client(token, http_client);
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&workspace_dir);
+    let layout = crate::config::WorkspaceLayout::new(&workspace_dir);
     let inbox_dir = layout.agent_inbox_dir();
     let main_conversation = layout.recent_messages_json();
 

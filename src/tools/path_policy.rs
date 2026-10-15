@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::Config;
-use crate::workspace::layout::WorkspaceLayout;
+use crate::config::WorkspaceLayout;
 use crate::workspace::team_files::TeamFiles;
 
 /// Paths the file tools may never write: the credential stores in `hub_dir`,

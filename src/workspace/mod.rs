@@ -6,7 +6,6 @@ pub mod bootstrap;
 pub mod channel_builder;
 pub mod config;
 pub mod identity;
-pub mod layout;
 pub mod mcp_patch;
 pub mod team;
 pub mod team_files;

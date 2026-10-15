@@ -16,11 +16,11 @@ use chrono_tz::Tz;
 
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
+    WorkspaceLayout,
 };
 use crate::inference::{CompletionOptions, InferenceProvider, ResponseFormat};
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;
-use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_observer_response;
 use prompt::{EXTRACTION_CONTENT_PROMPT, build_extraction_prompt, observer_response_schema};
 

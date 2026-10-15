@@ -200,7 +200,7 @@ fn recognize(path: &Path, paths: &DiagnosticsPaths) -> Option<FileKind> {
         return Some(FileKind::ProvidersToml);
     }
 
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&paths.workspace_dir);
+    let layout = crate::config::WorkspaceLayout::new(&paths.workspace_dir);
     if paths_match(path, &layout.channels_toml()) {
         return Some(FileKind::ChannelsToml);
     }

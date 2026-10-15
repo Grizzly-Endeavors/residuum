@@ -11,7 +11,7 @@ use crate::background::registry::SessionRegistry;
 use crate::background::spawn_context::SpawnContext;
 use crate::background::store::SessionStore;
 use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
-use crate::config::{Config, HubConfig};
+use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -20,7 +20,6 @@ use crate::memory::search::HybridSearcher;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// Describes what kind of configuration reload was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
