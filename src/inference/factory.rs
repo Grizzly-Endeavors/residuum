@@ -1,9 +1,12 @@
 //! Provider factory functions for constructing `InferenceProvider` instances from config.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+
 use crate::config::{ProviderKind, ProviderSpec};
 use crate::util::FatalError;
 
-use super::failover::FailoverProvider;
+use super::failover::{FailoverProvider, NoticeSink};
 use super::image_input::{ImageInputGuard, LearnedTextOnly};
 use super::providers::anthropic::AnthropicClient;
 use super::providers::gemini::GeminiClient;
@@ -191,7 +194,7 @@ fn build_provider_list(
 ///
 /// Single spec → direct provider. Multiple specs → `FailoverProvider`.
 /// Callers surface any dropped fallback to the user with a notice where
-/// they have a publisher in scope.
+/// they have a notice sink in scope.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the primary provider cannot be built.
@@ -213,7 +216,7 @@ pub(crate) fn build_provider_chain(
 /// Build the main model's provider chain, with a user notice wired to
 /// `role` on a fallback/recovery transition (see
 /// [`FailoverProvider::with_notices`]). Single-provider specs have nothing
-/// to fail over to, so `publisher`/`role` are simply unused in that case.
+/// to fail over to, so `notices`/`role` are simply unused in that case.
 /// Like [`build_provider_chain`], an unbuildable fallback is dropped
 /// rather than failing the whole chain.
 ///
@@ -224,7 +227,7 @@ pub(crate) fn build_provider_chain_with_notices(
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
-    publisher: crate::bus::Publisher,
+    notices: Arc<dyn NoticeSink>,
     role: impl Into<String>,
 ) -> Result<(Box<dyn InferenceProvider>, Vec<DroppedFallback>), FatalError> {
     if let [spec] = specs {
@@ -234,7 +237,7 @@ pub(crate) fn build_provider_chain_with_notices(
 
     let (providers, dropped) = build_provider_list(specs, max_tokens, &http, &retry)?;
     Ok((
-        Box::new(FailoverProvider::new(providers).with_notices(publisher, role)),
+        Box::new(FailoverProvider::new(providers).with_notices(notices, role)),
         dropped,
     ))
 }
@@ -249,7 +252,7 @@ pub(crate) fn build_provider_chain_with_notices(
 /// each time, so many short-lived providers for the same role notice on a
 /// transition exactly once rather than each re-announcing a fallback that's
 /// already in effect. Single-spec chains have nothing to fail over to, so
-/// `publisher`/`role`/`active_index` are unused in that case.
+/// `notices`/`role`/`active_index` are unused in that case.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the primary provider cannot be built.
@@ -258,9 +261,9 @@ pub(crate) fn build_provider_chain_with_shared_notices(
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
-    publisher: crate::bus::Publisher,
+    notices: Arc<dyn NoticeSink>,
     role: impl Into<String>,
-    active_index: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    active_index: Arc<AtomicUsize>,
 ) -> Result<(Box<dyn InferenceProvider>, Vec<DroppedFallback>), FatalError> {
     if let [spec] = specs {
         return build_provider_from_provider_spec(spec, max_tokens, http, retry)
@@ -272,7 +275,7 @@ pub(crate) fn build_provider_chain_with_shared_notices(
         Box::new(
             FailoverProvider::new(providers)
                 .with_shared_active_index(active_index)
-                .with_notices(publisher, role),
+                .with_notices(notices, role),
         ),
         dropped,
     ))

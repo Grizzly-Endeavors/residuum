@@ -215,7 +215,7 @@ impl Subconscious {
             cfg.max_tokens,
             http,
             cfg.retry.clone(),
-            publisher,
+            std::sync::Arc::new(publisher),
             "the subconscious",
         ) {
             Ok((provider, dropped)) => {

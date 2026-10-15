@@ -1,5 +1,7 @@
 //! Model providers and memory pipeline initialization.
 
+use std::sync::Arc;
+
 use crate::bus::Publisher;
 use crate::config::Config;
 use crate::inference::{
@@ -44,7 +46,7 @@ pub fn init_providers(
         cfg.max_tokens,
         http.clone(),
         cfg.retry.clone(),
-        publisher.clone(),
+        Arc::new(publisher.clone()),
         "main model",
     )?;
     tracing::info!(model = provider.model_name(), "model provider ready");

@@ -352,7 +352,7 @@ pub(crate) async fn build_spawn_resources(
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),
-        ctx.publisher.clone(),
+        Arc::new(ctx.publisher.clone()),
         chain.label,
         chain.active_index,
     )
