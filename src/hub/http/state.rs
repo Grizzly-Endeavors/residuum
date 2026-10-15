@@ -17,7 +17,7 @@ use crate::inference::system_one::SystemOneService;
 use crate::tracing_service::{ClientContext, Subagent, TracingService};
 use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
-use crate::workbench::server::WorkbenchServing;
+use crate::workbench::WorkbenchServing;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::WatchHealth;
 

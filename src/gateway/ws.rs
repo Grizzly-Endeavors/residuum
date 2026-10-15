@@ -17,7 +17,7 @@ use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
 use crate::interfaces::types::MessageOrigin;
 use crate::interfaces::websocket::subscriber::WsSubscribers;
-use crate::workbench::forward::ArtifactsOrigin;
+use crate::workbench::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.

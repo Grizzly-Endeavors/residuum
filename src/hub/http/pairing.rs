@@ -19,7 +19,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 
 use super::error::json_error;
-use crate::pairing::remote::{RemoteContext, remote_context};
 use crate::pairing::types::{
     CreatePairingRequestBody, DeviceListResponse, HandoffBody, PairLinkResponse, PairedResponse,
     PairingPollResponse, PairingRequestCreated, PairingRequestStatus, PairingStateResponse,
@@ -30,7 +29,8 @@ use crate::pairing::{
     AuthenticatedDevice, DevicePairing, Issued, PAIRING_PAGE_PATH, PairingError, PollOutcome,
     Surface, cookie_header, qr,
 };
-use crate::workbench::forward::ArtifactsOrigin;
+use crate::pairing::{RemoteContext, remote_context};
+use crate::workbench::ArtifactsOrigin;
 
 const NO_STORE: (HeaderName, HeaderValue) =
     (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

@@ -23,6 +23,7 @@ publish = false
 # Workspace members
 residuum-core = { path = "crates/core", version = "0.1.0" }
 residuum-config = { path = "crates/config", version = "0.1.0" }
+residuum-net = { path = "crates/net", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
@@ -154,6 +155,7 @@ jsonschema = { version = "0.58.6", default-features = false }
 [dependencies]
 residuum-core = { workspace = true }
 residuum-config = { workspace = true }
+residuum-net = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -203,13 +205,7 @@ rpassword = { workspace = true }
 axum = { workspace = true }
 tokio-tungstenite = { workspace = true }
 rustls = { workspace = true }
-tokio-rustls = { workspace = true }
-instant-acme = { workspace = true }
-rcgen = { workspace = true }
-hickory-resolver = { workspace = true }
 hyper = { workspace = true }
-hyper-util = { workspace = true }
-x509-parser = { workspace = true }
 ring = { workspace = true }
 futures-util = { workspace = true }
 tower = { workspace = true }
@@ -217,7 +213,6 @@ tower-http = { workspace = true }
 uuid = { workspace = true }
 url = { workspace = true }
 rust-embed = { workspace = true }
-qrcode = { workspace = true }
 mime_guess = { workspace = true }
 iana-time-zone = { workspace = true }
 serenity = { workspace = true }
@@ -245,11 +240,11 @@ tauri-winrt-notification = "0.8.1"
 [dev-dependencies]
 residuum-core = { workspace = true, features = ["test-support"] }
 residuum-config = { workspace = true, features = ["test-support"] }
+residuum-net = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
-http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 jsonschema = { workspace = true }
 

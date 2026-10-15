@@ -1,0 +1,56 @@
+[package]
+name = "residuum-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+residuum-core = { workspace = true }
+residuum-config = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+hickory-resolver = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+instant-acme = { workspace = true }
+mime_guess = { workspace = true }
+qrcode = { workspace = true }
+rand = { workspace = true }
+rcgen = { workspace = true }
+reqwest = { workspace = true }
+ring = { workspace = true }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tokio-rustls = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+ts-rs = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
+x509-parser = { workspace = true }
+
+[dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
+residuum-config = { workspace = true, features = ["test-support"] }
+ctor = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client"] }
+rustls = { workspace = true }
+tempfile = { workspace = true }

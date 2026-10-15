@@ -78,8 +78,8 @@ stress *args: _web-dist
 
 # Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker
 [group('rust')]
-pebble: _web-dist
-    cargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests
+pebble:
+    cargo test --quiet -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
 
 # Regenerate the TypeScript protocol types in web/src/lib/generated from the Rust types; the files are replaced only if the export succeeds
 [group('rust')]

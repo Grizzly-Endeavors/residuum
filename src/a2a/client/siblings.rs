@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::sync::{Mutex, watch};
 
-use crate::remote_access::siblings::discovery::SecureDiscovery;
+use crate::remote_access::SecureDiscovery;
 
 use super::hub::A2aClientHub;
 

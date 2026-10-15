@@ -2,7 +2,7 @@
 
 Residuum reached through Residuum Cloud answers only browsers that have been paired with it. A browser that arrives through Residuum Cloud carries a device credential, a cookie only that browser holds, or it is sent to the pairing page. Opening Residuum on the machine it runs on needs no pairing. The A2A and Teams listeners are not part of this and authenticate their own callers (see [A2A](a2a.md) and [Microsoft Teams](teams.md)).
 
-The code is in `src/pairing/`; the pairing routes are in `src/hub/http/pairing.rs`.
+The code is in `crates/net/src/pairing/`; the pairing routes are in `src/hub/http/pairing.rs`.
 
 ## What counts as remote
 

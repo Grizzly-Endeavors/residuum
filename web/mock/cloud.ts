@@ -23,7 +23,7 @@ const DEFAULT_RELAY_URL = "wss://agent-residuum.com/tunnel/v2/register";
 /** Who the tunnel reports as signed in. */
 const MOCK_CLOUD_USER = "mock-user";
 
-/** The guard's refusal, word for word (`src/remote_control_guard.rs`). */
+/** The guard's refusal, word for word (`crates/net/src/remote_control_guard.rs`). */
 const REMOTE_REFUSAL =
   "Shutting down or disconnecting can't be done remotely, because nothing could bring Residuum back. Do it on the machine running Residuum.";
 
