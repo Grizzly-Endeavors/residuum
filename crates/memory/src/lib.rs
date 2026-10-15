@@ -4,8 +4,9 @@
 //! observation logs, and full-text search.
 //!
 //! The `test-support` feature adds `testing`, the fixed-reply model provider
-//! other crates' tests run the observer and reflector with, and the
-//! `episode_store` transcript writers those tests seed episodes with.
+//! other crates' tests run the observer and reflector with, and two
+//! `episode_store` helpers those tests seed and read episodes with:
+//! `write_episode_transcript` and `latest_episode_id`.
 
 mod chunk_extractor;
 #[cfg(test)]
@@ -30,7 +31,6 @@ pub mod vector_store;
 pub mod wiki_index;
 
 pub use chunk_extractor::read_idx_jsonl;
-pub use search::parse_obs_file;
 
 /// Truncate a string at a char boundary, appending "...(truncated)" if truncated.
 pub(crate) fn truncate_at_char_boundary(s: &str, max: usize) -> String {

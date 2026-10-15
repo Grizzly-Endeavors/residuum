@@ -46,8 +46,9 @@ use residuum_config::WorkspaceLayout;
 use residuum_core::time::now_local;
 use residuum_inference::EmbeddingProvider;
 
-/// The outcome of a successful merge: what would previously have been
-/// returned by `Observer::observe`, plus whether the reflector fired.
+/// The result of merging one episode into the memory index: the episode's
+/// identity, its transcript and observations, and whether the reflector ran
+/// for it.
 pub struct MergeOutcome {
     /// The episode identifier (e.g., `"ep-001"`).
     pub id: String,

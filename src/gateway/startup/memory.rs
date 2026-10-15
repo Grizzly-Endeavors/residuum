@@ -10,10 +10,9 @@ use crate::inference::{
     EmbeddingProvider, SharedHttpClient, build_provider_chain, build_provider_chain_with_notices,
 };
 use crate::memory::observer::{Observer, ObserverConfig};
-use crate::memory::parse_obs_file;
 use crate::memory::read_idx_jsonl;
 use crate::memory::reflector::{Reflector, ReflectorConfig};
-use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult};
+use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_obs_file};
 use crate::memory::team_wiki::TeamWikiIndex;
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
