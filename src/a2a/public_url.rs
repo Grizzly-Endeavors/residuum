@@ -4,10 +4,8 @@
 //! See `docs/systems-usage/a2a.md`.
 
 use crate::config::A2aConfig;
+use crate::remote_access::A2A_AGENTS_PATH_PREFIX;
 use crate::tunnel::TunnelStatus;
-
-/// The path prefix the hub's A2A listener serves each agent under.
-pub(crate) const AGENTS_PATH_PREFIX: &str = "/agents";
 
 /// The address other agents can use to reach `agent_name`, when one is
 /// configured: `[a2a] public_url` plus `/agents/<name>`. `None` when
@@ -16,7 +14,7 @@ pub(crate) const AGENTS_PATH_PREFIX: &str = "/agents";
 pub(crate) fn known_a2a_public_url(a2a: &A2aConfig, agent_name: &str) -> Option<String> {
     a2a.public_url.as_ref().map(|url| {
         format!(
-            "{}{AGENTS_PATH_PREFIX}/{agent_name}",
+            "{}{A2A_AGENTS_PATH_PREFIX}/{agent_name}",
             url.trim_end_matches('/')
         )
     })
@@ -58,7 +56,7 @@ pub(crate) fn resolve_a2a_public_url(
         .or_else(|| relay_base.map(|base| relay_agent_url(base, agent_name)))
         .unwrap_or_else(|| {
             format!(
-                "http://{gateway_bind}:{}{AGENTS_PATH_PREFIX}/{agent_name}",
+                "http://{gateway_bind}:{}{A2A_AGENTS_PATH_PREFIX}/{agent_name}",
                 a2a.port
             )
         })

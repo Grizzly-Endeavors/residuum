@@ -19,7 +19,7 @@ use axum::http::{Method, Request, Response, StatusCode};
 use tracing::{error, warn};
 
 use super::engine_limit::PeerRateLimiter;
-use crate::gateway::browser_landing::{self, Landing};
+use crate::browser_landing::{self, Landing};
 
 /// How long the listener may take to start answering.
 const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(120);
@@ -248,10 +248,7 @@ impl InstanceProxy {
         self.forward(
             req,
             answer,
-            format!(
-                "http://127.0.0.1:{port}{}",
-                crate::interfaces::teams::MESSAGES_PATH
-            ),
+            format!("http://127.0.0.1:{port}{}", super::TEAMS_MESSAGES_PATH),
         )
         .await
     }
@@ -402,7 +399,7 @@ fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static
     let separator = if path.starts_with('/') { "" } else { "/" };
     Ok(format!(
         "{}/{agent}{separator}{path}",
-        crate::a2a::public_url::AGENTS_PATH_PREFIX
+        super::A2A_AGENTS_PATH_PREFIX
     ))
 }
 

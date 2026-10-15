@@ -82,7 +82,7 @@ fn ui_router() -> Router {
             axum::routing::post(|| async { "disconnected" }),
         )
         .route_layer(axum::middleware::from_fn(
-            crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+            crate::remote_control_guard::reject_remote_shutdown_and_disconnect,
         ));
     Router::new()
         .route("/whoami", get(whoami))
@@ -481,7 +481,7 @@ async fn spawn_upstream(release_second_chunk: Arc<Notify>) -> u16 {
         .route("/agents/scout/{*rest}", any(echo))
         .route("/agents/scout", any(echo))
         .route(
-            crate::interfaces::teams::MESSAGES_PATH,
+            super::TEAMS_MESSAGES_PATH,
             post(|body: String| async move { format!("teams got {} bytes", body.len()) }),
         );
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

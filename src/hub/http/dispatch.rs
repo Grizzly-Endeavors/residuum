@@ -18,8 +18,8 @@ use tower::ServiceExt;
 use tracing::Instrument;
 
 use super::error::{json_error, lifecycle_error_response};
+use crate::browser_landing::{self, AppNotice, Fallback, Landing};
 use crate::config::paths::validate_agent_name;
-use crate::gateway::browser_landing::{self, AppNotice, Fallback, Landing};
 use crate::hub::{AgentDirectory, LifecycleError};
 
 /// The routes that hand requests to an agent: everything under

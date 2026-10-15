@@ -23,7 +23,7 @@ use serde_json::json;
 
 use super::remote::{is_navigation, passes_cross_site_rule, remote_context};
 use super::{DevicePairing, Surface};
-use crate::gateway::browser_landing::{self, Landing};
+use crate::browser_landing::{self, Landing};
 use crate::workbench::forward::ArtifactsOrigin;
 
 /// The pairing page's path on the UI host.

@@ -7,8 +7,8 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::browser_landing::{self, AppNotice, Fallback};
 use crate::config::WorkspaceLayout;
-use crate::gateway::browser_landing::{self, AppNotice, Fallback};
 use crate::gateway::types::GatewayState;
 use crate::inbox::{InboxAttachment, InboxItem};
 

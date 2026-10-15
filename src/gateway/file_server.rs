@@ -28,8 +28,8 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, OnceCell, RwLock};
 
+use crate::browser_landing::{self, AppNotice, Fallback};
 use crate::config::WorkspaceLayout;
-use crate::gateway::browser_landing::{self, AppNotice, Fallback};
 
 /// The `Content-Security-Policy` of a file an agent wrote, served from the
 /// hub's own origin. An agent can be steered by what it read into writing an

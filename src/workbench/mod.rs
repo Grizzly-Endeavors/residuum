@@ -11,7 +11,6 @@
 
 pub(crate) mod forward;
 pub(crate) mod server;
-pub(crate) mod watcher;
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -19,9 +18,7 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 
-use crate::features;
 use crate::gateway::protocol::ArtifactSummary;
-use crate::update;
 
 /// Only the start of a page is scanned for its `<title>` when listing.
 const TITLE_SCAN_BYTES: usize = 64 * 1024;
@@ -34,6 +31,14 @@ const RESERVED_ARTIFACT_NAME: &str = "api";
 
 /// The SDK injected into every served HTML file.
 const SDK_JS: &str = include_str!("../../assets/workbench/sdk.js");
+
+/// What the SDK reports about the build serving it: its version and the
+/// features it supports. The hub builds it from the binary's own constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SdkContext {
+    pub version: &'static str,
+    pub features: &'static [&'static str],
+}
 
 /// Whether `name` is a valid artifact name: lowercase ASCII letters and digits in
 /// hyphen-separated words, at most 64 characters, and not `api`, which the
@@ -273,7 +278,7 @@ fn embed_as_script_json<T: serde::Serialize + ?Sized>(value: &T) -> String {
 /// name, this build's version, and its feature list, which the SDK exposes as
 /// `residuum.artifact`, `residuum.version`, and `residuum.features`.
 #[must_use]
-pub(crate) fn inject_sdk(html: &str, artifact: &str, version: &str, features: &[&str]) -> String {
+pub(crate) fn inject_sdk(html: &str, artifact: &str, sdk: SdkContext) -> String {
     let lower = html.to_ascii_lowercase();
     let insert_at = ["head", "html", "!doctype"]
         .iter()
@@ -286,8 +291,8 @@ pub(crate) fn inject_sdk(html: &str, artifact: &str, version: &str, features: &[
     let context = format!(
         "const __RESIDUUM_ARTIFACT__={};const __RESIDUUM_VERSION__={};const __RESIDUUM_FEATURES__={};",
         embed_as_script_json(artifact),
-        embed_as_script_json(version),
-        embed_as_script_json(features),
+        embed_as_script_json(sdk.version),
+        embed_as_script_json(sdk.features),
     );
     // The block scopes the context constants to the SDK, keeping them out of
     // the page's global scope where an artifact's own names could collide.
@@ -348,6 +353,7 @@ pub(crate) async fn read_artifact_file(
     dir: &Path,
     name: &str,
     rest: &str,
+    sdk: SdkContext,
 ) -> Result<ArtifactFile, ArtifactFileError> {
     let artifact = discover_artifacts(dir)
         .await
@@ -380,13 +386,7 @@ pub(crate) async fn read_artifact_file(
         let bytes = tokio::fs::read(&path).await.map_err(io_err)?;
         Ok(ArtifactFile {
             body: ArtifactBody::Bytes(
-                inject_sdk(
-                    &String::from_utf8_lossy(&bytes),
-                    name,
-                    update::CURRENT_VERSION,
-                    features::FEATURES,
-                )
-                .into_bytes(),
+                inject_sdk(&String::from_utf8_lossy(&bytes), name, sdk).into_bytes(),
             ),
             content_type: "text/html; charset=utf-8".to_string(),
         })
@@ -543,6 +543,11 @@ pub(crate) async fn delete_artifact(
 
 #[cfg(test)]
 mod tests {
+    const SDK: SdkContext = SdkContext {
+        version: "2026.09.23",
+        features: &["workspace-tree"],
+    };
+
     use super::*;
 
     #[test]
@@ -600,8 +605,10 @@ mod tests {
         let out = inject_sdk(
             "<!doctype html><html><head lang=x><title>t</title></head></html>",
             "chart",
-            "2026.09.23",
-            &[],
+            SdkContext {
+                version: "2026.09.23",
+                features: &[],
+            },
         );
         let script_at = out.find("<script>").unwrap();
         assert_eq!(
@@ -617,8 +624,10 @@ mod tests {
         let out = inject_sdk(
             "<html><body><header>h</header></body></html>",
             "chart",
-            "2026.09.23",
-            &[],
+            SdkContext {
+                version: "2026.09.23",
+                features: &[],
+            },
         );
         assert!(
             out.starts_with("<html><script>"),
@@ -629,7 +638,14 @@ mod tests {
 
     #[test]
     fn inject_sdk_prepends_to_fragments() {
-        let out = inject_sdk("<div>fragment</div>", "chart", "2026.09.23", &[]);
+        let out = inject_sdk(
+            "<div>fragment</div>",
+            "chart",
+            SdkContext {
+                version: "2026.09.23",
+                features: &[],
+            },
+        );
         assert!(out.starts_with("<script>"));
         assert!(out.ends_with("<div>fragment</div>"));
     }
@@ -639,8 +655,10 @@ mod tests {
         let out = inject_sdk(
             "<html></html>",
             "pricing-explorer",
-            "2026.09.23",
-            &["workspace-tree", "model-complete"],
+            SdkContext {
+                version: "2026.09.23",
+                features: &["workspace-tree", "model-complete"],
+            },
         );
         assert!(out.contains(r#"<script>{const __RESIDUUM_ARTIFACT__="pricing-explorer";"#));
         // Windows checkouts may give the SDK source CRLF line endings.
@@ -656,7 +674,14 @@ mod tests {
 
     #[test]
     fn inject_sdk_escapes_embedded_values_against_closing_the_script_tag() {
-        let out = inject_sdk("<html></html>", "</script><script>evil</script>", "1", &[]);
+        let out = inject_sdk(
+            "<html></html>",
+            "</script><script>evil</script>",
+            SdkContext {
+                version: "1",
+                features: &[],
+            },
+        );
         assert!(!out.to_ascii_lowercase().contains("</script><script>evil"));
         assert!(out.contains(r"<\/script>"));
     }
@@ -713,7 +738,7 @@ mod tests {
             .collect();
         assert_eq!(names, ["api-tools"]);
         assert!(matches!(
-            read_artifact_file(dir.path(), "api", "").await,
+            read_artifact_file(dir.path(), "api", "", SDK).await,
             Err(ArtifactFileError::NoSuchArtifact(_))
         ));
     }
@@ -766,7 +791,7 @@ mod tests {
         write(&p.join("graph/lib/app.js"), "console.log(1)");
         write(&p.join("graph/docs/index.html"), "<p>docs</p>");
 
-        let page = read_artifact_file(p, "single", "").await.unwrap();
+        let page = read_artifact_file(p, "single", "", SDK).await.unwrap();
         assert!(
             String::from_utf8(body_to_bytes(page.body).await)
                 .unwrap()
@@ -774,18 +799,20 @@ mod tests {
         );
         assert_eq!(page.content_type, "text/html; charset=utf-8");
 
-        let index = read_artifact_file(p, "graph", "").await.unwrap();
+        let index = read_artifact_file(p, "graph", "", SDK).await.unwrap();
         assert!(
             String::from_utf8(body_to_bytes(index.body).await)
                 .unwrap()
                 .contains("window.residuum")
         );
 
-        let script = read_artifact_file(p, "graph", "lib/app.js").await.unwrap();
+        let script = read_artifact_file(p, "graph", "lib/app.js", SDK)
+            .await
+            .unwrap();
         assert_eq!(body_to_bytes(script.body).await, b"console.log(1)");
         assert!(script.content_type.contains("javascript"));
 
-        let nested = read_artifact_file(p, "graph", "docs/").await.unwrap();
+        let nested = read_artifact_file(p, "graph", "docs/", SDK).await.unwrap();
         assert!(
             String::from_utf8(body_to_bytes(nested.body).await)
                 .unwrap()
@@ -793,11 +820,11 @@ mod tests {
         );
 
         assert!(matches!(
-            read_artifact_file(p, "single", "other.js").await,
+            read_artifact_file(p, "single", "other.js", SDK).await,
             Err(ArtifactFileError::NotFound { .. })
         ));
         assert!(matches!(
-            read_artifact_file(p, "missing", "").await,
+            read_artifact_file(p, "missing", "", SDK).await,
             Err(ArtifactFileError::NoSuchArtifact(_))
         ));
     }
@@ -810,7 +837,7 @@ mod tests {
         let big = vec![b'x'; 9 * 1024 * 1024];
         std::fs::write(p.join("big/data.bin"), &big).unwrap();
 
-        let served = read_artifact_file(p, "big", "data.bin").await.unwrap();
+        let served = read_artifact_file(p, "big", "data.bin", SDK).await.unwrap();
         assert!(matches!(served.body, ArtifactBody::File(_)));
         assert_eq!(body_to_bytes(served.body).await.len(), big.len());
     }
@@ -826,7 +853,7 @@ mod tests {
         for rest in ["../other/index.html", "..", "a/../../graph.state.json"] {
             assert!(
                 matches!(
-                    read_artifact_file(p, "graph", rest).await,
+                    read_artifact_file(p, "graph", rest, SDK).await,
                     Err(ArtifactFileError::NotFound { .. })
                 ),
                 "{rest} must not resolve"
@@ -844,7 +871,9 @@ mod tests {
         write(&p.join("graph/index.html"), "x");
         write(&p.join("graph/.secret"), "shh");
 
-        let served = read_artifact_file(p, "graph", ".secret").await.unwrap();
+        let served = read_artifact_file(p, "graph", ".secret", SDK)
+            .await
+            .unwrap();
         assert_eq!(body_to_bytes(served.body).await, b"shh");
     }
 
@@ -867,9 +896,13 @@ mod tests {
             .map(|t| t.name)
             .collect();
         assert_eq!(names, ["graph"]);
-        assert!(read_artifact_file(dir.path(), "leak", "").await.is_err());
         assert!(
-            read_artifact_file(dir.path(), "graph", "leak.html")
+            read_artifact_file(dir.path(), "leak", "", SDK)
+                .await
+                .is_err()
+        );
+        assert!(
+            read_artifact_file(dir.path(), "graph", "leak.html", SDK)
                 .await
                 .is_err()
         );

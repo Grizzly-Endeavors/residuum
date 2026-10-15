@@ -32,7 +32,7 @@ use tower_http::compression::{CompressionLayer, CompressionLevel};
 use tracing::warn;
 
 use super::WebAssets;
-use crate::gateway::browser_landing::is_top_level_navigation;
+use crate::browser_landing::is_top_level_navigation;
 
 /// Directory of build output whose file names carry a content hash.
 const HASHED_ASSET_DIR: &str = "assets/";

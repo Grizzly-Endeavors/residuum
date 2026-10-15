@@ -46,7 +46,7 @@ pub(crate) struct CloudStatusResponse {
     /// Whether this response is being served to a browser that's viewing
     /// the gateway through the tunnel rather than directly. The web UI uses
     /// this to hide the disconnect control: disconnecting over the tunnel
-    /// is refused server-side (see `gateway::remote_control_guard`), so a
+    /// is refused server-side (see `remote_control_guard`), so a
     /// remote viewer should never see a button that can't work.
     viewed_via_tunnel: bool,
     /// Public origin of this user's web UI through the relay, while connected.

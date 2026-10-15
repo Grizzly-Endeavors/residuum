@@ -597,7 +597,7 @@ pub(super) async fn api_a2a_status(State(state): State<A2aStatusState>) -> Json<
             "http://{}:{}{}/{}",
             cfg.gateway_bind,
             cfg.port,
-            crate::a2a::public_url::AGENTS_PATH_PREFIX,
+            crate::remote_access::A2A_AGENTS_PATH_PREFIX,
             config.agent_name
         ),
         relay_access,

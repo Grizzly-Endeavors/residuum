@@ -1,7 +1,7 @@
 // Notices for an address the backend sent a browser to. When someone opens a
 // link the backend can't serve (a file link that expired, an artifact that was
 // renamed, a webhook address), it redirects them into the app with a code in
-// the `notice` query parameter (`src/gateway/browser_landing.rs`), and the
+// the `notice` query parameter (`src/browser_landing.rs`), and the
 // app tells them what happened where they can act on it. The words live here
 // and the backend sends only codes, so a crafted link can't put its own text
 // in front of the user. The router drops the parameter once it's read.

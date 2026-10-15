@@ -36,6 +36,7 @@ use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::interfaces::context_buffer::ContextBuffer;
 use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
+use crate::remote_access::TEAMS_MESSAGES_PATH;
 
 use self::auth::TokenValidator;
 use self::connector::ConnectorClient;
@@ -43,8 +44,6 @@ use self::store::{ConversationRef, TeamsStore};
 
 /// Endpoint and interface name for Teams on the bus.
 pub(crate) const ENDPOINT: &str = "teams";
-/// Path Microsoft posts activities to; configured as the bot's messaging endpoint.
-pub(crate) const MESSAGES_PATH: &str = "/api/teams/messages";
 /// Activities waiting for the inbound worker before the endpoint sheds load.
 const INBOUND_QUEUE: usize = 64;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -209,14 +208,14 @@ impl TeamsInterface {
             .with_context(|| format!("failed to bind the teams listener on {addr}"))?;
         tracing::info!(
             addr = %addr,
-            path = MESSAGES_PATH,
+            path = TEAMS_MESSAGES_PATH,
             respond_to_others = rt.cfg.respond_to_others,
             "teams interface listening"
         );
 
         let app = axum::Router::new()
             .route(
-                MESSAGES_PATH,
+                TEAMS_MESSAGES_PATH,
                 axum::routing::post(handler::messages_endpoint),
             )
             .with_state(Arc::clone(&rt));
