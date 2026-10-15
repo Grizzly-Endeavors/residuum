@@ -6,8 +6,8 @@
 //! for the same run id — a crash between a successful merge and the run
 //! record being marked completed leaves the record `running`, and recovery
 //! would otherwise re-run the pipeline from the same transcript. This log is
-//! the durable, O(1)-lookup source of truth [`crate::memory::merge_writer::MemoryMergeWriter`]
-//! consults to refuse a duplicate merge, and [`crate::background::store::SessionStore`]
+//! the durable, O(1)-lookup source of truth [`crate::merge_writer::MemoryMergeWriter`]
+//! consults to refuse a duplicate merge, and the root's background `SessionStore`
 //! consults to backfill a recovered run's record instead of re-merging.
 
 use std::collections::HashMap;
@@ -49,7 +49,7 @@ pub(crate) async fn record_merged_run(
     map.insert(run_id.to_string(), episode_id.to_string());
     let json =
         serde_json::to_string_pretty(&map).context("failed to serialize merged-runs record")?;
-    crate::util::fs::atomic_write(path, &json).await
+    residuum_core::util::fs::atomic_write(path, &json).await
 }
 
 #[cfg(test)]

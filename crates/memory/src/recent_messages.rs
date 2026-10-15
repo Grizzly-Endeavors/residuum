@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::Context;
 
-use crate::inference::Message;
-use crate::memory::types::Visibility;
+use crate::types::Visibility;
+use residuum_inference::Message;
 
 /// A persisted message with observation metadata.
 ///
@@ -28,7 +28,7 @@ pub struct RecentMessage {
     #[serde(flatten)]
     pub message: Message,
     /// When this message was recorded.
-    #[serde(with = "crate::time::minute_format")]
+    #[serde(with = "residuum_core::time::minute_format")]
     pub timestamp: NaiveDateTime,
     /// Whether this message came from a user-visible or background turn.
     #[serde(default)]
@@ -84,7 +84,7 @@ pub async fn load_messages_for_agent(path: &Path) -> anyhow::Result<AgentRestore
         .iter()
         .rev()
         .find(|rm| {
-            rm.message.role == crate::inference::Role::User && rm.visibility == Visibility::User
+            rm.message.role == residuum_inference::Role::User && rm.visibility == Visibility::User
         })
         .map(|rm| rm.timestamp);
 
@@ -104,12 +104,12 @@ async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow
     let json =
         serde_json::to_string_pretty(messages).context("failed to serialize recent messages")?;
 
-    crate::util::fs::atomic_write(path, &json).await
+    residuum_core::util::fs::atomic_write(path, &json).await
 }
 
 /// The lock serializing every read-modify-write of the recent-messages file
 /// at `path`. The main loop appends after each turn while the background
-/// observer (see `crate::gateway::post_turn`) removes the messages it just
+/// observer (the gateway's `post_turn` worker) removes the messages it just
 /// observed; two rewrites interleaving would silently drop whichever landed
 /// first.
 ///
@@ -151,7 +151,7 @@ pub async fn append_recent_messages(
     let lock = rewrite_lock(path);
     let _guard = lock.lock().await;
     let mut existing = load_recent_messages(path).await?;
-    let now = crate::time::now_local(tz);
+    let now = residuum_core::time::now_local(tz);
     existing.extend(new_messages.iter().map(|msg| RecentMessage {
         message: msg.clone(),
         timestamp: now,
@@ -222,7 +222,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
         let relayed = Message::user("[Agent Message from spawned-a (spawned)]\ndone")
-            .with_agent_sender(Some(crate::inference::AgentSender {
+            .with_agent_sender(Some(residuum_inference::AgentSender {
                 address: "spawned-a".to_string(),
                 category: "spawned".to_string(),
             }));
@@ -433,7 +433,7 @@ mod tests {
 
         let appends = (0..20).map(|i| {
             let path = path.clone();
-            crate::util::spawn_in_span(async move {
+            residuum_core::util::spawn_in_span(async move {
                 append_recent_messages(
                     &path,
                     &[sample_message(&format!("later-{i}"))],
@@ -447,7 +447,7 @@ mod tests {
         });
         let removal = {
             let path = path.clone();
-            crate::util::spawn_in_span(async move {
+            residuum_core::util::spawn_in_span(async move {
                 remove_observed_recent_messages(&path, 1).await.unwrap();
             })
         };

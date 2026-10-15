@@ -4,9 +4,9 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::inference::InferenceResponse;
-use crate::memory::types::Visibility;
-use crate::time::now_local;
+use crate::types::Visibility;
+use residuum_core::time::now_local;
+use residuum_inference::InferenceResponse;
 
 /// Typed response from structured output mode.
 #[derive(Deserialize)]
@@ -48,7 +48,7 @@ pub(super) fn parse_observer_response(
     tz: Tz,
 ) -> anyhow::Result<ObserverParseResult> {
     let content = response.content.trim();
-    let json_str = crate::inference::strip_code_fences(content);
+    let json_str = residuum_inference::strip_code_fences(content);
 
     // Fast path: try typed deserialization (structured output)
     if let Ok(typed) = serde_json::from_str::<ObserverJsonResponse>(json_str) {
@@ -125,7 +125,7 @@ fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<Observer
             }
         })
         .map(|item| {
-            let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
+            let timestamp = crate::parse_minute_timestamp(&item.timestamp, tz);
             ObserverExtraction {
                 content: item.content.clone(),
                 timestamp,
@@ -167,7 +167,7 @@ pub(super) fn parse_extraction_items(
                     );
                     now_local(tz)
                 },
-                |ts| crate::memory::parse_minute_timestamp(ts, tz),
+                |ts| crate::parse_minute_timestamp(ts, tz),
             );
 
         let visibility = item

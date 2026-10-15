@@ -5017,11 +5017,11 @@ dependencies = [
  "residuum-config",
  "residuum-core",
  "residuum-inference",
+ "residuum-memory",
  "residuum-net",
  "ring",
  "rmcp",
  "rpassword",
- "rusqlite",
  "rust-embed",
  "rustls 0.23.46",
  "serde",
@@ -5029,7 +5029,6 @@ dependencies = [
  "serde_yaml_ng",
  "serenity",
  "similar",
- "sqlite-vec",
  "tantivy",
  "tauri-winrt-notification",
  "teloxide-core",
@@ -5050,7 +5049,6 @@ dependencies = [
  "uuid",
  "windows-sys 0.59.0",
  "wiremock",
- "zerocopy",
 ]
 
 [[package]]
@@ -5122,6 +5120,32 @@ dependencies = [
  "ts-rs",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "residuum-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "rusqlite",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sqlite-vec",
+ "tantivy",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs",
+ "zerocopy",
 ]
 
 [[package]]

@@ -24,6 +24,7 @@ publish = false
 residuum-core = { path = "crates/core", version = "0.1.0" }
 residuum-config = { path = "crates/config", version = "0.1.0" }
 residuum-inference = { path = "crates/inference", version = "0.1.0" }
+residuum-memory = { path = "crates/memory", version = "0.1.0" }
 residuum-net = { path = "crates/net", version = "0.1.0" }
 
 # Async runtime
@@ -157,6 +158,7 @@ jsonschema = { version = "0.58.6", default-features = false }
 residuum-core = { workspace = true }
 residuum-config = { workspace = true }
 residuum-inference = { workspace = true }
+residuum-memory = { workspace = true }
 residuum-net = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -178,9 +180,6 @@ hex = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 tantivy = { workspace = true }
-rusqlite = { workspace = true }
-sqlite-vec = { workspace = true }
-zerocopy = { workspace = true }
 http = { workspace = true }
 regex = { workspace = true }
 globset = { workspace = true }
@@ -243,6 +242,7 @@ tauri-winrt-notification = "0.8.1"
 residuum-core = { workspace = true, features = ["test-support"] }
 residuum-config = { workspace = true, features = ["test-support"] }
 residuum-inference = { workspace = true, features = ["test-support"] }
+residuum-memory = { workspace = true, features = ["test-support"] }
 residuum-net = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }

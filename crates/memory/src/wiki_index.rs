@@ -18,10 +18,10 @@ use std::time::SystemTime;
 
 use anyhow::Context;
 
-use crate::config::paths::{TEAM_DIR_NAME, TeamPaths};
-use crate::inference::EmbeddingProvider;
-use crate::memory::search::MemoryIndex;
-use crate::memory::vector_store::{VectorStore, WikiVector};
+use crate::search::MemoryIndex;
+use crate::vector_store::{VectorStore, WikiVector};
+use residuum_config::paths::{TEAM_DIR_NAME, TeamPaths};
+use residuum_inference::EmbeddingProvider;
 
 /// OKF reserved file names; they are catalogs and history, not concepts.
 const RESERVED_FILE_NAMES: [&str; 2] = ["index.md", "log.md"];
@@ -31,13 +31,13 @@ const EMBED_BATCH_SIZE: usize = 64;
 
 /// A wiki page prepared for indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WikiPage {
+pub struct WikiPage {
     /// Path from the residuum root with `/` separators, e.g. `team/wiki/homelab/cluster.md`.
-    pub(crate) id: String,
+    pub id: String,
     /// Date of the page's last modification (YYYY-MM-DD).
-    pub(crate) date: String,
+    pub date: String,
     /// Title, description, and body — the text that is indexed and embedded.
-    pub(crate) content: String,
+    pub content: String,
 }
 
 /// Incrementally syncs `team/wiki/` pages into the BM25 index and vector store.
@@ -89,7 +89,7 @@ impl WikiIndexer {
         let team_root = self.team_root.clone();
         let wiki_dir = self.wiki_dir.clone();
         let scanned =
-            crate::util::spawn_blocking_in_span(move || scan_pages(&team_root, &wiki_dir))
+            residuum_core::util::spawn_blocking_in_span(move || scan_pages(&team_root, &wiki_dir))
                 .await
                 .context("wiki scan task failed")??;
 
@@ -109,7 +109,7 @@ impl WikiIndexer {
             return Ok(());
         }
 
-        let pages = crate::util::spawn_blocking_in_span(move || {
+        let pages = residuum_core::util::spawn_blocking_in_span(move || {
             changed
                 .iter()
                 .map(|(id, path)| read_page(id, path))
@@ -122,7 +122,7 @@ impl WikiIndexer {
             let bm25 = Arc::clone(bm25);
             let pages = pages.clone();
             let removed = removed.clone();
-            crate::util::spawn_blocking_in_span(move || {
+            residuum_core::util::spawn_blocking_in_span(move || {
                 bm25.replace_wiki_documents(&pages, &removed, first_sync)
             })
             .await
@@ -160,7 +160,7 @@ async fn sync_vectors(
 ) -> anyhow::Result<()> {
     let stored = {
         let store = Arc::clone(store);
-        crate::util::spawn_blocking_in_span(move || store.wiki_page_contents())
+        residuum_core::util::spawn_blocking_in_span(move || store.wiki_page_contents())
             .await
             .context("wiki vector read task failed")??
     };
@@ -203,7 +203,7 @@ async fn sync_vectors(
         .map(|(p, emb)| (p.id.clone(), p.date.clone(), p.content.clone(), emb))
         .collect();
     let store = Arc::clone(store);
-    crate::util::spawn_blocking_in_span(move || {
+    residuum_core::util::spawn_blocking_in_span(move || {
         let vectors: Vec<WikiVector<'_>> = rows
             .iter()
             .map(|(page_id, date, content, embedding)| WikiVector {
@@ -338,8 +338,8 @@ fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::search::SearchFilters;
-    use crate::memory::types::DocSource;
+    use crate::search::SearchFilters;
+    use crate::types::DocSource;
 
     const PAGE: &str = "---\ntype: Project\ntitle: Grizzly Platform\ndescription: Self-hosted infrastructure repo.\nsources:\n  - resource: episode:ep-042\n---\n\n# Grizzly Platform\n\nRuns Flux on the homelab cluster.\n";
 
@@ -494,10 +494,11 @@ mod tests {
         async fn embed(
             &self,
             texts: &[&str],
-        ) -> Result<crate::inference::EmbeddingResponse, crate::inference::InferenceError> {
+        ) -> Result<residuum_inference::EmbeddingResponse, residuum_inference::InferenceError>
+        {
             self.0
                 .fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
-            Ok(crate::inference::EmbeddingResponse {
+            Ok(residuum_inference::EmbeddingResponse {
                 embeddings: texts.iter().map(|_| vec![0.1, 0.2, 0.3, 0.4]).collect(),
                 dimensions: 4,
             })

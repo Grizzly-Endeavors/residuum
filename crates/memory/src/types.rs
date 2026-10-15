@@ -11,16 +11,17 @@ use anyhow::Context;
 
 /// A compressed episode extracted from a conversation segment.
 ///
-/// Used internally for LLM parsing (observer and reflector responses).
-/// Not exposed publicly — callers work with [`Observation`] instead.
+/// The merge writer builds one from the observer's output and writes its
+/// transcript, observations and index files; searches work with
+/// [`Observation`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Episode {
+pub struct Episode {
     /// Unique identifier (e.g., `"ep-001"`).
-    pub(crate) id: String,
+    pub id: String,
     /// Date of the episode.
-    pub(crate) date: chrono::NaiveDate,
+    pub date: chrono::NaiveDate,
     /// Concise single-sentence observations extracted from the conversation.
-    pub(crate) observations: Vec<String>,
+    pub observations: Vec<String>,
 }
 
 /// Visibility of an observation relative to the conversation context.
@@ -185,7 +186,7 @@ impl SourceTag {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observation {
     /// When this observation was created.
-    #[serde(with = "crate::time::minute_format")]
+    #[serde(with = "residuum_core::time::minute_format")]
     pub timestamp: NaiveDateTime,
     /// ID of the episode transcript that produced this observation.
     #[serde(
@@ -333,7 +334,7 @@ impl IndexManifest {
         let json =
             serde_json::to_string_pretty(self).context("failed to serialize index manifest")?;
 
-        crate::util::fs::atomic_write(path, &json).await
+        residuum_core::util::fs::atomic_write(path, &json).await
     }
 }
 

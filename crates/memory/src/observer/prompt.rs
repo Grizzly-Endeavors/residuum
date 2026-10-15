@@ -1,15 +1,15 @@
 //! Prompt construction for the observer LLM call.
 
-use crate::inference::Message;
-use crate::memory::recent_messages::RecentMessage;
-use crate::memory::types::Visibility;
+use crate::recent_messages::RecentMessage;
+use crate::types::Visibility;
+use residuum_inference::Message;
 
 /// User-customizable content guidance — default when `memory/OBSERVER.md` is absent.
 ///
 /// Embedded from the same asset the workspace bootstrap writes to disk, so the
 /// fallback and the bundled file cannot drift. The format spec is always appended by code.
 pub(super) const EXTRACTION_CONTENT_PROMPT: &str =
-    include_str!("../../../assets/workspace-bootstrap/memory/OBSERVER.md");
+    include_str!("../../../../assets/workspace-bootstrap/memory/OBSERVER.md");
 
 /// Output format spec — always appended by code, never stored in editable files.
 ///

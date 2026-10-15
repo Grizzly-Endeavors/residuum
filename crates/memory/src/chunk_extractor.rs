@@ -8,9 +8,9 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use crate::inference::Role;
-use crate::memory::recent_messages::RecentMessage;
-use crate::memory::types::IndexChunk;
+use crate::recent_messages::RecentMessage;
+use crate::types::IndexChunk;
+use residuum_inference::Role;
 
 /// Extract interaction-pair chunks from a sequence of recent messages.
 ///
@@ -91,13 +91,14 @@ pub(crate) async fn write_idx_jsonl(path: &Path, chunks: &[IndexChunk]) -> anyho
         lines.join("\n") + "\n"
     };
 
-    crate::util::fs::atomic_write(path, &content).await
+    residuum_core::util::fs::atomic_write(path, &content).await
 }
 
 /// Read and parse an idx.jsonl file, returning chunks.
 ///
 /// Returns an empty Vec for missing or empty files. Skips unparseable lines with a warning.
-pub(crate) fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
+#[must_use]
+pub fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -133,8 +134,8 @@ pub(crate) fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
 )]
 mod tests {
     use super::*;
-    use crate::inference::{Message, ToolCall};
-    use crate::memory::types::Visibility;
+    use crate::types::Visibility;
+    use residuum_inference::{Message, ToolCall};
 
     fn recent_user(text: &str) -> RecentMessage {
         RecentMessage {
@@ -386,8 +387,8 @@ mod tests {
     #[test]
     fn a_chunk_holds_what_was_said_and_not_what_the_model_thought() {
         let reply = RecentMessage {
-            message: crate::inference::Message::assistant("The answer is 42.".to_string(), None)
-                .with_thinking(vec![crate::inference::ThinkingBlock {
+            message: residuum_inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![residuum_inference::ThinkingBlock {
                     text: "private reasoning about the answer".to_string(),
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),

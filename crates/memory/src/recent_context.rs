@@ -19,7 +19,7 @@ pub struct RecentContext {
     /// Narrative summary of the conversation at observation time.
     pub narrative: String,
     /// When this context was created.
-    #[serde(with = "crate::time::minute_format")]
+    #[serde(with = "residuum_core::time::minute_format")]
     pub created_at: NaiveDateTime,
     /// Episode ID that produced this context.
     pub episode_id: String,
@@ -32,7 +32,7 @@ pub struct RecentContext {
 pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(ctx).context("failed to serialize recent context")?;
 
-    crate::util::fs::atomic_write(path, &json).await
+    residuum_core::util::fs::atomic_write(path, &json).await
 }
 
 /// Load a recent context from disk.

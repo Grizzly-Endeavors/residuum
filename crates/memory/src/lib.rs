@@ -2,26 +2,35 @@
 //!
 //! Provides persistence across restarts through structured episodes,
 //! observation logs, and full-text search.
+//!
+//! The `test-support` feature adds `testing`, the fixed-reply model provider
+//! other crates' tests run the observer and reflector with, and the
+//! `episode_store` transcript writers those tests seed episodes with.
 
-pub(crate) mod chunk_extractor;
+mod chunk_extractor;
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;
 pub mod episode_store;
 mod fork_safe_directory;
 pub mod log_store;
 pub mod merge_writer;
-pub(crate) mod merged_run_log;
+mod merged_run_log;
 pub mod observer;
 pub mod recent_context;
 pub mod recent_messages;
 pub mod reflector;
 pub mod search;
 pub mod team_wiki;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod tokens;
 pub mod types;
 pub mod vector_store;
 pub mod wiki_index;
 
-#[cfg(test)]
-pub(crate) mod test_helpers;
+pub use chunk_extractor::read_idx_jsonl;
+pub use search::parse_obs_file;
 
 /// Truncate a string at a char boundary, appending "...(truncated)" if truncated.
 pub(crate) fn truncate_at_char_boundary(s: &str, max: usize) -> String {
@@ -48,5 +57,5 @@ pub(crate) fn parse_minute_timestamp(ts: &str, tz: chrono_tz::Tz) -> chrono::Nai
         timestamp = ts,
         "failed to parse timestamp, using current time"
     );
-    crate::time::now_local(tz)
+    residuum_core::time::now_local(tz)
 }

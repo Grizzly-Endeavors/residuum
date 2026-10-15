@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use anyhow::Context;
 
-use crate::inference::{Message, Role};
-use crate::memory::types::{Episode, SourceTag};
+use crate::types::{Episode, SourceTag};
+use residuum_inference::{Message, Role};
 
 /// Metadata from the first line of an episode JSONL file.
 #[derive(Debug, Deserialize)]
@@ -44,8 +44,8 @@ pub struct EpisodeMeta {
 /// Test-only: production code always has a [`SourceTag`] and calls
 /// [`write_episode_transcript_tagged`] directly (the merge writer is the
 /// only production caller).
-#[cfg(test)]
-pub(crate) async fn write_episode_transcript(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn write_episode_transcript(
     episodes_dir: &Path,
     episode: &Episode,
     messages: &[Message],
@@ -60,7 +60,7 @@ pub(crate) async fn write_episode_transcript(
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub(crate) async fn write_episode_transcript_tagged(
+pub async fn write_episode_transcript_tagged(
     episodes_dir: &Path,
     episode: &Episode,
     messages: &[Message],
@@ -116,7 +116,7 @@ pub(crate) async fn write_episode_transcript_tagged(
 
 /// Get the path where an episode JSONL transcript would be written.
 #[must_use]
-pub(crate) fn episode_jsonl_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
+pub fn episode_jsonl_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
     episodes_dir
         .join(episode.date.format("%Y-%m/%d").to_string())
         .join(format!("{}.jsonl", episode.id))
@@ -174,7 +174,7 @@ pub(crate) async fn write_completion_marker(
 ) -> anyhow::Result<()> {
     let path = episode_marker_path(episodes_dir, episode);
     let body = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    crate::util::fs::atomic_write(&path, body)
+    residuum_core::util::fs::atomic_write(&path, body)
         .await
         .with_context(|| {
             format!(
@@ -266,7 +266,7 @@ fn is_episode_transcript(path: &Path) -> bool {
 ///
 /// # Errors
 /// Returns an error if a directory cannot be read.
-pub(crate) fn transcripts_newest_first(episodes_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+pub fn transcripts_newest_first(episodes_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     if !episodes_dir.exists() {
         return Ok(Vec::new());
     }
@@ -321,10 +321,10 @@ pub async fn read_episode_jsonl(path: &Path) -> anyhow::Result<(EpisodeMeta, Vec
 }
 
 /// Default number of message lines returned when no limit is specified.
-pub(crate) const DEFAULT_LINES: usize = 50;
+pub const DEFAULT_LINES: usize = 50;
 
 /// Hard maximum on the number of message lines per request.
-pub(crate) const MAX_LINES: usize = 200;
+pub const MAX_LINES: usize = 200;
 
 /// Maximum characters shown for tool result content before truncation.
 const MAX_TOOL_RESULT_CHARS: usize = 500;
@@ -336,10 +336,7 @@ const MAX_TOOL_RESULT_CHARS: usize = 500;
 ///
 /// # Errors
 /// Returns an error if a directory cannot be read.
-pub(crate) fn find_episode_path(
-    episodes_dir: &Path,
-    episode_id: &str,
-) -> anyhow::Result<Option<PathBuf>> {
+pub fn find_episode_path(episodes_dir: &Path, episode_id: &str) -> anyhow::Result<Option<PathBuf>> {
     if !episodes_dir.exists() {
         return Ok(None);
     }
@@ -377,7 +374,7 @@ fn walk_for_file(dir: &Path, target: &str) -> anyhow::Result<Option<PathBuf>> {
 ///
 /// # Errors
 /// Returns an error if the file cannot be read or the meta line cannot be parsed.
-pub(crate) async fn read_episode_lines(
+pub async fn read_episode_lines(
     path: &Path,
     from_line: Option<usize>,
     request_limit: Option<usize>,
@@ -487,8 +484,8 @@ pub async fn next_episode_id(episodes_dir: &Path) -> anyhow::Result<String> {
 ///
 /// # Errors
 /// Returns an error if the directory cannot be read.
-#[cfg(test)]
-pub(crate) fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<String>> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<String>> {
     let max_num = max_episode_num(episodes_dir)?;
     if max_num == 0 {
         Ok(None)
@@ -511,7 +508,7 @@ pub(crate) fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<St
 ///
 /// # Errors
 /// Returns an error if the directory cannot be traversed.
-pub(crate) async fn older_main_episode_id(
+pub async fn older_main_episode_id(
     episodes_dir: &Path,
     before: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
@@ -604,12 +601,7 @@ fn walk_for_max(dir: &Path, max: &mut u32) -> anyhow::Result<()> {
 /// of `MAX_TOOL_RESULT_CHARS` — used for a single-line `expand_line` request.
 /// When false and the content is over the limit, the truncated line reports
 /// the original length and how to retrieve it in full.
-pub(crate) fn format_message_line(
-    parts: &mut Vec<String>,
-    line_num: usize,
-    msg: &Message,
-    full: bool,
-) {
+pub fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message, full: bool) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
             let calls = msg.tool_calls.as_deref().unwrap_or(&[]);
@@ -627,7 +619,7 @@ pub(crate) fn format_message_line(
         }
         Role::Tool => {
             let display_content =
-                crate::memory::truncate_at_char_boundary(&msg.content, MAX_TOOL_RESULT_CHARS);
+                crate::truncate_at_char_boundary(&msg.content, MAX_TOOL_RESULT_CHARS);
             let original_chars = msg.content.chars().count();
             parts.push(format!(
                 "[line {line_num}] Tool: {display_content} (showing {MAX_TOOL_RESULT_CHARS} of \
@@ -921,7 +913,7 @@ mod tests {
             Message::user("do something"),
             Message::assistant(
                 "",
-                Some(vec![crate::inference::ToolCall {
+                Some(vec![residuum_inference::ToolCall {
                     id: "c1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "ls"}),
@@ -1321,8 +1313,8 @@ mod tests {
         let episode = sample_episode();
         let messages = vec![
             Message::user("what is it?"),
-            crate::inference::Message::assistant("The answer is 42.".to_string(), None)
-                .with_thinking(vec![crate::inference::ThinkingBlock {
+            residuum_inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![residuum_inference::ThinkingBlock {
                     text: "private reasoning about the answer".to_string(),
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),
@@ -1343,7 +1335,7 @@ mod tests {
         assert!(!raw.contains("encrypted-blob"), "{raw}");
         assert_eq!(
             loaded.last().unwrap().thinking,
-            [crate::inference::ThinkingBlock::text(
+            [residuum_inference::ThinkingBlock::text(
                 "private reasoning about the answer"
             )]
         );
@@ -1355,8 +1347,8 @@ mod tests {
         let episode = sample_episode();
         let messages = vec![
             Message::user("what is it?"),
-            crate::inference::Message::assistant("The answer is 42.".to_string(), None)
-                .with_thinking(vec![crate::inference::ThinkingBlock {
+            residuum_inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![residuum_inference::ThinkingBlock {
                     text: "private reasoning about the answer".to_string(),
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),

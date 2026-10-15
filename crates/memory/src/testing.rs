@@ -1,22 +1,22 @@
-//! Shared mock model provider for memory subsystem tests.
+//! A fixed-reply model provider for tests that run the observer or reflector
+//! (feature `test-support`).
 
 use async_trait::async_trait;
 
-use crate::inference::{
+use residuum_inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ToolDefinition,
 };
 
 /// A mock [`InferenceProvider`] that returns a fixed response for every `complete` call.
-///
-/// Eliminates the near-identical `MockObserverProvider` / `MockReflectorProvider`
-/// structs that were duplicated in each test module.
-pub(crate) struct MockMemoryProvider {
+pub struct MockMemoryProvider {
     response: String,
 }
 
 impl MockMemoryProvider {
-    pub(crate) fn new(response: &str) -> Self {
+    /// A provider whose every completion is `response`.
+    #[must_use]
+    pub fn new(response: &str) -> Self {
         Self {
             response: response.to_string(),
         }

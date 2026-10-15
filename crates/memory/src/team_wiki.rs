@@ -3,7 +3,7 @@
 //! A [`TeamWikiIndex`] owns a tantivy index (`team/.index/`) and, when an
 //! embedding provider is configured, a vector store (`team/vectors.db`), both
 //! holding only the pages of `team/wiki/`. It is constructed once and handed
-//! out as an `Arc`; every agent's [`HybridSearcher`](crate::memory::search::HybridSearcher)
+//! out as an `Arc`; every agent's [`HybridSearcher`](crate::search::HybridSearcher)
 //! holds a clone of the same handle. Wiki pages are synced into the index
 //! before each search, and those syncs are serialized inside the index, so
 //! concurrent searches from several agents never write to it at the same time.
@@ -16,13 +16,13 @@
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use crate::config::SearchConfig;
-use crate::config::paths::TeamPaths;
-use crate::inference::EmbeddingProvider;
-use crate::memory::search::{MemoryIndex, SearchFilters, SideOutcome, search_side};
-use crate::memory::types::DocSource;
-use crate::memory::vector_store::VectorStore;
-use crate::memory::wiki_index::WikiIndexer;
+use crate::search::{MemoryIndex, SearchFilters, SideOutcome, search_side};
+use crate::types::DocSource;
+use crate::vector_store::VectorStore;
+use crate::wiki_index::WikiIndexer;
+use residuum_config::SearchConfig;
+use residuum_config::paths::TeamPaths;
+use residuum_inference::EmbeddingProvider;
 
 /// A vector store and the provider that embeds pages and queries into it.
 struct TeamVectors {
@@ -285,9 +285,10 @@ mod tests {
         async fn embed(
             &self,
             texts: &[&str],
-        ) -> Result<crate::inference::EmbeddingResponse, crate::inference::InferenceError> {
+        ) -> Result<residuum_inference::EmbeddingResponse, residuum_inference::InferenceError>
+        {
             self.embedded.fetch_add(texts.len(), Ordering::SeqCst);
-            Ok(crate::inference::EmbeddingResponse {
+            Ok(residuum_inference::EmbeddingResponse {
                 embeddings: texts
                     .iter()
                     .map(|t| {

@@ -419,7 +419,7 @@ impl Subconscious {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::test_helpers::MockMemoryProvider;
+    use crate::memory::testing::MockMemoryProvider;
 
     const EMPTY_RESPONSE: &str = r#"{"findings": []}"#;
     const ACT_RESPONSE: &str = r#"{

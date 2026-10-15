@@ -21,7 +21,7 @@
 //! marked completed leaves the run `running`, and startup recovery re-runs
 //! the pipeline from the same transcript. `merge` refuses to create a
 //! duplicate episode for a run id already recorded in
-//! [`crate::memory::merged_run_log`].
+//! [`crate::merged_run_log`].
 
 use std::sync::Arc;
 
@@ -29,24 +29,22 @@ use anyhow::Context;
 use chrono_tz::Tz;
 use tokio::sync::Mutex;
 
-use crate::config::WorkspaceLayout;
-use crate::inference::EmbeddingProvider;
-use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
-use crate::memory::episode_store::{
+use crate::chunk_extractor::{extract_chunks, write_idx_jsonl};
+use crate::episode_store::{
     episode_idx_path, episode_obs_path, next_episode_id, write_completion_marker,
     write_episode_transcript_tagged,
 };
-use crate::memory::log_store::{
-    append_observations, load_observation_log, save_episode_observations,
-};
-use crate::memory::observer::Extraction;
-use crate::memory::reflector::{Reflector, ReflectorConfig, replace_with_compressed};
-use crate::memory::search::MemoryIndex;
-use crate::memory::types::{
+use crate::log_store::{append_observations, load_observation_log, save_episode_observations};
+use crate::observer::Extraction;
+use crate::reflector::{Reflector, ReflectorConfig, replace_with_compressed};
+use crate::search::MemoryIndex;
+use crate::types::{
     Episode, IndexChunk, IndexManifest, ManifestFileEntry, Observation, ObservationLog, SourceTag,
 };
-use crate::memory::vector_store::VectorStore;
-use crate::time::now_local;
+use crate::vector_store::VectorStore;
+use residuum_config::WorkspaceLayout;
+use residuum_core::time::now_local;
+use residuum_inference::EmbeddingProvider;
 
 /// The outcome of a successful merge: what would previously have been
 /// returned by `Observer::observe`, plus whether the reflector fired.
@@ -69,7 +67,7 @@ pub struct MergeOutcome {
     /// automatic failure streak, for the caller to surface as a user
     /// notice. `None` on every other merge, including one where the
     /// reflector wasn't due or was backing off.
-    pub reflector_notice: Option<crate::util::NoticeAction>,
+    pub reflector_notice: Option<residuum_core::util::NoticeAction>,
 }
 
 /// State that is replaced on a config/provider reload: the reflector and the
@@ -112,7 +110,7 @@ pub struct MemoryMergeWriter {
     /// the reflector's own state — is itself global. `force_reflect` bypasses
     /// this and always attempts, but still updates it so a working manual
     /// retry un-sticks a stuck automatic backoff.
-    reflector_failure: crate::util::BackoffTracker,
+    reflector_failure: residuum_core::util::BackoffTracker,
 }
 
 impl MemoryMergeWriter {
@@ -136,7 +134,7 @@ impl MemoryMergeWriter {
             layout,
             search_index,
             vector_store,
-            reflector_failure: crate::util::BackoffTracker::new(),
+            reflector_failure: residuum_core::util::BackoffTracker::new(),
         }
     }
 
@@ -145,7 +143,7 @@ impl MemoryMergeWriter {
     /// streak starts or clears. `force_reflect` doesn't consult this for
     /// whether to attempt, but does update it — see the field's own doc.
     #[must_use]
-    pub fn reflector_failure_tracker(&self) -> &crate::util::BackoffTracker {
+    pub fn reflector_failure_tracker(&self) -> &residuum_core::util::BackoffTracker {
         &self.reflector_failure
     }
 
@@ -207,7 +205,7 @@ impl MemoryMergeWriter {
     }
 
     /// Whether `tag` names a session run that has already been durably
-    /// merged into an episode, per the [`crate::memory::merged_run_log`]
+    /// merged into an episode, per the [`crate::merged_run_log`]
     /// record. Always `Ok(None)` for the main agent's own merges
     /// (`SourceTag::main` carries no run id).
     ///
@@ -224,21 +222,18 @@ impl MemoryMergeWriter {
             return Ok(None);
         };
         let merged =
-            crate::memory::merged_run_log::load_merged_runs(&self.layout.merged_runs_json())
-                .await?;
+            crate::merged_run_log::load_merged_runs(&self.layout.merged_runs_json()).await?;
         let Some(episode_id) = merged.get(run_id).cloned() else {
             return Ok(None);
         };
         tracing::info!(run_id, episode_id = %episode_id, "run already merged into global memory; refusing duplicate merge");
-        let transcript_path = crate::memory::episode_store::find_episode_path(
-            &self.layout.episodes_dir(),
-            &episode_id,
-        )?
-        .unwrap_or_else(|| {
-            self.layout
-                .episodes_dir()
-                .join(format!("{episode_id}.jsonl"))
-        });
+        let transcript_path =
+            crate::episode_store::find_episode_path(&self.layout.episodes_dir(), &episode_id)?
+                .unwrap_or_else(|| {
+                    self.layout
+                        .episodes_dir()
+                        .join(format!("{episode_id}.jsonl"))
+                });
         Ok(Some(MergeOutcome {
             id: episode_id,
             transcript_path,
@@ -259,9 +254,9 @@ impl MemoryMergeWriter {
     ///
     /// # Errors
     /// Returns an error if the merged-run record exists but cannot be read.
-    pub(crate) async fn find_merged_episode(&self, run_id: &str) -> anyhow::Result<Option<String>> {
+    pub async fn find_merged_episode(&self, run_id: &str) -> anyhow::Result<Option<String>> {
         Ok(
-            crate::memory::merged_run_log::load_merged_runs(&self.layout.merged_runs_json())
+            crate::merged_run_log::load_merged_runs(&self.layout.merged_runs_json())
                 .await?
                 .get(run_id)
                 .cloned(),
@@ -352,9 +347,9 @@ impl MemoryMergeWriter {
             date: date_str,
             reflected,
             reflector_notice: match reflector_notice {
-                crate::util::NoticeAction::None => None,
-                started @ crate::util::NoticeAction::FailureStarted => Some(started),
-                recovered @ crate::util::NoticeAction::Recovered => Some(recovered),
+                residuum_core::util::NoticeAction::None => None,
+                started @ residuum_core::util::NoticeAction::FailureStarted => Some(started),
+                recovered @ residuum_core::util::NoticeAction::Recovered => Some(recovered),
             },
         })
     }
@@ -373,7 +368,7 @@ impl MemoryMergeWriter {
     /// artifact cannot be written. Every step here is required: the
     /// completion marker's presence certifies that all of them landed on
     /// disk, so a failure anywhere leaves the marker absent — the signal
-    /// [`crate::memory::episode_store::find_interrupted_episodes`] uses to
+    /// [`crate::episode_store::find_interrupted_episodes`] uses to
     /// detect an interrupted write.
     async fn persist_episode(
         &self,
@@ -382,8 +377,8 @@ impl MemoryMergeWriter {
         tag: &SourceTag,
     ) -> anyhow::Result<(std::path::PathBuf, Vec<Observation>, Vec<IndexChunk>)> {
         let transcript_path =
-            crate::memory::episode_store::episode_jsonl_path(&self.layout.episodes_dir(), episode);
-        let messages: Vec<crate::inference::Message> = extraction
+            crate::episode_store::episode_jsonl_path(&self.layout.episodes_dir(), episode);
+        let messages: Vec<residuum_inference::Message> = extraction
             .messages
             .iter()
             .map(|rm| rm.message.clone())
@@ -434,7 +429,7 @@ impl MemoryMergeWriter {
             .context("failed to write interaction-pair chunk index")?;
 
         if let Some(run_id) = tag.run_id.as_deref() {
-            crate::memory::merged_run_log::record_merged_run(
+            crate::merged_run_log::record_merged_run(
                 &self.layout.merged_runs_json(),
                 run_id,
                 &episode.id,
@@ -454,7 +449,7 @@ impl MemoryMergeWriter {
     /// manifest entries, and check whether the reflector should run.
     /// Returns whether the reflector fired, and a notice for the caller to
     /// surface exactly when an automatic reflector failure streak starts or
-    /// clears (`crate::util::NoticeAction::None` otherwise, including when
+    /// clears (`residuum_core::util::NoticeAction::None` otherwise, including when
     /// backed off, not due, or another reflection is already running). Never
     /// fails the merge — every failure here is logged and degrades
     /// search/reflection, not the durable record.
@@ -466,7 +461,7 @@ impl MemoryMergeWriter {
         date_str: &str,
         observations: &[Observation],
         chunks: &[IndexChunk],
-    ) -> (bool, crate::util::NoticeAction) {
+    ) -> (bool, residuum_core::util::NoticeAction) {
         let obs_ids = self
             .search_index
             .index_observations(episode_id, date_str, observations)
@@ -503,19 +498,19 @@ impl MemoryMergeWriter {
         // again against that log.
         let Ok(_reflection) = self.reflection_lock.try_lock() else {
             tracing::debug!("a reflection is already running, skipping this check");
-            return (false, crate::util::NoticeAction::None);
+            return (false, residuum_core::util::NoticeAction::None);
         };
         let log = load_observation_log(&self.layout.observations_json())
             .await
             .unwrap_or_default();
         if !reflector.should_reflect(&log) {
-            return (false, crate::util::NoticeAction::None);
+            return (false, residuum_core::util::NoticeAction::None);
         }
-        if self.reflector_failure.gate() == crate::util::RetryGate::Skip {
+        if self.reflector_failure.gate() == residuum_core::util::RetryGate::Skip {
             tracing::debug!(
                 "reflector is backing off after a recent failure, skipping this attempt"
             );
-            return (false, crate::util::NoticeAction::None);
+            return (false, residuum_core::util::NoticeAction::None);
         }
         match self.reflect_and_replace(reflector, log).await {
             Ok(compressed) => {
@@ -661,11 +656,11 @@ async fn record_episode_in_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::Message;
-    use crate::memory::observer::ExtractedObservation;
-    use crate::memory::recent_messages::RecentMessage;
-    use crate::memory::reflector::ReflectorConfig;
-    use crate::memory::types::Visibility;
+    use crate::observer::ExtractedObservation;
+    use crate::recent_messages::RecentMessage;
+    use crate::reflector::ReflectorConfig;
+    use crate::types::Visibility;
+    use residuum_inference::Message;
     use std::path::Path;
 
     fn writer(dir: &Path) -> MemoryMergeWriter {
@@ -673,7 +668,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::inference::NullProvider),
+            Box::new(residuum_inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 ..ReflectorConfig::default()
@@ -719,7 +714,7 @@ mod tests {
         assert!(!outcome.observations.first().unwrap().source.is_session());
 
         let layout = WorkspaceLayout::new(dir.path());
-        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+        let log = crate::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         assert_eq!(log.observations.len(), 1);
@@ -733,7 +728,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::inference::NullProvider),
+            Box::new(residuum_inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: 0,
                 ..ReflectorConfig::default()
@@ -756,7 +751,7 @@ mod tests {
         assert!(!first.reflected);
         assert_eq!(
             first.reflector_notice,
-            Some(crate::util::NoticeAction::FailureStarted)
+            Some(residuum_core::util::NoticeAction::FailureStarted)
         );
 
         // Second merge: still due, but backing off — no repeat attempt, no
@@ -777,7 +772,7 @@ mod tests {
         assert!(mw.force_reflect().await.is_err());
         assert_eq!(
             mw.reflector_failure_tracker().gate(),
-            crate::util::RetryGate::Skip,
+            residuum_core::util::RetryGate::Skip,
             "the failed manual retry should extend, not clear, the automatic backoff"
         );
     }
@@ -791,7 +786,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::inference::testing::model::GatedProvider::new(
+            Box::new(residuum_inference::testing::model::GatedProvider::new(
                 gate,
                 r#"{"observations": [{"content": "compressed", "timestamp": "2026-02-21T14:30", "visibility": "user"}]}"#,
             )),
@@ -844,7 +839,7 @@ mod tests {
         assert!(first.reflected, "the first merge's reflection should land");
 
         let layout = WorkspaceLayout::new(dir.path());
-        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+        let log = crate::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         let contents: Vec<&str> = log
@@ -895,7 +890,7 @@ mod tests {
             Some("spawned-researcher-0001")
         );
 
-        let (meta, _) = crate::memory::episode_store::read_episode_jsonl(&outcome.transcript_path)
+        let (meta, _) = crate::episode_store::read_episode_jsonl(&outcome.transcript_path)
             .await
             .unwrap();
         assert_eq!(meta.source, tag);
@@ -913,7 +908,7 @@ mod tests {
         let mut handles = Vec::new();
         for i in 0..5 {
             let mw = Arc::clone(&mw);
-            handles.push(crate::util::spawn_in_span(async move {
+            handles.push(residuum_core::util::spawn_in_span(async move {
                 mw.merge(
                     sample_extraction(&format!("observation {i}")),
                     SourceTag::main(),
@@ -937,7 +932,7 @@ mod tests {
         );
 
         let layout = WorkspaceLayout::new(dir.path());
-        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+        let log = crate::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         assert_eq!(
@@ -954,22 +949,22 @@ mod tests {
         tokio::fs::create_dir_all(layout.memory_dir())
             .await
             .unwrap();
-        let mut log = crate::memory::types::ObservationLog::new();
-        log.observations.push(crate::memory::types::Observation {
+        let mut log = crate::types::ObservationLog::new();
+        log.observations.push(crate::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "an observation".to_string(),
             source: SourceTag::main(),
         });
-        crate::memory::log_store::save_observation_log(&layout.observations_json(), &log)
+        crate::log_store::save_observation_log(&layout.observations_json(), &log)
             .await
             .unwrap();
 
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "compressed", "timestamp": "2026-02-21T14:30", "visibility": "user"}]}"#,
             )),
             ReflectorConfig::default(),
@@ -1006,7 +1001,7 @@ mod tests {
         );
 
         let layout = WorkspaceLayout::new(dir.path());
-        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+        let log = crate::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         assert_eq!(
@@ -1014,8 +1009,7 @@ mod tests {
             1,
             "the duplicate merge must not append a second observation"
         );
-        let latest =
-            crate::memory::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
+        let latest = crate::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
         assert_eq!(
             latest,
             Some(first.id),
@@ -1062,10 +1056,11 @@ mod tests {
         async fn embed(
             &self,
             texts: &[&str],
-        ) -> Result<crate::inference::EmbeddingResponse, crate::inference::InferenceError> {
+        ) -> Result<residuum_inference::EmbeddingResponse, residuum_inference::InferenceError>
+        {
             self.entered.notify_one();
             self.release.acquire().await.unwrap().forget();
-            Ok(crate::inference::EmbeddingResponse {
+            Ok(residuum_inference::EmbeddingResponse {
                 embeddings: texts.iter().map(|_| vec![0.0_f32; 4]).collect(),
                 dimensions: 4,
             })
@@ -1086,7 +1081,7 @@ mod tests {
         // A never-triggering reflector isolates this test to the embedding
         // step alone.
         let reflector = Reflector::new(
-            Box::new(crate::inference::NullProvider),
+            Box::new(residuum_inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 ..ReflectorConfig::default()
@@ -1106,7 +1101,7 @@ mod tests {
         ));
 
         let mw1 = Arc::clone(&mw);
-        let first = crate::util::spawn_in_span(async move {
+        let first = residuum_core::util::spawn_in_span(async move {
             mw1.merge(
                 sample_extraction("first"),
                 SourceTag::main(),
@@ -1121,7 +1116,7 @@ mod tests {
         entered.notified().await;
 
         let mw2 = Arc::clone(&mw);
-        let second = crate::util::spawn_in_span(async move {
+        let second = residuum_core::util::spawn_in_span(async move {
             mw2.merge(
                 sample_extraction("second"),
                 SourceTag::main(),
@@ -1140,8 +1135,7 @@ mod tests {
              while the first merge is still inside its embedding step",
             || async {
                 let latest =
-                    crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
-                        .unwrap();
+                    crate::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
                 (latest.as_deref() == Some("ep-002")).then_some(())
             },
         )

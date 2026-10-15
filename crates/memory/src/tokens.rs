@@ -3,7 +3,7 @@
 //! Uses character-based heuristic (~4 chars/token) rather than a
 //! tokenizer dependency. Sufficient for threshold comparisons, not billing.
 
-use crate::inference::Message;
+use residuum_inference::Message;
 
 /// Estimate the number of tokens in a string.
 ///
@@ -51,7 +51,7 @@ pub(crate) fn estimate_single_message(msg: &Message) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::ToolCall;
+    use residuum_inference::ToolCall;
 
     #[test]
     fn estimate_tokens_empty() {
@@ -154,14 +154,15 @@ mod tests {
     #[test]
     fn a_messages_size_does_not_count_the_models_thinking() {
         let plain = Message::assistant("The answer is 42.".to_string(), None);
-        let reasoned = crate::inference::Message::assistant("The answer is 42.".to_string(), None)
-            .with_thinking(vec![crate::inference::ThinkingBlock {
-                text: "private reasoning about the answer".to_string(),
-                signature: Some("sig-opaque-token".to_string()),
-                redacted: Some("encrypted-blob".to_string()),
-                part: None,
-                origin: None,
-            }]);
+        let reasoned =
+            residuum_inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![residuum_inference::ThinkingBlock {
+                    text: "private reasoning about the answer".to_string(),
+                    signature: Some("sig-opaque-token".to_string()),
+                    redacted: Some("encrypted-blob".to_string()),
+                    part: None,
+                    origin: None,
+                }]);
 
         assert_eq!(
             estimate_single_message(&reasoned),
