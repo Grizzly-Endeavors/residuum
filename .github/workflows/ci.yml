@@ -84,7 +84,7 @@ jobs:
           fi
           rust=false web=false deps=false workflows=false
           if grep -qE "$RUST_PATHS_RE" <<<"$changed"; then rust=true; fi
-          if grep -qE "$WEB_PATHS_RE" <<<"$changed"; then web=true; fi
+          if grep -vE '^web/.*\.md$' <<<"$changed" | grep -qE "$WEB_PATHS_RE"; then web=true; fi
           if grep -qE "$DEPS_PATHS_RE" <<<"$changed"; then deps=true; fi
           if grep -qE "$WORKFLOWS_PATHS_RE" <<<"$changed"; then workflows=true; fi
           {
