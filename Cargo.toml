@@ -8,8 +8,11 @@ license = "MIT"
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
 
-# HTTP client
-reqwest = { version = "0.13", features = ["json", "stream"] }
+# HTTP client. `rustls-no-provider` keeps reqwest's rustls stack and platform
+# certificate verifier but leaves the crypto provider to the process: reqwest's
+# own `rustls` feature would also compile aws-lc-rs. `commands::run` installs
+# ring before the first client is built.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls-no-provider", "charset", "http2", "system-proxy"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
