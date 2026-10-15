@@ -5,6 +5,7 @@ pub mod agent_keys;
 pub mod background;
 pub mod bus;
 pub mod checkpoints;
+pub mod client_context;
 pub mod config;
 pub mod daemon;
 pub mod diagnostics;

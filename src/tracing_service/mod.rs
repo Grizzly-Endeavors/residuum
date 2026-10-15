@@ -4,7 +4,6 @@
 //! content sanitization, and error reporting. Called by both CLI (via HTTP to
 //! the daemon) and web API handlers.
 
-pub mod client_context;
 mod otel;
 mod sanitize;
 mod submit;
@@ -160,7 +159,7 @@ pub struct BugReport {
     pub what_doing: String,
     /// Severity selected by the user.
     pub severity: Severity,
-    /// Runtime metadata gathered by [`client_context::gather_for_bug_report`].
+    /// Runtime metadata gathered by `crate::client_context::gather_for_bug_report` in the root crate.
     pub client: ClientContext,
 }
 

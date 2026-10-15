@@ -1243,7 +1243,7 @@ async fn log_adapter_task_exit(
     rt.tracing_service
         .on_error(
             &described,
-            crate::tracing_service::client_context::gather_for_bug_report(&rt.cfg),
+            crate::client_context::gather_for_bug_report(&rt.cfg),
         )
         .await;
 }
