@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs scripts/stress-issues.sh as a dry run over logs in scripts/ci-failures-fixtures
 # and checks which issues it would open: one per failing test, a test named in two
-# logs once, a crashed test binary under a title without its build hash, and one
-# suite-wide issue when no log names a test.
+# logs once, a crashed test binary under a title without its build hash, one
+# suite-wide issue when no log names a test, one for the run when more than ten
+# tests are new, one for a cancelled job, and none for a job that did not fail.
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,8 +41,33 @@ expect_titles "a log that names no test" "Nightly stress: the Rust run failed wi
 expect_titles "no log at all" "Nightly stress: the Web run failed without naming a failing test" \
     Web failure "$fixtures/does-not-exist.log"
 
+expect_titles "ten new tests, one issue each" "Nightly stress: gateway::flood::tests::case_01
+Nightly stress: gateway::flood::tests::case_02
+Nightly stress: gateway::flood::tests::case_03
+Nightly stress: gateway::flood::tests::case_04
+Nightly stress: gateway::flood::tests::case_05
+Nightly stress: gateway::flood::tests::case_06
+Nightly stress: gateway::flood::tests::case_07
+Nightly stress: gateway::flood::tests::case_08
+Nightly stress: gateway::flood::tests::case_09
+Nightly stress: gateway::flood::tests::case_10" \
+    Rust failure "$fixtures/rust-stress-ten.log"
+
+expect_titles "eleven new tests, one issue for the run" "Nightly stress: the Rust run failed more than 10 tests" \
+    Rust failure "$fixtures/rust-stress-flood.log"
+
+expect_titles "a cancelled job with no log" "Nightly stress: the Web run did not finish" \
+    Web cancelled "$fixtures/does-not-exist.log"
+
+expect_titles "a cancelled job with a failing test in its log" "Nightly stress: the Rust run did not finish
+Nightly stress: hub::runtime::tests::changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_running" \
+    Rust cancelled "$fixtures/stress.log"
+
 expect_titles "a job that did not fail" "" \
     Web success "$fixtures/web-stress.log"
+
+expect_titles "a skipped job" "" \
+    Rust skipped "$fixtures/stress.log"
 
 if (( status == 0 )); then
     echo "stress-issues: every case opens the expected issues"

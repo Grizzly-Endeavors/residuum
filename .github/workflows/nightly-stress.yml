@@ -8,7 +8,9 @@ name: Nightly Stress
 #
 # Nothing here gates a merge. Each failing test is filed as an `investigate`
 # issue titled "Nightly stress: <test>", or added as a comment to the open
-# issue with that title (scripts/stress-issues.sh). Run it by hand from the
+# issue with that title; a run with more than ten new failures files one issue
+# for the run instead, and a job that hit its timeout files one saying the run
+# did not finish (scripts/stress-issues.sh). Run it by hand from the
 # Actions tab, or with `gh workflow run nightly-stress.yml`, to check a fix.
 on:
   schedule:
@@ -200,12 +202,12 @@ jobs:
             echo "| Every spec, repeated with CPU throttled | ${{ steps.web_stress.outcome }}: ${{ steps.web_stress.outputs.summary || 'not reached' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Files each failure as an issue. Runs when a stress job failed, not when it
-  # was cancelled: a cancelled run says nothing about the tests.
+  # Files each failure as an issue. Runs when a stress job failed or hit its
+  # timeout (cancelled), and not when the whole run was cancelled.
   file-issues:
     name: File the failures as issues
     needs: [rust-stress, web-stress]
-    if: ${{ !cancelled() && (needs.rust-stress.result == 'failure' || needs.web-stress.result == 'failure') }}
+    if: ${{ !cancelled() && ((needs.rust-stress.result != 'success' && needs.rust-stress.result != 'skipped') || (needs.web-stress.result != 'success' && needs.web-stress.result != 'skipped')) }}
     runs-on: lab-runners-light
     permissions:
       contents: read
