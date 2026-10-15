@@ -175,69 +175,11 @@ pub(crate) fn load_or_create_key(key_path: &Path) -> Result<[u8; 32], FatalError
     })?;
 
     // Set permissions to 0o600 (owner-only read/write)
-    set_file_mode_600(key_path)?;
+    crate::util::fs::set_file_mode_600(key_path)?;
 
     tracing::info!(path = %key_path.display(), "generated new encryption key");
 
     Ok(key)
-}
-
-/// Set file permissions to 0600 (Unix only).
-#[cfg(unix)]
-pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = std::fs::Permissions::from_mode(0o600);
-    std::fs::set_permissions(path, perms).map_err(|e| {
-        FatalError::Config(format!(
-            "failed to set permissions on {}: {e}",
-            path.display()
-        ))
-    })
-}
-
-/// Restrict file access to the current user via `icacls` (Windows).
-#[cfg(windows)]
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "signature matches the unix variant, which can fail"
-    )
-)]
-pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
-    let grant_arg = format!("{username}:(F)");
-    let status = std::process::Command::new("icacls")
-        .arg(path.as_os_str())
-        .args(["/inheritance:r", "/grant:r", &grant_arg])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => {
-            tracing::warn!(
-                path = %path.display(),
-                exit_code = ?s.code(),
-                "icacls failed to restrict file permissions — the key file may be readable by other users"
-            );
-            Ok(())
-        }
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "could not run icacls — the key file may be readable by other users"
-            );
-            Ok(())
-        }
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
-    // No-op on unsupported platforms
-    Ok(())
 }
 
 /// Encrypt plaintext using AES-256-GCM-SIV with a random nonce.

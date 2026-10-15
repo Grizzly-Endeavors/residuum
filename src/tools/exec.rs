@@ -17,7 +17,7 @@ use crate::agent_keys::{
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
-use crate::util::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
+use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// Maximum output size from a command (100KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -702,7 +702,7 @@ mod tests {
             return;
         };
         wait::until_true("the killed process to be gone", || {
-            !crate::util::process::is_process_running(pid_u32)
+            !crate::process::is_process_running(pid_u32)
         })
         .await;
     }

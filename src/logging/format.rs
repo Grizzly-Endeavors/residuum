@@ -2,8 +2,7 @@
 //!
 //! Parses JSON log lines produced by `tracing-subscriber`'s JSON formatter
 //! and renders them as human-readable text with optional filtering by module
-//! or log level. Designed for reuse by both `residuum logs` and future
-//! `residuum report`.
+//! or log level. Used by `residuum logs`.
 
 use std::fmt::Write;
 

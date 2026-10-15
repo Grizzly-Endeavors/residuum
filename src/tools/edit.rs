@@ -17,7 +17,7 @@ use super::write::{
     append_diagnostics, check_reserved_target, commit_team_write, lock_team_target, resolve,
 };
 use super::{Tool, ToolError, ToolResult};
-use crate::diagnostics::DiagnosticsPaths;
+use crate::diagnostics_dispatch::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
 
 /// Lines of unchanged context shown around each changed region in the result preview.

@@ -2162,7 +2162,7 @@ mod tests {
         tools.register_defaults(
             crate::tools::FileTracker::new_shared(),
             crate::tools::PathPolicy::new_shared(),
-            crate::diagnostics::DiagnosticsPaths {
+            crate::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
                 // Must exist: this test's tool call actually runs `exec`,
                 // which now starts the spawned command here.

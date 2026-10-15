@@ -28,7 +28,7 @@ use crate::interfaces::teams::setup_types::{
     SetupResult, SignInPrompt, TeamsSetupForm, TeamsSetupJob, TeamsSetupPhase, TeamsSetupPrereqs,
     TeamsSetupStart, TeamsSetupState,
 };
-use crate::util::process::{create_argv_command, kill_process_tree_sync};
+use crate::process::{create_argv_command, kill_process_tree_sync};
 
 /// Errors encountered when managing Teams setup jobs.
 #[derive(Debug, thiserror::Error)]
@@ -1728,18 +1728,18 @@ exit 0
             content.trim().parse::<u32>().ok()
         })
         .await;
-        assert!(crate::util::process::is_process_running(pid));
+        assert!(crate::process::is_process_running(pid));
 
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
 
         // Verify that the grandchild process tree is actually gone
         wait::until_true("the grandchild process tree to terminate", || {
-            !crate::util::process::is_process_running(pid)
+            !crate::process::is_process_running(pid)
         })
         .await;
         assert!(
-            !crate::util::process::is_process_running(pid),
+            !crate::process::is_process_running(pid),
             "grandchild process tree should be terminated after cancel"
         );
     }
@@ -1965,7 +1965,7 @@ exit 0
 
         mgr.cancel_job("agent-1").await.unwrap();
         wait::until_true("the provisioning process tree to terminate", || {
-            !crate::util::process::is_process_running(pid)
+            !crate::process::is_process_running(pid)
         })
         .await;
     }

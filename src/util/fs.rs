@@ -7,6 +7,8 @@ use std::time::Duration;
 use anyhow::Context as _;
 use tokio::time::Instant;
 
+use super::FatalError;
+
 /// Write `data` to `path` atomically (temp file in the same directory, then rename).
 ///
 /// The temporary file is named `.{filename}.{random}.residuum-tmp` in the same
@@ -55,7 +57,7 @@ async fn write_via_temp_file(path: &Path, data: &[u8], owner_only: bool) -> anyh
     };
     written.with_context(|| format!("failed to write temporary file at {}", tmp_path.display()))?;
 
-    if owner_only && let Err(e) = crate::config::secrets::set_file_mode_600(&tmp_path) {
+    if owner_only && let Err(e) = set_file_mode_600(&tmp_path) {
         remove_temp_file(&tmp_path).await;
         return Err(anyhow::anyhow!("{e}"));
     }
@@ -201,6 +203,64 @@ async fn rename_dir_retrying(
             }
         }
     }
+}
+
+/// Set file permissions to 0600 (Unix only).
+#[cfg(unix)]
+pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(path, perms).map_err(|e| {
+        FatalError::Config(format!(
+            "failed to set permissions on {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+/// Restrict file access to the current user via `icacls` (Windows).
+#[cfg(windows)]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "signature matches the unix variant, which can fail"
+    )
+)]
+pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
+    let grant_arg = format!("{username}:(F)");
+    let status = std::process::Command::new("icacls")
+        .arg(path.as_os_str())
+        .args(["/inheritance:r", "/grant:r", &grant_arg])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => {
+            tracing::warn!(
+                path = %path.display(),
+                exit_code = ?s.code(),
+                "icacls failed to restrict file permissions — the key file may be readable by other users"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not run icacls — the key file may be readable by other users"
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
+    // No-op on unsupported platforms
+    Ok(())
 }
 
 #[cfg(test)]
