@@ -413,7 +413,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
   | config | `["dep:tempfile"]` | `tempfile = { workspace = true, optional = true }`: the guard field holds an `Arc<tempfile::TempDir>` | core | `tempfile` |
   | skills | — | | core, config | `tempfile` |
   | inference | `["dep:axum", "residuum-core/test-support"]` | `axum = { workspace = true, optional = true }`: `testing::model` serves through axum and holds requests with core's `testing::gate` | core, config | `axum`, `wiremock`, `ctor`, `rustls`, `toml` (the `completion_options_for_role` tests parse their TOML) |
-  | tracing-service | — | | core, config | `tempfile`, `ctor`, `rustls` |
+  | tracing-service | — | | core, config | `ctor`, `rustls` |
   | memory | `["dep:async-trait"]` | `async-trait = { workspace = true, optional = true }`: `testing`'s provider implements inference's `#[async_trait]` `InferenceProvider`, and memory's production code names no `async_trait` | core, config, inference | `async-trait`, `tempfile`, `ctor`, `rustls` |
   | mcp | — | | core, config, inference | `tempfile`, `ctor`, `rustls` |
   | net | `[]` | none: its two hooks use only pairing's own state; `tunnel::v2::test_relay` and `remote_access::pebble_support`, which use core's `testing`, are `#[cfg(test)]` and reach it through the dev-dependency | core, config | `tempfile`, `http-body-util`, `hyper = { workspace = true, features = ["client"] }`, `ctor`, `rustls` |

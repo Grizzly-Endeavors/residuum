@@ -42,7 +42,7 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
 
 /// Diagnostics for `content` as a skill's `SKILL.md` frontmatter.
 ///
-/// Reuses [`parse_skill_md`], so an error diagnostic can never disagree with
+/// Reuses `parse_skill_md`, so an error diagnostic can never disagree with
 /// what loading rejects — a skill with an invalid name, an empty
 /// description, or invalid YAML fails to parse here exactly as it would when
 /// the skill scanner loads it. Extracts a line/column when the failure is a
@@ -50,7 +50,7 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
 /// once deserialization has already succeeded, so it's reported by message
 /// alone.
 ///
-/// A description long enough to trigger [`oversized_description_notice`]
+/// A description long enough to trigger `oversized_description_notice`
 /// doesn't fail parsing — the skill still loads — but is surfaced here as a
 /// warning, so the live editor shows the same per-turn token-cost notice the
 /// scanner would raise once the file is saved.
@@ -398,7 +398,7 @@ mod tests {
     /// the same `parse_skill_md` the workspace skill scanner uses.
     ///
     /// A bundled skill is embedded into the binary at compile time
-    /// (`include_str!` in `workspace::bootstrap`) and written into every new
+    /// (`include_str!` in the root crate's `workspace::bootstrap`) and written into every new
     /// workspace verbatim, so a frontmatter defect here — invalid YAML, a bad
     /// name, an empty description — ships broken to every user and is
     /// dropped by `SkillIndex::scan`'s skip handling, surfacing only as a
