@@ -6,6 +6,7 @@ pub mod background;
 pub(crate) mod browser_landing;
 pub mod bus;
 pub mod checkpoints;
+pub mod client_context;
 pub mod config;
 pub(crate) mod cross_site;
 pub mod daemon;

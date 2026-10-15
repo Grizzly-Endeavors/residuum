@@ -8,10 +8,11 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
+use crate::client_context;
 use crate::config::OtelEndpoint;
 use crate::tracing_service::{
     BugReport, ClientContext, ExportResult, ExportTarget, Feedback, Severity, SubmissionReceipt,
-    TracingService, TracingStatus, client_context,
+    TracingService, TracingStatus,
 };
 
 /// Shared state for the tracing API routes.

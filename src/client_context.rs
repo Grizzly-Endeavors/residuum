@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use crate::config::Config;
 use crate::config::{ThinkingConfig, ThinkingLevel};
 
-use super::{ClientContext, FeedbackClient};
+use crate::tracing_service::{ClientContext, FeedbackClient};
 
 /// Gather the static part of the client context for a bug report.
 ///

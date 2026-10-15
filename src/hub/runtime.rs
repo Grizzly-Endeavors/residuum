@@ -690,10 +690,7 @@ impl HubRuntime {
         };
         self.services
             .tracing_service
-            .on_error(
-                &described,
-                crate::tracing_service::client_context::gather_for_hub(),
-            )
+            .on_error(&described, crate::client_context::gather_for_hub())
             .await;
         self.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
         if let Some(cloud) = &self.hub_cfg.cloud {
@@ -989,7 +986,7 @@ pub(super) fn build_app(
         restart_tx: services.control.restart_tx.clone(),
         shutdown_tx: services.control.shutdown_tx.clone(),
         tracing_service: Arc::clone(&services.tracing_service),
-        client_context: Arc::new(crate::tracing_service::client_context::gather_for_hub()),
+        client_context: Arc::new(crate::client_context::gather_for_hub()),
         active_subagents: Arc::new(move || subagents_host.active_subagents()),
         workbench_serving: services.workbench_serving.clone(),
         team: services.team.clone(),
