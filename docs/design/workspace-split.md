@@ -165,6 +165,7 @@ residuum-core = { workspace = true }
 residuum-config = { workspace = true }
 residuum-inference = { workspace = true }
 tantivy = { workspace = true }
+async-trait = { workspace = true, optional = true }
 # ... every external crate the moved sources name (rule below)
 
 [dev-dependencies]
@@ -377,7 +378,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
 
 **`residuum-memory`**
 - Public namespace `episode_store` (new): `find_episode_path`, `read_episode_lines`, `format_message_line`, `older_main_episode_id`, `transcripts_newest_first`, `DEFAULT_LINES`, `MAX_LINES`, with the already-public `read_episode_jsonl` and `EpisodeMeta`; also `write_episode_transcript_tagged` and `episode_jsonl_path`, which are production code that root tests call. Behind `test-support`: `write_episode_transcript` and `latest_episode_id`, which are `#[cfg(test)]` today.
-- Root, new: `read_idx_jsonl` (from `chunk_extractor`), `parse_obs_file` (from `search`).
+- Root, new: `read_idx_jsonl` (from `chunk_extractor`). `parse_obs_file` is not re-exported at the root; it is reached through the public `search` namespace (`residuum_memory::search::parse_obs_file`).
 - `testing` (today's `test_helpers`) behind `test-support`.
 - Moves instead: `strip_code_fences` (inference).
 
