@@ -12,6 +12,8 @@
 //! - [`script`]: writing a fake tool the test then runs, so its exec never
 //!   fails with "Text file busy" when another test forks.
 //!
+//! `manifest_scan` holds the rules the workspace's `Cargo.toml` files keep.
+//!
 //! `source_scan` holds the tests that keep it that way: test code may not
 //! call `sleep`, `timeout` or wiremock's `set_delay` outside this module, and
 //! the waits that predate the rule are counted in `wall_clock_backlog`, where
@@ -22,6 +24,7 @@
 pub(crate) mod clock;
 mod crypto;
 pub(crate) mod gate;
+mod manifest_scan;
 pub(crate) mod model;
 pub(crate) mod script;
 mod source_scan;
