@@ -347,9 +347,12 @@ module_files() { # a::b::c::test -> the repo file that holds module a::b::c
             fi
         done
     done
-    if [[ -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
-        echo "tests/${segs[0]}.rs"
-    fi
+    for cand in "tests/it/${segs[0]}.rs" "tests/${segs[0]}.rs"; do
+        if [[ -n "${repo_files[$cand]:-}" ]]; then
+            echo "$cand"
+            return 0
+        fi
+    done
 }
 
 print_messages() { # messages indent

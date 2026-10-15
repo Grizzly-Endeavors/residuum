@@ -4,7 +4,7 @@
 //! `#[ignore]` so they don't run in normal CI. Run them explicitly with:
 //!
 //! ```sh
-//! cargo test --test mcp_integration -- --ignored
+//! cargo test --test it mcp:: -- --ignored
 //! ```
 //!
 //! The tests use `npx @anthropic/mcp-echo-server` or a simple script-based

@@ -21,7 +21,7 @@ pub(super) const ALLOWED: &[(&str, usize, &str)] = &[
         "`Step::Pause` is a scripted network stall: the silence is the stimulus a stream's idle timeout is tested against",
     ),
     (
-        "tests/smoke.rs",
+        "tests/it/smoke.rs",
         1,
         "runs the real binary for a while to see that it starts without panicking; it has no event of its own to wait on",
     ),

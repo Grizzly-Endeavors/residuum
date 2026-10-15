@@ -8,9 +8,6 @@
 //! them from here would mean re-exposing crate-internal construction just
 //! for the test.
 
-#[path = "support/until.rs"]
-mod until;
-
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -54,7 +51,7 @@ mod background_integration {
             .await
             .unwrap();
 
-        crate::until::until("an inbox item to be created", || {
+        crate::support::until::until("an inbox item to be created", || {
             let count = std::fs::read_dir(&inbox_dir)
                 .unwrap()
                 .filter_map(Result::ok)
