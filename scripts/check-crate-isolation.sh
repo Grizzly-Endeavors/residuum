@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #
-# Checks that each workspace member compiles on its own. Cargo unifies features
-# across every package in one build, so a whole-workspace run can pass a member
+# Checks that each workspace member compiles on its own, and that the root
+# library compiles without dev-dependency features. Cargo unifies features
+# across every package in one build, so a whole-workspace run can pass a crate
 # that needs a feature another package turns on. Each check here is a separate
-# cargo invocation for one member, so nothing unifies across members.
+# cargo invocation, so nothing unifies across crates.
+#
+# The root library, which dev-depends on residuum-core with test-support:
+#   cargo check --quiet -p residuum --lib
 #
 # For each crates/<dir>/ holding a Cargo.toml, with package residuum-<dir>:
 #   cargo check --quiet -p residuum-<dir> --lib
@@ -11,7 +15,8 @@
 #   cargo check --quiet -p residuum-<dir> --lib --features test-support   (when the member has that feature)
 #
 # Every check runs. Each failure is printed with its command, and the script
-# exits non-zero when any check failed. With no members there is nothing to check.
+# exits non-zero when any check failed. With no members only the root library
+# is checked.
 set -uo pipefail
 
 # Whether the manifest in $1 has a feature named test-support in its [features] table.
@@ -41,6 +46,9 @@ run_check() {
     fi
 }
 
+echo "check-crate-isolation: residuum (root library)"
+run_check cargo check --quiet -p residuum --lib
+
 for manifest in crates/*/Cargo.toml; do
     [ -f "$manifest" ] || continue
     dir="${manifest#crates/}"
@@ -55,13 +63,12 @@ for manifest in crates/*/Cargo.toml; do
     fi
 done
 
-if [ "$members" -eq 0 ]; then
-    echo "check-crate-isolation: no workspace members under crates/; nothing to check"
-    exit 0
-fi
-
 if [ "$status" -ne 0 ]; then
-    echo "check-crate-isolation: a member does not compile on its own; see the failed commands above" >&2
+    echo "check-crate-isolation: a crate does not compile on its own; see the failed commands above" >&2
     exit 1
 fi
-echo "check-crate-isolation: every member compiles on its own"
+if [ "$members" -eq 0 ]; then
+    echo "check-crate-isolation: no workspace members under crates/; the root library compiles on its own"
+    exit 0
+fi
+echo "check-crate-isolation: the root library and every member compile on their own"
