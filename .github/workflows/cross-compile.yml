@@ -73,7 +73,12 @@ jobs:
     if: needs.decide.outputs.run == 'true'
     runs-on: lab-runners-wide
 
+    # CI checkouts are fresh, so incremental state is never reused here, and with
+    # it off sccache can cache the library build of every workspace crate. No job
+    # may set CARGO_TARGET_DIR: sccache hashes its value, so a per-job target
+    # directory would miss every crate.
     env:
+      CARGO_INCREMENTAL: '0'
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
     steps:
