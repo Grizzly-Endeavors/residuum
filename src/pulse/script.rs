@@ -540,23 +540,44 @@ pub(crate) mod tests {
         assert!(!stdout.contains("output cut"));
     }
 
-    // The timeout races a script that would run for far longer than the
-    // limit, on a paused clock: tokio moves the clock straight to the
-    // timeout once nothing else is ready, so the test never waits on real
-    // time and the script can't finish first.
-    #[tokio::test(start_paused = true)]
+    // Once the script has started, the clock is paused and moved past the
+    // limit in one jump, so the test never waits on real time and the
+    // script can't finish first. The jump is explicit because a paused
+    // clock can't be left to advance on its own here: on Windows tokio
+    // reads a child's pipes on blocking threads, and a running blocking
+    // task stops a paused clock from auto-advancing, so it would sit still
+    // until the script exited.
+    #[tokio::test]
     async fn a_script_past_its_timeout_is_stopped_and_reported() {
         let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
         let command = if cfg!(windows) {
-            "powershell -NoProfile -Command \"Start-Sleep -Seconds 600\""
+            format!(
+                "echo x> \"{}\" && powershell -NoProfile -Command \"Start-Sleep -Seconds 600\"",
+                started.display()
+            )
         } else {
-            "sleep 600"
+            format!("touch '{}'; sleep 600", started.display())
         };
-        let mut t = task("t", command);
+        let mut t = task("t", &command);
         t.script_timeout_secs = Some(30);
-        let run = run_one(dir.path(), t).await;
-        let ScriptRun::Failed(failure) = run else {
-            panic!("expected a timeout, got {run:?}");
+        let pulse = pulse(vec![t]);
+        let script_env = env(dir.path());
+        let cancel = CancellationToken::new();
+        let mut run = std::pin::pin!(run_pulse_scripts(&pulse, &script_env, &cancel));
+        tokio::select! {
+            biased;
+            () = wait::until_true("the script to start", || started.exists()) => {}
+            runs = &mut run => panic!("the scripts ended before the script started: {runs:?}"),
+        }
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        let runs = run.await.unwrap();
+        let Some(Some(script_run)) = runs.into_iter().next() else {
+            panic!("expected one script run");
+        };
+        let ScriptRun::Failed(failure) = script_run else {
+            panic!("expected a timeout, got {script_run:?}");
         };
         assert_eq!(failure.cause, ScriptFailureCause::TimedOut { secs: 30 });
         assert!(failure.reason().contains("30-second limit"));
