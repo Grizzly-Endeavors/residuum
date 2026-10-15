@@ -1532,11 +1532,11 @@ mod tests {
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillIndex, SkillState};
     use crate::testing::bus_wait;
-    use crate::testing::gate::Gate;
     use crate::testing::model::GatedProvider;
-    use crate::testing::wait;
     use crate::workspace::identity::IdentityFiles;
     use async_trait::async_trait;
+    use residuum_core::testing::gate::Gate;
+    use residuum_core::testing::wait;
 
     use super::super::registry::{MAIN_ADDRESS, MAIN_DEPTH};
     use super::super::subagent::test_memory_extras;
@@ -2734,7 +2734,7 @@ mod tests {
 
     // `start_paused` isn't about idle-timeout logic here (the one-minute
     // idle timeouts below are never actually reached) — it protects the hang
-    // guard in `crate::testing::wait` from firing spuriously. The guard wraps a
+    // guard in `residuum_core::testing::wait` from firing spuriously. The guard wraps a
     // *real* timer: if the OS starves this test's single worker thread for
     // longer than the guard under heavy contention (many parallel test
     // threads plus a concurrent build reproduces this locally), the timer
@@ -3236,7 +3236,7 @@ mod tests {
         what: &str,
         pred: impl Fn(&SessionInfo) -> bool,
     ) {
-        crate::testing::wait::until_true(what, || {
+        residuum_core::testing::wait::until_true(what, || {
             runtime
                 .registry
                 .get(address)

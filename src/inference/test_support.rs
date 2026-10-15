@@ -9,8 +9,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use super::{StreamDelta, StreamSink};
-use crate::testing::gate::GateEntry;
 use crate::util::spawn_in_span;
+use residuum_core::testing::gate::GateEntry;
 
 /// A sink that keeps everything pushed to it.
 #[derive(Default)]
@@ -292,8 +292,8 @@ async fn read_request(socket: &mut TcpStream) -> Option<RecordedRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::gate::Gate;
-    use crate::testing::wait;
+    use residuum_core::testing::gate::Gate;
+    use residuum_core::testing::wait;
 
     #[tokio::test]
     async fn a_held_step_sends_nothing_more_until_released() {

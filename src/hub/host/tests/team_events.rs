@@ -91,7 +91,7 @@ async fn an_agent_that_cannot_start_is_told_as_failed_with_the_reason() {
     )
     .unwrap();
 
-    let log = crate::testing::log::EventLog::default();
+    let log = residuum_core::testing::log::EventLog::default();
     let _guard = log.capture();
 
     hub.host.start("scout").await.unwrap_err();

@@ -155,7 +155,7 @@ mod tests {
     use crate::config::WorkspaceLayout;
     use crate::memory::test_helpers::MockMemoryProvider;
     use crate::subconscious::SubconsciousConfig;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     const ACT_RESPONSE: &str = r#"{
         "findings": [

@@ -695,9 +695,9 @@ mod tests {
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
     use crate::testing::bus_wait;
-    use crate::testing::gate::Gate;
     use crate::testing::model::GatedProvider;
-    use crate::testing::wait;
+    use residuum_core::testing::gate::Gate;
+    use residuum_core::testing::wait;
 
     const OBSERVER_RESPONSE: &str = r#"{
         "observations": [

@@ -1,3 +1,5 @@
+pub use residuum_core::{diagnostics, time, util};
+
 pub mod a2a;
 pub mod actions;
 pub mod agent;
@@ -10,7 +12,6 @@ pub mod client_context;
 pub mod config;
 pub(crate) mod cross_site;
 pub mod daemon;
-pub mod diagnostics;
 pub mod diagnostics_dispatch;
 pub(crate) mod features;
 pub mod gateway;
@@ -32,11 +33,9 @@ pub mod skills;
 pub mod subconscious;
 #[cfg(test)]
 pub(crate) mod testing;
-pub mod time;
 pub mod tools;
 pub mod tracing_service;
 pub(crate) mod tunnel;
 pub mod update;
-pub mod util;
 pub(crate) mod workbench;
 pub mod workspace;

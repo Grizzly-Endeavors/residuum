@@ -585,7 +585,8 @@ mod tests {
     use crate::bus::{
         BusHandle, EndpointName, NoticeEvent, NotifyName, SYSTEM_CHANNEL, SessionAddress,
     };
-    use crate::testing::{bus_wait, clock, wait};
+    use crate::testing::bus_wait;
+    use residuum_core::testing::{clock, wait};
 
     const ENDPOINT: &str = "fakechat";
 

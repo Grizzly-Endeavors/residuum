@@ -5022,6 +5022,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest 0.13.3",
+ "residuum-core",
  "ring",
  "rmcp",
  "rpassword",
@@ -5059,6 +5060,27 @@ dependencies = [
  "wiremock",
  "x509-parser",
  "zerocopy",
+]
+
+[[package]]
+name = "residuum-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "rand 0.8.6",
+ "regex",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

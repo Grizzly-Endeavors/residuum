@@ -409,7 +409,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
 
   | crate | `[features] test-support = …` | normal dependencies the feature needs | workspace `[dev-dependencies]` (each with `features = ["test-support"]` where the crate has it) | external `[dev-dependencies]` |
   |---|---|---|---|---|
-  | core | `["tokio/test-util", "tokio/net"]` | `tokio` (already a dependency): `testing::clock` calls `tokio::time::advance` and `pause` (`test-util`), `testing::ports` converts its listener with `tokio::net::TcpListener::from_std` (`net`) | none (core's tests use its own `testing` directly) | `tokio = { workspace = true, features = ["test-util", "net"] }`, `tempfile` |
+  | core | `["tokio/test-util", "tokio/net"]` | `tokio` (already a dependency): `testing::clock` calls `tokio::time::advance` and `pause` (`test-util`), `testing::ports` converts its listener with `tokio::net::TcpListener::from_std` (`net`) | none (core's tests use its own `testing` directly) | `tokio = { workspace = true, features = ["test-util", "net"] }`, `tempfile`, `serde_json` (the `time` serde tests) |
   | config | `["dep:tempfile"]` | `tempfile = { workspace = true, optional = true }`: the guard field holds an `Arc<tempfile::TempDir>` | core | `tempfile` |
   | skills | — | | core, config | `tempfile` |
   | inference | `["dep:axum", "residuum-core/test-support"]` | `axum = { workspace = true, optional = true }`: `testing::model` serves through axum and holds requests with core's `testing::gate` | core, config | `axum`, `wiremock`, `ctor`, `rustls` |

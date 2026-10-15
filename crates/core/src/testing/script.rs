@@ -13,8 +13,15 @@ use std::path::Path;
 
 /// Write an executable script at `path` with `content`, creating its parent
 /// directory, ready to exec on return.
+///
+/// # Panics
+/// Panics when the script can't be written, failing the test that asked for it.
+#[expect(
+    clippy::unwrap_used,
+    reason = "test-support helper: a fake tool that can't be written fails the test that needs it"
+)]
 #[cfg(unix)]
-pub(crate) fn write_executable(path: &Path, content: &str) {
+pub fn write_executable(path: &Path, content: &str) {
     use std::io::Write as _;
     use std::process::Stdio;
 
@@ -48,8 +55,15 @@ pub(crate) fn write_executable(path: &Path, content: &str) {
 /// Write a script at `path` with `content`, creating its parent directory.
 /// Windows does not hand a file handle to a child process unless the handle
 /// was made inheritable, so writing it here carries no fork race.
+///
+/// # Panics
+/// Panics when the script can't be written, failing the test that asked for it.
+#[expect(
+    clippy::unwrap_used,
+    reason = "test-support helper: a fake tool that can't be written fails the test that needs it"
+)]
 #[cfg(not(unix))]
-pub(crate) fn write_executable(path: &Path, content: &str) {
+pub fn write_executable(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }

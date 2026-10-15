@@ -5,7 +5,7 @@ use std::fmt::Display;
 
 use crate::bus::{BusHandle, Subscriber, WorkbenchEvent, topics};
 use crate::hub::agent_watch::{AgentChange, AgentChangeReceiver};
-use crate::testing::wait::{Recv, guarded};
+use residuum_core::testing::wait::{Recv, guarded};
 
 impl Recv for AgentChangeReceiver {
     type Item = AgentChange;

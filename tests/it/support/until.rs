@@ -1,6 +1,6 @@
 //! Polls a check until it finds something, under the suite's hang guard.
 //!
-//! The integration-test counterpart of `crate::testing::wait::until`: the same
+//! The integration-test counterpart of `residuum_core::testing::wait::until`: the same
 //! 60 second guard, which exists only to fail a test that would otherwise hang.
 
 use std::fmt::Display;

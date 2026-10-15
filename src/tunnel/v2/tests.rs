@@ -13,8 +13,8 @@ use super::frames::{AgentInfo, V2Frame};
 use super::test_relay::{FakeRelay, FakeRelayConfig, V2Mode, client_hello};
 use super::{ClaimError, ConnectedInfo, IncomingStream, RelayLink, SessionHandler, Verdict};
 use crate::config::{CloudConfig, RemoteAccessSettings};
-use crate::testing::wait;
 use crate::tunnel::TunnelStatus;
+use residuum_core::testing::wait;
 
 struct TestHandler {
     refuse: Option<String>,

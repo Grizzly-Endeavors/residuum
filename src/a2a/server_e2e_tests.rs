@@ -6,9 +6,9 @@
 //! Declared as `#[cfg(test)] mod server_e2e_tests;` from `mod.rs`, so this
 //! whole file (harness and tests alike) only exists in test builds.
 
-use crate::testing::gate::{Gate, GateEntry};
-use crate::testing::ports::{ReservedPort, reserve_port};
-use crate::testing::wait;
+use residuum_core::testing::gate::{Gate, GateEntry};
+use residuum_core::testing::ports::{ReservedPort, reserve_port};
+use residuum_core::testing::wait;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;

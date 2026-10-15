@@ -341,7 +341,7 @@ mod tests {
         // that never answers: with a call configured to time out, a future
         // slower than that timeout is cut off and reports how long it ran.
         let slow = async {
-            crate::testing::clock::elapse(Duration::from_millis(200)).await;
+            residuum_core::testing::clock::elapse(Duration::from_millis(200)).await;
             "unreachable"
         };
         let result = run_with_optional_timeout(Some(Duration::from_millis(20)), slow).await;
@@ -359,7 +359,7 @@ mod tests {
         // there is no hidden fixed cutoff standing in for the removed
         // default 60s timeout.
         let slow = async {
-            crate::testing::clock::elapse(Duration::from_millis(50)).await;
+            residuum_core::testing::clock::elapse(Duration::from_millis(50)).await;
             "done"
         };
         let result = run_with_optional_timeout(None, slow).await;
@@ -415,7 +415,7 @@ mod tests {
 
         // With the tools PATH the binary spawns; the handshake then fails,
         // proving the command resolved against the injected PATH.
-        let connected = crate::testing::wait::guarded(
+        let connected = residuum_core::testing::wait::guarded(
             "the spawned fake server to fail its handshake",
             McpClient::connect(&entry, Some(path.as_os_str()), None),
         )
@@ -463,7 +463,7 @@ mod tests {
         // stdout once it exits); the bound is just a safety net against a
         // hang, so give it generous headroom for a contended scheduler
         // rather than racing real process spawn/exit timing.
-        let result = crate::testing::wait::guarded(
+        let result = residuum_core::testing::wait::guarded(
             "the spawned fake server to fail its handshake",
             McpClient::connect(&entry, None, Some(&workspace)),
         )

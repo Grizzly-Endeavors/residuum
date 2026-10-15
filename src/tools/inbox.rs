@@ -514,7 +514,7 @@ impl Tool for UserInboxAddTool {
 mod tests {
     use super::*;
     use crate::testing::bus_wait;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     #[test]
     fn tool_names_correct() {

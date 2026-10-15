@@ -17,7 +17,7 @@ use super::FatalError;
 ///
 /// # Errors
 /// Returns an error if the parent directory is missing, or if writing or renaming fails.
-pub(crate) async fn atomic_write(path: &Path, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
+pub async fn atomic_write(path: &Path, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
     write_via_temp_file(path, data.as_ref(), false).await
 }
 
@@ -29,10 +29,7 @@ pub(crate) async fn atomic_write(path: &Path, data: impl AsRef<[u8]>) -> anyhow:
 /// # Errors
 /// Returns an error if the parent directory is missing, or if writing,
 /// restricting or renaming fails.
-pub(crate) async fn atomic_write_owner_only(
-    path: &Path,
-    data: impl AsRef<[u8]>,
-) -> anyhow::Result<()> {
+pub async fn atomic_write_owner_only(path: &Path, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
     write_via_temp_file(path, data.as_ref(), true).await
 }
 
@@ -104,7 +101,7 @@ const ATOMIC_WRITE_TEMP_SUFFIX: &str = ".residuum-tmp";
 /// Whether `file_name` is a temporary file [`atomic_write`] creates and
 /// renames away.
 #[must_use]
-pub(crate) fn is_atomic_write_temp(file_name: &str) -> bool {
+pub fn is_atomic_write_temp(file_name: &str) -> bool {
     file_name.starts_with('.') && file_name.ends_with(ATOMIC_WRITE_TEMP_SUFFIX)
 }
 
@@ -121,7 +118,8 @@ const WINDOWS_FILE_IN_USE: [i32; 2] = [5, 32];
 
 /// Whether `error` is Windows refusing to move a directory because a program
 /// has a file under it open.
-pub(crate) fn is_held_open(error: &io::Error) -> bool {
+#[must_use]
+pub fn is_held_open(error: &io::Error) -> bool {
     cfg!(windows)
         && error
             .raw_os_error()
@@ -142,7 +140,7 @@ pub(crate) fn is_held_open(error: &io::Error) -> bool {
 ///
 /// # Errors
 /// Returns the error of the last rename attempt.
-pub(crate) async fn rename_dir_when_released(from: &Path, to: &Path) -> io::Result<()> {
+pub async fn rename_dir_when_released(from: &Path, to: &Path) -> io::Result<()> {
     rename_dir_retrying(
         from,
         to,
@@ -206,8 +204,12 @@ async fn rename_dir_retrying(
 }
 
 /// Set file permissions to 0600 (Unix only).
+///
+/// # Errors
+///
+/// Returns [`FatalError::Config`] when the permissions can't be set.
 #[cfg(unix)]
-pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
+pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms).map_err(|e| {
@@ -219,6 +221,11 @@ pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
 }
 
 /// Restrict file access to the current user via `icacls` (Windows).
+///
+/// # Errors
+///
+/// Never returns an error: when `icacls` can't run or fails, a warning is
+/// logged and the file keeps its permissions.
 #[cfg(windows)]
 #[cfg_attr(
     windows,
@@ -227,7 +234,7 @@ pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
         reason = "signature matches the unix variant, which can fail"
     )
 )]
-pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
+pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
     let grant_arg = format!("{username}:(F)");
     let status = std::process::Command::new("icacls")
@@ -257,8 +264,14 @@ pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     }
 }
 
+/// Leave file permissions as they are, on platforms with neither Unix modes
+/// nor `icacls`.
+///
+/// # Errors
+///
+/// Never returns an error.
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
+pub fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
     // No-op on unsupported platforms
     Ok(())
 }

@@ -768,8 +768,8 @@ mod tests {
         ndjson_response, split_bytes, sse_chunks,
     };
     use crate::inference::{StreamDelta, ThinkingBlock};
-    use crate::testing::gate::Gate;
     use crate::testing::model::GatedModel;
+    use residuum_core::testing::gate::Gate;
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

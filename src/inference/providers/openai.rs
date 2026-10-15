@@ -1252,8 +1252,8 @@ mod tests {
         sse_chunks, sse_response,
     };
     use crate::inference::{StreamDelta, ThinkingBlock};
-    use crate::testing::gate::Gate;
     use crate::testing::model::GatedModel;
+    use residuum_core::testing::gate::Gate;
     use serde_json::{Value, json};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

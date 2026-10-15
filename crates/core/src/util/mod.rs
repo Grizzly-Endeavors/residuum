@@ -5,14 +5,14 @@ pub mod backoff_tracker;
 mod env_expand;
 mod error;
 pub mod frontmatter;
-pub(crate) mod fs;
+pub mod fs;
 pub mod secret_compare;
 mod spawn;
 pub mod telemetry;
 mod xml;
 
 pub use backoff_tracker::{BackoffTracker, NoticeAction, RetryGate};
-pub(crate) use env_expand::expand_env_vars;
+pub use env_expand::expand_env_vars;
 pub use error::FatalError;
 pub use frontmatter::{parse_frontmatter_md, validate_kebab_name};
 pub use secret_compare::secrets_match;

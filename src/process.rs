@@ -568,7 +568,7 @@ mod tests {
     /// run has seen the shell exit and is now waiting on the pipes alone.
     #[cfg(target_os = "linux")]
     async fn shell_reaped(pid_file: &std::path::Path) {
-        let pid: u32 = crate::testing::wait::until("the shell's pid", || async {
+        let pid: u32 = residuum_core::testing::wait::until("the shell's pid", || async {
             tokio::fs::read_to_string(pid_file)
                 .await
                 .ok()?
@@ -577,7 +577,7 @@ mod tests {
                 .ok()
         })
         .await;
-        crate::testing::wait::until_true("the shell to be reaped", || {
+        residuum_core::testing::wait::until_true("the shell to be reaped", || {
             !std::path::Path::new(&format!("/proc/{pid}")).exists()
         })
         .await;
@@ -590,7 +590,7 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        crate::testing::wait::until_true("the background process to be killed", || {
+        residuum_core::testing::wait::until_true("the background process to be killed", || {
             !is_process_running(pid)
         })
         .await;
@@ -621,7 +621,7 @@ mod tests {
             cancel.cancel();
         };
         let (result, ()) = tokio::join!(
-            crate::testing::wait::guarded("the stopped run to return", run),
+            residuum_core::testing::wait::guarded("the stopped run to return", run),
             stop
         );
         let (outcome, output) = result.unwrap();
@@ -650,10 +650,11 @@ mod tests {
             result = &mut run => panic!("the run ended before its shell was reaped: {result:?}"),
         }
         tokio::time::pause();
-        let (outcome, output) = crate::testing::clock::within(Duration::from_secs(3600), &mut run)
-            .await
-            .expect("the run ends at its timeout")
-            .unwrap();
+        let (outcome, output) =
+            residuum_core::testing::clock::within(Duration::from_secs(3600), &mut run)
+                .await
+                .expect("the run ends at its timeout")
+                .unwrap();
         assert_eq!(outcome, RunOutcome::TimedOut);
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
         background_pid_dies(&dir.path().join("bg.pid")).await;

@@ -305,7 +305,7 @@ mod tests {
 
     use super::*;
     use crate::a2a::client::hub::{AgentSnapshot, AgentSource, AgentStatus};
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     /// A fanout with `hub` registered as agent `solo`.
     async fn fanout_of(hub: &Arc<A2aClientHub>) -> Arc<SiblingFanout> {
@@ -669,7 +669,7 @@ mod tests {
     async fn losing_the_directory_address_keeps_previously_registered_siblings() {
         let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
-        let log = crate::testing::log::EventLog::default();
+        let log = residuum_core::testing::log::EventLog::default();
         let _capture = log.capture();
         let (tx, task) = start(fanout_of(&hub).await);
 

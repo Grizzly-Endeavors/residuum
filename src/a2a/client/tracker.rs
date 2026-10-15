@@ -1042,7 +1042,7 @@ mod tests {
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
     use crate::testing::bus_wait;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     fn messenger() -> (Arc<AgentMessenger>, crate::bus::BusHandle) {
         let bus_handle = crate::bus::spawn_broker();

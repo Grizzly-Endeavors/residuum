@@ -316,7 +316,7 @@ mod tests {
     use crate::gateway::web::{ConfigApiState, WorkspaceScope};
     use crate::interfaces::teams::atk_runner::AtkRunnerOverrides;
     use crate::interfaces::teams::setup_job::{TeamsSetupJobManager, register_test_manager};
-    use crate::testing::script::write_executable as make_script;
+    use residuum_core::testing::script::write_executable as make_script;
 
     fn test_state(root: &Path, agent: &str) -> ConfigApiState {
         ConfigApiState {

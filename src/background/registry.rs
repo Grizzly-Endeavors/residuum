@@ -1512,14 +1512,14 @@ mod tests {
             waiter_registry.wait_until_clear(&address).await;
         });
 
-        crate::testing::clock::elapse(Duration::from_millis(20)).await;
+        residuum_core::testing::clock::elapse(Duration::from_millis(20)).await;
         assert!(
             !waiter.is_finished(),
             "should still be waiting while the entry is live"
         );
 
         registry.remove(&info.address, &info.run_id);
-        crate::testing::wait::guarded(
+        residuum_core::testing::wait::guarded(
             "wait_until_clear to return once the entry is removed",
             waiter,
         )

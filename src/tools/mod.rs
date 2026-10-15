@@ -163,7 +163,7 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::clock;
+    use residuum_core::testing::clock;
 
     #[test]
     fn tool_result_cancelled_is_not_an_error() {

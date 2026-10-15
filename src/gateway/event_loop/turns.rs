@@ -1145,8 +1145,8 @@ mod tests {
     use super::*;
     use crate::bus::Subscriber;
     use crate::testing::bus_wait;
-    use crate::testing::wait;
     use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
+    use residuum_core::testing::wait;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
 

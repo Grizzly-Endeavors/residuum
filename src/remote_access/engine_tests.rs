@@ -400,7 +400,7 @@ async fn acme_alpn_connection_ends_after_handshake() {
     if let Ok(mut client) = result {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
-        crate::testing::wait::guarded(
+        residuum_core::testing::wait::guarded(
             "the refused connection to close",
             client.read_to_end(&mut buf),
         )
@@ -426,7 +426,7 @@ async fn websocket_upgrade_reaches_ui_router() {
         .send(tokio_tungstenite::tungstenite::Message::text("hi"))
         .await
         .expect("send");
-    let reply = crate::testing::wait::guarded("the websocket's echo reply", socket.next())
+    let reply = residuum_core::testing::wait::guarded("the websocket's echo reply", socket.next())
         .await
         .expect("a frame")
         .expect("ok frame");
@@ -520,7 +520,7 @@ async fn a2a_proxy_streams_sse_incrementally() {
     assert!(response.headers().get(header::SET_COOKIE).is_none());
     let mut body = response.into_body();
 
-    let first = crate::testing::wait::guarded(
+    let first = residuum_core::testing::wait::guarded(
         "the first chunk to arrive before the stream ends",
         body.frame(),
     )
@@ -530,7 +530,7 @@ async fn a2a_proxy_streams_sse_incrementally() {
     assert_eq!(first.into_data().expect("data").as_ref(), b"data: one\n\n");
 
     release.notify_one();
-    let second = crate::testing::wait::guarded("the second chunk", body.frame())
+    let second = residuum_core::testing::wait::guarded("the second chunk", body.frame())
         .await
         .expect("frame")
         .expect("ok frame");

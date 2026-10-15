@@ -383,7 +383,7 @@ mod tests {
         }
 
         async fn wait_for_pending(&self) -> String {
-            crate::testing::wait::until("a join request to arrive", || {
+            residuum_core::testing::wait::until("a join request to arrive", || {
                 std::future::ready(
                     self.service
                         .host
@@ -429,11 +429,11 @@ mod tests {
             let id = laptop.wait_for_pending().await;
             let shown = laptop.service.host.pending(Utc::now()).remove(0);
             // The code the approving person sees is the one the joiner reports.
-            let reported =
-                crate::testing::wait::until("the joiner to report the approval code", || {
-                    std::future::ready(log.lock().unwrap().iter().find_map(|p| p.code.clone()))
-                })
-                .await;
+            let reported = residuum_core::testing::wait::until(
+                "the joiner to report the approval code",
+                || std::future::ready(log.lock().unwrap().iter().find_map(|p| p.code.clone())),
+            )
+            .await;
             assert_eq!(shown.code, reported);
             laptop.service.approve(&laptop.approver(&client), &id).await
         };
@@ -497,17 +497,20 @@ mod tests {
             let id = laptop.wait_for_pending().await;
             // More polls than the per-peer limit allows join requests in a
             // minute (ten), all within that minute.
-            crate::testing::wait::until("the requester to poll more than ten times", || {
-                std::future::ready(
-                    laptop
-                        .service
-                        .host
-                        .pending(Utc::now())
-                        .iter()
-                        .any(|pending| pending.approval_id == id && pending.polls > 10)
-                        .then_some(()),
-                )
-            })
+            residuum_core::testing::wait::until(
+                "the requester to poll more than ten times",
+                || {
+                    std::future::ready(
+                        laptop
+                            .service
+                            .host
+                            .pending(Utc::now())
+                            .iter()
+                            .any(|pending| pending.approval_id == id && pending.polls > 10)
+                            .then_some(()),
+                    )
+                },
+            )
             .await;
             laptop.service.approve(&laptop.approver(&client), &id).await
         });

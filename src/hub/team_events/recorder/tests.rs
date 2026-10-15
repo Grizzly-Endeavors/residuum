@@ -801,7 +801,8 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
 
     let mut kinds = Vec::new();
     for _ in 0..2 {
-        let entry = crate::testing::wait::next("a team event entry", &mut entries_seen).await;
+        let entry =
+            residuum_core::testing::wait::next("a team event entry", &mut entries_seen).await;
         kinds.push(entry.kind);
     }
     kinds.sort_by_key(|kind| format!("{kind:?}"));
@@ -821,7 +822,7 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
         .unwrap();
     // Nothing else can run on a paused clock, so once this returns the
     // recorder has handled everything it was sent.
-    crate::testing::clock::elapse(std::time::Duration::from_millis(50)).await;
+    residuum_core::testing::clock::elapse(std::time::Duration::from_millis(50)).await;
     assert_eq!(
         log.page(&PageQuery::default()).events.len(),
         2,

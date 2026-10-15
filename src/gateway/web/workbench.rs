@@ -473,7 +473,7 @@ mod tests {
         let data_file = workbench.join("chart.state.json");
         tokio::select! {
             _ = &mut deleting => panic!("the delete must wait for the data file's lock"),
-            () = crate::testing::wait::until_true("the delete to queue for the data file's lock", || {
+            () = residuum_core::testing::wait::until_true("the delete to queue for the data file's lock", || {
                 hub.coordinator.lock_contenders(&data_file) == 2
             }) => {}
         }

@@ -104,7 +104,7 @@ mod tests {
     use super::*;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
     use crate::testing::bus_wait;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     fn inbound(endpoint: &str, conversation_id: &str, location: Option<&str>) -> MessageEvent {
         MessageEvent {

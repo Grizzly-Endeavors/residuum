@@ -549,7 +549,7 @@ mod tests {
     // ── Endpoint + worker, end to end (no network) ───────────────────────
 
     use crate::bus::{MessageEvent, Subscriber, topics};
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     use super::super::auth::TokenValidator;
     use super::super::auth::test_support::valid_token;

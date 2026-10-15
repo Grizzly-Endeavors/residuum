@@ -182,7 +182,7 @@ impl FakeRelay {
 
     /// Wait for a received frame matching `matches`.
     pub(crate) async fn wait_frame(&self, matches: impl Fn(&V2Frame) -> bool) -> V2Frame {
-        crate::testing::wait::guarded(
+        residuum_core::testing::wait::guarded(
             "a frame matching the test's expectation at the fake relay",
             async {
                 loop {

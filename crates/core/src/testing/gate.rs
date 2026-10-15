@@ -23,25 +23,27 @@ struct GateState {
 
 /// The test's handle on a gate. Dropping it opens the gate, so calls still
 /// held when a test ends never hang its teardown.
-pub(crate) struct Gate {
+pub struct Gate {
     state: Arc<watch::Sender<GateState>>,
     name: String,
 }
 
 /// What a held call awaits; see [`GateEntry::pass`].
 #[derive(Clone)]
-pub(crate) struct GateEntry {
+pub struct GateEntry {
     state: Arc<watch::Sender<GateState>>,
 }
 
 impl Gate {
     /// A gate that holds every call until released.
-    pub(crate) fn closed(name: &str) -> Self {
+    #[must_use]
+    pub fn closed(name: &str) -> Self {
         Self::with_open(name, false)
     }
 
     /// A gate that lets every call through until closed.
-    pub(crate) fn open(name: &str) -> Self {
+    #[must_use]
+    pub fn open(name: &str) -> Self {
         Self::with_open(name, true)
     }
 
@@ -57,7 +59,8 @@ impl Gate {
     }
 
     /// What the gated code awaits.
-    pub(crate) fn entry(&self) -> GateEntry {
+    #[must_use]
+    pub fn entry(&self) -> GateEntry {
         GateEntry {
             state: Arc::clone(&self.state),
         }
@@ -65,17 +68,17 @@ impl Gate {
 
     /// Let the next `n` calls through, in the order they arrive, whether they
     /// have arrived yet or not.
-    pub(crate) fn release(&self, n: usize) {
+    pub fn release(&self, n: usize) {
         self.state.send_modify(|state| state.released += n);
     }
 
     /// Let every call through, held or still to come.
-    pub(crate) fn open_all(&self) {
+    pub fn open_all(&self) {
         self.state.send_modify(|state| state.open = true);
     }
 
     /// Hold calls from now on. Calls already let through stay through.
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         self.state.send_modify(|state| {
             state.open = false;
             state.released = state.released.max(state.arrived);
@@ -83,19 +86,21 @@ impl Gate {
     }
 
     /// How many calls are waiting at the gate now.
-    pub(crate) fn held(&self) -> usize {
+    #[must_use]
+    pub fn held(&self) -> usize {
         let state = self.state.borrow();
         state.arrived - state.passed
     }
 
     /// How many calls have reached the gate, ever, whether they are still
     /// waiting at it or have passed.
-    pub(crate) fn arrived(&self) -> usize {
+    #[must_use]
+    pub fn arrived(&self) -> usize {
         self.state.borrow().arrived
     }
 
     /// Wait until `n` calls are waiting at the gate.
-    pub(crate) async fn until_held(&self, n: usize) {
+    pub async fn until_held(&self, n: usize) {
         let mut rx = self.state.subscribe();
         crate::testing::wait::watch_until(
             format_args!("{n} call(s) to reach gate {}", self.name),
@@ -114,7 +119,15 @@ impl Drop for Gate {
 
 impl GateEntry {
     /// Arrive at the gate and wait to be let through.
-    pub(crate) async fn pass(&self) {
+    ///
+    /// # Panics
+    /// Never in practice: every entry holds the gate's state, so it can't go
+    /// away while this waits on it.
+    #[expect(
+        clippy::panic,
+        reason = "test-support helper: the gate state outlives every entry, so the wait cannot fail"
+    )]
+    pub async fn pass(&self) {
         let mut ticket = 0;
         self.state.send_modify(|state| {
             ticket = state.arrived;

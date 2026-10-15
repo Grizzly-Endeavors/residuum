@@ -643,11 +643,14 @@ mod tests {
         let shared = table.get(id).unwrap();
         let drain = tokio::spawn(async move { while rx.ordered.recv().await.is_some() {} });
         io.write_all(&vec![0; WINDOW]).await.unwrap();
-        let blocked =
-            crate::testing::clock::within(Duration::from_millis(100), io.write_all(b"more")).await;
+        let blocked = residuum_core::testing::clock::within(
+            Duration::from_millis(100),
+            io.write_all(b"more"),
+        )
+        .await;
         assert!(blocked.is_none(), "no credit means no progress");
         shared.add_credit(10);
-        crate::testing::wait::guarded(
+        residuum_core::testing::wait::guarded(
             "the write to resume once credit is granted",
             io.write_all(b"more"),
         )
@@ -679,7 +682,7 @@ mod tests {
             seen
         });
         live.write_all(&[9; 1000]).await.unwrap();
-        let seen = crate::testing::wait::guarded("the live stream's bytes to arrive", data)
+        let seen = residuum_core::testing::wait::guarded("the live stream's bytes to arrive", data)
             .await
             .unwrap();
         assert_eq!(seen, 1000);

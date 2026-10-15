@@ -653,7 +653,7 @@ fn validate_images(images: &[ImageData]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     #[test]
     fn set_verbose_updates_flag() {

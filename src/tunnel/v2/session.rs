@@ -502,10 +502,10 @@ mod tests {
     async fn shutdown_requested_waits_for_the_flag() {
         let (tx, mut rx) = watch::channel(false);
         let waiter = tokio::spawn(async move { shutdown_requested(&mut rx).await });
-        crate::testing::clock::elapse(Duration::from_millis(20)).await;
+        residuum_core::testing::clock::elapse(Duration::from_millis(20)).await;
         assert!(!waiter.is_finished());
         tx.send(true).unwrap();
-        crate::testing::wait::guarded("the shutdown flag to end the wait", waiter)
+        residuum_core::testing::wait::guarded("the shutdown flag to end the wait", waiter)
             .await
             .unwrap();
     }

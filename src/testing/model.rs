@@ -18,11 +18,11 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use tokio::task::JoinHandle;
 
-use super::gate::{Gate, GateEntry};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ToolDefinition,
 };
+use residuum_core::testing::gate::{Gate, GateEntry};
 
 /// One call the model received.
 #[derive(Debug, Clone)]
@@ -230,7 +230,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     async fn post(uri: &str, body: &str) -> (u16, String) {
         let response = reqwest::Client::new()

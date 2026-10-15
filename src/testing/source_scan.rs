@@ -449,8 +449,8 @@ fn crate_sources() -> Vec<SourceFile> {
 /// Files whose test code may wait on the clock: the waits that everything
 /// else goes through.
 const WAIT_HELPERS: &[&str] = &[
-    "src/testing/wait.rs",
-    "src/testing/clock.rs",
+    "crates/core/src/testing/wait.rs",
+    "crates/core/src/testing/clock.rs",
     "src/testing/source_scan.rs",
     // Integration tests can't reach `crate::testing`; these are its two waits
     // for them, under the same hang guard.
@@ -496,7 +496,10 @@ fn wall_clock_waits(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, Stri
 
 /// Files that may grant execute permission in test code: the helper that does
 /// it safely, and this file, whose rule tests hold sample lines.
-const EXEC_GRANT_HELPERS: &[&str] = &["src/testing/script.rs", "src/testing/source_scan.rs"];
+const EXEC_GRANT_HELPERS: &[&str] = &[
+    "crates/core/src/testing/script.rs",
+    "src/testing/source_scan.rs",
+];
 
 /// Test code that sets an execute-bit mode on something that is not a script
 /// the test then runs, as `(file, count, why)`. A directory needs its execute
@@ -681,7 +684,7 @@ mod tests {
         ];
         let mut offenders = Vec::new();
         for file in crate_sources() {
-            if file.path == "src/util/spawn.rs" {
+            if file.path == "crates/core/src/util/spawn.rs" {
                 continue;
             }
             for (number, code) in file.code_lines(false) {
@@ -748,13 +751,13 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "test code waits on elapsed time. Wait on the event instead, with crate::testing::wait (channels, watches, polled conditions under one hang guard), crate::testing::gate (hold a call open until the test releases it) or crate::testing::clock (a paused clock, for code with no real I/O); CONTRIBUTING.md, \"Waiting in tests\", says which fits where.\n{problems}"
+            "test code waits on elapsed time. Wait on the event instead, with residuum_core::testing::wait (channels, watches, polled conditions under one hang guard), residuum_core::testing::gate (hold a call open until the test releases it) or residuum_core::testing::clock (a paused clock, for code with no real I/O); CONTRIBUTING.md, \"Waiting in tests\", says which fits where.\n{problems}"
         );
     }
 
     /// A test that writes a script and executes it fails with "Text file
     /// busy" when another test thread forks while the write descriptor is
-    /// open. `crate::testing::script::write_executable` writes through a child
+    /// open. `residuum_core::testing::script::write_executable` writes through a child
     /// shell instead, so test code makes nothing executable by itself.
     #[test]
     fn test_code_makes_scripts_executable_through_the_helper() {
@@ -783,7 +786,7 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "test code makes a file executable itself. Write the script with crate::testing::script::write_executable, which never holds a write descriptor that a forked child could inherit (\"Text file busy\"); a test that only needs some program to run links to a system binary (/bin/sh, /bin/echo). A directory restored to a mode with its execute bit goes in EXEC_MODE_ALLOWED in src/testing/source_scan.rs, with why. CONTRIBUTING.md, \"Waiting in tests\", has the details.\n{problems}"
+            "test code makes a file executable itself. Write the script with residuum_core::testing::script::write_executable, which never holds a write descriptor that a forked child could inherit (\"Text file busy\"); a test that only needs some program to run links to a system binary (/bin/sh, /bin/echo). A directory restored to a mode with its execute bit goes in EXEC_MODE_ALLOWED in src/testing/source_scan.rs, with why. CONTRIBUTING.md, \"Waiting in tests\", has the details.\n{problems}"
         );
     }
 

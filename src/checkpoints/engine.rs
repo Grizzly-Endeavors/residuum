@@ -1409,7 +1409,11 @@ mod tests {
         kind: RepoKind,
         count: usize,
     ) -> Vec<CheckpointSummary> {
-        crate::testing::wait::guarded("the spawned checkpoints to finish", engine.settled()).await;
+        residuum_core::testing::wait::guarded(
+            "the spawned checkpoints to finish",
+            engine.settled(),
+        )
+        .await;
         let page = engine
             .list_checkpoints(kind, None, None, None, Some(count))
             .await
@@ -1438,9 +1442,11 @@ mod tests {
             2,
             "a turn hook checkpoints the workspace and the team, counted before it returns"
         );
-        crate::testing::wait::watch_until("the checkpoints to finish", &mut pending, |count| {
-            *count == 0
-        })
+        residuum_core::testing::wait::watch_until(
+            "the checkpoints to finish",
+            &mut pending,
+            |count| *count == 0,
+        )
         .await;
         engine.settled().await;
         let page = engine
@@ -1584,7 +1590,7 @@ mod tests {
             .join("objects");
         std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
 
-        crate::testing::wait::guarded(
+        residuum_core::testing::wait::guarded(
             "checkpoint_workspace_before_action to return when the commit fails",
             engine.checkpoint_workspace_before_action(ctx(
                 CheckpointTrigger::PreAction,

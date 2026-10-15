@@ -23,7 +23,7 @@ use crate::background::store::SessionStore;
 use crate::gateway::web::scheduled::{ScheduledApiState, scheduled_api_router};
 use crate::hub::agent_watch::{AgentChangeKind, WatchedPath};
 use crate::hub::overview::AgentOverview;
-use crate::testing::log::EventLog;
+use residuum_core::testing::log::EventLog;
 
 fn at_2099(month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2099, month, day, hour, minute, 0)

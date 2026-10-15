@@ -1176,7 +1176,7 @@ mod tests {
     use super::*;
     use crate::bus::{EventTrigger, SkillName, Subscriber};
     use crate::testing::bus_wait;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     const NO_LIMIT: HopLimits = HopLimits { soft: 8, hard: 32 };
@@ -1472,9 +1472,12 @@ mod tests {
         // Nothing should be published yet: the deferred task is still
         // waiting for the entry to clear.
         assert!(
-            crate::testing::clock::within(std::time::Duration::from_millis(50), spawn_sub.recv())
-                .await
-                .is_none(),
+            residuum_core::testing::clock::within(
+                std::time::Duration::from_millis(50),
+                spawn_sub.recv()
+            )
+            .await
+            .is_none(),
             "the resume must wait for the completing run to clear before publishing"
         );
 
@@ -1914,7 +1917,7 @@ mod tests {
         assert!(matches!(outcome, ConversationDeliveryOutcome::Queued(addr) if addr == address));
 
         assert!(
-            crate::testing::clock::within(std::time::Duration::from_millis(50), sub.recv())
+            residuum_core::testing::clock::within(std::time::Duration::from_millis(50), sub.recv())
                 .await
                 .is_none(),
             "the resume must wait for the completing run to clear before publishing"

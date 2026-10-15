@@ -186,8 +186,8 @@ async fn settle(events: &mut broadcast::Receiver<HubEvent>) -> bool {
 mod tests {
     use super::*;
     use crate::a2a::StaticAgentDirectory;
-    use crate::testing::{clock, wait};
     use axum::Router;
+    use residuum_core::testing::{clock, wait};
 
     fn summary(name: &str, state: AgentState, visibility: A2aVisibility) -> AgentSummary {
         AgentSummary {

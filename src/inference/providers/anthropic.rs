@@ -1575,8 +1575,8 @@ struct AnthropicErrorDetail {
     reason = "test code uses get().unwrap() for clarity"
 )]
 mod tests {
-    use crate::testing::gate::Gate;
     use crate::testing::model::GatedModel;
+    use residuum_core::testing::gate::Gate;
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2227,7 +2227,7 @@ mod tests {
 
     #[tokio::test]
     async fn temperature_dropped_with_one_warning_for_model_that_rejects_it() {
-        let log = crate::testing::log::EventLog::default();
+        let log = residuum_core::testing::log::EventLog::default();
         let _guard = log.capture();
         let server = MockServer::start().await;
         mount_ok(&server).await;
@@ -2268,7 +2268,7 @@ mod tests {
 
     #[tokio::test]
     async fn temperature_still_sent_to_older_model_without_warning() {
-        let log = crate::testing::log::EventLog::default();
+        let log = residuum_core::testing::log::EventLog::default();
         let _guard = log.capture();
         let server = MockServer::start().await;
         mount_ok(&server).await;
@@ -2299,7 +2299,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_warning_for_model_that_rejects_temperature_when_none_is_set() {
-        let log = crate::testing::log::EventLog::default();
+        let log = residuum_core::testing::log::EventLog::default();
         let _guard = log.capture();
         let server = MockServer::start().await;
         mount_ok(&server).await;

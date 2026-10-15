@@ -1,6 +1,6 @@
 /**
  * The mock hub's timezone, and the conversions the hub makes between instants
- * and the naive local times its agents' files keep (`src/time.rs`).
+ * and the naive local times its agents' files keep (`crates/core/src/time.rs`).
  */
 
 /** The hub timezone the mock reports from `GET /api/system/timezone` and reads its schedules in. */

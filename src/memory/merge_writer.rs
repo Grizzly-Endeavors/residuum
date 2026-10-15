@@ -785,7 +785,7 @@ mod tests {
     /// A reflector that is always due and whose model call waits at `gate`.
     fn writer_with_gated_reflector(
         dir: &Path,
-        gate: &crate::testing::gate::Gate,
+        gate: &residuum_core::testing::gate::Gate,
     ) -> MemoryMergeWriter {
         let layout = WorkspaceLayout::new(dir);
         let search_index =
@@ -805,10 +805,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_running_reflection_holds_up_neither_merges_nor_reloads() {
-        use crate::testing::wait::guarded;
+        use residuum_core::testing::wait::guarded;
 
         let dir = tempfile::tempdir().unwrap();
-        let gate = crate::testing::gate::Gate::closed("reflector");
+        let gate = residuum_core::testing::gate::Gate::closed("reflector");
         let mw = Arc::new(writer_with_gated_reflector(dir.path(), &gate));
 
         let reflecting = tokio::spawn({
@@ -1135,7 +1135,7 @@ mod tests {
         // wait on the first merge's embedding step. The gate is still closed,
         // so the second episode appearing on disk at all proves it; the
         // timeout only bounds how long a regression takes to fail.
-        crate::testing::wait::until(
+        residuum_core::testing::wait::until(
             "the second merge's episode id allocation and durable writes to complete \
              while the first merge is still inside its embedding step",
             || async {

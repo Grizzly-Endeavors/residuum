@@ -449,7 +449,7 @@ mod tests {
     use crate::inference::MessageSender;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
     use crate::testing::bus_wait;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     fn sample_inbound(id: &str, content: &str, sender_name: &str) -> MessageEvent {
