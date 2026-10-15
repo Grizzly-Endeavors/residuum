@@ -18,7 +18,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
    cargo build
    cargo test --quiet
    ```
-5. Install the git hooks — they format and check every commit, and run clippy, the tests, and the web checks on every push:
+5. Install the git hooks — they format and check every commit, and run clippy, the tests for the code you changed, and the web checks on every push:
    ```bash
    .githooks/install.sh
    ```
@@ -32,7 +32,7 @@ All changes go through pull requests.
 1. Create a feature branch from `main` with a descriptive name
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
-4. The git hooks are the first quality gate: formatting and the dependency audit run on every commit; clippy, the whole test suite (which includes the source scans), the generated-types check, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
+4. The git hooks are the first quality gate: formatting and the dependency audit run on every commit; clippy, the tests for the code you changed (and the source scans), the generated-types check, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the whole test suites, the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
 5. Clippy for Windows runs on every Rust PR; the other cross-platform checks (clippy for aarch64 Linux and macOS, plus tests on Windows) are opt-in; see below
 
 ### Rust Toolchain
@@ -79,8 +79,15 @@ On every commit (pre-commit), on what is staged:
 - No `dbg!()` or `#[allow(...)]` in the staged diff, and no growth of the wall-clock backlog
 
 On every push (pre-push), against the pushed branch merged with the current `main` (the hook fetches `origin/main` and, when the branch is behind it, builds the merge in a temporary worktree; a conflict fails the push until you merge `main` into your branch):
-- When the pushed commits change what the Rust checks run on (the paths `.github/workflows/rust-pr.yml` triggers on, such as `src/`, `tests/`, `assets/`, the Cargo and lint configuration, and the generated web types in `web/src/lib/generated/`): `cargo clippy` (pedantic linting with strict denials), the whole test suite, which includes the source scans (`testing::source_scan`, see [Waiting in tests](#waiting-in-tests)), and `scripts/check-generated-types.sh`, which checks that the web app's TypeScript protocol types match the Rust types
-- When they change `web/`: ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
+- When the pushed commits change what the Rust checks run on (the paths `.github/workflows/rust-pr.yml` triggers on, such as `src/`, `tests/`, `assets/`, the Cargo and lint configuration, and the generated web types in `web/src/lib/generated/`): `cargo clippy` (pedantic linting with strict denials), the tests for the code the push touches, and `scripts/check-generated-types.sh`, which checks that the web app's TypeScript protocol types match the Rust types. The hook picks the tests from the changed paths and prints what it chose:
+  - A change under `src/<module>/` or in `src/<module>.rs` runs that module's unit tests (`cargo test --lib` filtered to `<module>::`, plus the bin's tests when `src/main.rs` declares the module).
+  - A change to `src/lib.rs` or `src/main.rs` runs every unit test.
+  - A change to `tests/<name>.rs` runs that integration test, and a change under `tests/support/` or `tests/fixtures/` runs every integration test. Integration tests are built only when a `tests/` path changed.
+  - The source scans (`testing::source_scan`, see [Waiting in tests](#waiting-in-tests)) run on every push that changes Rust.
+  - A change to a manifest, `build.rs`, the toolchain or lint configuration, `assets/` or the generated web types adds no tests of its own.
+- When they change `web/`: ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest) that import a changed file. A change to `web/package.json`, the lockfile, the Vite, Vitest, Svelte or TypeScript configuration, or the component test setup file runs the whole web suite.
+
+The hook runs the tests of the code you changed, not the whole suite, and CI runs the whole suite. When a change reaches code that other modules depend on (a shared helper, a trait other modules implement), run those modules' tests with `just test <filter>`, or the whole suite with `cargo test --quiet`, before you push.
 
 Every push check runs even after one fails, and the hook ends with a summary of what failed. Do not bypass the hooks: `--no-verify` is not allowed on `git commit` or `git push`. If a hook fails, fix the issue and try again.
 
