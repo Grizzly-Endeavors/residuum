@@ -343,7 +343,7 @@ mod tests {
         let (mut out, mut err): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
         print_entries(&f, &args, &content, &mut out, &mut err)
             .expect("writing to a Vec cannot fail");
-        assert!(out.is_empty());
+        assert_eq!(String::from_utf8(out).expect("entries are UTF-8"), "");
         assert_eq!(
             String::from_utf8(err).expect("notice is UTF-8"),
             "No log entries matched (--module nosuchmodule).\n"
@@ -353,10 +353,10 @@ mod tests {
             watch: true,
             ..args
         };
-        let (mut out, mut err): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
-        print_entries(&f, &watching, &content, &mut out, &mut err)
+        let (mut watch_out, mut watch_err): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+        print_entries(&f, &watching, &content, &mut watch_out, &mut watch_err)
             .expect("writing to a Vec cannot fail");
-        assert!(err.is_empty());
+        assert_eq!(String::from_utf8(watch_err).expect("UTF-8"), "");
     }
 
     #[test]
