@@ -46,7 +46,7 @@ build: _web-dist
 release: web-build
     cargo build --release
 
-# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test memory::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
+# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test hub::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
 test *args: _web-dist
