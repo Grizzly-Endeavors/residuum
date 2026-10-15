@@ -663,10 +663,8 @@ mod tests {
 
     #[test]
     fn empty_findings_produce_empty_plan() {
-        assert_eq!(
-            plan_delivery(vec![]),
-            [] as [crate::gateway::post_turn::Delivery; 0]
-        );
+        let actual = &plan_delivery(vec![]);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

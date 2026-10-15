@@ -325,7 +325,8 @@ async fn a_restore_racing_a_create_of_the_same_name_leaves_one_consistent_agent(
     assert!(crate::config::Config::load_agent_at(&nova, &hub_config).is_ok());
     assert!(hub.host.team_paths().agent_role_page("nova").is_file());
     assert_eq!(hub.state_of("nova"), AgentState::Running);
-    assert_eq!(deleted_names(&hub).await, [] as [String; 0]);
+    let actual = &deleted_names(&hub).await;
+    assert!(actual.is_empty(), "expected {actual:?} to be empty");
     assert_eq!(hub.chat("nova", "hello").await, "scout here");
 }
 

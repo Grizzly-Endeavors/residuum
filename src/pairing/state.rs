@@ -647,9 +647,10 @@ mod tests {
             state.poll(&secret_hash, t).unwrap(),
             PollOutcome::Denied
         ));
-        assert_eq!(
-            state.persisted.devices,
-            [] as [crate::pairing::store::StoredDevice; 0]
+        assert!(
+            state.persisted.devices.is_empty(),
+            "expected {:?} to be empty",
+            state.persisted.devices
         );
     }
 

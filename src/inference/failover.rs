@@ -1330,7 +1330,8 @@ mod tests {
                 .unwrap();
             assert_eq!(response.content, "answer from vision-b");
             assert_eq!(sent_images(&last_requests), vec![1]);
-            assert_eq!(sent_images(&primary_requests), [] as [usize; 0]);
+            let actual = &sent_images(&primary_requests);
+            assert!(actual.is_empty(), "expected {actual:?} to be empty");
             assert_no_notice(&bus_handle, &mut notices).await;
 
             let text = chain
@@ -1379,7 +1380,8 @@ mod tests {
             assert_eq!(response.content, "answer from glm-5.3");
             assert_eq!(response.images_omitted.map(|o| o.count), Some(1));
             assert_eq!(sent_images(&primary_requests), vec![0]);
-            assert_eq!(sent_images(&fallback_requests), [] as [usize; 0]);
+            let actual_2 = &sent_images(&fallback_requests);
+            assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
         }
 
         #[tokio::test]
@@ -1400,7 +1402,8 @@ mod tests {
                 vec![1, 0],
                 "rejected with the image, then answered without it"
             );
-            assert_eq!(sent_images(&fallback_requests), [] as [usize; 0]);
+            let actual_3 = &sent_images(&fallback_requests);
+            assert!(actual_3.is_empty(), "expected {actual_3:?} to be empty");
         }
 
         #[tokio::test]

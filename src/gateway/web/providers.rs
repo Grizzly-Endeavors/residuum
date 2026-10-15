@@ -601,9 +601,10 @@ mod tests {
         .unwrap();
 
         assert!(response.valid);
-        assert_eq!(
-            response.diagnostics,
-            [] as [crate::diagnostics::Diagnostic; 0]
+        assert!(
+            response.diagnostics.is_empty(),
+            "expected {:?} to be empty",
+            response.diagnostics
         );
     }
 

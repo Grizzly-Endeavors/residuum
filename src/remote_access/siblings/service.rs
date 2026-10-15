@@ -525,15 +525,12 @@ mod tests {
             assert!(laptop.service.host.deny(&id, Utc::now()));
         });
         assert!(matches!(outcome, Err(JoinFailure::Denied { .. })));
-        assert_eq!(
-            desktop.keys.joined(),
-            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
-        );
-        assert_eq!(
-            laptop.keys.joined(),
-            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
-        );
-        assert_eq!(pins.operations(), [] as [String; 0]);
+        let actual = &desktop.keys.joined();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
+        let actual_2 = &laptop.keys.joined();
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
+        let actual_3 = &pins.operations();
+        assert!(actual_3.is_empty(), "expected {actual_3:?} to be empty");
         assert_eq!(log.lock().unwrap().last().unwrap().state, JoinState::Denied);
     }
 
@@ -566,10 +563,8 @@ mod tests {
             laptop.service.host.find_pending(&id, Utc::now()).is_some(),
             "the request is still waiting for another try"
         );
-        assert_eq!(
-            laptop.keys.joined(),
-            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
-        );
+        let actual_4 = &laptop.keys.joined();
+        assert!(actual_4.is_empty(), "expected {actual_4:?} to be empty");
         assert!(!laptop.store.is_known(desktop.account.uri()));
     }
 
@@ -606,10 +601,8 @@ mod tests {
             );
         });
         assert!(matches!(outcome, Err(JoinFailure::Refused { .. })));
-        assert_eq!(
-            desktop.keys.joined(),
-            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
-        );
+        let actual_5 = &desktop.keys.joined();
+        assert!(actual_5.is_empty(), "expected {actual_5:?} to be empty");
         assert!(!desktop.store.is_known(laptop.account.uri()));
         assert_eq!(log.lock().unwrap().last().unwrap().state, JoinState::Failed);
     }

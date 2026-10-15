@@ -372,10 +372,8 @@ mod tests {
     #[test]
     fn diagnose_clean_file_has_no_diagnostics() {
         let content = r#"{"agents": {"laptop": {"url": "https://x.example.com"}}}"#;
-        assert_eq!(
-            diagnose_a2a_json(content),
-            [] as [crate::diagnostics::Diagnostic; 0]
-        );
+        let actual = &diagnose_a2a_json(content);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

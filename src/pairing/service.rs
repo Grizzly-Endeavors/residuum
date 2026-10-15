@@ -666,10 +666,8 @@ mod tests {
                 .await
                 .is_some()
         );
-        assert_eq!(
-            pairing.pending(),
-            [] as [crate::pairing::types::PendingPairingInfo; 0]
-        );
+        let actual = &pairing.pending();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]

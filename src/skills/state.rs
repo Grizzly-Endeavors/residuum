@@ -444,7 +444,8 @@ mod tests {
 
         state.activate("test-skill").await.unwrap();
         state.deactivate("TEST-SKILL").unwrap();
-        assert_eq!(state.active_skill_names(), [] as [&str; 0]);
+        let actual = &state.active_skill_names();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

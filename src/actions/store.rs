@@ -451,17 +451,17 @@ mod tests {
 
         let original = make_action("action-00000001", 60);
         let (mut store, rejected_on_first_load, _) = ActionStore::load(&path).await.unwrap();
-        assert_eq!(
-            rejected_on_first_load,
-            [] as [crate::actions::store::RejectedAction; 0]
+        assert!(
+            rejected_on_first_load.is_empty(),
+            "expected {rejected_on_first_load:?} to be empty"
         );
         store.add(original.clone());
         store.save().await.unwrap();
 
         let (loaded, rejected_on_reload, _) = ActionStore::load(&path).await.unwrap();
-        assert_eq!(
-            rejected_on_reload,
-            [] as [crate::actions::store::RejectedAction; 0]
+        assert!(
+            rejected_on_reload.is_empty(),
+            "expected {rejected_on_reload:?} to be empty"
         );
         assert_eq!(loaded.list().len(), 1, "should load one action");
         assert_eq!(
@@ -678,7 +678,7 @@ mod tests {
             store.list().is_empty(),
             "a corrupt file should load as an empty store"
         );
-        assert_eq!(rejected, [] as [crate::actions::store::RejectedAction; 0]);
+        assert!(rejected.is_empty(), "expected {rejected:?} to be empty");
         let moved_aside = moved_aside.expect("a corrupt file should be moved aside");
         assert!(
             moved_aside

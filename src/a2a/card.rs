@@ -331,7 +331,11 @@ mod tests {
         );
         let file = AgentCardFile::load(&path).unwrap();
         assert_eq!(file.name, "My Agent");
-        assert_eq!(file.skills, [] as [crate::a2a::card::AgentCardSkillFile; 0]);
+        assert!(
+            file.skills.is_empty(),
+            "expected {:?} to be empty",
+            file.skills
+        );
     }
 
     #[test]
@@ -383,7 +387,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = CardState::load_or_default(&dir.path().join("nope.json"), &runtime());
         assert_ne!(state.current().name.trim(), "");
-        assert_eq!(state.current().skills, [] as [::a2a::AgentSkill; 0]);
+        let actual = &state.current().skills;
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

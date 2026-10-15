@@ -1364,7 +1364,7 @@ pulses:
             1,
             "unknown top-level keys should be ignored"
         );
-        assert_eq!(problems, [] as [crate::pulse::types::HeartbeatProblem; 0]);
+        assert!(problems.is_empty(), "expected {problems:?} to be empty");
     }
 
     #[test]
@@ -1566,10 +1566,8 @@ pulses:
     #[test]
     fn diagnose_heartbeat_clean_file_has_no_diagnostics() {
         let yaml = "pulses:\n  - name: morning\n    schedule: \"30m\"\n    tasks: []\n";
-        assert_eq!(
-            diagnose_heartbeat(yaml),
-            [] as [crate::diagnostics::Diagnostic; 0]
-        );
+        let actual = &diagnose_heartbeat(yaml);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]
@@ -1793,7 +1791,7 @@ pulses:
     #[test]
     fn a_pulse_without_scripts_is_not_script_only() {
         let (pulses, problems) = load_problems(SIMPLE_VALID_HEARTBEAT);
-        assert_eq!(problems, [] as [crate::pulse::types::HeartbeatProblem; 0]);
+        assert!(problems.is_empty(), "expected {problems:?} to be empty");
         let pulse = pulses.first().unwrap();
         assert!(!pulse.has_scripts());
         assert!(!pulse.is_script_only());

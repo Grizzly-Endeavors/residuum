@@ -185,7 +185,7 @@ mod tests {
         let cfg = resolve_auto_mode_config(None, &mut notices);
         assert!(!cfg.enabled);
         assert!(!cfg.is_active());
-        assert_eq!(notices, [] as [String; 0]);
+        assert!(notices.is_empty(), "expected {notices:?} to be empty");
     }
 
     #[test]

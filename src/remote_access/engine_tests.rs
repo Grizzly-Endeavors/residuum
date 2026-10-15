@@ -406,7 +406,7 @@ async fn acme_alpn_connection_ends_after_handshake() {
         )
         .await
         .ok();
-        assert_eq!(buf, [] as [u8; 0]);
+        assert!(buf.is_empty(), "expected {buf:?} to be empty");
     }
 }
 

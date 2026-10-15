@@ -273,7 +273,7 @@ async fn delete_answers_204_and_then_404() {
         )
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert_eq!(body, [] as [u8; 0]);
+    assert!(body.is_empty(), "expected {body:?} to be empty");
     let listed = h.get_expect("/api/hub/push/devices", StatusCode::OK).await;
     assert_eq!(listed["devices"], json!([]));
 

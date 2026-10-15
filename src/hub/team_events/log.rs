@@ -378,9 +378,10 @@ mod tests {
             after: Some(10),
             ..PageQuery::default()
         });
-        assert_eq!(
-            nothing.events,
-            [] as [crate::hub::team_events::event::TeamEvent; 0]
+        assert!(
+            nothing.events.is_empty(),
+            "expected {:?} to be empty",
+            nothing.events
         );
         assert_eq!(nothing.next_before, None);
     }

@@ -351,9 +351,10 @@ mod tests {
         let history = HistoryMessage::from(recent);
 
         assert_eq!(history.thinking, ["real"]);
-        assert_eq!(
-            history.message.thinking,
-            [] as [crate::inference::ThinkingBlock; 0]
+        assert!(
+            history.message.thinking.is_empty(),
+            "expected {:?} to be empty",
+            history.message.thinking
         );
     }
 }

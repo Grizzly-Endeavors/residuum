@@ -245,7 +245,11 @@ hop_hard_limit = 16
         let file = parse("timezone = \"UTC\"\n");
         let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
         assert_eq!(cfg.push, HubPushConfig::default());
-        assert_eq!(cfg.load_notices, [] as [String; 0]);
+        assert!(
+            cfg.load_notices.is_empty(),
+            "expected {:?} to be empty",
+            cfg.load_notices
+        );
     }
 
     #[test]
@@ -265,7 +269,11 @@ hop_hard_limit = 16
         let file = parse("timezone = \"UTC\"\n\n[push]\ncontact = \"  \"\n");
         let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
         assert_eq!(cfg.push.contact, None);
-        assert_eq!(cfg.load_notices, [] as [String; 0]);
+        assert!(
+            cfg.load_notices.is_empty(),
+            "expected {:?} to be empty",
+            cfg.load_notices
+        );
     }
 
     #[test]

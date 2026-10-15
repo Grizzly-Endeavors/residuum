@@ -394,7 +394,8 @@ mod tests {
     fn missing_file_is_empty_store() {
         let dir = tempfile::tempdir().unwrap();
         let store = AgentKeyStore::load(dir.path()).unwrap();
-        assert_eq!(store.names(), [] as [&str; 0]);
+        let actual = &store.names();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

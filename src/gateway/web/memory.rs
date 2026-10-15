@@ -415,9 +415,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            response.0.results,
-            [] as [crate::gateway::web::memory::MemorySearchResultItem; 0]
-        );
+        let actual = &response.0.results;
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 }

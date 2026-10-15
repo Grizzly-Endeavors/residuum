@@ -354,7 +354,8 @@ mod tests {
     fn missing_file_is_empty_store() {
         let dir = tempfile::tempdir().unwrap();
         let store = A2aKeyStore::load(dir.path()).unwrap();
-        assert_eq!(store.list(), [] as [crate::a2a::keys::A2aKeyInfo; 0]);
+        let actual = &store.list();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]
