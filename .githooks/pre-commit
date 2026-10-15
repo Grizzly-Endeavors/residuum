@@ -6,7 +6,7 @@
 #
 # The slow checks (clippy, the whole test suite with its source scans, the
 # generated-types check, and the web lint, type check and tests) run once per
-# push in pre-push. They recompile the crate or the web app, which costs minutes
+# push in pre-push. They recompile the workspace or the web app, which costs minutes
 # on every commit and pushes authors to commit less often or to route around the
 # hook.
 #

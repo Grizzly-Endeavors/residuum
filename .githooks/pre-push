@@ -362,10 +362,8 @@ pick_packages() {
 #                                  test except ts_export
 #   tests/<name>.rs                that integration test
 #   other tests/*/*                every integration test
-#   web/src/styles/tokens.css      every root unit test while
-#                                  crates/net/src/browser_landing.rs does not
-#                                  exist, else the member tests of the crate
-#                                  that holds it
+#   web/src/styles/tokens.css      the member tests of residuum-net, which
+#                                  embeds it (crates/net/src/browser_landing.rs)
 #   web/app-shell-csp.txt, .github/workflows/release.yml
 #                                  every root unit test
 # Clippy checks the packages scripts/affected-packages.sh --affected picks for
@@ -468,10 +466,6 @@ plan_rust_tests() {
             ;;
         web/src/styles/tokens.css)
             member_paths="$member_paths$path"$'\n'
-            if [ ! -f "$dir/crates/net/src/browser_landing.rs" ]; then
-                unit_all=1
-                unit_reason="$path is read by unit tests"
-            fi
             ;;
         *)
             # Only paths the Rust checks cover count: a docs or web file that no
