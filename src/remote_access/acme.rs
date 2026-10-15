@@ -108,10 +108,6 @@ impl AcmeAccount {
     /// replaced silently, because CAA records may pin the account), the CA
     /// is unreachable, or registration or storing fails.
     pub(crate) async fn load_or_create(settings: &AcmeSettings) -> anyhow::Result<Self> {
-        // The ACME HTTP client picks up the process-wide rustls provider, and this build
-        // links both ring and aws-lc-rs so rustls cannot choose one itself. Another
-        // provider installed first is fine, which is why the result is ignored.
-        drop(rustls::crypto::ring::default_provider().install_default());
         let path = settings.state_dir.join(format!(
             "acme-account-{}.json",
             directory_fingerprint(&settings.directory_url)

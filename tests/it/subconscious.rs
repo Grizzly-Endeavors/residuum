@@ -1,0 +1,166 @@
+//! End-to-end integration tests for the subconscious classifier.
+//!
+//! Exercises the real config → `Subconscious::build` wiring and the
+//! `evaluate` path with a mock provider, through the crate's public API.
+
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+
+use async_trait::async_trait;
+
+use residuum::config::{Config, HubConfig};
+use residuum::inference::{
+    CompletionOptions, HttpClientConfig, InferenceError, InferenceProvider, InferenceResponse,
+    Message, SharedHttpClient, ToolDefinition,
+};
+use residuum::subconscious::{EvalPhase, FindingKind, Severity, Subconscious, SubconsciousConfig};
+use residuum::workspace::layout::WorkspaceLayout;
+
+/// Mock provider returning a fixed response; records whether it was called.
+struct CountingProvider {
+    response: String,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl InferenceProvider for CountingProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _options: &CompletionOptions,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(InferenceResponse::new(self.response.clone(), vec![]))
+    }
+
+    fn model_name(&self) -> &'static str {
+        "mock-subconscious"
+    }
+}
+
+fn http() -> SharedHttpClient {
+    SharedHttpClient::new(&HttpClientConfig::default()).unwrap()
+}
+
+/// Write an agent's `config/config.toml` and `config/providers.toml`
+/// under `dir` (the agent directory), plus a hub config beside it, and
+/// load the resulting agent `Config`.
+fn load_agent(dir: &std::path::Path, config_toml: &str) -> Config {
+    let hub_dir = dir.join("hub");
+    std::fs::create_dir_all(&hub_dir).unwrap();
+    std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+    let agent_dir = dir.join("scout");
+    let agent_config_dir = agent_dir.join("config");
+    std::fs::create_dir_all(&agent_config_dir).unwrap();
+    std::fs::write(agent_config_dir.join("config.toml"), config_toml).unwrap();
+    // Ollama needs no API key, so the provider chain builds in tests.
+    std::fs::write(
+        agent_config_dir.join("providers.toml"),
+        r#"
+[models]
+main = "ollama/llama3"
+subconscious = "ollama/llama3-mini"
+"#,
+    )
+    .unwrap();
+    let hub = HubConfig::load_at(&hub_dir).unwrap();
+    Config::load_agent_at(&agent_dir, &hub).unwrap()
+}
+
+#[test]
+fn build_enabled_from_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = load_agent(dir.path(), "[subconscious]\nenabled = true\n");
+
+    let layout = WorkspaceLayout::new(dir.path().join("scout"));
+    let sub = Subconscious::build(&cfg, &layout, http(), residuum::bus::Publisher::noop());
+
+    assert!(
+        sub.enabled(),
+        "enabled config should build an enabled instance"
+    );
+    assert!(sub.mid_turn_enabled(), "mid_turn defaults on when enabled");
+    assert_eq!(
+        cfg.subconscious.first().unwrap().model.model,
+        "llama3-mini",
+        "subconscious role should resolve to its assigned model"
+    );
+}
+
+#[test]
+fn build_disabled_when_section_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = load_agent(dir.path(), "");
+
+    let layout = WorkspaceLayout::new(dir.path().join("scout"));
+    let sub = Subconscious::build(&cfg, &layout, http(), residuum::bus::Publisher::noop());
+
+    assert!(
+        !sub.enabled(),
+        "subconscious is opt-in; absent section must build a disabled instance"
+    );
+    assert!(!sub.mid_turn_enabled());
+}
+
+#[tokio::test]
+async fn evaluate_end_to_end_produces_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    let layout = WorkspaceLayout::new(dir.path());
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let response = r#"{
+            "findings": [
+                {"kind": "omission", "severity": "act", "instruction": "Persist the user's bullet-point preference to the wiki."}
+            ]
+        }"#;
+    let sub = Subconscious::new(
+        Box::new(CountingProvider {
+            response: response.to_string(),
+            calls: std::sync::Arc::clone(&calls),
+        }),
+        SubconsciousConfig {
+            enabled: true,
+            ..SubconsciousConfig::default()
+        },
+        layout,
+    );
+
+    let transcript = vec![
+        Message::user("Always answer me in bullet points."),
+        Message::assistant("Got it.".to_string(), None),
+    ];
+    let outcome = sub
+        .evaluate(&transcript, EvalPhase::EndOfTurn, None)
+        .await
+        .unwrap();
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(outcome.findings.len(), 1);
+    let finding = outcome.findings.first().unwrap();
+    assert_eq!(finding.kind, FindingKind::Omission);
+    assert_eq!(finding.severity, Severity::Act);
+    assert!(finding.instruction.contains("wiki"));
+    assert!(
+        outcome.learnings.is_empty(),
+        "learnings must be empty when learning is disabled (the default)"
+    );
+}
+
+#[tokio::test]
+async fn disabled_instance_never_calls_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let layout = WorkspaceLayout::new(dir.path());
+
+    // A disabled instance uses a NullProvider that errors if called; the
+    // empty-transcript short-circuit and the caller's enabled() gate keep it
+    // from ever running. Here we assert the disabled state directly.
+    let sub = Subconscious::disabled(layout);
+    assert!(
+        !sub.enabled(),
+        "disabled config performs zero classification"
+    );
+}

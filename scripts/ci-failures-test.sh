@@ -35,6 +35,35 @@ for runs in "$dir"/ci-failures-fixtures/*.json; do
     fi
 done
 
+# module_files maps a failing test's name to the repo files it touches. The
+# function is read out of the script, so the check runs the code that ships.
+check_module_files() {
+    local fn name expected actual
+    local -A repo_files=()
+    fn="$(awk '/^module_files\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
+    eval "$fn"
+    for name in src/gateway.rs src/memory/mod.rs src/lib.rs tests/it/gateway.rs \
+        tests/it/memory.rs tests/it/support/mod.rs tests/ts_export.rs; do
+        repo_files["$name"]=1
+    done
+    (( ${#repo_files[@]} == 7 )) || { echo "ci-failures module_files: fixture has ${#repo_files[@]} files, expected 7" >&2; status=1; }
+    while IFS='|' read -r name expected; do
+        actual="$(module_files "$name")"
+        if [[ "$actual" != "$expected" ]]; then
+            echo "ci-failures module_files: $name gave '$actual', expected '$expected'" >&2
+            status=1
+        fi
+    done <<'CASES'
+gateway::server::tests::x|src/gateway.rs tests/it/gateway.rs
+gateway::x|src/gateway.rs tests/it/gateway.rs
+memory::x|src/memory/mod.rs tests/it/memory.rs
+ts_export::roundtrip|tests/ts_export.rs
+skills::x|
+lonely|
+CASES
+}
+check_module_files
+
 if (( status == 0 )); then
     echo "ci-failures parser and queue selection: every fixture matches its .records file"
 fi

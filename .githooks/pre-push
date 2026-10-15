@@ -197,8 +197,9 @@ declares_module() {
 #                                  in the lib, and in the bin when main.rs
 #                                  declares the module
 #   src/lib.rs, src/main.rs        every unit test, lib and bin
-#   tests/<name>.rs                that integration test
-#   tests/support/**               every integration test
+#   tests/it/**                    the `it` binary, which holds every integration
+#                                  test except ts_export
+#   tests/<name>.rs                that integration test (only ts_export today)
 #   tests/fixtures/**, assets/**   every unit test and every integration test,
 #                                  since the unit tests read them too
 #   other paths the Rust checks cover, which no module declares (the files
@@ -210,9 +211,9 @@ declares_module() {
 # workflows the checks use add no tests of their own; clippy and the
 # generated-types check still cover them. A push with no list of changed paths
 # selects every test.
-# Every integration test other than ts_export builds as a binary of its own,
-# which is a large part of the cost of a rebuild, so they are only built when a
-# tests/ path changed. ts_export is built by the generated-types check.
+# The integration tests other than ts_export build as one binary, `it`, which
+# is only built when a tests/ path changed. ts_export is built by the
+# generated-types check.
 # Sets UNIT_ARGS and INTEGRATION_ARGS (cargo test arguments; INTEGRATION_ARGS is
 # empty when no integration test is called for) and prints the choice.
 plan_rust_tests() {
@@ -260,7 +261,7 @@ plan_rust_tests() {
                 esac
             fi
             ;;
-        Cargo.toml | Cargo.lock | build.rs | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh | .github/workflows/quality-checks.yml | .github/workflows/rust-pr.yml)
+        Cargo.toml | Cargo.lock | build.rs | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh | .github/workflows/ci.yml | .github/workflows/rust-checks.yml)
             # No test reads these; the source scans below still run.
             ;;
         assets/* | tests/fixtures/*)
@@ -268,6 +269,16 @@ plan_rust_tests() {
             unit_reason="$path is read by unit tests"
             integration_all=1
             integration_reason="$path is read by integration tests"
+            ;;
+        tests/it/*)
+            name=it
+            case "$tests" in
+            *" $name "*) ;;
+            *)
+                tests="$tests$name "
+                test_names+=("$name")
+                ;;
+            esac
             ;;
         tests/*/*)
             integration_all=1

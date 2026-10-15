@@ -357,25 +357,34 @@ seen_on() { # key -> comma list of other branches with the same failure
 
 # --- report ---------------------------------------------------------------------
 
-module_files() { # a::b::c::test -> the repo file that holds module a::b::c
+module_files() { # a::b::c::test -> the repo files that hold module a::b::c
     local -a segs
     read -r -a segs <<<"${1//::/ }"
-    local count=${#segs[@]} k base cand
+    local count=${#segs[@]} k base cand src_match="" out=""
     if (( count < 2 )); then
         return 0
     fi
     for (( k = count - 1; k >= 1; k-- )); do
+        [[ -n "$src_match" ]] && break
         base="$(IFS=/; echo "${segs[*]:0:k}")"
         for cand in "src/$base.rs" "src/$base/mod.rs"; do
             if [[ -n "${repo_files[$cand]:-}" ]]; then
-                echo "$cand"
-                return 0
+                src_match="$cand"
+                break
             fi
         done
     done
-    if [[ -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
-        echo "tests/${segs[0]}.rs"
+    # An integration test is named by its module in tests/it/, which can share
+    # a name with a src module, so both files count when both exist.
+    for cand in "$src_match" "tests/it/${segs[0]}.rs"; do
+        if [[ -n "$cand" && -n "${repo_files[$cand]:-}" ]]; then
+            out="$out $cand"
+        fi
+    done
+    if [[ -z "$src_match" && -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
+        out="$out tests/${segs[0]}.rs"
     fi
+    echo "${out# }"
 }
 
 print_messages() { # messages indent
