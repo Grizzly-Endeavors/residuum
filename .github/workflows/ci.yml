@@ -15,8 +15,9 @@ name: CI
 # checks with the visual comparisons, which never fail it and report in one
 # pull request comment. Merge queue lane: the same checks on the batch merged
 # onto main, with the Pebble tests, without the visual comparisons, and with
-# cross-compile.yml when the batch changes dependencies or the toolchain. The
-# suites under load run nightly on main (nightly-stress.yml), not here.
+# cross-compile.yml when the batch changes dependencies or the toolchain. Both
+# lanes run actionlint.yml when a workflow changes. The suites under load run
+# nightly on main (nightly-stress.yml), not here.
 on:
   pull_request:
   merge_group:
@@ -52,6 +53,7 @@ jobs:
       rust: ${{ steps.decide.outputs.rust }}
       web: ${{ steps.decide.outputs.web }}
       deps: ${{ steps.decide.outputs.deps }}
+      workflows: ${{ steps.decide.outputs.workflows }}
 
     steps:
       # The merge base needs the history, not the shallow clone.
@@ -70,6 +72,7 @@ jobs:
           RUST_PATHS_RE: '^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/(check|export)-generated-types\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
           WEB_PATHS_RE: '^web/|^scripts/(with-playwright-container|web-initial-route-size|ci-cpu-report)\.sh$|^\.github/workflows/(ci|web-checks)\.yml$'
           DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml)$'
+          WORKFLOWS_PATHS_RE: '^\.github/(workflows/|actionlint\.yaml$)'
         run: |
           set -euo pipefail
           if [ "$EVENT" = merge_group ]; then
@@ -79,14 +82,16 @@ jobs:
             changed="$(git diff --name-only "$PR_BASE_SHA...$PR_HEAD_SHA")"
             compared="the pull request, $PR_BASE_SHA...$PR_HEAD_SHA"
           fi
-          rust=false web=false deps=false
+          rust=false web=false deps=false workflows=false
           if grep -qE "$RUST_PATHS_RE" <<<"$changed"; then rust=true; fi
           if grep -qE "$WEB_PATHS_RE" <<<"$changed"; then web=true; fi
           if grep -qE "$DEPS_PATHS_RE" <<<"$changed"; then deps=true; fi
+          if grep -qE "$WORKFLOWS_PATHS_RE" <<<"$changed"; then workflows=true; fi
           {
             echo "rust=$rust"
             echo "web=$web"
             echo "deps=$deps"
+            echo "workflows=$workflows"
           } >> "$GITHUB_OUTPUT"
           {
             echo '## Changes'
@@ -98,6 +103,7 @@ jobs:
             echo "| Rust | $rust |"
             echo "| Web | $web |"
             echo "| Dependencies or toolchain (cross-compile in the merge queue) | $deps |"
+            echo "| Workflows (actionlint) | $workflows |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   rust:
@@ -121,6 +127,12 @@ jobs:
     needs: changes
     if: github.event_name == 'merge_group' && needs.changes.outputs.deps == 'true'
     uses: ./.github/workflows/cross-compile.yml
+
+  workflow-lint:
+    name: Workflow Lint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    uses: ./.github/workflows/actionlint.yml
 
   # Posts the result of the visual comparisons (web-checks.yml, `web-visual`)
   # as one comment on the pull request. The comment carries a hidden marker, so
@@ -177,7 +189,7 @@ jobs:
   # because its files did not change.
   gate:
     name: CI gate
-    needs: [changes, rust, web, cross-compile]
+    needs: [changes, rust, web, cross-compile, workflow-lint]
     if: always()
     runs-on: lab-runners-light
 
@@ -189,6 +201,7 @@ jobs:
           RUST: ${{ needs.rust.result }}
           WEB: ${{ needs.web.result }}
           CROSS: ${{ needs.cross-compile.result }}
+          WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
         run: |
           set -euo pipefail
           failed=""
@@ -209,11 +222,12 @@ jobs:
           check Rust "$RUST"
           check Web "$WEB"
           check Cross-Platform "$CROSS"
+          check "Workflow Lint" "$WORKFLOW_LINT"
 
           # Skipping every check passes, so the one job that decides what runs
           # must have run, except on a fork's pull request.
-          if [ "$CHECKED_HERE" = true ] && [ "$CHANGES" != success ]; then
-            failed+="${failed:+, }Changes did not run"
+          if [ "$CHECKED_HERE" = true ] && [ "$CHANGES" = skipped ]; then
+            failed+="${failed:+, }Changes was skipped, so nothing was checked"
           fi
           if [ "$CHECKED_HERE" != true ]; then
             echo '' >> "$GITHUB_STEP_SUMMARY"
