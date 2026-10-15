@@ -280,13 +280,28 @@ describe("the mock server plugin", () => {
   });
 
   describe("when deterministic", () => {
-    /** A port nothing is listening on. */
-    function freePort(): number {
-      return 30000 + Math.floor(Math.random() * 20000);
+    /**
+     * A port nothing is listening on, as the OS picks it: a random port in a
+     * fixed range can be one another test's client socket holds, and the
+     * listener then can't bind it.
+     */
+    async function freePort(): Promise<number> {
+      const probe = createServer();
+      await new Promise<void>((resolve) => {
+        probe.listen(0, "127.0.0.1", resolve);
+      });
+      const { port } = probe.address() as AddressInfo;
+      await new Promise<void>((resolve, reject) => {
+        probe.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      return port;
     }
 
     it("listens for artifacts on the port it is given, where a live mock takes a free one", async () => {
-      const port = freePort();
+      const port = await freePort();
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
       vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
       const dev = await start();
@@ -322,7 +337,7 @@ describe("the mock server plugin", () => {
 
     it("resets through the plugin's own handler", async () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
-      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(freePort()));
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(await freePort()));
       const dev = await start();
       await fetchJson(`${dev.baseUrl}/api/hub/agents/scout`, { method: "DELETE" });
       expect((await fetchJson(`${dev.baseUrl}/api/mock/reset`, { method: "POST" })).body).toEqual({
