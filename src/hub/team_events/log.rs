@@ -378,7 +378,11 @@ mod tests {
             after: Some(10),
             ..PageQuery::default()
         });
-        assert!(nothing.events.is_empty());
+        assert!(
+            nothing.events.is_empty(),
+            "expected {:?} to be empty",
+            nothing.events
+        );
         assert_eq!(nothing.next_before, None);
     }
 

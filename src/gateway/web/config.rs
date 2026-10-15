@@ -1070,7 +1070,11 @@ mod tests {
             .unwrap();
 
         assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
+        assert!(
+            response.diagnostics.is_empty(),
+            "expected {:?} to be empty",
+            response.diagnostics
+        );
     }
 
     #[tokio::test]
@@ -1083,7 +1087,10 @@ mod tests {
             .unwrap();
 
         assert!(!response.valid, "invalid JSON should be flagged invalid");
-        assert!(!response.diagnostics.is_empty());
+        assert!(
+            !response.diagnostics.is_empty(),
+            "response.diagnostics should not be empty"
+        );
         let mcp_path = crate::config::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
         let saved = tokio::fs::read_to_string(&mcp_path).await.unwrap();
         assert_eq!(
@@ -1105,7 +1112,11 @@ mod tests {
         .unwrap();
 
         assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
+        assert!(
+            response.diagnostics.is_empty(),
+            "expected {:?} to be empty",
+            response.diagnostics
+        );
     }
 
     #[tokio::test]
@@ -1346,11 +1357,8 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!*done_rx.borrow());
         assert!(!root.path().join("scout/config/config.toml").exists());
-        assert!(
-            crate::config::discover_agents(root.path())
-                .unwrap()
-                .is_empty()
-        );
+        let actual = &crate::config::discover_agents(root.path()).unwrap();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]

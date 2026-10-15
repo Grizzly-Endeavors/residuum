@@ -663,7 +663,8 @@ mod tests {
 
     #[test]
     fn empty_findings_produce_empty_plan() {
-        assert!(plan_delivery(vec![]).is_empty());
+        let actual = &plan_delivery(vec![]);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

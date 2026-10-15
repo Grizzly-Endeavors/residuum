@@ -6,6 +6,9 @@
 //! it can never quietly measure real time. Under a paused clock, a runtime
 //! with nothing to do jumps straight to its next timer, so waiting on a socket
 //! there fires every pending timeout at once; keep real I/O out of these tests.
+//! A test of a timeout on a child process pauses the clock itself once the
+//! child has started and jumps it with `tokio::time::advance`; CONTRIBUTING.md,
+//! "Waiting in tests", says why.
 
 use std::future::IntoFuture;
 use std::time::Duration;

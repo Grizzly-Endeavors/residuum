@@ -23,15 +23,20 @@ const HUB_REPORT = "hub configuration reloaded: timezone";
 const HUB_FAILED = "hub config reload failed (keeping current hub config): bad toml";
 const WORKSPACE_REPORT = "workspace configuration reloaded";
 
+// The quiet window is module state, so each test starts a minute after the last
+// one ended, wherever that test moved the clock: whatever an earlier test left
+// open has closed, in any test order.
+let clock = Date.parse("2026-10-09T12:00:00Z");
+
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-10-09T12:00:00Z"));
-  // Whatever an earlier test left open has ended.
-  vi.advanceTimersByTime(60_000);
+  clock += 60_000;
+  vi.setSystemTime(clock);
   quietReloads.takeReloading();
 });
 
 afterEach(() => {
+  clock = Date.now();
   vi.useRealTimers();
 });
 

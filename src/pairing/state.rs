@@ -647,7 +647,11 @@ mod tests {
             state.poll(&secret_hash, t).unwrap(),
             PollOutcome::Denied
         ));
-        assert!(state.persisted.devices.is_empty());
+        assert!(
+            state.persisted.devices.is_empty(),
+            "expected {:?} to be empty",
+            state.persisted.devices
+        );
     }
 
     #[test]

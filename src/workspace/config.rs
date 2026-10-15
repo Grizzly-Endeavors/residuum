@@ -1110,7 +1110,8 @@ web_url = "http://localhost:3000"
     #[test]
     fn diagnose_channels_toml_clean_file_has_no_diagnostics() {
         let content = "[channels.my-ntfy]\ntype = \"ntfy\"\nurl = \"https://ntfy.sh\"\ntopic = \"residuum\"\n";
-        assert!(diagnose_channels_toml(content).is_empty());
+        let actual = &diagnose_channels_toml(content);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]
@@ -1168,7 +1169,8 @@ url = "https://hooks.example.com/notify"
     #[test]
     fn diagnose_mcp_json_clean_file_has_no_diagnostics() {
         let content = r#"{"mcpServers": {"fs": {"command": "mcp-fs"}}}"#;
-        assert!(diagnose_mcp_json(content).is_empty());
+        let actual_2 = &diagnose_mcp_json(content);
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
     }
 
     #[test]

@@ -162,17 +162,12 @@ mod tests {
         let start = Instant::now();
         let mut coalescer = DeltaCoalescer::default();
 
-        assert!(coalescer.push(text("Hel"), start).is_empty());
-        assert!(
-            coalescer
-                .push(text("lo, "), start + Duration::from_millis(10))
-                .is_empty()
-        );
-        assert!(
-            coalescer
-                .push(text("world"), start + Duration::from_millis(20))
-                .is_empty()
-        );
+        let actual = &coalescer.push(text("Hel"), start);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
+        let actual_2 = &coalescer.push(text("lo, "), start + Duration::from_millis(10));
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
+        let actual_3 = &coalescer.push(text("world"), start + Duration::from_millis(20));
+        assert!(actual_3.is_empty(), "expected {actual_3:?} to be empty");
 
         assert_eq!(
             coalescer.take_pending(),
@@ -247,8 +242,10 @@ mod tests {
         let start = Instant::now();
         let mut coalescer = DeltaCoalescer::default();
 
-        assert!(coalescer.push(text(""), start).is_empty());
-        assert!(coalescer.push(thinking(""), start).is_empty());
+        let actual_4 = &coalescer.push(text(""), start);
+        assert!(actual_4.is_empty(), "expected {actual_4:?} to be empty");
+        let actual_5 = &coalescer.push(thinking(""), start);
+        assert!(actual_5.is_empty(), "expected {actual_5:?} to be empty");
         assert_eq!(coalescer.flush_at(), None);
     }
 

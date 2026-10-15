@@ -854,7 +854,8 @@ mod tests {
         assert!(err.to_string().contains("Nothing was created"));
         assert!(!final_dir.exists());
         assert!(!staging.exists(), "the partial directory is removed");
-        assert!(discover_agents(fx.root()).unwrap().is_empty());
+        let actual = &discover_agents(fx.root()).unwrap();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]
@@ -876,7 +877,8 @@ mod tests {
 
         assert!(matches!(err, LifecycleError::Failed(_)), "{err:?}");
         assert!(!fx.root().join("scout").exists());
-        assert!(discover_agents(fx.root()).unwrap().is_empty());
+        let actual_2 = &discover_agents(fx.root()).unwrap();
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
     }
 
     #[tokio::test]

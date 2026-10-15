@@ -357,7 +357,11 @@ mod tests {
             1,
             "note queued for end-of-turn triage"
         );
-        assert!(s.applied_corrections.is_empty());
+        assert!(
+            s.applied_corrections.is_empty(),
+            "expected {:?} to be empty",
+            s.applied_corrections
+        );
     }
 
     #[tokio::test]

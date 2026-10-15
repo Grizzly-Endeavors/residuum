@@ -1955,7 +1955,7 @@ mod tests {
     #[test]
     fn extract_date_from_path_invalid() {
         let path = std::path::PathBuf::from("/some/random/path.json");
-        assert!(extract_date_from_path(&path).is_empty());
+        assert_eq!(extract_date_from_path(&path), "");
     }
 
     #[test]

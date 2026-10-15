@@ -959,7 +959,8 @@ mod tests {
 
         // Verify it's gone
         let after_delete = secrets::api_secrets_list(State(state)).await.unwrap();
-        assert!(after_delete.0.names.is_empty());
+        let actual = &after_delete.0.names;
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 }
 
