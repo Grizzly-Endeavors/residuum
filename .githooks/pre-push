@@ -33,7 +33,7 @@ MAIN_REF=refs/remotes/origin/main
 # The paths that run the Rust checks. This is the RUST_PATHS_RE of the
 # `changes` job in .github/workflows/ci.yml, which decides when CI runs the same
 # checks; change both together.
-RUST_PATHS_RE='^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/(check|export)-generated-types\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+RUST_PATHS_RE='^(src|tests|assets|crates)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
 
 note() { echo -e "${YELLOW}$1${NC}" >&2; }
 
@@ -191,41 +191,89 @@ declares_module() {
     grep -qE "^(pub(\([a-z]+\))? )?mod $2;" "$1" 2>/dev/null
 }
 
-# The Rust tests the changed paths call for. CI runs the whole suite, so this
-# picks what the push can have changed:
-#   src/<mod>/** and src/<mod>.rs  the unit tests of that module (`<mod>::`),
-#                                  in the lib, and in the bin when main.rs
-#                                  declares the module
-#   src/lib.rs, src/main.rs        every unit test, lib and bin
+# Whether the tree $1 has a member crate $2: a directory under crates/ that
+# holds a manifest. Its package is residuum-$2.
+is_member() {
+    [ -f "$1/crates/$2/Cargo.toml" ]
+}
+
+# The root unit-test filters of the push being planned, space-separated. The
+# source scans are always among them.
+UNIT_FILTERS=""
+add_filter() {
+    case " $UNIT_FILTERS " in
+    *" $1 "*) ;;
+    *) UNIT_FILTERS="$UNIT_FILTERS $1" ;;
+    esac
+}
+
+# Sets PICKED to the words scripts/affected-packages.sh prints for the mode $2
+# (--affected or --members) on the newline-separated paths $3. When the script
+# is missing or fails, PICKED is the fallback words given after the paths and
+# the function returns 1: a selection may check more, never less. The script's
+# stderr says what it chose.
+pick_packages() {
+    local dir="$1" mode="$2" paths="$3" out
+    shift 3
+    if out="$(cd "$dir" && ./scripts/affected-packages.sh "$mode" <<<"$paths")"; then
+        PICKED=()
+        read -r -a PICKED <<<"$out"
+        return 0
+    fi
+    echo -e "${YELLOW}WARNING: scripts/affected-packages.sh $mode failed; checking $*.${NC}" >&2
+    PICKED=("$@")
+    return 1
+}
+
+# The Rust checks the changed paths call for: which packages clippy checks, and
+# which tests run. CI runs the whole suite, so this picks what the push can have
+# changed. One arm per changed path; the arms of a push combine: filters
+# accumulate, a choice of every test wins over a filtered one, and the member
+# list is the union.
+#   src/lib.rs, src/main.rs        every root unit test, lib and bin
+#   src/<mod>/**, src/<mod>.rs     the root unit tests of that module (`<mod>::`),
+#                                  and the bin's too when main.rs declares it
+#   other src/** paths             every root unit test (no module declares them)
+#   Cargo.toml, Cargo.lock, rust-toolchain.toml, clippy.toml, rustfmt.toml,
+#   deny.toml, .cargo/**           the testing::manifest_scan filter
+#   crates/<dir>/Cargo.toml        the same filter, and the member's tests
+#   crates/<dir>/** of a member    that member's tests, and those of every member
+#                                  that depends on it
+#   crates/** outside a member     the testing::manifest_scan filter
+#   build.rs, the generated web types, the generated-types and isolation
+#   scripts, affected-packages*, the CI workflows
+#                                  no test added (clippy and the generated-types
+#                                  check still cover them)
+#   assets/**, tests/fixtures/**   every unit test of every package, and every
+#                                  integration test, since both read them
 #   tests/it/**                    the `it` binary, which holds every integration
 #                                  test except ts_export
-#   tests/<name>.rs                that integration test (only ts_export today)
-#   tests/fixtures/**, assets/**   every unit test and every integration test,
-#                                  since the unit tests read them too
-#   other paths the Rust checks cover, which no module declares (the files
-#   tests read by path, such as web/src/styles/tokens.css)
-#                                  every unit test
-# and the source scans (testing::source_scan, cheap, and they fail any test that
-# waits on elapsed time) whenever the Rust checks run at all. Manifests, build.rs,
-# toolchain and lint configuration, the generated web types, and the scripts and
-# workflows the checks use add no tests of their own; clippy and the
-# generated-types check still cover them. A push with no list of changed paths
-# selects every test.
-# The integration tests other than ts_export build as one binary, `it`, which
-# is only built when a tests/ path changed. ts_export is built by the
-# generated-types check.
-# Sets UNIT_ARGS and INTEGRATION_ARGS (cargo test arguments; INTEGRATION_ARGS is
-# empty when no integration test is called for) and prints the choice.
+#   tests/<name>.rs                that integration test
+#   other tests/*/*                every integration test
+#   web/src/styles/tokens.css      every root unit test while src/browser_landing.rs
+#                                  is in the root, else the member tests of the
+#                                  crate that holds it
+#   web/app-shell-csp.txt, .github/workflows/release.yml
+#                                  every root unit test
+# Clippy checks the packages scripts/affected-packages.sh --affected picks for
+# all the changed paths, and every package when there is no list of them.
+# The source scans (testing::source_scan) run whenever the Rust checks run at
+# all. A push with no list of changed paths selects every test.
+# Sets UNIT_ARGS, CLIPPY_ARGS, MEMBER_ARGS and INTEGRATION_ARGS (cargo
+# arguments; MEMBER_ARGS and INTEGRATION_ARGS are empty when none is called
+# for) and prints the choice.
 plan_rust_tests() {
     local dir="$1" path mod name known unit_reason="" integration_reason=""
-    local unit_all=0 unit_bins=0 integration_all=0
-    local filters="testing::source_scan" filter_list=" testing::source_scan "
-    local tests=" " test_names
+    local unit_all=0 unit_workspace=0 unit_bins=0 integration_all=0
+    local tests=" " test_names member_paths="" member_reason="" clippy_reason=""
     test_names=()
+    UNIT_FILTERS="testing::source_scan"
     UNIT_ARGS=()
+    CLIPPY_ARGS=()
+    MEMBER_ARGS=()
     INTEGRATION_ARGS=()
     if [ "$CHANGED_KNOWN" = 0 ]; then
-        unit_all=1
+        unit_workspace=1
         unit_reason="no list of changed paths"
         integration_all=1
         integration_reason="no list of changed paths"
@@ -252,20 +300,27 @@ plan_rust_tests() {
                 unit_all=1
                 unit_reason="$path belongs to no module"
             else
-                case "$filter_list" in
-                *" $mod:: "*) ;;
-                *)
-                    filter_list="$filter_list$mod:: "
-                    filters="$filters $mod::"
-                    ;;
-                esac
+                add_filter "$mod::"
             fi
             ;;
-        Cargo.toml | Cargo.lock | build.rs | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh | .github/workflows/ci.yml | .github/workflows/rust-checks.yml)
-            # No test reads these; the source scans below still run.
+        Cargo.toml | Cargo.lock | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | .cargo/*)
+            add_filter testing::manifest_scan
+            ;;
+        crates/*)
+            name="${path#crates/}"
+            name="${name%%/*}"
+            if is_member "$dir" "$name"; then
+                member_paths="$member_paths$path"$'\n'
+            fi
+            if [ "$path" = "crates/$name/Cargo.toml" ] || ! is_member "$dir" "$name"; then
+                add_filter testing::manifest_scan
+            fi
+            ;;
+        build.rs | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh | scripts/affected-packages* | scripts/check-crate-isolation.sh | .github/workflows/ci.yml | .github/workflows/rust-checks.yml)
+            # No test reads these; clippy and the generated-types check still cover them.
             ;;
         assets/* | tests/fixtures/*)
-            unit_all=1
+            unit_workspace=1
             unit_reason="$path is read by unit tests"
             integration_all=1
             integration_reason="$path is read by integration tests"
@@ -298,11 +353,17 @@ plan_rust_tests() {
                 esac
             fi
             ;;
+        web/src/styles/tokens.css)
+            member_paths="$member_paths$path"$'\n'
+            if [ -f "$dir/src/browser_landing.rs" ]; then
+                unit_all=1
+                unit_reason="$path is read by unit tests"
+            fi
+            ;;
         *)
             # Only paths the Rust checks cover count: a docs or web file that no
             # test reads selects nothing. Those that reach here are files tests
-            # read by path (web/src/styles/tokens.css, web/app-shell-csp.txt,
-            # .github/workflows/release.yml).
+            # read by path (web/app-shell-csp.txt, .github/workflows/release.yml).
             if grep -qE "$RUST_PATHS_RE" <<<"$path"; then
                 unit_all=1
                 unit_reason="$path is read by unit tests"
@@ -311,27 +372,62 @@ plan_rust_tests() {
         esac
     done <<<"$CHANGED_PATHS"
 
-    UNIT_ARGS=(--lib)
-    if [ "$unit_all" = 1 ] || [ "$unit_bins" = 1 ]; then
-        UNIT_ARGS+=(--bins)
-    fi
-    if [ "$unit_all" = 1 ]; then
-        echo "Unit tests: every one, lib and bin ($unit_reason)."
+    if [ "$unit_workspace" = 1 ]; then
+        UNIT_ARGS=(--workspace --lib --bins)
+        echo "Unit tests: every one of every package ($unit_reason)."
+    elif [ "$unit_all" = 1 ]; then
+        UNIT_ARGS=(-p residuum --lib --bins)
+        echo "Unit tests: every root one, lib and bin ($unit_reason)."
     else
+        UNIT_ARGS=(-p residuum --lib)
+        if [ "$unit_bins" = 1 ]; then
+            UNIT_ARGS+=(--bins)
+        fi
         UNIT_ARGS+=(--)
-        for mod in $filters; do
+        for mod in $UNIT_FILTERS; do
             UNIT_ARGS+=("$mod")
         done
         if [ "$unit_bins" = 1 ]; then
-            echo "Unit tests: filtered to $filters (lib and bin)."
+            echo "Unit tests: root, filtered to $UNIT_FILTERS (lib and bin)."
         else
-            echo "Unit tests: filtered to $filters."
+            echo "Unit tests: root, filtered to $UNIT_FILTERS."
         fi
     fi
+
+    CLIPPY_ARGS=(--workspace)
+    if [ "$CHANGED_KNOWN" = 0 ]; then
+        clippy_reason="no list of changed paths"
+    elif pick_packages "$dir" --affected "$CHANGED_PATHS" --workspace; then
+        if [ "${#PICKED[@]}" -gt 0 ]; then
+            CLIPPY_ARGS=("${PICKED[@]}")
+            clippy_reason="the packages the changed paths touch and their dependents"
+        else
+            clippy_reason="the script named no package"
+        fi
+    else
+        clippy_reason="the selection failed"
+    fi
+    echo "Clippy: ${CLIPPY_ARGS[*]} ($clippy_reason)."
+
+    if [ -n "$member_paths" ]; then
+        if pick_packages "$dir" --members "$member_paths" --workspace --exclude residuum; then
+            member_reason="the member crates the changed paths touch and their dependents"
+        else
+            member_reason="the selection failed"
+        fi
+        if [ "${#PICKED[@]}" -gt 0 ]; then
+            MEMBER_ARGS=("${PICKED[@]}" --lib --tests)
+            echo "Member tests: ${PICKED[*]} ($member_reason)."
+        else
+            echo "Member tests: none (no changed path is in a member crate)."
+        fi
+    fi
+
     if [ "$integration_all" = 1 ]; then
-        INTEGRATION_ARGS=(--test '*')
+        INTEGRATION_ARGS=(-p residuum --test '*')
         echo "Integration tests: every one ($integration_reason)."
     elif [ "${#test_names[@]}" -gt 0 ]; then
+        INTEGRATION_ARGS=(-p residuum)
         for name in "${test_names[@]}"; do
             INTEGRATION_ARGS+=(--test "$name")
         done
@@ -395,9 +491,12 @@ run_rust_checks() {
         echo -e "${RED}FAILED: building web/dist, which the Rust build needs. Skipping the Rust checks.${NC}" >&2
         return
     }
-    run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features -- -D warnings
     plan_rust_tests "$dir"
+    run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
     run_check "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
+    if [ "${#MEMBER_ARGS[@]}" -gt 0 ]; then
+        run_check "member tests (changed crates)" run_cargo_test "$dir" "${MEMBER_ARGS[@]}"
+    fi
     if [ "${#INTEGRATION_ARGS[@]}" -gt 0 ]; then
         run_check "integration tests (changed)" run_cargo_test "$dir" "${INTEGRATION_ARGS[@]}"
     fi
