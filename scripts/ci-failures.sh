@@ -358,31 +358,57 @@ seen_on() { # key -> comma list of other branches with the same failure
 # --- report ---------------------------------------------------------------------
 
 module_files() { # a::b::c::test -> the repo files that hold module a::b::c
-    local -a segs
-    read -r -a segs <<<"${1//::/ }"
-    local count=${#segs[@]} k base cand src_match="" out=""
+    local name="$1" member=no root base cand module_match k count
+    local -a roots=() segs
+    local out=""
+    if [[ "$name" =~ ^residuum_([a-z0-9_]+)::(.+)$ ]]; then
+        # A member crate's test path starts below the crate, so only its src/ holds it.
+        member=yes
+        roots=("crates/${BASH_REMATCH[1]//_/-}/src")
+        name="${BASH_REMATCH[2]}"
+    else
+        # A bare name can be in the root package or in any member crate.
+        roots=("src")
+        while IFS= read -r root; do
+            roots+=("$root")
+        done < <(
+            for cand in "${!repo_files[@]}"; do
+                if [[ "$cand" == crates/*/src/* ]]; then
+                    echo "${cand%/src/*}/src"
+                fi
+            done | sort -u
+        )
+    fi
+    read -r -a segs <<<"${name//::/ }"
+    count=${#segs[@]}
     if (( count < 2 )); then
         return 0
     fi
-    for (( k = count - 1; k >= 1; k-- )); do
-        [[ -n "$src_match" ]] && break
-        base="$(IFS=/; echo "${segs[*]:0:k}")"
-        for cand in "src/$base.rs" "src/$base/mod.rs"; do
-            if [[ -n "${repo_files[$cand]:-}" ]]; then
-                src_match="$cand"
-                break
-            fi
+    for root in "${roots[@]}"; do
+        module_match=""
+        for (( k = count - 1; k >= 1; k-- )); do
+            [[ -n "$module_match" ]] && break
+            base="$(IFS=/; echo "${segs[*]:0:k}")"
+            for cand in "$root/$base.rs" "$root/$base/mod.rs"; do
+                if [[ -n "${repo_files[$cand]:-}" ]]; then
+                    module_match="$cand"
+                    break
+                fi
+            done
         done
-    done
-    # An integration test is named by its module in tests/it/, which can share
-    # a name with a src module, so both files count when both exist.
-    for cand in "$src_match" "tests/it/${segs[0]}.rs"; do
-        if [[ -n "$cand" && -n "${repo_files[$cand]:-}" ]]; then
-            out="$out $cand"
+        if [[ -n "$module_match" ]]; then
+            out="$out $module_match"
         fi
     done
-    if [[ -z "$src_match" && -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
-        out="$out tests/${segs[0]}.rs"
+    if [[ "$member" == no ]]; then
+        # An integration test is named by its module in tests/it/, which can share
+        # a name with a src module, so both files count when both exist.
+        if [[ -n "${repo_files[tests/it/${segs[0]}.rs]:-}" ]]; then
+            out="$out tests/it/${segs[0]}.rs"
+        fi
+        if [[ -z "$out" && -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
+            out="$out tests/${segs[0]}.rs"
+        fi
     fi
     echo "${out# }"
 }
