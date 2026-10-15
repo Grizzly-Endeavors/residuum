@@ -34,8 +34,9 @@ use residuum::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, StreamDelta,
     StreamSink, ToolCall, ToolDefinition,
 };
+use residuum::inference::{ToolError, ToolResult};
 use residuum::memory::types::Visibility;
-use residuum::tools::{Tool, ToolError, ToolRegistry, ToolResult};
+use residuum::tools::{Tool, ToolRegistry};
 use residuum::workspace::identity::IdentityFiles;
 
 /// Mock provider that returns configurable responses in sequence.

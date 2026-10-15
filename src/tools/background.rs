@@ -16,7 +16,8 @@ use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 // ─── StopAgentTool ───────────────────────────────────────────────────────────
 

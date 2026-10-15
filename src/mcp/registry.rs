@@ -12,7 +12,8 @@ use tokio::sync::RwLock;
 
 use crate::agent_keys::SharedAgentKeys;
 use crate::inference::ToolDefinition;
-use crate::tools::{SharedToolsPath, ToolError, ToolResult};
+use crate::inference::{ToolError, ToolResult};
+use crate::tools::SharedToolsPath;
 
 use super::client::{McpClient, McpClientHandle};
 use super::types::McpServerEntry;

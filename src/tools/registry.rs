@@ -20,11 +20,12 @@ use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult,
-    a2a_task_update, actions, agent_keys, background, edit, exec, file_bug_report, inbox,
-    memory_get, memory_search, message_agent, ollama_web_search, read, send_message, skills,
-    submit_feedback, web_fetch, workspace_checkpoints, write,
+    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, a2a_task_update, actions,
+    agent_keys, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
+    message_agent, ollama_web_search, read, send_message, skills, submit_feedback, web_fetch,
+    workspace_checkpoints, write,
 };
+use crate::inference::{ToolError, ToolResult};
 
 /// Registry of available tools.
 pub struct ToolRegistry {

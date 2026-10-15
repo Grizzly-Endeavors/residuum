@@ -7,9 +7,10 @@ use base64::Engine;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use super::Tool;
 use super::file_tracker::SharedFileTracker;
-use super::{Tool, ToolError, ToolResult};
 use crate::inference::{ImageData, ToolDefinition};
+use crate::inference::{ToolError, ToolResult};
 use crate::interfaces::attachment::MAX_IMAGE_INLINE_SIZE;
 use crate::tools::path_policy::SharedPathPolicy;
 use crate::workspace::team_files::{FileStamp, TeamFiles};

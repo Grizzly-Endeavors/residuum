@@ -183,6 +183,17 @@ impl<'a> ReplyAssembler<'a> {
     }
 }
 
+/// Strip markdown code fences (```` ```json ... ``` ````) from LLM responses.
+///
+/// Returns the inner content trimmed, or the original string if no fences found.
+#[must_use]
+pub fn strip_code_fences(s: &str) -> &str {
+    s.strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .and_then(|inner| inner.strip_suffix("```"))
+        .map_or(s, str::trim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

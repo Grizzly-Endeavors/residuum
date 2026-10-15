@@ -844,7 +844,7 @@ async fn tool_call(
     tools: &crate::tools::ToolRegistry,
     name: &str,
     args: Value,
-) -> crate::tools::ToolResult {
+) -> crate::inference::ToolResult {
     tools.execute(name, args).await.unwrap()
 }
 

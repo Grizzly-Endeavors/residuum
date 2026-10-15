@@ -273,7 +273,7 @@ async fn run_completion(
     match provider.complete(messages, &[], options).await {
         Ok(resp) => {
             let json = if schema_requested {
-                let content = crate::memory::strip_code_fences(resp.content.trim());
+                let content = crate::inference::strip_code_fences(resp.content.trim());
                 match serde_json::from_str::<serde_json::Value>(content) {
                     Ok(v) => Some(v),
                     Err(e) => {

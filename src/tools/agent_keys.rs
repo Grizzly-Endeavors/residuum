@@ -6,11 +6,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{Tool, ToolError, ToolResult, publish_notice, require_str};
+use super::{Tool, publish_notice, require_str};
 use crate::agent_keys::{AgentKeyError, KeyCreator, SharedAgentKeys};
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
+use crate::inference::{ToolError, ToolResult};
 
 /// Lists agent keys: names, environment variables, creators, descriptions.
 pub struct AgentKeysListTool {
