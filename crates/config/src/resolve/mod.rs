@@ -228,64 +228,31 @@ fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     }
 }
 
-/// Fixtures for building a `Config` from TOML text in tests. The `pub` ones
-/// are for other crates' tests (`test-support`), which parse their TOML with
-/// `toml::from_str` into [`AgentConfigFile`](super::super::AgentConfigFile)
-/// and [`ProvidersFile`](super::super::ProvidersFile); the rest serve this
-/// crate's own resolve tests.
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_helpers {
-    #[cfg(test)]
+/// Fixtures for this crate's resolve tests.
+#[cfg(test)]
+mod test_helpers {
+    pub(super) use crate::testing::{test_agent_dir, test_hub_config};
+
     pub(super) use super::super::deserialize::{AgentConfigFile, ProvidersFile};
-    #[cfg(test)]
     pub(super) use super::super::secrets::SecretStore;
 
-    #[cfg(test)]
     pub(super) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[cfg(test)]
     pub(super) fn empty_secrets() -> SecretStore {
         let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
         SecretStore::load(&dir).unwrap()
     }
 
-    /// The agent directory the fixtures resolve against (it need not exist).
-    #[must_use]
-    pub fn test_agent_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join("residuum-test-agent")
-    }
-
-    /// A hub config with every hub-owned value at its default and UTC as the
-    /// timezone.
-    #[must_use]
-    pub fn test_hub_config() -> super::super::HubConfig {
-        super::super::HubConfig {
-            timezone: chrono_tz::UTC,
-            gateway: super::super::GatewayConfig::default(),
-            cloud: None,
-            a2a: super::super::HubA2aConfig::default(),
-            tracing: super::super::TracingConfig::default(),
-            background: super::super::HubBackgroundConfig::default(),
-            push: super::super::HubPushConfig::default(),
-            system_one: None,
-            config_dir: std::env::temp_dir().join("residuum-test-hub"),
-            load_notices: Vec::new(),
-        }
-    }
-
-    #[cfg(test)]
     pub(super) fn parse_config(toml: &str) -> AgentConfigFile {
         toml::from_str(toml).unwrap()
     }
 
-    #[cfg(test)]
     pub(super) fn parse_providers(toml: &str) -> ProvidersFile {
         toml::from_str(toml).unwrap()
     }
 
     /// Resolve an agent `Config` from raw TOML sources against a default
     /// test hub config — the shape almost every resolve test needs.
-    #[cfg(test)]
     pub(super) fn resolve_test(
         cfg_toml: &str,
         providers_toml: &str,
@@ -295,7 +262,6 @@ pub mod test_helpers {
 
     /// [`resolve_test`], with an explicit hub config for tests that need to
     /// vary hub-owned values.
-    #[cfg(test)]
     pub(super) fn resolve_test_with_hub(
         cfg_toml: &str,
         providers_toml: &str,

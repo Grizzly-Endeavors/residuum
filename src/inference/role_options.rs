@@ -19,7 +19,7 @@ pub fn completion_options_for_role(cfg: &Config, role: &str) -> CompletionOption
 
 #[cfg(test)]
 mod tests {
-    use crate::config::test_helpers::{test_agent_dir, test_hub_config};
+    use crate::config::testing::{test_agent_dir, test_hub_config};
     use crate::config::{
         AgentConfigFile, ProvidersFile, ThinkingConfig, ThinkingLevel, from_file_and_env,
     };
