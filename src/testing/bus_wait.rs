@@ -1,5 +1,5 @@
 //! Waiting on what the bus and the hub publish, under the same hang guard as
-//! [`wait`](super::wait).
+//! core's `testing::wait`.
 
 use std::fmt::Display;
 

@@ -86,8 +86,8 @@ impl Gate {
     }
 
     /// How many calls are waiting at the gate now.
-    #[must_use]
-    pub fn held(&self) -> usize {
+    #[cfg(test)]
+    fn held(&self) -> usize {
         let state = self.state.borrow();
         state.arrived - state.passed
     }
