@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Pre-push gate: the slow checks, once per push, on each pushed commit as it
-# would be merged with the current main.
+# Pre-push gate: the slow checks, once per push, on each pushed commit as pushed.
 #
 # Rust changes in the pushed range run clippy, the tests of the code those
 # changes touch plus the source scans, and the generated-types check. Web
@@ -9,6 +8,10 @@
 # import a changed file. CI runs the whole suites; this hook runs what the push
 # can have changed. Every check runs even after one fails, so a push reports all
 # of its problems at once, and a summary at the end lists what failed.
+#
+# The hook does not merge main into the commit. The merge queue tests every
+# pull request merged with main before it lands, so a conflict with main shows
+# on the pull request and the merged result is checked there.
 #
 # Written for bash 3.2, the shell macOS ships: no mapfile, no associative
 # arrays, and arrays expand as ${arr[@]+"${arr[@]}"} so an empty one is safe
@@ -37,17 +40,17 @@ note() { echo -e "${YELLOW}$1${NC}" >&2; }
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CHECKOUT_HEAD="$(git rev-parse HEAD)"
 # Git hands hooks its repository variables, which in a linked worktree point at
-# the worktree. Every git call here finds the repository from the working
-# directory, and the temporary worktree's `git -C` must not be pinned to this
-# one, so the hook runs without them (the reasoning is in .githooks/pre-commit).
+# the worktree. The hook's git calls must find the repository from the directory
+# they run in, including a temporary worktree, so it runs without them (the
+# reasoning is in .githooks/pre-commit).
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
 # The target directory every check that builds uses, set per pushed commit
 # below. A commit checked in place builds into the checkout's own target
 # directory (CARGO_TARGET_DIR when set, else target/), so the push reuses the
 # crate artifacts the checkout's cargo runs already left there. A commit checked
-# in a temporary worktree builds into target/pre-push, which keeps the merged or
-# detached tree from replacing the artifacts a cargo run in the checkout depends
-# on; sccache shares the dependency builds between the two.
+# in a temporary worktree builds into target/pre-push, which keeps the detached
+# tree from replacing the artifacts a cargo run in the checkout depends on;
+# sccache shares the dependency builds between the two.
 PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
 
 # Git passes one line per pushed ref on stdin. Read them all up front: the
@@ -57,19 +60,14 @@ while IFS= read -r line || [ -n "$line" ]; do
     PUSHED_REFS+=("$line")
 done
 
-# MAIN_FRESH: origin/main is what the remote has now, so merging it shows the
-# branch as it would land. MAIN_KNOWN: some copy of it exists, which is enough
-# to tell where a branch left main.
-MAIN_FRESH=0
+# MAIN_KNOWN: some copy of origin/main exists. A new branch's changes are
+# measured against it, since a new branch has no remote commit to measure from.
 MAIN_KNOWN=0
 # A fetch that can't reach the remote must not hang on a credential prompt.
-if GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/main:$MAIN_REF"; then
-    MAIN_FRESH=1
-else
-    note "WARNING: couldn't fetch main from origin; checking the pushed commits without merging main into them."
+if ! GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/main:$MAIN_REF"; then
+    note "WARNING: couldn't fetch main from origin; a new branch is measured against the last origin/main this checkout fetched."
 fi
 git rev-parse --verify --quiet "$MAIN_REF" >/dev/null && MAIN_KNOWN=1
-[ "$MAIN_KNOWN" = 1 ] || MAIN_FRESH=0
 
 # Which parts of the tree the commits being pushed change. The range starts at
 # what the remote already has, or for a new branch where it left main. With
@@ -95,7 +93,8 @@ classify_range() {
     fi
     # --no-renames lists both sides of a move, so the module a file left counts
     # as changed too.
-    CHANGED_PATHS="$(git diff --name-only --no-renames "$base" "$local_sha")"
+    # core.quotePath=false keeps non-ASCII paths unquoted, so they match the arms below.
+    CHANGED_PATHS="$(git -c core.quotePath=false diff --name-only --no-renames "$base" "$local_sha")"
     CHANGED_KNOWN=1
     grep -qE "$RUST_PATHS_RE" <<<"$CHANGED_PATHS" && TOUCHES_RUST=1
     grep -q '^web/' <<<"$CHANGED_PATHS" && TOUCHES_WEB=1
@@ -162,28 +161,17 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Check out the pushed commit, merged with main when it is behind, in a
-# temporary worktree that borrows this checkout's caches. Leaves its path in
-# TEMP_TREE. Returns 3 when the merge conflicts and 1 for any other failure.
+# Check out the pushed commit in a temporary worktree that borrows this
+# checkout's node_modules. Leaves its path in TEMP_TREE. Returns 1 on failure.
 # Never call it in a subshell: the cleanup trap needs the paths it sets.
 prepare_worktree() {
-    local sha="$1" merge="$2"
+    local sha="$1"
     cleanup
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/residuum-pre-push.XXXXXX")" || return 1
     TEMP_TREE="$TEMP_DIR/tree"
     git worktree add --quiet --detach "$TEMP_TREE" "$sha" >&2 || return 1
-    if [ "$merge" = 1 ]; then
-        # --no-commit leaves the merge in the working tree, where the checks
-        # read it, without needing a committer identity or running commit
-        # hooks for a commit nobody keeps.
-        if ! git -C "$TEMP_TREE" merge --quiet --no-ff --no-commit "$MAIN_REF" >&2; then
-            echo -e "${RED}ERROR: this branch conflicts with origin/main.${NC}" >&2
-            echo "Merge main into it (git merge origin/main), resolve the conflicts, commit, and push again." >&2
-            return 3
-        fi
-    fi
     # Symlinking node_modules skips an install, which only holds while the
-    # merge leaves the lockfile as this checkout has it.
+    # pushed commit's lockfile is the one this checkout has.
     if [ -d "$REPO_ROOT/web/node_modules" ] && cmp -s "$REPO_ROOT/web/package-lock.json" "$TEMP_TREE/web/package-lock.json"; then
         ln -s "$REPO_ROOT/web/node_modules" "$TEMP_TREE/web/node_modules"
     fi
@@ -202,17 +190,21 @@ declares_module() {
 #                                  declares the module
 #   src/lib.rs, src/main.rs        every unit test, lib and bin
 #   tests/<name>.rs                that integration test
-#   tests/support/**, tests/fixtures/**, any other path under tests/
-#                                  every integration test
+#   tests/support/**               every integration test
+#   tests/fixtures/**, assets/**   every unit test and every integration test,
+#                                  since the unit tests read them too
+#   other paths the Rust checks cover, which no module declares (the files
+#   tests read by path, such as web/src/styles/tokens.css)
+#                                  every unit test
 # and the source scans (testing::source_scan, cheap, and they fail any test that
 # waits on elapsed time) whenever the Rust checks run at all. Manifests, build.rs,
-# toolchain and lint configuration, assets and the generated web types add no
-# tests of their own; clippy still checks them. A source file that no module
-# declares (an embedded data file, say) selects every unit test, because no
-# module name says which tests read it, and so does a push with no list of
-# changed paths.
-# Every integration test builds as a binary of its own, which is a large part of
-# the cost of a rebuild, so they are only built when a tests/ path changed.
+# toolchain and lint configuration, the generated web types, and the scripts and
+# workflows the checks use add no tests of their own; clippy and the
+# generated-types check still cover them. A push with no list of changed paths
+# selects every test.
+# Every integration test other than ts_export builds as a binary of its own,
+# which is a large part of the cost of a rebuild, so they are only built when a
+# tests/ path changed. ts_export is built by the generated-types check.
 # Sets UNIT_ARGS and INTEGRATION_ARGS (cargo test arguments; INTEGRATION_ARGS is
 # empty when no integration test is called for) and prints the choice.
 plan_rust_tests() {
@@ -260,6 +252,15 @@ plan_rust_tests() {
                 esac
             fi
             ;;
+        Cargo.toml | Cargo.lock | build.rs | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh | .github/workflows/quality-checks.yml | .github/workflows/rust-pr.yml)
+            # No test reads these; the source scans below still run.
+            ;;
+        assets/* | tests/fixtures/*)
+            unit_all=1
+            unit_reason="$path is read by unit tests"
+            integration_all=1
+            integration_reason="$path is read by integration tests"
+            ;;
         tests/*/*)
             integration_all=1
             integration_reason="$path changed"
@@ -278,6 +279,16 @@ plan_rust_tests() {
                 esac
             fi
             ;;
+        *)
+            # Only paths the Rust checks cover count: a docs or web file that no
+            # test reads selects nothing. Those that reach here are files tests
+            # read by path (web/src/styles/tokens.css, web/app-shell-csp.txt,
+            # .github/workflows/release.yml).
+            if grep -qE "$RUST_PATHS_RE" <<<"$path"; then
+                unit_all=1
+                unit_reason="$path is read by unit tests"
+            fi
+            ;;
         esac
     done <<<"$CHANGED_PATHS"
 
@@ -292,7 +303,11 @@ plan_rust_tests() {
         for mod in $filters; do
             UNIT_ARGS+=("$mod")
         done
-        echo "Unit tests: filtered to $filters."
+        if [ "$unit_bins" = 1 ]; then
+            echo "Unit tests: filtered to $filters (lib and bin)."
+        else
+            echo "Unit tests: filtered to $filters."
+        fi
     fi
     if [ "$integration_all" = 1 ]; then
         INTEGRATION_ARGS=(--test '*')
@@ -380,9 +395,12 @@ cargo_in() {
 # whole suite. The whole suite runs here when the change is to something that
 # decides how every test builds or runs: package.json and the lockfile (the
 # versions the tests run on), the Vite, Vitest, Svelte and TypeScript
-# configuration, and the component setup file, which no test imports, so the
-# import graph can't tie it to a test. With no list of changed paths it runs the
-# whole suite too.
+# configuration, and the files every test run loads through that configuration:
+# the component setup file and the hang guard (src/test/setup.*, src/test/guard.*)
+# and the service worker plugin (build/service-worker*). The import graph can't
+# tie those to a test, and they change how every test runs, so an import-graph
+# selection would miss tests they affect. With no list of changed paths it runs
+# the whole suite too.
 web_tests() {
     local dir="$1" path rel reason="" all=0 files
     files=()
@@ -392,7 +410,7 @@ web_tests() {
     fi
     while IFS= read -r path; do
         case "$path" in
-        web/package.json | web/package-lock.json | web/vite.config.* | web/vitest.config.* | web/svelte.config.js | web/tsconfig* | web/*/tsconfig*.json | web/src/test/setup.*)
+        web/package.json | web/package-lock.json | web/vite.config.* | web/vitest.config.* | web/svelte.config.js | web/tsconfig* | web/*/tsconfig*.json | web/src/test/setup.* | web/src/test/guard.* | web/build/service-worker*)
             all=1
             reason="$path changed"
             ;;
@@ -461,41 +479,19 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
     [ "$TOUCHES_RUST" = 1 ] || [ "$TOUCHES_WEB" = 1 ] || continue
     CHECKED_ANY=1
 
-    merge=0
-    if [ "$MAIN_FRESH" = 1 ] && ! git merge-base --is-ancestor "$MAIN_REF" "$local_sha"; then
-        if git merge-base "$local_sha" "$MAIN_REF" >/dev/null 2>&1; then
-            merge=1
-        else
-            # A shallow clone can lack the history that joins the two.
-            note "WARNING: $local_ref shares no history with origin/main here (a shallow clone?); checking it without merging main."
-        fi
-    fi
-
     # The checkout itself is the commit being pushed only when HEAD is that
     # commit and nothing uncommitted or untracked would leak into the checks:
     # a file the author forgot to add compiles here and fails everywhere else.
-    if [ "$merge" = 0 ] && [ "$local_sha" = "$CHECKOUT_HEAD" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
+    if [ "$local_sha" = "$CHECKOUT_HEAD" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
         dir="$REPO_ROOT"
         PRE_PUSH_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
         echo -e "${BOLD}Checking $local_ref in place.${NC}"
     else
-        if [ "$merge" = 1 ]; then
-            echo -e "${BOLD}Checking $local_ref merged with origin/main in a temporary worktree.${NC}"
-        else
-            echo -e "${BOLD}Checking $local_ref in a temporary worktree.${NC}"
-        fi
-        prepare_worktree "$local_sha" "$merge"
-        prepare_status=$?
-        if [ "$prepare_status" -ne 0 ]; then
+        echo -e "${BOLD}Checking $local_ref in a temporary worktree.${NC}"
+        if ! prepare_worktree "$local_sha"; then
             cleanup
-            # The conflict is named by its own check so it reads as a merge problem.
-            if [ "$prepare_status" -eq 3 ]; then
-                FAILED+=("${CHECK_SCOPE}merge with origin/main (conflict)")
-                echo -e "${RED}FAILED: merge with origin/main (conflict)${NC}" >&2
-            else
-                FAILED+=("${CHECK_SCOPE}temporary worktree")
-                echo -e "${RED}FAILED: preparing a temporary worktree for $local_ref${NC}" >&2
-            fi
+            FAILED+=("${CHECK_SCOPE}temporary worktree")
+            echo -e "${RED}FAILED: preparing a temporary worktree for $local_ref${NC}" >&2
             continue
         fi
         dir="$TEMP_TREE"
