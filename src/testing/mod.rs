@@ -12,14 +12,14 @@
 //! - [`script`]: writing a fake tool the test then runs, so its exec never
 //!   fails with "Text file busy" when another test forks.
 //!
-//! `manifest_scan` holds the rules the workspace's `Cargo.toml` files keep.
-//!
 //! `source_scan` holds the tests that keep it that way: test code may not
 //! call `sleep`, `timeout` or wiremock's `set_delay` outside this module, and
 //! the waits that predate the rule are counted in `wall_clock_backlog`, where
 //! the counts only go down. Test code may not make a file executable itself
 //! either; it writes scripts through [`script`]. `CONTRIBUTING.md` ("Waiting
 //! in tests") describes which wait fits which situation.
+//!
+//! `manifest_scan` holds the rules the workspace's `Cargo.toml` files keep.
 
 pub(crate) mod clock;
 mod crypto;
