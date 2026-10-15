@@ -113,10 +113,11 @@ enum Command {
 }
 
 pub async fn run() -> Result<(), FatalError> {
-    // Install rustls CryptoProvider before any TLS usage. Required since
-    // rustls 0.23 when both `ring` and `aws-lc-rs` appear in the dep tree.
-    // Err means a provider was already installed by a dependency — that's
-    // expected and fine; we just continue with whatever was registered first.
+    // Install ring as the rustls process-default CryptoProvider before the first
+    // HTTP client is built. reqwest 0.13 is compiled with `rustls-no-provider` and
+    // panics in `Client::new()` when no default is installed. Err means a provider
+    // was already installed, which leaves ring in place: it is the only one
+    // compiled in.
     drop(rustls::crypto::ring::default_provider().install_default());
 
     // Install a panic hook that logs to tracing and stderr.
