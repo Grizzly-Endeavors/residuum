@@ -601,7 +601,11 @@ mod tests {
         .unwrap();
 
         assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
+        assert!(
+            response.diagnostics.is_empty(),
+            "expected {:?} to be empty",
+            response.diagnostics
+        );
     }
 
     #[test]

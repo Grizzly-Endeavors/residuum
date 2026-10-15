@@ -801,7 +801,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(header_of(&resp, "vary"), Some("Accept-Encoding"));
         assert_eq!(header_of(&resp, "content-encoding"), None);
-        assert!(body_of(resp).await.is_empty());
+        let actual = &body_of(resp).await;
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]

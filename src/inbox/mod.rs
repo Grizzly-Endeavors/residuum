@@ -1077,8 +1077,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(first_failures.is_empty());
-        assert!(second_failures.is_empty());
+        assert!(
+            first_failures.is_empty(),
+            "expected {first_failures:?} to be empty"
+        );
+        assert!(
+            second_failures.is_empty(),
+            "expected {second_failures:?} to be empty"
+        );
         assert_ne!(first, second, "second save must get a distinct filename");
 
         let first_id = first.trim_end_matches(".json");
@@ -1132,7 +1138,11 @@ mod tests {
         assert_eq!(item.body, "body text");
         assert_eq!(item.source, "cli");
         assert!(!item.read);
-        assert!(item.attachments.is_empty());
+        assert!(
+            item.attachments.is_empty(),
+            "expected {:?} to be empty",
+            item.attachments
+        );
     }
 
     #[tokio::test]
@@ -1498,8 +1508,8 @@ mod tests {
         let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[])
             .await
             .unwrap();
-        assert!(recorded.is_empty());
-        assert!(failures.is_empty());
+        assert!(recorded.is_empty(), "expected {recorded:?} to be empty");
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert!(
             !attachments_dir.exists(),
             "no directory should be created when there are no attachments"
@@ -1523,7 +1533,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(failures.is_empty());
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(
             recorded,
             vec![PathBuf::from("inbox/user/attachments/item1/report.pdf")]
@@ -1577,7 +1587,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(failures.is_empty());
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(recorded.len(), 2);
         let item_dir = attachments_dir.join("item1");
         assert!(item_dir.join("report.pdf").exists());
@@ -1615,7 +1625,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(failures.is_empty());
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(
             recorded,
             vec![PathBuf::from("inbox/user/attachments/item1/passwd")]
@@ -1641,7 +1651,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(failures.is_empty());
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(recorded.len(), 1);
     }
 
@@ -1688,10 +1698,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(failures.is_empty());
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
         let item = load_item(&inbox_dir.join(&filename)).await.unwrap();
         assert_eq!(item.title, "no attachments here");
-        assert!(item.attachments.is_empty());
+        assert!(
+            item.attachments.is_empty(),
+            "expected {:?} to be empty",
+            item.attachments
+        );
         assert!(
             !attachments_dir.exists(),
             "no attachments directory should be created"
@@ -1719,7 +1733,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(failures.is_empty());
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
         let item = load_item(&inbox_dir.join(&filename)).await.unwrap();
         let item_id = filename.trim_end_matches(".json");
         assert_eq!(item.attachments.len(), 1);

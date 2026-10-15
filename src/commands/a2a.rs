@@ -146,7 +146,8 @@ mod tests {
         .unwrap();
 
         let keys = A2aKeys::new(dir.path());
-        assert!(keys.snapshot().await.unwrap().list().is_empty());
+        let actual = &keys.snapshot().await.unwrap().list();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]
