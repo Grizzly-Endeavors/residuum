@@ -4,425 +4,424 @@
 //! produce wire-compatible JSON, decode the documented receipt shape,
 //! and surface upstream errors (including 429 Retry-After) to the caller.
 
-#[expect(
+#![expect(
     clippy::indexing_slicing,
     reason = "test code indexes serde_json::Value by known-present keys"
 )]
-#[expect(
+#![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
-mod feedback_submit_integration {
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
 
-    use residuum::config::TracingConfig;
-    use residuum::tracing_service::{
-        BugReport, ClientContext, Feedback, FeedbackClient, Severity, Subagent, TracingService,
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use residuum::config::TracingConfig;
+use residuum::tracing_service::{
+    BugReport, ClientContext, Feedback, FeedbackClient, Severity, Subagent, TracingService,
+};
+use residuum::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
+use serde_json::Value;
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+fn sample_client() -> ClientContext {
+    ClientContext {
+        version: "v2026.04.16".to_string(),
+        commit: Some("deadbeef1234".to_string()),
+        os: "linux".to_string(),
+        arch: "x86_64".to_string(),
+        model_provider: Some("anthropic".to_string()),
+        model_name: Some("claude-opus-4-7".to_string()),
+        active_subagents: Vec::new(),
+        config_flags: BTreeMap::new(),
+        agent: None,
+    }
+}
+
+fn build_service(endpoint: &str) -> Arc<TracingService> {
+    let cfg = TracingConfig {
+        feedback_endpoint: endpoint.to_string(),
+        ..TracingConfig::default()
     };
-    use residuum::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
-    use serde_json::Value;
-    use wiremock::matchers::{header, method, path};
-    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+    let (_, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
+    Arc::new(TracingService::new(cfg, handle))
+}
 
-    fn sample_client() -> ClientContext {
-        ClientContext {
-            version: "v2026.04.16".to_string(),
-            commit: Some("deadbeef1234".to_string()),
-            os: "linux".to_string(),
-            arch: "x86_64".to_string(),
-            model_provider: Some("anthropic".to_string()),
-            model_name: Some("claude-opus-4-7".to_string()),
-            active_subagents: Vec::new(),
-            config_flags: BTreeMap::new(),
-            agent: None,
-        }
-    }
+fn build_service_with_auto_error_reporting(endpoint: &str) -> Arc<TracingService> {
+    let cfg = TracingConfig {
+        feedback_endpoint: endpoint.to_string(),
+        auto_error_reporting: true,
+        ..TracingConfig::default()
+    };
+    let (_, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
+    Arc::new(TracingService::new(cfg, handle))
+}
 
-    fn build_service(endpoint: &str) -> Arc<TracingService> {
-        let cfg = TracingConfig {
-            feedback_endpoint: endpoint.to_string(),
-            ..TracingConfig::default()
-        };
-        let (_, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
-        Arc::new(TracingService::new(cfg, handle))
-    }
+/// Captured request body: shared between the mock responder and the test
+/// assertions. Created fresh per test.
+fn capture_body() -> Arc<std::sync::Mutex<Option<Value>>> {
+    Arc::new(std::sync::Mutex::new(None))
+}
 
-    fn build_service_with_auto_error_reporting(endpoint: &str) -> Arc<TracingService> {
-        let cfg = TracingConfig {
-            feedback_endpoint: endpoint.to_string(),
-            auto_error_reporting: true,
-            ..TracingConfig::default()
-        };
-        let (_, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
-        Arc::new(TracingService::new(cfg, handle))
-    }
+#[tokio::test]
+async fn bug_report_happy_path_sends_wire_contract_and_returns_receipt() {
+    let server = MockServer::start().await;
+    let captured = capture_body();
+    let captured_for_mock = Arc::clone(&captured);
 
-    /// Captured request body: shared between the mock responder and the test
-    /// assertions. Created fresh per test.
-    fn capture_body() -> Arc<std::sync::Mutex<Option<Value>>> {
-        Arc::new(std::sync::Mutex::new(None))
-    }
-
-    #[tokio::test]
-    async fn bug_report_happy_path_sends_wire_contract_and_returns_receipt() {
-        let server = MockServer::start().await;
-        let captured = capture_body();
-        let captured_for_mock = Arc::clone(&captured);
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/bug-report"))
-            .and(header("content-type", "application/json"))
-            .respond_with(move |req: &Request| {
-                let body: Value = serde_json::from_slice(&req.body).unwrap();
-                *captured_for_mock.lock().unwrap() = Some(body);
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "public_id": "RR-01HZKX2P7M",
-                    "submitted_at": "2026-04-16T14:23:00Z"
-                }))
-            })
-            .mount(&server)
-            .await;
-
-        let service = build_service(&server.uri());
-        let receipt = service
-            .send_bug_report(BugReport {
-                what_happened: "it crashed".to_string(),
-                what_expected: "it should not crash".to_string(),
-                what_doing: "running the thing".to_string(),
-                severity: Severity::Broken,
-                client: sample_client(),
-            })
-            .await
-            .expect("submission must succeed");
-
-        assert_eq!(receipt.public_id, "RR-01HZKX2P7M");
-        assert_eq!(receipt.submitted_at, "2026-04-16T14:23:00Z");
-
-        let body = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("mock must have captured a body");
-        assert_eq!(body["kind"], "bug", "wire-format `kind` tag must be 'bug'");
-        assert_eq!(body["what_happened"], "it crashed");
-        assert_eq!(body["what_expected"], "it should not crash");
-        assert_eq!(body["what_doing"], "running the thing");
-        assert_eq!(body["severity"], "broken", "severity must lowercase");
-        assert!(
-            body["spans_otlp_b64"].is_string(),
-            "spans_otlp_b64 is required even when the span buffer is empty"
-        );
-        assert_eq!(body["client"]["version"], "v2026.04.16");
-        assert_eq!(body["client"]["commit"], "deadbeef1234");
-        assert_eq!(body["client"]["model_provider"], "anthropic");
-        assert!(
-            body["client"]["active_subagents"].is_array()
-                && body["client"]["active_subagents"]
-                    .as_array()
-                    .unwrap()
-                    .is_empty(),
-            "active_subagents must be present and empty"
-        );
-        assert!(
-            body["client"]["config_flags"].is_object()
-                && body["client"]["config_flags"]
-                    .as_object()
-                    .unwrap()
-                    .is_empty(),
-            "config_flags must be present and empty"
-        );
-    }
-
-    #[tokio::test]
-    async fn bug_report_includes_active_subagents_when_present() {
-        // The wire format itself doesn't know about the session registry —
-        // that's assembled by the bug-report tool and HTTP handler (see
-        // src/tools/file_bug_report.rs and src/gateway/web/tracing_api.rs).
-        // This test only confirms the wire contract carries whatever the
-        // caller populates through unchanged, since the happy-path test
-        // above pins the empty case.
-        let server = MockServer::start().await;
-        let captured = capture_body();
-        let captured_for_mock = Arc::clone(&captured);
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/bug-report"))
-            .respond_with(move |req: &Request| {
-                let body: Value = serde_json::from_slice(&req.body).unwrap();
-                *captured_for_mock.lock().unwrap() = Some(body);
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "public_id": "RR-SUBAGENTS",
-                    "submitted_at": "2026-04-16T14:23:00Z"
-                }))
-            })
-            .mount(&server)
-            .await;
-
-        let mut client = sample_client();
-        client.active_subagents = vec![Subagent {
-            name: "spawned-researcher-3f9a".to_string(),
-            status: "running (agent:researcher)".to_string(),
-        }];
-
-        let service = build_service(&server.uri());
-        service
-            .send_bug_report(BugReport {
-                what_happened: "it crashed".to_string(),
-                what_expected: "it should not crash".to_string(),
-                what_doing: "running the thing".to_string(),
-                severity: Severity::Broken,
-                client,
-            })
-            .await
-            .expect("submission must succeed");
-
-        let body = captured.lock().unwrap().clone().unwrap();
-        let subagents = body["client"]["active_subagents"].as_array().unwrap();
-        assert_eq!(subagents.len(), 1);
-        assert_eq!(subagents[0]["name"], "spawned-researcher-3f9a");
-        assert_eq!(subagents[0]["status"], "running (agent:researcher)");
-    }
-
-    #[tokio::test]
-    async fn feedback_happy_path_sends_version_only_client() {
-        let server = MockServer::start().await;
-        let captured = capture_body();
-        let captured_for_mock = Arc::clone(&captured);
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/feedback"))
-            .respond_with(move |req: &Request| {
-                let body: Value = serde_json::from_slice(&req.body).unwrap();
-                *captured_for_mock.lock().unwrap() = Some(body);
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "public_id": "RR-FBK99",
-                    "submitted_at": "2026-04-16T15:00:00Z"
-                }))
-            })
-            .mount(&server)
-            .await;
-
-        let service = build_service(&server.uri());
-        let receipt = service
-            .send_feedback(Feedback {
-                message: "the chat history reload is slick".to_string(),
-                category: Some("ui".to_string()),
-                client: FeedbackClient {
-                    version: "v2026.04.16".to_string(),
-                },
-            })
-            .await
-            .expect("submission must succeed");
-        assert_eq!(receipt.public_id, "RR-FBK99");
-
-        let body = captured.lock().unwrap().clone().unwrap();
-        assert_eq!(body["kind"], "feedback");
-        assert_eq!(body["message"], "the chat history reload is slick");
-        assert_eq!(body["category"], "ui");
-        let client_obj = body["client"].as_object().unwrap();
-        assert_eq!(
-            client_obj.len(),
-            1,
-            "feedback client must carry version only — got {:?}",
-            client_obj.keys().collect::<Vec<_>>()
-        );
-        assert_eq!(body["client"]["version"], "v2026.04.16");
-    }
-
-    #[tokio::test]
-    async fn feedback_omits_category_when_none() {
-        let server = MockServer::start().await;
-        let captured = capture_body();
-        let captured_for_mock = Arc::clone(&captured);
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/feedback"))
-            .respond_with(move |req: &Request| {
-                let body: Value = serde_json::from_slice(&req.body).unwrap();
-                *captured_for_mock.lock().unwrap() = Some(body);
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "public_id": "RR-X",
-                    "submitted_at": "2026-04-16T15:00:00Z"
-                }))
-            })
-            .mount(&server)
-            .await;
-
-        let service = build_service(&server.uri());
-        service
-            .send_feedback(Feedback {
-                message: "no category here".to_string(),
-                category: None,
-                client: FeedbackClient {
-                    version: "v2026.04.16".to_string(),
-                },
-            })
-            .await
-            .unwrap();
-
-        let body = captured.lock().unwrap().clone().unwrap();
-        assert!(
-            body.as_object().unwrap().get("category").is_none(),
-            "category must be omitted when None to keep the JSON envelope minimal"
-        );
-    }
-
-    #[tokio::test]
-    async fn upstream_422_surfaces_error_body_to_caller() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/bug-report"))
-            .respond_with(ResponseTemplate::new(422).set_body_json(
-                serde_json::json!({"error": "severity must be one of broken|wrong|annoying"}),
-            ))
-            .mount(&server)
-            .await;
-
-        let service = build_service(&server.uri());
-        let err = service
-            .send_bug_report(BugReport {
-                what_happened: "x".to_string(),
-                what_expected: "y".to_string(),
-                what_doing: "z".to_string(),
-                severity: Severity::Broken,
-                client: sample_client(),
-            })
-            .await
-            .expect_err("422 must error");
-        let msg = format!("{err}");
-        assert!(msg.contains("422"), "error must include status: {msg}");
-        assert!(
-            msg.contains("severity must be one of"),
-            "error must surface upstream message: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn upstream_429_surfaces_retry_after_header() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/feedback"))
-            .respond_with(
-                ResponseTemplate::new(429)
-                    .insert_header("retry-after", "120")
-                    .set_body_json(serde_json::json!({"error": "rate limited"})),
-            )
-            .mount(&server)
-            .await;
-
-        let service = build_service(&server.uri());
-        let err = service
-            .send_feedback(Feedback {
-                message: "test".to_string(),
-                category: None,
-                client: FeedbackClient {
-                    version: "v2026.04.16".to_string(),
-                },
-            })
-            .await
-            .expect_err("429 must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("retry after 120s"),
-            "Retry-After must be surfaced in the error: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn on_error_no_ops_when_auto_error_reporting_is_off() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/bug-report"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "public_id": "RR-SHOULD-NOT-FIRE",
+    Mock::given(method("POST"))
+        .and(path("/api/v1/bug-report"))
+        .and(header("content-type", "application/json"))
+        .respond_with(move |req: &Request| {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            *captured_for_mock.lock().unwrap() = Some(body);
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-01HZKX2P7M",
                 "submitted_at": "2026-04-16T14:23:00Z"
-            })))
-            .expect(0)
-            .mount(&server)
-            .await;
+            }))
+        })
+        .mount(&server)
+        .await;
 
-        // build_service defaults auto_error_reporting to false.
-        let service = build_service(&server.uri());
-        service.on_error("something broke", sample_client()).await;
-    }
+    let service = build_service(&server.uri());
+    let receipt = service
+        .send_bug_report(BugReport {
+            what_happened: "it crashed".to_string(),
+            what_expected: "it should not crash".to_string(),
+            what_doing: "running the thing".to_string(),
+            severity: Severity::Broken,
+            client: sample_client(),
+        })
+        .await
+        .expect("submission must succeed");
 
-    #[tokio::test]
-    async fn on_error_submits_a_broken_severity_report_when_enabled() {
-        let server = MockServer::start().await;
-        let captured = capture_body();
-        let captured_for_mock = Arc::clone(&captured);
+    assert_eq!(receipt.public_id, "RR-01HZKX2P7M");
+    assert_eq!(receipt.submitted_at, "2026-04-16T14:23:00Z");
 
-        Mock::given(method("POST"))
-            .and(path("/api/v1/bug-report"))
-            .respond_with(move |req: &Request| {
-                let body: Value = serde_json::from_slice(&req.body).unwrap();
-                *captured_for_mock.lock().unwrap() = Some(body);
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "public_id": "RR-AUTO",
-                    "submitted_at": "2026-04-16T14:23:00Z"
-                }))
-            })
-            .expect(1)
-            .mount(&server)
-            .await;
+    let body = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("mock must have captured a body");
+    assert_eq!(body["kind"], "bug", "wire-format `kind` tag must be 'bug'");
+    assert_eq!(body["what_happened"], "it crashed");
+    assert_eq!(body["what_expected"], "it should not crash");
+    assert_eq!(body["what_doing"], "running the thing");
+    assert_eq!(body["severity"], "broken", "severity must lowercase");
+    assert!(
+        body["spans_otlp_b64"].is_string(),
+        "spans_otlp_b64 is required even when the span buffer is empty"
+    );
+    assert_eq!(body["client"]["version"], "v2026.04.16");
+    assert_eq!(body["client"]["commit"], "deadbeef1234");
+    assert_eq!(body["client"]["model_provider"], "anthropic");
+    assert!(
+        body["client"]["active_subagents"].is_array()
+            && body["client"]["active_subagents"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+        "active_subagents must be present and empty"
+    );
+    assert!(
+        body["client"]["config_flags"].is_object()
+            && body["client"]["config_flags"]
+                .as_object()
+                .unwrap()
+                .is_empty(),
+        "config_flags must be present and empty"
+    );
+}
 
-        let service = build_service_with_auto_error_reporting(&server.uri());
+#[tokio::test]
+async fn bug_report_includes_active_subagents_when_present() {
+    // The wire format itself doesn't know about the session registry —
+    // that's assembled by the bug-report tool and HTTP handler (see
+    // src/tools/file_bug_report.rs and src/gateway/web/tracing_api.rs).
+    // This test only confirms the wire contract carries whatever the
+    // caller populates through unchanged, since the happy-path test
+    // above pins the empty case.
+    let server = MockServer::start().await;
+    let captured = capture_body();
+    let captured_for_mock = Arc::clone(&captured);
+
+    Mock::given(method("POST"))
+        .and(path("/api/v1/bug-report"))
+        .respond_with(move |req: &Request| {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            *captured_for_mock.lock().unwrap() = Some(body);
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-SUBAGENTS",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let mut client = sample_client();
+    client.active_subagents = vec![Subagent {
+        name: "spawned-researcher-3f9a".to_string(),
+        status: "running (agent:researcher)".to_string(),
+    }];
+
+    let service = build_service(&server.uri());
+    service
+        .send_bug_report(BugReport {
+            what_happened: "it crashed".to_string(),
+            what_expected: "it should not crash".to_string(),
+            what_doing: "running the thing".to_string(),
+            severity: Severity::Broken,
+            client,
+        })
+        .await
+        .expect("submission must succeed");
+
+    let body = captured.lock().unwrap().clone().unwrap();
+    let subagents = body["client"]["active_subagents"].as_array().unwrap();
+    assert_eq!(subagents.len(), 1);
+    assert_eq!(subagents[0]["name"], "spawned-researcher-3f9a");
+    assert_eq!(subagents[0]["status"], "running (agent:researcher)");
+}
+
+#[tokio::test]
+async fn feedback_happy_path_sends_version_only_client() {
+    let server = MockServer::start().await;
+    let captured = capture_body();
+    let captured_for_mock = Arc::clone(&captured);
+
+    Mock::given(method("POST"))
+        .and(path("/api/v1/feedback"))
+        .respond_with(move |req: &Request| {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            *captured_for_mock.lock().unwrap() = Some(body);
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-FBK99",
+                "submitted_at": "2026-04-16T15:00:00Z"
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let service = build_service(&server.uri());
+    let receipt = service
+        .send_feedback(Feedback {
+            message: "the chat history reload is slick".to_string(),
+            category: Some("ui".to_string()),
+            client: FeedbackClient {
+                version: "v2026.04.16".to_string(),
+            },
+        })
+        .await
+        .expect("submission must succeed");
+    assert_eq!(receipt.public_id, "RR-FBK99");
+
+    let body = captured.lock().unwrap().clone().unwrap();
+    assert_eq!(body["kind"], "feedback");
+    assert_eq!(body["message"], "the chat history reload is slick");
+    assert_eq!(body["category"], "ui");
+    let client_obj = body["client"].as_object().unwrap();
+    assert_eq!(
+        client_obj.len(),
+        1,
+        "feedback client must carry version only — got {:?}",
+        client_obj.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(body["client"]["version"], "v2026.04.16");
+}
+
+#[tokio::test]
+async fn feedback_omits_category_when_none() {
+    let server = MockServer::start().await;
+    let captured = capture_body();
+    let captured_for_mock = Arc::clone(&captured);
+
+    Mock::given(method("POST"))
+        .and(path("/api/v1/feedback"))
+        .respond_with(move |req: &Request| {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            *captured_for_mock.lock().unwrap() = Some(body);
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-X",
+                "submitted_at": "2026-04-16T15:00:00Z"
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let service = build_service(&server.uri());
+    service
+        .send_feedback(Feedback {
+            message: "no category here".to_string(),
+            category: None,
+            client: FeedbackClient {
+                version: "v2026.04.16".to_string(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let body = captured.lock().unwrap().clone().unwrap();
+    assert!(
+        body.as_object().unwrap().get("category").is_none(),
+        "category must be omitted when None to keep the JSON envelope minimal"
+    );
+}
+
+#[tokio::test]
+async fn upstream_422_surfaces_error_body_to_caller() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/bug-report"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(
+            serde_json::json!({"error": "severity must be one of broken|wrong|annoying"}),
+        ))
+        .mount(&server)
+        .await;
+
+    let service = build_service(&server.uri());
+    let err = service
+        .send_bug_report(BugReport {
+            what_happened: "x".to_string(),
+            what_expected: "y".to_string(),
+            what_doing: "z".to_string(),
+            severity: Severity::Broken,
+            client: sample_client(),
+        })
+        .await
+        .expect_err("422 must error");
+    let msg = format!("{err}");
+    assert!(msg.contains("422"), "error must include status: {msg}");
+    assert!(
+        msg.contains("severity must be one of"),
+        "error must surface upstream message: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn upstream_429_surfaces_retry_after_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/feedback"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "120")
+                .set_body_json(serde_json::json!({"error": "rate limited"})),
+        )
+        .mount(&server)
+        .await;
+
+    let service = build_service(&server.uri());
+    let err = service
+        .send_feedback(Feedback {
+            message: "test".to_string(),
+            category: None,
+            client: FeedbackClient {
+                version: "v2026.04.16".to_string(),
+            },
+        })
+        .await
+        .expect_err("429 must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("retry after 120s"),
+        "Retry-After must be surfaced in the error: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn on_error_no_ops_when_auto_error_reporting_is_off() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/bug-report"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "public_id": "RR-SHOULD-NOT-FIRE",
+            "submitted_at": "2026-04-16T14:23:00Z"
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    // build_service defaults auto_error_reporting to false.
+    let service = build_service(&server.uri());
+    service.on_error("something broke", sample_client()).await;
+}
+
+#[tokio::test]
+async fn on_error_submits_a_broken_severity_report_when_enabled() {
+    let server = MockServer::start().await;
+    let captured = capture_body();
+    let captured_for_mock = Arc::clone(&captured);
+
+    Mock::given(method("POST"))
+        .and(path("/api/v1/bug-report"))
+        .respond_with(move |req: &Request| {
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            *captured_for_mock.lock().unwrap() = Some(body);
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-AUTO",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            }))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let service = build_service_with_auto_error_reporting(&server.uri());
+    service
+        .on_error("panic in tool executor", sample_client())
+        .await;
+
+    let body = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("mock must have captured a body");
+    assert_eq!(body["kind"], "bug");
+    assert_eq!(body["what_happened"], "panic in tool executor");
+    assert_eq!(body["what_expected"], "no error");
+    assert_eq!(body["what_doing"], "auto-reported (no user input)");
+    assert_eq!(body["severity"], "broken");
+}
+
+#[tokio::test]
+async fn on_error_rate_limits_a_tight_loop_of_the_same_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/bug-report"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "public_id": "RR-LOOP",
+            "submitted_at": "2026-04-16T14:23:00Z"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let service = build_service_with_auto_error_reporting(&server.uri());
+    for _ in 0..20 {
         service
-            .on_error("panic in tool executor", sample_client())
+            .on_error("same failure repeated", sample_client())
             .await;
-
-        let body = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("mock must have captured a body");
-        assert_eq!(body["kind"], "bug");
-        assert_eq!(body["what_happened"], "panic in tool executor");
-        assert_eq!(body["what_expected"], "no error");
-        assert_eq!(body["what_doing"], "auto-reported (no user input)");
-        assert_eq!(body["severity"], "broken");
     }
+}
 
-    #[tokio::test]
-    async fn on_error_rate_limits_a_tight_loop_of_the_same_error() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/bug-report"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "public_id": "RR-LOOP",
-                "submitted_at": "2026-04-16T14:23:00Z"
-            })))
-            .expect(1)
-            .mount(&server)
+#[tokio::test]
+async fn on_error_caps_distinct_errors_at_the_hourly_budget() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/bug-report"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "public_id": "RR-CAP",
+            "submitted_at": "2026-04-16T14:23:00Z"
+        })))
+        .expect(5)
+        .mount(&server)
+        .await;
+
+    let service = build_service_with_auto_error_reporting(&server.uri());
+    for i in 0..10 {
+        service
+            .on_error(&format!("distinct failure {i}"), sample_client())
             .await;
-
-        let service = build_service_with_auto_error_reporting(&server.uri());
-        for _ in 0..20 {
-            service
-                .on_error("same failure repeated", sample_client())
-                .await;
-        }
-    }
-
-    #[tokio::test]
-    async fn on_error_caps_distinct_errors_at_the_hourly_budget() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/bug-report"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "public_id": "RR-CAP",
-                "submitted_at": "2026-04-16T14:23:00Z"
-            })))
-            .expect(5)
-            .mount(&server)
-            .await;
-
-        let service = build_service_with_auto_error_reporting(&server.uri());
-        for i in 0..10 {
-            service
-                .on_error(&format!("distinct failure {i}"), sample_client())
-                .await;
-        }
     }
 }
