@@ -826,7 +826,7 @@ async fn build_tools_and_agent(
 
     // Reserve the built-in tool namespace so any MCP tool (workspace or web
     // search) that reuses a built-in name is shadowed visibly instead of
-    // silently. See crates/mcp/CLAUDE.md.
+    // silently. See crates/mcp/src/CLAUDE.md.
     inputs
         .mcp_registry
         .write()

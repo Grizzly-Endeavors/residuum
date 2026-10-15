@@ -116,7 +116,7 @@ pub struct McpRegistry {
     /// excluded from [`tool_definitions`](Self::tool_definitions) and never
     /// reachable. Set once by the gateway after the tool registry is built via
     /// [`set_reserved_tool_names`](Self::set_reserved_tool_names); empty in
-    /// bare registries (tests). See `crates/mcp/CLAUDE.md` for the full policy.
+    /// bare registries (tests). See `crates/mcp/src/CLAUDE.md` for the full policy.
     reserved_tool_names: HashSet<String>,
     /// The agent's workspace root, passed to every spawned stdio server as
     /// its `current_dir` (see [`McpClient::connect`]) instead of the
@@ -533,7 +533,7 @@ impl McpRegistry {
     /// colliding tools are therefore shadowed — excluded from
     /// [`tool_definitions`](Self::tool_definitions) and never dispatched to.
     /// The winner and this server's non-colliding tools keep working. See
-    /// `crates/mcp/CLAUDE.md`.
+    /// `crates/mcp/src/CLAUDE.md`.
     fn warn_shadowed_tools(&self, server_name: &str, tools: &[ToolDefinition]) {
         for tool in tools {
             if self.reserved_tool_names.contains(&tool.name) {
@@ -582,7 +582,7 @@ impl McpRegistry {
     /// once, matching what [`call_tool`](Self::call_tool) will dispatch to:
     /// names reserved by a built-in tool are excluded (the built-in wins), and
     /// when two MCP servers expose the same name only the first-registered
-    /// running server's definition is kept. See `crates/mcp/CLAUDE.md`.
+    /// running server's definition is kept. See `crates/mcp/src/CLAUDE.md`.
     #[must_use]
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         let mut seen: HashSet<&str> = HashSet::new();
