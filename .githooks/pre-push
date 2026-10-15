@@ -225,8 +225,13 @@ link_stable_node_modules() {
 }
 
 # Checks out the commit $1 in the stable tree under the stable lock. Returns 1,
-# having said why, when another live push holds the lock or the tree cannot be
-# prepared, and the caller then uses a temporary worktree. Never call it in a
+# having said why, when another push holds the lock or the tree cannot be
+# prepared, and the caller then uses a temporary worktree. A lock with no pid
+# yet is held: the window between creating the lock directory and writing the
+# pid is too short to call it stale, and a holder that died in that window needs
+# the lock removed by hand. A stale lock taken over by two pushes at the same
+# moment can still race; that needs two pushes after one crashed holder, and the
+# result is a second push checking in the same tree. Never call it in a
 # subshell: the lock and the cleanup trap need the variables it sets.
 prepare_stable_tree() {
     local sha="$1" holder=""
@@ -236,11 +241,11 @@ prepare_stable_tree() {
     fi
     if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
         holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
-        if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-            note "another push (pid $holder) is using the stable pre-push tree; checking in a temporary worktree instead."
+        if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
+            note "the stable pre-push tree is locked${holder:+ by pid $holder}; checking in a temporary worktree instead. If no push is running, remove $STABLE_LOCK."
             return 1
         fi
-        note "the stable pre-push tree's lock was held by pid ${holder:-unknown}, which is no longer running; taking it over."
+        note "the stable pre-push tree's lock was held by pid $holder, which is no longer running; taking it over."
         rm -rf "$STABLE_LOCK"
         if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
             note "another push took the stable pre-push tree first; checking in a temporary worktree instead."
@@ -357,9 +362,10 @@ pick_packages() {
 #                                  test except ts_export
 #   tests/<name>.rs                that integration test
 #   other tests/*/*                every integration test
-#   web/src/styles/tokens.css      every root unit test while src/browser_landing.rs
-#                                  is in the root, else the member tests of the
-#                                  crate that holds it
+#   web/src/styles/tokens.css      every root unit test while
+#                                  crates/net/src/browser_landing.rs does not
+#                                  exist, else the member tests of the crate
+#                                  that holds it
 #   web/app-shell-csp.txt, .github/workflows/release.yml
 #                                  every root unit test
 # Clippy checks the packages scripts/affected-packages.sh --affected picks for
@@ -462,7 +468,7 @@ plan_rust_tests() {
             ;;
         web/src/styles/tokens.css)
             member_paths="$member_paths$path"$'\n'
-            if [ -f "$dir/src/browser_landing.rs" ]; then
+            if [ ! -f "$dir/crates/net/src/browser_landing.rs" ]; then
                 unit_all=1
                 unit_reason="$path is read by unit tests"
             fi
