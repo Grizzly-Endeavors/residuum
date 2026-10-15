@@ -3,7 +3,7 @@
 //! Runs synchronously after the agent completes a turn when the accumulated
 //! recent message token count exceeds the configured threshold. Extraction
 //! has no side effects — see [`Observer::extract`]; persisting the result as
-//! an episode is [`crate::memory::merge_writer::MemoryMergeWriter`]'s job.
+//! an episode is [`crate::merge_writer::MemoryMergeWriter`]'s job.
 
 mod parse;
 mod prompt;
@@ -14,15 +14,15 @@ use anyhow::Context;
 use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 
-use crate::config::{
+use crate::recent_messages::RecentMessage;
+use crate::types::Visibility;
+use parse::parse_observer_response;
+use prompt::{EXTRACTION_CONTENT_PROMPT, build_extraction_prompt, observer_response_schema};
+use residuum_config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
     WorkspaceLayout,
 };
-use crate::inference::{CompletionOptions, InferenceProvider, ResponseFormat};
-use crate::memory::recent_messages::RecentMessage;
-use crate::memory::types::Visibility;
-use parse::parse_observer_response;
-use prompt::{EXTRACTION_CONTENT_PROMPT, build_extraction_prompt, observer_response_schema};
+use residuum_inference::{CompletionOptions, InferenceProvider, ResponseFormat};
 
 /// A single observation extracted from a conversation segment, before it is
 /// assigned an episode id or written anywhere.
@@ -75,7 +75,7 @@ pub struct ObserverConfig {
     /// Timezone used for timestamps in observations.
     pub tz: Tz,
     /// Per-role overrides for temperature and thinking.
-    pub role_overrides: Option<crate::config::RoleOverrides>,
+    pub role_overrides: Option<residuum_config::RoleOverrides>,
 }
 
 impl Default for ObserverConfig {
@@ -101,7 +101,7 @@ struct ObserverInner {
 ///
 /// Provider and config live behind a lock, not owned directly, so `Observer`
 /// can be shared (`Arc<Observer>`) with the background post-turn worker —
-/// see `crate::gateway::post_turn` — while a config reload on the main loop
+/// in the gateway's `post_turn` — while a config reload on the main loop
 /// can still swap them in place. `extract` only ever holds the lock briefly,
 /// to clone out an `Arc` and a couple of `Copy`/cheap-`Clone` fields, never
 /// across the LLM call itself.
@@ -112,7 +112,7 @@ pub struct Observer {
     /// LLM call — on every later threshold crossing while recent messages
     /// keep accumulating unobserved. Manual observes (`observe --force`)
     /// bypass this deliberately and always attempt.
-    automatic_failure: crate::util::BackoffTracker,
+    automatic_failure: residuum_core::util::BackoffTracker,
 }
 
 impl Observer {
@@ -124,7 +124,7 @@ impl Observer {
                 provider: Arc::from(provider),
                 config,
             }),
-            automatic_failure: crate::util::BackoffTracker::new(),
+            automatic_failure: residuum_core::util::BackoffTracker::new(),
         }
     }
 
@@ -136,7 +136,7 @@ impl Observer {
     pub fn disabled(tz: Tz) -> Self {
         Self {
             inner: std::sync::RwLock::new(ObserverInner {
-                provider: Arc::new(crate::inference::NullProvider),
+                provider: Arc::new(residuum_inference::NullProvider),
                 config: ObserverConfig {
                     threshold_tokens: usize::MAX,
                     cooldown_secs: u64::MAX,
@@ -145,7 +145,7 @@ impl Observer {
                     role_overrides: None,
                 },
             }),
-            automatic_failure: crate::util::BackoffTracker::new(),
+            automatic_failure: residuum_core::util::BackoffTracker::new(),
         }
     }
 
@@ -190,7 +190,7 @@ impl Observer {
     /// once when a failure streak starts or clears. A manually forced
     /// observe doesn't consult this — it always attempts.
     #[must_use]
-    pub fn automatic_failure_tracker(&self) -> &crate::util::BackoffTracker {
+    pub fn automatic_failure_tracker(&self) -> &residuum_core::util::BackoffTracker {
         &self.automatic_failure
     }
 
@@ -325,22 +325,22 @@ impl Observer {
 fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
     recent_messages
         .iter()
-        .map(|rm| crate::memory::tokens::estimate_single_message(&rm.message))
+        .map(|rm| crate::tokens::estimate_single_message(&rm.message))
         .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::{InferenceResponse, Message, Role};
-    use crate::memory::recent_messages::RecentMessage;
-    use crate::memory::test_helpers::MockMemoryProvider;
-    use crate::memory::types::Visibility;
+    use crate::recent_messages::RecentMessage;
+    use crate::testing::MockMemoryProvider;
+    use crate::types::Visibility;
     use parse::{parse_extraction_items, parse_observer_response};
     use prompt::{
         EXTRACTION_CONTENT_PROMPT, EXTRACTION_FORMAT_SPEC, build_extraction_prompt,
         format_recent_message,
     };
+    use residuum_inference::{InferenceResponse, Message, Role};
 
     const SAMPLE_RESPONSE: &str = r#"{
         "observations": [
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn format_recent_message_includes_tool_calls() {
-        use crate::inference::ToolCall;
+        use residuum_inference::ToolCall;
 
         let rm = RecentMessage {
             message: Message::assistant(
@@ -841,8 +841,8 @@ mod tests {
     #[test]
     fn the_extraction_prompt_leaves_out_the_models_thinking() {
         let recent_messages = vec![RecentMessage {
-            message: crate::inference::Message::assistant("The answer is 42.".to_string(), None)
-                .with_thinking(vec![crate::inference::ThinkingBlock {
+            message: residuum_inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![residuum_inference::ThinkingBlock {
                     text: "private reasoning about the answer".to_string(),
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),

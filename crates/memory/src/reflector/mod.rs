@@ -13,14 +13,14 @@ use std::sync::Arc;
 use anyhow::Context;
 use chrono_tz::Tz;
 
-use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
-use crate::config::WorkspaceLayout;
-use crate::inference::{CompletionOptions, InferenceProvider, ResponseFormat};
-use crate::memory::log_store::{load_observation_log, save_observation_log};
-use crate::memory::tokens::estimate_tokens;
-use crate::memory::types::ObservationLog;
+use crate::log_store::{load_observation_log, save_observation_log};
+use crate::tokens::estimate_tokens;
+use crate::types::ObservationLog;
 use parse::parse_reflection_response;
 use prompt::{REFLECTION_CONTENT_PROMPT, build_reflection_prompt, reflector_response_schema};
+use residuum_config::DEFAULT_REFLECTOR_THRESHOLD;
+use residuum_config::WorkspaceLayout;
+use residuum_inference::{CompletionOptions, InferenceProvider, ResponseFormat};
 
 /// Reflector configuration.
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ pub struct ReflectorConfig {
     /// Timezone used for timestamps in observations.
     pub tz: Tz,
     /// Per-role overrides for temperature and thinking.
-    pub role_overrides: Option<crate::config::RoleOverrides>,
+    pub role_overrides: Option<residuum_config::RoleOverrides>,
 }
 
 impl Default for ReflectorConfig {
@@ -70,7 +70,7 @@ impl Reflector {
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
-            provider: Arc::new(crate::inference::NullProvider),
+            provider: Arc::new(residuum_inference::NullProvider),
             config: ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 tz,
@@ -229,9 +229,9 @@ pub(crate) async fn replace_with_compressed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::log_store::save_observation_log;
-    use crate::memory::test_helpers::MockMemoryProvider;
-    use crate::memory::types::{Observation, Visibility};
+    use crate::log_store::save_observation_log;
+    use crate::testing::MockMemoryProvider;
+    use crate::types::{Observation, Visibility};
     use parse::parse_reflection_response;
 
     fn sample_observation(episode_id: &str) -> Observation {
@@ -240,7 +240,7 @@ mod tests {
             source_episodes: Some(episode_id.to_string()),
             visibility: Visibility::User,
             content: format!("observation from {episode_id}"),
-            source: crate::memory::types::SourceTag::main(),
+            source: crate::types::SourceTag::main(),
         }
     }
 
@@ -440,7 +440,7 @@ mod tests {
             .unwrap();
 
         // A merge lands while the model is compressing.
-        crate::memory::log_store::append_observations(
+        crate::log_store::append_observations(
             &layout.observations_json(),
             vec![sample_observation("ep-002")],
         )

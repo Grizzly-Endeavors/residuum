@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use crate::memory::types::{Observation, ObservationLog};
+use crate::types::{Observation, ObservationLog};
 
 /// Load the observation log from disk.
 ///
@@ -41,7 +41,7 @@ pub async fn load_observation_log(path: &Path) -> anyhow::Result<ObservationLog>
 pub async fn save_observation_log(path: &Path, log: &ObservationLog) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(log).context("failed to serialize observation log")?;
 
-    crate::util::fs::atomic_write(path, &json).await
+    residuum_core::util::fs::atomic_write(path, &json).await
 }
 
 /// Append observations to the observation log on disk.
@@ -74,20 +74,20 @@ pub(crate) async fn save_episode_observations(
     let json =
         serde_json::to_string(observations).context("failed to serialize episode observations")?;
 
-    crate::util::fs::atomic_write(path, &json).await
+    residuum_core::util::fs::atomic_write(path, &json).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::types::Visibility;
+    use crate::types::Visibility;
     fn sample_observation(episode_id: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             source_episodes: Some(episode_id.to_string()),
             visibility: Visibility::User,
             content: format!("observed something from {episode_id}"),
-            source: crate::memory::types::SourceTag::main(),
+            source: crate::types::SourceTag::main(),
         }
     }
 

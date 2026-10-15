@@ -12,7 +12,7 @@ use zerocopy::IntoBytes;
 
 use anyhow::Context;
 
-use crate::memory::types::{DocSource, IndexChunk, Observation};
+use crate::types::{DocSource, IndexChunk, Observation};
 
 /// A vector search result from the observation, chunk, or wiki table.
 #[derive(Debug, Clone)]
@@ -811,7 +811,7 @@ fn build_filter_clauses(filters: &VectorSearchFilters) -> (String, Vec<String>) 
 )]
 mod tests {
     use super::*;
-    use crate::memory::types::Visibility;
+    use crate::types::Visibility;
 
     const TEST_DIM: usize = 4;
 
@@ -825,7 +825,7 @@ mod tests {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: text.to_string(),
-            source: crate::memory::types::SourceTag::main(),
+            source: crate::types::SourceTag::main(),
         }
     }
 

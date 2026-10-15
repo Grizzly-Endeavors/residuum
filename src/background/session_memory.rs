@@ -196,7 +196,7 @@ mod tests {
     use super::*;
     use crate::inference::Message;
     use crate::memory::observer::{Observer, ObserverConfig};
-    use crate::memory::test_helpers::MockMemoryProvider;
+    use crate::memory::testing::MockMemoryProvider;
     use std::sync::Arc;
 
     fn sample_tag() -> SourceTag {

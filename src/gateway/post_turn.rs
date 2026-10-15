@@ -1112,7 +1112,7 @@ mod tests {
         }"#;
         let dir = tempfile::tempdir().unwrap();
         let subconscious = Subconscious::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 NOTE_RESPONSE,
             )),
             crate::subconscious::SubconsciousConfig {

@@ -1,13 +1,13 @@
 //! Prompt construction for the reflector LLM call.
 
-use crate::inference::Message;
+use residuum_inference::Message;
 
 /// User-customizable content guidance — default when `memory/REFLECTOR.md` is absent.
 ///
 /// Embedded from the same asset the workspace bootstrap writes to disk, so the
 /// fallback and the bundled file cannot drift. The format spec is always appended by code.
 pub(super) const REFLECTION_CONTENT_PROMPT: &str =
-    include_str!("../../../assets/workspace-bootstrap/memory/REFLECTOR.md");
+    include_str!("../../../../assets/workspace-bootstrap/memory/REFLECTOR.md");
 
 /// Output format spec — always appended by code, never stored in editable files.
 ///

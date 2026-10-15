@@ -13,14 +13,14 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Te
 
 use anyhow::Context;
 
-use crate::config::SearchConfig;
-use crate::inference::EmbeddingProvider;
-use crate::memory::chunk_extractor::read_idx_jsonl;
-use crate::memory::fork_safe_directory::ForkSafeMmapDirectory;
-use crate::memory::team_wiki::TeamWikiIndex;
-use crate::memory::types::{DocSource, IndexChunk, IndexManifest, ManifestFileEntry, Observation};
-use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
-use crate::memory::wiki_index::WikiPage;
+use crate::chunk_extractor::read_idx_jsonl;
+use crate::fork_safe_directory::ForkSafeMmapDirectory;
+use crate::team_wiki::TeamWikiIndex;
+use crate::types::{DocSource, IndexChunk, IndexManifest, ManifestFileEntry, Observation};
+use crate::vector_store::{VectorSearchFilters, VectorStore};
+use crate::wiki_index::WikiPage;
+use residuum_config::SearchConfig;
+use residuum_inference::EmbeddingProvider;
 
 /// Memory budget for the tantivy index writer (50 MB).
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
@@ -305,7 +305,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub(crate) fn replace_wiki_documents(
+    pub fn replace_wiki_documents(
         &self,
         pages: &[WikiPage],
         removed_ids: &[String],
@@ -732,7 +732,7 @@ fn get_text(doc: &TantivyDocument, field: Field) -> String {
 fn get_snippet(doc: &TantivyDocument, content_field: Field) -> String {
     match doc.get_first(content_field).map(|v| v.as_value()) {
         Some(ReferenceValue::Leaf(ReferenceValueLeaf::Str(s))) => {
-            crate::memory::truncate_at_char_boundary(s, 200)
+            crate::truncate_at_char_boundary(s, 200)
         }
         Some(_) | None => String::new(),
     }
@@ -751,7 +751,11 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
 ///
 /// The `episode_id` and date are derived from the filename: `ep-NNN.obs.json`
 /// lives under `episodes/YYYY-MM/DD/`.
-pub(crate) fn parse_obs_file(path: &Path) -> anyhow::Result<(String, String, Vec<Observation>)> {
+///
+/// # Errors
+/// Returns an error if the file cannot be read or does not parse as an
+/// observation list.
+pub fn parse_obs_file(path: &Path) -> anyhow::Result<(String, String, Vec<Observation>)> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
 
@@ -861,7 +865,7 @@ fn collect_indexable_files(
 /// episode vanishing without a trace. Reconciliation is read-only and never
 /// blocks indexing.
 fn report_interrupted_episodes(episodes_dir: &Path) {
-    match crate::memory::episode_store::find_interrupted_episodes(episodes_dir) {
+    match crate::episode_store::find_interrupted_episodes(episodes_dir) {
         Ok(interrupted) if !interrupted.is_empty() => {
             tracing::warn!(
                 count = interrupted.len(),
@@ -962,7 +966,7 @@ pub(crate) async fn search_side(
         source: filters.source,
     };
     let vec_limit = candidates;
-    let vec_results = crate::util::spawn_blocking_in_span(move || {
+    let vec_results = residuum_core::util::spawn_blocking_in_span(move || {
         vs_clone.search(&query_vec, vec_limit, &vec_filters)
     })
     .await
@@ -1229,7 +1233,7 @@ fn merge_hybrid_results(
                 ..(*bm25_r).clone()
             }
         } else if let Some((_, vec_r)) = vec_map.get(id) {
-            let snippet = crate::memory::truncate_at_char_boundary(&vec_r.content, 200);
+            let snippet = crate::truncate_at_char_boundary(&vec_r.content, 200);
             SearchResult {
                 id: vec_r.id.clone(),
                 source_type: vec_r.source_type,
@@ -1305,7 +1309,7 @@ fn apply_temporal_decay(
 )]
 mod tests {
     use super::*;
-    use crate::memory::types::Visibility;
+    use crate::types::Visibility;
 
     fn create_test_index() -> (tempfile::TempDir, MemoryIndex) {
         let dir = tempfile::tempdir().unwrap();
@@ -1320,7 +1324,7 @@ mod tests {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: text.to_string(),
-            source: crate::memory::types::SourceTag::main(),
+            source: crate::types::SourceTag::main(),
         }
     }
 
@@ -2031,8 +2035,8 @@ mod tests {
         }
     }
 
-    fn make_vec_result(id: &str, distance: f64) -> crate::memory::vector_store::VectorSearchResult {
-        crate::memory::vector_store::VectorSearchResult {
+    fn make_vec_result(id: &str, distance: f64) -> crate::vector_store::VectorSearchResult {
+        crate::vector_store::VectorSearchResult {
             id: id.to_string(),
             source_type: DocSource::Observation,
             episode_id: "ep-001".to_string(),
@@ -2058,7 +2062,7 @@ mod tests {
     #[test]
     fn merge_bm25_only() {
         let bm25 = vec![make_bm25_result("a", 5.0), make_bm25_result("b", 3.0)];
-        let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
+        let vec_results: Vec<crate::vector_store::VectorSearchResult> = vec![];
 
         let cfg = test_search_config();
         let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 10);
@@ -2099,7 +2103,7 @@ mod tests {
     #[test]
     fn merge_min_score_filter() {
         let bm25 = vec![make_bm25_result("a", 5.0), make_bm25_result("b", 0.1)];
-        let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
+        let vec_results: Vec<crate::vector_store::VectorSearchResult> = vec![];
 
         let cfg = SearchConfig {
             min_score: 0.5, // high threshold
@@ -2126,7 +2130,7 @@ mod tests {
             make_bm25_result("b", 4.0),
             make_bm25_result("c", 3.0),
         ];
-        let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
+        let vec_results: Vec<crate::vector_store::VectorSearchResult> = vec![];
 
         let cfg = test_search_config();
         let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 2);
@@ -2332,7 +2336,7 @@ mod tests {
             .index_observations("ep-001", "2026-02-19", &observations)
             .unwrap();
 
-        let team = crate::config::paths::TeamPaths::new(dir.path().join("team"));
+        let team = residuum_config::paths::TeamPaths::new(dir.path().join("team"));
         for (name, body) in [
             ("alpha", "cluster cluster cluster nodes"),
             (
@@ -2462,7 +2466,7 @@ mod tests {
 
     #[tokio::test]
     async fn semantic_reports_vectors_from_either_side() {
-        use crate::inference::{EmbeddingResponse, InferenceError};
+        use residuum_inference::{EmbeddingResponse, InferenceError};
 
         struct Flat;
         #[async_trait::async_trait]
@@ -2479,13 +2483,13 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let team = crate::config::paths::TeamPaths::new(dir.path().join("team"));
+        let team = residuum_config::paths::TeamPaths::new(dir.path().join("team"));
         std::fs::create_dir_all(team.wiki_dir()).unwrap();
         std::fs::write(team.wiki_dir().join("a.md"), "cluster page\n").unwrap();
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(Flat);
         let vectored_team = TeamWikiIndex::open(&team, Some(provider)).await.unwrap();
         let text_only_team = TeamWikiIndex::open(
-            &crate::config::paths::TeamPaths::new(dir.path().join("other-team")),
+            &residuum_config::paths::TeamPaths::new(dir.path().join("other-team")),
             None,
         )
         .await

@@ -491,7 +491,7 @@ struct PanicMemoryExtras {
 /// and, when the resources for it are available, runs the normal completion
 /// memory pipeline over it — a panic mid-turn must not silently drop
 /// whatever the run had already produced. The merge writer's own
-/// idempotency check (see `crate::memory::merged_run_log`) makes this safe
+/// idempotency check (memory's merged-run log) makes this safe
 /// even if the panic happened after a merge had already succeeded.
 async fn recover_from_panic(
     info: &SessionInfo,
@@ -2984,7 +2984,7 @@ mod tests {
             None,
         ));
         let observer = Arc::new(crate::memory::observer::Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "recovered from a panic", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
             crate::memory::observer::ObserverConfig::default(),
@@ -3853,7 +3853,7 @@ mod tests {
             None,
         ));
         let observer = Arc::new(crate::memory::observer::Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "staged a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
             crate::memory::observer::ObserverConfig {

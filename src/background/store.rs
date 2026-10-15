@@ -1342,7 +1342,7 @@ mod tests {
             None,
         );
         let observer = crate::memory::observer::Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
             crate::memory::observer::ObserverConfig::default(),
@@ -1404,7 +1404,7 @@ mod tests {
             None,
         );
         let observer = crate::memory::observer::Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
             crate::memory::observer::ObserverConfig::default(),
@@ -1468,7 +1468,7 @@ mod tests {
             None,
         );
         let observer = crate::memory::observer::Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
             crate::memory::observer::ObserverConfig::default(),

@@ -158,7 +158,7 @@ publish.workspace = true
 workspace = true
 
 [features]
-test-support = []
+test-support = ["dep:async-trait"]
 
 [dependencies]
 residuum-core = { workspace = true }
@@ -414,7 +414,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
   | skills | — | | core, config | `tempfile` |
   | inference | `["dep:axum", "residuum-core/test-support"]` | `axum = { workspace = true, optional = true }`: `testing::model` serves through axum and holds requests with core's `testing::gate` | core, config | `axum`, `wiremock`, `ctor`, `rustls`, `toml` (the `completion_options_for_role` tests parse their TOML) |
   | tracing-service | — | | core, config | `tempfile`, `ctor`, `rustls` |
-  | memory | `[]` | none: its helpers use only memory's and inference's production items | core, config, inference | `tempfile`, `ctor`, `rustls` |
+  | memory | `["dep:async-trait"]` | `async-trait = { workspace = true, optional = true }`: `testing`'s provider implements inference's `#[async_trait]` `InferenceProvider`, and memory's production code names no `async_trait` | core, config, inference | `async-trait`, `tempfile`, `ctor`, `rustls` |
   | mcp | — | | core, config, inference | `tempfile`, `ctor`, `rustls` |
   | net | `[]` | none: its two hooks use only pairing's own state; `tunnel::v2::test_relay` and `remote_access::pebble_support`, which use core's `testing`, are `#[cfg(test)]` and reach it through the dev-dependency | core, config | `tempfile`, `http-body-util`, `hyper = { workspace = true, features = ["client"] }`, `ctor`, `rustls` |
   | root | (no feature) | | core, config, inference, memory, net (the five with the feature); skills, tracing-service and mcp only as normal dependencies | as today: `ctor`, `tempfile`, `tokio` with `test-util`, `wiremock`, `hyper` with `client`, `jsonschema` (`http-body-util` leaves with net, whose tests are its only users) |

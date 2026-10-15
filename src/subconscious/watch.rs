@@ -153,7 +153,7 @@ impl SubconsciousWatch {
 mod tests {
     use super::*;
     use crate::config::WorkspaceLayout;
-    use crate::memory::test_helpers::MockMemoryProvider;
+    use crate::memory::testing::MockMemoryProvider;
     use crate::subconscious::SubconsciousConfig;
     use residuum_core::testing::wait;
 

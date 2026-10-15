@@ -3,8 +3,8 @@
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::memory::types::{Observation, ObservationLog, Visibility};
-use crate::time::now_local;
+use crate::types::{Observation, ObservationLog, Visibility};
+use residuum_core::time::now_local;
 
 /// Typed response from structured output mode (object-wrapped).
 #[derive(Deserialize)]
@@ -29,7 +29,7 @@ struct ReflectorItem {
 /// Returns an error if the response cannot be parsed.
 pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result<ObservationLog> {
     let trimmed = content.trim();
-    let json_str = crate::inference::strip_code_fences(trimmed);
+    let json_str = residuum_inference::strip_code_fences(trimmed);
 
     // Fast path: try typed deserialization (structured output object format)
     if let Ok(typed) = serde_json::from_str::<ReflectorJsonResponse>(json_str) {
@@ -38,13 +38,13 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
             if item.content.is_empty() {
                 continue;
             }
-            let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
+            let timestamp = crate::parse_minute_timestamp(&item.timestamp, tz);
             log.observations.push(Observation {
                 timestamp,
                 source_episodes: None,
                 visibility: item.visibility.clone(),
                 content: item.content.clone(),
-                source: crate::memory::types::SourceTag::main(),
+                source: crate::types::SourceTag::main(),
             });
         }
         return Ok(log);
@@ -79,10 +79,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
         let timestamp = item
             .get("timestamp")
             .and_then(serde_json::Value::as_str)
-            .map_or_else(
-                || now_local(tz),
-                |ts| crate::memory::parse_minute_timestamp(ts, tz),
-            );
+            .map_or_else(|| now_local(tz), |ts| crate::parse_minute_timestamp(ts, tz));
 
         let visibility = item
             .get("visibility")
@@ -94,7 +91,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
             source_episodes: None,
             visibility,
             content: obs_content.to_string(),
-            source: crate::memory::types::SourceTag::main(),
+            source: crate::types::SourceTag::main(),
         });
     }
 

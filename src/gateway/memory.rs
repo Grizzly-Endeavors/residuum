@@ -746,7 +746,7 @@ mod tests {
         .unwrap();
 
         let observer = Arc::new(Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 EXTRACT_RESPONSE,
             )),
             crate::memory::observer::ObserverConfig::default(),
@@ -828,7 +828,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 COMPRESSED_RESPONSE,
             )),
             ReflectorConfig::default(),
