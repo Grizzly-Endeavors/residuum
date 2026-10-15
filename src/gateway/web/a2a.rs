@@ -374,7 +374,7 @@ pub(super) async fn api_a2a_agents_raw_put(
 }
 
 /// `[a2a]` settings as currently written in `config.toml`, resolved with the
-/// same defaults `crate::config::resolve::resolve_a2a_config` uses. Parsed
+/// same defaults config's a2a resolution (`crates/config/src/resolve/a2a.rs`) uses. Parsed
 /// standalone from the raw file — rather than through `Config::load_at`, which
 /// validates the whole config — so an unrelated broken section elsewhere in
 /// `config.toml` never breaks this status check.

@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 /// Minimal hub `config.toml` written on first run — user edits this.
 const MINIMAL_HUB_CONFIG: &str = "# Hub configuration. See hub-config.example.toml for all options.\n\
@@ -11,13 +11,13 @@ const MINIMAL_HUB_CONFIG: &str = "# Hub configuration. See hub-config.example.to
     # timezone = \"America/New_York\"  # IANA timezone name. The setup wizard writes this.\n";
 
 /// Full reference hub config always regenerated on startup.
-const EXAMPLE_HUB_CONFIG: &str = include_str!("../../assets/hub-config.example.toml");
+const EXAMPLE_HUB_CONFIG: &str = include_str!("../../../assets/hub-config.example.toml");
 
 /// Full reference agent config always regenerated on startup.
-const EXAMPLE_CONFIG: &str = include_str!("../../assets/config.example.toml");
+const EXAMPLE_CONFIG: &str = include_str!("../../../assets/config.example.toml");
 
 /// Full reference providers config always regenerated on startup.
-const EXAMPLE_PROVIDERS: &str = include_str!("../../assets/providers.example.toml");
+const EXAMPLE_PROVIDERS: &str = include_str!("../../../assets/providers.example.toml");
 
 /// Write a file only if it doesn't already exist.
 ///
@@ -174,7 +174,7 @@ mod tests {
             "config.toml is the discovery marker and must not be a placeholder"
         );
         assert!(!dir.join("providers.toml").exists());
-        let actual = &crate::config::discover_agents(base.path()).unwrap();
+        let actual = &crate::discover_agents(base.path()).unwrap();
         assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 

@@ -8,7 +8,7 @@
 // form doesn't model (comments, unmodeled sections/keys, HTTP MCP server
 // fields untouched by the edit) survives on the server.
 //
-// Patch value conventions (mirrored by `src/config/patch.rs` and
+// Patch value conventions (mirrored by `crates/config/src/patch.rs` and
 // `src/workspace/mcp_patch.rs`):
 //   - a nested object recurses into (or creates) the matching TOML/JSON table
 //   - `null` removes that key, or a whole named entry (provider/webhook/MCP

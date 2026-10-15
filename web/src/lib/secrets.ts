@@ -1,7 +1,7 @@
 // ── Secret / env-reference detection ──────────────────────────────────
 //
 // A settings field that holds a credential can be one of three things (see
-// `resolve_secret_value` in `src/config/resolve/mod.rs`): a `${ENV_VAR}`
+// `resolve_secret_value` in `crates/config/src/resolve/mod.rs`): a `${ENV_VAR}`
 // reference, a `secret:<name>` reference into the encrypted store, or a raw
 // literal. Only a literal should ever be sent to `storeSecret` — a
 // reference is already resolvable on its own, and round-tripping it through

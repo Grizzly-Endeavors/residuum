@@ -4978,7 +4978,6 @@ dependencies = [
  "a2a-server-lf",
  "aes",
  "aes-gcm",
- "aes-gcm-siv",
  "anyhow",
  "async-trait",
  "axum",
@@ -4988,7 +4987,6 @@ dependencies = [
  "chrono-tz",
  "clap",
  "ctor",
- "dirs 5.0.1",
  "dom_smoothie",
  "dotenvy",
  "fd-lock",
@@ -5022,6 +5020,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest 0.13.3",
+ "residuum-config",
  "residuum-core",
  "ring",
  "rmcp",
@@ -5033,7 +5032,6 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "serenity",
- "shellexpand",
  "similar",
  "sqlite-vec",
  "tantivy",
@@ -5053,13 +5051,36 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ts-rs",
- "unicode-normalization",
  "url",
  "uuid",
  "windows-sys 0.59.0",
  "wiremock",
  "x509-parser",
  "zerocopy",
+]
+
+[[package]]
+name = "residuum-config"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm-siv",
+ "base64 0.22.1",
+ "chrono-tz",
+ "dirs 5.0.1",
+ "iana-time-zone",
+ "rand 0.8.6",
+ "residuum-core",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "toml_edit 0.25.15+spec-1.1.0",
+ "tracing",
+ "unicode-normalization",
+ "url",
 ]
 
 [[package]]

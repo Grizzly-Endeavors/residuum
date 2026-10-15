@@ -1,15 +1,15 @@
+pub use residuum_config as config;
+pub use residuum_config::agent_keys;
 pub use residuum_core::{diagnostics, time, util};
 
 pub mod a2a;
 pub mod actions;
 pub mod agent;
-pub mod agent_keys;
 pub mod background;
 pub(crate) mod browser_landing;
 pub mod bus;
 pub mod checkpoints;
 pub mod client_context;
-pub mod config;
 pub(crate) mod cross_site;
 pub mod daemon;
 pub mod diagnostics_dispatch;

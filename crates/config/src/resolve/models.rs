@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
-use crate::config::types::{BackgroundModelsConfig, RoleOverrides};
-use crate::util::FatalError;
+use crate::types::{BackgroundModelsConfig, RoleOverrides};
+use residuum_core::util::FatalError;
 
 use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
 use super::super::model_catalog::{NamedProvider, implicit_provider_spec, split_model_id};
@@ -248,7 +248,7 @@ pub(super) fn scope_all_session_affinity(
 }
 
 /// A role's session-affinity key: `residuum-<role>-<hash of the workspace path>`.
-pub(in crate::config) fn session_affinity_key(workspace_dir: &Path, role: &str) -> String {
+pub(crate) fn session_affinity_key(workspace_dir: &Path, role: &str) -> String {
     let mut hasher = DefaultHasher::new();
     workspace_dir.hash(&mut hasher);
     format!("residuum-{role}-{:016x}", hasher.finish())
@@ -415,8 +415,7 @@ main = "local/qwen3"
     /// Apply the patch the web Settings sends for a model's image setting.
     fn patched(toml: &str, models: &serde_json::Value) -> String {
         let diff = serde_json::json!({ "providers": { "zai": { "models": models.clone() } } });
-        crate::config::patch::apply_patch(toml, diff.as_object().unwrap(), "providers.toml")
-            .unwrap()
+        crate::patch::apply_patch(toml, diff.as_object().unwrap(), "providers.toml").unwrap()
     }
 
     #[test]
@@ -975,18 +974,13 @@ reflector = { model = "anthropic/claude-sonnet-4-6", thinking = "low" }
 
         let obs_ov = &cfg.role_overrides["observer"];
         assert_eq!(obs_ov.temperature, Some(0.2));
-        assert_eq!(
-            obs_ov.thinking,
-            Some(crate::config::ThinkingConfig::Toggle(false))
-        );
+        assert_eq!(obs_ov.thinking, Some(crate::ThinkingConfig::Toggle(false)));
 
         let ref_ov = &cfg.role_overrides["reflector"];
         assert_eq!(ref_ov.temperature, None);
         assert_eq!(
             ref_ov.thinking,
-            Some(crate::config::ThinkingConfig::Level(
-                crate::config::ThinkingLevel::Low
-            ))
+            Some(crate::ThinkingConfig::Level(crate::ThinkingLevel::Low))
         );
     }
 
@@ -1151,15 +1145,13 @@ large = { model = "anthropic/claude-sonnet-4-6", thinking = "medium" }
         let bg_small_ov = &cfg.role_overrides["bg_small"];
         assert_eq!(
             bg_small_ov.thinking,
-            Some(crate::config::ThinkingConfig::Toggle(false))
+            Some(crate::ThinkingConfig::Toggle(false))
         );
         assert!(!cfg.role_overrides.contains_key("bg_medium"));
         let bg_large_ov = &cfg.role_overrides["bg_large"];
         assert_eq!(
             bg_large_ov.thinking,
-            Some(crate::config::ThinkingConfig::Level(
-                crate::config::ThinkingLevel::Medium
-            ))
+            Some(crate::ThinkingConfig::Level(crate::ThinkingLevel::Medium))
         );
     }
 }

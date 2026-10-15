@@ -10,7 +10,7 @@ use super::types::{CloudConfig, GatewayConfig, TracingConfig};
 
 /// The A2A settings that are hub-level: who the process listens as. Per-agent
 /// visibility (`[a2a] visibility`) lives on the agent's own config instead —
-/// see [`crate::config::A2aConfig`].
+/// see [`crate::A2aConfig`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HubA2aConfig {
     /// Whether the A2A listener runs at all.
@@ -37,7 +37,7 @@ impl Default for HubA2aConfig {
 /// budget and the hop limits a message chain is checked against as it
 /// crosses agents. Per-agent knobs (idle timeouts, the subagent depth cap,
 /// model tiers) live on the agent's own config instead — see
-/// [`crate::config::BackgroundConfig`].
+/// [`crate::BackgroundConfig`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HubBackgroundConfig {
     /// Maximum number of concurrent running session turns, shared by every
@@ -193,6 +193,6 @@ pub struct HubConfig {
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while
     /// loading this config. Populated the same way as
-    /// [`crate::config::Config::load_notices`].
+    /// [`crate::Config::load_notices`].
     pub load_notices: Vec<String>,
 }

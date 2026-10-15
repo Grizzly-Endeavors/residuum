@@ -1086,7 +1086,7 @@ fn publish_startup_notices(host: &AgentHost, hub: &HubConfig, fallback_problem: 
         tracing::warn!(%notice, "hub config notice");
         host.notice(NoticeLevel::Warn, notice.clone(), None);
     }
-    for notice in crate::config::resolve::removed_agent_env_override_notices() {
+    for notice in crate::config::removed_agent_env_override_notices() {
         tracing::warn!(%notice, "removed environment override is still set");
         host.notice(NoticeLevel::Warn, notice, None);
     }

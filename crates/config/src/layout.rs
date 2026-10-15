@@ -15,7 +15,7 @@ pub struct WorkspaceLayout {
     /// Keeps a test fixture's backing temp directory alive (and cleaned up
     /// on drop) for as long as any clone of this layout is in use. `Arc`
     /// so the guard survives every clone, not just the first owner.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     tempdir_guard: Option<std::sync::Arc<tempfile::TempDir>>,
 }
 
@@ -29,7 +29,7 @@ impl WorkspaceLayout {
         Self {
             root,
             team,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             tempdir_guard: None,
         }
     }
@@ -37,9 +37,9 @@ impl WorkspaceLayout {
     /// Attach a temp directory guard so it's dropped (and cleaned up)
     /// together with this layout and every clone of it, instead of being
     /// leaked with [`tempfile::TempDir::keep`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub(crate) fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
+    pub fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
         self.tempdir_guard = Some(std::sync::Arc::new(dir));
         self
     }

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 use super::super::deserialize::{
     AgentBackgroundConfigFile, BackgroundModelsFile, ProviderEntryFile,

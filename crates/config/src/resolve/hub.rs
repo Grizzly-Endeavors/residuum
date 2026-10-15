@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 use super::super::deserialize::{HubBackgroundConfigFile, HubConfigFile, HubPushConfigFile};
 use super::super::hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig};
@@ -18,7 +18,7 @@ use super::tracing_config;
 /// # Errors
 /// Returns `FatalError::Config` if the timezone is missing/invalid or the
 /// tracing log level string is invalid.
-pub(crate) fn from_file_and_env(
+pub fn from_file_and_env(
     file: Option<&HubConfigFile>,
     hub_dir: &Path,
 ) -> Result<HubConfig, FatalError> {
@@ -198,7 +198,7 @@ mod tests {
         let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
         assert_eq!(cfg.timezone, chrono_tz::UTC);
         assert!(cfg.a2a.enabled);
-        assert_eq!(cfg.a2a.port, crate::config::DEFAULT_A2A_PORT);
+        assert_eq!(cfg.a2a.port, crate::DEFAULT_A2A_PORT);
         assert_eq!(cfg.background.max_concurrent, 3);
         assert_eq!(cfg.background.hop_soft_limit, 8);
         assert_eq!(cfg.background.hop_hard_limit, 32);

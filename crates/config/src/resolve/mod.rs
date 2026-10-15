@@ -15,12 +15,12 @@ mod web_search;
 
 pub(super) use models::session_affinity_key;
 
-pub(crate) use hub::from_file_and_env as resolve_hub_config;
+pub use hub::from_file_and_env as resolve_hub_config;
 
 use std::path::Path;
 
-use crate::config::{ThinkingConfig, ThinkingLevel};
-use crate::util::FatalError;
+use crate::{ThinkingConfig, ThinkingLevel};
+use residuum_core::util::FatalError;
 
 use super::Config;
 use super::HubConfig;
@@ -72,7 +72,7 @@ fn load_secrets_degraded(config_dir: &Path, notices: &mut Vec<String>) -> Secret
 /// background model tier can't be resolved, or `agent.max_tool_iterations`
 /// is set to `0`.
 #[tracing::instrument(skip_all, fields(agent = %agent_name, agent_dir = %agent_dir.display()))]
-pub(crate) fn from_file_and_env(
+pub fn from_file_and_env(
     file: Option<&AgentConfigFile>,
     providers_file: Option<&ProvidersFile>,
     agent_dir: &Path,
@@ -228,23 +228,37 @@ fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod test_helpers {
+/// Fixtures for building a `Config` from TOML text in tests. The `pub` ones
+/// are for other crates' tests (`test-support`), which parse their TOML with
+/// `toml::from_str` into [`AgentConfigFile`](super::super::AgentConfigFile)
+/// and [`ProvidersFile`](super::super::ProvidersFile); the rest serve this
+/// crate's own resolve tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_helpers {
+    #[cfg(test)]
     pub(super) use super::super::deserialize::{AgentConfigFile, ProvidersFile};
+    #[cfg(test)]
     pub(super) use super::super::secrets::SecretStore;
 
+    #[cfg(test)]
     pub(super) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[cfg(test)]
     pub(super) fn empty_secrets() -> SecretStore {
         let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
         SecretStore::load(&dir).unwrap()
     }
 
-    pub(crate) fn test_agent_dir() -> std::path::PathBuf {
+    /// The agent directory the fixtures resolve against (it need not exist).
+    #[must_use]
+    pub fn test_agent_dir() -> std::path::PathBuf {
         std::env::temp_dir().join("residuum-test-agent")
     }
 
-    pub(crate) fn test_hub_config() -> super::super::HubConfig {
+    /// A hub config with every hub-owned value at its default and UTC as the
+    /// timezone.
+    #[must_use]
+    pub fn test_hub_config() -> super::super::HubConfig {
         super::super::HubConfig {
             timezone: chrono_tz::UTC,
             gateway: super::super::GatewayConfig::default(),
@@ -259,30 +273,34 @@ pub(crate) mod test_helpers {
         }
     }
 
-    pub(crate) fn parse_config(toml: &str) -> AgentConfigFile {
+    #[cfg(test)]
+    pub(super) fn parse_config(toml: &str) -> AgentConfigFile {
         toml::from_str(toml).unwrap()
     }
 
-    pub(crate) fn parse_providers(toml: &str) -> ProvidersFile {
+    #[cfg(test)]
+    pub(super) fn parse_providers(toml: &str) -> ProvidersFile {
         toml::from_str(toml).unwrap()
     }
 
     /// Resolve an agent `Config` from raw TOML sources against a default
     /// test hub config — the shape almost every resolve test needs.
+    #[cfg(test)]
     pub(super) fn resolve_test(
         cfg_toml: &str,
         providers_toml: &str,
-    ) -> Result<super::super::Config, crate::util::FatalError> {
+    ) -> Result<super::super::Config, residuum_core::util::FatalError> {
         resolve_test_with_hub(cfg_toml, providers_toml, &test_hub_config())
     }
 
     /// [`resolve_test`], with an explicit hub config for tests that need to
     /// vary hub-owned values.
+    #[cfg(test)]
     pub(super) fn resolve_test_with_hub(
         cfg_toml: &str,
         providers_toml: &str,
         hub: &super::super::HubConfig,
-    ) -> Result<super::super::Config, crate::util::FatalError> {
+    ) -> Result<super::super::Config, residuum_core::util::FatalError> {
         let cfg_file = parse_config(cfg_toml);
         let prov_file = parse_providers(providers_toml);
         super::from_file_and_env(
@@ -314,13 +332,9 @@ const REMOVED_AGENT_ENV_OVERRIDES: &[&str] = &[
     "RESIDUUM_TEAMS_APP_PASSWORD",
 ];
 
-/// One notice (also logged at `warn`) per agent-scoped environment variable
-/// from [`REMOVED_AGENT_ENV_OVERRIDES`] that is set in the process
-/// environment. Called once at startup, not on config load, so a config
-/// reload does not repeat it.
 fn note_unusable_display_name(file: Option<&AgentConfigFile>, notices: &mut Vec<String>) {
     if let Some(raw) = file.and_then(|f| f.display_name.as_deref())
-        && crate::config::canonicalize_display_name(raw).is_err()
+        && crate::canonicalize_display_name(raw).is_err()
     {
         notices.push(format!(
             "The name \"{raw}\" in config.toml can't be shown. Fix display_name, or remove it to show the folder name."
@@ -328,7 +342,12 @@ fn note_unusable_display_name(file: Option<&AgentConfigFile>, notices: &mut Vec<
     }
 }
 
-pub(crate) fn removed_agent_env_override_notices() -> Vec<String> {
+/// One notice (also logged at `warn`) per agent-scoped environment variable
+/// from [`REMOVED_AGENT_ENV_OVERRIDES`] that is set in the process
+/// environment. Called once at startup, not on config load, so a config
+/// reload does not repeat it.
+#[must_use]
+pub fn removed_agent_env_override_notices() -> Vec<String> {
     let mut notices = Vec::new();
     for var in REMOVED_AGENT_ENV_OVERRIDES {
         if std::env::var(var).is_ok() {
@@ -772,9 +791,9 @@ content_fields = ["issue.title", "issue.body"]
         assert_eq!(entry.secret.as_deref(), Some("my-secret"));
         assert_eq!(
             entry.routing,
-            crate::config::WebhookRouting::Agent("code_reviewer".to_string())
+            crate::WebhookRouting::Agent("code_reviewer".to_string())
         );
-        assert_eq!(entry.format, crate::config::WebhookFormat::Parsed);
+        assert_eq!(entry.format, crate::WebhookFormat::Parsed);
         assert_eq!(
             entry.content_fields.as_deref(),
             Some(&["issue.title".to_string(), "issue.body".to_string()][..])
@@ -800,12 +819,12 @@ format = "raw"
 
         let gh = &cfg.webhooks["github"];
         assert_eq!(gh.secret.as_deref(), Some("gh-secret"));
-        assert_eq!(gh.routing, crate::config::WebhookRouting::Inbox);
+        assert_eq!(gh.routing, crate::WebhookRouting::Inbox);
 
         let deploy = &cfg.webhooks["deploy"];
         assert!(deploy.secret.is_none());
-        assert_eq!(deploy.format, crate::config::WebhookFormat::Raw);
-        assert_eq!(deploy.routing, crate::config::WebhookRouting::Inbox);
+        assert_eq!(deploy.format, crate::WebhookFormat::Raw);
+        assert_eq!(deploy.routing, crate::WebhookRouting::Inbox);
     }
 
     #[test]
@@ -818,12 +837,12 @@ format = "raw"
         let entry = &cfg.webhooks["simple"];
         assert_eq!(
             entry.routing,
-            crate::config::WebhookRouting::Inbox,
+            crate::WebhookRouting::Inbox,
             "routing should default to inbox"
         );
         assert_eq!(
             entry.format,
-            crate::config::WebhookFormat::Parsed,
+            crate::WebhookFormat::Parsed,
             "format should default to parsed"
         );
     }
@@ -1466,7 +1485,7 @@ app_password = "s"
     fn a2a_absent_resolves_to_hub_defaults_and_public_visibility() {
         let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(cfg.a2a.enabled, "enabled by default (from hub)");
-        assert_eq!(cfg.a2a.port, crate::config::DEFAULT_A2A_PORT);
+        assert_eq!(cfg.a2a.port, crate::DEFAULT_A2A_PORT);
         assert_eq!(cfg.a2a.public_url, None);
         assert_eq!(cfg.a2a.visibility, A2aVisibility::Public);
     }

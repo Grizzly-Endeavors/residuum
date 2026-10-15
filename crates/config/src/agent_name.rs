@@ -128,7 +128,7 @@ pub fn allocate_slug(base: &str, mut taken: impl FnMut(&str) -> bool) -> Result<
 /// `fallback` when the key is absent, empty, or not a usable name, and when
 /// `config` is not TOML.
 #[must_use]
-pub(crate) fn display_name_in_toml(config: &str, fallback: &str) -> String {
+pub fn display_name_in_toml(config: &str, fallback: &str) -> String {
     let Ok(doc) = config.parse::<DocumentMut>() else {
         return fallback.to_string();
     };

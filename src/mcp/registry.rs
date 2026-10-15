@@ -221,14 +221,14 @@ impl McpRegistry {
     /// `entry` with every exact `secret:<name>` value in its `env` and
     /// `headers` resolved against the hub's secret store — the same store
     /// the settings model exchanges provider keys and chat tokens into
-    /// (`crate::config::secrets::SecretStore`). Borrows the entry unchanged
+    /// (`config::secrets::SecretStore`). Borrows the entry unchanged
     /// when it has no such value, so a broken secret store never blocks a
     /// server that doesn't use one.
     ///
     /// Unlike `${agent-key:<name>}`, which may appear anywhere inside a
     /// larger string, a `secret:<name>` reference must be the entry's whole
     /// value, matching how every other `secret:<name>` consumer in the
-    /// config system (`crate::config::resolve::resolve_secret_value`)
+    /// config system (config's `resolve_secret_value`)
     /// recognizes it.
     async fn resolve_secrets<'e>(
         &self,

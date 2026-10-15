@@ -22,6 +22,7 @@ publish = false
 [workspace.dependencies]
 # Workspace members
 residuum-core = { path = "crates/core", version = "0.1.0" }
+residuum-config = { path = "crates/config", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
@@ -152,6 +153,7 @@ jsonschema = { version = "0.58.6", default-features = false }
 
 [dependencies]
 residuum-core = { workspace = true }
+residuum-config = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -165,10 +167,7 @@ base64 = { workspace = true }
 tempfile = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
-dirs = { workspace = true }
 dotenvy = { workspace = true }
-shellexpand = { workspace = true }
-aes-gcm-siv = { workspace = true }
 aes-gcm = { workspace = true }
 aes = { workspace = true }
 hex = { workspace = true }
@@ -186,7 +185,6 @@ rmcp = { workspace = true }
 serde_yaml_ng = { workspace = true }
 tokio-util = { workspace = true }
 fd-lock = { workspace = true }
-unicode-normalization = { workspace = true }
 a2a = { workspace = true }
 a2a-server = { workspace = true }
 a2a-client = { workspace = true }
@@ -246,6 +244,7 @@ tauri-winrt-notification = "0.8.1"
 
 [dev-dependencies]
 residuum-core = { workspace = true, features = ["test-support"] }
+residuum-config = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

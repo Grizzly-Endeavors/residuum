@@ -181,7 +181,7 @@ impl AgentKeys {
     {
         let _guard = self.write_lock.lock().await;
         let config_dir = self.config_dir.clone();
-        let (store, result) = crate::util::spawn_blocking_in_span(move || {
+        let (store, result) = residuum_core::util::spawn_blocking_in_span(move || {
             let _file_lock = lock_store_file(&config_dir)?;
             let mut store = AgentKeyStore::load(&config_dir)?;
             let result = change(&mut store)?;
@@ -202,7 +202,7 @@ impl AgentKeys {
 
     async fn load_blocking(&self) -> Result<AgentKeyStore, AgentKeyError> {
         let config_dir = self.config_dir.clone();
-        crate::util::spawn_blocking_in_span(move || AgentKeyStore::load(&config_dir))
+        residuum_core::util::spawn_blocking_in_span(move || AgentKeyStore::load(&config_dir))
             .await
             .map_err(|e| AgentKeyError::Storage(format!("agent key load task failed: {e}")))?
     }

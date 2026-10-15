@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 use super::deserialize;
 use super::hub_types::HubConfig;
@@ -155,8 +155,11 @@ impl HubConfig {
     /// Diagnostics for `contents` as `hub/config.toml`. Mirrors
     /// `Config::diagnose_agent_toml`'s syntax-then-semantic approach.
     #[must_use]
-    pub fn diagnose_toml(contents: &str, hub_dir: &Path) -> Vec<crate::diagnostics::Diagnostic> {
-        use crate::diagnostics::{Diagnostic, Location};
+    pub fn diagnose_toml(
+        contents: &str,
+        hub_dir: &Path,
+    ) -> Vec<residuum_core::diagnostics::Diagnostic> {
+        use residuum_core::diagnostics::{Diagnostic, Location};
 
         if let Err(e) = toml::from_str::<deserialize::HubConfigFile>(contents) {
             if !e.message().starts_with("unknown field") {

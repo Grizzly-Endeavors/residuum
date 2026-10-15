@@ -1,6 +1,6 @@
 //! Gateway bind, timezone, and cloud tunnel settings (hub-level).
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 use super::super::constants::DEFAULT_CLOUD_RELAY_URL;
 use super::super::deserialize::{CloudConfigFile, GatewayConfigFile, HubConfigFile};

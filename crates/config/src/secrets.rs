@@ -17,11 +17,12 @@ use std::path::Path;
 use aes_gcm_siv::aead::Aead;
 use aes_gcm_siv::{Aes256GcmSiv, KeyInit, Nonce};
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
-/// File names within the config directory.
+/// The key file's name within the config directory.
 pub(crate) const KEY_FILE: &str = "secrets.key";
-pub(crate) const ENCRYPTED_FILE: &str = "secrets.toml.enc";
+/// The encrypted store's file name within the config directory.
+pub const ENCRYPTED_FILE: &str = "secrets.toml.enc";
 
 /// Nonce size for AES-256-GCM-SIV (96 bits / 12 bytes).
 const NONCE_SIZE: usize = 12;
@@ -175,7 +176,7 @@ pub(crate) fn load_or_create_key(key_path: &Path) -> Result<[u8; 32], FatalError
     })?;
 
     // Set permissions to 0o600 (owner-only read/write)
-    crate::util::fs::set_file_mode_600(key_path)?;
+    residuum_core::util::fs::set_file_mode_600(key_path)?;
 
     tracing::info!(path = %key_path.display(), "generated new encryption key");
 
@@ -244,7 +245,7 @@ fn serialize_secrets_toml(secrets: &HashMap<String, String>) -> Result<String, F
 /// expanding a value, and `is_reference` reuses it to recognize the shape
 /// without performing a lookup.
 #[must_use]
-pub fn env_var_name(raw: &str) -> Option<&str> {
+pub(crate) fn env_var_name(raw: &str) -> Option<&str> {
     raw.strip_prefix("${")
         .and_then(|s| s.strip_suffix('}'))
         .filter(|s| !s.is_empty())
@@ -256,7 +257,7 @@ pub fn env_var_name(raw: &str) -> Option<&str> {
 ///
 /// Used to keep a raw value the settings UI is about to store from
 /// accidentally being a reference to something else (see
-/// `crate::gateway::web::secrets::api_secrets_set`).
+/// the root crate's `gateway::web::secrets::api_secrets_set`).
 #[must_use]
 pub fn is_reference(value: &str) -> bool {
     value.starts_with("secret:") || env_var_name(value).is_some()

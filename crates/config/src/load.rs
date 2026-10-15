@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 use super::constants::DEFAULT_PULSE_ENABLED;
 use super::tolerant::parse_tolerating_unknown_keys;
@@ -56,7 +56,7 @@ impl Config {
     /// # Errors
     /// Returns `FatalError::Config` if either file exists but cannot be
     /// read or parsed, or if required values are missing.
-    pub(crate) fn load_agent_from_paths(
+    pub fn load_agent_from_paths(
         agent_dir: &Path,
         config_path: &Path,
         providers_path: &Path,
@@ -257,7 +257,7 @@ impl Config {
         agent_dir: &Path,
         agent_name: &str,
         hub: &HubConfig,
-    ) -> Vec<crate::diagnostics::Diagnostic> {
+    ) -> Vec<residuum_core::diagnostics::Diagnostic> {
         diagnose_toml_file::<deserialize::AgentConfigFile>(contents, "config.toml", || {
             Self::validate_agent_toml(contents, agent_dir, agent_name, hub)
         })
@@ -271,7 +271,7 @@ impl Config {
         agent_dir: &Path,
         agent_name: &str,
         hub: &HubConfig,
-    ) -> Vec<crate::diagnostics::Diagnostic> {
+    ) -> Vec<residuum_core::diagnostics::Diagnostic> {
         diagnose_toml_file::<deserialize::ProvidersFile>(contents, "providers.toml", || {
             Self::validate_agent_providers_toml(contents, agent_dir, agent_name, hub)
         })
@@ -347,8 +347,8 @@ fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
     contents: &str,
     file_label: &str,
     validate: impl FnOnce() -> Result<(), String>,
-) -> Vec<crate::diagnostics::Diagnostic> {
-    use crate::diagnostics::{Diagnostic, Location};
+) -> Vec<residuum_core::diagnostics::Diagnostic> {
+    use residuum_core::diagnostics::{Diagnostic, Location};
 
     if let Err(e) = toml::from_str::<T>(contents) {
         if !e.message().starts_with("unknown field") {
@@ -575,7 +575,7 @@ main = "my-provider/claude-sonnet-4-6"
 
     #[test]
     fn diagnose_agent_toml_reports_syntax_error_with_line_column() {
-        use crate::diagnostics::Location;
+        use residuum_core::diagnostics::Location;
 
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
@@ -593,7 +593,7 @@ main = "my-provider/claude-sonnet-4-6"
 
     #[test]
     fn diagnose_agent_toml_reports_unknown_key_as_warning() {
-        use crate::diagnostics::Severity;
+        use residuum_core::diagnostics::Severity;
 
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);

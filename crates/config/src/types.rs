@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::config::RetryConfig;
+use crate::RetryConfig;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
@@ -502,10 +502,7 @@ pub type SharedToolsPath = Arc<RwLock<Option<OsString>>>;
 /// Give `cmd` the configured tools `PATH`, read live so a config reload
 /// applies to the next spawn. Leaves the inherited `PATH` alone when no
 /// override is configured.
-pub(crate) async fn apply_tools_path(
-    cmd: &mut tokio::process::Command,
-    tools_path: &SharedToolsPath,
-) {
+pub async fn apply_tools_path(cmd: &mut tokio::process::Command, tools_path: &SharedToolsPath) {
     if let Some(path) = tools_path.read().await.as_ref() {
         cmd.env("PATH", path);
     }
@@ -915,7 +912,7 @@ pub struct RoleOverrides {
     /// Sampling temperature override (0.0–2.0).
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration override.
-    pub thinking: Option<crate::config::ThinkingConfig>,
+    pub thinking: Option<crate::ThinkingConfig>,
 }
 
 /// Log detail level for daemon file output.
@@ -1050,7 +1047,7 @@ pub struct StandaloneBackendConfig {
 /// `a2a.enabled`/`a2a.port`/`a2a.public_url`, and
 /// `background.max_concurrent`/`background.hop_soft_limit`/
 /// `background.hop_hard_limit`) belong to the hub: they live in
-/// `hub/config.toml` (see [`crate::config::HubConfig`]) and are copied in
+/// `hub/config.toml` (see [`crate::HubConfig`]) and are copied in
 /// here at resolve time so the rest of the codebase reads one flat `Config`.
 /// Every other field is resolved from this agent's own files.
 #[derive(Clone, PartialEq)]
@@ -1122,7 +1119,7 @@ pub struct Config {
     /// Sampling temperature for model completions.
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration for model completions.
-    pub thinking: Option<crate::config::ThinkingConfig>,
+    pub thinking: Option<crate::ThinkingConfig>,
     /// Web search configuration.
     pub web_search: WebSearchConfig,
     /// Tracing and observability configuration. Hub-owned; copied from `HubConfig`.
@@ -1378,7 +1375,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-            image_input: crate::config::ImageInput::Undeclared,
+            image_input: crate::ImageInput::Undeclared,
         }
     }
 
@@ -1466,7 +1463,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-            image_input: crate::config::ImageInput::Undeclared,
+            image_input: crate::ImageInput::Undeclared,
         };
         let p_medium = ProviderSpec {
             name: "dummy-medium".to_string(),
@@ -1478,7 +1475,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-            image_input: crate::config::ImageInput::Undeclared,
+            image_input: crate::ImageInput::Undeclared,
         };
         let p_main = ProviderSpec {
             name: "dummy-main".to_string(),
@@ -1490,7 +1487,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-            image_input: crate::config::ImageInput::Undeclared,
+            image_input: crate::ImageInput::Undeclared,
         };
 
         let main_slice = std::slice::from_ref(&p_main);

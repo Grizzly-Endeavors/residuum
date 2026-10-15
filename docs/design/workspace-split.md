@@ -359,7 +359,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
 
 **`residuum-config`**
 - Root re-exports as today (`src/config/mod.rs:26-53`), plus, new: `DEFAULT_A2A_PORT`, `DEFAULT_CLOUD_RELAY_URL`, `DEFAULT_GATEWAY_PORT`, `DEFAULT_OBSERVER_COOLDOWN_SECS`, `DEFAULT_OBSERVER_FORCE_THRESHOLD`, `DEFAULT_OBSERVER_THRESHOLD`, `DEFAULT_REFLECTOR_THRESHOLD`, `DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS`, `DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS`, `DEFAULT_TEAMS_PORT`; `AgentConfigFile`, `HubConfigFile`, `ProvidersFile` (from the private `deserialize`); `from_file_and_env`, `resolve_hub_config`, `removed_agent_env_override_notices` (from the private `resolve`); `display_name_in_toml`.
-- Moved in and re-exported at the root: `WorkspaceLayout`, `ThinkingConfig`, `ThinkingLevel`, `RetryConfig`, `WEB_UI_ENDPOINT`, `SkillDir`, `SkillSource`, `SharedToolsPath`, `apply_tools_path`. Behind `test-support`: `WorkspaceLayout::with_tempdir_guard` (§7).
+- Moved in and re-exported at the root: `WorkspaceLayout`, `ThinkingConfig`, `ThinkingLevel`, `RetryConfig`, `WEB_UI_ENDPOINT`, `SkillDir`, `SkillSource`, `SharedToolsPath`, `apply_tools_path`. Behind `test-support`: `WorkspaceLayout::with_tempdir_guard` and the `test_helpers` namespace with `test_agent_dir` and `test_hub_config` (§7).
 - Public namespaces: `paths` (already public), `patch` (new; its edit functions read as `patch::…`), `secrets` (new; `SecretStore`, `is_reference`, `ENCRYPTED_FILE`), `agent_keys` (its API as today).
 - Stays crate-private: `secrets::{decrypt, encrypt, load_key, load_or_create_key}` (only `agent_keys` uses them, inside the crate).
 - Moves instead: the wizard (root `setup_wizard`), `completion_options_for_role` (inference).
@@ -398,7 +398,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
 - **Each crate's own tests use `#[cfg(test)]`, as today.**
 - **Helpers other crates' tests use** live in the lowest crate that can hold them, behind a `test-support` feature, enabled only through `[dev-dependencies]` (`manifest_scan` rule 4):
   - `residuum-core`: `testing::{wait, gate, clock, script, log, ports}`: today's `src/testing/{wait,gate,clock,script}.rs` (the generic part of `wait`, §5), `EventLog`/`LoggedEvent` from `src/hub/test_support.rs`, and `src/util/test_ports.rs`.
-  - `residuum-config`: `WorkspaceLayout`'s `tempdir_guard` field and `with_tempdir_guard` (`src/workspace/layout.rs:18,40`, used by root tests in `background/`, `checkpoints/` and `a2a/`).
+  - `residuum-config`: `WorkspaceLayout`'s `tempdir_guard` field and `with_tempdir_guard` (`src/workspace/layout.rs:18,40`, used by root tests in `background/`, `checkpoints/` and `a2a/`), and `test_helpers::{test_agent_dir, test_hub_config}` (in `resolve/mod.rs`, used by inference's `completion_options_for_role` tests, which parse their TOML into the public `AgentConfigFile` and `ProvidersFile` themselves). The helpers that only config's own tests use stay `#[cfg(test)]`.
   - `residuum-inference`: `testing::model` (today's `src/testing/model.rs`).
   - `residuum-memory`: `testing` (today's `src/memory/test_helpers.rs`) and the two transcript writers.
   - `residuum-net`: the hooks listed in §6.

@@ -1,6 +1,6 @@
 //! Tracing and log-level settings.
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 use super::super::constants::DEFAULT_FEEDBACK_ENDPOINT;
 use super::super::deserialize::TracingConfigFile;
