@@ -1,4 +1,4 @@
-//! The rustls process-default `CryptoProvider` for the unit-test binary.
+//! The rustls process-default `CryptoProvider` for the unit-test binaries (the lib and the bin).
 //!
 //! reqwest 0.13 is built with `rustls-no-provider` and panics in `Client::new()`
 //! until a process-default provider is installed. Production installs ring in
