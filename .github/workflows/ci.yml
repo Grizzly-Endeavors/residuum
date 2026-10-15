@@ -54,6 +54,7 @@ jobs:
       web: ${{ steps.decide.outputs.web }}
       deps: ${{ steps.decide.outputs.deps }}
       workflows: ${{ steps.decide.outputs.workflows }}
+      packages: ${{ steps.decide.outputs.packages }}
 
     steps:
       # The merge base needs the history, not the shallow clone.
@@ -69,9 +70,9 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
-          RUST_PATHS_RE: '^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/(check|export)-generated-types\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+          RUST_PATHS_RE: '^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
           WEB_PATHS_RE: '^web/|^scripts/(with-playwright-container|web-initial-route-size|ci-cpu-report)\.sh$|^\.github/workflows/(ci|web-checks)\.yml$'
-          DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml|\.github/workflows/cross-compile\.yml)$'
+          DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml|\.github/workflows/cross-compile\.yml)$|^crates/[^/]+/Cargo\.toml$'
           WORKFLOWS_PATHS_RE: '^\.github/(workflows/|actionlint\.yaml$)'
         run: |
           set -euo pipefail
@@ -87,11 +88,46 @@ jobs:
           if grep -vE '^web/.*\.md$' <<<"$changed" | grep -qE "$WEB_PATHS_RE"; then web=true; fi
           if grep -qE "$DEPS_PATHS_RE" <<<"$changed"; then deps=true; fi
           if grep -qE "$WORKFLOWS_PATHS_RE" <<<"$changed"; then workflows=true; fi
+
+          # A merge queue batch checks the whole workspace. A pull request checks
+          # the packages its change touches and the packages that depend on them;
+          # when that selection cannot be made, the whole workspace is checked and
+          # the step says so. Without a Rust change the Rust job does not run, so
+          # there is nothing to select.
+          packages=--workspace
+          if [ "$rust" = true ] && [ "$EVENT" != merge_group ]; then
+            selection_log="$RUNNER_TEMP/affected-packages.log"
+            if selected="$(scripts/affected-packages.sh --affected 2>"$selection_log" <<<"$changed")" && [ -n "$selected" ]; then
+              packages="$selected"
+              {
+                echo '## Packages'
+                echo ''
+                echo 'Checking the packages this pull request touches and the packages that depend on them:'
+                echo ''
+                echo '```'
+                cat "$selection_log"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Could not select the affected packages, so every package is checked: $(tr '\n' ' ' < "$selection_log")"
+              {
+                echo '## Packages'
+                echo ''
+                echo 'Could not select the affected packages, so every package is checked. The selection script'"'"'s output:'
+                echo ''
+                echo '```'
+                cat "$selection_log"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
           {
             echo "rust=$rust"
             echo "web=$web"
             echo "deps=$deps"
             echo "workflows=$workflows"
+            echo "packages=$packages"
           } >> "$GITHUB_OUTPUT"
           {
             echo '## Changes'
@@ -102,7 +138,7 @@ jobs:
             echo '|--------|-----|'
             echo "| Rust | $rust |"
             echo "| Web | $web |"
-            echo "| Dependencies, toolchain or cross-compile.yml (cross-compile in the merge queue) | $deps |"
+            echo "| Dependencies (root or member manifests), toolchain or cross-compile.yml (cross-compile in the merge queue) | $deps |"
             echo "| Workflows (actionlint) | $workflows |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -113,6 +149,8 @@ jobs:
     uses: ./.github/workflows/rust-checks.yml
     with:
       pebble: ${{ github.event_name == 'merge_group' }}
+      packages: ${{ needs.changes.outputs.packages }}
+      isolation: ${{ github.event_name == 'merge_group' }}
 
   web:
     name: Web

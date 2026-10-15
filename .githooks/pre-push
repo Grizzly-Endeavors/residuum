@@ -33,7 +33,7 @@ MAIN_REF=refs/remotes/origin/main
 # The paths that run the Rust checks. This is the RUST_PATHS_RE of the
 # `changes` job in .github/workflows/ci.yml, which decides when CI runs the same
 # checks; change both together.
-RUST_PATHS_RE='^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/(check|export)-generated-types\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+RUST_PATHS_RE='^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
 
 note() { echo -e "${YELLOW}$1${NC}" >&2; }
 
@@ -48,10 +48,17 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_A
 # below. A commit checked in place builds into the checkout's own target
 # directory (CARGO_TARGET_DIR when set, else target/), so the push reuses the
 # crate artifacts the checkout's cargo runs already left there. A commit checked
-# in a temporary worktree builds into target/pre-push, which keeps the detached
-# tree from replacing the artifacts a cargo run in the checkout depends on;
-# sccache shares the dependency builds between the two.
+# in a temporary tree builds into target/pre-push, which keeps the detached tree
+# from replacing the artifacts a cargo run in the checkout depends on.
+# target/pre-push keeps its own builds from push to push, and the stable tree
+# (target/pre-push/tree) keeps the modification times of unchanged files, which
+# is what lets Cargo reuse those builds.
 PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
+STABLE_DIR="$REPO_ROOT/target/pre-push"
+STABLE_TREE="$STABLE_DIR/tree"
+STABLE_LOCK="$STABLE_DIR/tree.lock"
+# The commit web/dist was last built from in the stable tree.
+DIST_COMMIT_FILE="$STABLE_DIR/tree-dist-commit"
 
 # Git passes one line per pushed ref on stdin. Read them all up front: the
 # checks below run tools that would otherwise read the rest of it.
@@ -139,8 +146,14 @@ ensure_web_deps() {
     (cd "$web" && npm ci --no-audit --no-fund >/dev/null)
 }
 
+# TEMP_TREE is the tree the checks of the current commit run in. TEMP_DIR is
+# set only when that tree is a temporary worktree, which the cleanup removes;
+# the stable tree stays. LOCK_HELD is 1 while this hook holds the stable lock.
 TEMP_DIR=""
 TEMP_TREE=""
+LOCK_HELD=0
+# What prepare_worktree checked the commit in, for the line that names it.
+TREE_NAME=""
 TEST_LOG=""
 TS_EXPORT_DIR=""
 cleanup_test_scratch() {
@@ -155,26 +168,107 @@ cleanup_test_scratch() {
 }
 cleanup() {
     cleanup_test_scratch
-    [ -n "$TEMP_DIR" ] || return 0
     # Unlink the borrowed node_modules first so nothing below can reach
     # through it into this checkout's copy.
-    [ -L "$TEMP_TREE/web/node_modules" ] && rm -f "$TEMP_TREE/web/node_modules"
-    git worktree remove --force "$TEMP_TREE" >/dev/null 2>&1 || rm -rf "$TEMP_TREE"
-    git worktree prune >/dev/null 2>&1
-    rm -rf "$TEMP_DIR"
-    TEMP_DIR=""
+    if [ -n "$TEMP_TREE" ] && [ -L "$TEMP_TREE/web/node_modules" ]; then
+        rm -f "$TEMP_TREE/web/node_modules"
+    fi
+    if [ -n "$TEMP_DIR" ]; then
+        git worktree remove --force "$TEMP_TREE" >/dev/null 2>&1 || rm -rf "$TEMP_TREE"
+        git worktree prune >/dev/null 2>&1
+        rm -rf "$TEMP_DIR"
+        TEMP_DIR=""
+    fi
+    TEMP_TREE=""
+    if [ "$LOCK_HELD" = 1 ]; then
+        rm -rf "$STABLE_LOCK"
+        LOCK_HELD=0
+    fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Check out the pushed commit in a temporary worktree that borrows this
+# Makes the stable tree a checkout of the commit $1. A checkout rewrites only
+# the files that differ, so every other file keeps its modification time and
+# Cargo keeps its builds. Returns 1 when that fails.
+refresh_stable_tree() {
+    local sha="$1" listing
+    # Drops the registration of a tree whose directory is gone.
+    git worktree prune >/dev/null 2>&1
+    listing="$(git worktree list --porcelain)"
+    if [ -d "$STABLE_TREE" ] && grep -Fxq "worktree $STABLE_TREE" <<<"$listing"; then
+        (cd "$STABLE_TREE" && git checkout --quiet --force --detach "$sha" && git clean -fdq)
+        return
+    fi
+    # A directory that is not a registered worktree is removed and added again.
+    rm -rf "$STABLE_TREE"
+    git worktree prune >/dev/null 2>&1
+    git worktree add --quiet --detach "$STABLE_TREE" "$sha" >&2
+}
+
+# Points the stable tree's web/node_modules at this checkout's copy when the
+# lockfiles match. Otherwise the tree has no link, and ensure_web_deps installs
+# its own copy when the web checks need one.
+link_stable_node_modules() {
+    if [ -L "$STABLE_TREE/web/node_modules" ]; then
+        rm -f "$STABLE_TREE/web/node_modules"
+    fi
+    if [ -d "$REPO_ROOT/web/node_modules" ] && cmp -s "$REPO_ROOT/web/package-lock.json" "$STABLE_TREE/web/package-lock.json"; then
+        # A real directory is left by an npm ci run in the tree; the link replaces it.
+        if [ -d "$STABLE_TREE/web/node_modules" ]; then
+            rm -rf "$STABLE_TREE/web/node_modules"
+        fi
+        ln -s "$REPO_ROOT/web/node_modules" "$STABLE_TREE/web/node_modules"
+    fi
+}
+
+# Checks out the commit $1 in the stable tree under the stable lock. Returns 1,
+# having said why, when another push holds the lock or the tree cannot be
+# prepared, and the caller then uses a temporary worktree. A lock with no pid
+# yet is held: the window between creating the lock directory and writing the
+# pid is too short to call it stale, and a holder that died in that window needs
+# the lock removed by hand. A stale lock taken over by two pushes at the same
+# moment can still race; that needs two pushes after one crashed holder, and the
+# result is a second push checking in the same tree. Never call it in a
+# subshell: the lock and the cleanup trap need the variables it sets.
+prepare_stable_tree() {
+    local sha="$1" holder=""
+    if ! mkdir -p "$STABLE_DIR"; then
+        note "couldn't create $STABLE_DIR; checking in a temporary worktree instead."
+        return 1
+    fi
+    if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
+        holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
+        if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
+            note "the stable pre-push tree is locked${holder:+ by pid $holder}; checking in a temporary worktree instead. If no push is running, remove $STABLE_LOCK."
+            return 1
+        fi
+        note "the stable pre-push tree's lock was held by pid $holder, which is no longer running; taking it over."
+        rm -rf "$STABLE_LOCK"
+        if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
+            note "another push took the stable pre-push tree first; checking in a temporary worktree instead."
+            return 1
+        fi
+    fi
+    LOCK_HELD=1
+    printf '%s\n' "$$" >"$STABLE_LOCK/pid"
+    TEMP_TREE="$STABLE_TREE"
+    if ! refresh_stable_tree "$sha"; then
+        note "couldn't prepare the stable pre-push tree at $STABLE_TREE; checking in a temporary worktree instead."
+        cleanup
+        return 1
+    fi
+    link_stable_node_modules
+    TREE_NAME="the stable pre-push tree"
+}
+
+# Checks out the commit $1 in a new temporary worktree that borrows this
 # checkout's node_modules. Leaves its path in TEMP_TREE. Returns 1 on failure.
 # Never call it in a subshell: the cleanup trap needs the paths it sets.
-prepare_worktree() {
+prepare_temp_worktree() {
     local sha="$1"
-    cleanup
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/residuum-pre-push.XXXXXX")" || return 1
     TEMP_TREE="$TEMP_DIR/tree"
     git worktree add --quiet --detach "$TEMP_TREE" "$sha" >&2 || return 1
@@ -183,6 +277,24 @@ prepare_worktree() {
     if [ -d "$REPO_ROOT/web/node_modules" ] && cmp -s "$REPO_ROOT/web/package-lock.json" "$TEMP_TREE/web/package-lock.json"; then
         ln -s "$REPO_ROOT/web/node_modules" "$TEMP_TREE/web/node_modules"
     fi
+    TREE_NAME="a temporary worktree"
+}
+
+# Checks out the pushed commit $1 in the stable tree when it can be used, and
+# otherwise in a temporary worktree. Leaves the tree's path in TEMP_TREE and
+# names the tree in TREE_NAME. Returns 1 on failure.
+# Never call it in a subshell: the cleanup trap needs the paths it sets.
+prepare_worktree() {
+    local sha="$1"
+    cleanup
+    # Cargo reads .cargo/config.toml from every parent directory, so a tree below
+    # the checkout would build with the checkout's configuration as well as its own.
+    if [ -d "$REPO_ROOT/.cargo" ]; then
+        note "$REPO_ROOT/.cargo exists, and Cargo would read its configuration in the stable tree; checking in a temporary worktree instead."
+    elif prepare_stable_tree "$sha"; then
+        return 0
+    fi
+    prepare_temp_worktree "$sha"
 }
 
 # Whether the Rust source file $1 declares the module $2 (`mod name;`, with or
@@ -191,41 +303,90 @@ declares_module() {
     grep -qE "^(pub(\([a-z]+\))? )?mod $2;" "$1" 2>/dev/null
 }
 
-# The Rust tests the changed paths call for. CI runs the whole suite, so this
-# picks what the push can have changed:
-#   src/<mod>/** and src/<mod>.rs  the unit tests of that module (`<mod>::`),
-#                                  in the lib, and in the bin when main.rs
-#                                  declares the module
-#   src/lib.rs, src/main.rs        every unit test, lib and bin
+# Whether the tree $1 has a member crate $2: a directory under crates/ that
+# holds a manifest. Its package is residuum-$2.
+is_member() {
+    [ -f "$1/crates/$2/Cargo.toml" ]
+}
+
+# The root unit-test filters of the push being planned, space-separated. The
+# source scans are always among them.
+UNIT_FILTERS=""
+add_filter() {
+    case " $UNIT_FILTERS " in
+    *" $1 "*) ;;
+    *) UNIT_FILTERS="$UNIT_FILTERS $1" ;;
+    esac
+}
+
+# Sets PICKED to the words scripts/affected-packages.sh prints for the mode $2
+# (--affected or --members) on the newline-separated paths $3. When the script
+# is missing or fails, PICKED is the fallback words given after the paths and
+# the function returns 1: a selection may check more, never less. The script's
+# stderr says what it chose.
+pick_packages() {
+    local dir="$1" mode="$2" paths="$3" out
+    shift 3
+    if out="$(cd "$dir" && ./scripts/affected-packages.sh "$mode" <<<"$paths")"; then
+        PICKED=()
+        read -r -a PICKED <<<"$out"
+        return 0
+    fi
+    echo -e "${YELLOW}WARNING: scripts/affected-packages.sh $mode failed; checking $*.${NC}" >&2
+    PICKED=("$@")
+    return 1
+}
+
+# The Rust checks the changed paths call for: which packages clippy checks, and
+# which tests run. CI runs the whole suite, so this picks what the push can have
+# changed. One arm per changed path; the arms of a push combine: filters
+# accumulate, a choice of every test wins over a filtered one, and the member
+# list is the union.
+#   src/lib.rs, src/main.rs        every root unit test, lib and bin
+#   src/<mod>/**, src/<mod>.rs     the root unit tests of that module (`<mod>::`),
+#                                  and the bin's too when main.rs declares it
+#   other src/** paths             every root unit test (no module declares them)
+#   Cargo.toml, Cargo.lock, rust-toolchain.toml, clippy.toml, rustfmt.toml,
+#   deny.toml, .cargo/**           the testing::manifest_scan filter
+#   crates/<dir>/Cargo.toml        the same filter, and the member's tests
+#   crates/<dir>/** of a member    that member's tests, and those of every member
+#                                  that depends on it
+#   crates/** outside a member     the testing::manifest_scan filter
+#   build.rs, the generated web types, the generated-types and isolation
+#   scripts, affected-packages*, the CI workflows
+#                                  no test added (clippy and the generated-types
+#                                  check still cover them)
+#   assets/**, tests/fixtures/**   every unit test of every package, and every
+#                                  integration test, since both read them
 #   tests/it/**                    the `it` binary, which holds every integration
 #                                  test except ts_export
-#   tests/<name>.rs                that integration test (only ts_export today)
-#   tests/fixtures/**, assets/**   every unit test and every integration test,
-#                                  since the unit tests read them too
-#   other paths the Rust checks cover, which no module declares (the files
-#   tests read by path, such as web/src/styles/tokens.css)
-#                                  every unit test
-# and the source scans (testing::source_scan, cheap, and they fail any test that
-# waits on elapsed time) whenever the Rust checks run at all. Manifests, build.rs,
-# toolchain and lint configuration, the generated web types, and the scripts and
-# workflows the checks use add no tests of their own; clippy and the
-# generated-types check still cover them. A push with no list of changed paths
-# selects every test.
-# The integration tests other than ts_export build as one binary, `it`, which
-# is only built when a tests/ path changed. ts_export is built by the
-# generated-types check.
-# Sets UNIT_ARGS and INTEGRATION_ARGS (cargo test arguments; INTEGRATION_ARGS is
-# empty when no integration test is called for) and prints the choice.
+#   tests/<name>.rs                that integration test
+#   other tests/*/*                every integration test
+#   web/src/styles/tokens.css      every root unit test while
+#                                  crates/net/src/browser_landing.rs does not
+#                                  exist, else the member tests of the crate
+#                                  that holds it
+#   web/app-shell-csp.txt, .github/workflows/release.yml
+#                                  every root unit test
+# Clippy checks the packages scripts/affected-packages.sh --affected picks for
+# all the changed paths, and every package when there is no list of them.
+# The source scans (testing::source_scan) run whenever the Rust checks run at
+# all. A push with no list of changed paths selects every test.
+# Sets UNIT_ARGS, CLIPPY_ARGS, MEMBER_ARGS and INTEGRATION_ARGS (cargo
+# arguments; MEMBER_ARGS and INTEGRATION_ARGS are empty when none is called
+# for) and prints the choice.
 plan_rust_tests() {
     local dir="$1" path mod name known unit_reason="" integration_reason=""
-    local unit_all=0 unit_bins=0 integration_all=0
-    local filters="testing::source_scan" filter_list=" testing::source_scan "
-    local tests=" " test_names
+    local unit_all=0 unit_workspace=0 unit_bins=0 integration_all=0
+    local tests=" " test_names member_paths="" member_reason="" clippy_reason=""
     test_names=()
+    UNIT_FILTERS="testing::source_scan"
     UNIT_ARGS=()
+    CLIPPY_ARGS=()
+    MEMBER_ARGS=()
     INTEGRATION_ARGS=()
     if [ "$CHANGED_KNOWN" = 0 ]; then
-        unit_all=1
+        unit_workspace=1
         unit_reason="no list of changed paths"
         integration_all=1
         integration_reason="no list of changed paths"
@@ -252,20 +413,27 @@ plan_rust_tests() {
                 unit_all=1
                 unit_reason="$path belongs to no module"
             else
-                case "$filter_list" in
-                *" $mod:: "*) ;;
-                *)
-                    filter_list="$filter_list$mod:: "
-                    filters="$filters $mod::"
-                    ;;
-                esac
+                add_filter "$mod::"
             fi
             ;;
-        Cargo.toml | Cargo.lock | build.rs | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh | .github/workflows/ci.yml | .github/workflows/rust-checks.yml)
-            # No test reads these; the source scans below still run.
+        Cargo.toml | Cargo.lock | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | .cargo/*)
+            add_filter testing::manifest_scan
+            ;;
+        crates/*)
+            name="${path#crates/}"
+            name="${name%%/*}"
+            if is_member "$dir" "$name"; then
+                member_paths="$member_paths$path"$'\n'
+            fi
+            if [ "$path" = "crates/$name/Cargo.toml" ] || ! is_member "$dir" "$name"; then
+                add_filter testing::manifest_scan
+            fi
+            ;;
+        build.rs | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh | scripts/affected-packages* | scripts/check-crate-isolation.sh | .github/workflows/ci.yml | .github/workflows/rust-checks.yml)
+            # No test reads these; clippy and the generated-types check still cover them.
             ;;
         assets/* | tests/fixtures/*)
-            unit_all=1
+            unit_workspace=1
             unit_reason="$path is read by unit tests"
             integration_all=1
             integration_reason="$path is read by integration tests"
@@ -298,11 +466,17 @@ plan_rust_tests() {
                 esac
             fi
             ;;
+        web/src/styles/tokens.css)
+            member_paths="$member_paths$path"$'\n'
+            if [ ! -f "$dir/crates/net/src/browser_landing.rs" ]; then
+                unit_all=1
+                unit_reason="$path is read by unit tests"
+            fi
+            ;;
         *)
             # Only paths the Rust checks cover count: a docs or web file that no
             # test reads selects nothing. Those that reach here are files tests
-            # read by path (web/src/styles/tokens.css, web/app-shell-csp.txt,
-            # .github/workflows/release.yml).
+            # read by path (web/app-shell-csp.txt, .github/workflows/release.yml).
             if grep -qE "$RUST_PATHS_RE" <<<"$path"; then
                 unit_all=1
                 unit_reason="$path is read by unit tests"
@@ -311,27 +485,62 @@ plan_rust_tests() {
         esac
     done <<<"$CHANGED_PATHS"
 
-    UNIT_ARGS=(--lib)
-    if [ "$unit_all" = 1 ] || [ "$unit_bins" = 1 ]; then
-        UNIT_ARGS+=(--bins)
-    fi
-    if [ "$unit_all" = 1 ]; then
-        echo "Unit tests: every one, lib and bin ($unit_reason)."
+    if [ "$unit_workspace" = 1 ]; then
+        UNIT_ARGS=(--workspace --lib --bins)
+        echo "Unit tests: every one of every package ($unit_reason)."
+    elif [ "$unit_all" = 1 ]; then
+        UNIT_ARGS=(-p residuum --lib --bins)
+        echo "Unit tests: every root one, lib and bin ($unit_reason)."
     else
+        UNIT_ARGS=(-p residuum --lib)
+        if [ "$unit_bins" = 1 ]; then
+            UNIT_ARGS+=(--bins)
+        fi
         UNIT_ARGS+=(--)
-        for mod in $filters; do
+        for mod in $UNIT_FILTERS; do
             UNIT_ARGS+=("$mod")
         done
         if [ "$unit_bins" = 1 ]; then
-            echo "Unit tests: filtered to $filters (lib and bin)."
+            echo "Unit tests: root, filtered to $UNIT_FILTERS (lib and bin)."
         else
-            echo "Unit tests: filtered to $filters."
+            echo "Unit tests: root, filtered to $UNIT_FILTERS."
         fi
     fi
+
+    CLIPPY_ARGS=(--workspace)
+    if [ "$CHANGED_KNOWN" = 0 ]; then
+        clippy_reason="no list of changed paths"
+    elif pick_packages "$dir" --affected "$CHANGED_PATHS" --workspace; then
+        if [ "${#PICKED[@]}" -gt 0 ]; then
+            CLIPPY_ARGS=("${PICKED[@]}")
+            clippy_reason="the packages the changed paths touch and their dependents"
+        else
+            clippy_reason="the script named no package"
+        fi
+    else
+        clippy_reason="the selection failed"
+    fi
+    echo "Clippy: ${CLIPPY_ARGS[*]} ($clippy_reason)."
+
+    if [ -n "$member_paths" ]; then
+        if pick_packages "$dir" --members "$member_paths" --workspace --exclude residuum; then
+            member_reason="the member crates the changed paths touch and their dependents"
+        else
+            member_reason="the selection failed"
+        fi
+        if [ "${#PICKED[@]}" -gt 0 ]; then
+            MEMBER_ARGS=("${PICKED[@]}" --lib --tests)
+            echo "Member tests: ${PICKED[*]} ($member_reason)."
+        else
+            echo "Member tests: none (no changed path is in a member crate)."
+        fi
+    fi
+
     if [ "$integration_all" = 1 ]; then
-        INTEGRATION_ARGS=(--test '*')
+        INTEGRATION_ARGS=(-p residuum --test '*')
         echo "Integration tests: every one ($integration_reason)."
     elif [ "${#test_names[@]}" -gt 0 ]; then
+        INTEGRATION_ARGS=(-p residuum)
         for name in "${test_names[@]}"; do
             INTEGRATION_ARGS+=(--test "$name")
         done
@@ -371,17 +580,39 @@ generated_types_check() {
     return 1
 }
 
+# Whether web/dist must be built before the Rust checks of the commit $2 in the
+# tree $1, which the caller has entered. The stable tree reuses its dist while
+# no web source differs from the commit the dist was built from, Markdown aside.
+# Any other tree rebuilds when the push changes web/, and always when it has no
+# dist of its own: a temporary worktree has none, and the checkout's dist is
+# rebuilt when it is missing.
+web_dist_needs_build() {
+    local dir="$1" sha="$2" recorded=""
+    if [ "$dir" = "$STABLE_TREE" ]; then
+        recorded="$(cat "$DIST_COMMIT_FILE" 2>/dev/null)"
+        [ -n "$recorded" ] && [ -f web/dist/index.html ] && [ -f web/dist/sw.js ] &&
+            git diff --quiet "$recorded" "$sha" -- web ':(exclude)web/**/*.md' && return 1
+        return 0
+    fi
+    [ "$dir" != "$REPO_ROOT" ] || [ "$TOUCHES_WEB" = 1 ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]
+}
+
 run_rust_checks() {
-    local dir="$1"
+    local dir="$1" sha="$2"
     (
         cd "$dir" || exit 1
         # build.rs refuses to compile without web/dist, and the gateway's tests
-        # read the built service worker. A push that changes web/ rebuilds it
-        # from the sources being checked, and a temporary worktree has no dist
-        # of its own. Otherwise an existing dist is reused.
-        if [ "$dir" != "$REPO_ROOT" ] || [ "$TOUCHES_WEB" = 1 ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]; then
+        # read the built service worker, so the Rust checks build it when
+        # web_dist_needs_build says the dist is not the one they need.
+        if web_dist_needs_build "$dir" "$sha"; then
             ensure_web_deps web || exit 1
             echo "Building web/dist..."
+            # The stable tree's record names the commit the dist came from, so it
+            # goes once the build has replaced the dist, and is written after
+            # the build succeeds.
+            if [ "$dir" = "$STABLE_TREE" ]; then
+                rm -f "$DIST_COMMIT_FILE"
+            fi
             # Vite's output, chunk-size advice included, only matters when the
             # build fails.
             local build_output
@@ -389,15 +620,24 @@ run_rust_checks() {
                 echo "$build_output" >&2
                 exit 1
             }
+            if [ "$dir" = "$STABLE_TREE" ]; then
+                printf '%s\n' "$sha" >"$DIST_COMMIT_FILE" || {
+                    echo "couldn't record the commit web/dist was built from in $DIST_COMMIT_FILE" >&2
+                    exit 1
+                }
+            fi
         fi
     ) || {
         FAILED+=("${CHECK_SCOPE}web build for the Rust checks")
         echo -e "${RED}FAILED: building web/dist, which the Rust build needs. Skipping the Rust checks.${NC}" >&2
         return
     }
-    run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features -- -D warnings
     plan_rust_tests "$dir"
+    run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
     run_check "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
+    if [ "${#MEMBER_ARGS[@]}" -gt 0 ]; then
+        run_check "member tests (changed crates)" run_cargo_test "$dir" "${MEMBER_ARGS[@]}"
+    fi
     if [ "${#INTEGRATION_ARGS[@]}" -gt 0 ]; then
         run_check "integration tests (changed)" run_cargo_test "$dir" "${INTEGRATION_ARGS[@]}"
     fi
@@ -506,7 +746,6 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
         PRE_PUSH_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
         echo -e "${BOLD}Checking $local_ref in place.${NC}"
     else
-        echo -e "${BOLD}Checking $local_ref in a temporary worktree.${NC}"
         if ! prepare_worktree "$local_sha"; then
             cleanup
             FAILED+=("${CHECK_SCOPE}temporary worktree")
@@ -515,10 +754,11 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
         fi
         dir="$TEMP_TREE"
         PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
+        echo -e "${BOLD}Checking $local_ref in $TREE_NAME.${NC}"
     fi
 
     if [ "$TOUCHES_RUST" = 1 ]; then
-        run_rust_checks "$dir"
+        run_rust_checks "$dir" "$local_sha"
     fi
     [ "$TOUCHES_WEB" = 1 ] && run_web_checks "$dir"
     cleanup

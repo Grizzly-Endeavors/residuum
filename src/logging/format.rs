@@ -52,17 +52,45 @@ impl LogLevel {
     }
 }
 
-/// Expand a shorthand module name to a full target prefix.
-///
-/// Accepts either a bare module name (`agent`) or a fully qualified
-/// target prefix (`residuum::agent::core`).
+/// Display form of a log target: `residuum::` is removed from the front, and a
+/// crate target `residuum_<x>::…` shows as `<x>::…`, and a crate's root target
+/// `residuum_<x>` shows as `<x>`. Any other target without `::` is returned
+/// unchanged.
 #[must_use]
-pub fn expand_module_filter(module: &str) -> String {
-    if module.contains("::") {
-        module.to_string()
-    } else {
-        format!("residuum::{module}")
+pub fn display_target(target: &str) -> String {
+    let Some((first, rest)) = target.split_once("::") else {
+        return target
+            .strip_prefix("residuum_")
+            .unwrap_or(target)
+            .to_string();
+    };
+    if first == "residuum" {
+        return rest.to_string();
     }
+    match first.strip_prefix("residuum_") {
+        Some(krate) => format!("{krate}::{rest}"),
+        None => target.to_string(),
+    }
+}
+
+/// Module form of a log target: the target with its first segment removed. A
+/// target without `::` is a crate root, so its module form is empty.
+#[must_use]
+pub fn module_target(target: &str) -> &str {
+    target.split_once("::").map_or("", |(_, rest)| rest)
+}
+
+/// Whether a `--module` value selects a log target.
+///
+/// `filter` is the value as typed. It matches when it is a plain string prefix
+/// of the target, or when it, with one leading `residuum::` removed, is a plain
+/// string prefix of the target's display form or module form.
+#[must_use]
+pub fn module_matches(filter: &str, target: &str) -> bool {
+    let bare = filter.strip_prefix("residuum::").unwrap_or(filter);
+    target.starts_with(filter)
+        || display_target(target).starts_with(bare)
+        || module_target(target).starts_with(bare)
 }
 
 /// Check whether a log entry's level meets the minimum severity threshold.
@@ -120,12 +148,7 @@ fn format_entry_impl(entry: &LogEntry, color: bool) -> String {
         _ = write!(out, "{:<5}  ", entry.level);
     }
 
-    // Target — strip residuum:: prefix for brevity
-    let short_target = entry
-        .target
-        .strip_prefix("residuum::")
-        .unwrap_or(&entry.target);
-    _ = write!(out, "[{short_target}]");
+    _ = write!(out, "[{}]", display_target(&entry.target));
 
     // Message from fields
     if let Some(msg) = entry.fields.get("message").and_then(|v| v.as_str()) {
@@ -225,22 +248,145 @@ mod tests {
     }
 
     #[test]
-    fn module_filter_shorthand_expansion() {
-        assert_eq!(expand_module_filter("agent"), "residuum::agent");
-        assert_eq!(expand_module_filter("mcp"), "residuum::mcp");
+    fn display_residuum_module() {
+        assert_eq!(display_target("residuum::hub::runtime"), "hub::runtime");
+    }
+
+    #[test]
+    fn display_crate_single_module() {
+        assert_eq!(display_target("residuum_memory::search"), "memory::search");
+        assert_eq!(display_target("residuum_memory"), "memory");
+    }
+
+    #[test]
+    fn display_crate_inference() {
         assert_eq!(
-            expand_module_filter("residuum::mcp::client"),
-            "residuum::mcp::client"
+            display_target("residuum_inference::factory"),
+            "inference::factory"
         );
     }
 
     #[test]
-    fn module_matching() {
-        let target = "residuum::agent::core";
-        assert!(target.starts_with("residuum::agent"));
-        assert!(!target.starts_with("residuum::tools"));
-        assert!(target.starts_with("residuum::agent::core"));
-        assert!(!target.starts_with("residuum::agent::core::deep"));
+    fn display_crate_tracing_service() {
+        assert_eq!(
+            display_target("residuum_tracing_service::submit"),
+            "tracing_service::submit"
+        );
+    }
+
+    #[test]
+    fn display_crate_config_root_module() {
+        assert_eq!(display_target("residuum_config::load"), "config::load");
+    }
+
+    #[test]
+    fn display_crate_config_bundled_module() {
+        assert_eq!(
+            display_target("residuum_config::agent_keys::store"),
+            "config::agent_keys::store"
+        );
+    }
+
+    #[test]
+    fn display_crate_core_bundled_module() {
+        assert_eq!(display_target("residuum_core::util::fs"), "core::util::fs");
+    }
+
+    #[test]
+    fn display_crate_net_bundled_module() {
+        assert_eq!(
+            display_target("residuum_net::tunnel::v2"),
+            "net::tunnel::v2"
+        );
+    }
+
+    #[test]
+    fn match_agent_residuum_module_by_display() {
+        assert!(module_matches("agent", "residuum::agent::core"));
+    }
+
+    #[test]
+    fn match_agent_config_bundled_module_by_module_form() {
+        assert!(module_matches(
+            "agent",
+            "residuum_config::agent_keys::store"
+        ));
+    }
+
+    #[test]
+    fn match_memory_crate_by_display() {
+        assert!(module_matches("memory", "residuum_memory::search"));
+        assert!(module_matches("memory", "residuum_memory"));
+    }
+
+    #[test]
+    fn match_tunnel_in_net_by_module_form() {
+        assert!(module_matches("tunnel", "residuum_net::tunnel::v2"));
+    }
+
+    #[test]
+    fn match_net_crate_short_name_by_display() {
+        assert!(module_matches("net", "residuum_net::pairing::gate"));
+    }
+
+    #[test]
+    fn match_config_crate_short_name_by_display() {
+        assert!(module_matches(
+            "config",
+            "residuum_config::agent_keys::store"
+        ));
+    }
+
+    #[test]
+    fn match_hub_residuum_module_by_display() {
+        assert!(module_matches("hub", "residuum::hub::runtime"));
+    }
+
+    #[test]
+    fn match_residuum_prefixed_filter_by_module_form() {
+        assert!(module_matches(
+            "residuum::tunnel::v2",
+            "residuum_net::tunnel::v2::link"
+        ));
+    }
+
+    #[test]
+    fn match_residuum_prefixed_filter_by_display_after_strip() {
+        assert!(module_matches(
+            "residuum::mcp::client",
+            "residuum_mcp::client"
+        ));
+    }
+
+    #[test]
+    fn match_crate_target_written_out() {
+        assert!(module_matches(
+            "residuum_net::tunnel",
+            "residuum_net::tunnel::v2"
+        ));
+    }
+
+    #[test]
+    fn match_diagnostics_by_module_form_in_core() {
+        assert!(module_matches("diagnostics", "residuum_core::diagnostics"));
+    }
+
+    #[test]
+    fn match_diagnostics_by_display_in_dispatch_module() {
+        assert!(module_matches(
+            "diagnostics",
+            "residuum::diagnostics_dispatch"
+        ));
+    }
+
+    #[test]
+    fn match_module_below_crate_by_its_own_name() {
+        assert!(module_matches("search", "residuum_memory::search"));
+    }
+
+    #[test]
+    fn match_rejects_unrelated_module() {
+        assert!(!module_matches("tools", "residuum_net::tunnel::v2"));
     }
 
     #[test]
