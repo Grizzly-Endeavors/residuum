@@ -801,7 +801,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(header_of(&resp, "vary"), Some("Accept-Encoding"));
         assert_eq!(header_of(&resp, "content-encoding"), None);
-        assert!(body_of(resp).await.is_empty());
+        assert_eq!(body_of(resp).await, [] as [u8; 0]);
     }
 
     #[tokio::test]

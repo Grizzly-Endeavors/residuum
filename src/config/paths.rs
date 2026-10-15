@@ -546,10 +546,9 @@ mod tests {
             vec!["alpha".to_string(), "mid".to_string(), "zeta".to_string()]
         );
 
-        assert!(
-            discover_agents(&root.join("does-not-exist"))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            discover_agents(&root.join("does-not-exist")).unwrap(),
+            [] as [String; 0]
         );
     }
 
@@ -572,7 +571,7 @@ mod tests {
     fn discover_agents_skips_a_dangling_symlink() {
         let dir = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("dangling")).unwrap();
-        assert!(discover_agents(dir.path()).unwrap().is_empty());
+        assert_eq!(discover_agents(dir.path()).unwrap(), [] as [String; 0]);
     }
 
     #[test]

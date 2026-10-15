@@ -314,7 +314,7 @@ async fn a_config_that_cannot_be_read_lists_no_runs_and_is_warned_about_once() {
         upcoming_of(&h, "quiet").await.is_empty(),
         "no pulse and no action is promised by an agent that can't be loaded"
     );
-    assert!(upcoming_of(&h, "quiet").await.is_empty());
+    assert_eq!(upcoming_of(&h, "quiet").await, [] as [String; 0]);
     let warned = log.matching("couldn't read the agent's config");
     let [event] = warned.as_slice() else {
         panic!("one warning for as long as it stays unreadable, got {warned:?}");
@@ -424,7 +424,7 @@ async fn times_are_told_in_the_hubs_timezone() {
 async fn a_stopped_agents_upcoming_is_read_again_on_every_request() {
     let h = Harness::new();
     let _tracker = h.track_overview();
-    assert!(upcoming_of(&h, "quiet").await.is_empty());
+    assert_eq!(upcoming_of(&h, "quiet").await, [] as [String; 0]);
     let mut frames = h.overview.subscribe();
 
     write_actions(&h, "quiet", &[("weekly", at_2099(1, 7, 8, 0))]);
@@ -444,7 +444,7 @@ async fn a_stopped_agents_upcoming_is_read_again_on_every_request() {
 async fn a_running_agents_upcoming_follows_the_changes_its_watcher_reports() {
     let h = Harness::new();
     let _tracker = h.track_overview();
-    assert!(upcoming_of(&h, "scout").await.is_empty());
+    assert_eq!(upcoming_of(&h, "scout").await, [] as [String; 0]);
     let mut frames = h.overview.subscribe();
 
     write_actions(&h, "scout", &[("weekly", at_2099(1, 7, 8, 0))]);
@@ -563,11 +563,12 @@ async fn the_pulses_endpoint_and_the_overview_give_a_pulse_the_same_next_time() 
             .all(|pulse| pulse["next_fire_at"].is_null()),
         "no pulse runs while the pulse system is off: {off}"
     );
-    assert!(
+    assert_eq!(
         overview_of(&h, "quiet").await["upcoming"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
 }
 
@@ -577,11 +578,12 @@ async fn the_pulses_endpoint_and_the_overview_give_a_pulse_the_same_next_time() 
 async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_and_until_it_ends() {
     let h = Harness::new();
     let _tracker = h.track_overview();
-    assert!(
+    assert_eq!(
         overview_of(&h, "scout").await["outbound_problems"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
     let mut frames = h.overview.subscribe();
     let since = Utc::now() - TimeDelta::minutes(11);
@@ -610,11 +612,9 @@ async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_a
     laptop.unreachable_notified = false;
     write_outbound(&h, "scout", &[laptop.clone()]);
     task_changed(&h, "scout", &laptop);
-    assert!(
-        next_overview(&mut frames)
-            .await
-            .outbound_problems
-            .is_empty()
+    assert_eq!(
+        next_overview(&mut frames).await.outbound_problems,
+        [] as [crate::hub::overview::types::OutboundProblem; 0]
     );
 
     // The streak starts again and the user stops watching the task.
@@ -627,11 +627,9 @@ async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_a
     laptop.first_unreachable_at = None;
     write_outbound(&h, "scout", &[laptop.clone()]);
     task_changed(&h, "scout", &laptop);
-    assert!(
-        next_overview(&mut frames)
-            .await
-            .outbound_problems
-            .is_empty()
+    assert_eq!(
+        next_overview(&mut frames).await.outbound_problems,
+        [] as [crate::hub::overview::types::OutboundProblem; 0]
     );
 }
 
@@ -743,11 +741,12 @@ async fn a_task_that_ends_its_streak_before_the_threshold_never_becomes_a_proble
         frames.try_recv().is_err(),
         "no frame, at the old crossing or any other time"
     );
-    assert!(
+    assert_eq!(
         overview_of(&h, "scout").await["outbound_problems"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
 }
 
@@ -775,17 +774,16 @@ async fn a_stopped_agent_has_no_outbound_problems_and_a_stopping_agent_drops_its
 
     move_to(&h, "scout", AgentState::Stopped);
 
-    assert!(
-        next_overview(&mut frames)
-            .await
-            .outbound_problems
-            .is_empty()
+    assert_eq!(
+        next_overview(&mut frames).await.outbound_problems,
+        [] as [crate::hub::overview::types::OutboundProblem; 0]
     );
-    assert!(
+    assert_eq!(
         overview_of(&h, "scout").await["outbound_problems"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
 }
 

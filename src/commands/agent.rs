@@ -745,7 +745,10 @@ mod tests {
         let (addr, mock) = mock_hub(vec![summary("a", "running")]).await;
         let out = message(execute(&AgentCommand::Create(create_args("Not Valid!")), &addr).await);
         assert!(out.contains("agent name"), "{out}");
-        assert!(mock.lock().unwrap().requests.is_empty());
+        assert_eq!(
+            mock.lock().unwrap().requests,
+            [] as [(std::string::String, std::string::String, serde_json::Value); 0]
+        );
     }
 
     #[tokio::test]

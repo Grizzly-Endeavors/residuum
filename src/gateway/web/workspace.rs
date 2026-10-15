@@ -1714,7 +1714,7 @@ mod tests {
             .unwrap();
         let write_result: WriteResponse = serde_json::from_slice(&write_body).unwrap();
         assert!(write_result.saved);
-        assert!(!write_result.version.is_empty());
+        assert_ne!(write_result.version, "");
 
         // Verify write persisted
         let updated_content = tokio::fs::read_to_string(ws_dir.join("SOUL.md"))
@@ -2193,7 +2193,10 @@ mod tests {
         )
         .await;
 
-        assert!(response.diagnostics.is_empty());
+        assert_eq!(
+            response.diagnostics,
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     #[tokio::test]
@@ -2212,7 +2215,10 @@ mod tests {
         )
         .await;
 
-        assert!(response.diagnostics.is_empty());
+        assert_eq!(
+            response.diagnostics,
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     // ── Raw read/write ──────────────────────────────────────────────

@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(event.address.as_ref(), "external-a2a-0001");
         assert_eq!(event.state, A2aTaskSignalState::Completed);
         assert_eq!(event.message, "all done");
-        assert!(event.artifacts.is_empty());
+        assert_eq!(event.artifacts, [] as [::a2a::Artifact; 0]);
     }
 
     #[tokio::test]

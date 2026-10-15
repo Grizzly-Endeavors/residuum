@@ -434,7 +434,10 @@ mod tests {
             host.submit(&tampered, now),
             Err(HostError::Invalid(_))
         ));
-        assert!(host.pending(now).is_empty());
+        assert_eq!(
+            host.pending(now),
+            [] as [crate::remote_access::siblings::host::PendingView; 0]
+        );
     }
 
     #[test]
@@ -472,7 +475,10 @@ mod tests {
             .join_id;
         assert_eq!(host.pending(now).len(), 1);
         let later = now + Duration::seconds(LIFETIME_SECS + 1);
-        assert!(host.pending(later).is_empty());
+        assert_eq!(
+            host.pending(later),
+            [] as [crate::remote_access::siblings::host::PendingView; 0]
+        );
         assert!(host.poll(&join_id, later).is_none());
     }
 

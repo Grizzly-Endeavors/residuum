@@ -567,7 +567,7 @@ observer_threshold_tokens = 30000
             unsafe { std::env::remove_var(var) };
         }
         let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
-        assert!(cfg.load_notices.is_empty());
+        assert_eq!(cfg.load_notices, [] as [String; 0]);
     }
 
     #[test]

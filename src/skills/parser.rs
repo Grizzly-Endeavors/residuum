@@ -346,7 +346,10 @@ mod tests {
     #[test]
     fn diagnose_valid_skill_has_no_diagnostics() {
         let content = "---\nname: pdf-processing\ndescription: \"Extracts text from PDFs\"\n---\n";
-        assert!(diagnose_skill_md(content).is_empty());
+        assert_eq!(
+            diagnose_skill_md(content),
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     #[test]
@@ -367,7 +370,10 @@ mod tests {
     #[test]
     fn diagnose_reports_nothing_for_a_normal_description() {
         let content = "---\nname: my-skill\ndescription: \"Extracts text from PDFs\"\n---\n";
-        assert!(diagnose_skill_md(content).is_empty());
+        assert_eq!(
+            diagnose_skill_md(content),
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     #[test]

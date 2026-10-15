@@ -527,7 +527,7 @@ mod tests {
             "waiting outlasts the turn it waited on"
         );
         journal.observe(&read("c", "c"));
-        assert!(waiting(&journal).is_empty());
+        assert_eq!(waiting(&journal), [] as [String; 0]);
     }
 
     #[test]

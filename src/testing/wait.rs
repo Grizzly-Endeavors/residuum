@@ -398,7 +398,7 @@ mod tests {
             next_where("an even item past 2", &mut rx, |n| *n == 4).await,
             vec![1, 2, 3, 4]
         );
-        assert!(drain(&mut rx).is_empty());
+        assert_eq!(drain(&mut rx), [] as [i32; 0]);
     }
 
     #[tokio::test]

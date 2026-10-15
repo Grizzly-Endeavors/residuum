@@ -959,7 +959,7 @@ mod tests {
 
         // Verify it's gone
         let after_delete = secrets::api_secrets_list(State(state)).await.unwrap();
-        assert!(after_delete.0.names.is_empty());
+        assert_eq!(after_delete.0.names, [] as [String; 0]);
     }
 }
 

@@ -146,7 +146,10 @@ mod tests {
         .unwrap();
 
         let keys = A2aKeys::new(dir.path());
-        assert!(keys.snapshot().await.unwrap().list().is_empty());
+        assert_eq!(
+            keys.snapshot().await.unwrap().list(),
+            [] as [residuum::a2a::A2aKeyInfo; 0]
+        );
     }
 
     #[tokio::test]

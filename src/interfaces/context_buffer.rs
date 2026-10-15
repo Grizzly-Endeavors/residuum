@@ -195,7 +195,10 @@ mod tests {
     fn zero_capacity_disables_buffering() {
         let buffer = ContextBuffer::new(0);
         buffer.record("c", msg("Jane", "hi", 1));
-        assert!(buffer.drain("c").is_empty());
+        assert_eq!(
+            buffer.drain("c"),
+            [] as [crate::interfaces::context_buffer::BufferedMessage; 0]
+        );
     }
 
     #[test]

@@ -162,7 +162,7 @@ mod tests {
 
         connection.report("phone", false);
 
-        assert!(devices(&presence).is_empty());
+        assert_eq!(devices(&presence), [] as [String; 0]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(devices(&presence), ["laptop"]);
 
         second.report("laptop", false);
-        assert!(devices(&presence).is_empty());
+        assert_eq!(devices(&presence), [] as [String; 0]);
     }
 
     #[tokio::test(start_paused = true)]

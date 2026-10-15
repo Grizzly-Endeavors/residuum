@@ -213,7 +213,7 @@ mod tests {
         let (value, notices) =
             parse_tolerating_unknown_keys::<Root>(toml_str, "config.toml").unwrap();
         assert_eq!(value.top, Some(1));
-        assert!(notices.is_empty());
+        assert_eq!(notices, [] as [String; 0]);
     }
 
     #[test]

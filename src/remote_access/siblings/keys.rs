@@ -357,7 +357,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("siblings.json"), "{ nope").unwrap();
         let keys = SiblingKeys::open(dir.path());
-        assert!(keys.joined().is_empty());
+        assert_eq!(
+            keys.joined(),
+            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
+        );
         assert!(dir.path().join("siblings.json.unreadable").exists());
     }
 

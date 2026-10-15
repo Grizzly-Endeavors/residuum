@@ -310,6 +310,6 @@ mod tests {
     #[test]
     fn trim_spans_returns_empty_unchanged() {
         let trimmed = trim_spans_to_budget(Vec::new());
-        assert!(trimmed.is_empty());
+        assert_eq!(trimmed, [] as [opentelemetry_sdk::trace::SpanData; 0]);
     }
 }

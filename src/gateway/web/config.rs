@@ -1070,7 +1070,10 @@ mod tests {
             .unwrap();
 
         assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
+        assert_eq!(
+            response.diagnostics,
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     #[tokio::test]
@@ -1083,7 +1086,10 @@ mod tests {
             .unwrap();
 
         assert!(!response.valid, "invalid JSON should be flagged invalid");
-        assert!(!response.diagnostics.is_empty());
+        assert_ne!(
+            response.diagnostics,
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
         let mcp_path =
             crate::workspace::layout::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
         let saved = tokio::fs::read_to_string(&mcp_path).await.unwrap();
@@ -1106,7 +1112,10 @@ mod tests {
         .unwrap();
 
         assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
+        assert_eq!(
+            response.diagnostics,
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     #[tokio::test]
@@ -1348,10 +1357,9 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!*done_rx.borrow());
         assert!(!root.path().join("scout/config/config.toml").exists());
-        assert!(
-            crate::config::discover_agents(root.path())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            crate::config::discover_agents(root.path()).unwrap(),
+            [] as [String; 0]
         );
     }
 

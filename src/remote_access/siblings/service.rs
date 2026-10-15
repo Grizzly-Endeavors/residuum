@@ -525,9 +525,15 @@ mod tests {
             assert!(laptop.service.host.deny(&id, Utc::now()));
         });
         assert!(matches!(outcome, Err(JoinFailure::Denied { .. })));
-        assert!(desktop.keys.joined().is_empty());
-        assert!(laptop.keys.joined().is_empty());
-        assert!(pins.operations().is_empty());
+        assert_eq!(
+            desktop.keys.joined(),
+            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
+        );
+        assert_eq!(
+            laptop.keys.joined(),
+            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
+        );
+        assert_eq!(pins.operations(), [] as [String; 0]);
         assert_eq!(log.lock().unwrap().last().unwrap().state, JoinState::Denied);
     }
 
@@ -560,7 +566,10 @@ mod tests {
             laptop.service.host.find_pending(&id, Utc::now()).is_some(),
             "the request is still waiting for another try"
         );
-        assert!(laptop.keys.joined().is_empty());
+        assert_eq!(
+            laptop.keys.joined(),
+            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
+        );
         assert!(!laptop.store.is_known(desktop.account.uri()));
     }
 
@@ -597,7 +606,10 @@ mod tests {
             );
         });
         assert!(matches!(outcome, Err(JoinFailure::Refused { .. })));
-        assert!(desktop.keys.joined().is_empty());
+        assert_eq!(
+            desktop.keys.joined(),
+            [] as [crate::remote_access::siblings::keys::JoinedSibling; 0]
+        );
         assert!(!desktop.store.is_known(laptop.account.uri()));
         assert_eq!(log.lock().unwrap().last().unwrap().state, JoinState::Failed);
     }

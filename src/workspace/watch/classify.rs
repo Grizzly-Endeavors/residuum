@@ -270,6 +270,9 @@ mod tests {
         drop(dir);
         let classified = classify(&removed, &roots);
         assert!(classified.root_gone);
-        assert!(classified.changes.is_empty());
+        assert_eq!(
+            classified.changes,
+            [] as [crate::workspace::watch::batcher::RawChange; 0]
+        );
     }
 }

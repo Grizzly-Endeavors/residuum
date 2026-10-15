@@ -513,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn a_team_of_one_has_no_teammates_and_no_block() {
         let link = TeamLink::alone("solo");
-        assert!(link.teammates().is_empty());
+        assert_eq!(link.teammates(), [] as [crate::hub::types::AgentSummary; 0]);
         assert!(link.prompt_block().is_none());
         let target = TeamTarget {
             agent: "ghost".to_string(),

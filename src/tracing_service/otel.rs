@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn convert_empty_spans_returns_empty() {
         let result = convert_spans(&[]);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [opentelemetry_sdk::trace::SpanData; 0]);
     }
 
     #[test]

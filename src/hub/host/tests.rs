@@ -1595,7 +1595,10 @@ async fn the_agent_that_creates_or_deletes_an_agent_files_nothing_in_its_user_in
         .await
         .unwrap();
 
-    assert!(user_inbox_files(&hub, "scout").is_empty());
+    assert_eq!(
+        user_inbox_files(&hub, "scout"),
+        [] as [std::path::PathBuf; 0]
+    );
 }
 
 #[tokio::test]

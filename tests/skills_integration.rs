@@ -187,7 +187,7 @@ mod skills_integration {
         {
             let s = state.lock().await;
             assert_eq!(s.index().entries().len(), bundled_skill_count() + 1);
-            assert!(s.active_skill_names().is_empty());
+            assert_eq!(s.active_skill_names(), [] as [&str; 0]);
         }
 
         // Activate via tool
@@ -226,7 +226,7 @@ mod skills_integration {
         // Verify removed
         {
             let s = state.lock().await;
-            assert!(s.active_skill_names().is_empty());
+            assert_eq!(s.active_skill_names(), [] as [&str; 0]);
             assert!(s.format_active_for_prompt().is_none());
         }
     }

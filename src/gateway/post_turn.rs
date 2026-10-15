@@ -663,7 +663,10 @@ mod tests {
 
     #[test]
     fn empty_findings_produce_empty_plan() {
-        assert!(plan_delivery(vec![]).is_empty());
+        assert_eq!(
+            plan_delivery(vec![]),
+            [] as [crate::gateway::post_turn::Delivery; 0]
+        );
     }
 
     #[test]

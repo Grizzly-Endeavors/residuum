@@ -839,7 +839,7 @@ async fn create_answers_400_for_a_body_it_cannot_read() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let refusal: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(refusal["error"].as_str().unwrap().contains("request body"));
-    assert!(h.directory.calls().is_empty());
+    assert_eq!(h.directory.calls(), [] as [String; 0]);
 }
 
 #[tokio::test]
@@ -1041,7 +1041,7 @@ async fn patch_needs_a_field_and_a_known_value() {
         StatusCode::BAD_REQUEST,
     )
     .await;
-    assert!(h.directory.calls().is_empty());
+    assert_eq!(h.directory.calls(), [] as [String; 0]);
 }
 
 #[tokio::test]
@@ -1965,7 +1965,7 @@ async fn the_cross_site_guard_covers_the_whole_app() {
         let write_status = h.status(cross_site(Method::POST, uri)).await;
         assert_eq!(write_status, StatusCode::FORBIDDEN, "{uri}");
     }
-    assert!(h.directory.calls().is_empty());
+    assert_eq!(h.directory.calls(), [] as [String; 0]);
 
     // Reads are side-effect free and stay open; a cross-site WebSocket
     // upgrade is not.

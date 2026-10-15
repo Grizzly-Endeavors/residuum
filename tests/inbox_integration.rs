@@ -169,7 +169,7 @@ mod inbox_integration {
             .await
             .unwrap();
         let loaded = load_item(&inbox_dir.join("empty.json")).await.unwrap();
-        assert!(loaded.attachments.is_empty());
+        assert_eq!(loaded.attachments, [] as [std::path::PathBuf; 0]);
     }
 
     #[tokio::test]

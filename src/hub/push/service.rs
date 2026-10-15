@@ -1009,7 +1009,10 @@ mod tests {
             .unwrap();
 
         service.delete_device(&device.id).await.unwrap();
-        assert!(service.devices().await.unwrap().is_empty());
+        assert_eq!(
+            service.devices().await.unwrap(),
+            [] as [crate::hub::push::types::PushDevice; 0]
+        );
         assert!(matches!(
             service.delete_device(&device.id).await,
             Err(PushError::UnknownDevice(_))

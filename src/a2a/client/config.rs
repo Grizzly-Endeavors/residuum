@@ -372,7 +372,10 @@ mod tests {
     #[test]
     fn diagnose_clean_file_has_no_diagnostics() {
         let content = r#"{"agents": {"laptop": {"url": "https://x.example.com"}}}"#;
-        assert!(diagnose_a2a_json(content).is_empty());
+        assert_eq!(
+            diagnose_a2a_json(content),
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     #[test]

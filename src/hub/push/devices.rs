@@ -151,7 +151,10 @@ mod tests {
     async fn a_missing_file_holds_no_devices() {
         let dir = tempfile::tempdir().unwrap();
         let store = DeviceStore::new(dir.path().join("push-devices.json"));
-        assert!(store.read().await.unwrap().is_empty());
+        assert_eq!(
+            store.read().await.unwrap(),
+            [] as [crate::hub::push::devices::StoredDevice; 0]
+        );
     }
 
     #[tokio::test]

@@ -162,16 +162,17 @@ mod tests {
         let start = Instant::now();
         let mut coalescer = DeltaCoalescer::default();
 
-        assert!(coalescer.push(text("Hel"), start).is_empty());
-        assert!(
-            coalescer
-                .push(text("lo, "), start + Duration::from_millis(10))
-                .is_empty()
+        assert_eq!(
+            coalescer.push(text("Hel"), start),
+            [] as [crate::agent::stream::StreamPiece; 0]
         );
-        assert!(
-            coalescer
-                .push(text("world"), start + Duration::from_millis(20))
-                .is_empty()
+        assert_eq!(
+            coalescer.push(text("lo, "), start + Duration::from_millis(10)),
+            [] as [crate::agent::stream::StreamPiece; 0]
+        );
+        assert_eq!(
+            coalescer.push(text("world"), start + Duration::from_millis(20)),
+            [] as [crate::agent::stream::StreamPiece; 0]
         );
 
         assert_eq!(
@@ -247,8 +248,14 @@ mod tests {
         let start = Instant::now();
         let mut coalescer = DeltaCoalescer::default();
 
-        assert!(coalescer.push(text(""), start).is_empty());
-        assert!(coalescer.push(thinking(""), start).is_empty());
+        assert_eq!(
+            coalescer.push(text(""), start),
+            [] as [crate::agent::stream::StreamPiece; 0]
+        );
+        assert_eq!(
+            coalescer.push(thinking(""), start),
+            [] as [crate::agent::stream::StreamPiece; 0]
+        );
         assert_eq!(coalescer.flush_at(), None);
     }
 

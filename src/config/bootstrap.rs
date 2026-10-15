@@ -174,10 +174,9 @@ mod tests {
             "config.toml is the discovery marker and must not be a placeholder"
         );
         assert!(!dir.join("providers.toml").exists());
-        assert!(
-            crate::config::discover_agents(base.path())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            crate::config::discover_agents(base.path()).unwrap(),
+            [] as [String; 0]
         );
     }
 

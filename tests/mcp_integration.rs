@@ -149,7 +149,7 @@ mod mcp_integration {
     async fn disconnect_all_on_empty_is_noop() {
         let mut registry = McpRegistry::new();
         let disconnected = registry.disconnect_all().await;
-        assert!(disconnected.is_empty());
+        assert_eq!(disconnected, [] as [std::string::String; 0]);
     }
 
     #[tokio::test]

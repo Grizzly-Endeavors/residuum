@@ -444,7 +444,7 @@ mod tests {
 
         state.activate("test-skill").await.unwrap();
         state.deactivate("TEST-SKILL").unwrap();
-        assert!(state.active_skill_names().is_empty());
+        assert_eq!(state.active_skill_names(), [] as [&str; 0]);
     }
 
     #[test]

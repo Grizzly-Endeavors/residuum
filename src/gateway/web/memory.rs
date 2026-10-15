@@ -415,6 +415,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(response.0.results.is_empty());
+        assert_eq!(
+            response.0.results,
+            [] as [crate::gateway::web::memory::MemorySearchResultItem; 0]
+        );
     }
 }

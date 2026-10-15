@@ -601,7 +601,10 @@ mod tests {
         .unwrap();
 
         assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
+        assert_eq!(
+            response.diagnostics,
+            [] as [crate::diagnostics::Diagnostic; 0]
+        );
     }
 
     #[test]
