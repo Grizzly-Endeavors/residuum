@@ -16,7 +16,7 @@ pub(super) const ALLOWED: &[(&str, usize, &str)] = &[
         "the harness's `Drop` removes the workspace while detached session and checkpoint writers may still be finishing; teardown is synchronous, with nothing to await their end on, so the removal retries between short pauses",
     ),
     (
-        "src/inference/test_support.rs",
+        "crates/inference/src/test_support.rs",
         1,
         "`Step::Pause` is a scripted network stall: the silence is the stimulus a stream's idle timeout is tested against",
     ),

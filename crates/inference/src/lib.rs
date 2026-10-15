@@ -1,5 +1,11 @@
 //! Inference provider abstraction and the shared LLM vocabulary.
+//!
+//! The `test-support` feature adds `testing`, the gated model server and
+//! provider other crates' tests hold model calls open with.
 
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;
 pub(crate) mod embedding;
 mod error;
 pub(crate) mod factory;
@@ -14,19 +20,22 @@ mod stream;
 pub mod system_one;
 #[cfg(test)]
 mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 mod tool;
 mod types;
 
-pub(crate) use embedding::build_embedding_provider;
-pub use embedding::{EmbeddingProvider, EmbeddingResponse};
+pub use embedding::{EmbeddingProvider, EmbeddingResponse, build_embedding_provider};
 pub use error::{FailureDescription, InferenceError, describe_turn_failure};
-pub(crate) use factory::{
+pub use factory::{
     DroppedFallback, build_provider_chain, build_provider_chain_with_notices,
     build_provider_chain_with_shared_notices,
 };
 pub use failover::NoticeSink;
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use image_input::ImagesOmitted;
+pub use providers::anthropic;
+pub use providers::null::NullProvider;
 pub use reply::strip_code_fences;
 pub(crate) use retry::with_retry;
 pub use role_options::completion_options_for_role;

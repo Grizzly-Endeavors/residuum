@@ -12,21 +12,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::config::RetryConfig;
-use crate::config::{ThinkingConfig, ThinkingLevel};
-use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
-use crate::inference::http::{
+use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
+use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
-use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
-use crate::inference::types::current_exchange_start;
-use crate::inference::with_retry;
-use crate::inference::{
+use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
+use crate::types::current_exchange_start;
+use crate::with_retry;
+use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
     ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
+use residuum_config::RetryConfig;
+use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// The `part` of a [`ThinkingBlock`] whose signature belongs to the
 /// response's text rather than to a tool call.
@@ -468,7 +468,7 @@ impl GeminiClient {
             tracing::warn!(
                 status = %status,
                 response_body = %raw_body,
-                request_body = %crate::inference::http::without_inline_media(&request_json),
+                request_body = %crate::http::without_inline_media(&request_json),
                 "gemini API error — full request/response for diagnosis"
             );
             let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
@@ -1149,14 +1149,14 @@ async fn parse_gemini_embed_error(response: reqwest::Response) -> InferenceError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RetryConfig;
-    use crate::inference::CompletionOptions;
-    use crate::inference::test_support::{
+    use crate::CompletionOptions;
+    use crate::test_support::{
         RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
         sse_chunks, sse_response,
     };
-    use crate::inference::{StreamDelta, ThinkingBlock};
     use crate::testing::model::GatedModel;
+    use crate::{StreamDelta, ThinkingBlock};
+    use residuum_config::RetryConfig;
     use residuum_core::testing::gate::Gate;
     use serde_json::{Value, json};
     use wiremock::matchers::{method, path_regex, query_param};
@@ -1170,9 +1170,7 @@ mod tests {
     }
 
     fn make_client(base_url: &str) -> GeminiClient {
-        let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60))
-                .unwrap();
+        let http = SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(60)).unwrap();
         GeminiClient::new(
             http,
             base_url,
@@ -1185,9 +1183,7 @@ mod tests {
 
     #[test]
     fn endpoint_includes_model_and_key() {
-        let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60))
-                .unwrap();
+        let http = SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(60)).unwrap();
         let client = GeminiClient::new(
             http,
             "https://generativelanguage.googleapis.com/v1beta",
@@ -1526,9 +1522,7 @@ mod tests {
         // 1 second timeout can end the call.
         let model = GatedModel::replying("unused").await;
 
-        let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(1))
-                .unwrap();
+        let http = SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(1)).unwrap();
         let client = GeminiClient::new(
             http,
             model.uri(),
@@ -1585,7 +1579,7 @@ mod tests {
 
         let client = make_client(&mock_server.uri());
         let options = CompletionOptions {
-            response_format: crate::inference::ResponseFormat::JsonSchema {
+            response_format: crate::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -2447,8 +2441,7 @@ mod tests {
         script.push(Step::Hold(stall.entry()));
         let (result, _, _) = stream_from(script, |url| {
             let http =
-                SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(1))
-                    .unwrap();
+                SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(1)).unwrap();
             GeminiClient::new(
                 http,
                 url,
@@ -2478,8 +2471,7 @@ mod tests {
             sse_response(&[second]),
         ])
         .await;
-        let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::default()).unwrap();
+        let http = SharedHttpClient::new(&crate::http::HttpClientConfig::default()).unwrap();
         let client = GeminiClient::new(
             http,
             server.uri(),
@@ -2605,12 +2597,10 @@ mod tests {
 
     // --- Embedding tests ---
 
-    use crate::inference::embedding::EmbeddingProvider;
+    use crate::embedding::EmbeddingProvider;
 
     fn make_embedding_client(base_url: &str) -> GeminiEmbeddingClient {
-        let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60))
-                .unwrap();
+        let http = SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(60)).unwrap();
         GeminiEmbeddingClient::new(
             http,
             base_url,

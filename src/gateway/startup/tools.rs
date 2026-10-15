@@ -779,7 +779,7 @@ mod tests {
 
         let _agent = create_agent(
             CreateAgentArgs {
-                provider: Box::new(crate::inference::providers::null::NullProvider),
+                provider: Box::new(crate::inference::NullProvider),
                 options: crate::inference::CompletionOptions::default(),
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),

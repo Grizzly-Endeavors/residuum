@@ -9,20 +9,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use crate::config::RetryConfig;
-use crate::config::{ThinkingConfig, ThinkingLevel};
-use crate::inference::http::{
+use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
-use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
-use crate::inference::types::current_exchange_start;
-use crate::inference::with_retry;
-use crate::inference::{
+use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
+use crate::types::current_exchange_start;
+use crate::with_retry;
+use crate::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
     ProviderApi, ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
     ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
+use residuum_config::RetryConfig;
+use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// Anthropic Messages API version header value.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -31,8 +31,9 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// OAuth tokens (sk-ant-oat01-*) are issued via the Claude Code OAuth flow and
 /// require Claude Code identity markers to access models like claude-sonnet-4-6
 /// and claude-opus-4-6.
-pub(crate) const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
-pub(crate) const OAUTH_USER_AGENT: &str = "claude-cli/2.1.75";
+pub const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
+/// The user agent an OAuth token request identifies itself with.
+pub const OAUTH_USER_AGENT: &str = "claude-cli/2.1.75";
 const OAUTH_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /// Lets a model that takes a manual thinking budget reason between tool calls.
@@ -263,7 +264,7 @@ impl AnthropicClient {
     /// a server-side `web_search_20250305` entry is appended.
     fn convert_tools(
         tools: &[ToolDefinition],
-        web_search: Option<&crate::inference::WebSearchNativeConfig>,
+        web_search: Option<&crate::WebSearchNativeConfig>,
     ) -> Vec<AnthropicToolEntry> {
         let mut entries: Vec<AnthropicToolEntry> = tools
             .iter()
@@ -525,7 +526,7 @@ impl AnthropicClient {
                 warn!(
                     status = %status,
                     response_body = %body,
-                    request_body = %crate::inference::http::without_inline_media(&request_json),
+                    request_body = %crate::http::without_inline_media(&request_json),
                     "anthropic API error — full request/response for diagnosis"
                 );
             }
@@ -691,7 +692,9 @@ fn count_dropped_thinking(transformations: &[AnthropicInputTransformation]) -> u
     dropped
 }
 
-pub(crate) fn is_oauth_key(key: &str) -> bool {
+/// Whether `key` is an OAuth token (`sk-ant-oat01-…`) rather than an API key.
+#[must_use]
+pub fn is_oauth_key(key: &str) -> bool {
     key.starts_with("sk-ant-oat01-")
 }
 
@@ -1582,12 +1585,12 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::config::RetryConfig;
-    use crate::inference::http::HttpClientConfig;
-    use crate::inference::test_support::{
+    use crate::http::HttpClientConfig;
+    use crate::test_support::{
         RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
         sse_chunks, sse_response,
     };
+    use residuum_config::RetryConfig;
 
     const TEST_MODEL: &str = "claude-sonnet-4-20250514";
 
@@ -2045,7 +2048,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            response_format: crate::inference::ResponseFormat::JsonSchema {
+            response_format: crate::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: json!({
                     "type": "object",
@@ -2400,7 +2403,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            web_search: Some(crate::inference::WebSearchNativeConfig {
+            web_search: Some(crate::WebSearchNativeConfig {
                 max_uses: Some(3),
                 ..Default::default()
             }),
@@ -2488,7 +2491,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            web_search: Some(crate::inference::WebSearchNativeConfig::default()),
+            web_search: Some(crate::WebSearchNativeConfig::default()),
             ..CompletionOptions::default()
         };
         let result = client.complete(&simple_user_message(), &[], &options).await;

@@ -448,7 +448,7 @@ mod tests {
 
     fn test_agent() -> Agent {
         Agent::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             crate::tools::ToolRegistry::new(),
             crate::mcp::McpRegistry::new_shared(),
             crate::workspace::identity::IdentityFiles::default(),
@@ -467,7 +467,7 @@ mod tests {
         // `check_thresholds` — only the `NullProvider`'s guaranteed error
         // matters.
         Observer::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             crate::memory::observer::ObserverConfig::default(),
         )
     }
@@ -476,7 +476,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 ..ReflectorConfig::default()

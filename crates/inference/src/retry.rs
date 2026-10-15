@@ -6,7 +6,7 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use super::InferenceError;
-use crate::config::RetryConfig;
+use residuum_config::RetryConfig;
 
 /// Execute a fallible async operation with retry logic.
 ///

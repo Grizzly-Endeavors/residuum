@@ -2093,7 +2093,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let tools = ToolRegistry::new();
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
@@ -2185,7 +2185,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -2294,7 +2294,7 @@ mod tests {
             arguments: serde_json::json!({}),
             server: None,
         };
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -2408,7 +2408,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -2482,7 +2482,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3421,7 +3421,7 @@ mod tests {
             counting_tool_call("c3"),
         ];
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3509,7 +3509,7 @@ mod tests {
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3596,7 +3596,7 @@ mod tests {
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();

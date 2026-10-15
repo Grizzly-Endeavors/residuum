@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::inference::{
+use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ToolDefinition,
 };
@@ -11,7 +11,7 @@ use crate::inference::{
 ///
 /// Used by disabled observer/reflector instances to satisfy the type system
 /// without requiring a real model configuration.
-pub(crate) struct NullProvider;
+pub struct NullProvider;
 
 #[async_trait]
 impl InferenceProvider for NullProvider {

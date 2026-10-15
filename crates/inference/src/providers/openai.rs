@@ -12,21 +12,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::config::RetryConfig;
-use crate::config::{ThinkingConfig, ThinkingLevel};
-use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
-use crate::inference::http::{
+use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
+use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
-use crate::inference::reply::{ReplyAssembler, plain_reasoning};
-use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
-use crate::inference::types::current_exchange_start;
-use crate::inference::with_retry;
-use crate::inference::{
+use crate::reply::{ReplyAssembler, plain_reasoning};
+use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
+use crate::types::current_exchange_start;
+use crate::with_retry;
+use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ResponseFormat, Role, StopReason, StreamSink, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
 };
+use residuum_config::RetryConfig;
+use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// Fireworks response header carrying the prompt tokens served from cache.
 const FIREWORKS_CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tokens";
@@ -374,7 +374,7 @@ impl OpenAiClient {
             tracing::warn!(
                 status = %status,
                 response_body = %raw_body,
-                request_body = %crate::inference::http::without_inline_media(&request_json),
+                request_body = %crate::http::without_inline_media(&request_json),
                 "openai API error — full request/response for diagnosis"
             );
             let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
@@ -1244,15 +1244,15 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RetryConfig;
-    use crate::inference::CompletionOptions;
-    use crate::inference::http::{HttpClientConfig, SharedHttpClient};
-    use crate::inference::test_support::{
+    use crate::CompletionOptions;
+    use crate::http::{HttpClientConfig, SharedHttpClient};
+    use crate::test_support::{
         RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
         sse_chunks, sse_response,
     };
-    use crate::inference::{StreamDelta, ThinkingBlock};
     use crate::testing::model::GatedModel;
+    use crate::{StreamDelta, ThinkingBlock};
+    use residuum_config::RetryConfig;
     use residuum_core::testing::gate::Gate;
     use serde_json::{Value, json};
     use wiremock::matchers::{header, method, path};
@@ -1357,7 +1357,7 @@ mod tests {
 
     #[test]
     fn message_conversion_user_with_images() {
-        use crate::inference::ImageData;
+        use crate::ImageData;
         let images = vec![ImageData {
             media_type: "image/jpeg".to_string(),
             data: "base64abc123".to_string(),
@@ -1859,7 +1859,7 @@ mod tests {
 
         let client = make_client(mock_server.uri(), "gpt-4");
         let options = CompletionOptions {
-            response_format: crate::inference::ResponseFormat::JsonSchema {
+            response_format: crate::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -2055,7 +2055,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_success() {
-        use crate::inference::embedding::EmbeddingProvider;
+        use crate::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -2089,7 +2089,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_batch_ordering() {
-        use crate::inference::embedding::EmbeddingProvider;
+        use crate::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -2122,7 +2122,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_api_error_401() {
-        use crate::inference::embedding::EmbeddingProvider;
+        use crate::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -2159,7 +2159,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_empty_data() {
-        use crate::inference::embedding::EmbeddingProvider;
+        use crate::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -2339,7 +2339,7 @@ mod tests {
 
         let client = make_fireworks_client(mock_server.uri(), None);
         let options = CompletionOptions {
-            web_search: Some(crate::inference::WebSearchNativeConfig::default()),
+            web_search: Some(crate::WebSearchNativeConfig::default()),
             ..CompletionOptions::default()
         };
         client

@@ -70,7 +70,7 @@ impl Reflector {
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
-            provider: Arc::new(crate::inference::providers::null::NullProvider),
+            provider: Arc::new(crate::inference::NullProvider),
             config: ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 tz,

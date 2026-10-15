@@ -412,7 +412,7 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
   | core | `["tokio/test-util", "tokio/net"]` | `tokio` (already a dependency): `testing::clock` calls `tokio::time::advance` and `pause` (`test-util`), `testing::ports` converts its listener with `tokio::net::TcpListener::from_std` (`net`) | none (core's tests use its own `testing` directly) | `tokio = { workspace = true, features = ["test-util", "net"] }`, `tempfile`, `serde_json` (the `time` serde tests) |
   | config | `["dep:tempfile"]` | `tempfile = { workspace = true, optional = true }`: the guard field holds an `Arc<tempfile::TempDir>` | core | `tempfile` |
   | skills | — | | core, config | `tempfile` |
-  | inference | `["dep:axum", "residuum-core/test-support"]` | `axum = { workspace = true, optional = true }`: `testing::model` serves through axum and holds requests with core's `testing::gate` | core, config | `axum`, `wiremock`, `ctor`, `rustls` |
+  | inference | `["dep:axum", "residuum-core/test-support"]` | `axum = { workspace = true, optional = true }`: `testing::model` serves through axum and holds requests with core's `testing::gate` | core, config | `axum`, `wiremock`, `ctor`, `rustls`, `toml` (the `completion_options_for_role` tests parse their TOML) |
   | tracing-service | — | | core, config | `tempfile`, `ctor`, `rustls` |
   | memory | `[]` | none: its helpers use only memory's and inference's production items | core, config, inference | `tempfile`, `ctor`, `rustls` |
   | mcp | — | | core, config, inference | `tempfile`, `ctor`, `rustls` |

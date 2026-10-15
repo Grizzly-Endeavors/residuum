@@ -18,7 +18,7 @@ use super::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, Role,
     StreamSink, ToolDefinition,
 };
-use crate::config::{ImageInput, ProviderSpec};
+use residuum_config::{ImageInput, ProviderSpec};
 
 /// Stands in for the images of a user (or system) message.
 const IMAGE_PLACEHOLDER: &str = "(image omitted: this model can't view images)";
@@ -305,9 +305,9 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
-    use crate::config::{ModelSpec, ProviderKind};
-    use crate::inference::test_support::RecordingSink;
-    use crate::inference::{ImageData, StreamDelta};
+    use crate::test_support::RecordingSink;
+    use crate::{ImageData, StreamDelta};
+    use residuum_config::{ModelSpec, ProviderKind};
 
     /// Records each request it gets and answers from a script, then with a
     /// plain reply once the script runs out.

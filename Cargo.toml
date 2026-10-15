@@ -23,6 +23,7 @@ publish = false
 # Workspace members
 residuum-core = { path = "crates/core", version = "0.1.0" }
 residuum-config = { path = "crates/config", version = "0.1.0" }
+residuum-inference = { path = "crates/inference", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
@@ -154,6 +155,7 @@ jsonschema = { version = "0.58.6", default-features = false }
 [dependencies]
 residuum-core = { workspace = true }
 residuum-config = { workspace = true }
+residuum-inference = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -245,6 +247,7 @@ tauri-winrt-notification = "0.8.1"
 [dev-dependencies]
 residuum-core = { workspace = true, features = ["test-support"] }
 residuum-config = { workspace = true, features = ["test-support"] }
+residuum-inference = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

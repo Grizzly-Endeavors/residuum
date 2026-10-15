@@ -8,7 +8,9 @@
 //! own types is here:
 //!
 //! - [`bus_wait`]: waits on what the bus and the hub publish.
-//! - [`model`]: a model server and provider that answer through a gate.
+//!
+//! A model server and provider that answer through a gate are inference's
+//! `testing::model`, reached as `crate::inference::testing::model`.
 //!
 //! `source_scan` holds the tests that keep it that way: test code may not
 //! call `sleep`, `timeout` or wiremock's `set_delay` outside core's `wait`
@@ -24,6 +26,5 @@ pub(crate) mod bus_wait;
 #[path = "../../crates/core/src/testing/crypto.rs"]
 mod crypto;
 mod manifest_scan;
-pub(crate) mod model;
 mod source_scan;
 mod wall_clock_backlog;

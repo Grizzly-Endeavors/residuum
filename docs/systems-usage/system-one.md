@@ -29,7 +29,7 @@ A gap in the section is a load notice, not a failed load: no provider, an unknow
 
 Every provider takes `POST {base}/v1/systemone` with `{ model, state, questions }`. `state` is a string or JSON value; `questions` is a map from an ID the caller picks to a typed question with `instructions` (a string or a structured object) and, for choice and score, `criteria`. The answer is `{ model, answers, usage }`, with one answer per question ID and `model` naming the versioned model that answered. `GET {base}/v1/models` lists model names; TypeSafe answers `{ models: [{ name, description }] }` and Ollama answers the OpenAI shape `{ data: [{ id }] }`, and the client reads both.
 
-The client lives in `src/inference/system_one/`. A rate limit (`429`), an overloaded or failing service (`5xx`, including TypeSafe's `529`), a timeout, or a connection failure is retried with exponential backoff using the default retry policy; it logs one `warn` when retries start and one if they run out. Requests time out after 120 seconds, since a local model may still be loading on the first request.
+The client lives in `crates/inference/src/system_one/`. A rate limit (`429`), an overloaded or failing service (`5xx`, including TypeSafe's `529`), a timeout, or a connection failure is retried with exponential backoff using the default retry policy; it logs one `warn` when retries start and one if they run out. Requests time out after 120 seconds, since a local model may still be loading on the first request.
 
 ## Status and outages
 

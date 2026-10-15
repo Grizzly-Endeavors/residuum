@@ -9,8 +9,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use super::{StreamDelta, StreamSink};
-use crate::util::spawn_in_span;
 use residuum_core::testing::gate::GateEntry;
+use residuum_core::util::spawn_in_span;
 
 /// A sink that keeps everything pushed to it.
 #[derive(Default)]
@@ -307,7 +307,7 @@ mod tests {
         ]])
         .await;
         let uri = server.uri();
-        let body = crate::util::spawn_in_span(async move {
+        let body = residuum_core::util::spawn_in_span(async move {
             reqwest::get(uri).await.unwrap().text().await.unwrap()
         });
         gate.until_held(1).await;

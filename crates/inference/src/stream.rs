@@ -240,7 +240,7 @@ pub(crate) async fn read_ndjson(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::test_support::RecordingSink;
+    use crate::test_support::RecordingSink;
 
     #[test]
     fn lines_split_across_chunks_are_reassembled() {
