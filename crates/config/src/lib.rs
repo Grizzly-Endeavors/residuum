@@ -9,7 +9,7 @@
 //! store's key handling.
 //!
 //! The `test-support` feature adds `WorkspaceLayout::with_tempdir_guard` and
-//! `test_helpers`, the parsers other crates' tests build a `Config` with.
+//! `testing`, the fixtures other crates' tests build a `Config` with.
 
 pub mod agent_keys;
 mod agent_name;
@@ -27,6 +27,8 @@ mod provider;
 mod resolve;
 mod retry;
 pub mod secrets;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 mod thinking;
 mod tolerant;
 mod types;
@@ -51,8 +53,6 @@ pub use layout::WorkspaceLayout;
 pub use model_catalog::{ModelCatalog, SharedModelCatalog};
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
 pub use provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
-#[cfg(any(test, feature = "test-support"))]
-pub use resolve::test_helpers;
 pub use resolve::{from_file_and_env, removed_agent_env_override_notices, resolve_hub_config};
 pub use retry::RetryConfig;
 pub use secrets::SecretStore;

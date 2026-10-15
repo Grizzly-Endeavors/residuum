@@ -278,8 +278,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # build.rs refuses to compile without web/dist; the root library check builds it
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
-      - name: Check each member crate alone
+      - name: Check the root library and each member crate alone
         run: scripts/check-crate-isolation.sh
