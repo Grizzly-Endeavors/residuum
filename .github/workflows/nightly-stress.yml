@@ -31,7 +31,12 @@ jobs:
     runs-on: lab-runners-fast
     timeout-minutes: 240
 
+    # CI checkouts are fresh, so incremental state is never reused here, and with
+    # it off sccache can cache the library build of every workspace crate. No job
+    # may set CARGO_TARGET_DIR: sccache hashes its value, so a per-job target
+    # directory would miss every crate.
     env:
+      CARGO_INCREMENTAL: '0'
       STRESS_ROUNDS: '3'
 
     steps:

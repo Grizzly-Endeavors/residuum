@@ -25,6 +25,13 @@ on:
         type: boolean
         default: true
 
+env:
+  # CI checkouts are fresh, so incremental state is never reused here, and with
+  # it off sccache can cache the library build of every workspace crate. No job
+  # may set CARGO_TARGET_DIR: sccache hashes its value, so a per-job target
+  # directory would miss every crate.
+  CARGO_INCREMENTAL: '0'
+
 jobs:
   # Every check runs even when an earlier one fails, so one run lists every
   # failure. A check runs only when the dependencies it needs were installed,
@@ -122,6 +129,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The node's CPU pressure is counted from here (scripts/ci-cpu-report.sh).
+      - name: Start the CPU report
+        run: scripts/ci-cpu-report.sh start
+
       - name: Install pinned Rust toolchain
         id: toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
@@ -181,4 +192,6 @@ jobs:
             echo '```'
             sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
             echo '```'
+            echo ''
+            scripts/ci-cpu-report.sh report
           } >> "$GITHUB_STEP_SUMMARY"
