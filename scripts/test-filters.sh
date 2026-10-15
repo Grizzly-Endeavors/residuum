@@ -67,27 +67,31 @@ filters_of() {
     return 0
 }
 
-# Prints the member crates a filter's first segment names: a crate directory, and
-# each crate holding a module file or directory of that name. Names may repeat.
+# Prints one "dir <name>" line for each crate directory the segment names, and one
+# "module <crate>" line for each crate holding a module file or directory of the
+# segment's name. A crate directory may be spelled with `-` where the path segment
+# has `_` (`tracing-service` is `tracing_service::…`). Names may repeat.
 crates_named_by() {
-    local seg="$1" dir
+    local seg="$1" dir name
     case $seg in
         "" | *[!A-Za-z0-9_]*) return 0 ;;
     esac
-    if [ -d "crates/$seg" ]; then
-        printf '%s\n' "$seg"
-    fi
+    for name in "$seg" "${seg//_/-}"; do
+        if [ -d "crates/$name" ]; then
+            printf 'dir %s\n' "$name"
+        fi
+    done
     for dir in crates/*/src/"$seg".rs crates/*/src/"$seg"/; do
         if [ -e "$dir" ]; then
             dir=${dir#crates/}
-            printf '%s\n' "${dir%%/*}"
+            printf 'module %s\n' "${dir%%/*}"
         fi
     done
     return 0
 }
 
 note_for() {
-    local filter="$1" seg rest sp crate
+    local filter="$1" seg rest sp kind name
     case $filter in
         *::*)
             seg=${filter%%::*}
@@ -100,10 +104,15 @@ note_for() {
     esac
     sp=""
     if [ -n "$rest" ]; then sp=" "; fi
-    crates_named_by "$seg" | sort -u | while IFS= read -r crate; do
-        if [ -n "$crate" ]; then
-            echo "note: $seg is in residuum-$crate, whose test paths start below the crate; run just test-crate $crate$sp$rest or just test -p residuum-$crate$sp$rest" >&2
-        fi
+    crates_named_by "$seg" | sort -u | while read -r kind name; do
+        case $kind in
+            dir)
+                echo "note: $seg is crate directory crates/$name (residuum-$name), whose test paths start below the crate; run just test-crate $name$sp$rest or just test -p residuum-$name$sp$rest" >&2
+                ;;
+            module)
+                echo "note: $seg is a module of residuum-$name, so its tests are that crate's; run just test-crate $name $filter or just test -p residuum-$name $filter" >&2
+                ;;
+        esac
     done
     return 0
 }

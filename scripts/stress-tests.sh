@@ -33,6 +33,10 @@ if [ -n "${STRESS_TESTS_LOG:-}" ] && [ ! -f "$STRESS_TESTS_LOG" ]; then
     exit 1
 fi
 
+# Clears the previous run's logs before the build, so a run that fails to build
+# cannot leave them for the caller's summary to count.
+rm -rf "$out"
+
 # ts_export writes web/src/lib/generated, so concurrent copies would race on
 # the working tree. It has no timing to stress. Each line is a binary's path and
 # its package's directory, tab-separated.
@@ -66,7 +70,6 @@ stop_burners() {
 }
 trap stop_burners EXIT INT TERM
 
-rm -rf "$out"
 mkdir -p "$out"
 
 echo "Stress: ${#binaries[@]} test binaries, $copies copies at once, $burn CPU burners, $rounds round(s), on $(nproc) CPUs."
@@ -118,7 +121,7 @@ done
             name = $0
             sub(/^---- /, "", name)
             sub(/ stdout ----$/, "", name)
-            if (bin ~ /^residuum_[a-z0-9_]+-[0-9a-f]{16}$/) {
+            if (bin ~ /^residuum_[a-z0-9_]+-[0-9a-f]+$/) {
                 crate = bin
                 sub(/-[0-9a-f]+$/, "", crate)
                 name = crate "::" name

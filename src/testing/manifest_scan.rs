@@ -1,9 +1,10 @@
 //! Rules the workspace manifests keep, checked by reading `Cargo.toml`.
 //!
 //! The root package is also the workspace root. Members live in `crates/<dir>/`
-//! and are read from every `crates/*/Cargo.toml`. Each rule is one test over
-//! the root and every member, and a failure names the manifest and the key at
-//! fault. Member-only rules have nothing to check until the first member exists.
+//! and are read from every `crates/*/Cargo.toml`. Each rule is one test that
+//! checks the real manifests and then a hand-built workspace that breaks the
+//! rule, so a checker that never fires fails the test. A failure names the
+//! manifest and the key at fault.
 
 #[cfg(test)]
 mod tests {
@@ -53,6 +54,35 @@ mod tests {
             }
         }
 
+        /// A workspace built from inline manifests, so a rule can be shown to fire.
+        ///
+        /// `members` pairs each `crates/<dir>` with its `Cargo.toml` text; `extra_dirs`
+        /// are `crates/` directories that hold no manifest.
+        fn from_toml(root: &str, members: &[(&str, &str)], extra_dirs: &[&str]) -> Self {
+            let root = parse_manifest(root, "Cargo.toml".to_owned(), None);
+            let mut crate_dirs: Vec<String> = members
+                .iter()
+                .map(|(dir, _)| (*dir).to_owned())
+                .chain(extra_dirs.iter().map(|dir| (*dir).to_owned()))
+                .collect();
+            crate_dirs.sort();
+            let members = members
+                .iter()
+                .map(|(dir, text)| {
+                    parse_manifest(
+                        text,
+                        format!("crates/{dir}/Cargo.toml"),
+                        Some((*dir).to_owned()),
+                    )
+                })
+                .collect();
+            Self {
+                root,
+                crate_dirs,
+                members,
+            }
+        }
+
         /// The root's `[workspace.dependencies]` entry for `key`, if any.
         fn workspace_dependency(&self, key: &str) -> Option<&Table> {
             sub_table(&self.root.table, "workspace")
@@ -64,8 +94,12 @@ mod tests {
     fn read_manifest(path: &Path, display: String, dir: Option<String>) -> Manifest {
         let text = fs::read_to_string(path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-        let table: Table = toml::from_str(&text)
-            .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
+        parse_manifest(&text, display, dir)
+    }
+
+    fn parse_manifest(text: &str, display: String, dir: Option<String>) -> Manifest {
+        let table: Table =
+            toml::from_str(text).unwrap_or_else(|err| panic!("failed to parse {display}: {err}"));
         Manifest {
             display,
             dir,
@@ -320,7 +354,7 @@ mod tests {
 
     fn inherited_package_problems(ws: &Workspace) -> Vec<String> {
         let mut problems = Vec::new();
-        for manifest in all(ws) {
+        for manifest in &ws.members {
             let package = sub_table(&manifest.table, "package");
             for key in ["version", "edition", "license", "publish"] {
                 if !inherits(package.and_then(|table| table.get(key))) {
@@ -426,51 +460,185 @@ mod tests {
         problems
     }
 
+    /// The root manifest of a hand-built workspace whose members and default members match `crates/*`.
+    const HAND_ROOT: &str =
+        "[workspace]\nmembers = [\"crates/*\"]\ndefault-members = [\"crates/*\"]\n";
+
+    /// The package fields every member inherits from the workspace.
+    const PACKAGE_INHERITS: &str = "version.workspace = true\nedition.workspace = true\nlicense.workspace = true\npublish.workspace = true\n";
+
+    /// A member manifest that follows every rule, with `rest` appended after its `[lints]`.
+    fn member_toml(name: &str, rest: &str) -> String {
+        format!(
+            "[package]\nname = \"{name}\"\n{PACKAGE_INHERITS}\n[lints]\nworkspace = true\n{rest}"
+        )
+    }
+
+    /// Asserts that a hand-built workspace breaking a rule is flagged: some problem contains each of `needles`.
+    fn assert_flagged(rule: &str, problems: &[String], needles: &[&str]) {
+        for needle in needles {
+            assert!(
+                problems.iter().any(|problem| problem.contains(needle)),
+                "manifest_scan {rule}: a hand-built workspace that breaks the rule must be flagged, naming `{needle}`; problems were:\n{}",
+                problems.join("\n")
+            );
+        }
+    }
+
     #[test]
     fn manifest_rule_1_lints_inherit_from_workspace() {
         let ws = Workspace::load();
         assert_no_problems("rule 1", &lints_problems(&ws));
+
+        let no_lints = format!("[package]\nname = \"residuum-a\"\n{PACKAGE_INHERITS}");
+        let ws = Workspace::from_toml(HAND_ROOT, &[("a", no_lints.as_str())], &[]);
+        assert_flagged("rule 1", &lints_problems(&ws), &["crates/a/Cargo.toml"]);
     }
 
     #[test]
     fn manifest_rule_2_member_names_and_libraries() {
         let ws = Workspace::load();
         assert_no_problems("rule 2", &member_name_problems(&ws));
+
+        let core = member_toml("core", "");
+        let lib = member_toml("residuum-a", "[lib]\nname = \"x\"\n");
+        let ws = Workspace::from_toml(
+            HAND_ROOT,
+            &[("core", core.as_str()), ("a", lib.as_str())],
+            &[],
+        );
+        assert_flagged(
+            "rule 2",
+            &member_name_problems(&ws),
+            &[
+                "crates/core/Cargo.toml: `package.name` is `core`",
+                "crates/a/Cargo.toml: `[lib] name` is set",
+            ],
+        );
     }
 
     #[test]
     fn manifest_rule_3_package_fields_inherit_from_workspace() {
         let ws = Workspace::load();
         assert_no_problems("rule 3", &inherited_package_problems(&ws));
+
+        let edition =
+            member_toml("residuum-a", "").replace("edition.workspace = true", "edition = \"2024\"");
+        let ws = Workspace::from_toml(HAND_ROOT, &[("a", edition.as_str())], &[]);
+        assert_flagged(
+            "rule 3",
+            &inherited_package_problems(&ws),
+            &["crates/a/Cargo.toml: `package.edition` must be"],
+        );
     }
 
     #[test]
     fn manifest_rule_4_test_support_stays_out_of_normal_dependencies() {
         let ws = Workspace::load();
         assert_no_problems("rule 4", &test_support_in_normal_dependency_problems(&ws));
+
+        let rest = "[dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n\n[target.'cfg(unix)'.dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n";
+        let leaks = member_toml("residuum-a", rest);
+        let ws = Workspace::from_toml(HAND_ROOT, &[("a", leaks.as_str())], &[]);
+        assert_flagged(
+            "rule 4",
+            &test_support_in_normal_dependency_problems(&ws),
+            &[
+                "`[dependencies]` enables `test-support` on `residuum-core`",
+                "`[target.cfg(unix).dependencies]` enables `test-support` on `residuum-core`",
+            ],
+        );
     }
 
     #[test]
     fn manifest_rule_5_workspace_graph_is_acyclic() {
         let ws = Workspace::load();
         assert_no_problems("rule 5", &workspace_cycle_problems(&ws));
+
+        let a = member_toml(
+            "residuum-a",
+            "[dev-dependencies]\nresiduum-b = { workspace = true }\n",
+        );
+        let b = member_toml(
+            "residuum-b",
+            "[dev-dependencies]\nresiduum-a = { workspace = true }\n",
+        );
+        let two_cycle =
+            Workspace::from_toml(HAND_ROOT, &[("a", a.as_str()), ("b", b.as_str())], &[]);
+        assert_flagged(
+            "rule 5",
+            &workspace_cycle_problems(&two_cycle),
+            &["residuum-a -> residuum-b -> residuum-a"],
+        );
+
+        let c = member_toml(
+            "residuum-c",
+            "[dev-dependencies]\nresiduum-c = { workspace = true }\n",
+        );
+        let self_loop = Workspace::from_toml(HAND_ROOT, &[("c", c.as_str())], &[]);
+        assert_flagged(
+            "rule 5",
+            &workspace_cycle_problems(&self_loop),
+            &["residuum-c -> residuum-c"],
+        );
     }
 
     #[test]
     fn manifest_rule_6_members_and_default_members_cover_each_crate() {
         let ws = Workspace::load();
         assert_no_problems("rule 6", &member_pattern_problems(&ws));
+
+        let a = member_toml("residuum-a", "");
+        let ws = Workspace::from_toml(
+            "[workspace]\nmembers = [\"crates/a\"]\ndefault-members = [\"crates/a\"]\n",
+            &[("a", a.as_str())],
+            &["b"],
+        );
+        assert_flagged(
+            "rule 6",
+            &member_pattern_problems(&ws),
+            &[
+                "`workspace.members` does not match `crates/b`",
+                "`workspace.default-members` does not match `crates/b`",
+            ],
+        );
     }
 
     #[test]
     fn manifest_rule_7_member_directory_is_its_package_name() {
         let ws = Workspace::load();
         assert_no_problems("rule 7", &member_directory_problems(&ws));
+
+        let bar = member_toml("residuum-bar", "");
+        let ws = Workspace::from_toml(HAND_ROOT, &[("foo", bar.as_str())], &[]);
+        assert_flagged(
+            "rule 7",
+            &member_directory_problems(&ws),
+            &["crates/foo/Cargo.toml"],
+        );
     }
 
     #[test]
     fn manifest_rule_8_test_support_enabled_in_dev_dependencies() {
         let ws = Workspace::load();
         assert_no_problems("rule 8", &test_support_in_dev_dependency_problems(&ws));
+
+        let core = member_toml("residuum-core", "[features]\ntest-support = []\n");
+        let a = member_toml(
+            "residuum-a",
+            "[dev-dependencies]\nresiduum-core = { workspace = true }\n",
+        );
+        let ws = Workspace::from_toml(
+            HAND_ROOT,
+            &[("core", core.as_str()), ("a", a.as_str())],
+            &[],
+        );
+        assert_flagged(
+            "rule 8",
+            &test_support_in_dev_dependency_problems(&ws),
+            &[
+                "crates/a/Cargo.toml: `[dev-dependencies]` `residuum-core` depends on `residuum-core`",
+            ],
+        );
     }
 }
