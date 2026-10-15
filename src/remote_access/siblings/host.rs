@@ -434,7 +434,8 @@ mod tests {
             host.submit(&tampered, now),
             Err(HostError::Invalid(_))
         ));
-        assert!(host.pending(now).is_empty());
+        let actual = &host.pending(now);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]
@@ -472,7 +473,8 @@ mod tests {
             .join_id;
         assert_eq!(host.pending(now).len(), 1);
         let later = now + Duration::seconds(LIFETIME_SECS + 1);
-        assert!(host.pending(later).is_empty());
+        let actual_2 = &host.pending(later);
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
         assert!(host.poll(&join_id, later).is_none());
     }
 

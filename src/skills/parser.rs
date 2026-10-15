@@ -346,7 +346,8 @@ mod tests {
     #[test]
     fn diagnose_valid_skill_has_no_diagnostics() {
         let content = "---\nname: pdf-processing\ndescription: \"Extracts text from PDFs\"\n---\n";
-        assert!(diagnose_skill_md(content).is_empty());
+        let actual = &diagnose_skill_md(content);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]
@@ -367,7 +368,8 @@ mod tests {
     #[test]
     fn diagnose_reports_nothing_for_a_normal_description() {
         let content = "---\nname: my-skill\ndescription: \"Extracts text from PDFs\"\n---\n";
-        assert!(diagnose_skill_md(content).is_empty());
+        let actual_2 = &diagnose_skill_md(content);
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
     }
 
     #[test]

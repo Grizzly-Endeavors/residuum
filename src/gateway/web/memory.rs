@@ -415,6 +415,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(response.0.results.is_empty());
+        let actual = &response.0.results;
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 }

@@ -394,7 +394,8 @@ fn activity_and_stopping_frames_add_nothing() {
     recorder.on_hub_event(HubEvent::AgentStopping {
         name: "atlas".to_string(),
     });
-    assert!(entries(&recorder).is_empty());
+    let actual = &entries(&recorder);
+    assert!(actual.is_empty(), "expected {actual:?} to be empty");
 }
 
 #[test]
@@ -426,7 +427,8 @@ fn a_turn_without_a_reply_or_without_the_user_is_not_told() {
     recorder.on_agent_change(change("atlas", turn(None, Visibility::User)));
     recorder.on_agent_change(change("atlas", turn(Some("noted"), Visibility::Background)));
     recorder.on_agent_change(change("atlas", turn(None, Visibility::Background)));
-    assert!(entries(&recorder).is_empty());
+    let actual_2 = &entries(&recorder);
+    assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
 }
 
 #[test]
@@ -460,7 +462,8 @@ fn a_change_to_the_inbox_files_is_not_an_added_item() {
         AgentChangeKind::WatchedPathChanged(WatchedPath::UserInbox),
     ));
     recorder.on_agent_change(change("atlas", AgentChangeKind::Resync));
-    assert!(entries(&recorder).is_empty());
+    let actual_3 = &entries(&recorder);
+    assert!(actual_3.is_empty(), "expected {actual_3:?} to be empty");
 }
 
 #[test]
@@ -713,7 +716,8 @@ fn a_session_that_ends_without_a_start_on_record_is_left_out() {
         ("spawned-x", "run-1"),
         AgentResultStatus::Completed,
     );
-    assert!(entries(&recorder).is_empty());
+    let actual_4 = &entries(&recorder);
+    assert!(actual_4.is_empty(), "expected {actual_4:?} to be empty");
 }
 
 #[test]
@@ -727,7 +731,8 @@ fn state_changes_of_a_session_and_outbound_task_changes_add_nothing() {
             state: SessionState::Running,
         },
     ));
-    assert!(entries(&recorder).is_empty());
+    let actual_5 = &entries(&recorder);
+    assert!(actual_5.is_empty(), "expected {actual_5:?} to be empty");
 }
 
 #[test]

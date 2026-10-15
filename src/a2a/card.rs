@@ -331,7 +331,11 @@ mod tests {
         );
         let file = AgentCardFile::load(&path).unwrap();
         assert_eq!(file.name, "My Agent");
-        assert!(file.skills.is_empty());
+        assert!(
+            file.skills.is_empty(),
+            "expected {:?} to be empty",
+            file.skills
+        );
     }
 
     #[test]
@@ -382,8 +386,9 @@ mod tests {
     fn card_state_load_or_default_falls_back_on_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let state = CardState::load_or_default(&dir.path().join("nope.json"), &runtime());
-        assert!(!state.current().name.trim().is_empty());
-        assert!(state.current().skills.is_empty());
+        assert_ne!(state.current().name.trim(), "");
+        let actual = &state.current().skills;
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

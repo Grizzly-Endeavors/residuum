@@ -209,12 +209,18 @@ async fn action_store_round_trip() {
     };
 
     let (mut store, rejected_on_first_load, _) = ActionStore::load(&path).await.unwrap();
-    assert!(rejected_on_first_load.is_empty());
+    assert!(
+        rejected_on_first_load.is_empty(),
+        "expected {rejected_on_first_load:?} to be empty"
+    );
     store.add(action);
     store.save().await.unwrap();
 
     let (reloaded, rejected_on_reload, _) = ActionStore::load(&path).await.unwrap();
-    assert!(rejected_on_reload.is_empty());
+    assert!(
+        rejected_on_reload.is_empty(),
+        "expected {rejected_on_reload:?} to be empty"
+    );
     assert_eq!(
         reloaded.list().len(),
         1,

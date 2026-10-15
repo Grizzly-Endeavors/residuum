@@ -527,7 +527,8 @@ mod tests {
             "waiting outlasts the turn it waited on"
         );
         journal.observe(&read("c", "c"));
-        assert!(waiting(&journal).is_empty());
+        let actual = &waiting(&journal);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

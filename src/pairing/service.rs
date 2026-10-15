@@ -666,7 +666,8 @@ mod tests {
                 .await
                 .is_some()
         );
-        assert!(pairing.pending().is_empty());
+        let actual = &pairing.pending();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]

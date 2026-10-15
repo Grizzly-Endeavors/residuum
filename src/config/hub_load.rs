@@ -212,7 +212,7 @@ mod tests {
         let cfg = HubConfig::load_at_for_start(&hub_dir, root.path()).unwrap();
         let after = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
 
-        assert!(!cfg.timezone.name().is_empty());
+        assert_ne!(cfg.timezone.name(), "");
         assert_eq!(
             before, after,
             "the stand-in timezone must not be written back"
