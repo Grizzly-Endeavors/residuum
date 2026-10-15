@@ -28,7 +28,7 @@ A request is remote when the secure tunnel's engine marked it with the `RemoteTr
 Everything that treats remote requests differently asks that one question:
 
 - **The device gate** (`pairing::device_gate`), which refuses a remote request to the main gateway or the workbench listener unless it carries a paired device's credential, and applies the cross-site rule to it. The A2A and Teams listeners are not gated. See [Remote access](remote-access.md).
-- **The remote-control guard** (`gateway::remote_control_guard`), described below.
+- **The remote-control guard** (`src/remote_control_guard.rs`), described below.
 - **`viewed_via_tunnel`** in the cloud status, below.
 
 ## Remote-Control Guard

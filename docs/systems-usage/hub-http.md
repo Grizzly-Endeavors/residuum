@@ -144,7 +144,7 @@ Resolution answers before the agent's router sees the request:
 
 ### Browser landings
 
-People open some of these addresses in a browser tab: a file link from a chat, an inbox attachment, a webhook address copied from Settings. When such an address can't serve what was asked, a browser opening it in a tab (`Sec-Fetch-Dest: document`, or no fetch metadata and an `Accept` asking for HTML) is redirected (`303`, `Cache-Control: no-store`) to the place in the web app that shows what happened, with a `notice` code the app turns into a toast (`src/gateway/browser_landing.rs`; the words are in `web/src/lib/landing-notices.ts`, so a link can't put its own text in front of the user). A script's `fetch` or an image or frame load keeps its JSON error.
+People open some of these addresses in a browser tab: a file link from a chat, an inbox attachment, a webhook address copied from Settings. When such an address can't serve what was asked, a browser opening it in a tab (`Sec-Fetch-Dest: document`, or no fetch metadata and an `Accept` asking for HTML) is redirected (`303`, `Cache-Control: no-store`) to the place in the web app that shows what happened, with a `notice` code the app turns into a toast (`src/browser_landing.rs`; the words are in `web/src/lib/landing-notices.ts`, so a link can't put its own text in front of the user). A script's `fetch` or an image or frame load keeps its JSON error.
 
 | Address | What happened | A tab goes to |
 |---------|---------------|---------------|

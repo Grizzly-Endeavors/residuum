@@ -27,3 +27,10 @@ pub(crate) mod store;
 mod system_tests;
 pub(crate) mod tls;
 pub(crate) mod types;
+
+/// Path Microsoft posts Teams activities to; configured as the bot's messaging
+/// endpoint. Remote access forwards it, so it owns the path.
+pub(crate) const TEAMS_MESSAGES_PATH: &str = "/api/teams/messages";
+/// The path prefix the hub's A2A listener serves each agent under. Remote access
+/// forwards these routes, so it owns the prefix.
+pub(crate) const A2A_AGENTS_PATH_PREFIX: &str = "/agents";

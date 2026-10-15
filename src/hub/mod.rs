@@ -28,6 +28,7 @@ pub mod team_events;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod types;
+pub(crate) mod workbench_watcher;
 
 pub use directory::{AgentDirectory, AgentFiles, DirectoryHandle};
 pub use host::AgentHost;

@@ -15,13 +15,14 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
+use crate::browser_landing::{self, Landing};
 use crate::config::{Config, HubConfig};
-use crate::gateway::browser_landing::{self, Landing};
 use crate::gateway::last_known_good;
 use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSignal};
 use crate::inference::EmbeddingProvider;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
+use crate::workbench::SdkContext;
 use crate::workbench::forward::HubApi;
 
 use super::directory::AgentDirectory;
@@ -1056,9 +1057,19 @@ async fn start_workbench_listener(
         workbench_dir,
         api.clone(),
         pairing.clone(),
+        workbench_sdk(),
     )
     .await;
     (serving, shutdown_tx, api, router)
+}
+
+/// The SDK the artifacts listener injects into every served page: this
+/// build's version and the features it supports.
+fn workbench_sdk() -> SdkContext {
+    SdkContext {
+        version: crate::update::CURRENT_VERSION,
+        features: crate::features::FEATURES,
+    }
 }
 
 /// Report what the hub itself found wrong while starting: a fallback to its
@@ -1121,6 +1132,13 @@ mod tests {
     use super::*;
     use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
     use wiremock::MockServer;
+
+    #[test]
+    fn the_workbench_sdk_reports_this_build() {
+        let sdk = workbench_sdk();
+        assert_eq!(sdk.version, crate::update::CURRENT_VERSION);
+        assert_eq!(sdk.features, crate::features::FEATURES);
+    }
 
     /// What the hub said about one config reload.
     struct Reload {

@@ -269,7 +269,7 @@ const MARK_SVG: &str = r#"<svg width="18" height="18" viewBox="0 0 24 24" fill="
 
 /// The app's design tokens. The page reads its values from here, so it
 /// always matches the app.
-const TOKENS_CSS: &str = include_str!("../../web/src/styles/tokens.css");
+const TOKENS_CSS: &str = include_str!("../web/src/styles/tokens.css");
 
 /// The tokens the page's rules use.
 const PAGE_TOKENS: [&str; 26] = [

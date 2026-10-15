@@ -117,7 +117,7 @@ impl WorkbenchScanner {
 }
 
 async fn scan(dir: &Path) -> std::io::Result<HashMap<String, PageStamp>> {
-    Ok(super::discover_artifacts(dir)
+    Ok(crate::workbench::discover_artifacts(dir)
         .await?
         .into_iter()
         .map(|artifact| {

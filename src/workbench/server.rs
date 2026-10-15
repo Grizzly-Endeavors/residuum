@@ -31,9 +31,10 @@ use tokio_util::io::ReaderStream;
 
 use super::forward::{self, HubApi};
 use super::{
-    ArtifactBody, ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file,
+    ArtifactBody, ArtifactFileError, SdkContext, discover_artifacts, is_valid_artifact_name,
+    read_artifact_file,
 };
-use crate::gateway::browser_landing::{self, AppNotice, Landing};
+use crate::browser_landing::{self, AppNotice, Landing};
 use crate::pairing::HANDOFF_PAGE_PATH;
 
 /// How many ports after the gateway's are tried before giving up.
@@ -63,6 +64,7 @@ pub(crate) async fn start(
     dir: PathBuf,
     api: HubApi,
     pairing: crate::pairing::DevicePairing,
+    sdk: SdkContext,
 ) -> (
     WorkbenchServing,
     Option<tokio::sync::watch::Sender<bool>>,
@@ -86,7 +88,7 @@ pub(crate) async fn start(
     tracing::info!(addr = %format!("{bind}:{port}"), "workbench artifacts listening");
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let app = router(dir, api, pairing, gateway_port);
+    let app = router(dir, api, pairing, gateway_port, sdk);
     let served = app.clone();
     crate::util::spawn_monitored("workbench-listener", async move {
         if let Err(e) = axum::serve(listener, served)
@@ -149,11 +151,13 @@ pub(crate) fn router(
     api: HubApi,
     pairing: crate::pairing::DevicePairing,
     gateway_port: u16,
+    sdk: SdkContext,
 ) -> Router {
     let ui = UiAddress::new(pairing.clone(), gateway_port);
     let state = ArtifactsState {
         dir,
         ui: ui.clone(),
+        sdk,
     };
     let artifacts = Router::new()
         .route("/", get(home))
@@ -165,7 +169,7 @@ pub(crate) fn router(
         .with_state(state);
     forward::forwarding(artifacts, api, ui)
         .layer(axum::middleware::from_fn(
-            crate::gateway::cross_site::reject_cross_site_requests,
+            crate::cross_site::reject_cross_site_requests,
         ))
         .layer(axum::middleware::from_fn_with_state(
             crate::pairing::GateState {
@@ -180,6 +184,7 @@ pub(crate) fn router(
 struct ArtifactsState {
     dir: PathBuf,
     ui: UiAddress,
+    sdk: SdkContext,
 }
 
 /// Where the web app is, as seen from a browser on the artifacts host.
@@ -401,7 +406,7 @@ async fn serve(state: &ArtifactsState, request: &Parts, name: &str, rest: &str) 
     if !is_valid_artifact_name(name) {
         return missing_artifact(request, &state.ui, name);
     }
-    match read_artifact_file(&state.dir, name, rest).await {
+    match read_artifact_file(&state.dir, name, rest, state.sdk).await {
         Ok(served) => {
             let body = match served.body {
                 ArtifactBody::Bytes(bytes) => Body::from(bytes),
@@ -466,6 +471,11 @@ mod tests {
 
     use super::*;
 
+    const SDK: SdkContext = SdkContext {
+        version: "2026.09.23",
+        features: &[],
+    };
+
     /// Pairing state in a throwaway directory, so nothing remote is paired.
     fn test_pairing(dir: &std::path::Path) -> crate::pairing::DevicePairing {
         crate::pairing::DevicePairing::open(dir)
@@ -479,10 +489,16 @@ mod tests {
     }
 
     async fn get_path(dir: &std::path::Path, path: &str) -> Response {
-        router(dir.to_path_buf(), HubApi::new(), test_pairing(dir), 7700)
-            .oneshot(Request::get(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap()
+        router(
+            dir.to_path_buf(),
+            HubApi::new(),
+            test_pairing(dir),
+            7700,
+            SDK,
+        )
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
     }
 
     /// A hub stand-in: `/api/probe` says whether the request arrived marked,
@@ -507,7 +523,7 @@ mod tests {
     fn listener(dir: &std::path::Path) -> Router {
         let api = HubApi::new();
         api.bind(stand_in_hub());
-        router(dir.to_path_buf(), api, test_pairing(dir), 7700)
+        router(dir.to_path_buf(), api, test_pairing(dir), 7700, SDK)
     }
 
     async fn send(app: Router, request: Request<Body>) -> (StatusCode, String) {
@@ -599,6 +615,7 @@ mod tests {
             HubApi::new(),
             test_pairing(dir.path()),
             7700,
+            SDK,
         )
         .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
         .await
@@ -867,6 +884,7 @@ mod tests {
             api,
             test_pairing(dir.path()),
             7700,
+            SDK,
         );
         let resp = app
             .clone()

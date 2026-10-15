@@ -77,7 +77,7 @@ impl TeamChangeFeed {
         let bus = span.in_scope(crate::bus::spawn_broker);
         let (health_tx, health) = watch::channel(WatchHealth::Starting);
         // Subscribed before the feed starts, so no batch goes unseen.
-        let workbench_task = crate::workbench::watcher::spawn_workbench_watcher(
+        let workbench_task = crate::hub::workbench_watcher::spawn_workbench_watcher(
             TeamPaths::new(team_root.clone()).workbench_dir(),
             &bus,
             bus.publisher(),

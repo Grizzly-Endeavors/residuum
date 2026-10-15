@@ -7,8 +7,8 @@ use axum::Router;
 use axum::routing::{get, post};
 
 use super::state::HubHttpState;
-use crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect;
 use crate::gateway::web;
+use crate::remote_control_guard::reject_remote_shutdown_and_disconnect;
 
 /// Cloud connection routes. Disconnect is refused over the tunnel, since a
 /// remote disconnect leaves no way to reconnect. The relay's sign-in callback

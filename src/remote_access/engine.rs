@@ -35,7 +35,7 @@ use tracing::{debug, warn};
 use super::proxy::{InstanceProxy, InstanceTargets, text_response};
 use super::tls::CertResolver;
 use super::types::{HostKind, Hostnames, normalize_host};
-use crate::gateway::browser_landing::{self, Landing};
+use crate::browser_landing::{self, Landing};
 use crate::pairing::remote::RemoteTransport;
 
 /// How long the TLS handshake may take, from the first byte to completion.

@@ -34,7 +34,7 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use super::server::UiAddress;
-use crate::gateway::browser_landing::{self, AppRedirect, Landing};
+use crate::browser_landing::{self, AppRedirect, Landing};
 
 /// Marks a request as arriving through the artifacts origin.
 ///
