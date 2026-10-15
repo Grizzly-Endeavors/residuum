@@ -56,7 +56,7 @@ test *args: _web-dist
     trap 'rm -f "$log"' EXIT
     cargo test --quiet --no-fail-fast "$@" 2>&1 | tee "$log"
     status="${PIPESTATUS[0]}"
-    scripts/test-filters.sh check test "$log" -- "$@"
+    if [ "$status" -eq 0 ]; then scripts/test-filters.sh check test "$log" -- "$@"; fi
     exit "$status"
 
 # Run one member crate's tests, quietly, without the web build: `just test-crate core util::fs` runs residuum-core's tests; args after the crate are cargo's
@@ -73,7 +73,7 @@ stress *args: _web-dist
     scripts/test-filters.sh note stress "$@"
     scripts/stress-tests.sh "$@"
     status="$?"
-    scripts/test-filters.sh check stress target/stress/*/*.log -- "$@"
+    if [ "$status" -eq 0 ]; then scripts/test-filters.sh check stress target/stress/*/*.log -- "$@"; fi
     exit "$status"
 
 # Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker
