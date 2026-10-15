@@ -92,9 +92,10 @@ jobs:
           # A merge queue batch checks the whole workspace. A pull request checks
           # the packages its change touches and the packages that depend on them;
           # when that selection cannot be made, the whole workspace is checked and
-          # the step says so.
+          # the step says so. Without a Rust change the Rust job does not run, so
+          # there is nothing to select.
           packages=--workspace
-          if [ "$EVENT" != merge_group ]; then
+          if [ "$rust" = true ] && [ "$EVENT" != merge_group ]; then
             selection_log="$RUNNER_TEMP/affected-packages.log"
             if selected="$(scripts/affected-packages.sh --affected 2>"$selection_log" <<<"$changed")" && [ -n "$selected" ]; then
               packages="$selected"

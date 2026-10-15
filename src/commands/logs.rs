@@ -7,6 +7,7 @@ use residuum::logging::format::{
     LogEntry, LogLevel, format_entry, format_entry_colored, meets_level, module_matches, parse_line,
 };
 use residuum::util::FatalError;
+use std::io::Write;
 
 #[derive(clap::Args)]
 pub(super) struct LogsArgs {
@@ -140,12 +141,31 @@ fn entry_belongs_to_agent(entry: &LogEntry, agent: &str) -> bool {
             .any(|span| matches(span.fields.get("agent")))
 }
 
-/// Write the notice to stderr as command output. It is not a diagnostic, so it is
-/// not routed through tracing.
-fn print_no_match_notice(notice: &str) {
-    use std::io::Write;
-
-    _ = writeln!(std::io::stderr().lock(), "{notice}");
+/// Writes the entries of one log file that pass the filter to `out`. A non-watch
+/// run that prints no entries writes the no-match notice to `err` instead: it is
+/// command output for the person running the command, not a diagnostic, so it
+/// is not routed through tracing.
+fn print_entries(
+    filter: &LogFilter,
+    args: &LogsArgs,
+    content: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    let mut printed = 0_usize;
+    for line in content.lines() {
+        if let Some(text) = filter.render_line(line) {
+            writeln!(out, "{text}")?;
+            printed += 1;
+        }
+    }
+    if !args.watch
+        && printed == 0
+        && let Some(notice) = no_match_notice(args)
+    {
+        writeln!(err, "{notice}")?;
+    }
+    Ok(())
 }
 
 /// Display and optionally tail structured log files.
@@ -197,17 +217,11 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
 
     let content = std::fs::read_to_string(&latest)
         .map_err(|e| FatalError::Config(format!("failed to read log file: {e}")))?;
-    let mut printed = 0_usize;
-    for line in content.lines() {
-        if filter.process_line(line) {
-            printed += 1;
-        }
-    }
-    if !args.watch
-        && printed == 0
-        && let Some(notice) = no_match_notice(args)
     {
-        print_no_match_notice(&notice);
+        let mut out = std::io::stdout().lock();
+        let mut err = std::io::stderr().lock();
+        print_entries(&filter, args, &content, &mut out, &mut err)
+            .map_err(|e| FatalError::Config(format!("failed to write log output: {e}")))?;
     }
 
     if args.watch {
@@ -314,8 +328,6 @@ mod tests {
             module: Some("nosuchmodule".to_string()),
             ..filter(None, None)
         };
-        let content = line("INFO", r#"{"message":"hi"}"#, "[]");
-        assert!(content.lines().all(|l| f.render_line(l).is_none()));
         let args = LogsArgs {
             watch: false,
             module: Some("nosuchmodule".to_string()),
@@ -323,10 +335,28 @@ mod tests {
             agent: None,
             json: false,
         };
+        let content = [
+            line("INFO", r#"{"message":"hi"}"#, "[]"),
+            line("WARN", r#"{"message":"there"}"#, "[]"),
+        ]
+        .join("\n");
+        let (mut out, mut err): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+        print_entries(&f, &args, &content, &mut out, &mut err)
+            .expect("writing to a Vec cannot fail");
+        assert!(out.is_empty());
         assert_eq!(
-            no_match_notice(&args).as_deref(),
-            Some("No log entries matched (--module nosuchmodule).")
+            String::from_utf8(err).expect("notice is UTF-8"),
+            "No log entries matched (--module nosuchmodule).\n"
         );
+
+        let watching = LogsArgs {
+            watch: true,
+            ..args
+        };
+        let (mut out, mut err): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+        print_entries(&f, &watching, &content, &mut out, &mut err)
+            .expect("writing to a Vec cannot fail");
+        assert!(err.is_empty());
     }
 
     #[test]

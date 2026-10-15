@@ -53,12 +53,16 @@ impl LogLevel {
 }
 
 /// Display form of a log target: `residuum::` is removed from the front, and a
-/// crate target `residuum_<x>::…` shows as `<x>::…`. A target without `::` is
-/// returned unchanged.
+/// crate target `residuum_<x>::…` shows as `<x>::…`, and a crate's root target
+/// `residuum_<x>` shows as `<x>`. Any other target without `::` is returned
+/// unchanged.
 #[must_use]
 pub fn display_target(target: &str) -> String {
     let Some((first, rest)) = target.split_once("::") else {
-        return target.to_string();
+        return target
+            .strip_prefix("residuum_")
+            .unwrap_or(target)
+            .to_string();
     };
     if first == "residuum" {
         return rest.to_string();
@@ -70,10 +74,10 @@ pub fn display_target(target: &str) -> String {
 }
 
 /// Module form of a log target: the target with its first segment removed. A
-/// target without `::` is returned unchanged.
+/// target without `::` is a crate root, so its module form is empty.
 #[must_use]
 pub fn module_target(target: &str) -> &str {
-    target.split_once("::").map_or(target, |(_, rest)| rest)
+    target.split_once("::").map_or("", |(_, rest)| rest)
 }
 
 /// Whether a `--module` value selects a log target.
@@ -251,6 +255,7 @@ mod tests {
     #[test]
     fn display_crate_single_module() {
         assert_eq!(display_target("residuum_memory::search"), "memory::search");
+        assert_eq!(display_target("residuum_memory"), "memory");
     }
 
     #[test]
@@ -311,6 +316,7 @@ mod tests {
     #[test]
     fn match_memory_crate_by_display() {
         assert!(module_matches("memory", "residuum_memory::search"));
+        assert!(module_matches("memory", "residuum_memory"));
     }
 
     #[test]
