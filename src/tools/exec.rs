@@ -10,12 +10,13 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::{SharedToolsPath, Tool, ToolError, ToolResult, publish_notice};
+use super::{Tool, ToolError, ToolResult, publish_notice};
 use crate::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
+use crate::config::{SharedToolsPath, apply_tools_path};
 use crate::inference::ToolDefinition;
 use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
@@ -382,7 +383,7 @@ impl Tool for ExecTool {
         cmd.current_dir(&self.workspace_root);
 
         if let Some(handle) = &self.tools_path {
-            super::apply_tools_path(&mut cmd, handle).await;
+            apply_tools_path(&mut cmd, handle).await;
         }
         for (var, value) in &key_env {
             cmd.env(var, value);

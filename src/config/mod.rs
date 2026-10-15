@@ -23,7 +23,6 @@ pub(crate) mod secrets;
 mod thinking;
 mod tolerant;
 mod types;
-pub mod wizard;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
@@ -31,6 +30,7 @@ pub(crate) use agent_name::display_name_in_toml;
 pub use agent_name::{
     allocate_slug, canonicalize_display_name, display_name_key, set_display_name_toml, slug_base,
 };
+pub use constants::WEB_UI_ENDPOINT;
 pub(crate) use constants::{
     DEFAULT_A2A_PORT, DEFAULT_CLOUD_RELAY_URL, DEFAULT_GATEWAY_PORT,
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
@@ -47,12 +47,13 @@ pub use provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
 pub use retry::RetryConfig;
 pub use secrets::SecretStore;
 pub use thinking::{ThinkingConfig, ThinkingLevel};
+pub(crate) use types::apply_tools_path;
 pub use types::{
     A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,
     BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
     IdleConfig, LearningConfig, LogLevel, MemoryConfig, ModelSelector, OtelEndpoint,
     ProviderNativeSearchConfig, RemoteAccessSettings, RepeatCallGuardConfig, RoleOverrides,
-    SearchConfig, SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TeamsConfig,
-    TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat,
-    WebhookRouting,
+    SearchConfig, SharedToolsPath, SkillDir, SkillSource, SkillsConfig, StandaloneBackendConfig,
+    SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
+    WebhookEntry, WebhookFormat, WebhookRouting,
 };

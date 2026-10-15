@@ -3,14 +3,15 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::RetryConfig;
-use crate::skills::SkillDir;
 use crate::util::FatalError;
 
 use super::super::deserialize::{
     AgentAbilitiesConfigFile, AgentConfigFile, AutoModeConfigFile, SkillsConfigFile,
     ToolsConfigFile,
 };
-use super::super::types::{AgentAbilitiesConfig, AutoModeConfig, SkillsConfig, ToolsConfig};
+use super::super::types::{
+    AgentAbilitiesConfig, AutoModeConfig, SkillDir, SkillsConfig, ToolsConfig,
+};
 
 /// Resolve skills configuration from TOML section.
 ///

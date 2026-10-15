@@ -19,8 +19,8 @@ use crate::bus::{
     AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     ResultDisposition, ends_with_sentinel,
 };
+use crate::config::SharedToolsPath;
 use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
-use crate::tools::SharedToolsPath;
 
 /// How much of a failed script's stderr is kept: its last 2 KiB, where the
 /// error that ended it usually is.
@@ -150,7 +150,7 @@ async fn run_task_script(
 
     let mut cmd = shell_command(script);
     cmd.current_dir(&env.workspace_root);
-    crate::tools::apply_tools_path(&mut cmd, &env.tools_path).await;
+    crate::config::apply_tools_path(&mut cmd, &env.tools_path).await;
 
     tracing::info!(
         pulse = %pulse_name,

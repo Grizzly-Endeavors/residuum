@@ -526,9 +526,10 @@ pub(crate) fn test_memory_extras() -> (
 mod tests {
     use super::*;
     use crate::agent::interrupt::dead_interrupt_rx;
+    use crate::config::SkillDir;
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::skills::{SkillDir, SkillIndex, SkillState};
+    use crate::skills::{SkillIndex, SkillState};
     use crate::testing::wait;
     use async_trait::async_trait;
 

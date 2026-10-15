@@ -13,17 +13,17 @@ use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, Publisher, SessionAddress};
-use crate::config::SharedModelCatalog;
+use crate::config::{SharedModelCatalog, SharedToolsPath};
 use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult,
-    a2a_task_update, actions, agent_keys, background, edit, exec, file_bug_report, inbox,
-    memory_get, memory_search, message_agent, ollama_web_search, read, send_message, skills,
-    submit_feedback, web_fetch, workspace_checkpoints, write,
+    SharedFileTracker, SharedPathPolicy, Tool, ToolError, ToolResult, a2a_task_update, actions,
+    agent_keys, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
+    message_agent, ollama_web_search, read, send_message, skills, submit_feedback, web_fetch,
+    workspace_checkpoints, write,
 };
 
 /// Registry of available tools.

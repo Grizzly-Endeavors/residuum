@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::super::constants::{
     DEFAULT_DISCORD_CONTEXT_MESSAGES, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_TEAMS_CONTEXT_MESSAGES,
-    DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES,
+    DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES, WEB_UI_ENDPOINT,
 };
 use super::super::deserialize::{
     AgentConfigFile, DiscordConfigFile, TeamsConfigFile, TelegramConfigFile, WebhookEntryFile,
@@ -14,7 +14,6 @@ use super::super::types::{
     DiscordConfig, IdleConfig, TeamsConfig, TelegramConfig, WebhookEntry, WebhookFormat,
     WebhookRouting,
 };
-use crate::interfaces::types::WEB_UI_ENDPOINT;
 
 /// Resolve a bot token from the raw TOML value, with `${ENV_VAR}` / `secret:name`
 /// expansion. There are no agent-scoped env var overrides (such as

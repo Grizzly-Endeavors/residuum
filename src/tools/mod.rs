@@ -36,13 +36,9 @@ pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
 pub use registry::{SubagentToolDeps, ToolRegistry};
 
-use std::ffi::OsString;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde_json::Value;
 use thiserror::Error;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::inference::{ImageData, ToolDefinition};
@@ -56,25 +52,6 @@ pub(crate) const CANCELLED_WHILE_RUNNING: &str =
 /// already been stopped by the time its turn came up.
 pub(crate) const CANCELLED_BEFORE_START: &str =
     "cancelled: the turn was stopped before this tool call started";
-
-/// Shared, reloadable effective `PATH` for spawned children.
-///
-/// Holds the tool-dir-prepended `PATH` (see [`crate::config::ToolsConfig::effective_path`]),
-/// or `None` when no override applies. Read at spawn time by the `exec` tool and
-/// MCP stdio spawner so config reloads take effect without rebuilding registries.
-pub type SharedToolsPath = Arc<RwLock<Option<OsString>>>;
-
-/// Give `cmd` the configured tools `PATH`, read live so a config reload
-/// applies to the next spawn. Leaves the inherited `PATH` alone when no
-/// override is configured.
-pub(crate) async fn apply_tools_path(
-    cmd: &mut tokio::process::Command,
-    tools_path: &SharedToolsPath,
-) {
-    if let Some(path) = tools_path.read().await.as_ref() {
-        cmd.env("PATH", path);
-    }
-}
 
 /// Errors from tool execution.
 #[derive(Error, Debug, PartialEq)]

@@ -23,6 +23,7 @@ pub mod pairing;
 pub mod process;
 pub mod pulse;
 pub mod remote_access;
+pub mod setup_wizard;
 pub mod skills;
 pub mod subconscious;
 #[cfg(test)]
