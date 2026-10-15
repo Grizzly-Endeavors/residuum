@@ -20,7 +20,7 @@ esac
 # must not inherit the repository variables a hook exports. See .githooks/pre-commit.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
 
-RESIDUUM_TS_EXPORT_DIR="$1" cargo test --quiet --test ts_export
+RESIDUUM_TS_EXPORT_DIR="$1" cargo test --quiet -p residuum --test ts_export
 
 # cargo test exits 0 when no test matches, as after the export test is renamed or
 # removed, so check that the export wrote its output.
