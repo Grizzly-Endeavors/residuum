@@ -92,3 +92,36 @@ impl ToolResult {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_result_success() {
+        let result = ToolResult::success("output");
+        assert!(!result.is_error, "success result should not be error");
+        assert_eq!(result.output, "output", "output should match");
+    }
+
+    #[test]
+    fn tool_result_error() {
+        let result = ToolResult::error("failed");
+        assert!(result.is_error, "error result should be error");
+        assert_eq!(result.output, "failed", "output should match");
+    }
+
+    #[test]
+    fn malformed_name_error_is_actionable() {
+        let err = ToolError::MalformedName("write_file\tcontent</arg_key>".to_string());
+        let message = err.to_string();
+        assert!(
+            message.contains("provider likely failed to parse"),
+            "message should explain the likely cause: {message}"
+        );
+        assert!(
+            message.contains("retry using the exact tool name"),
+            "message should tell the model how to recover: {message}"
+        );
+    }
+}

@@ -34,6 +34,10 @@ async fn artifacts_port(hub: &Fixture) -> String {
         api,
         hub.services.pairing.clone(),
         GATEWAY_PORT,
+        crate::workbench::SdkContext {
+            version: "2026.09.23",
+            features: &[],
+        },
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();

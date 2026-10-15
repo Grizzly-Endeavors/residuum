@@ -28,7 +28,7 @@ pub use failover::NoticeSink;
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use image_input::ImagesOmitted;
 pub use reply::strip_code_fences;
-pub use retry::with_retry;
+pub(crate) use retry::with_retry;
 pub use role_options::completion_options_for_role;
 pub use tool::{ToolError, ToolResult};
 pub use types::{
