@@ -205,14 +205,14 @@ mod tests {
         }
     }
 
-    /// Each workspace package's workspace dependencies, normal and dev, read from the manifests.
-    fn workspace_graph(ws: &Workspace) -> BTreeMap<String, BTreeSet<String>> {
+    /// Each workspace package's workspace dependencies, in the tables `kinds` names, read from the manifests.
+    fn workspace_graph(ws: &Workspace, kinds: &[&str]) -> BTreeMap<String, BTreeSet<String>> {
         let names: BTreeSet<String> = all(ws).map(package_name).collect();
         all(ws)
             .map(|manifest| {
                 let edges = dependencies_of(ws, manifest)
                     .into_iter()
-                    .filter(|dep| dep.kind != "build-dependencies")
+                    .filter(|dep| kinds.contains(&dep.kind))
                     .map(|dep| dep.package)
                     .filter(|package| names.contains(package))
                     .collect();
@@ -384,7 +384,7 @@ mod tests {
     }
 
     fn workspace_cycle_problems(ws: &Workspace) -> Vec<String> {
-        find_cycle(&workspace_graph(ws))
+        find_cycle(&workspace_graph(ws, &["dependencies", "dev-dependencies"]))
             .map(|cycle| {
                 format!(
                     "workspace manifests: dependency cycle {} through normal and dev dependencies; Cargo compiles the crates on it twice, so their types stop unifying",
@@ -472,5 +472,50 @@ mod tests {
     fn manifest_rule_8_test_support_enabled_in_dev_dependencies() {
         let ws = Workspace::load();
         assert_no_problems("rule 8", &test_support_in_dev_dependency_problems(&ws));
+    }
+
+    /// The graph `scripts/affected-packages.sh --graph` prints for `graph`: one `package: deps` line per package.
+    #[cfg(unix)]
+    fn graph_text(graph: &BTreeMap<String, BTreeSet<String>>) -> String {
+        let mut text = String::new();
+        for (package, deps) in graph {
+            text.push_str(package);
+            text.push(':');
+            for dep in deps {
+                text.push(' ');
+                text.push_str(dep);
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// The script reads the graph with awk; the manifests give it through `toml`. A
+    /// mismatch means the package selection reads an edge the manifests do not have, or
+    /// misses one they do. The script is a POSIX shell script, so the Windows run skips it.
+    #[cfg(unix)]
+    #[test]
+    fn affected_packages_graph_matches_manifests() {
+        use std::process::Command;
+
+        let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let output = Command::new(root_dir.join("scripts/affected-packages.sh"))
+            .arg("--graph")
+            .current_dir(&root_dir)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run scripts/affected-packages.sh: {err}"));
+        assert!(
+            output.status.success(),
+            "scripts/affected-packages.sh --graph failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+
+        let ws = Workspace::load();
+        let expected = graph_text(&workspace_graph(&ws, &DEPENDENCY_KINDS));
+        assert_eq!(
+            printed, expected,
+            "scripts/affected-packages.sh --graph disagrees with the workspace dependencies in the manifests"
+        );
     }
 }
