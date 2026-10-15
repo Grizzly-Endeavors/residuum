@@ -2,6 +2,7 @@ pub use residuum_config as config;
 pub use residuum_config::agent_keys;
 pub use residuum_core::{diagnostics, time, util};
 pub use residuum_inference as inference;
+pub use residuum_skills as skills;
 
 pub mod a2a;
 pub mod actions;
@@ -29,7 +30,6 @@ pub mod pulse;
 pub mod remote_access;
 pub(crate) mod remote_control_guard;
 pub mod setup_wizard;
-pub mod skills;
 pub mod subconscious;
 #[cfg(test)]
 pub(crate) mod testing;

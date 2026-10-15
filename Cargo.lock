@@ -5023,6 +5023,7 @@ dependencies = [
  "residuum-config",
  "residuum-core",
  "residuum-inference",
+ "residuum-skills",
  "ring",
  "rmcp",
  "rpassword",
@@ -5129,6 +5130,20 @@ dependencies = [
  "ts-rs",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "residuum-skills"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "residuum-config",
+ "residuum-core",
+ "serde",
+ "serde_yaml_ng",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

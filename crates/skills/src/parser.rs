@@ -1,4 +1,4 @@
-use crate::util::{parse_frontmatter_md, validate_kebab_name};
+use residuum_core::util::{parse_frontmatter_md, validate_kebab_name};
 
 use super::types::SkillFrontmatter;
 
@@ -54,8 +54,9 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
 /// doesn't fail parsing — the skill still loads — but is surfaced here as a
 /// warning, so the live editor shows the same per-turn token-cost notice the
 /// scanner would raise once the file is saved.
-pub(crate) fn diagnose_skill_md(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
-    use crate::diagnostics::{Diagnostic, Location};
+#[must_use]
+pub fn diagnose_skill_md(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
+    use residuum_core::diagnostics::{Diagnostic, Location};
 
     match parse_skill_md(content) {
         Ok((frontmatter, _body)) => {
@@ -360,7 +361,10 @@ mod tests {
         let diagnostics = diagnose_skill_md(&content);
         assert_eq!(diagnostics.len(), 1);
         let diagnostic = diagnostics.first().unwrap();
-        assert_eq!(diagnostic.severity, crate::diagnostics::Severity::Warning);
+        assert_eq!(
+            diagnostic.severity,
+            residuum_core::diagnostics::Severity::Warning
+        );
         assert!(diagnostic.message.contains("281"));
         assert!(diagnostic.message.contains("my-skill"));
     }
@@ -374,7 +378,7 @@ mod tests {
 
     #[test]
     fn diagnose_reports_invalid_yaml_with_location() {
-        use crate::diagnostics::Location;
+        use residuum_core::diagnostics::Location;
 
         let content = "---\n: invalid yaml [[\n---\n";
         let diagnostics = diagnose_skill_md(content);
@@ -403,7 +407,8 @@ mod tests {
     /// complaint.
     #[test]
     fn all_bundled_skills_parse() {
-        let bundled_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/bundled-skills");
+        let bundled_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/bundled-skills");
 
         let mut skill_dirs: Vec<PathBuf> = std::fs::read_dir(&bundled_root)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", bundled_root.display()))
