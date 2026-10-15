@@ -7,6 +7,11 @@
 # elsewhere is marked likely flake. Every other failure is presumed to come from
 # this change.
 #
+# For a PR number whose own runs show no failure, the latest merge queue batch of
+# the PR is listed as well when it did not succeed: a PR ejected from the queue
+# failed there, on a commit that is not its head. The batch is labelled with its
+# commit.
+#
 # Usage: scripts/ci-failures.sh [PR-number | branch | vYYYY.MM.DD[-N] | commit]
 #        `just ci-failures` runs it for the current branch.
 #
@@ -79,6 +84,8 @@ arg="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 change_word="change"
 base_sha=""
 base_desc=""
+# The queue branch of a PR's merge batches, set for a PR number only.
+queue_prefix=""
 
 if [[ "$arg" =~ ^[0-9]+$ ]]; then
     pr_json="$(gh pr view "$arg" --repo "$repo" --json headRefName,headRefOid)" \
@@ -86,6 +93,7 @@ if [[ "$arg" =~ ^[0-9]+$ ]]; then
     sha="$(jq -r .headRefOid <<<"$pr_json")"
     label="PR #$arg ($(jq -r .headRefName <<<"$pr_json"))"
     change_word="PR"
+    queue_prefix="gh-readonly-queue/main/pr-$arg-"
 elif [[ "$arg" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[0-9]+)?$ ]]; then
     git fetch --quiet --force --tags origin || die "could not fetch tags from origin"
     sha="$(git rev-parse --verify --quiet "refs/tags/$arg^{commit}")" || die "no tag $arg"
@@ -175,6 +183,22 @@ fi
 
 target_branch="$(jq -r '.head_branch' "$work/target.jsonl" | sed -n 1p)"
 
+# A PR that merge queue ejected can have green runs on its head while its failing
+# batch ran only on the queue branch, so its head runs are not the whole story.
+# When no head run failed, the latest queue run of each workflow that was created
+# after the head commit is added, unless it succeeded.
+if [[ -n "$queue_prefix" ]] && ! jq -s -e 'any(.[]; .conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")' "$work/target.jsonl" >/dev/null; then
+    head_epoch="$(git show -s --format=%ct "$sha")" || die "could not read the commit time of ${sha:0:7}"
+    if gh api "repos/$repo/actions/runs?event=merge_group&per_page=100" > "$work/queue-raw.json"; then
+        jq -c -s -f "$script_dir/ci-failures-queue.jq" --arg prefix "$queue_prefix" \
+            --argjson since "$head_epoch" --arg excluded "$EXCLUDED_WORKFLOW" "$work/queue-raw.json" \
+            >> "$work/target.jsonl" || die "could not read the merge queue runs"
+    else
+        echo "warning: could not list the merge queue runs; a batch that failed is not listed" >&2
+        query_errors=$((query_errors + 1))
+    fi
+fi
+
 # Recent completed runs on other branches, for the seen-elsewhere flag: the
 # LOOKBACK_RUNS most recent, fetched in pages of at most RUNS_PER_PAGE.
 lookback_ok=yes
@@ -199,11 +223,13 @@ done
 : > "$work/look.jsonl"
 if [[ "$lookback_ok" == yes && -s "$work/recent.jsonl" ]]; then
     # A run listed on two pages (new runs land between page fetches) is kept once.
+    # The PR's own merge batches are its runs too, so they never count as elsewhere.
     jq -s -c --arg excluded "$EXCLUDED_WORKFLOW" --arg br "$target_branch" --arg sha "$sha" \
-        --argjson days "$LOOKBACK_DAYS" '
+        --arg own "$queue_prefix" --argjson days "$LOOKBACK_DAYS" '
         (now - $days * 86400 | todate) as $cut
         | [ .[]
             | select(.name != $excluded and .head_branch != $br and .head_sha != $sha and .created_at >= $cut)
+            | select($own == "" or ((.head_branch // "") | startswith($own) | not))
             | select(.conclusion == "failure" or .run_attempt > 1)
             | {id, name, run_attempt, head_branch, html_url} ]
         | unique_by(.id)
@@ -382,14 +408,17 @@ flake_n=0
 unparsed_n=0
 running_n=0
 while IFS= read -r run_line; do
-    IFS=$'\t' read -r run_id attempt status conclusion name url < <(
-        jq -r '[.id, .run_attempt, .status, (.conclusion // "-"), .name, .html_url] | @tsv' <<<"$run_line"
+    IFS=$'\t' read -r run_id attempt status conclusion name url branch head < <(
+        jq -r '[.id, .run_attempt, .status, (.conclusion // "-"), .name, .html_url, .head_branch, .head_sha] | @tsv' <<<"$run_line"
     )
     if [[ "$status" == completed ]]; then
         state="$conclusion"
     else
         state="in progress"
         running_n=$((running_n + 1))
+    fi
+    if [[ "$branch" == gh-readonly-queue/* ]]; then
+        name="$name, merge queue batch ${head:0:7}"
     fi
     echo
     echo "== $name - run $run_id - attempt $attempt - $state - $url"

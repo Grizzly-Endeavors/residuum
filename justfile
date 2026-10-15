@@ -212,7 +212,7 @@ web-e2e-update *args: _web-deps
 web-e2e-webkit *args: _web-deps
     scripts/with-playwright-container.sh npm --prefix web run e2e:webkit -- "$@"
 
-# The end-to-end specs this branch adds or changes, each run repeatedly (WEB_STRESS_REPEAT, default 5) with the browser's CPU throttled (WEB_STRESS_CPU_THROTTLE, default 4); on this machine's Chromium, or in the Playwright container when that can't be installed; args go to playwright, e.g. `just web-stress --grep "tab is titled"`
+# The end-to-end specs this branch adds or changes (every spec with WEB_STRESS_ALL=1), each run repeatedly (WEB_STRESS_REPEAT, default 5) with the browser's CPU throttled (WEB_STRESS_CPU_THROTTLE, default 4); on this machine's Chromium, or in the Playwright container when that can't be installed; args go to playwright, e.g. `just web-stress --grep "tab is titled"`
 [group('web')]
 [positional-arguments]
 web-stress *args: _web-deps
@@ -269,6 +269,11 @@ ci-failures *args:
 [group('check')]
 ci-failures-test:
     scripts/ci-failures-test.sh
+
+# Checks which issues the nightly stress run's issue filer would open for the parser's fixtures (a dry run; GitHub is not queried)
+[group('check')]
+stress-issues-test:
+    scripts/stress-issues-test.sh
 
 # --- misc --------------------------------------------------------------------
 

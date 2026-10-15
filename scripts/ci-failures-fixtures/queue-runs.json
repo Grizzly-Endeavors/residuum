@@ -1,0 +1,13 @@
+{
+  "total_count": 8,
+  "workflow_runs": [
+    {"id": 108, "name": "CI", "run_attempt": 1, "status": "completed", "conclusion": "failure", "head_branch": "main", "head_sha": "1111111", "created_at": "2023-11-16T12:00:00Z", "html_url": "https://example.test/runs/108"},
+    {"id": 107, "name": "CI", "run_attempt": 1, "status": "completed", "conclusion": "failure", "head_branch": "gh-readonly-queue/main/pr-70-ccc", "head_sha": "2222222", "created_at": "2023-11-16T11:30:00Z", "html_url": "https://example.test/runs/107"},
+    {"id": 106, "name": "Web Checks", "run_attempt": 1, "status": "in_progress", "conclusion": null, "head_branch": "gh-readonly-queue/main/pr-7-bbb", "head_sha": "3333333", "created_at": "2023-11-16T11:00:00Z", "html_url": "https://example.test/runs/106"},
+    {"id": 105, "name": "Actionlint", "run_attempt": 1, "status": "completed", "conclusion": "success", "head_branch": "gh-readonly-queue/main/pr-7-bbb", "head_sha": "3333333", "created_at": "2023-11-16T11:00:00Z", "html_url": "https://example.test/runs/105"},
+    {"id": 104, "name": "Claude Code", "run_attempt": 1, "status": "completed", "conclusion": "failure", "head_branch": "gh-readonly-queue/main/pr-7-bbb", "head_sha": "3333333", "created_at": "2023-11-16T11:00:00Z", "html_url": "https://example.test/runs/104"},
+    {"id": 103, "name": "CI", "run_attempt": 1, "status": "completed", "conclusion": "failure", "head_branch": "gh-readonly-queue/main/pr-7-bbb", "head_sha": "3333333", "created_at": "2023-11-16T10:00:00Z", "html_url": "https://example.test/runs/103"},
+    {"id": 102, "name": "CI", "run_attempt": 1, "status": "completed", "conclusion": "failure", "head_branch": "gh-readonly-queue/main/pr-7-aaa", "head_sha": "4444444", "created_at": "2023-11-15T10:00:00Z", "html_url": "https://example.test/runs/102"},
+    {"id": 98, "name": "Web Checks", "run_attempt": 1, "status": "completed", "conclusion": "failure", "head_branch": "gh-readonly-queue/main/pr-7-aaa", "head_sha": "4444444", "created_at": "2023-11-14T00:00:00Z", "html_url": "https://example.test/runs/98"}
+  ]
+}
