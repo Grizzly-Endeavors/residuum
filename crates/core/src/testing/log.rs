@@ -12,9 +12,10 @@ pub struct LoggedEvent {
     pub text: String,
 }
 
+/// A tracing layer that records every event, so a test can check what was logged.
 #[derive(Clone, Default)]
 pub struct EventLog {
-    pub events: Arc<std::sync::Mutex<Vec<LoggedEvent>>>,
+    events: Arc<std::sync::Mutex<Vec<LoggedEvent>>>,
 }
 
 #[derive(Default)]
@@ -52,7 +53,7 @@ impl EventLog {
         tracing::subscriber::set_default(tracing_subscriber::registry().with(self.clone()))
     }
 
-    /// The events logged so far whose text contains `needle`.
+    /// Every event logged so far.
     ///
     /// # Panics
     /// Panics when the log's lock is poisoned, which takes a test thread that
@@ -62,13 +63,20 @@ impl EventLog {
         clippy::unwrap_used,
         reason = "test-support helper: a poisoned log lock means a test thread already panicked"
     )]
+    pub fn events(&self) -> Vec<LoggedEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    /// The events logged so far whose text contains `needle`.
+    ///
+    /// # Panics
+    /// Panics when the log's lock is poisoned, which takes a test thread that
+    /// already panicked while logging.
+    #[must_use]
     pub fn matching(&self, needle: &str) -> Vec<LoggedEvent> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
+        self.events()
+            .into_iter()
             .filter(|event| event.text.contains(needle))
-            .cloned()
             .collect()
     }
 }

@@ -2,7 +2,7 @@
 //! local time, and the diagnostic types validators report. It depends on no
 //! other workspace crate.
 //!
-//! The `test-support` feature adds [`testing`], the waits, gates and clock
+//! The `test-support` feature adds `testing`, the waits, gates and clock
 //! helpers every crate's tests use.
 
 pub mod diagnostics;
