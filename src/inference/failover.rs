@@ -11,7 +11,14 @@ use super::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, StreamSink,
     ToolDefinition,
 };
-use crate::bus::{NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
+
+/// Where a failover notice goes: one user-visible message per fallback or
+/// recovery transition. The bus `Publisher` implements it.
+#[async_trait]
+pub trait NoticeSink: Send + Sync {
+    /// Deliver `message` to the user.
+    async fn notice(&self, message: String);
+}
 
 /// A provider that tries multiple underlying providers in order.
 ///
@@ -41,7 +48,7 @@ pub(crate) struct FailoverProvider {
 /// What a fallback/recovery notice needs: where to publish it and what to
 /// call the role it's speaking for (e.g. "the main model").
 struct FailoverNotices {
-    publisher: Publisher,
+    sink: Arc<dyn NoticeSink>,
     role: String,
 }
 
@@ -62,9 +69,13 @@ impl FailoverProvider {
     /// the primary — never on every call while already on the fallback.
     /// `role` names what's failing over in the notice, e.g. `"main model"`.
     #[must_use]
-    pub(crate) fn with_notices(mut self, publisher: Publisher, role: impl Into<String>) -> Self {
+    pub(crate) fn with_notices(
+        mut self,
+        sink: Arc<dyn NoticeSink>,
+        role: impl Into<String>,
+    ) -> Self {
         self.notices = Some(FailoverNotices {
-            publisher,
+            sink,
             role: role.into(),
         });
         self
@@ -114,16 +125,7 @@ impl FailoverProvider {
                 notices.role
             )
         };
-        if let Err(e) = notices
-            .publisher
-            .publish(
-                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                NoticeEvent::new(message),
-            )
-            .await
-        {
-            tracing::warn!(error = %e, "failed to publish failover notice");
-        }
+        notices.sink.notice(message).await;
     }
 
     /// The order to try the providers in for this request, each with whether
@@ -287,7 +289,6 @@ mod tests {
     use super::*;
     use crate::inference::StreamDelta;
     use crate::inference::test_support::RecordingSink;
-    use crate::testing::wait;
 
     /// A mock provider that always succeeds with a fixed response.
     struct SuccessProvider {
@@ -463,42 +464,54 @@ mod tests {
         }
     }
 
-    async fn notice_text(sub: &mut crate::bus::Subscriber<NoticeEvent>) -> String {
-        wait::next_event("a notice", sub).await.message
+    /// Collects every notice a failover provider delivers, in order.
+    #[derive(Default)]
+    struct RecordingNotices {
+        messages: std::sync::Mutex<Vec<String>>,
     }
 
-    async fn assert_no_notice(
-        bus: &crate::bus::BusHandle,
-        sub: &mut crate::bus::Subscriber<NoticeEvent>,
-    ) {
-        wait::bus_barrier(bus).await;
+    #[async_trait]
+    impl NoticeSink for RecordingNotices {
+        async fn notice(&self, message: String) {
+            self.messages.lock().unwrap().push(message);
+        }
+    }
+
+    /// The single notice recorded so far, taken off the sink.
+    fn notice_text(notices: &RecordingNotices) -> String {
+        let mut messages = std::mem::take(&mut *notices.messages.lock().unwrap());
+        assert_eq!(
+            messages.len(),
+            1,
+            "expected exactly one notice, got {messages:?}"
+        );
+        messages.remove(0)
+    }
+
+    fn assert_no_notice(notices: &RecordingNotices) {
+        let messages = std::mem::take(&mut *notices.messages.lock().unwrap());
         assert!(
-            sub.drain().is_empty(),
-            "expected no notice on a repeat call while already on the fallback"
+            messages.is_empty(),
+            "expected no notice on a repeat call while already on the fallback: {messages:?}"
         );
     }
 
     #[tokio::test]
     async fn failover_transition_publishes_exactly_one_notice() {
-        let bus_handle = crate::bus::spawn_broker();
-        let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
+        let notices = Arc::new(RecordingNotices::default());
 
         let provider = FailoverProvider::new(vec![
             Box::new(FailProvider { name: "primary" }),
             Box::new(SuccessProvider { name: "fallback" }),
         ])
-        .with_notices(publisher, "main model");
+        .with_notices(notices.clone(), "main model");
 
         let result = provider
             .complete(&[], &[], &CompletionOptions::default())
             .await;
         assert!(result.is_ok(), "should succeed via failover");
 
-        let message = notice_text(&mut notices).await;
+        let message = notice_text(&notices);
         assert!(
             message.contains("main model") && message.contains("fallback"),
             "notice should name the role and the fallback it switched to: {message}"
@@ -511,25 +524,20 @@ mod tests {
 
     #[tokio::test]
     async fn staying_on_the_fallback_does_not_notice_again() {
-        let bus_handle = crate::bus::spawn_broker();
-        let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
+        let notices = Arc::new(RecordingNotices::default());
 
         let provider = FailoverProvider::new(vec![
             Box::new(FailProvider { name: "primary" }),
             Box::new(SuccessProvider { name: "fallback" }),
         ])
-        .with_notices(publisher, "main model");
+        .with_notices(notices.clone(), "main model");
 
         // First call: transition to the fallback, one notice.
         provider
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        notice_text(&mut notices).await;
+        notice_text(&notices);
 
         // Second and third calls: primary still fails, fallback still
         // serves — same active provider as before, so no repeat notice.
@@ -539,17 +547,12 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert_no_notice(&bus_handle, &mut notices).await;
+        assert_no_notice(&notices);
     }
 
     #[tokio::test]
     async fn recovery_to_primary_publishes_a_back_online_notice() {
-        let bus_handle = crate::bus::spawn_broker();
-        let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
+        let notices = Arc::new(RecordingNotices::default());
 
         let provider = FailoverProvider::new(vec![
             Box::new(RecoveringProvider {
@@ -558,14 +561,14 @@ mod tests {
             }),
             Box::new(SuccessProvider { name: "fallback" }),
         ])
-        .with_notices(publisher, "main model");
+        .with_notices(notices.clone(), "main model");
 
         // First call: primary fails once, fallback serves — fallover notice.
         provider
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        let fallover_message = notice_text(&mut notices).await;
+        let fallover_message = notice_text(&notices);
         assert!(fallover_message.contains("unavailable"));
 
         // Second call: primary has recovered — recovery notice, not a
@@ -575,7 +578,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.content, "response from primary");
-        let recovery_message = notice_text(&mut notices).await;
+        let recovery_message = notice_text(&notices);
         assert!(
             recovery_message.contains("back online") && recovery_message.contains("primary"),
             "recovery notice should say it's back on the primary: {recovery_message}"
@@ -584,12 +587,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_active_index_suppresses_repeat_notices_across_instances() {
-        let bus_handle = crate::bus::spawn_broker();
-        let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
+        let notices = Arc::new(RecordingNotices::default());
 
         let shared_index = Arc::new(AtomicUsize::new(0));
 
@@ -599,12 +597,12 @@ mod tests {
             Box::new(SuccessProvider { name: "fallback" }),
         ])
         .with_shared_active_index(Arc::clone(&shared_index))
-        .with_notices(publisher.clone(), "background sessions (large tier)");
+        .with_notices(notices.clone(), "background sessions (large tier)");
         first
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        notice_text(&mut notices).await;
+        notice_text(&notices);
 
         // A second, brand-new provider for the same role/tier, built as if
         // for another spawn while the tier is still degraded — because it
@@ -615,21 +613,17 @@ mod tests {
             Box::new(SuccessProvider { name: "fallback" }),
         ])
         .with_shared_active_index(Arc::clone(&shared_index))
-        .with_notices(publisher, "background sessions (large tier)");
+        .with_notices(notices.clone(), "background sessions (large tier)");
         second
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        assert_no_notice(&bus_handle, &mut notices).await;
+        assert_no_notice(&notices);
     }
 
     #[tokio::test]
     async fn without_notices_configured_nothing_is_published() {
-        let bus_handle = crate::bus::spawn_broker();
-        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
+        let notices = Arc::new(RecordingNotices::default());
 
         // No `.with_notices(...)` — the default (used by every role other
         // than main) must stay exactly as quiet as before this feature.
@@ -642,7 +636,7 @@ mod tests {
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        assert_no_notice(&bus_handle, &mut notices).await;
+        assert_no_notice(&notices);
     }
 
     /// A provider that streams `partial` and then either fails or completes.
@@ -819,12 +813,7 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_failover_notifies_like_complete() {
-        let bus_handle = crate::bus::spawn_broker();
-        let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
+        let notices = Arc::new(RecordingNotices::default());
         let provider = FailoverProvider::new(vec![
             Box::new(StreamingProvider {
                 name: "primary",
@@ -837,7 +826,7 @@ mod tests {
                 fails: false,
             }),
         ])
-        .with_notices(publisher, "main model");
+        .with_notices(notices.clone(), "main model");
 
         provider
             .complete_streaming(
@@ -849,7 +838,7 @@ mod tests {
             .await
             .unwrap();
 
-        let message = notice_text(&mut notices).await;
+        let message = notice_text(&notices);
         assert!(
             message.contains("main model") && message.contains("fallback"),
             "the transition is announced: {message}"
@@ -1230,15 +1219,11 @@ mod tests {
 
         #[tokio::test]
         async fn an_image_turn_goes_to_a_fallback_that_takes_images_without_a_notice() {
-            let bus_handle = crate::bus::spawn_broker();
-            let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-                .await
-                .unwrap();
+            let notices = Arc::new(RecordingNotices::default());
             let (primary, primary_requests) = hop("glm-5.3", ImageInput::TextOnly, false);
             let (fallback, fallback_requests) = hop("gpt-4o", ImageInput::Accepted, false);
             let chain = FailoverProvider::new(vec![primary, fallback])
-                .with_notices(bus_handle.publisher(), "main model");
+                .with_notices(notices.clone(), "main model");
 
             let response = chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1249,7 +1234,7 @@ mod tests {
             assert_eq!(response.images_omitted, None, "nothing was left out");
             assert!(sent_images(&primary_requests).is_empty(), "primary skipped");
             assert_eq!(sent_images(&fallback_requests), vec![1], "image sent");
-            assert_no_notice(&bus_handle, &mut notices).await;
+            assert_no_notice(&notices);
 
             let text = chain
                 .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
@@ -1259,20 +1244,16 @@ mod tests {
                 text.content, "answer from glm-5.3",
                 "text turns stay on the primary"
             );
-            assert_no_notice(&bus_handle, &mut notices).await;
+            assert_no_notice(&notices);
         }
 
         #[tokio::test]
         async fn an_image_rejection_passes_the_hop_over_for_one_that_takes_images() {
-            let bus_handle = crate::bus::spawn_broker();
-            let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-                .await
-                .unwrap();
+            let notices = Arc::new(RecordingNotices::default());
             let (primary, primary_requests) = hop("glm-5.3", ImageInput::Undeclared, true);
             let (fallback, fallback_requests) = hop("gpt-4o", ImageInput::Accepted, false);
             let chain = FailoverProvider::new(vec![primary, fallback])
-                .with_notices(bus_handle.publisher(), "main model");
+                .with_notices(notices.clone(), "main model");
 
             let response = chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1287,7 +1268,7 @@ mod tests {
                 "the primary is tried once with the image and not retried without it"
             );
             assert_eq!(sent_images(&fallback_requests), vec![1]);
-            assert_no_notice(&bus_handle, &mut notices).await;
+            assert_no_notice(&notices);
 
             chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1308,21 +1289,17 @@ mod tests {
                 text.content, "answer from glm-5.3",
                 "text turns stay on the primary"
             );
-            assert_no_notice(&bus_handle, &mut notices).await;
+            assert_no_notice(&notices);
         }
 
         #[tokio::test]
         async fn a_failing_vision_hop_behind_a_skipped_primary_raises_no_notice() {
-            let bus_handle = crate::bus::spawn_broker();
-            let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
-                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-                .await
-                .unwrap();
+            let notices = Arc::new(RecordingNotices::default());
             let (primary, primary_requests) = hop("glm-5.3", ImageInput::TextOnly, false);
             let down: Box<dyn InferenceProvider> = Box::new(FailProvider { name: "vision-a" });
             let (last, last_requests) = hop("vision-b", ImageInput::Accepted, false);
             let chain = FailoverProvider::new(vec![primary, down, last])
-                .with_notices(bus_handle.publisher(), "main model");
+                .with_notices(notices.clone(), "main model");
 
             let response = chain
                 .complete(&with_image(), &[], &CompletionOptions::default())
@@ -1331,14 +1308,14 @@ mod tests {
             assert_eq!(response.content, "answer from vision-b");
             assert_eq!(sent_images(&last_requests), vec![1]);
             assert!(sent_images(&primary_requests).is_empty());
-            assert_no_notice(&bus_handle, &mut notices).await;
+            assert_no_notice(&notices);
 
             let text = chain
                 .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
                 .await
                 .unwrap();
             assert_eq!(text.content, "answer from glm-5.3");
-            assert_no_notice(&bus_handle, &mut notices).await;
+            assert_no_notice(&notices);
         }
 
         #[tokio::test]

@@ -22,6 +22,7 @@ pub(crate) use factory::{
     DroppedFallback, build_provider_chain, build_provider_chain_with_notices,
     build_provider_chain_with_shared_notices,
 };
+pub use failover::NoticeSink;
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use image_input::ImagesOmitted;
 pub use types::{

@@ -56,7 +56,7 @@ pub(super) fn build_observer(
             cfg.max_tokens,
             http,
             cfg.retry.clone(),
-            publisher,
+            Arc::new(publisher),
             "the memory observer",
         )?
     } else {
@@ -110,7 +110,7 @@ pub(super) fn build_memory_components(
         cfg.max_tokens,
         http,
         cfg.retry.clone(),
-        publisher,
+        Arc::new(publisher),
         "the memory reflector",
     ) {
         Ok((reflector_provider, dropped)) => {
