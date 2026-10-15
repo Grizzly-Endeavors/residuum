@@ -30,8 +30,8 @@ use tracing::debug;
 
 use super::acme::AcmeSettings;
 use super::tls::CertResolver;
-use crate::testing::ports::{ReservedPort, reserve_port};
-use crate::testing::wait;
+use residuum_core::testing::ports::{ReservedPort, reserve_port};
+use residuum_core::testing::wait;
 
 /// Pinned Pebble release; both images share the tag.
 const PEBBLE_VERSION: &str = "2.10.1";
@@ -46,7 +46,7 @@ static CONTAINER_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 /// A running Pebble CA plus a challenge test server acting as its DNS resolver.
 ///
 /// Both run with host networking on ports reserved through
-/// [`crate::testing::ports`], below the OS's ephemeral range, so tests can run
+/// [`residuum_core::testing::ports`], below the OS's ephemeral range, so tests can run
 /// in parallel: each reservation is held until just before the container that
 /// binds the port starts. Validation connections for TLS-ALPN-01 go to `127.0.0.1:tls_port()`; every
 /// name resolves to 127.0.0.1 unless the test says otherwise. The containers are removed on drop.

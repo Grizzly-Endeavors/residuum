@@ -21,7 +21,7 @@ use std::time::Duration;
 ///
 /// # Panics
 /// Panics if the clock isn't paused.
-pub(crate) async fn elapse(duration: Duration) {
+pub async fn elapse(duration: Duration) {
     assert_paused().await;
     tokio::time::sleep(duration).await;
 }
@@ -32,7 +32,7 @@ pub(crate) async fn elapse(duration: Duration) {
 ///
 /// # Panics
 /// Panics if the clock isn't paused.
-pub(crate) async fn within<F: IntoFuture>(duration: Duration, fut: F) -> Option<F::Output> {
+pub async fn within<F: IntoFuture>(duration: Duration, fut: F) -> Option<F::Output> {
     assert_paused().await;
     tokio::time::timeout(duration, fut).await.ok()
 }

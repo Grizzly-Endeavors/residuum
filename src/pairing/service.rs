@@ -855,10 +855,11 @@ mod tests {
         })
         .unwrap();
         // The identity is set in memory first and saved after, so wait for the file.
-        let saved = crate::testing::wait::until("the announced identity to be saved", || {
-            std::future::ready(DevicePairing::open(dir.path()).identity().slug)
-        })
-        .await;
+        let saved =
+            residuum_core::testing::wait::until("the announced identity to be saved", || {
+                std::future::ready(DevicePairing::open(dir.path()).identity().slug)
+            })
+            .await;
         assert_eq!(saved, "laptop", "the announced identity is saved");
         assert_eq!(pairing.identity().slug.as_deref(), Some("laptop"));
     }

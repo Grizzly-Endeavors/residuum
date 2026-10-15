@@ -163,12 +163,12 @@ pub(super) fn move_to(h: &Harness, agent: &str, state: AgentState) {
 }
 
 /// The next overview frame within `within` of paused time, or `None`. The
-/// test must run on a paused clock (see `crate::testing::clock`).
+/// test must run on a paused clock (see `residuum_core::testing::clock`).
 pub(super) async fn frame_within(
     frames: &mut broadcast::Receiver<AgentOverview>,
     within: Duration,
 ) -> Option<AgentOverview> {
-    crate::testing::clock::within(within, frames.recv())
+    residuum_core::testing::clock::within(within, frames.recv())
         .await
         .and_then(Result::ok)
 }
@@ -665,7 +665,7 @@ async fn a_burst_of_changes_is_gathered_into_frames_a_window_apart_and_the_last_
         let id = format!("20260930_{n:02}");
         place_item(&h, "scout", &id).await;
         changed(&h, "scout", AgentChangeKind::UserInboxAdded { item_id: id });
-        crate::testing::clock::elapse(BURST_GAP).await;
+        residuum_core::testing::clock::elapse(BURST_GAP).await;
     }
     let received = collector.await.unwrap();
 
@@ -708,7 +708,7 @@ async fn a_change_during_the_wait_is_in_the_frame_the_wait_ends_with() {
             item_id: "20260930_first".to_string(),
         },
     );
-    crate::testing::clock::elapse(OVERVIEW_WINDOW / 2).await;
+    residuum_core::testing::clock::elapse(OVERVIEW_WINDOW / 2).await;
     place_item(&h, "scout", "20260930_second").await;
     changed(
         &h,

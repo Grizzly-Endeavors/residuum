@@ -3,7 +3,7 @@
 //! visibility, over real HTTP with the official client. See
 //! `docs/systems-usage/a2a.md`.
 
-use crate::testing::ports::reserve_port;
+use residuum_core::testing::ports::reserve_port;
 use std::sync::Arc;
 
 use a2a::{
@@ -26,7 +26,7 @@ use crate::a2a::listener::{A2aListener, StubHandler, agent_handler_router};
 use crate::a2a::static_directory::StaticAgentDirectory;
 use crate::config::A2aConfig;
 use crate::hub::{A2aVisibility, AgentState};
-use crate::testing::wait;
+use residuum_core::testing::wait;
 
 /// A handler that identifies its agent in every reply and gates its second
 /// streamed event on `gate`, so a test can prove the first event arrived

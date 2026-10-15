@@ -9,6 +9,8 @@ workspace = true
 
 [workspace]
 resolver = "3"
+members = ["crates/*"]
+default-members = [".", "crates/*"]
 exclude = [".claude", "target"]
 
 [workspace.package]
@@ -18,6 +20,9 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+# Workspace members
+residuum-core = { path = "crates/core", version = "0.1.0" }
+
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
 
@@ -146,6 +151,7 @@ http-body-util = "0.1"
 jsonschema = { version = "0.58.6", default-features = false }
 
 [dependencies]
+residuum-core = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -239,6 +245,7 @@ windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_F
 tauri-winrt-notification = "0.8.1"
 
 [dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

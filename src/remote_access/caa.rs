@@ -334,7 +334,7 @@ mod tests {
         pebble.clear_dns_queries("two.wait.test").await.unwrap();
         let late = Arc::clone(&pebble);
         let adder = tokio::spawn(async move {
-            crate::testing::wait::until("the wait to look up the missing name", || async {
+            residuum_core::testing::wait::until("the wait to look up the missing name", || async {
                 (late.dns_queries("two.wait.test").await.unwrap() > 0).then_some(())
             })
             .await;

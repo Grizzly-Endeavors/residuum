@@ -3,7 +3,7 @@
 //! Uses clap for CLI argument parsing. Run `residuum --help` for usage.
 
 #[cfg(test)]
-#[path = "testing/crypto.rs"]
+#[path = "../crates/core/src/testing/crypto.rs"]
 mod crypto;
 
 mod commands;

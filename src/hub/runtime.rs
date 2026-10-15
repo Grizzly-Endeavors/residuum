@@ -1128,7 +1128,7 @@ pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
 mod tests {
     use super::*;
     use crate::hub::test_support::{mount_reply, write_agent};
-    use crate::testing::ports::reserve_port;
+    use residuum_core::testing::ports::reserve_port;
     use wiremock::MockServer;
 
     #[test]
@@ -1175,7 +1175,7 @@ mod tests {
     ) -> serde_json::Value {
         use futures_util::StreamExt as _;
 
-        let message = crate::testing::wait::guarded("a hub socket frame", socket.next())
+        let message = residuum_core::testing::wait::guarded("a hub socket frame", socket.next())
             .await
             .expect("a frame arrives")
             .unwrap();
@@ -1252,7 +1252,7 @@ mod tests {
         }
 
         async fn eventually_status(&self, port: u16, path: &str, expected: Option<u16>) {
-            crate::testing::wait::until(
+            residuum_core::testing::wait::until(
                 format!("{path} on port {port} to answer {expected:?}"),
                 || async { (self.status_of(port, path).await == expected).then_some(()) },
             )
@@ -1296,7 +1296,7 @@ mod tests {
         /// Wait until the team event log holds an entry of `kind` about
         /// `agent`, and return it.
         async fn team_event(&self, kind: &str, agent: &str) -> serde_json::Value {
-            crate::testing::wait::until(format!("a {kind} entry about {agent}"), || async {
+            residuum_core::testing::wait::until(format!("a {kind} entry about {agent}"), || async {
                 let (_boot, events) = self.team_events().await;
                 events
                     .into_iter()
@@ -1312,7 +1312,7 @@ mod tests {
         /// Wait for the hub to announce a finished config reload, and return
         /// its frame with the notices that came before it.
         async fn next_reload(&mut self) -> Reload {
-            crate::testing::wait::guarded("the hub to announce the reload", async {
+            residuum_core::testing::wait::guarded("the hub to announce the reload", async {
                 let mut notices = Vec::new();
                 loop {
                     match self.events.recv().await.unwrap() {
@@ -1352,7 +1352,7 @@ mod tests {
                 .await
                 .unwrap();
             assert!(response.status().is_success());
-            let exit = crate::testing::wait::guarded(
+            let exit = residuum_core::testing::wait::guarded(
                 "the hub to stop after a shutdown request",
                 self.exit,
             )
@@ -1483,7 +1483,7 @@ mod tests {
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
         let (boot_id, _) = hub.team_events().await;
-        let new_port = crate::testing::ports::unprobed_port_after(hub.gateway_port);
+        let new_port = residuum_core::testing::ports::unprobed_port_after(hub.gateway_port);
 
         std::fs::write(
             hub.hub_config_path(),
@@ -1501,7 +1501,7 @@ mod tests {
         // Another test process may bind the old port once this hub lets go of
         // it, so the check is that this hub no longer answers there, not that
         // nothing does.
-        crate::testing::wait::until(
+        residuum_core::testing::wait::until(
             format!("this hub to stop answering on port {}", hub.gateway_port),
             || async {
                 (hub.boot_id_on(hub.gateway_port).await.as_ref() != Some(&boot_id)).then_some(())
@@ -1515,7 +1515,7 @@ mod tests {
 
     #[test]
     fn an_a2a_bind_failure_is_worded_by_its_io_cause() {
-        let port = crate::testing::ports::free_port();
+        let port = residuum_core::testing::ports::free_port();
         let in_use = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::AddrInUse))
             .context(format!(
                 "failed to bind the A2A listener on 127.0.0.1:{port}"
@@ -1565,7 +1565,7 @@ mod tests {
         )
         .unwrap();
 
-        let notice = crate::testing::wait::next_matching(
+        let notice = residuum_core::testing::wait::next_matching(
             "the hub to warn that the A2A listener couldn't start",
             &mut hub.events,
             |event| {
@@ -1787,7 +1787,7 @@ mod tests {
 
         assert!(response.status().is_success(), "{response:?}");
         for (name, before) in ["atlas", "scout"].into_iter().zip(reloads_before) {
-            crate::testing::wait::until(
+            residuum_core::testing::wait::until(
                 format!("{name} to reload after the team USER.md changed"),
                 || async { (hub.host.reloads_finished(name).unwrap() > before).then_some(()) },
             )

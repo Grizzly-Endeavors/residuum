@@ -193,7 +193,7 @@ mod tests {
         let _scout_rewrite = held.lock().await;
 
         // Another agent's file rewrites while scout's is locked.
-        crate::testing::wait::guarded(
+        residuum_core::testing::wait::guarded(
             "atlas's rewrite to finish while scout's lock is held",
             append_recent_messages(
                 &atlas,

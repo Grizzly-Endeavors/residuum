@@ -250,7 +250,7 @@ async fn recovery_check(service: Weak<SystemOneService>, interval: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

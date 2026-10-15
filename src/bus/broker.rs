@@ -292,7 +292,7 @@ mod tests {
     use crate::bus::topics;
     use crate::bus::types::{EndpointName, NotifyName, SYSTEM_CHANNEL};
     use crate::interfaces::types::MessageOrigin;
-    use crate::testing::clock;
+    use residuum_core::testing::clock;
 
     fn test_timestamp() -> chrono::NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 3, 13)

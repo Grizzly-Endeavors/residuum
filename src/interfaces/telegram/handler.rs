@@ -786,7 +786,7 @@ mod tests {
     use crate::interfaces::chat_state::ChatStateStore;
     use crate::interfaces::context_buffer::ContextBuffer;
     use crate::interfaces::reply_targets::ReplyTargets;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     const BOT_USERNAME: &str = "resibot";
     const BOT_ID: UserId = UserId(9_999);

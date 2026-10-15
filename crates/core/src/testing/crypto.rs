@@ -1,4 +1,4 @@
-//! The rustls process-default `CryptoProvider` for the test binaries: the lib, the bin and `tests/it`.
+//! The rustls process-default `CryptoProvider` for every test binary that can build an HTTP client; each includes this file by path.
 //!
 //! It runs before `main`, which is safe because it only installs a process-default provider and no other initialization depends on its order.
 //!

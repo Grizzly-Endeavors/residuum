@@ -545,7 +545,7 @@ fn format_output(output: &Output) -> ToolResult {
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     /// A workspace root for tests that don't care where commands start —
     /// the system temp dir, which always exists.

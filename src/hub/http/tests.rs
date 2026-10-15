@@ -40,10 +40,10 @@ use crate::hub::{
     AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
     RestoreAgentRequest,
 };
-use crate::testing::wait;
 use crate::tunnel::TunnelStatus;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
+use residuum_core::testing::wait;
 
 mod artifacts_origin;
 mod events;

@@ -113,7 +113,7 @@ async fn artifact_events_reach_the_socket_with_no_agent_running() {
     // the watch is placed is never reported. The watcher is a separate thread
     // that a busy machine can starve, so write only once the feed says it runs.
     let mut health = feed.health.clone();
-    let started = crate::testing::wait::watch_until(
+    let started = residuum_core::testing::wait::watch_until(
         "the team change feed to start its watcher",
         &mut health,
         |health| *health != WatchHealth::Starting,
@@ -130,7 +130,7 @@ async fn artifact_events_reach_the_socket_with_no_agent_running() {
     // the hub sends at once, so read the socket directly: the bound here only
     // turns a notification that never comes into a failure instead of a hang.
     let next = async |connection: &mut ClientSocket| {
-        let message = crate::testing::wait::guarded("an artifact frame", connection.next())
+        let message = residuum_core::testing::wait::guarded("an artifact frame", connection.next())
             .await
             .expect("socket closed")
             .expect("socket error");
@@ -484,7 +484,7 @@ async fn subscriptions_end_with_the_connection() {
 
     first.close(None).await.unwrap();
     drop(first);
-    crate::testing::wait::until_true("the closed connection's relay to end", || {
+    residuum_core::testing::wait::until_true("the closed connection's relay to end", || {
         h.changes.session_relay_receivers() == 0
     })
     .await;

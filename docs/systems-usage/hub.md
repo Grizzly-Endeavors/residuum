@@ -174,7 +174,12 @@ Each line's target is shown in display form: `residuum::` is dropped from the fr
 
 A `residuum logs` run without `--watch` that was given `--module`, `--level` or `--agent` and printed no entries writes one line to stderr after reading the whole file: `No log entries matched (--module <value>, --level <value>, --agent <value>).` It names only the filters given. The exit status is 0.
 
-`RUST_LOG` is a developer override; `log_level` in `hub/config.toml` is unaffected by it. Its directives match targets by prefix, so a directive names the crate a module lives in. Every module is in the `residuum` crate, so `RUST_LOG=residuum::memory=trace` is the form to use. The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.
+`RUST_LOG` is a developer override; `log_level` in `hub/config.toml` is unaffected by it. Its directives match targets by prefix, so a directive names the crate a module lives in. Each module lives in one of these crates:
+
+- `residuum_core`: `util`, `time` and `diagnostics`, so `RUST_LOG=residuum_core::util::fs=trace`.
+- `residuum`: every other module, so `RUST_LOG=residuum::memory=trace`.
+
+The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.
 
 ## Running in Docker
 

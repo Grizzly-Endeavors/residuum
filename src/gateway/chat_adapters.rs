@@ -162,7 +162,7 @@ pub(crate) async fn shutdown_adapter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     #[tokio::test]
     async fn next_exit_reports_a_finished_adapter_once() {

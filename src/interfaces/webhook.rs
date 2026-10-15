@@ -322,7 +322,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::WebhookRouting;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     async fn make_app(
         webhooks: HashMap<String, WebhookEndpointState>,

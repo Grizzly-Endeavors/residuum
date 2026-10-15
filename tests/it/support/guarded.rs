@@ -1,6 +1,6 @@
 //! Awaits a future under the suite's hang guard.
 //!
-//! The integration-test counterpart of `crate::testing::wait::guarded`: the
+//! The integration-test counterpart of `residuum_core::testing::wait::guarded`: the
 //! same 60 second guard, which exists only to fail a test that would otherwise
 //! hang.
 

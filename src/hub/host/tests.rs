@@ -19,11 +19,12 @@ use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{mount_reply, write_agent};
-use crate::testing::gate::Gate;
+use crate::testing::bus_wait;
 use crate::testing::model::GatedModel;
-use crate::testing::ports::reserve_port;
-use crate::testing::{bus_wait, wait};
 use crate::workspace::watch::WatchHealth;
+use residuum_core::testing::gate::Gate;
+use residuum_core::testing::ports::reserve_port;
+use residuum_core::testing::wait;
 
 /// A hub over a temp residuum root with running-capable agents, each talking
 /// to its own mock model server that answers "<name> here".

@@ -287,14 +287,14 @@ mod tests {
         let sign_ins = PendingSignIns::default();
         let late = sign_ins.start().unwrap();
         let on_time = sign_ins.start().unwrap();
-        crate::testing::clock::elapse(
+        residuum_core::testing::clock::elapse(
             SIGN_IN_LIFETIME
                 .checked_sub(Duration::from_secs(1))
                 .unwrap(),
         )
         .await;
         assert_eq!(sign_ins.redeem(&on_time), SignInOrigin::StartedHere);
-        crate::testing::clock::elapse(Duration::from_secs(1)).await;
+        residuum_core::testing::clock::elapse(Duration::from_secs(1)).await;
         assert_eq!(sign_ins.redeem(&late), SignInOrigin::Expired);
         assert_eq!(sign_ins.redeem(&late), SignInOrigin::Unknown);
     }
@@ -303,7 +303,7 @@ mod tests {
     async fn starting_a_sign_in_forgets_the_expired_ones() {
         let sign_ins = PendingSignIns::default();
         let old = sign_ins.start().unwrap();
-        crate::testing::clock::elapse(SIGN_IN_LIFETIME).await;
+        residuum_core::testing::clock::elapse(SIGN_IN_LIFETIME).await;
         sign_ins.start().unwrap();
         assert_eq!(sign_ins.redeem(&old), SignInOrigin::Unknown);
     }

@@ -31,7 +31,7 @@ static NEXT_SLOT: AtomicU16 = AtomicU16::new(0);
 /// returned here keeps the port out of every other process's reach until the
 /// caller drops it, which it should do immediately before the real component
 /// binds the same port number.
-pub(crate) struct ReservedPort {
+pub struct ReservedPort {
     port: u16,
     /// Held open so the port stays reserved until this value is dropped or
     /// converted with [`ReservedPort::into_tokio_listener`].
@@ -41,7 +41,7 @@ pub(crate) struct ReservedPort {
 impl ReservedPort {
     /// The reserved port number. Still reserved until this value is dropped.
     #[must_use]
-    pub(crate) fn port(&self) -> u16 {
+    pub fn port(&self) -> u16 {
         self.port
     }
 
@@ -52,7 +52,11 @@ impl ReservedPort {
     /// # Panics
     /// Panics outside a tokio runtime, or if the socket can't go non-blocking.
     #[must_use]
-    pub(crate) fn into_tokio_listener(self) -> tokio::net::TcpListener {
+    #[expect(
+        clippy::expect_used,
+        reason = "test-support helper: a reserved port that can't serve fails the test that reserved it"
+    )]
+    pub fn into_tokio_listener(self) -> tokio::net::TcpListener {
         self.listener
             .set_nonblocking(true)
             .expect("a reserved port can go non-blocking");
@@ -63,6 +67,10 @@ impl ReservedPort {
 
 /// Probe the reserved loopback range for a port that is free right now, the
 /// shared walk behind both [`free_port`] and [`reserve_port`].
+#[expect(
+    clippy::panic,
+    reason = "test-support helper: a test that can't get a port can't run"
+)]
 fn probe_free_port() -> (u16, std::net::TcpListener) {
     let slots = RANGE_LEN / STRIDE;
     let pid_slot = u16::try_from(std::process::id() % u32::from(slots)).unwrap_or(0);
@@ -94,7 +102,7 @@ fn probe_free_port() -> (u16, std::net::TcpListener) {
 /// # Panics
 /// Panics if no port in the reserved range can be bound.
 #[must_use]
-pub(crate) fn free_port() -> u16 {
+pub fn free_port() -> u16 {
     probe_free_port().0
 }
 
@@ -106,7 +114,7 @@ pub(crate) fn free_port() -> u16 {
 /// in that time. The port sits halfway up the gap, so it stays out of reach
 /// of the workbench's upward scan from `port` itself.
 #[must_use]
-pub(crate) fn unprobed_port_after(port: u16) -> u16 {
+pub fn unprobed_port_after(port: u16) -> u16 {
     port + STRIDE / 2
 }
 
@@ -119,7 +127,7 @@ pub(crate) fn unprobed_port_after(port: u16) -> u16 {
 /// # Panics
 /// Panics if no port in the reserved range can be bound.
 #[must_use]
-pub(crate) fn reserve_port() -> ReservedPort {
+pub fn reserve_port() -> ReservedPort {
     let (port, listener) = probe_free_port();
     ReservedPort { port, listener }
 }

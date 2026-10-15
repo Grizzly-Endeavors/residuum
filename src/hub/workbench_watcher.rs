@@ -288,7 +288,7 @@ mod tests {
         }
 
         async fn next_reload(&mut self) -> WorkbenchEvent {
-            crate::testing::wait::guarded("an artifact reload", self.reloads.recv())
+            residuum_core::testing::wait::guarded("an artifact reload", self.reloads.recv())
                 .await
                 .unwrap()
                 .unwrap()

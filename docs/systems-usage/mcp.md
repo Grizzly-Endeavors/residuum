@@ -51,7 +51,7 @@ The setup wizard writes tool server keys this way. When a catalog server asks fo
 
 ## `${VAR}` / `${VAR:-default}` expansion
 
-`expand_env_vars` (`src/util/env_expand.rs`) expands `${VAR}` and `${VAR:-default}` patterns against the process's own environment. It applies only to HTTP server **header values** at connect time (`expand_header_env_vars`), after agent key references are resolved — a missing variable with no default resolves to an empty string; an empty (but set) variable does **not** trigger the default, which diverges from POSIX shell semantics. Stdio `env` entries are passed through to the child process as literal strings without this expansion.
+`expand_env_vars` (`crates/core/src/util/env_expand.rs`) expands `${VAR}` and `${VAR:-default}` patterns against the process's own environment. It applies only to HTTP server **header values** at connect time (`expand_header_env_vars`), after agent key references are resolved — a missing variable with no default resolves to an empty string; an empty (but set) variable does **not** trigger the default, which diverges from POSIX shell semantics. Stdio `env` entries are passed through to the child process as literal strings without this expansion.
 
 ## Registry and reconciliation
 

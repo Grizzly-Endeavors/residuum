@@ -402,7 +402,7 @@ pub(crate) fn script_only_result(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     pub(crate) fn env(dir: &std::path::Path) -> ScriptEnv {
         ScriptEnv {
@@ -647,10 +647,11 @@ pub(crate) mod tests {
             runs = &mut run => panic!("the scripts ended before the shell was reaped: {runs:?}"),
         }
         tokio::time::pause();
-        let runs = crate::testing::clock::within(std::time::Duration::from_secs(3600), &mut run)
-            .await
-            .expect("the script ends at its timeout")
-            .unwrap();
+        let runs =
+            residuum_core::testing::clock::within(std::time::Duration::from_secs(3600), &mut run)
+                .await
+                .expect("the script ends at its timeout")
+                .unwrap();
         let Some(Some(ScriptRun::Failed(failure))) = runs.into_iter().next() else {
             panic!("expected a timeout failure");
         };

@@ -1695,8 +1695,8 @@ mod tests {
     use super::*;
     use crate::inference::Role;
     use crate::testing::bus_wait;
-    use crate::testing::gate::{Gate, GateEntry};
-    use crate::testing::wait;
+    use residuum_core::testing::gate::{Gate, GateEntry};
+    use residuum_core::testing::wait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 

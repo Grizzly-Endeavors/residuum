@@ -260,7 +260,7 @@ mod tests {
         let _poller = spawn_root_config_watcher(config.clone(), providers, tx);
         // The poller's task hasn't run yet: this test hasn't yielded.
         set_mtime(&config, 2_000);
-        let reload = crate::testing::clock::within(Duration::from_secs(3), rx.recv()).await;
+        let reload = residuum_core::testing::clock::within(Duration::from_secs(3), rx.recv()).await;
 
         assert_eq!(reload, Some(Some(ReloadSignal::Agent)));
     }

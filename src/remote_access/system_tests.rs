@@ -178,7 +178,7 @@ impl Stack {
 
     async fn stop(self) {
         self.shutdown.send_replace(true);
-        crate::testing::wait::guarded("the tunnel to stop", self.task)
+        residuum_core::testing::wait::guarded("the tunnel to stop", self.task)
             .await
             .unwrap();
     }
@@ -192,7 +192,7 @@ impl Stack {
         what: &str,
         matches: impl Fn(&RemoteAccessStatus) -> bool,
     ) -> RemoteAccessStatus {
-        crate::testing::wait::until_reporting(
+        residuum_core::testing::wait::until_reporting(
             what,
             || {
                 let status = self.status();
@@ -291,7 +291,7 @@ async fn fetch(door_port: u16, sni: &str, host: &str, path: &str) -> Fetched {
     .await
     .unwrap();
     let mut raw = Vec::new();
-    crate::testing::wait::guarded("the answer to arrive", tls.read_to_end(&mut raw))
+    residuum_core::testing::wait::guarded("the answer to arrive", tls.read_to_end(&mut raw))
         .await
         .ok();
     Fetched {

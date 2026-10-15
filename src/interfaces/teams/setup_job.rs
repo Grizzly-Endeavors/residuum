@@ -1230,8 +1230,8 @@ async fn spawn_login_process(atk_bin: &Path, log: &BoundedLog) -> Result<LoginSp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::script::write_executable as make_script;
-    use crate::testing::wait;
+    use residuum_core::testing::script::write_executable as make_script;
+    use residuum_core::testing::wait;
 
     const FAKE_ATK_UNIX: &str = r#"#!/bin/sh
 cmd="$1"
@@ -1577,7 +1577,7 @@ exit 0
         let mgr = TeamsSetupJobManager::with_overrides(root, overrides);
         // Unit tests have no tracing subscriber, so capture the reason
         // `detect_tool` logs when it reports a tool as not found.
-        let log = crate::testing::log::EventLog::default();
+        let log = residuum_core::testing::log::EventLog::default();
         let prereqs = {
             let _guard = log.capture();
             mgr.get_prereqs("agent-1").await

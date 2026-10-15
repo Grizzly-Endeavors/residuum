@@ -262,8 +262,8 @@ async fn publish_to_targets(
 mod tests {
     use super::*;
     use crate::bus::{EndpointCapabilities, EndpointEntry, TopicId};
-    use crate::testing::{clock, wait};
     use chrono::NaiveDate;
+    use residuum_core::testing::{clock, wait};
 
     fn sample_timestamp() -> chrono::NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 3, 14)

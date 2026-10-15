@@ -732,7 +732,7 @@ mod tests {
     use super::*;
     use crate::hub::push::encrypt::browser::Browser;
     use crate::hub::push::types::PushPreferencesPatch;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     const FAST_RETRY: Duration = Duration::from_millis(40);
 
