@@ -484,7 +484,7 @@ async fn recv_msg(
         >,
     >,
 ) -> ServerMessage {
-    let frame = crate::support::guarded::guarded("the next server message", rx.next())
+    let frame = residuum_core::testing::wait::guarded("the next server message", rx.next())
         .await
         .expect("stream ended unexpectedly");
 
