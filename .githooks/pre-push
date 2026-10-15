@@ -33,7 +33,7 @@ MAIN_REF=refs/remotes/origin/main
 # The paths that run the Rust checks. This is the RUST_PATHS_RE of the
 # `changes` job in .github/workflows/ci.yml, which decides when CI runs the same
 # checks; change both together.
-RUST_PATHS_RE='^(src|tests|assets|crates)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+RUST_PATHS_RE='^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
 
 note() { echo -e "${YELLOW}$1${NC}" >&2; }
 

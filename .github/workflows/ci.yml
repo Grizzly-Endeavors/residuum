@@ -70,7 +70,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
-          RUST_PATHS_RE: '^(src|tests|assets|crates)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+          RUST_PATHS_RE: '^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
           WEB_PATHS_RE: '^web/|^scripts/(with-playwright-container|web-initial-route-size|ci-cpu-report)\.sh$|^\.github/workflows/(ci|web-checks)\.yml$'
           DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml|\.github/workflows/cross-compile\.yml)$|^crates/[^/]+/Cargo\.toml$'
           WORKFLOWS_PATHS_RE: '^\.github/(workflows/|actionlint\.yaml$)'
