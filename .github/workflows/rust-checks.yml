@@ -18,10 +18,26 @@ on:
         description: Run the Pebble tests, which issue certificates from the Let's Encrypt test CA in Docker
         type: boolean
         default: true
+      packages:
+        description: The cargo package arguments for clippy and the tests, --workspace or -p residuum-<crate> pairs
+        type: string
+        default: --workspace
+      isolation:
+        description: Check each member crate alone (rust-isolation), as the merge queue does
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       pebble:
         description: Run the Pebble tests, which issue certificates from the Let's Encrypt test CA in Docker
+        type: boolean
+        default: true
+      packages:
+        description: The cargo package arguments for clippy and the tests, --workspace or -p residuum-<crate> pairs
+        type: string
+        default: --workspace
+      isolation:
+        description: Check each member crate alone (rust-isolation)
         type: boolean
         default: true
 
@@ -42,6 +58,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Check the package selection
+        id: packages
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+            echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
+            exit 1
+          fi
 
       # Install the version pinned in rust-toolchain.toml as its own toolchain;
       # the runner image's baked-in toolchain can't be updated in place.
@@ -65,8 +92,12 @@ jobs:
 
       - name: Clippy
         id: clippy
-        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' && steps.packages.outcome == 'success' }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo clippy --all-targets --all-features "${packages[@]}" -- -D warnings
 
       - name: Dependency audit
         id: deny
@@ -107,6 +138,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check the package selection
+        id: packages
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+            echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
+            exit 1
+          fi
+
       - name: Build web assets
         run: cd web && npm ci && npm run build
 
@@ -117,7 +159,11 @@ jobs:
         run: rustup target add x86_64-pc-windows-gnu
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo clippy --all-targets --all-features "${packages[@]}" --target x86_64-pc-windows-gnu -- -D warnings
 
   # The tests run once, on an otherwise idle runner. The suite under load (two
   # copies at once with every CPU busy) runs nightly on main
@@ -133,6 +179,17 @@ jobs:
       - name: Start the CPU report
         run: scripts/ci-cpu-report.sh start
 
+      - name: Check the package selection
+        id: packages
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+            echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
+            exit 1
+          fi
+
       - name: Install pinned Rust toolchain
         id: toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
@@ -146,14 +203,22 @@ jobs:
       # this build, not on each other, so a compile error is reported here once.
       - name: Build test binaries
         id: build_tests
-        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
-        run: cargo test --quiet --no-run
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' && steps.packages.outcome == 'success' }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo test --quiet --no-run "${packages[@]}"
 
       # --no-fail-fast runs every test binary, so one run lists every failing test.
       - name: Tests
         id: test
         if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
-        run: cargo test --quiet --no-fail-fast
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo test --quiet --no-fail-fast "${packages[@]}"
 
       # Remote access issuance against Pebble, the Let's Encrypt test CA, in
       # Docker (see docs/systems-usage/secure-tunnel.md, "Tests"). The
@@ -195,3 +260,22 @@ jobs:
             echo ''
             scripts/ci-cpu-report.sh report
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Cargo unifies features across every package in one build, so a member can
+  # compile in a whole-workspace run only because another package turns on a
+  # feature it needs. Each member is checked alone, in its own cargo
+  # invocations, so nothing unifies across members. Runs only when `isolation`
+  # is set (the merge queue and releases).
+  rust-isolation:
+    name: Crate Isolation
+    if: inputs.isolation
+    runs-on: lab-runners-wide
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      - name: Check each member crate alone
+        run: scripts/check-crate-isolation.sh
