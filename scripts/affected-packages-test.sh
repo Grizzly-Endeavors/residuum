@@ -101,12 +101,6 @@ docs/design/workspace-split.md||
 .githooks/pre-push||
 CASES
 
-# Without browser_landing.rs, a tokens.css change touches the root alone.
-rm crates/net/src/browser_landing.rs
-check "tokens.css without browser_landing.rs" --affected web/src/styles/tokens.css "-p residuum"
-check "tokens.css without browser_landing.rs" --members web/src/styles/tokens.css ""
-touch crates/net/src/browser_landing.rs
-
 expected_graph="residuum: residuum-a residuum-b residuum-net
 residuum-a:
 residuum-b: residuum-a

@@ -159,11 +159,7 @@ classify_path() {
         CLASSIFIED="residuum"
         ;;
     web/src/styles/tokens.css)
-        if [ -f crates/net/src/browser_landing.rs ]; then
-            CLASSIFIED="residuum-net"
-        else
-            CLASSIFIED="residuum"
-        fi
+        CLASSIFIED="residuum-net"
         ;;
     esac
     return 0
