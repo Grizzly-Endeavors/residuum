@@ -1,12 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::config::{SkillDir, SkillSource};
 use crate::util::xml_escape;
 
-use super::{
-    parser::parse_skill_md,
-    types::{SkillDir, SkillIndexEntry, SkillSource},
-};
+use super::{parser::parse_skill_md, types::SkillIndexEntry};
 
 /// In-memory index of discovered skills.
 #[derive(Debug, Clone, Default)]
@@ -296,8 +294,9 @@ async fn process_skill_folder(
 mod tests {
     use std::path::PathBuf;
 
-    use super::super::types::{SkillDir, SkillIndexEntry, SkillSource};
+    use super::super::types::SkillIndexEntry;
     use super::SkillIndex;
+    use crate::config::{SkillDir, SkillSource};
 
     // ── SkillIndex ───────────────────────────────────────────────────────────
 

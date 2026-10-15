@@ -3,19 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::bus::EndpointName;
+use crate::config::WEB_UI_ENDPOINT;
 use crate::inference::{AgentSender, MessageSender};
 
 /// The endpoint name of a message no interface delivered: a result relayed
 /// to the main agent, another agent's message, a delivery-failure notice.
 pub const BACKGROUND_ENDPOINT: &str = "background";
-
-/// The web UI's endpoint name: always the owner's own channel, with no
-/// conversation concept to post elsewhere within.
-///
-/// The web UI follows the main agent's turns through the main conversation
-/// topic. What is published to its endpoint topic is only what the agent
-/// posts to the web with `send_message`, files included.
-pub const WEB_UI_ENDPOINT: &str = "ws";
 
 /// The endpoint whose topic carries a turn's events for the chat interface
 /// behind it: `delivered_to` itself, unless it is the web UI, which takes a

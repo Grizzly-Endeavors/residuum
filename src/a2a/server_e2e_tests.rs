@@ -236,7 +236,7 @@ async fn setup_workspace(
         .await
         .unwrap();
 
-    let skill_dirs = vec![crate::skills::SkillDir::agent(layout.skills_dir())];
+    let skill_dirs = vec![crate::config::SkillDir::agent(layout.skills_dir())];
     if let Some((name, description)) = opts.workspace_skill {
         let skill_dir = layout.skills_dir().join(name);
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
@@ -551,7 +551,7 @@ struct MiniListenerDeps {
     action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: Arc<tokio::sync::Notify>,
     endpoint_registry: EndpointRegistry,
-    tools_path: crate::tools::SharedToolsPath,
+    tools_path: crate::config::SharedToolsPath,
     path_policy: crate::tools::SharedPathPolicy,
     agent_keys: crate::agent_keys::SharedAgentKeys,
     hybrid_searcher: Arc<crate::memory::search::HybridSearcher>,

@@ -1,7 +1,8 @@
-use std::fmt;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+
+use crate::config::SkillSource;
 
 /// YAML frontmatter deserialized from a `SKILL.md` file.
 #[derive(Debug, Deserialize)]
@@ -10,68 +11,6 @@ pub(super) struct SkillFrontmatter {
     pub(super) name: String,
     /// Brief description shown in the index.
     pub(super) description: String,
-}
-
-/// Which layer a skill was discovered in.
-///
-/// Layers are searched in the order agent, team, configured; the first skill
-/// with a given name wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillSource {
-    /// From the agent's own `skills/` directory.
-    Agent,
-    /// From the shared `team/skills/` directory.
-    Team,
-    /// From an extra directory configured in `[skills].dirs`.
-    Configured,
-}
-
-impl fmt::Display for SkillSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Agent => write!(f, "agent"),
-            Self::Team => write!(f, "team"),
-            Self::Configured => write!(f, "configured"),
-        }
-    }
-}
-
-/// A directory to scan for skills, tagged with the layer it belongs to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillDir {
-    /// Directory holding one subfolder per skill.
-    pub path: PathBuf,
-    /// Layer skills found here are attributed to.
-    pub source: SkillSource,
-}
-
-impl SkillDir {
-    /// A directory in the given layer.
-    #[must_use]
-    pub fn new(path: impl Into<PathBuf>, source: SkillSource) -> Self {
-        Self {
-            path: path.into(),
-            source,
-        }
-    }
-
-    /// The agent's own skills directory.
-    #[must_use]
-    pub fn agent(path: impl Into<PathBuf>) -> Self {
-        Self::new(path, SkillSource::Agent)
-    }
-
-    /// The shared team skills directory.
-    #[must_use]
-    pub fn team(path: impl Into<PathBuf>) -> Self {
-        Self::new(path, SkillSource::Team)
-    }
-
-    /// A directory from `[skills].dirs`.
-    #[must_use]
-    pub fn configured(path: impl Into<PathBuf>) -> Self {
-        Self::new(path, SkillSource::Configured)
-    }
 }
 
 /// Lightweight index entry built from scanning a `SKILL.md` frontmatter.

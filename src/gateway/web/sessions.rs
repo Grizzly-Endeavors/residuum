@@ -1302,7 +1302,7 @@ mod tests {
         )
         .unwrap();
         let index =
-            crate::skills::SkillIndex::scan(&[crate::skills::SkillDir::agent(skills_root.path())])
+            crate::skills::SkillIndex::scan(&[crate::config::SkillDir::agent(skills_root.path())])
                 .await
                 .unwrap();
         let (state, fx) = state_with_skills(index);

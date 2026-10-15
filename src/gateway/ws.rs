@@ -11,10 +11,11 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
 use crate::bus::EndpointName;
+use crate::config::WEB_UI_ENDPOINT;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
-use crate::interfaces::types::{MessageOrigin, WEB_UI_ENDPOINT};
+use crate::interfaces::types::MessageOrigin;
 use crate::interfaces::websocket::subscriber::WsSubscribers;
 use crate::workbench::forward::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};

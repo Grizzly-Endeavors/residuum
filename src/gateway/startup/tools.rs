@@ -23,7 +23,7 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: &'a Arc<tokio::sync::Notify>,
     pub skill_state: &'a SharedSkillState,
-    pub tools_path: &'a crate::tools::SharedToolsPath,
+    pub tools_path: &'a crate::config::SharedToolsPath,
     /// Shared write policy — the same instance sessions fork with and
     /// config reloads update.
     pub path_policy: &'a crate::tools::SharedPathPolicy,
@@ -383,7 +383,7 @@ mod tests {
         action_store: Arc<tokio::sync::Mutex<ActionStore>>,
         action_notify: Arc<tokio::sync::Notify>,
         skill_state: SharedSkillState,
-        tools_path: crate::tools::SharedToolsPath,
+        tools_path: crate::config::SharedToolsPath,
         path_policy: crate::tools::SharedPathPolicy,
         agent_keys: crate::agent_keys::SharedAgentKeys,
         session_registry: Arc<SessionRegistry>,
@@ -423,7 +423,7 @@ mod tests {
         )));
         let action_notify = Arc::new(tokio::sync::Notify::new());
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let tools_path: crate::tools::SharedToolsPath = Arc::new(tokio::sync::RwLock::new(None));
+        let tools_path: crate::config::SharedToolsPath = Arc::new(tokio::sync::RwLock::new(None));
         let path_policy = PathPolicy::new_shared();
         let agent_keys = crate::agent_keys::AgentKeys::new_shared(dir);
         let session_registry = Arc::new(SessionRegistry::new());

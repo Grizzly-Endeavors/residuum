@@ -226,7 +226,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     let ep = EndpointName::from(
         options
             .delivered_to
-            .unwrap_or(crate::interfaces::types::WEB_UI_ENDPOINT),
+            .unwrap_or(crate::config::WEB_UI_ENDPOINT),
     );
     let mut main: Subscriber<MainConversationEvent> =
         bus.subscribe(topics::MainConversation).await.unwrap();

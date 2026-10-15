@@ -11,10 +11,10 @@
 //! loop.
 
 use crate::bus::EndpointName;
+use crate::config::WEB_UI_ENDPOINT;
 use crate::gateway::memory::MemorySubsystems;
 use crate::gateway::post_turn::IdleContinuation;
 use crate::gateway::types::AgentRuntime;
-use crate::interfaces::types::WEB_UI_ENDPOINT;
 
 /// Run the idle transition's synchronous steps and trigger its observe
 /// cycle in the background; [`apply_idle_continuation`] finishes the rest

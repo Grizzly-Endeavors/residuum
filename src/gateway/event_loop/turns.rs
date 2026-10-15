@@ -1243,7 +1243,7 @@ mod tests {
     }
 
     fn web() -> EndpointName {
-        EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT)
+        EndpointName::from(crate::config::WEB_UI_ENDPOINT)
     }
 
     /// The web UI and Telegram, both interactive, as a hub with Telegram
@@ -1256,7 +1256,7 @@ mod tests {
             display_name: id.to_string(),
         };
         crate::bus::EndpointRegistry::from_entries([
-            interactive(crate::interfaces::types::WEB_UI_ENDPOINT),
+            interactive(crate::config::WEB_UI_ENDPOINT),
             interactive("telegram"),
         ])
     }
@@ -1879,7 +1879,7 @@ mod tests {
     async fn a_turn_start_goes_to_a_chat_interface_but_not_to_the_web_ui() {
         let handle = crate::bus::spawn_broker();
         let publisher = handle.publisher();
-        let ws = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let ws = EndpointName::from(crate::config::WEB_UI_ENDPOINT);
         let mut chat: Subscriber<TurnLifecycleEvent> = handle
             .subscribe(topics::Endpoint(endpoint()))
             .await
@@ -1906,7 +1906,7 @@ mod tests {
     /// subscriber reads a turn's events.
     #[tokio::test]
     async fn a_turn_delivered_to_the_web_ui_publishes_nothing_to_its_endpoint_topic() {
-        let ws = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let ws = EndpointName::from(crate::config::WEB_UI_ENDPOINT);
         for outcome in [Ok(vec!["reply".to_string()]), Err(anyhow::anyhow!("boom"))] {
             let failed = outcome.is_err();
             let handle = crate::bus::spawn_broker();

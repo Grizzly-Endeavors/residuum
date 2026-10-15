@@ -4,12 +4,13 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::inference::retry::RetryConfig;
-use crate::skills::SkillDir;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
@@ -25,6 +26,7 @@ use super::constants::{
     DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
     DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBAGENT_DEPTH_CAP,
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    WEB_UI_ENDPOINT,
 };
 use super::provider::ProviderSpec;
 
@@ -384,6 +386,68 @@ pub struct WebhookEntry {
     pub content_fields: Option<Vec<String>>,
 }
 
+/// Which layer a skill was discovered in.
+///
+/// Layers are searched in the order agent, team, configured; the first skill
+/// with a given name wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSource {
+    /// From the agent's own `skills/` directory.
+    Agent,
+    /// From the shared `team/skills/` directory.
+    Team,
+    /// From an extra directory configured in `[skills].dirs`.
+    Configured,
+}
+
+impl fmt::Display for SkillSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Agent => write!(f, "agent"),
+            Self::Team => write!(f, "team"),
+            Self::Configured => write!(f, "configured"),
+        }
+    }
+}
+
+/// A directory to scan for skills, tagged with the layer it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillDir {
+    /// Directory holding one subfolder per skill.
+    pub path: PathBuf,
+    /// Layer skills found here are attributed to.
+    pub source: SkillSource,
+}
+
+impl SkillDir {
+    /// A directory in the given layer.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, source: SkillSource) -> Self {
+        Self {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// The agent's own skills directory.
+    #[must_use]
+    pub fn agent(path: impl Into<PathBuf>) -> Self {
+        Self::new(path, SkillSource::Agent)
+    }
+
+    /// The shared team skills directory.
+    #[must_use]
+    pub fn team(path: impl Into<PathBuf>) -> Self {
+        Self::new(path, SkillSource::Team)
+    }
+
+    /// A directory from `[skills].dirs`.
+    #[must_use]
+    pub fn configured(path: impl Into<PathBuf>) -> Self {
+        Self::new(path, SkillSource::Configured)
+    }
+}
+
 /// Validated skills subsystem configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillsConfig {
@@ -425,6 +489,25 @@ impl ToolsConfig {
         // join_paths only fails if a path contains the separator char; in that
         // case fall back to no override rather than a malformed PATH.
         std::env::join_paths(parts).ok()
+    }
+}
+
+/// Shared, reloadable effective `PATH` for spawned children.
+///
+/// Holds the tool-dir-prepended `PATH` (see [`ToolsConfig::effective_path`]),
+/// or `None` when no override applies. Read at spawn time by the `exec` tool and
+/// MCP stdio spawner so config reloads take effect without rebuilding registries.
+pub type SharedToolsPath = Arc<RwLock<Option<OsString>>>;
+
+/// Give `cmd` the configured tools `PATH`, read live so a config reload
+/// applies to the next spawn. Leaves the inherited `PATH` alone when no
+/// override is configured.
+pub(crate) async fn apply_tools_path(
+    cmd: &mut tokio::process::Command,
+    tools_path: &SharedToolsPath,
+) {
+    if let Some(path) = tools_path.read().await.as_ref() {
+        cmd.env("PATH", path);
     }
 }
 
@@ -540,7 +623,7 @@ impl Default for IdleConfig {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_MINUTES * 60),
-            idle_channel: crate::interfaces::types::WEB_UI_ENDPOINT.to_string(),
+            idle_channel: WEB_UI_ENDPOINT.to_string(),
         }
     }
 }

@@ -7,8 +7,8 @@ use crate::bus::{
     EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, EventTrigger,
     NotificationEvent, NotifyName, Publisher, ResponseEvent, topics,
 };
+use crate::config::WEB_UI_ENDPOINT;
 use crate::inference::ToolDefinition;
-use crate::interfaces::types::WEB_UI_ENDPOINT;
 
 use super::{Tool, ToolError, ToolResult};
 

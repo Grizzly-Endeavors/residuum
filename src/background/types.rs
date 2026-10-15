@@ -159,7 +159,7 @@ pub struct SubAgentBuildConfig {
     /// gate `ollama_web_search` the same way the main agent's does.
     pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
     /// Main's live tool `PATH` (see [`crate::tools::SubagentToolDeps::tools_path`]).
-    pub tools_path: crate::tools::SharedToolsPath,
+    pub tools_path: crate::config::SharedToolsPath,
     /// Main's write policy (see [`crate::tools::SubagentToolDeps::path_policy`]).
     pub path_policy: crate::tools::SharedPathPolicy,
     /// The shared agent key store.

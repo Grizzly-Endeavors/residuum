@@ -134,7 +134,7 @@ pub(crate) struct SpawnContext {
     pub(crate) web_search_backend: Option<crate::config::StandaloneBackendConfig>,
     /// Main's live tool `PATH`, shared so a session's `exec` resolves the
     /// same binaries and sees config reloads.
-    pub(crate) tools_path: crate::tools::SharedToolsPath,
+    pub(crate) tools_path: crate::config::SharedToolsPath,
     /// Main's write policy, shared so a session is blocked from the same
     /// config and credential files and sees config reloads.
     pub(crate) path_policy: crate::tools::SharedPathPolicy,

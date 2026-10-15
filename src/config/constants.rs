@@ -1,4 +1,13 @@
-//! Compile-time default values for configuration fields.
+//! Compile-time constants: default values for configuration fields, and fixed
+//! names the configuration refers to.
+
+/// The web UI's endpoint name: always the owner's own channel, with no
+/// conversation concept to post elsewhere within.
+///
+/// The web UI follows the main agent's turns through the main conversation
+/// topic. What is published to its endpoint topic is only what the agent
+/// posts to the web with `send_message`, files included.
+pub const WEB_UI_ENDPOINT: &str = "ws";
 
 /// Default base URL for the Anthropic API.
 pub(super) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";

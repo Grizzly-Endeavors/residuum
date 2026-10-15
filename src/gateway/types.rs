@@ -297,7 +297,7 @@ pub(crate) struct AgentRuntime {
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,
     /// Shared, reloadable effective `PATH` for spawned children (exec + MCP stdio).
-    pub tools_path: crate::tools::SharedToolsPath,
+    pub tools_path: crate::config::SharedToolsPath,
     /// The hub's shared agent key store (exec, MCP, trace redaction, sessions).
     pub agent_keys: crate::agent_keys::SharedAgentKeys,
     pub skill_state: SharedSkillState,

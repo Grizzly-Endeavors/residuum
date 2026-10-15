@@ -11,8 +11,9 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::agent_keys::SharedAgentKeys;
+use crate::config::SharedToolsPath;
 use crate::inference::ToolDefinition;
-use crate::tools::{SharedToolsPath, ToolError, ToolResult};
+use crate::tools::{ToolError, ToolResult};
 
 use super::client::{McpClient, McpClientHandle};
 use super::types::McpServerEntry;

@@ -2015,7 +2015,7 @@ mod tests {
     async fn publish_intermediate_for_the_web_ui_reaches_only_the_main_conversation() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let ep = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let ep = EndpointName::from(crate::config::WEB_UI_ENDPOINT);
         let mut endpoint_sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
             .subscribe(topics::Endpoint(ep.clone()))
             .await

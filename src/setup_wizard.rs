@@ -4,10 +4,10 @@ use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
-use super::agent_name::{
-    allocate_slug, canonicalize_display_name, set_display_name_toml, slug_base,
+use crate::config::{
+    HubConfig, ProviderKind, allocate_slug, canonicalize_display_name, set_display_name_toml,
+    slug_base,
 };
-use super::provider::ProviderKind;
 use crate::util::FatalError;
 
 /// Default name for the first agent when the user accepts the default.
@@ -249,8 +249,8 @@ pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> 
 /// Returns `FatalError::Config`/`FatalError::Workspace` if bootstrapping the
 /// hub or agent directories, or writing any file, fails.
 pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Result<(), FatalError> {
-    let hub_dir = super::paths::hub_dir(residuum_root);
-    super::HubConfig::bootstrap_at(&hub_dir)?;
+    let hub_dir = crate::config::paths::hub_dir(residuum_root);
+    HubConfig::bootstrap_at(&hub_dir)?;
 
     // hub/config.toml — timezone only
     let hub_config_path = hub_dir.join("config.toml");
@@ -291,7 +291,7 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
     .map_err(|e| FatalError::Workspace(e.to_string()))?;
 
     let agent_config_dir = layout.config_dir();
-    super::Config::bootstrap_agent_config_dir(&agent_config_dir)?;
+    crate::config::Config::bootstrap_agent_config_dir(&agent_config_dir)?;
 
     // The wizard sets only web search in the agent's config.toml; every other
     // section takes its default.
