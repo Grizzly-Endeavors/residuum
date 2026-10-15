@@ -14,11 +14,11 @@ use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
+use crate::config::WorkspaceLayout;
 use crate::inference::{CompletionOptions, InferenceProvider, ResponseFormat};
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
-use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_reflection_response;
 use prompt::{REFLECTION_CONTENT_PROMPT, build_reflection_prompt, reflector_response_schema};
 

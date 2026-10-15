@@ -10,13 +10,13 @@
 use chrono_tz::Tz;
 
 use crate::bus::{HEARTBEAT_OK, ends_with_sentinel};
+use crate::config::WorkspaceLayout;
 use crate::inference::Message;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::{ExtractedObservation, Extraction, ObserveAction, Observer};
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::{SourceTag, Visibility};
-use crate::workspace::layout::WorkspaceLayout;
 
 /// The subsystems a run's memory pipeline writes through, grouped because
 /// both a live run's completion and startup recovery of an interrupted run

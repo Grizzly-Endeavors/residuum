@@ -136,7 +136,7 @@ pub fn process_leftover_interrupts(
 pub(super) async fn inject_undelivered_messages(
     agent: &mut Agent,
     messenger: &crate::background::messaging::AgentMessenger,
-    layout: &crate::workspace::layout::WorkspaceLayout,
+    layout: &crate::config::WorkspaceLayout,
     tz: chrono_tz::Tz,
     messages: impl IntoIterator<Item = MessageEvent>,
 ) {
@@ -2784,7 +2784,7 @@ mod tests {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         messenger.restore_main_hop("leftover-1", 4);
 
         inject_undelivered_messages(
@@ -2805,7 +2805,7 @@ mod tests {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
             .await
             .unwrap();
@@ -2847,7 +2847,7 @@ mod tests {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
             .await
             .unwrap();

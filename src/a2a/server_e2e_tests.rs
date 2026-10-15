@@ -42,7 +42,7 @@ use crate::background::types::SubAgentConfig;
 use crate::bus::{
     BusHandle, EndpointRegistry, Publisher, SessionAddress, SpawnRequestEvent, topics,
 };
-use crate::config::{A2aConfig, A2aVisibility, Config, ModelSelector};
+use crate::config::{A2aConfig, A2aVisibility, Config, ModelSelector, WorkspaceLayout};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ToolCall,
     ToolDefinition,
@@ -51,7 +51,6 @@ use crate::mcp::McpRegistry;
 use crate::skills::{SkillIndex, SkillState};
 use crate::tools::{SubagentToolDeps, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// The name of the one agent the harness serves.
 const AGENT_NAME: &str = "solo";

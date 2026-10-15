@@ -154,7 +154,7 @@ impl HubApiState {
     /// team write coordinator.
     pub(super) async fn bootstrap_workspace(
         &self,
-        layout: &crate::workspace::layout::WorkspaceLayout,
+        layout: &crate::config::WorkspaceLayout,
         user_name: Option<&str>,
         timezone: &str,
         label: Option<&str>,

@@ -2213,7 +2213,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_and_coordinator_locate_team_through_the_layout() {
-        use crate::workspace::layout::WorkspaceLayout;
+        use crate::config::WorkspaceLayout;
         use crate::workspace::team_files::TeamWriteCoordinator;
 
         let dir = tempfile::tempdir().unwrap();

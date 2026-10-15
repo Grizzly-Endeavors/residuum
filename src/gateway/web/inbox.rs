@@ -7,10 +7,10 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::config::WorkspaceLayout;
 use crate::gateway::browser_landing::{self, AppNotice, Fallback};
 use crate::gateway::types::GatewayState;
 use crate::inbox::{InboxAttachment, InboxItem};
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::AgentFilesState;
 
@@ -422,7 +422,7 @@ mod tests {
                     workspace_dir.join("scheduled_actions.json"),
                 ),
             )),
-            layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            layout: crate::config::WorkspaceLayout::new(workspace_dir),
             activity: crate::hub::activity::ActivityTracker::new(
                 "test-agent",
                 tokio::sync::broadcast::channel(4).0,

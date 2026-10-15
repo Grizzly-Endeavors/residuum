@@ -23,10 +23,9 @@ use crate::a2a::{
     A2aClientHub, A2aKeyError, A2aKeyInfo, A2aKeys, AUTH_CHECK_PATH, AgentCardFile, AgentSnapshot,
     AgentSource, AgentStatus, CardError, CardRuntime, RemoteTaskTracker, build_agent_card,
 };
-use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT};
+use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT, WorkspaceLayout};
 use crate::gateway::protocol::OutboundA2aTaskSummary;
 use crate::tunnel::TunnelStatus;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::config::ValidateResponse;
 use super::{AgentFilesState, ConfigApiState, HubApiState};
@@ -305,8 +304,7 @@ const DEFAULT_A2A_AGENTS_JSON: &str = r#"{"agents":{}}"#;
 pub(super) async fn api_a2a_agents_raw_get(
     State(state): State<AgentFilesState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let path =
-        crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
+    let path = crate::config::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
     let contents = match tokio::fs::read_to_string(&path).await {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_A2A_AGENTS_JSON.to_string(),
@@ -343,8 +341,7 @@ pub(super) async fn api_a2a_agents_raw_put(
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
     let diagnostics = crate::a2a::client::config::diagnose_a2a_json(&body);
 
-    let path =
-        crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
+    let path = crate::config::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }

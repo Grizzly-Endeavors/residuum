@@ -600,7 +600,7 @@ struct ChangeFeeds {
 /// reads it and publishes its reloads on the agent's own bus.
 async fn spawn_change_feed_tasks(
     core: &GatewayCore,
-    layout: &crate::workspace::layout::WorkspaceLayout,
+    layout: &crate::config::WorkspaceLayout,
     team_feed: &crate::hub::services::TeamChangeFeed,
 ) -> ChangeFeeds {
     let (health_tx, health) =

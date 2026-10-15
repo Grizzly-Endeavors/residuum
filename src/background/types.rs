@@ -9,12 +9,12 @@ use crate::agent::HopCounter;
 use crate::bus::MessageEvent;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ModelSelector;
+use crate::config::WorkspaceLayout;
 use crate::inference::{ImageData, MessageSender};
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::messaging::AgentMessenger;
 use super::registry::SessionCategory;

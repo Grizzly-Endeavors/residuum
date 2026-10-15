@@ -11,6 +11,7 @@ mod constants;
 pub(crate) mod deserialize;
 mod hub_load;
 mod hub_types;
+mod layout;
 mod load;
 mod model_catalog;
 pub(crate) mod patch;
@@ -37,6 +38,7 @@ pub(crate) use constants::{
 pub use hub_types::{
     HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, SystemOneConfig, SystemOneProvider,
 };
+pub use layout::WorkspaceLayout;
 pub use model_catalog::{ModelCatalog, SharedModelCatalog};
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
 pub use provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};

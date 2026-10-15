@@ -406,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn loaded_team_identity_assembles_in_order() {
-        use crate::workspace::layout::WorkspaceLayout;
+        use crate::config::WorkspaceLayout;
 
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("scout"));

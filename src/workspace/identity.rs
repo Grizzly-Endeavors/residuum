@@ -2,7 +2,7 @@
 
 use crate::util::FatalError;
 
-use super::layout::WorkspaceLayout;
+use crate::config::WorkspaceLayout;
 
 /// Loaded identity files: the agent's own `SOUL.md` and `BOOTSTRAP.md`, plus
 /// the team layer's `AGENTS.md`, `USER.md` and wiki index.

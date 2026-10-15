@@ -439,7 +439,7 @@ async fn is_identity_target(state: &ConfigApiState, relative: &str, resolved: &P
     if is_identity_file(relative) {
         return true;
     }
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir);
+    let layout = crate::config::WorkspaceLayout::new(&state.workspace_dir);
     let team = layout.team();
     let Some(team_root) = tokio::fs::canonicalize(team.root()).await.ok() else {
         return [team.agents_md(), team.user_md()]

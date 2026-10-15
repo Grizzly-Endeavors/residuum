@@ -935,7 +935,7 @@ mod tests {
                     workspace_dir.join("scheduled_actions.json"),
                 ),
             )),
-            layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            layout: crate::config::WorkspaceLayout::new(workspace_dir),
             activity: crate::hub::activity::ActivityTracker::new(
                 "test-agent",
                 tokio::sync::broadcast::channel(4).0,

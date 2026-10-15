@@ -147,7 +147,7 @@ impl DiscordInterface {
             | GatewayIntents::GUILDS
             | GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
-        let layout = crate::workspace::layout::WorkspaceLayout::new(&self.workspace_dir);
+        let layout = crate::config::WorkspaceLayout::new(&self.workspace_dir);
 
         let (chat_store, chat_state_notice) =
             ChatStateStore::load(layout.discord_state_json()).await?;

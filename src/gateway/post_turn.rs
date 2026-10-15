@@ -690,12 +690,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::bus::{NotifyName, SYSTEM_CHANNEL, Subscriber};
+    use crate::config::WorkspaceLayout;
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
     use crate::testing::gate::Gate;
     use crate::testing::model::GatedProvider;
     use crate::testing::wait;
-    use crate::workspace::layout::WorkspaceLayout;
 
     const OBSERVER_RESPONSE: &str = r#"{
         "observations": [

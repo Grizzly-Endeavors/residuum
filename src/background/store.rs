@@ -934,7 +934,7 @@ mod tests {
     /// Build a `SessionMemoryEnv` whose observer/reflector never fire, so
     /// startup recovery tests exercise the skip path deterministically.
     fn test_env() -> (
-        crate::workspace::layout::WorkspaceLayout,
+        crate::config::WorkspaceLayout,
         std::sync::Arc<crate::memory::observer::Observer>,
         std::sync::Arc<crate::memory::merge_writer::MemoryMergeWriter>,
     ) {
@@ -1329,7 +1329,7 @@ mod tests {
             .await;
         let path = store.run_path(&info.run_id, info.started_at);
 
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         let search_index = std::sync::Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );
@@ -1391,7 +1391,7 @@ mod tests {
             .await;
         let path = store.run_path(&info.run_id, info.started_at);
 
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         let search_index = std::sync::Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );
@@ -1455,7 +1455,7 @@ mod tests {
             )
             .await;
 
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         let search_index = std::sync::Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );

@@ -124,7 +124,7 @@ pub struct TeamsInterface {
     cfg: TeamsConfig,
     senders: AdapterSenders,
     bind: String,
-    layout: crate::workspace::layout::WorkspaceLayout,
+    layout: crate::config::WorkspaceLayout,
     tz: chrono_tz::Tz,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -144,7 +144,7 @@ impl TeamsInterface {
             cfg,
             senders,
             bind,
-            layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            layout: crate::config::WorkspaceLayout::new(workspace_dir),
             tz,
             shutdown_rx,
         }

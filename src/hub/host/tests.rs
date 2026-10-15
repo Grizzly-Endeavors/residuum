@@ -596,7 +596,7 @@ async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     std::fs::write(&report, "the report").unwrap();
     let id = crate::gateway::file_server::FileRegistry::for_agent(
         "scout",
-        &crate::workspace::layout::WorkspaceLayout::new(hub.root.path().join("scout")),
+        &crate::config::WorkspaceLayout::new(hub.root.path().join("scout")),
     )
     .register(report, "text/plain".to_string(), "report.txt".to_string())
     .await;

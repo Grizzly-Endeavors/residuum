@@ -20,7 +20,7 @@ pub(super) fn resolve_skills_config(
     section: Option<&SkillsConfigFile>,
     workspace_dir: &Path,
 ) -> SkillsConfig {
-    let layout = crate::workspace::layout::WorkspaceLayout::new(workspace_dir);
+    let layout = crate::config::WorkspaceLayout::new(workspace_dir);
     let mut dirs = vec![
         SkillDir::agent(layout.skills_dir()),
         SkillDir::team(layout.team().skills_dir()),

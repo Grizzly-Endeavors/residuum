@@ -25,6 +25,7 @@ use super::{HubHttpState, agent_repair_router, hub_router};
 use crate::background::registry::SessionInfo;
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
+use crate::config::WorkspaceLayout;
 use crate::config::paths::TeamPaths;
 use crate::gateway::ReloadSignal;
 use crate::gateway::web::{
@@ -41,7 +42,6 @@ use crate::hub::{
 };
 use crate::testing::wait;
 use crate::tunnel::TunnelStatus;
-use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
 

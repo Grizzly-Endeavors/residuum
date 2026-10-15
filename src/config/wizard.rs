@@ -279,7 +279,7 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
     })
     .map_err(FatalError::Config)?;
     let agent_dir = residuum_root.join(&slug);
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
+    let layout = crate::config::WorkspaceLayout::new(&agent_dir);
     crate::workspace::bootstrap::ensure_workspace_labeled(
         &layout,
         &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
