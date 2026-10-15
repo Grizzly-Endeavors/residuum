@@ -24,6 +24,7 @@ publish = false
 residuum-core = { path = "crates/core", version = "0.1.0" }
 residuum-config = { path = "crates/config", version = "0.1.0" }
 residuum-skills = { path = "crates/skills", version = "0.1.0" }
+residuum-tracing-service = { path = "crates/tracing-service", version = "0.1.0" }
 residuum-inference = { path = "crates/inference", version = "0.1.0" }
 
 # Async runtime
@@ -158,6 +159,7 @@ residuum-core = { workspace = true }
 residuum-config = { workspace = true }
 residuum-inference = { workspace = true }
 residuum-skills = { workspace = true }
+residuum-tracing-service = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -196,11 +198,6 @@ notify = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true }
-opentelemetry-otlp = { workspace = true }
-opentelemetry-proto = { workspace = true }
-prost = { workspace = true }
 clap = { workspace = true }
 owo-colors = { workspace = true }
 rpassword = { workspace = true }

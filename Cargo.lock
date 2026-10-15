@@ -5008,12 +5008,7 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "objc2-user-notifications",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-proto",
- "opentelemetry_sdk",
  "owo-colors",
- "prost",
  "pulldown-cmark",
  "qrcode",
  "rand 0.8.6",
@@ -5024,6 +5019,7 @@ dependencies = [
  "residuum-core",
  "residuum-inference",
  "residuum-skills",
+ "residuum-tracing-service",
  "ring",
  "rmcp",
  "rpassword",
@@ -5143,6 +5139,29 @@ dependencies = [
  "serde_yaml_ng",
  "tempfile",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "residuum-tracing-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "ctor",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "reqwest 0.13.3",
+ "residuum-config",
+ "residuum-core",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 

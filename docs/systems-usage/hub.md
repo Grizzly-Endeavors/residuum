@@ -180,6 +180,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_config`: `config` and `agent_keys`, so `RUST_LOG=residuum_config=trace` for config loading and `RUST_LOG=residuum_config::agent_keys=trace` for the agent-key store.
 - `residuum_inference`: `inference`, so `RUST_LOG=residuum_inference=trace`, or `RUST_LOG=residuum_inference::providers::anthropic=trace` for one provider.
 - `residuum_skills`: `skills`, so `RUST_LOG=residuum_skills=trace`.
+- `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
 - `residuum`: every other module, so `RUST_LOG=residuum::memory=trace`.
 
 The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.
