@@ -15,7 +15,7 @@
   const concurrent = $derived(numberOfText(scope.config.bg_max_concurrent));
   const soft = $derived(numberOfText(scope.config.bg_hop_soft_limit));
   const hard = $derived(numberOfText(scope.config.bg_hop_hard_limit));
-  // What each limit is while its box is empty (`src/config/hub_types.rs`).
+  // What each limit is while its box is empty (`crates/config/src/hub_types.rs`).
   const DEFAULTS = { concurrent: 3, soft: 8, hard: 32 };
   // Flags for values that make the setting do nothing or block work; neither stops a save.
   const noTurns = $derived((concurrent ?? DEFAULTS.concurrent) < 1);

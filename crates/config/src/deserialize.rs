@@ -17,7 +17,7 @@ use serde::Deserialize;
 /// shared background session budget and hop limits.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct HubConfigFile {
+pub struct HubConfigFile {
     /// IANA timezone name (e.g. `"America/New_York"`), shared by every agent.
     pub(super) timezone: Option<String>,
     /// Gateway configuration.
@@ -93,7 +93,7 @@ pub(super) struct HubBackgroundConfigFile {
 /// deserialized directly. Everything that isn't hub-level.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AgentConfigFile {
+pub struct AgentConfigFile {
     /// Request timeout in seconds.
     pub(super) timeout_secs: Option<u64>,
     /// Maximum tokens for model responses.
@@ -209,7 +209,7 @@ pub(super) struct AgentAbilitiesConfigFile {
 /// Raw TOML providers file structure (`providers.toml`, always agent-scoped).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProvidersFile {
+pub struct ProvidersFile {
     /// Named provider definitions.
     pub(super) providers: Option<HashMap<String, ProviderEntryFile>>,
     /// Role → model string assignments.

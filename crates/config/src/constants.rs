@@ -40,7 +40,7 @@ pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 pub(super) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
 
 /// Default gateway port.
-pub(crate) const DEFAULT_GATEWAY_PORT: u16 = 7700;
+pub const DEFAULT_GATEWAY_PORT: u16 = 7700;
 
 /// Default upstream endpoint for bug-report and feedback submissions.
 /// Points at the relay; the relay attaches the upstream auth header.
@@ -53,22 +53,22 @@ pub(super) const DEFAULT_MAX_TOKENS: u32 = 16_384;
 pub(crate) const DEFAULT_PULSE_ENABLED: bool = true;
 
 /// Default observer token threshold before firing.
-pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
+pub const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
 
 /// Default reflector token threshold before compressing.
-pub(crate) const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
+pub const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
 
 /// Default observer cooldown period in seconds before observation fires.
-pub(crate) const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
+pub const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
 
 /// Default force-observe token threshold (bypasses cooldown).
-pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
+pub const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
 
 /// Default subconscious mid-turn evaluation cadence (every N tool iterations).
-pub(crate) const DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS: usize = 3;
+pub const DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS: usize = 3;
 
 /// Default token cap for the transcript sent to the subconscious classifier.
-pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS: usize = 12_000;
+pub const DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS: usize = 12_000;
 
 /// Default cooldown in minutes between learner sub-agent spawns.
 pub(crate) const DEFAULT_LEARNING_COOLDOWN_MINUTES: u64 = 240;
@@ -147,13 +147,13 @@ pub(super) const DEFAULT_DISCORD_CONTEXT_MESSAGES: usize = 20;
 pub(super) const DEFAULT_TELEGRAM_CONTEXT_MESSAGES: usize = 20;
 
 /// Default port for the dedicated Teams messaging listener.
-pub(crate) const DEFAULT_TEAMS_PORT: u16 = 7701;
+pub const DEFAULT_TEAMS_PORT: u16 = 7701;
 
 /// Default port for the dedicated A2A protocol listener.
-pub(crate) const DEFAULT_A2A_PORT: u16 = 7702;
+pub const DEFAULT_A2A_PORT: u16 = 7702;
 
 /// Default relay WebSocket URL.
-pub(crate) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/v2/register";
+pub const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/v2/register";
 
 /// Default consecutive identical tool-call count at which the repeat-call
 /// guard appends a steering note to the tool's result.

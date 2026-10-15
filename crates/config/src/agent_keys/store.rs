@@ -4,7 +4,7 @@
 //! both in the residuum config directory and both separate from the system
 //! secret store (`secrets.toml.enc`) so agent-facing code can never reach a
 //! provider key. Encryption is the same AES-256-GCM-SIV scheme as
-//! [`crate::config::SecretStore`].
+//! [`crate::SecretStore`].
 //!
 //! The plaintext format before encryption:
 //! ```toml
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::AgentKeyError;
-use crate::config::secrets::{decrypt, encrypt, load_key, load_or_create_key};
+use crate::secrets::{decrypt, encrypt, load_key, load_or_create_key};
 
 /// Encrypted store file name within the config directory.
 pub(crate) const ENCRYPTED_FILE: &str = "agent-keys.toml.enc";

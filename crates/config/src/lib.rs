@@ -4,39 +4,46 @@
 //! are validated into `Config` (runtime-safe values). Providers are defined in
 //! `[providers]`, models are assigned to roles in `[models]`, and everything
 //! resolves at load time into fully-built `ProviderSpec` values.
+//!
+//! The crate also holds [`agent_keys`], whose store encrypts with the secret
+//! store's key handling.
+//!
+//! The `test-support` feature adds `WorkspaceLayout::with_tempdir_guard` and
+//! `test_helpers`, the parsers other crates' tests build a `Config` with.
 
+pub mod agent_keys;
 mod agent_name;
 mod bootstrap;
 mod constants;
-pub(crate) mod deserialize;
+mod deserialize;
 mod hub_load;
 mod hub_types;
 mod layout;
 mod load;
 mod model_catalog;
-pub(crate) mod patch;
+pub mod patch;
 pub mod paths;
 mod provider;
-pub(crate) mod resolve;
+mod resolve;
 mod retry;
-pub(crate) mod secrets;
+pub mod secrets;
 mod thinking;
 mod tolerant;
 mod types;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
-pub(crate) use agent_name::display_name_in_toml;
 pub use agent_name::{
-    allocate_slug, canonicalize_display_name, display_name_key, set_display_name_toml, slug_base,
+    allocate_slug, canonicalize_display_name, display_name_in_toml, display_name_key,
+    set_display_name_toml, slug_base,
 };
-pub use constants::WEB_UI_ENDPOINT;
-pub(crate) use constants::{
+pub use constants::{
     DEFAULT_A2A_PORT, DEFAULT_CLOUD_RELAY_URL, DEFAULT_GATEWAY_PORT,
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
     DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
-    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS, DEFAULT_TEAMS_PORT,
+    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS, DEFAULT_TEAMS_PORT, WEB_UI_ENDPOINT,
 };
+pub use deserialize::{AgentConfigFile, HubConfigFile, ProvidersFile};
 pub use hub_types::{
     HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, SystemOneConfig, SystemOneProvider,
 };
@@ -44,10 +51,12 @@ pub use layout::WorkspaceLayout;
 pub use model_catalog::{ModelCatalog, SharedModelCatalog};
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
 pub use provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
+#[cfg(any(test, feature = "test-support"))]
+pub use resolve::test_helpers;
+pub use resolve::{from_file_and_env, removed_agent_env_override_notices, resolve_hub_config};
 pub use retry::RetryConfig;
 pub use secrets::SecretStore;
 pub use thinking::{ThinkingConfig, ThinkingLevel};
-pub(crate) use types::apply_tools_path;
 pub use types::{
     A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,
     BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
@@ -55,5 +64,5 @@ pub use types::{
     ProviderNativeSearchConfig, RemoteAccessSettings, RepeatCallGuardConfig, RoleOverrides,
     SearchConfig, SharedToolsPath, SkillDir, SkillSource, SkillsConfig, StandaloneBackendConfig,
     SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
-    WebhookEntry, WebhookFormat, WebhookRouting,
+    WebhookEntry, WebhookFormat, WebhookRouting, apply_tools_path,
 };

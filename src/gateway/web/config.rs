@@ -831,20 +831,19 @@ pub(super) async fn api_complete_setup(
 
     // Parse and resolve the hub config on its own first — the agent config
     // resolves against it (timezone, gateway, ...).
-    let hub_file = toml::from_str::<crate::config::deserialize::HubConfigFile>(&body.hub_config)
+    let hub_file = toml::from_str::<crate::config::HubConfigFile>(&body.hub_config)
         .map_err(|e| err(format!("hub config.toml parse error: {e}")))?;
-    let hub = crate::config::resolve::resolve_hub_config(Some(&hub_file), &state.hub_dir)
+    let hub = crate::config::resolve_hub_config(Some(&hub_file), &state.hub_dir)
         .map_err(|e| err(format!("{e}")))?;
 
     let config = crate::config::set_display_name_toml(&body.config, &display_name).map_err(err)?;
-    let config_file = toml::from_str::<crate::config::deserialize::AgentConfigFile>(&config)
+    let config_file = toml::from_str::<crate::config::AgentConfigFile>(&config)
         .map_err(|e| err(format!("config.toml parse error: {e}")))?;
-    let providers_file =
-        toml::from_str::<crate::config::deserialize::ProvidersFile>(&body.providers)
-            .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
+    let providers_file = toml::from_str::<crate::config::ProvidersFile>(&body.providers)
+        .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
 
     // Validate the agent config together with the hub config and providers.
-    crate::config::resolve::from_file_and_env(
+    crate::config::from_file_and_env(
         Some(&config_file),
         Some(&providers_file),
         &agent_dir,

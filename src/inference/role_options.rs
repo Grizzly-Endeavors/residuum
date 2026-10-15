@@ -19,28 +19,29 @@ pub fn completion_options_for_role(cfg: &Config, role: &str) -> CompletionOption
 
 #[cfg(test)]
 mod tests {
-    use crate::config::resolve::from_file_and_env;
-    use crate::config::resolve::test_helpers::{
-        parse_config, parse_providers, test_agent_dir, test_hub_config,
+    use crate::config::test_helpers::{test_agent_dir, test_hub_config};
+    use crate::config::{
+        AgentConfigFile, ProvidersFile, ThinkingConfig, ThinkingLevel, from_file_and_env,
     };
-    use crate::config::{ThinkingConfig, ThinkingLevel};
 
     use super::completion_options_for_role;
 
     #[test]
     fn completion_options_for_role_with_override() {
-        let prov_file = parse_providers(
+        let prov_file: ProvidersFile = toml::from_str(
             r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2 }
 "#,
-        );
-        let cfg_file = parse_config(
+        )
+        .unwrap();
+        let cfg_file: AgentConfigFile = toml::from_str(
             "
 temperature = 0.8
 ",
-        );
+        )
+        .unwrap();
         let cfg = from_file_and_env(
             Some(&cfg_file),
             Some(&prov_file),
@@ -67,18 +68,20 @@ temperature = 0.8
 
     #[test]
     fn completion_options_for_role_fallback_to_global() {
-        let prov_file = parse_providers(
+        let prov_file: ProvidersFile = toml::from_str(
             r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 "#,
-        );
-        let cfg_file = parse_config(
+        )
+        .unwrap();
+        let cfg_file: AgentConfigFile = toml::from_str(
             r#"
 temperature = 0.5
 thinking = "medium"
 "#,
-        );
+        )
+        .unwrap();
         let cfg = from_file_and_env(
             Some(&cfg_file),
             Some(&prov_file),

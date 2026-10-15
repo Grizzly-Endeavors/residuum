@@ -72,7 +72,7 @@ describe("slugBase", () => {
   });
 
   it("gives a name with no ASCII letters a stable slug", () => {
-    // Locked to the same value as `src/config/agent_name.rs`.
+    // Locked to the same value as `crates/config/src/agent_name.rs`.
     expect(slugBase("研究")).toBe("n310509ec");
   });
 

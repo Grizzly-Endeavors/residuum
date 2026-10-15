@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::RetryConfig;
-use crate::util::FatalError;
+use crate::RetryConfig;
+use residuum_core::util::FatalError;
 
 use super::super::deserialize::{
     AgentAbilitiesConfigFile, AgentConfigFile, AutoModeConfigFile, SkillsConfigFile,
@@ -21,7 +21,7 @@ pub(super) fn resolve_skills_config(
     section: Option<&SkillsConfigFile>,
     workspace_dir: &Path,
 ) -> SkillsConfig {
-    let layout = crate::config::WorkspaceLayout::new(workspace_dir);
+    let layout = crate::WorkspaceLayout::new(workspace_dir);
     let mut dirs = vec![
         SkillDir::agent(layout.skills_dir()),
         SkillDir::team(layout.team().skills_dir()),
@@ -204,10 +204,7 @@ mod tests {
     #[test]
     fn out_of_range_threshold_falls_back_with_a_notice() {
         let (cfg, notices) = auto_mode("enabled = true\ndeny = [\"x\"]\nthreshold = 1.5\n");
-        assert!(
-            (cfg.threshold - crate::config::types::DEFAULT_AUTO_MODE_THRESHOLD).abs()
-                < f64::EPSILON
-        );
+        assert!((cfg.threshold - crate::types::DEFAULT_AUTO_MODE_THRESHOLD).abs() < f64::EPSILON);
         assert!(
             notices.iter().any(|n| n.contains("threshold")),
             "{notices:?}"

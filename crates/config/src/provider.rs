@@ -39,7 +39,7 @@ pub struct ProviderSpec {
 pub enum ImageInput {
     /// Nothing declared. Images are sent; a provider that turns a request
     /// down for carrying them marks the model text-only for the rest of the
-    /// run (see `crate::inference::image_input`).
+    /// run (see inference's `image_input`).
     #[default]
     Undeclared,
     /// The `input` list includes `"image"`.
@@ -118,7 +118,7 @@ pub enum ProviderKind {
 impl ProviderKind {
     /// Default base URL for this provider.
     #[must_use]
-    pub(crate) fn default_url(self) -> &'static str {
+    pub fn default_url(self) -> &'static str {
         match self {
             Self::Anthropic => DEFAULT_ANTHROPIC_URL,
             Self::Fireworks => DEFAULT_FIREWORKS_URL,

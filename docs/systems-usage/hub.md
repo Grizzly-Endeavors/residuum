@@ -177,6 +177,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 `RUST_LOG` is a developer override; `log_level` in `hub/config.toml` is unaffected by it. Its directives match targets by prefix, so a directive names the crate a module lives in. Each module lives in one of these crates:
 
 - `residuum_core`: `util`, `time` and `diagnostics`, so `RUST_LOG=residuum_core::util::fs=trace`.
+- `residuum_config`: `config` and `agent_keys`, so `RUST_LOG=residuum_config=trace` for config loading and `RUST_LOG=residuum_config::agent_keys=trace` for the agent-key store.
 - `residuum`: every other module, so `RUST_LOG=residuum::memory=trace`.
 
 The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.

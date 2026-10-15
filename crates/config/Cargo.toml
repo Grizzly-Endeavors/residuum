@@ -1,0 +1,36 @@
+[package]
+name = "residuum-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+test-support = ["dep:tempfile"]
+
+[dependencies]
+residuum-core = { workspace = true }
+aes-gcm-siv = { workspace = true }
+base64 = { workspace = true }
+chrono-tz = { workspace = true }
+dirs = { workspace = true }
+iana-time-zone = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shellexpand = { workspace = true }
+tempfile = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+tracing = { workspace = true }
+unicode-normalization = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }

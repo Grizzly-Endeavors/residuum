@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 /// Directory name reserved for hub-level state; never a valid agent name.
 pub const HUB_DIR_NAME: &str = "hub";
