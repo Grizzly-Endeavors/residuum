@@ -442,7 +442,7 @@ mod tests {
         ) -> Result<InferenceResponse, InferenceError> {
             let remaining =
                 self.remaining_failures
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                         (n > 0).then(|| n - 1)
                     });
             if remaining.is_ok() {
@@ -1330,7 +1330,7 @@ mod tests {
                 .unwrap();
             assert_eq!(response.content, "answer from vision-b");
             assert_eq!(sent_images(&last_requests), vec![1]);
-            assert!(sent_images(&primary_requests).is_empty());
+            assert_eq!(sent_images(&primary_requests), [] as [usize; 0]);
             assert_no_notice(&bus_handle, &mut notices).await;
 
             let text = chain
@@ -1379,7 +1379,7 @@ mod tests {
             assert_eq!(response.content, "answer from glm-5.3");
             assert_eq!(response.images_omitted.map(|o| o.count), Some(1));
             assert_eq!(sent_images(&primary_requests), vec![0]);
-            assert!(sent_images(&fallback_requests).is_empty());
+            assert_eq!(sent_images(&fallback_requests), [] as [usize; 0]);
         }
 
         #[tokio::test]
@@ -1400,7 +1400,7 @@ mod tests {
                 vec![1, 0],
                 "rejected with the image, then answered without it"
             );
-            assert!(sent_images(&fallback_requests).is_empty());
+            assert_eq!(sent_images(&fallback_requests), [] as [usize; 0]);
         }
 
         #[tokio::test]
