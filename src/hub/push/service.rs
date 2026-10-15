@@ -1009,7 +1009,8 @@ mod tests {
             .unwrap();
 
         service.delete_device(&device.id).await.unwrap();
-        assert!(service.devices().await.unwrap().is_empty());
+        let actual = &service.devices().await.unwrap();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
         assert!(matches!(
             service.delete_device(&device.id).await,
             Err(PushError::UnknownDevice(_))

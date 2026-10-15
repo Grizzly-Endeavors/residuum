@@ -1596,7 +1596,8 @@ async fn the_agent_that_creates_or_deletes_an_agent_files_nothing_in_its_user_in
         .await
         .unwrap();
 
-    assert!(user_inbox_files(&hub, "scout").is_empty());
+    let actual = &user_inbox_files(&hub, "scout");
+    assert!(actual.is_empty(), "expected {actual:?} to be empty");
 }
 
 #[tokio::test]

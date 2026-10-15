@@ -186,7 +186,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 
 ### Depends On
 
-- **`crate::config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`, `RetryConfig` (passed to provider construction).
+- **`crate::config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`, `RetryConfig` (passed to provider construction), `WorkspaceLayout` (including `sessions_dir()`).
 - **`crate::inference`** — `InferenceProvider`, `CompletionOptions`, `SharedHttpClient`, `Message`. Used to build and call LLM providers for a session's turn.
 - **`crate::agent::context`** — `assemble_system_prompt`/`build_system_content` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `crate::agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
 - **`crate::agent::turn`** — `execute_turn()`. The session executor calls this to run the turn loop, passing the session's `CancellationToken` as the stop token.
@@ -198,7 +198,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`crate::mcp`** — `SharedMcpRegistry`, shared across the main agent and every session.
 - **`crate::skills`** — `SkillState`, `SharedSkillState`. Each session gets an isolated clone.
 - **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. Each session gets fresh isolated instances.
-- **`crate::workspace`** — `IdentityFiles`, `WorkspaceLayout` (including `sessions_dir()`).
+- **`crate::workspace`** — `IdentityFiles`.
 - **`crate::bus`** — `EventTrigger`, `SessionAddress`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`, `AgentMessageEvent`, `MessageEvent`, `Publisher`, `topics`.
 - **`crate::interfaces::types`** — `MessageOrigin`, for the `MessageEvent` `AgentMessenger` publishes to main.
 - **`tokio`** — `tokio::sync::{Semaphore, Mutex, Notify, mpsc}`, `tokio_util::sync::CancellationToken`.

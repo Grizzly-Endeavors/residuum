@@ -1199,8 +1199,8 @@ mod tests {
         .unwrap();
 
         let card = crate::a2a::AgentCardFile::load(&layout.agent_card_json()).unwrap();
-        assert!(!card.name.trim().is_empty());
-        assert!(!card.description.trim().is_empty());
+        assert_ne!(card.name.trim(), "");
+        assert_ne!(card.description.trim(), "");
         assert!(card.skills.is_empty(), "default card ships no skills");
     }
 

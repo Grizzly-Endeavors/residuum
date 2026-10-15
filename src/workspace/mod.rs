@@ -1,5 +1,4 @@
-//! Workspace management: directory layout, identity files, bootstrapping, and
-//! the change feed.
+//! Workspace management: identity files, bootstrapping, and the change feed.
 
 pub mod access;
 pub mod bootstrap;

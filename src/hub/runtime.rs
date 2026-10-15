@@ -1834,6 +1834,6 @@ mod tests {
         let (hub, problem) = load_hub_with_fallback(&hub_dir).unwrap();
 
         assert!(problem.is_none());
-        assert!(!hub.timezone.name().is_empty());
+        assert_ne!(hub.timezone.name(), "");
     }
 }

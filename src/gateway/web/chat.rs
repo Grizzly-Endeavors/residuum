@@ -351,6 +351,10 @@ mod tests {
         let history = HistoryMessage::from(recent);
 
         assert_eq!(history.thinking, ["real"]);
-        assert!(history.message.thinking.is_empty());
+        assert!(
+            history.message.thinking.is_empty(),
+            "expected {:?} to be empty",
+            history.message.thinking
+        );
     }
 }

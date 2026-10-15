@@ -79,6 +79,8 @@ export default defineConfig(({ command }) => ({
     // src/test/guard.ts holds it and the matching bound for waits in a test.
     testTimeout: HANG_GUARD_MS,
     hookTimeout: HANG_GUARD_MS,
+    // Cuts a full run by about 12% wall (37.5s to 33s, interleaved, 4 rounds): transforms persist in node_modules/.vitest-cache.
+    fsModuleCache: true,
     // Reported in CI's job summary, with no threshold. `npm run test:coverage` runs it locally.
     coverage: {
       provider: "v8",

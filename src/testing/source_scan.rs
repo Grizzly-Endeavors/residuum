@@ -34,7 +34,7 @@ fn is_test_gate(line: &str) -> bool {
 
 /// A source file, its lines, and which of them are test code.
 struct SourceFile {
-    /// Relative to the crate root, with `/` separators.
+    /// Relative to the repository root, with `/` separators.
     path: String,
     lines: Vec<String>,
     test: Vec<bool>,
@@ -649,6 +649,22 @@ mod tests {
                 "{path} is test code throughout"
             );
         }
+        assert!(
+            is_test_gate("#[cfg(test)]"),
+            "the test gate marks test code"
+        );
+        assert!(
+            is_test_gate(r#"    #[cfg(any(test, feature = "test-support"))]"#),
+            "the test-support gate marks test code, since its helpers compile into other crates' test builds"
+        );
+        assert!(
+            !is_test_gate(r#"#[cfg(feature = "test-support")]"#),
+            "a bare test-support feature gate is production code: it compiles into release builds"
+        );
+        assert!(
+            !is_test_gate("#[cfg(not(test))]"),
+            "a negated test gate is production code"
+        );
     }
 
     /// An agent's tasks must carry its `agent` log field, and `tokio::spawn`
@@ -856,35 +872,20 @@ mod tests {
     }
 
     /// The scan covers the root and every workspace member, and nothing else:
-    /// a member that is not scanned hides its waits from every rule here.
+    /// a member that is not scanned hides its waits from every rule here. The
+    /// expectation lists `crates/` from disk rather than reading `members`,
+    /// so a member missing from `members` fails here.
     #[test]
     fn the_scanned_roots_are_the_root_and_every_workspace_member() {
         let root = crate_root();
-        let text = std::fs::read_to_string(root.join("Cargo.toml")).expect("read Cargo.toml");
-        let manifest: toml::Table = toml::from_str(&text).expect("parse Cargo.toml");
-        let members: Vec<String> = manifest
-            .get("workspace")
-            .and_then(|workspace| workspace.get("members"))
-            .and_then(toml::Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(toml::Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
         let mut crate_dirs = vec![String::new()];
-        for member in members {
-            if let Some(prefix) = member.strip_suffix("/*").map(str::to_string) {
-                for entry in std::fs::read_dir(root.join(prefix)).expect("list members") {
-                    let path = entry.expect("list members").path();
-                    if path.join("Cargo.toml").is_file() {
-                        crate_dirs.push(relative(&root, &path));
-                    }
+        let crates_dir = root.join("crates");
+        if crates_dir.is_dir() {
+            for entry in std::fs::read_dir(&crates_dir).expect("list crates") {
+                let path = entry.expect("list crates").path();
+                if path.join("Cargo.toml").is_file() {
+                    crate_dirs.push(relative(&root, &path));
                 }
-            } else {
-                crate_dirs.push(member);
             }
         }
         let mut expected: Vec<String> = crate_dirs
