@@ -2,6 +2,9 @@
 //!
 //! Tests the pulse and cron systems using mock providers and temporary workspaces.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"

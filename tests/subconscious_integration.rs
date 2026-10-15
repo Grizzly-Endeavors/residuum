@@ -3,6 +3,9 @@
 //! Exercises the real config → `Subconscious::build` wiring and the
 //! `evaluate` path with a mock provider, through the crate's public API.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::tests_outside_test_module,

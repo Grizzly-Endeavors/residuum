@@ -2,6 +2,9 @@
 //!
 //! Tests the full inbox lifecycle using temporary directories.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,

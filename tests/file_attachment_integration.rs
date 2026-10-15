@@ -4,6 +4,9 @@
 //! `ResponseEvent` with `FileAttachment` → WebSocket subscriber maps to
 //! `ServerMessage::FileAttachment` with a valid URL.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "test assertions use wildcard for non-matching variants"

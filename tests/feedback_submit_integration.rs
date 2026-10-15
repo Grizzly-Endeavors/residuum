@@ -4,6 +4,9 @@
 //! produce wire-compatible JSON, decode the documented receipt shape,
 //! and surface upstream errors (including 429 Retry-After) to the caller.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes serde_json::Value by known-present keys"

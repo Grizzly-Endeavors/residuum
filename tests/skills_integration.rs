@@ -3,6 +3,9 @@
 //! Tests the full lifecycle: scan → verify index → activate → verify active →
 //! deactivate → verify removed. Also tests malformed SKILL.md handling.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::tests_outside_test_module,

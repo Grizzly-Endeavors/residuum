@@ -8,6 +8,9 @@
 //! them from here would mean re-exposing crate-internal construction just
 //! for the test.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[path = "support/until.rs"]
 mod until;
 

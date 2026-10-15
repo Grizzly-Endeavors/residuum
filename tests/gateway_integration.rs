@@ -4,6 +4,9 @@
 //! behavior including ping/pong, message round-trip, verbose filtering,
 //! multi-client broadcast, and error handling.
 
+#[path = "support/crypto.rs"]
+mod crypto;
+
 #[path = "support/guarded.rs"]
 mod guarded;
 
