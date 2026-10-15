@@ -4,8 +4,7 @@
 //! applies optional module/level filters, and renders human-readable output.
 
 use residuum::logging::format::{
-    LogEntry, LogLevel, expand_module_filter, format_entry, format_entry_colored, meets_level,
-    parse_line,
+    LogEntry, LogLevel, format_entry, format_entry_colored, meets_level, module_matches, parse_line,
 };
 use residuum::util::FatalError;
 
@@ -30,16 +29,30 @@ pub(super) struct LogsArgs {
 
 /// Resolved filter criteria, computed once from CLI args.
 struct LogFilter {
-    module_prefix: Option<String>,
+    module: Option<String>,
     min_level: Option<LogLevel>,
     agent: Option<String>,
     raw_json: bool,
     color: bool,
 }
 
+/// The line printed when a non-watch run shows no entries, naming only the filters given.
+fn no_match_notice(args: &LogsArgs) -> Option<String> {
+    let mut given = Vec::new();
+    if let Some(module) = &args.module {
+        given.push(format!("--module {module}"));
+    }
+    if let Some(level) = &args.level {
+        given.push(format!("--level {level}"));
+    }
+    if let Some(agent) = &args.agent {
+        given.push(format!("--agent {agent}"));
+    }
+    (!given.is_empty()).then(|| format!("No log entries matched ({}).", given.join(", ")))
+}
+
 impl LogFilter {
     fn from_args(args: &LogsArgs) -> Result<Self, FatalError> {
-        let module_prefix = args.module.as_deref().map(expand_module_filter);
         let min_level = args
             .level
             .as_deref()
@@ -55,7 +68,7 @@ impl LogFilter {
             && !args.json
             && std::env::var_os("NO_COLOR").is_none();
         Ok(Self {
-            module_prefix,
+            module: args.module.clone(),
             min_level,
             agent: args.agent.clone(),
             raw_json: args.json,
@@ -87,8 +100,8 @@ impl LogFilter {
             return self.agent.is_none().then(|| trimmed.to_string());
         };
 
-        if let Some(ref prefix) = self.module_prefix
-            && !entry.target.starts_with(prefix.as_str())
+        if let Some(ref module) = self.module
+            && !module_matches(module, &entry.target)
         {
             return None;
         }
@@ -125,6 +138,14 @@ fn entry_belongs_to_agent(entry: &LogEntry, agent: &str) -> bool {
             .spans
             .iter()
             .any(|span| matches(span.fields.get("agent")))
+}
+
+/// Write the notice to stderr as command output. It is not a diagnostic, so it is
+/// not routed through tracing.
+fn print_no_match_notice(notice: &str) {
+    use std::io::Write;
+
+    _ = writeln!(std::io::stderr().lock(), "{notice}");
 }
 
 /// Display and optionally tail structured log files.
@@ -176,8 +197,17 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
 
     let content = std::fs::read_to_string(&latest)
         .map_err(|e| FatalError::Config(format!("failed to read log file: {e}")))?;
+    let mut printed = 0_usize;
     for line in content.lines() {
-        filter.process_line(line);
+        if filter.process_line(line) {
+            printed += 1;
+        }
+    }
+    if !args.watch
+        && printed == 0
+        && let Some(notice) = no_match_notice(args)
+    {
+        print_no_match_notice(&notice);
     }
 
     if args.watch {
@@ -224,7 +254,7 @@ mod tests {
 
     fn filter(agent: Option<&str>, level: Option<LogLevel>) -> LogFilter {
         LogFilter {
-            module_prefix: None,
+            module: None,
             min_level: level,
             agent: agent.map(str::to_string),
             raw_json: false,
@@ -276,6 +306,27 @@ mod tests {
                 .is_some()
         );
         assert_eq!(f.render_line("not json").as_deref(), Some("not json"));
+    }
+
+    #[test]
+    fn module_matching_nothing_gives_notice_and_no_entries() {
+        let f = LogFilter {
+            module: Some("nosuchmodule".to_string()),
+            ..filter(None, None)
+        };
+        let content = line("INFO", r#"{"message":"hi"}"#, "[]");
+        assert!(content.lines().all(|l| f.render_line(l).is_none()));
+        let args = LogsArgs {
+            watch: false,
+            module: Some("nosuchmodule".to_string()),
+            level: None,
+            agent: None,
+            json: false,
+        };
+        assert_eq!(
+            no_match_notice(&args).as_deref(),
+            Some("No log entries matched (--module nosuchmodule).")
+        );
     }
 
     #[test]

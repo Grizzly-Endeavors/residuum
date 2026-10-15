@@ -203,7 +203,123 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
+    use tracing::Subscriber;
+    use tracing_subscriber::layer::SubscriberExt;
+
     use crate::config::LogLevel;
+
+    /// Metadata that identifies the probe callsite. Targets are built per check
+    /// with [`debug_event_metadata`], which shares this callsite.
+    static PROBE_META: tracing::Metadata<'static> = tracing::Metadata::new(
+        "probe",
+        "probe",
+        tracing::Level::DEBUG,
+        None,
+        None,
+        None,
+        tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&PROBE_SITE)),
+        tracing::metadata::Kind::EVENT,
+    );
+
+    struct ProbeSite;
+
+    impl tracing::callsite::Callsite for ProbeSite {
+        fn set_interest(&self, _interest: tracing::subscriber::Interest) {}
+
+        fn metadata(&self) -> &tracing::Metadata<'_> {
+            &PROBE_META
+        }
+    }
+
+    static PROBE_SITE: ProbeSite = ProbeSite;
+
+    fn debug_event_metadata(target: &str) -> tracing::Metadata<'_> {
+        tracing::Metadata::new(
+            "event",
+            target,
+            tracing::Level::DEBUG,
+            None,
+            None,
+            None,
+            tracing::field::FieldSet::new(&[], PROBE_META.callsite()),
+            tracing::metadata::Kind::EVENT,
+        )
+    }
+
+    /// Library names of the root crate and every workspace member: `residuum`,
+    /// then each member's package name with `-` replaced by `_`. Members come
+    /// from the root manifest's `[workspace] members`; a `dir/*` pattern expands
+    /// to each directory under `dir` that has a `Cargo.toml`.
+    fn workspace_library_names() -> Vec<String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root_manifest: toml::Table = toml::from_str(
+            &std::fs::read_to_string(root.join("Cargo.toml"))
+                .expect("failed to read the root Cargo.toml"),
+        )
+        .expect("failed to parse the root Cargo.toml");
+        let patterns: Vec<String> = root_manifest
+            .get("workspace")
+            .and_then(toml::Value::as_table)
+            .and_then(|workspace| workspace.get("members"))
+            .and_then(toml::Value::as_array)
+            .map(|members| {
+                members
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut names = vec!["residuum".to_string()];
+        for pattern in patterns {
+            let member_dirs: Vec<PathBuf> = match pattern.strip_suffix("/*") {
+                Some(parent) => std::fs::read_dir(root.join(parent))
+                    .expect("failed to read a workspace member directory")
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| path.join("Cargo.toml").is_file())
+                    .collect(),
+                None => vec![root.join(&pattern)],
+            };
+            for dir in member_dirs {
+                let member_manifest: toml::Table = toml::from_str(
+                    &std::fs::read_to_string(dir.join("Cargo.toml"))
+                        .expect("failed to read a workspace member manifest"),
+                )
+                .expect("failed to parse a workspace member manifest");
+                let package_name = member_manifest
+                    .get("package")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|package| package.get("name"))
+                    .and_then(toml::Value::as_str)
+                    .expect("workspace member manifest names its package");
+                names.push(package_name.replace('-', "_"));
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn debug_filter_enables_every_workspace_library_target() {
+        let subscriber = tracing_subscriber::registry().with(tracing_subscriber::EnvFilter::new(
+            LogLevel::Debug.filter_str(),
+        ));
+        for name in workspace_library_names() {
+            let meta = debug_event_metadata(&name);
+            assert!(
+                Subscriber::enabled(&subscriber, &meta),
+                "debug filter must enable target {name}"
+            );
+        }
+        let hyper = debug_event_metadata("hyper::proto");
+        assert!(
+            !Subscriber::enabled(&subscriber, &hyper),
+            "debug filter must not enable hyper::proto"
+        );
+    }
 
     #[test]
     fn log_level_filter_strings() {
