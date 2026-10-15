@@ -27,6 +27,10 @@ pub(crate) fn expand_env_vars(input: &str) -> String {
 }
 
 #[cfg(test)]
+#[expect(
+    unsafe_code,
+    reason = "std::env::set_var/remove_var require unsafe in edition 2024"
+)]
 mod tests {
     use super::*;
 

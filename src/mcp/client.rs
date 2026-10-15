@@ -331,10 +331,6 @@ impl std::fmt::Debug for McpClient {
 }
 
 #[cfg(test)]
-#[expect(
-    unsafe_code,
-    reason = "tests use set_var/remove_var which are unsafe in edition 2024"
-)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
