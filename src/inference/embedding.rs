@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use super::InferenceError;
 use super::SharedHttpClient;
-use super::retry::RetryConfig;
+use crate::config::RetryConfig;
 use crate::config::{ProviderKind, ProviderSpec};
 use crate::util::FatalError;
 

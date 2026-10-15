@@ -9,18 +9,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use crate::config::RetryConfig;
+use crate::config::{ThinkingConfig, ThinkingLevel};
 use crate::inference::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
-use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::inference::types::current_exchange_start;
+use crate::inference::with_retry;
 use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
     ProviderApi, ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
-    ThinkingBlock, ThinkingConfig, ThinkingLevel, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
-    blocks_produced_at,
+    ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
 
 /// Anthropic Messages API version header value.
@@ -1581,8 +1582,8 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::config::RetryConfig;
     use crate::inference::http::HttpClientConfig;
-    use crate::inference::retry::RetryConfig;
     use crate::inference::test_support::{
         RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
         sse_chunks, sse_response,

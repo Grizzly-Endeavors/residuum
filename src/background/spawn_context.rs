@@ -14,11 +14,11 @@ use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::background::runtime::SessionRuntime;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
+use crate::config::RetryConfig;
 use crate::config::{
     BackgroundConfig, BackgroundModelTier, ModelCatalog, ModelSelector, SharedModelCatalog,
     WorkspaceLayout,
 };
-use crate::inference::retry::RetryConfig;
 use crate::inference::{
     CompletionOptions, SharedHttpClient, build_provider_chain_with_shared_notices,
 };

@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use crate::config::Config;
-use crate::inference::{ThinkingConfig, ThinkingLevel};
+use crate::config::{ThinkingConfig, ThinkingLevel};
 
 use super::{ClientContext, FeedbackClient};
 

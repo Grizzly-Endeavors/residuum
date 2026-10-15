@@ -196,11 +196,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::config::RetryConfig;
     use crate::config::{
         BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, ToolsConfig,
         WebSearchConfig,
     };
-    use crate::inference::retry::RetryConfig;
 
     /// Minimal config for testing.
     fn minimal_config() -> Config {

@@ -276,21 +276,6 @@ impl Config {
             Self::validate_agent_providers_toml(contents, agent_dir, agent_name, hub)
         })
     }
-
-    /// Build `CompletionOptions` for a named role, applying per-role overrides
-    /// over the global defaults.
-    #[must_use]
-    pub fn completion_options_for_role(&self, role: &str) -> crate::inference::CompletionOptions {
-        let ov = self.role_overrides.get(role);
-        crate::inference::CompletionOptions {
-            max_tokens: Some(self.max_tokens),
-            temperature: ov.and_then(|o| o.temperature).or(self.temperature),
-            thinking: ov
-                .and_then(|o| o.thinking.clone())
-                .or(self.thinking.clone()),
-            ..crate::inference::CompletionOptions::default()
-        }
-    }
 }
 
 /// The agent's name from its workspace directory's file name.

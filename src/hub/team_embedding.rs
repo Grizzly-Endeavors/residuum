@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
+use crate::config::RetryConfig;
 use crate::config::{Config, ProviderSpec};
-use crate::inference::retry::RetryConfig;
 use crate::inference::{EmbeddingProvider, HttpClientConfig, SharedHttpClient};
 
 /// An agent's embedding model, as the team wiki would use it.

@@ -292,13 +292,13 @@ mod tests {
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
     use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
+    use crate::config::RetryConfig;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, GatewayConfig, IdleConfig, LearningConfig,
         MemoryConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig, SubconsciousSettings,
         ToolsConfig, TracingConfig, WebSearchConfig,
     };
     use crate::hub::AgentDirectory as _;
-    use crate::inference::retry::RetryConfig;
     use crate::memory::search::{HybridSearcher, MemoryIndex};
     use crate::skills::{SkillIndex, SkillState};
     use crate::tools::{FileTracker, PathPolicy};

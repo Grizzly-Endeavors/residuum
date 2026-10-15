@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::inference::retry::RetryConfig;
+use crate::config::RetryConfig;
 use crate::skills::SkillDir;
 
 use super::constants::{
@@ -832,7 +832,7 @@ pub struct RoleOverrides {
     /// Sampling temperature override (0.0–2.0).
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration override.
-    pub thinking: Option<crate::inference::ThinkingConfig>,
+    pub thinking: Option<crate::config::ThinkingConfig>,
 }
 
 /// Log detail level for daemon file output.
@@ -1039,7 +1039,7 @@ pub struct Config {
     /// Sampling temperature for model completions.
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration for model completions.
-    pub thinking: Option<crate::inference::ThinkingConfig>,
+    pub thinking: Option<crate::config::ThinkingConfig>,
     /// Web search configuration.
     pub web_search: WebSearchConfig,
     /// Tracing and observability configuration. Hub-owned; copied from `HubConfig`.

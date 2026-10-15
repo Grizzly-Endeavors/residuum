@@ -104,12 +104,12 @@ impl InferenceProvider for ScriptedProvider {
 /// whole `Config` (`gather_for_bug_report`) — nothing here is exercised by
 /// the a2a path itself.
 fn test_config(dir: &std::path::Path) -> Config {
+    use crate::config::RetryConfig;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, GatewayConfig, IdleConfig, LearningConfig,
         MemoryConfig, SkillsConfig, SubconsciousSettings, ToolsConfig, TracingConfig,
         WebSearchConfig,
     };
-    use crate::inference::retry::RetryConfig;
 
     Config {
         agent_name: "test-agent".to_string(),

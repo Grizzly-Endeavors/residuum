@@ -9,8 +9,8 @@ use super::providers::anthropic::AnthropicClient;
 use super::providers::gemini::GeminiClient;
 use super::providers::ollama::OllamaClient;
 use super::providers::openai::{OpenAiClient, OpenAiDialect};
-use super::retry::RetryConfig;
 use super::{InferenceProvider, SharedHttpClient};
+use crate::config::RetryConfig;
 
 /// Build a model provider from a resolved `ProviderSpec`, wrapped so images
 /// never reach a model that can't take them (see [`ImageInputGuard`]).

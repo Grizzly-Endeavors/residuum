@@ -1047,11 +1047,11 @@ async fn reload_a2a(rt: &mut AgentRuntime, new_cfg: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RetryConfig;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig,
         MemoryConfig, SkillsConfig, TelegramConfig, ToolsConfig,
     };
-    use crate::inference::retry::RetryConfig;
 
     /// Build a minimal test config.
     fn test_config() -> Config {
