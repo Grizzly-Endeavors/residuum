@@ -1,0 +1,184 @@
+name: Rust Checks
+
+# The Rust format, clippy (host and Windows), test, generated-types and
+# dependency checks. ci.yml calls it on pull requests and merge queue batches
+# that change Rust code, and release.yml on every release tag. It is also
+# runnable by hand from the Actions tab, to try a change on the runners
+# without opening a pull request.
+#
+# Every check is its own job so they run side by side. Each job names the
+# runner pool that suits it (grizzly-platform ADR-081): the jobs that build and
+# run the crate (lint and tests) compile one large crate, where per-core speed
+# decides the time, so they run on lab-runners-fast; the Windows clippy checks
+# without running tests, so it runs on lab-runners-wide.
+on:
+  workflow_call:
+    inputs:
+      pebble:
+        description: Run the Pebble tests, which issue certificates from the Let's Encrypt test CA in Docker
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      pebble:
+        description: Run the Pebble tests, which issue certificates from the Let's Encrypt test CA in Docker
+        type: boolean
+        default: true
+
+jobs:
+  # Every check runs even when an earlier one fails, so one run lists every
+  # failure. A check runs only when the dependencies it needs were installed,
+  # and the job still fails if any step failed.
+  rust-lint:
+    name: Rust Lint
+    runs-on: lab-runners-fast
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Install the version pinned in rust-toolchain.toml as its own toolchain;
+      # the runner image's baked-in toolchain can't be updated in place.
+      - name: Install pinned Rust toolchain
+        id: toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      # build.rs refuses to compile without web/dist, which gets embedded in the binary
+      - name: Build web assets
+        id: web_assets
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cd web && npm ci && npm run build
+
+      # The checks below run whether or not an earlier one failed, so one run
+      # lists every failure. Format and the dependency audit need only the
+      # toolchain; clippy also needs the web build, which the Rust build embeds.
+      - name: Check formatting
+        id: fmt
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        id: clippy
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Dependency audit
+        id: deny
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo deny check
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Rust Lint Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Web assets | ${{ steps.web_assets.outcome }} |"
+            echo "| Format | ${{ steps.fmt.outcome }} |"
+            echo "| Clippy | ${{ steps.clippy.outcome }} |"
+            echo "| Deny | ${{ steps.deny.outcome }} |"
+            echo ''
+            echo '### Compiler cache (sccache)'
+            echo ''
+            echo '```'
+            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The release builds Windows from Linux with the gnu target, and code behind
+  # cfg(windows) (and test imports only some platforms use) is not compiled by
+  # the host clippy above. Clippy rather than check, so that code is held to
+  # the same lints. The other cross targets are in cross-compile.yml.
+  # Runs on the wide pool, as the cross-compile.yml clippy jobs do: it checks
+  # without running tests, and a third job on the fast pool queues behind the
+  # lint and test jobs of every open pull request.
+  rust-lint-windows:
+    name: Clippy (x86_64-pc-windows-gnu)
+    runs-on: lab-runners-wide
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      - name: Add target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings
+
+  # The tests run once, on an otherwise idle runner. The suite under load (two
+  # copies at once with every CPU busy) runs nightly on main
+  # (nightly-stress.yml), which files each failure as an issue.
+  rust-test:
+    name: Rust Tests
+    runs-on: lab-runners-fast
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        id: toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      - name: Build web assets
+        id: web_assets
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cd web && npm ci && npm run build
+
+      # Compiles every test binary before any test runs. The test steps depend on
+      # this build, not on each other, so a compile error is reported here once.
+      - name: Build test binaries
+        id: build_tests
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
+        run: cargo test --quiet --no-run
+
+      # --no-fail-fast runs every test binary, so one run lists every failing test.
+      - name: Tests
+        id: test
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        run: cargo test --quiet --no-fail-fast
+
+      # Remote access issuance against Pebble, the Let's Encrypt test CA, in
+      # Docker (see docs/systems-usage/secure-tunnel.md, "Tests"). The
+      # containers run on the Docker daemon beside the runner, which shares
+      # the runner's network. They run one at a time: every container uses
+      # host networking on ports picked as free just before it starts, so
+      # parallel tests can take each other's ports.
+      - name: Pebble tests
+        id: pebble
+        if: ${{ !cancelled() && inputs.pebble && steps.build_tests.outcome == 'success' }}
+        run: cargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests
+
+      # Regenerates web/src/lib/generated from the Rust protocol types and
+      # fails on any difference from what is committed.
+      - name: Generated types are up to date
+        id: types
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        run: scripts/check-generated-types.sh
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Rust Test Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Web assets | ${{ steps.web_assets.outcome }} |"
+            echo "| Test binaries | ${{ steps.build_tests.outcome }} |"
+            echo "| Tests | ${{ steps.test.outcome }} |"
+            echo "| Pebble tests | ${{ steps.pebble.outcome }} |"
+            echo "| Generated types | ${{ steps.types.outcome }} |"
+            echo ''
+            echo '### Compiler cache (sccache)'
+            echo ''
+            echo '```'
+            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

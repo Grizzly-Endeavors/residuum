@@ -41,16 +41,24 @@ jobs:
             echo "**Version:** ${{ steps.version.outputs.version }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The visual comparisons report on pull requests and never gate a release.
-  quality:
-    name: Quality Checks
-    uses: ./.github/workflows/quality-checks.yml
+  # The checks of the merge queue lane, on the tagged commit. The suites under
+  # load run nightly (nightly-stress.yml) and do not gate a release, and the
+  # visual comparisons report on pull requests only.
+  rust:
+    name: Rust
+    uses: ./.github/workflows/rust-checks.yml
+    with:
+      pebble: true
+
+  web:
+    name: Web
+    uses: ./.github/workflows/web-checks.yml
     with:
       visual: false
 
-  # The builds run beside the quality checks instead of after them. Nothing
-  # leaves the workflow until both pass: the Docker image and the GitHub
-  # release need the quality checks.
+  # The builds run beside the checks instead of after them. Nothing leaves the
+  # workflow until both pass: the Docker image and the GitHub release need the
+  # Rust and web checks.
   build:
     name: Build (${{ matrix.artifact }})
     needs: [version]
@@ -203,7 +211,7 @@ jobs:
 
   docker:
     name: Docker Image
-    needs: [version, quality, build]
+    needs: [version, rust, web, build]
     runs-on: lab-runners-wide
 
     steps:
@@ -258,7 +266,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [version, quality, build, mac-app]
+    needs: [version, rust, web, build, mac-app]
     if: always() && !failure() && !cancelled()
     runs-on: lab-runners-light
 

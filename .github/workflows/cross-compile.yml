@@ -1,12 +1,15 @@
 name: Cross-Platform Checks
 
-# Opt-in: runs on a PR carrying the `cross-compile` label, on a PR that changes
+# Runs on a PR carrying the `cross-compile` label, on a PR that changes
 # dependencies or the toolchain, or by hand with
-# `gh workflow run cross-compile.yml --ref <branch>`.
+# `gh workflow run cross-compile.yml --ref <branch>`. ci.yml also calls it for
+# a merge queue batch that changes dependencies or the toolchain, where it is
+# part of the required CI gate; on a PR it reports without gating the merge.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+  workflow_call:
 
 # Adding an unrelated label gets its own group, so it can't cancel a real run
 concurrency:
@@ -14,8 +17,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gate:
+  decide:
     name: Decide whether to cross-compile
+    # The runners are self-hosted, so a fork's code never runs on them.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: lab-runners-light
 
     outputs:
@@ -42,6 +47,10 @@ jobs:
           reason="no cross-compile label and no dependency or toolchain change"
           if [ "$EVENT" = workflow_dispatch ]; then
             run=true; reason="manual dispatch"
+          elif [ "$EVENT" = merge_group ]; then
+            # ci.yml calls this workflow for a batch only when it changes
+            # dependencies or the toolchain.
+            run=true; reason="merge queue batch changes dependencies or the toolchain"
           elif [ "$ACTION" = labeled ]; then
             if [ "$ADDED_LABEL" = cross-compile ]; then
               run=true; reason="cross-compile label added"
@@ -56,12 +65,12 @@ jobs:
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "Cross-compile: $run ($reason)" | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # The Windows gnu target is linted on every Rust PR (quality-checks.yml,
+  # The Windows gnu target is linted on every Rust PR (rust-checks.yml,
   # `rust-lint-windows`), so it is not repeated here.
   cross-check:
     name: Clippy (aarch64-unknown-linux-gnu)
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
     runs-on: lab-runners-wide
 
     env:
@@ -88,8 +97,8 @@ jobs:
 
   macos-check:
     name: Clippy (aarch64-apple-darwin)
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
     runs-on: macos-15
 
     steps:
@@ -129,8 +138,8 @@ jobs:
   # executes: file permissions, PID locking, process spawning, and re-exec.
   windows-tests:
     name: Tests (Windows)
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
     runs-on: windows-latest
 
     defaults:
