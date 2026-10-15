@@ -7,8 +7,11 @@
 //! directly. Either way, a test holds a model call open by closing the gate,
 //! instead of slowing the reply down.
 //!
-//! This crate's own tests also use a model that answers with a fixed reply
-//! and one that records each call it receives.
+//! Other crates' tests (and the root's, through `test-support`) can use
+//! [`GatedModel::in_front_of`], [`GatedModel::uri`], [`GatedModel::gate`] and
+//! [`GatedProvider::new`]. Only inference's own tests can use
+//! `GatedModel::replying`, which answers with a fixed reply, and
+//! `GatedModel::calls`, which returns the calls the model recorded.
 
 use std::sync::Arc;
 

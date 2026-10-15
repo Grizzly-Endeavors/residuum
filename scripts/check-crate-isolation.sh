@@ -72,4 +72,4 @@ if [ "$members" -eq 0 ]; then
     echo "check-crate-isolation: no workspace members under crates/; the root library and binary compile on their own"
     exit 0
 fi
-echo "check-crate-isolation: the root library and binary and every member compile on their own"
+echo "check-crate-isolation: the root library, the binary and every member compile on their own"
