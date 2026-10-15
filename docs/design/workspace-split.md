@@ -549,14 +549,16 @@ Items marked "new" are `pub(crate)` today and are used from another crate after 
   run_hook() { printf 'refs/heads/a5-check %s refs/heads/a5-check %s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD~1)" | .githooks/pre-push origin unused 2>&1 | tee "$1"; }
   echo '// a5 check 1' >>src/hub/runtime.rs && git commit -am "a5 check: c1" && run_hook /tmp/a5-c1.log   # first use: creates target/pre-push/tree
   echo '// a5 check 2' >>src/hub/runtime.rs && git commit -am "a5 check: c2" && run_hook /tmp/a5-c2.log
-  grep -E '^ *(Checking|Compiling) ' /tmp/a5-c2.log  # expect exactly one line: Checking residuum v0.1.0 (...)
+  grep -E '^ *(Checking|Compiling) ' /tmp/a5-c2.log  # expect exactly one line: Compiling residuum v0.1.0 (...)
   grep -c 'Building web/dist' /tmp/a5-c2.log         # expect 0
-  echo '// a5 check' >>web/src/main.ts && git commit -am "a5 check: c3" && run_hook /tmp/a5-c3.log
+  echo '// a5 check' >>web/src/main.ts && echo '// a5 check' >>src/hub/runtime.rs && git commit -am "a5 check: c3" && run_hook /tmp/a5-c3.log
   grep -c 'Building web/dist' /tmp/a5-c3.log         # expect 1
   rm -rf target/pre-push/tree && run_hook /tmp/a5-c4.log   # recreates the tree; the run passes
   ```
 
-  The C2 log's first line from the hook says it is checking in the stable tree. For the lock: start `run_hook /tmp/a5-l1.log &`, and while it runs, `run_hook /tmp/a5-l2.log`; the second log says another push holds the stable tree and that it checks in a temporary worktree. Afterwards delete the scratch branch, the untracked file and the logs. `grep` lines beginning `Checking` come from clippy, which the hook runs without `--quiet`.
+  A push that changes only `web/` runs no Rust checks and so builds no dist, which is why c3 also changes `src/hub/runtime.rs`.
+
+  The C2 log's first line from the hook says it is checking in the stable tree. For the lock: start `run_hook /tmp/a5-l1.log &`, and while it runs, `run_hook /tmp/a5-l2.log`; the second log says `the stable pre-push tree is locked by pid N; checking in a temporary worktree instead.` and then `Checking refs/heads/a5-check in a temporary worktree.` Afterwards delete the scratch branch, the untracked file and the logs. `grep` lines beginning `Checking` come from clippy, which the hook runs without `--quiet`.
 
 ### CI
 
