@@ -200,8 +200,7 @@ pub(crate) fn text_answer(status: StatusCode, message: &str) -> Response {
 }
 
 /// The fallback page for a navigation, plain text for anything else.
-#[must_use]
-pub fn page_or_text(
+pub(crate) fn page_or_text(
     method: &Method,
     headers: &HeaderMap,
     status: StatusCode,
