@@ -52,6 +52,8 @@ done)"
 # The CI log parser behind `just ci-failures` and the nightly stress issue filer
 # that reuses it, their scripts and their fixtures.
 STAGED_CI_FAILURES="$(git diff --cached --name-only --diff-filter=ACDMR -- 'scripts/ci-failures*' 'scripts/stress-issues*')"
+# The package selection script behind the pre-push hook and the CI changes job, and its test.
+STAGED_AFFECTED="$(git diff --cached --name-only --diff-filter=ACDMR -- 'scripts/affected-packages*')"
 
 # Git hands hooks its repository variables. In a linked worktree they point at
 # the worktree, and cargo-deny's advisory-db refresh inherits them: its
@@ -71,7 +73,7 @@ with_git_env() {
     env ${GIT_HOOK_ENV[@]+"${GIT_HOOK_ENV[@]}"} "$@"
 }
 
-if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB_FORMAT" ] && [ -z "$STAGED_CI_FAILURES" ]; then
+if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB_FORMAT" ] && [ -z "$STAGED_CI_FAILURES" ] && [ -z "$STAGED_AFFECTED" ]; then
     exit 0
 fi
 
@@ -161,6 +163,11 @@ if [ -n "$STAGED_CI_FAILURES" ]; then
     scripts/ci-failures-test.sh || parser_status=1
     scripts/stress-issues-test.sh || parser_status=1
     [ "$parser_status" -eq 0 ] || fail "ERROR: the ci-failures log parser no longer matches a fixture, or the stress issue filer no longer opens the expected issues. The case named above is the one that differs."
+fi
+
+if [ -n "$STAGED_AFFECTED" ]; then
+    echo "Checking the package selection script..."
+    scripts/affected-packages-test.sh || fail "ERROR: scripts/affected-packages.sh no longer selects the packages its fixture expects. The case named above is the one that differs."
 fi
 
 # Content gates on the staged diff. These catch the two things clippy cannot:
