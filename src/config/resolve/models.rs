@@ -977,15 +977,15 @@ reflector = { model = "anthropic/claude-sonnet-4-6", thinking = "low" }
         assert_eq!(obs_ov.temperature, Some(0.2));
         assert_eq!(
             obs_ov.thinking,
-            Some(crate::inference::ThinkingConfig::Toggle(false))
+            Some(crate::config::ThinkingConfig::Toggle(false))
         );
 
         let ref_ov = &cfg.role_overrides["reflector"];
         assert_eq!(ref_ov.temperature, None);
         assert_eq!(
             ref_ov.thinking,
-            Some(crate::inference::ThinkingConfig::Level(
-                crate::inference::ThinkingLevel::Low
+            Some(crate::config::ThinkingConfig::Level(
+                crate::config::ThinkingLevel::Low
             ))
         );
     }
@@ -1151,89 +1151,15 @@ large = { model = "anthropic/claude-sonnet-4-6", thinking = "medium" }
         let bg_small_ov = &cfg.role_overrides["bg_small"];
         assert_eq!(
             bg_small_ov.thinking,
-            Some(crate::inference::ThinkingConfig::Toggle(false))
+            Some(crate::config::ThinkingConfig::Toggle(false))
         );
         assert!(!cfg.role_overrides.contains_key("bg_medium"));
         let bg_large_ov = &cfg.role_overrides["bg_large"];
         assert_eq!(
             bg_large_ov.thinking,
-            Some(crate::inference::ThinkingConfig::Level(
-                crate::inference::ThinkingLevel::Medium
+            Some(crate::config::ThinkingConfig::Level(
+                crate::config::ThinkingLevel::Medium
             ))
-        );
-    }
-
-    // ── completion_options_for_role ────────────────────────────────────────
-
-    #[test]
-    fn completion_options_for_role_with_override() {
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2 }
-"#,
-        );
-        let cfg_file = parse_config(
-            "
-temperature = 0.8
-",
-        );
-        let cfg = from_file_and_env(
-            Some(&cfg_file),
-            Some(&prov_file),
-            &test_agent_dir(),
-            "test-agent",
-            &test_hub_config(),
-        )
-        .unwrap();
-
-        let main_opts = cfg.completion_options_for_role("main");
-        assert_eq!(
-            main_opts.temperature,
-            Some(0.8),
-            "main should use global temp"
-        );
-
-        let obs_opts = cfg.completion_options_for_role("observer");
-        assert_eq!(
-            obs_opts.temperature,
-            Some(0.2),
-            "observer should use override temp"
-        );
-    }
-
-    #[test]
-    fn completion_options_for_role_fallback_to_global() {
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg_file = parse_config(
-            r#"
-temperature = 0.5
-thinking = "medium"
-"#,
-        );
-        let cfg = from_file_and_env(
-            Some(&cfg_file),
-            Some(&prov_file),
-            &test_agent_dir(),
-            "test-agent",
-            &test_hub_config(),
-        )
-        .unwrap();
-
-        let opts = cfg.completion_options_for_role("reflector");
-        assert_eq!(opts.temperature, Some(0.5), "should fall back to global");
-        assert_eq!(
-            opts.thinking,
-            Some(crate::inference::ThinkingConfig::Level(
-                crate::inference::ThinkingLevel::Medium
-            )),
-            "should fall back to global thinking"
         );
     }
 }

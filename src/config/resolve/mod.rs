@@ -19,7 +19,7 @@ pub(crate) use hub::from_file_and_env as resolve_hub_config;
 
 use std::path::Path;
 
-use crate::inference::{ThinkingConfig, ThinkingLevel};
+use crate::config::{ThinkingConfig, ThinkingLevel};
 use crate::util::FatalError;
 
 use super::Config;
@@ -229,7 +229,7 @@ fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
 }
 
 #[cfg(test)]
-pub(super) mod test_helpers {
+pub(crate) mod test_helpers {
     pub(super) use super::super::deserialize::{AgentConfigFile, ProvidersFile};
     pub(super) use super::super::secrets::SecretStore;
 
@@ -240,11 +240,11 @@ pub(super) mod test_helpers {
         SecretStore::load(&dir).unwrap()
     }
 
-    pub(super) fn test_agent_dir() -> std::path::PathBuf {
+    pub(crate) fn test_agent_dir() -> std::path::PathBuf {
         std::env::temp_dir().join("residuum-test-agent")
     }
 
-    pub(super) fn test_hub_config() -> super::super::HubConfig {
+    pub(crate) fn test_hub_config() -> super::super::HubConfig {
         super::super::HubConfig {
             timezone: chrono_tz::UTC,
             gateway: super::super::GatewayConfig::default(),
@@ -259,11 +259,11 @@ pub(super) mod test_helpers {
         }
     }
 
-    pub(super) fn parse_config(toml: &str) -> AgentConfigFile {
+    pub(crate) fn parse_config(toml: &str) -> AgentConfigFile {
         toml::from_str(toml).unwrap()
     }
 
-    pub(super) fn parse_providers(toml: &str) -> ProvidersFile {
+    pub(crate) fn parse_providers(toml: &str) -> ProvidersFile {
         toml::from_str(toml).unwrap()
     }
 

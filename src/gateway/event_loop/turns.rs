@@ -1183,7 +1183,7 @@ mod tests {
             webhooks: std::collections::HashMap::new(),
             skills: crate::config::SkillsConfig { dirs: vec![] },
             tools: crate::config::ToolsConfig { dirs: vec![] },
-            retry: crate::inference::retry::RetryConfig::default(),
+            retry: crate::config::RetryConfig::default(),
             background: crate::config::BackgroundConfig::default(),
             agent: crate::config::AgentAbilitiesConfig::default(),
             auto_mode: crate::config::AutoModeConfig::default(),

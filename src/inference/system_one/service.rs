@@ -13,8 +13,8 @@ use super::client::{SystemOneClient, SystemOneEndpoint};
 use super::error::SystemOneError;
 use super::health::SystemOneStatus;
 use super::types::{Question, SystemOneResponse};
+use crate::config::RetryConfig;
 use crate::config::SystemOneConfig;
-use crate::inference::retry::RetryConfig;
 use crate::inference::{HttpClientConfig, SharedHttpClient};
 
 /// How often a down service is checked while an outage lasts, so the outage

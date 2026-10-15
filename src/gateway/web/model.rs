@@ -14,11 +14,12 @@ use serde::{Deserialize, Serialize};
 
 use super::artifact_identity::artifact_identity;
 use crate::background::spawn_context::SpawnContext;
+use crate::config::RetryConfig;
+use crate::config::ThinkingConfig;
 use crate::config::{BackgroundModelTier, BackgroundModelsConfig, ProviderSpec, RoleOverrides};
-use crate::inference::retry::RetryConfig;
 use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, Message, ResponseFormat, Role,
-    SharedHttpClient, ThinkingConfig, Usage, build_provider_chain,
+    SharedHttpClient, Usage, build_provider_chain,
 };
 
 /// Identity label logged and reported when a call carries no artifact

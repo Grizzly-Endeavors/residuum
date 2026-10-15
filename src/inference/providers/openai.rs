@@ -12,19 +12,20 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::config::RetryConfig;
+use crate::config::{ThinkingConfig, ThinkingLevel};
 use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::inference::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
 use crate::inference::reply::{ReplyAssembler, plain_reasoning};
-use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::inference::types::current_exchange_start;
+use crate::inference::with_retry;
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
-    ResponseFormat, Role, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ThinkingOrigin,
-    ToolCall, ToolDefinition, Usage,
+    ResponseFormat, Role, StopReason, StreamSink, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
 };
 
 /// Fireworks response header carrying the prompt tokens served from cache.
@@ -1243,9 +1244,9 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RetryConfig;
     use crate::inference::CompletionOptions;
     use crate::inference::http::{HttpClientConfig, SharedHttpClient};
-    use crate::inference::retry::RetryConfig;
     use crate::inference::test_support::{
         RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
         sse_chunks, sse_response,

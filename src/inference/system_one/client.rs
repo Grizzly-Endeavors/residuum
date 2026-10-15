@@ -12,8 +12,8 @@ use super::error::SystemOneError;
 use super::types::{
     ModelListResponse, Question, SystemOneModel, SystemOneRequest, SystemOneResponse,
 };
+use crate::config::RetryConfig;
 use crate::inference::http::{SharedHttpClient, read_error_body, warn_if_insecure_remote};
-use crate::inference::retry::RetryConfig;
 
 /// Where a System 1 model is served and how to call it.
 #[derive(Clone, PartialEq, Eq)]

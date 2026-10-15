@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::inference::retry::RetryConfig;
+use crate::config::RetryConfig;
 use crate::skills::SkillDir;
 use crate::util::FatalError;
 

@@ -18,7 +18,9 @@ pub(crate) mod patch;
 pub mod paths;
 mod provider;
 pub(crate) mod resolve;
+mod retry;
 pub(crate) mod secrets;
+mod thinking;
 mod tolerant;
 mod types;
 pub mod wizard;
@@ -42,7 +44,9 @@ pub use layout::WorkspaceLayout;
 pub use model_catalog::{ModelCatalog, SharedModelCatalog};
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
 pub use provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
+pub use retry::RetryConfig;
 pub use secrets::SecretStore;
+pub use thinking::{ThinkingConfig, ThinkingLevel};
 pub use types::{
     A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,
     BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,

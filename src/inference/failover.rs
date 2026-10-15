@@ -858,8 +858,8 @@ mod tests {
 
     #[tokio::test]
     async fn real_streams_failing_over_mid_response_restart_exactly_once() {
+        use crate::config::RetryConfig;
         use crate::inference::providers::anthropic::AnthropicClient;
-        use crate::inference::retry::RetryConfig;
         use crate::inference::test_support::{ScriptedServer, sse_response};
         use crate::inference::{HttpClientConfig, SharedHttpClient};
 
@@ -952,14 +952,12 @@ mod tests {
     /// server, to follow reasoning across a failover.
     mod reasoning_across_providers {
         use super::*;
+        use crate::config::RetryConfig;
+        use crate::config::{ThinkingConfig, ThinkingLevel};
         use crate::inference::providers::anthropic::AnthropicClient;
         use crate::inference::providers::gemini::GeminiClient;
-        use crate::inference::retry::RetryConfig;
         use crate::inference::test_support::{ScriptedServer, json_response};
-        use crate::inference::{
-            HttpClientConfig, ProviderApi, SharedHttpClient, ThinkingConfig, ThinkingLevel,
-            ThinkingOrigin,
-        };
+        use crate::inference::{HttpClientConfig, ProviderApi, SharedHttpClient, ThinkingOrigin};
 
         const CLAUDE: &str = "claude-test";
         const GEMINI: &str = "gemini-3-pro-preview";

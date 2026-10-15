@@ -4,7 +4,7 @@ use crate::bus::Publisher;
 use crate::config::Config;
 use crate::inference::{
     CompletionOptions, EmbeddingProvider, SharedHttpClient, WebSearchNativeConfig,
-    build_embedding_provider, build_provider_chain_with_notices,
+    build_embedding_provider, build_provider_chain_with_notices, completion_options_for_role,
 };
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
@@ -96,7 +96,7 @@ pub fn init_providers(
             search_context_size: pn.search_context_size.clone(),
             exclude_domains: pn.exclude_domains.clone(),
         });
-    let mut options = cfg.completion_options_for_role("main");
+    let mut options = completion_options_for_role(cfg, "main");
     options.web_search = web_search;
 
     Ok(ProviderComponents {

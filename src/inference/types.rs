@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::error::InferenceError;
+use crate::config::ThinkingConfig;
 
 /// Base64-encoded image data for multimodal messages.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -580,23 +581,6 @@ pub enum ResponseFormat {
         /// The JSON Schema that the response must conform to.
         schema: serde_json::Value,
     },
-}
-
-/// Thinking/reasoning configuration for model completions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ThinkingConfig {
-    /// Graduated reasoning effort (Anthropic, `OpenAI`, Gemini).
-    Level(ThinkingLevel),
-    /// Simple on/off toggle (Ollama, or explicit disable).
-    Toggle(bool),
-}
-
-/// Reasoning effort levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThinkingLevel {
-    Low,
-    Medium,
-    High,
 }
 
 /// Provider-native web search configuration passed to completion requests.

@@ -8,7 +8,8 @@ mod http;
 mod image_input;
 pub(crate) mod providers;
 mod reply;
-pub(crate) mod retry;
+mod retry;
+mod role_options;
 mod stream;
 pub mod system_one;
 #[cfg(test)]
@@ -24,10 +25,12 @@ pub(crate) use factory::{
 };
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use image_input::ImagesOmitted;
+pub use retry::with_retry;
+pub use role_options::completion_options_for_role;
 pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
     MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
-    ThinkingBlock, ThinkingConfig, ThinkingLevel, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
-    WebSearchNativeConfig, joined_thinking_text, readable_thinking,
+    ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig,
+    joined_thinking_text, readable_thinking,
 };
 pub(crate) use types::{ReplayScope, blocks_produced_at};
