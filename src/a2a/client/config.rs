@@ -372,7 +372,8 @@ mod tests {
     #[test]
     fn diagnose_clean_file_has_no_diagnostics() {
         let content = r#"{"agents": {"laptop": {"url": "https://x.example.com"}}}"#;
-        assert!(diagnose_a2a_json(content).is_empty());
+        let actual = &diagnose_a2a_json(content);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

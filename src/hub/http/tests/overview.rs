@@ -507,7 +507,8 @@ async fn live_sessions_appear_as_they_start_and_clear_as_they_end_or_when_the_ag
             episode_id: None,
         },
     );
-    assert!(next_overview(&mut frames).await.live_sessions.is_empty());
+    let actual = &next_overview(&mut frames).await.live_sessions;
+    assert!(actual.is_empty(), "expected {actual:?} to be empty");
 
     // The agent stops with a session the registry still lists: a stopped
     // agent has none.
@@ -518,7 +519,8 @@ async fn live_sessions_appear_as_they_start_and_clear_as_they_end_or_when_the_ag
     changed(&h, "scout", AgentChangeKind::Resync);
     assert_eq!(next_overview(&mut frames).await.live_sessions.len(), 1);
     move_to(&h, "scout", AgentState::Stopped);
-    assert!(next_overview(&mut frames).await.live_sessions.is_empty());
+    let actual_2 = &next_overview(&mut frames).await.live_sessions;
+    assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
     assert_eq!(overview_of(&h, "scout").await["live_sessions"], json!([]));
 }
 

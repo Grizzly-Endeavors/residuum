@@ -505,6 +505,6 @@ mod tests {
         let resp = store.list(&req).await.unwrap();
         assert_eq!(resp.tasks.len(), 2);
         assert_eq!(resp.total_size, 5);
-        assert!(!resp.next_page_token.is_empty());
+        assert_ne!(resp.next_page_token, "");
     }
 }

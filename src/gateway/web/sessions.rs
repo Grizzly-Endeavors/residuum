@@ -1483,7 +1483,7 @@ mod tests {
         let unknown = message(&state, "spawned-ghost-0000", HeaderMap::new(), "hi").await;
         assert_eq!(unknown.status, StatusCode::NOT_FOUND);
         assert_eq!(unknown.text("code"), "unknown_address");
-        assert!(!unknown.text("error").is_empty());
+        assert_ne!(unknown.text("error"), "");
 
         let blank = message(&state, "spawned-ghost-0000", HeaderMap::new(), "  ").await;
         assert_eq!(blank.status, StatusCode::BAD_REQUEST);
@@ -1644,7 +1644,7 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "a misspelled field is refused"
         );
-        assert!(!misspelled.text("error").is_empty());
+        assert_ne!(misspelled.text("error"), "");
 
         let stopped = post(
             &app,

@@ -919,10 +919,7 @@ mod tests {
         assert!(write_config(root.path(), &answers("scout")).await.is_err());
 
         assert!(!root.path().join("scout/config/config.toml").exists());
-        assert!(
-            crate::config::discover_agents(root.path())
-                .unwrap()
-                .is_empty()
-        );
+        let actual = &crate::config::discover_agents(root.path()).unwrap();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 }

@@ -745,7 +745,8 @@ mod tests {
         let (addr, mock) = mock_hub(vec![summary("a", "running")]).await;
         let out = message(execute(&AgentCommand::Create(create_args("Not Valid!")), &addr).await);
         assert!(out.contains("agent name"), "{out}");
-        assert!(mock.lock().unwrap().requests.is_empty());
+        let actual = &mock.lock().unwrap().requests;
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]

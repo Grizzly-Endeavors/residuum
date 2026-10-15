@@ -187,7 +187,8 @@ mod skills_integration {
         {
             let s = state.lock().await;
             assert_eq!(s.index().entries().len(), bundled_skill_count() + 1);
-            assert!(s.active_skill_names().is_empty());
+            let actual = &s.active_skill_names();
+            assert!(actual.is_empty(), "expected {actual:?} to be empty");
         }
 
         // Activate via tool
@@ -226,7 +227,8 @@ mod skills_integration {
         // Verify removed
         {
             let s = state.lock().await;
-            assert!(s.active_skill_names().is_empty());
+            let actual_2 = &s.active_skill_names();
+            assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
             assert!(s.format_active_for_prompt().is_none());
         }
     }

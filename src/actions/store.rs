@@ -451,12 +451,18 @@ mod tests {
 
         let original = make_action("action-00000001", 60);
         let (mut store, rejected_on_first_load, _) = ActionStore::load(&path).await.unwrap();
-        assert!(rejected_on_first_load.is_empty());
+        assert!(
+            rejected_on_first_load.is_empty(),
+            "expected {rejected_on_first_load:?} to be empty"
+        );
         store.add(original.clone());
         store.save().await.unwrap();
 
         let (loaded, rejected_on_reload, _) = ActionStore::load(&path).await.unwrap();
-        assert!(rejected_on_reload.is_empty());
+        assert!(
+            rejected_on_reload.is_empty(),
+            "expected {rejected_on_reload:?} to be empty"
+        );
         assert_eq!(loaded.list().len(), 1, "should load one action");
         assert_eq!(
             loaded.list().first().unwrap(),
@@ -604,7 +610,7 @@ mod tests {
         std::fs::write(&path, json).unwrap();
 
         let (loaded, rejected, _moved_aside) = ActionStore::load(&path).await.unwrap();
-        assert!(loaded.list().is_empty());
+        assert_eq!(loaded.list(), []);
         assert_eq!(rejected.len(), 1, "the dropped action should be reported");
     }
 
@@ -672,7 +678,7 @@ mod tests {
             store.list().is_empty(),
             "a corrupt file should load as an empty store"
         );
-        assert!(rejected.is_empty());
+        assert!(rejected.is_empty(), "expected {rejected:?} to be empty");
         let moved_aside = moved_aside.expect("a corrupt file should be moved aside");
         assert!(
             moved_aside
