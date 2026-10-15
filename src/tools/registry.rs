@@ -362,7 +362,7 @@ impl ToolRegistry {
         &mut self,
         tracker: SharedFileTracker,
         policy: SharedPathPolicy,
-        diagnostics_paths: crate::diagnostics::DiagnosticsPaths,
+        diagnostics_paths: crate::diagnostics_dispatch::DiagnosticsPaths,
         config_watch: Option<super::config_reload_tracker::ConfigWriteWatch>,
     ) {
         // Every file/shell tool resolves a relative path (or spawns a child
@@ -613,7 +613,7 @@ impl ToolRegistry {
     fn register_session_workspace_tools(&mut self, deps: &SubagentToolDeps) {
         // Core I/O tools. `None`: a session never gets a `ConfigWriteWatch`
         // — see its doc comment.
-        let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+        let diagnostics_paths = crate::diagnostics_dispatch::DiagnosticsPaths {
             config_dir: deps.config_dir.clone(),
             workspace_dir: deps.workspace_dir.clone(),
             hub_dir: deps.hub_dir.clone(),
@@ -938,7 +938,7 @@ mod tests {
         registry.register_defaults(
             FileTracker::new_shared(),
             policy,
-            crate::diagnostics::DiagnosticsPaths {
+            crate::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
                 hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),

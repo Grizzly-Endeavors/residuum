@@ -39,7 +39,7 @@ fn build_child_args(raw: &[String]) -> Vec<String> {
 pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     use residuum::daemon::read_pid_file;
 
-    residuum::util::tracing_init::init_default_tracing();
+    residuum::logging::init_default_tracing();
 
     let residuum_root = residuum::config::residuum_root()?;
     let hub_dir = residuum::config::paths::hub_dir(&residuum_root);

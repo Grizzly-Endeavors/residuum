@@ -124,7 +124,7 @@ pub(super) fn init_tool_registry(
     tools.set_publisher(deps.publisher.clone());
     tools.set_auto_mode(Arc::clone(deps.auto_mode));
     let file_tracker = crate::tools::FileTracker::new_shared();
-    let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+    let diagnostics_paths = crate::diagnostics_dispatch::DiagnosticsPaths {
         config_dir: cfg.config_dir.clone(),
         workspace_dir: cfg.workspace_dir.clone(),
         hub_dir: deps.hub_dir.to_path_buf(),

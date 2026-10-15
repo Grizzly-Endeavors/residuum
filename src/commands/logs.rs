@@ -3,11 +3,11 @@
 //! Reads NDJSON log files produced by `tracing-subscriber`'s JSON formatter,
 //! applies optional module/level filters, and renders human-readable output.
 
-use residuum::util::FatalError;
-use residuum::util::log_format::{
+use residuum::logging::format::{
     LogEntry, LogLevel, expand_module_filter, format_entry, format_entry_colored, meets_level,
     parse_line,
 };
+use residuum::util::FatalError;
 
 #[derive(clap::Args)]
 pub(super) struct LogsArgs {

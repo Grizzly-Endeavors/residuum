@@ -885,7 +885,7 @@ impl HubRuntime {
             .tracing_service
             .update_config(new_hub.tracing.clone())
             .await;
-        if let Some(handle) = crate::util::tracing_init::global_filter_handle()
+        if let Some(handle) = crate::logging::global_filter_handle()
             && let Err(e) = handle.set_filter(new_hub.tracing.log_level)
         {
             tracing::warn!(error = %e, "failed to update the log filter on a tracing config reload");

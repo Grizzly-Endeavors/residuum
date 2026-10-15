@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::Path;
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
@@ -24,6 +23,7 @@ use serde_json::Value;
 use crate::inference::ToolDefinition;
 use crate::mcp::types::{McpServerEntry, McpTransport};
 use crate::tools::{ToolError, ToolResult};
+use crate::util::expand_env_vars;
 
 /// A live connection to a single MCP server process.
 pub struct McpClient {
@@ -288,30 +288,6 @@ fn coerce_tool_args(args: Value) -> Result<Option<serde_json::Map<String, Value>
     }
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "hardcoded regex literal is always valid"
-)]
-static ENV_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}").expect("hardcoded regex is valid")
-});
-
-/// Expand `${VAR}` and `${VAR:-default}` patterns in a string using environment variables.
-///
-/// Unresolved variables with no default are replaced with an empty string.
-#[must_use]
-pub(crate) fn expand_env_vars(input: &str) -> String {
-    ENV_VAR_RE
-        .replace_all(input, |caps: &regex::Captures<'_>| {
-            let var_name = caps.get(1).map_or("", |m| m.as_str());
-            match std::env::var(var_name) {
-                Ok(val) => val,
-                Err(_) => caps.get(2).map_or("", |m| m.as_str()).to_string(),
-            }
-        })
-        .into_owned()
-}
-
 /// Expand env vars in header values and convert to HTTP header types.
 ///
 /// # Errors
@@ -556,75 +532,6 @@ mod tests {
             err.contains("bad-stdio"),
             "error should mention server name: {err}"
         );
-    }
-
-    #[test]
-    fn expand_env_vars_simple() {
-        // SAFETY: test-only, single-threaded test runner for this module
-        unsafe { std::env::set_var("TEST_MCP_VAR", "hello") };
-        assert_eq!(
-            expand_env_vars("Bearer ${TEST_MCP_VAR}"),
-            "Bearer hello",
-            "should expand simple env var"
-        );
-        unsafe { std::env::remove_var("TEST_MCP_VAR") };
-    }
-
-    #[test]
-    fn expand_env_vars_with_default() {
-        // SAFETY: test-only, single-threaded test runner for this module
-        unsafe { std::env::remove_var("TEST_MCP_MISSING") };
-        assert_eq!(
-            expand_env_vars("${TEST_MCP_MISSING:-fallback}"),
-            "fallback",
-            "should use default when var is missing"
-        );
-    }
-
-    #[test]
-    fn expand_env_vars_no_pattern() {
-        assert_eq!(
-            expand_env_vars("plain string"),
-            "plain string",
-            "should pass through strings without patterns"
-        );
-    }
-
-    #[test]
-    fn expand_env_vars_missing_no_default() {
-        // SAFETY: test-only, single-threaded test runner for this module
-        unsafe { std::env::remove_var("TEST_MCP_GONE") };
-        assert_eq!(
-            expand_env_vars("prefix-${TEST_MCP_GONE}-suffix"),
-            "prefix--suffix",
-            "should replace with empty string when no default"
-        );
-    }
-
-    #[test]
-    fn expand_env_vars_multiple_vars() {
-        // SAFETY: test-only, single-threaded test runner for this module
-        unsafe { std::env::set_var("TEST_MCP_A", "aaa") };
-        unsafe { std::env::set_var("TEST_MCP_B", "bbb") };
-        assert_eq!(
-            expand_env_vars("${TEST_MCP_A}:${TEST_MCP_B}"),
-            "aaa:bbb",
-            "should expand multiple vars"
-        );
-        unsafe { std::env::remove_var("TEST_MCP_A") };
-        unsafe { std::env::remove_var("TEST_MCP_B") };
-    }
-
-    #[test]
-    fn expand_env_vars_empty_var_does_not_use_default() {
-        // SAFETY: test-only, single-threaded test runner for this module
-        unsafe { std::env::set_var("TEST_MCP_EMPTY", "") };
-        assert_eq!(
-            expand_env_vars("${TEST_MCP_EMPTY:-fallback}"),
-            "",
-            "empty var does not trigger default substitution (diverges from POSIX shell)"
-        );
-        unsafe { std::env::remove_var("TEST_MCP_EMPTY") };
     }
 
     #[test]

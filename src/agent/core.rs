@@ -516,8 +516,8 @@ mod tests {
 
     /// Directories that don't correspond to any real strictly-parsed file,
     /// so `register_defaults` in these tests gets no diagnostics behavior.
-    fn test_diagnostics_paths() -> crate::diagnostics::DiagnosticsPaths {
-        crate::diagnostics::DiagnosticsPaths {
+    fn test_diagnostics_paths() -> crate::diagnostics_dispatch::DiagnosticsPaths {
+        crate::diagnostics_dispatch::DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
             workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
             hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),

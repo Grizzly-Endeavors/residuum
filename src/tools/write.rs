@@ -7,7 +7,7 @@ use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
-use crate::diagnostics::DiagnosticsPaths;
+use crate::diagnostics_dispatch::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
 use crate::workspace::team_files::{TeamFiles, TeamPathGuard};
 
@@ -267,7 +267,8 @@ pub(super) fn append_diagnostics(
     content: &str,
     diagnostics_paths: &DiagnosticsPaths,
 ) {
-    let Some(diagnostics) = crate::diagnostics::diagnose(file_path, content, diagnostics_paths)
+    let Some(diagnostics) =
+        crate::diagnostics_dispatch::diagnose(file_path, content, diagnostics_paths)
     else {
         return;
     };

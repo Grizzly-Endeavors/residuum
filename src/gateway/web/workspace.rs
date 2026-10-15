@@ -734,7 +734,7 @@ fn diagnose_write_content(
         // Every file this module understands is text (YAML/TOML/JSON/MD), so
         // non-UTF-8 content on a recognized path is itself worth reporting,
         // even though there's no parser to run on bytes that aren't text.
-        return if crate::diagnostics::is_recognized(path, &paths) {
+        return if crate::diagnostics_dispatch::is_recognized(path, &paths) {
             vec![crate::diagnostics::Diagnostic::error(
                 "content is not valid UTF-8 text",
             )]
@@ -743,7 +743,7 @@ fn diagnose_write_content(
         };
     };
 
-    crate::diagnostics::diagnose(path, text, &paths).unwrap_or_default()
+    crate::diagnostics_dispatch::diagnose(path, text, &paths).unwrap_or_default()
 }
 
 /// `POST /api/agents/{name}/workspace/validate` — diagnostics for `content` as if it were

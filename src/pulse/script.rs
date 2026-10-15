@@ -19,8 +19,8 @@ use crate::bus::{
     AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     ResultDisposition, ends_with_sentinel,
 };
+use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 use crate::tools::SharedToolsPath;
-use crate::util::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// How much of a failed script's stderr is kept: its last 2 KiB, where the
 /// error that ended it usually is.

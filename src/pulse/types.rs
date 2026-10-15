@@ -214,12 +214,12 @@ pub(crate) fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String
     {
         format!(
             "See {} for how to update them.",
-            crate::util::MIGRATION_GUIDE_URL
+            crate::pulse::MIGRATION_GUIDE_URL
         )
     } else {
         format!(
             "See {} for the HEARTBEAT.yml format.",
-            crate::util::HEARTBEATS_REFERENCE_URL
+            crate::pulse::HEARTBEATS_REFERENCE_URL
         )
     };
     parts.push(guide);
