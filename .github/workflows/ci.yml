@@ -71,7 +71,7 @@ jobs:
           QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           RUST_PATHS_RE: '^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/(check|export)-generated-types\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
           WEB_PATHS_RE: '^web/|^scripts/(with-playwright-container|web-initial-route-size|ci-cpu-report)\.sh$|^\.github/workflows/(ci|web-checks)\.yml$'
-          DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml)$'
+          DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml|\.github/workflows/cross-compile\.yml)$'
           WORKFLOWS_PATHS_RE: '^\.github/(workflows/|actionlint\.yaml$)'
         run: |
           set -euo pipefail
@@ -102,7 +102,7 @@ jobs:
             echo '|--------|-----|'
             echo "| Rust | $rust |"
             echo "| Web | $web |"
-            echo "| Dependencies or toolchain (cross-compile in the merge queue) | $deps |"
+            echo "| Dependencies, toolchain or cross-compile.yml (cross-compile in the merge queue) | $deps |"
             echo "| Workflows (actionlint) | $workflows |"
           } >> "$GITHUB_STEP_SUMMARY"
 
