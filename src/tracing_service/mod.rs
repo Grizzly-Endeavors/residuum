@@ -159,7 +159,7 @@ pub struct BugReport {
     pub what_doing: String,
     /// Severity selected by the user.
     pub severity: Severity,
-    /// Runtime metadata gathered by `crate::client_context::gather_for_bug_report` in the root crate.
+    /// Runtime metadata gathered by the root crate's `client_context` module.
     pub client: ClientContext,
 }
 

@@ -313,4 +313,45 @@ mod tests {
         );
         assert_eq!(drain(&mut rx), vec![4]);
     }
+
+    #[tokio::test]
+    async fn next_where_returns_everything_up_to_the_match() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for n in 1..=4 {
+            tx.send(n).unwrap();
+        }
+        assert_eq!(
+            next_where("an even item past 2", &mut rx, |n| *n == 4).await,
+            vec![1, 2, 3, 4]
+        );
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "last received: [1, 2]")]
+    async fn next_where_reports_what_it_saw_when_the_sender_goes() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        drop(tx);
+        next_where("a 3", &mut rx, |n| *n == 3).await;
+    }
+
+    #[tokio::test]
+    async fn a_broadcast_receiver_reads_in_order() {
+        let (tx, mut rx) = broadcast::channel(4);
+        tx.send("a").unwrap();
+        tx.send("b").unwrap();
+        assert_eq!(next("the first message", &mut rx).await, "a");
+        assert_eq!(drain(&mut rx), vec!["b"]);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "missed 1 messages")]
+    async fn a_lagged_broadcast_receiver_fails_the_test() {
+        let (tx, mut rx) = broadcast::channel(1);
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        drain(&mut rx);
+    }
 }

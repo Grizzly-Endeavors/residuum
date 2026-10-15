@@ -751,7 +751,16 @@ impl Workbench {
         let api = HubApi::new();
         api.bind(h.app.clone());
         Self {
-            router: crate::workbench::server::router(dir, api, h.pairing.clone(), 7700),
+            router: crate::workbench::server::router(
+                dir,
+                api,
+                h.pairing.clone(),
+                7700,
+                crate::workbench::SdkContext {
+                    version: "2026.09.23",
+                    features: &[],
+                },
+            ),
         }
     }
 

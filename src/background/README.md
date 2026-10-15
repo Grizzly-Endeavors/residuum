@@ -186,9 +186,8 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 
 ### Depends On
 
-- **`crate::config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`.
+- **`crate::config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`, `RetryConfig` (passed to provider construction).
 - **`crate::inference`** — `InferenceProvider`, `CompletionOptions`, `SharedHttpClient`, `Message`. Used to build and call LLM providers for a session's turn.
-- **`crate::config`** — `RetryConfig`, passed to provider construction.
 - **`crate::agent::context`** — `assemble_system_prompt`/`build_system_content` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `crate::agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
 - **`crate::agent::turn`** — `execute_turn()`. The session executor calls this to run the turn loop, passing the session's `CancellationToken` as the stop token.
 - **`crate::agent::recent_messages`** — `RecentMessages`, the message buffer accumulated across a run's turns.
