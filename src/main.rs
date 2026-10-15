@@ -2,6 +2,10 @@
 //!
 //! Uses clap for CLI argument parsing. Run `residuum --help` for usage.
 
+#[cfg(test)]
+#[path = "testing/crypto.rs"]
+mod crypto;
+
 mod commands;
 
 #[tokio::main]

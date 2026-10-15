@@ -20,6 +20,7 @@
 //! in tests") describes which wait fits which situation.
 
 pub(crate) mod clock;
+mod crypto;
 pub(crate) mod gate;
 pub(crate) mod model;
 pub(crate) mod script;
