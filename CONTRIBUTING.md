@@ -98,7 +98,7 @@ When a CI run fails, `just ci-failures` lists every failing test of the latest r
 
 ### Testing
 
-Tests are required for new functionality. Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests go in `tests/`.
+Tests are required for new functionality. Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests are modules of the one test binary in `tests/it/`: add a file there and a `mod` line to `tests/it/main.rs`, and `cargo test --test it gateway::` runs one module. They share a process, so a test doesn't change environment variables, the current directory or the global tracing subscriber. Every file directly in `tests/` links the whole crate as a binary of its own; `tests/ts_export.rs`, which writes the web app's generated types and which the type scripts run by name, is the only one.
 
 A test waits on the event it checks, never on elapsed time: a duration that holds on an idle machine fails when several builds share it. A flaky test is fixed by making it wait on an event the code exposes, adding that signal to the code when there is none, never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs the tests as two concurrent copies with CPU burners alongside (`STRESS_COPIES`, `STRESS_ROUNDS` and `STRESS_BURN` tune it), and a test you add or fix must pass it. CI runs the whole suite this way too, in the Stress step of the Rust tests (pull requests and releases). A red Stress step blocks the merge like any other failure, and its summary splits the failures in two. A test under "failed under load only" waits on time, so fix the wait; a rerun that happens to pass hides it. A test under "also failed in the Tests step" is an ordinary failure, to fix as any failing test.
 
@@ -116,7 +116,7 @@ A test that needs a fake tool writes it with `crate::testing::script::write_exec
 
 `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` inside `#[cfg(test)]` modules and `#[test]` functions, so unit tests use unwrap, expect, panic, and `dbg!` with no suppression. Do not add `#[expect(clippy::unwrap_used)]` (or `expect_used`, `panic`, `dbg_macro`) on that code: the lint is already exempt, the expectation never fires, and `-D warnings` fails the build.
 
-`clippy::tests_outside_test_module` is denied and is not controllable from `clippy.toml`. Integration tests under `tests/` need `#[expect(clippy::tests_outside_test_module, reason = "...")]`. A helper at the top level of a `tests/*.rs` file — not inside `#[cfg(test)]`, and not itself a `#[test]` — still needs its own `#[expect]` when it uses unwrap, expect, panic, or `dbg!`.
+`clippy::tests_outside_test_module` is denied and is not controllable from `clippy.toml`. Integration tests under `tests/` need `#![expect(clippy::tests_outside_test_module, reason = "...")]` at the top of the module's file. A helper at the top level of a `tests/it/*.rs` module — not inside `#[cfg(test)]`, and not itself a `#[test]` — still needs its own `#[expect]` when it uses unwrap, expect, panic, or `dbg!`.
 
 ### Lint Denials
 
