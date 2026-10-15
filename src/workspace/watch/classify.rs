@@ -270,6 +270,10 @@ mod tests {
         drop(dir);
         let classified = classify(&removed, &roots);
         assert!(classified.root_gone);
-        assert!(classified.changes.is_empty());
+        assert!(
+            classified.changes.is_empty(),
+            "expected {:?} to be empty",
+            classified.changes
+        );
     }
 }

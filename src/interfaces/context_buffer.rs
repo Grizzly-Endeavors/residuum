@@ -195,7 +195,8 @@ mod tests {
     fn zero_capacity_disables_buffering() {
         let buffer = ContextBuffer::new(0);
         buffer.record("c", msg("Jane", "hi", 1));
-        assert!(buffer.drain("c").is_empty());
+        let actual = &buffer.drain("c");
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]

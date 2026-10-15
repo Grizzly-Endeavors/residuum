@@ -226,7 +226,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let keys = A2aKeys::new(dir.path());
         let snap = keys.snapshot().await.unwrap();
-        assert!(snap.list().is_empty());
+        let actual = &snap.list();
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test]
@@ -250,7 +251,8 @@ mod tests {
     async fn external_write_is_picked_up() {
         let dir = tempfile::tempdir().unwrap();
         let keys = A2aKeys::new(dir.path());
-        assert!(keys.snapshot().await.unwrap().list().is_empty());
+        let actual_2 = &keys.snapshot().await.unwrap().list();
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
 
         // Simulates `residuum a2a keys create` from another process.
         let mut store = A2aKeyStore::load(dir.path()).unwrap();

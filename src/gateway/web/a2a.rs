@@ -710,7 +710,11 @@ mod tests {
         let after = api_a2a_keys_list(State(hub_state(dir.path())))
             .await
             .unwrap();
-        assert!(after.keys.is_empty());
+        assert!(
+            after.keys.is_empty(),
+            "expected {:?} to be empty",
+            after.keys
+        );
     }
 
     #[tokio::test]
@@ -977,7 +981,10 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.valid, "invalid JSON should be flagged invalid");
-        assert!(!result.diagnostics.is_empty());
+        assert!(
+            !result.diagnostics.is_empty(),
+            "result.diagnostics should not be empty"
+        );
 
         let path = WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
         let saved = tokio::fs::read_to_string(&path).await.unwrap();
@@ -1169,7 +1176,11 @@ mod tests {
 
         let card = api_a2a_card(State(status_state(state))).await.unwrap().0;
         assert_eq!(card.name, "Test Agent");
-        assert!(card.skills.is_empty());
+        assert!(
+            card.skills.is_empty(),
+            "expected {:?} to be empty",
+            card.skills
+        );
     }
 
     #[tokio::test]

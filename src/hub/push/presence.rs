@@ -162,7 +162,8 @@ mod tests {
 
         connection.report("phone", false);
 
-        assert!(devices(&presence).is_empty());
+        let actual = &devices(&presence);
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[tokio::test(start_paused = true)]
@@ -192,7 +193,8 @@ mod tests {
         assert_eq!(devices(&presence), ["laptop"]);
 
         second.report("laptop", false);
-        assert!(devices(&presence).is_empty());
+        let actual_2 = &devices(&presence);
+        assert!(actual_2.is_empty(), "expected {actual_2:?} to be empty");
     }
 
     #[tokio::test(start_paused = true)]

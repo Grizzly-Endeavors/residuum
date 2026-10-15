@@ -628,9 +628,8 @@ main = "my-provider/claude-sonnet-4-6"
     fn diagnose_agent_toml_clean_config_has_no_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
-        assert!(
-            Config::diagnose_agent_toml(VALID_CONFIG, &agent_dir, "sam", &test_hub()).is_empty()
-        );
+        let actual = &Config::diagnose_agent_toml(VALID_CONFIG, &agent_dir, "sam", &test_hub());
+        assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
     #[test]
