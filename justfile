@@ -46,17 +46,35 @@ build: _web-dist
 release: web-build
     cargo build --release
 
-# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test memory::` or `just test --test it smoke::`
+# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test memory::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
 test *args: _web-dist
-    cargo test --quiet --no-fail-fast "$@"
+    #!/usr/bin/env bash
+    scripts/test-filters.sh note test "$@"
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    cargo test --quiet --no-fail-fast "$@" 2>&1 | tee "$log"
+    status="${PIPESTATUS[0]}"
+    scripts/test-filters.sh check test "$log" -- "$@"
+    exit "$status"
 
-# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`
+# Run one member crate's tests, quietly, without the web build: `just test-crate core util::fs` runs residuum-core's tests; args after the crate are cargo's
+[group('rust')]
+[positional-arguments]
+test-crate crate *args:
+    cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
+
+# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
 stress *args: _web-dist
+    #!/usr/bin/env bash
+    scripts/test-filters.sh note stress "$@"
     scripts/stress-tests.sh "$@"
+    status="$?"
+    scripts/test-filters.sh check stress target/stress/*/*.log -- "$@"
+    exit "$status"
 
 # Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker
 [group('rust')]
