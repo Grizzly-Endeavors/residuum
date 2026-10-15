@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::error::InferenceError;
-use crate::config::ThinkingConfig;
+use residuum_config::ThinkingConfig;
 
 /// Base64-encoded image data for multimodal messages.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

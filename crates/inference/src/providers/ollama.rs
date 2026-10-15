@@ -4,21 +4,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::config::RetryConfig;
-use crate::config::ThinkingConfig;
-use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
-use crate::inference::http::{
+use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
+use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
-use crate::inference::reply::{ReplyAssembler, plain_reasoning};
-use crate::inference::stream::{Flow, TrackedSink, read_ndjson};
-use crate::inference::types::current_exchange_start;
-use crate::inference::with_retry;
-use crate::inference::{
+use crate::reply::{ReplyAssembler, plain_reasoning};
+use crate::stream::{Flow, TrackedSink, read_ndjson};
+use crate::types::current_exchange_start;
+use crate::with_retry;
+use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ResponseFormat, StopReason, StreamSink, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
 };
+use residuum_config::RetryConfig;
+use residuum_config::ThinkingConfig;
 
 /// Ollama API client implementing the [`InferenceProvider`] trait.
 #[derive(Clone)]
@@ -760,15 +760,15 @@ struct OllamaEmbedResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RetryConfig;
-    use crate::inference::CompletionOptions;
-    use crate::inference::http::{HttpClientConfig, SharedHttpClient};
-    use crate::inference::test_support::{
+    use crate::CompletionOptions;
+    use crate::http::{HttpClientConfig, SharedHttpClient};
+    use crate::test_support::{
         RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response,
         ndjson_response, split_bytes, sse_chunks,
     };
-    use crate::inference::{StreamDelta, ThinkingBlock};
     use crate::testing::model::GatedModel;
+    use crate::{StreamDelta, ThinkingBlock};
+    use residuum_config::RetryConfig;
     use residuum_core::testing::gate::Gate;
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
@@ -855,7 +855,7 @@ mod tests {
 
     #[test]
     fn message_conversion_user_with_images() {
-        use crate::inference::ImageData;
+        use crate::ImageData;
         let images = vec![ImageData {
             media_type: "image/png".to_string(),
             data: "base64data".to_string(),
@@ -1301,7 +1301,7 @@ mod tests {
 
         let client = make_client(mock_server.uri(), "test-model");
         let options = CompletionOptions {
-            response_format: crate::inference::ResponseFormat::JsonSchema {
+            response_format: crate::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -1543,7 +1543,7 @@ mod tests {
 
     // --- Embedding client tests ---
 
-    use crate::inference::embedding::EmbeddingProvider;
+    use crate::embedding::EmbeddingProvider;
 
     #[tokio::test]
     async fn keep_alive_included_in_request() {

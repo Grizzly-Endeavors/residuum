@@ -1,6 +1,6 @@
 //! Per-role completion options resolved from the agent's global settings.
 
-use crate::config::Config;
+use residuum_config::Config;
 
 use super::CompletionOptions;
 
@@ -19,8 +19,8 @@ pub fn completion_options_for_role(cfg: &Config, role: &str) -> CompletionOption
 
 #[cfg(test)]
 mod tests {
-    use crate::config::test_helpers::{test_agent_dir, test_hub_config};
-    use crate::config::{
+    use residuum_config::test_helpers::{test_agent_dir, test_hub_config};
+    use residuum_config::{
         AgentConfigFile, ProvidersFile, ThinkingConfig, ThinkingLevel, from_file_and_env,
     };
 

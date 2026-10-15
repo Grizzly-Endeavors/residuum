@@ -1,30 +1,32 @@
 //! A model that answers through a [`Gate`], over HTTP or in process.
 //!
 //! [`GatedModel`] is a small HTTP server an agent's provider config points
-//! at. It records each call, waits at its gate, then either forwards the call
-//! to a wiremock server behind it (so a test keeps wiremock's scripted replies
-//! and request log) or answers with a fixed reply. [`GatedProvider`] is the
-//! same for code that takes an [`InferenceProvider`] directly. Either way, a
-//! test holds a model call open by closing the gate, instead of slowing the
-//! reply down.
+//! at. It waits at its gate, then forwards the call to a wiremock server
+//! behind it, so a test keeps wiremock's scripted replies and request log.
+//! [`GatedProvider`] is the same for code that takes an [`InferenceProvider`]
+//! directly. Either way, a test holds a model call open by closing the gate,
+//! instead of slowing the reply down.
+//!
+//! This crate's own tests also use a model that answers with a fixed reply
+//! and one that records each call it receives.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use serde_json::json;
 use tokio::task::JoinHandle;
 
-use crate::inference::{
+use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ToolDefinition,
 };
 use residuum_core::testing::gate::{Gate, GateEntry};
 
 /// One call the model received.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct RecordedCall {
     pub(crate) method: Method,
@@ -41,19 +43,23 @@ enum Answer {
         client: reqwest::Client,
     },
     /// Answer with this text as an OpenAI-shaped chat completion.
+    #[cfg(test)]
     Reply(String),
 }
 
 struct Shared {
     entry: GateEntry,
     answer: Answer,
-    calls: Mutex<Vec<RecordedCall>>,
+    #[cfg(test)]
+    calls: std::sync::Mutex<Vec<RecordedCall>>,
 }
 
 /// A model server whose answers wait at a gate. Dropping it stops the server.
-pub(crate) struct GatedModel {
+pub struct GatedModel {
     uri: String,
     gate: Gate,
+    /// Read by `calls`; the server's own handle keeps the state alive.
+    #[cfg(test)]
     shared: Arc<Shared>,
     task: JoinHandle<()>,
 }
@@ -62,7 +68,7 @@ impl GatedModel {
     /// Serve in front of `upstream` (a wiremock server's URI), forwarding every
     /// call to it. The gate starts open, so calls pass straight through until
     /// a test closes it.
-    pub(crate) async fn in_front_of(upstream: &str) -> Self {
+    pub async fn in_front_of(upstream: &str) -> Self {
         Self::start(
             Gate::open("model"),
             Answer::Forward {
@@ -75,43 +81,53 @@ impl GatedModel {
 
     /// Answer every call with `text`. The gate starts closed: no call is
     /// answered until the test releases it.
+    #[cfg(test)]
     pub(crate) async fn replying(text: &str) -> Self {
         Self::start(Gate::closed("model"), Answer::Reply(text.to_string())).await
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test-support helper: a loopback listener that can't bind or serve fails the test that started it"
+    )]
     async fn start(gate: Gate, answer: Answer) -> Self {
         let shared = Arc::new(Shared {
             entry: gate.entry(),
             answer,
-            calls: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            calls: std::sync::Mutex::new(Vec::new()),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let uri = format!("http://{}", listener.local_addr().unwrap());
         let app = axum::Router::new()
             .fallback(answer_call)
             .with_state(Arc::clone(&shared));
-        let task = crate::util::spawn_in_span(async move {
+        let task = residuum_core::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
             uri,
             gate,
+            #[cfg(test)]
             shared,
             task,
         }
     }
 
     /// The base URL to point a provider at.
-    pub(crate) fn uri(&self) -> String {
+    #[must_use]
+    pub fn uri(&self) -> String {
         self.uri.clone()
     }
 
     /// The gate every call waits at.
-    pub(crate) fn gate(&self) -> &Gate {
+    #[must_use]
+    pub fn gate(&self) -> &Gate {
         &self.gate
     }
 
     /// Every call received so far, recorded on arrival, before the gate.
+    #[cfg(test)]
     pub(crate) fn calls(&self) -> Vec<RecordedCall> {
         self.shared.calls.lock().unwrap().clone()
     }
@@ -133,6 +149,7 @@ async fn answer_call(
     let target = uri
         .path_and_query()
         .map_or_else(|| uri.path().to_string(), ToString::to_string);
+    #[cfg(test)]
     shared.calls.lock().unwrap().push(RecordedCall {
         method: method.clone(),
         target: target.clone(),
@@ -140,7 +157,8 @@ async fn answer_call(
     });
     shared.entry.pass().await;
     match &shared.answer {
-        Answer::Reply(text) => axum::Json(json!({
+        #[cfg(test)]
+        Answer::Reply(text) => axum::Json(serde_json::json!({
             "choices": [{ "message": { "role": "assistant", "content": text } }]
         }))
         .into_response(),
@@ -193,13 +211,15 @@ async fn forward(
 
 /// An in-process provider whose every completion waits at a gate, then
 /// answers with a fixed reply.
-pub(crate) struct GatedProvider {
+pub struct GatedProvider {
     entry: GateEntry,
     reply: String,
 }
 
 impl GatedProvider {
-    pub(crate) fn new(gate: &Gate, reply: &str) -> Self {
+    /// A provider whose completions wait at `gate`, then answer `reply`.
+    #[must_use]
+    pub fn new(gate: &Gate, reply: &str) -> Self {
         Self {
             entry: gate.entry(),
             reply: reply.to_string(),
@@ -260,7 +280,8 @@ mod tests {
 
         model.gate().close();
         let uri = model.uri();
-        let held = crate::util::spawn_in_span(async move { post(&uri, r#"{"n":2}"#).await });
+        let held =
+            residuum_core::util::spawn_in_span(async move { post(&uri, r#"{"n":2}"#).await });
         model.gate().until_held(1).await;
         assert_eq!(upstream.received_requests().await.unwrap().len(), 1);
         model.gate().release(1);
@@ -292,7 +313,7 @@ mod tests {
     async fn replying_answers_only_once_released() {
         let model = GatedModel::replying("hello").await;
         let uri = model.uri();
-        let held = crate::util::spawn_in_span(async move { post(&uri, "{}").await });
+        let held = residuum_core::util::spawn_in_span(async move { post(&uri, "{}").await });
         model.gate().until_held(1).await;
         model.gate().release(1);
         let (status, body) = wait::guarded("the reply", held).await.unwrap();
@@ -305,7 +326,7 @@ mod tests {
         let gate = Gate::closed("provider");
         let provider = Arc::new(GatedProvider::new(&gate, "done"));
         let running = Arc::clone(&provider);
-        let call = crate::util::spawn_in_span(async move {
+        let call = residuum_core::util::spawn_in_span(async move {
             running
                 .complete(&[], &[], &CompletionOptions::default())
                 .await

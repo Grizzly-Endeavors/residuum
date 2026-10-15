@@ -220,7 +220,7 @@ fn is_inline_media(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::test_support::{ScriptedServer, Step};
+    use crate::test_support::{ScriptedServer, Step};
 
     #[test]
     fn logged_requests_leave_out_inline_media() {

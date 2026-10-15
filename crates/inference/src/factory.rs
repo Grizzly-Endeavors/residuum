@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
-use crate::config::{ProviderKind, ProviderSpec};
-use crate::util::FatalError;
+use residuum_config::{ProviderKind, ProviderSpec};
+use residuum_core::util::FatalError;
 
 use super::failover::{FailoverProvider, NoticeSink};
 use super::image_input::{ImageInputGuard, LearnedTextOnly};
@@ -13,7 +13,7 @@ use super::providers::gemini::GeminiClient;
 use super::providers::ollama::OllamaClient;
 use super::providers::openai::{OpenAiClient, OpenAiDialect};
 use super::{InferenceProvider, SharedHttpClient};
-use crate::config::RetryConfig;
+use residuum_config::RetryConfig;
 
 /// Build a model provider from a resolved `ProviderSpec`, wrapped so images
 /// never reach a model that can't take them (see [`ImageInputGuard`]).
@@ -145,7 +145,7 @@ fn build_provider_client(
 
 /// A fallback provider that failed to build and was dropped from a chain,
 /// e.g. a deleted `secret:` reference or a missing env key.
-pub(crate) struct DroppedFallback {
+pub struct DroppedFallback {
     pub name: String,
     pub error: FatalError,
 }
@@ -198,7 +198,7 @@ fn build_provider_list(
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the primary provider cannot be built.
-pub(crate) fn build_provider_chain(
+pub fn build_provider_chain(
     specs: &[ProviderSpec],
     max_tokens: u32,
     http: SharedHttpClient,
@@ -222,7 +222,7 @@ pub(crate) fn build_provider_chain(
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the primary provider cannot be built.
-pub(crate) fn build_provider_chain_with_notices(
+pub fn build_provider_chain_with_notices(
     specs: &[ProviderSpec],
     max_tokens: u32,
     http: SharedHttpClient,
@@ -256,7 +256,7 @@ pub(crate) fn build_provider_chain_with_notices(
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the primary provider cannot be built.
-pub(crate) fn build_provider_chain_with_shared_notices(
+pub fn build_provider_chain_with_shared_notices(
     specs: &[ProviderSpec],
     max_tokens: u32,
     http: SharedHttpClient,
@@ -284,8 +284,8 @@ pub(crate) fn build_provider_chain_with_shared_notices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
-    use crate::inference::http::HttpClientConfig;
+    use crate::http::HttpClientConfig;
+    use residuum_config::{ModelSpec, ProviderKind, ProviderSpec};
 
     fn make_spec(kind: ProviderKind, model: &str, api_key: Option<&str>) -> ProviderSpec {
         ProviderSpec {
@@ -298,7 +298,7 @@ mod tests {
             api_key: api_key.map(String::from),
             keep_alive: None,
             session_affinity: None,
-            image_input: crate::config::ImageInput::Undeclared,
+            image_input: residuum_config::ImageInput::Undeclared,
         }
     }
 

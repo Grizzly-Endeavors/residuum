@@ -1526,13 +1526,13 @@ fn build_result_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::testing::model::GatedProvider;
     use crate::inference::{
         CompletionOptions, InferenceError, InferenceResponse, Message, ToolDefinition,
     };
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillIndex, SkillState};
     use crate::testing::bus_wait;
-    use crate::testing::model::GatedProvider;
     use crate::workspace::identity::IdentityFiles;
     use async_trait::async_trait;
     use residuum_core::testing::gate::Gate;

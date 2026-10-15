@@ -176,7 +176,7 @@ fn has_server_error_type(lower: &str) -> bool {
 /// A plain-language bucket for an [`InferenceError`], independent of which
 /// provider produced it. Providers collapse their own status code and
 /// error body into `InferenceError::Api`'s single string (see
-/// `src/inference/providers/`), so classification reads the status where the
+/// `crates/inference/src/providers/`), so classification reads the status where the
 /// clients put it (see [`http_status`]) and matches the rest of that string.
 enum FailureCategory {
     AuthFailed,

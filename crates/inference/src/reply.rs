@@ -197,7 +197,7 @@ pub fn strip_code_fences(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::test_support::RecordingSink;
+    use crate::test_support::RecordingSink;
 
     /// Run `input` through a splitter in pieces of `size` characters and
     /// return the text and the reasoning.

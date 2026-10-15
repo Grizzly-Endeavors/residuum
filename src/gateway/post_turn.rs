@@ -692,10 +692,10 @@ mod tests {
 
     use crate::bus::{NotifyName, SYSTEM_CHANNEL, Subscriber};
     use crate::config::WorkspaceLayout;
+    use crate::inference::testing::model::GatedProvider;
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
     use crate::testing::bus_wait;
-    use crate::testing::model::GatedProvider;
     use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
 
@@ -1141,7 +1141,7 @@ mod tests {
     async fn failed_subconscious_evaluation_still_delivers_queued_notes() {
         let dir = tempfile::tempdir().unwrap();
         let subconscious = Subconscious::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             crate::subconscious::SubconsciousConfig {
                 enabled: true,
                 ..crate::subconscious::SubconsciousConfig::default()

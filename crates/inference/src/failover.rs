@@ -287,8 +287,8 @@ impl InferenceProvider for FailoverProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::StreamDelta;
-    use crate::inference::test_support::RecordingSink;
+    use crate::StreamDelta;
+    use crate::test_support::RecordingSink;
 
     /// A mock provider that always succeeds with a fixed response.
     struct SuccessProvider {
@@ -853,10 +853,10 @@ mod tests {
 
     #[tokio::test]
     async fn real_streams_failing_over_mid_response_restart_exactly_once() {
-        use crate::config::RetryConfig;
-        use crate::inference::providers::anthropic::AnthropicClient;
-        use crate::inference::test_support::{ScriptedServer, sse_response};
-        use crate::inference::{HttpClientConfig, SharedHttpClient};
+        use crate::providers::anthropic::AnthropicClient;
+        use crate::test_support::{ScriptedServer, sse_response};
+        use crate::{HttpClientConfig, SharedHttpClient};
+        use residuum_config::RetryConfig;
 
         fn sse(name: &str, data: &str) -> String {
             format!("event: {name}\ndata: {data}\n\n")
@@ -947,12 +947,12 @@ mod tests {
     /// server, to follow reasoning across a failover.
     mod reasoning_across_providers {
         use super::*;
-        use crate::config::RetryConfig;
-        use crate::config::{ThinkingConfig, ThinkingLevel};
-        use crate::inference::providers::anthropic::AnthropicClient;
-        use crate::inference::providers::gemini::GeminiClient;
-        use crate::inference::test_support::{ScriptedServer, json_response};
-        use crate::inference::{HttpClientConfig, ProviderApi, SharedHttpClient, ThinkingOrigin};
+        use crate::providers::anthropic::AnthropicClient;
+        use crate::providers::gemini::GeminiClient;
+        use crate::test_support::{ScriptedServer, json_response};
+        use crate::{HttpClientConfig, ProviderApi, SharedHttpClient, ThinkingOrigin};
+        use residuum_config::RetryConfig;
+        use residuum_config::{ThinkingConfig, ThinkingLevel};
 
         const CLAUDE: &str = "claude-test";
         const GEMINI: &str = "gemini-3-pro-preview";
@@ -1122,9 +1122,9 @@ mod tests {
         use std::sync::Mutex;
 
         use super::*;
-        use crate::config::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
-        use crate::inference::ImageData;
-        use crate::inference::image_input::{ImageInputGuard, LearnedTextOnly};
+        use crate::ImageData;
+        use crate::image_input::{ImageInputGuard, LearnedTextOnly};
+        use residuum_config::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
 
         type Requests = Arc<Mutex<Vec<Vec<Message>>>>;
 

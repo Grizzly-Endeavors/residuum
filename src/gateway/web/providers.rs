@@ -9,7 +9,7 @@ use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::config::secrets::SecretStore;
-use crate::inference::providers::anthropic::is_oauth_key;
+use crate::inference::anthropic::is_oauth_key;
 
 use super::config::{PatchSavedResponse, ValidateResponse};
 use super::{ConfigApiState, HubDir};
@@ -125,14 +125,8 @@ async fn fetch_anthropic_models(
     if is_oauth_key(key) {
         req_builder = req_builder
             .header("Authorization", format!("Bearer {key}"))
-            .header(
-                "anthropic-beta",
-                crate::inference::providers::anthropic::OAUTH_BETA,
-            )
-            .header(
-                "user-agent",
-                crate::inference::providers::anthropic::OAUTH_USER_AGENT,
-            )
+            .header("anthropic-beta", crate::inference::anthropic::OAUTH_BETA)
+            .header("user-agent", crate::inference::anthropic::OAUTH_USER_AGENT)
             .header("x-app", "cli");
     } else {
         req_builder = req_builder.header("X-Api-Key", key);

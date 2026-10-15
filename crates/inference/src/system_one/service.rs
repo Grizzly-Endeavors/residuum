@@ -13,9 +13,9 @@ use super::client::{SystemOneClient, SystemOneEndpoint};
 use super::error::SystemOneError;
 use super::health::SystemOneStatus;
 use super::types::{Question, SystemOneResponse};
-use crate::config::RetryConfig;
-use crate::config::SystemOneConfig;
-use crate::inference::{HttpClientConfig, SharedHttpClient};
+use crate::{HttpClientConfig, SharedHttpClient};
+use residuum_config::RetryConfig;
+use residuum_config::SystemOneConfig;
 
 /// How often a down service is checked while an outage lasts, so the outage
 /// clears even when nothing else is asking for decisions.
@@ -184,7 +184,7 @@ impl SystemOneService {
             recovery_check(weak, interval),
             tracing::info_span!("system_one_recovery"),
         );
-        *slot = Some(crate::util::spawn_in_span(task));
+        *slot = Some(residuum_core::util::spawn_in_span(task));
     }
 
     fn stop_recovery_check(&self) {
@@ -256,8 +256,8 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::config::SystemOneProvider;
-    use crate::inference::system_one::SystemOneOutageKind;
+    use crate::system_one::SystemOneOutageKind;
+    use residuum_config::SystemOneProvider;
 
     fn config(url: &str) -> SystemOneConfig {
         SystemOneConfig {

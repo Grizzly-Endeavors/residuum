@@ -136,7 +136,7 @@ impl Observer {
     pub fn disabled(tz: Tz) -> Self {
         Self {
             inner: std::sync::RwLock::new(ObserverInner {
-                provider: Arc::new(crate::inference::providers::null::NullProvider),
+                provider: Arc::new(crate::inference::NullProvider),
                 config: ObserverConfig {
                     threshold_tokens: usize::MAX,
                     cooldown_secs: u64::MAX,

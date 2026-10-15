@@ -673,7 +673,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 ..ReflectorConfig::default()
@@ -733,7 +733,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: 0,
                 ..ReflectorConfig::default()
@@ -791,7 +791,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::testing::model::GatedProvider::new(
+            Box::new(crate::inference::testing::model::GatedProvider::new(
                 gate,
                 r#"{"observations": [{"content": "compressed", "timestamp": "2026-02-21T14:30", "visibility": "user"}]}"#,
             )),
@@ -1086,7 +1086,7 @@ mod tests {
         // A never-triggering reflector isolates this test to the embedding
         // step alone.
         let reflector = Reflector::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 ..ReflectorConfig::default()

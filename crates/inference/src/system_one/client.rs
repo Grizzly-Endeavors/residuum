@@ -12,8 +12,8 @@ use super::error::SystemOneError;
 use super::types::{
     ModelListResponse, Question, SystemOneModel, SystemOneRequest, SystemOneResponse,
 };
-use crate::config::RetryConfig;
-use crate::inference::http::{SharedHttpClient, read_error_body, warn_if_insecure_remote};
+use crate::http::{SharedHttpClient, read_error_body, warn_if_insecure_remote};
+use residuum_config::RetryConfig;
 
 /// Where a System 1 model is served and how to call it.
 #[derive(Clone, PartialEq, Eq)]
@@ -272,8 +272,8 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     use super::*;
-    use crate::inference::HttpClientConfig;
-    use crate::inference::system_one::Answer;
+    use crate::HttpClientConfig;
+    use crate::system_one::Answer;
 
     fn client(server: &MockServer, api_key: Option<&str>) -> SystemOneClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();

@@ -7,9 +7,9 @@ use async_trait::async_trait;
 
 use super::InferenceError;
 use super::SharedHttpClient;
-use crate::config::RetryConfig;
-use crate::config::{ProviderKind, ProviderSpec};
-use crate::util::FatalError;
+use residuum_config::RetryConfig;
+use residuum_config::{ProviderKind, ProviderSpec};
+use residuum_core::util::FatalError;
 
 /// Trait for model providers that generate vector embeddings.
 #[async_trait]
@@ -41,7 +41,7 @@ pub struct EmbeddingResponse {
 /// Returns `FatalError::Config` if:
 /// - The provider is Anthropic (no embeddings API)
 /// - A required API key is missing
-pub(crate) fn build_embedding_provider(
+pub fn build_embedding_provider(
     spec: &ProviderSpec,
     http: SharedHttpClient,
     retry: RetryConfig,
@@ -133,8 +133,8 @@ pub(crate) fn build_embedding_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
-    use crate::inference::http::HttpClientConfig;
+    use crate::http::HttpClientConfig;
+    use residuum_config::{ModelSpec, ProviderKind, ProviderSpec};
 
     fn make_spec(kind: ProviderKind, model: &str, api_key: Option<&str>) -> ProviderSpec {
         ProviderSpec {
@@ -147,7 +147,7 @@ mod tests {
             api_key: api_key.map(String::from),
             keep_alive: None,
             session_affinity: None,
-            image_input: crate::config::ImageInput::Undeclared,
+            image_input: residuum_config::ImageInput::Undeclared,
         }
     }
 

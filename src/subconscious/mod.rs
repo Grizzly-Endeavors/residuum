@@ -270,7 +270,7 @@ impl Subconscious {
     #[must_use]
     pub fn disabled(layout: WorkspaceLayout) -> Self {
         Self {
-            provider: Box::new(crate::inference::providers::null::NullProvider),
+            provider: Box::new(crate::inference::NullProvider),
             config: SubconsciousConfig::default(),
             layout,
         }

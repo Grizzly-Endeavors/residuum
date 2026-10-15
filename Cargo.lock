@@ -5022,6 +5022,7 @@ dependencies = [
  "reqwest 0.13.3",
  "residuum-config",
  "residuum-core",
+ "residuum-inference",
  "ring",
  "rmcp",
  "rpassword",
@@ -5102,6 +5103,32 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "residuum-inference"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "ctor",
+ "futures-util",
+ "rand 0.8.6",
+ "reqwest 0.13.3",
+ "residuum-config",
+ "residuum-core",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "ts-rs",
+ "url",
+ "wiremock",
 ]
 
 [[package]]

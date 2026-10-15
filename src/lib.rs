@@ -1,6 +1,7 @@
 pub use residuum_config as config;
 pub use residuum_config::agent_keys;
 pub use residuum_core::{diagnostics, time, util};
+pub use residuum_inference as inference;
 
 pub mod a2a;
 pub mod actions;
@@ -17,7 +18,6 @@ pub(crate) mod features;
 pub mod gateway;
 pub mod hub;
 pub mod inbox;
-pub mod inference;
 pub mod interfaces;
 pub mod logging;
 pub mod mcp;
