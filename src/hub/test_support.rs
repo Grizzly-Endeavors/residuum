@@ -33,5 +33,3 @@ pub(crate) fn write_agent(root: &Path, name: &str, model_url: &str) {
     )
     .unwrap();
 }
-
-pub(crate) use crate::util::test_ports::reserve_port;

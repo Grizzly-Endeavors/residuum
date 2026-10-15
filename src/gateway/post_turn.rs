@@ -693,6 +693,7 @@ mod tests {
     use crate::config::WorkspaceLayout;
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
+    use crate::testing::bus_wait;
     use crate::testing::gate::Gate;
     use crate::testing::model::GatedProvider;
     use crate::testing::wait;
@@ -780,7 +781,7 @@ mod tests {
         active: bool,
     ) {
         loop {
-            let event = wait::next_event("a memory cycle activity signal", activity).await;
+            let event = bus_wait::next_event("a memory cycle activity signal", activity).await;
             if event.kind == PostTurnActivityKind::Memory && event.active == active {
                 return;
             }

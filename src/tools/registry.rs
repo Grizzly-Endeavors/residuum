@@ -823,7 +823,7 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
     use crate::tools::{FileTracker, PathPolicy};
 
     #[tokio::test]
@@ -886,7 +886,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "{}", result.output);
-        wait::bus_barrier(bus).await;
+        bus_wait::bus_barrier(bus).await;
         !added.drain().is_empty()
     }
 

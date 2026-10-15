@@ -18,10 +18,11 @@ use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
-use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
+use crate::hub::test_support::{mount_reply, write_agent};
 use crate::testing::gate::Gate;
 use crate::testing::model::GatedModel;
-use crate::testing::wait::{self};
+use crate::testing::ports::reserve_port;
+use crate::testing::{bus_wait, wait};
 use crate::workspace::watch::WatchHealth;
 
 /// A hub over a temp residuum root with running-capable agents, each talking
@@ -2486,7 +2487,7 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
         panic!("the WebSocket closed before it answered the ping");
     })
     .await;
-    wait::bus_barrier(&agent_watch::agent_bus(&hub, "alpha")).await;
+    bus_wait::bus_barrier(&agent_watch::agent_bus(&hub, "alpha")).await;
     hub.gate("alpha").open_all();
 
     let replies = wait::guarded("both messages to be answered", async {

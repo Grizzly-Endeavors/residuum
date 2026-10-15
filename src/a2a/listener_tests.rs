@@ -3,7 +3,7 @@
 //! visibility, over real HTTP with the official client. See
 //! `docs/systems-usage/a2a.md`.
 
-use crate::util::test_ports::reserve_port;
+use crate::testing::ports::reserve_port;
 use std::sync::Arc;
 
 use a2a::{

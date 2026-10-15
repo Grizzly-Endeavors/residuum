@@ -287,7 +287,7 @@ mod tests {
     use super::*;
     use crate::inference::StreamDelta;
     use crate::inference::test_support::RecordingSink;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
 
     /// A mock provider that always succeeds with a fixed response.
     struct SuccessProvider {
@@ -464,14 +464,14 @@ mod tests {
     }
 
     async fn notice_text(sub: &mut crate::bus::Subscriber<NoticeEvent>) -> String {
-        wait::next_event("a notice", sub).await.message
+        bus_wait::next_event("a notice", sub).await.message
     }
 
     async fn assert_no_notice(
         bus: &crate::bus::BusHandle,
         sub: &mut crate::bus::Subscriber<NoticeEvent>,
     ) {
-        wait::bus_barrier(bus).await;
+        bus_wait::bus_barrier(bus).await;
         assert!(
             sub.drain().is_empty(),
             "expected no notice on a repeat call while already on the fallback"

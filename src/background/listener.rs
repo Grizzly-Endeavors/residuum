@@ -448,6 +448,7 @@ mod tests {
     use crate::config::ModelSelector;
     use crate::inference::MessageSender;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
+    use crate::testing::bus_wait;
     use crate::testing::wait;
     use tokio_util::sync::CancellationToken;
 
@@ -711,7 +712,7 @@ mod tests {
             .expect("a target that just finished must hand off to a retry, not error");
 
         let republished =
-            wait::next_event("a fresh spawn request to be republished", &mut spawns).await;
+            bus_wait::next_event("a fresh spawn request to be republished", &mut spawns).await;
         assert_eq!(republished.address, SessionAddress::from(address));
         assert_eq!(
             republished.inbound.map(|m| m.content),
@@ -740,7 +741,7 @@ mod tests {
         )
         .await;
 
-        let notice = wait::next_event("the first failure's notice", &mut sub).await;
+        let notice = bus_wait::next_event("the first failure's notice", &mut sub).await;
         assert!(notice.message.contains("email_check"));
         assert!(notice.message.contains("skill 'ghost' not found"));
     }
@@ -760,7 +761,7 @@ mod tests {
         )
         .await;
 
-        let notice = wait::next_event("the owner's failure notice", &mut sub).await;
+        let notice = bus_wait::next_event("the owner's failure notice", &mut sub).await;
         assert!(
             notice.message.contains("spawned-multitask-1a2b"),
             "{}",
@@ -787,7 +788,7 @@ mod tests {
             &err,
         )
         .await;
-        wait::next_event("the first call's notice", &mut sub).await;
+        bus_wait::next_event("the first call's notice", &mut sub).await;
 
         handle_spawn_failure(
             &bus.publisher(),
@@ -797,7 +798,7 @@ mod tests {
             &err,
         )
         .await;
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(
             sub.drain().is_empty(),
             "an unchanged, still-failing retry must not notice again"
@@ -821,7 +822,7 @@ mod tests {
             &anyhow::anyhow!("skill 'ghost' not found"),
         )
         .await;
-        wait::next_event("the first pulse failure's notice", &mut sub).await;
+        bus_wait::next_event("the first pulse failure's notice", &mut sub).await;
 
         handle_spawn_failure(
             &bus.publisher(),
@@ -831,7 +832,7 @@ mod tests {
             &anyhow::anyhow!("a different failure now"),
         )
         .await;
-        let notice = wait::next_event("a genuinely new error's notice", &mut sub).await;
+        let notice = bus_wait::next_event("a genuinely new error's notice", &mut sub).await;
         assert!(notice.message.contains("a different failure now"));
     }
 
@@ -853,7 +854,7 @@ mod tests {
         )
         .await;
 
-        let notice = wait::next_event("the scheduled action's notice", &mut sub).await;
+        let notice = bus_wait::next_event("the scheduled action's notice", &mut sub).await;
         assert!(notice.message.contains("scheduled action"));
         assert!(notice.message.contains("nightly digest"));
     }
@@ -882,7 +883,7 @@ mod tests {
             .await;
         }
 
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(sub.drain().is_empty());
     }
 }

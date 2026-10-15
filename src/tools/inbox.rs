@@ -512,6 +512,7 @@ impl Tool for UserInboxAddTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::bus_wait;
     use crate::testing::wait;
 
     #[test]
@@ -870,7 +871,7 @@ mod tests {
                 .is_file(),
             "the announced item is already saved"
         );
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(added.drain().is_empty(), "one item, one announcement");
     }
 
@@ -894,7 +895,7 @@ mod tests {
             .execute(serde_json::json!({"title": "lost", "body": "never saved"}))
             .await;
         assert!(result.is_err(), "saving into a file path fails");
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(
             added.drain().is_empty(),
             "an item that wasn't saved is not announced"

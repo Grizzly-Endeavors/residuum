@@ -529,7 +529,7 @@ mod tests {
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillDir, SkillIndex, SkillState};
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
     use async_trait::async_trait;
 
     /// A turn identity with no broker behind it: these tests exercise the
@@ -1268,7 +1268,7 @@ mod tests {
 
         assert_eq!(summary, "build is green");
 
-        let event = wait::next_event(
+        let event = bus_wait::next_event(
             "the intermediate text to reach the conversation",
             &mut conv_sub,
         )
@@ -1278,7 +1278,8 @@ mod tests {
         assert_eq!(event.conversation_id, "chan-1");
 
         let session_event =
-            wait::next_event("the session-stream event to be published", &mut session_sub).await;
+            bus_wait::next_event("the session-stream event to be published", &mut session_sub)
+                .await;
         assert_eq!(session_event.address, address);
         assert_eq!(session_event.run_id, "run-conv-tool");
         assert!(

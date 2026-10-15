@@ -585,7 +585,7 @@ mod tests {
     use crate::bus::{
         BusHandle, EndpointName, NoticeEvent, NotifyName, SYSTEM_CHANNEL, SessionAddress,
     };
-    use crate::testing::{clock, wait};
+    use crate::testing::{bus_wait, clock, wait};
 
     const ENDPOINT: &str = "fakechat";
 
@@ -1022,7 +1022,7 @@ mod tests {
 
         // Refused by the platform: its fix in the message, its own words in
         // the details only.
-        let refused = wait::next_event("the refused-send error", &mut errors).await;
+        let refused = bus_wait::next_event("the refused-send error", &mut errors).await;
         assert!(
             refused.message.contains("group-7")
                 && refused.message.contains("FakeChat")
@@ -1032,7 +1032,7 @@ mod tests {
             refused.message
         );
         assert_eq!(refused.details.as_deref(), Some("the platform refused it"));
-        let refused_note = wait::next_event("the refused-send note to main", &mut main).await;
+        let refused_note = bus_wait::next_event("the refused-send note to main", &mut main).await;
         assert!(
             refused_note.content.starts_with("[Delivery Failed]")
                 && refused_note.content.contains("group-7")
@@ -1042,7 +1042,7 @@ mod tests {
         );
 
         // An unknown conversation: the platform's reason is already plain.
-        let unknown = wait::next_event("the unknown-conversation error", &mut errors).await;
+        let unknown = bus_wait::next_event("the unknown-conversation error", &mut errors).await;
         assert!(
             unknown.message.contains("gone-1") && unknown.message.contains("no such conversation"),
             "the error should name the place and why: {}",
@@ -1050,7 +1050,7 @@ mod tests {
         );
         assert_eq!(unknown.details, None);
         let unknown_note =
-            wait::next_event("the unknown-conversation note to main", &mut main).await;
+            bus_wait::next_event("the unknown-conversation note to main", &mut main).await;
         assert!(
             unknown_note.content.starts_with("[Delivery Failed]")
                 && unknown_note.content.contains("gone-1")
@@ -1076,7 +1076,7 @@ mod tests {
     {
         let mut before = Vec::new();
         loop {
-            let event = wait::next_event(format!("an event naming {marker}"), sub).await;
+            let event = bus_wait::next_event(format!("an event naming {marker}"), sub).await;
             if text(&event).contains(marker) {
                 break;
             }
@@ -1111,7 +1111,7 @@ mod tests {
 
     /// Waits for the owner-facing error that says `FakeChat` replies are failing.
     async fn expect_failing_replies_error(errors: &mut crate::bus::Subscriber<ErrorEvent>) {
-        let error = wait::next_event("the failing-replies error", errors).await;
+        let error = bus_wait::next_event("the failing-replies error", errors).await;
         assert_failing_replies_error(&error);
     }
 
@@ -1241,7 +1241,7 @@ mod tests {
             .await
             .unwrap();
         let first_note = only_event_before(&mut main, "gone-1", note_text).await;
-        let first_notice = wait::next_event("the no-owner notice", &mut notices).await;
+        let first_notice = bus_wait::next_event("the no-owner notice", &mut notices).await;
         expect_no_owner_report(&first_note, &first_notice);
 
         // The owner messages the bot and a reply gets through; when the
@@ -1262,7 +1262,7 @@ mod tests {
             .await
             .unwrap();
         let second_note = only_event_before(&mut main, "gone-2", note_text).await;
-        let second_notice = wait::next_event("the second no-owner notice", &mut notices).await;
+        let second_notice = bus_wait::next_event("the second no-owner notice", &mut notices).await;
         expect_no_owner_report(&second_note, &second_notice);
     }
 
@@ -1288,7 +1288,7 @@ mod tests {
             .unwrap();
 
         expect_failing_replies_error(&mut errors).await;
-        let note = wait::next_event("the failing-replies note to main", &mut main).await;
+        let note = bus_wait::next_event("the failing-replies note to main", &mut main).await;
         assert_failing_replies_note(&note.content);
     }
 
@@ -1314,7 +1314,7 @@ mod tests {
             .unwrap();
 
         expect_failing_replies_error(&mut errors).await;
-        let note = wait::next_event("the failing-replies note to main", &mut main).await;
+        let note = bus_wait::next_event("the failing-replies note to main", &mut main).await;
         assert_failing_replies_note(&note.content);
     }
 }
