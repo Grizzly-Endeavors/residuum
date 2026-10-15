@@ -24,7 +24,8 @@ const HUB_FAILED = "hub config reload failed (keeping current hub config): bad t
 const WORKSPACE_REPORT = "workspace configuration reloaded";
 
 // The quiet window is module state, so each test starts a minute after the last
-// one began: whatever an earlier test left open has ended, in any test order.
+// one ended, wherever that test moved the clock: whatever an earlier test left
+// open has closed, in any test order.
 let clock = Date.parse("2026-10-09T12:00:00Z");
 
 beforeEach(() => {
@@ -35,6 +36,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clock = Date.now();
   vi.useRealTimers();
 });
 
