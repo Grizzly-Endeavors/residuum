@@ -48,10 +48,17 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_A
 # below. A commit checked in place builds into the checkout's own target
 # directory (CARGO_TARGET_DIR when set, else target/), so the push reuses the
 # crate artifacts the checkout's cargo runs already left there. A commit checked
-# in a temporary worktree builds into target/pre-push, which keeps the detached
-# tree from replacing the artifacts a cargo run in the checkout depends on;
-# sccache shares the dependency builds between the two.
+# in a temporary tree builds into target/pre-push, which keeps the detached tree
+# from replacing the artifacts a cargo run in the checkout depends on.
+# target/pre-push keeps its own builds from push to push, and the stable tree
+# (target/pre-push/tree) keeps the modification times of unchanged files, which
+# is what lets Cargo reuse those builds.
 PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
+STABLE_DIR="$REPO_ROOT/target/pre-push"
+STABLE_TREE="$STABLE_DIR/tree"
+STABLE_LOCK="$STABLE_DIR/tree.lock"
+# The commit web/dist was last built from in the stable tree.
+DIST_COMMIT_FILE="$STABLE_DIR/tree-dist-commit"
 
 # Git passes one line per pushed ref on stdin. Read them all up front: the
 # checks below run tools that would otherwise read the rest of it.
@@ -139,8 +146,14 @@ ensure_web_deps() {
     (cd "$web" && npm ci --no-audit --no-fund >/dev/null)
 }
 
+# TEMP_TREE is the tree the checks of the current commit run in. TEMP_DIR is
+# set only when that tree is a temporary worktree, which the cleanup removes;
+# the stable tree stays. LOCK_HELD is 1 while this hook holds the stable lock.
 TEMP_DIR=""
 TEMP_TREE=""
+LOCK_HELD=0
+# What prepare_worktree checked the commit in, for the line that names it.
+TREE_NAME=""
 TEST_LOG=""
 TS_EXPORT_DIR=""
 cleanup_test_scratch() {
@@ -155,26 +168,102 @@ cleanup_test_scratch() {
 }
 cleanup() {
     cleanup_test_scratch
-    [ -n "$TEMP_DIR" ] || return 0
     # Unlink the borrowed node_modules first so nothing below can reach
     # through it into this checkout's copy.
-    [ -L "$TEMP_TREE/web/node_modules" ] && rm -f "$TEMP_TREE/web/node_modules"
-    git worktree remove --force "$TEMP_TREE" >/dev/null 2>&1 || rm -rf "$TEMP_TREE"
-    git worktree prune >/dev/null 2>&1
-    rm -rf "$TEMP_DIR"
-    TEMP_DIR=""
+    if [ -n "$TEMP_TREE" ] && [ -L "$TEMP_TREE/web/node_modules" ]; then
+        rm -f "$TEMP_TREE/web/node_modules"
+    fi
+    if [ -n "$TEMP_DIR" ]; then
+        git worktree remove --force "$TEMP_TREE" >/dev/null 2>&1 || rm -rf "$TEMP_TREE"
+        git worktree prune >/dev/null 2>&1
+        rm -rf "$TEMP_DIR"
+        TEMP_DIR=""
+    fi
+    TEMP_TREE=""
+    if [ "$LOCK_HELD" = 1 ]; then
+        rm -rf "$STABLE_LOCK"
+        LOCK_HELD=0
+    fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Check out the pushed commit in a temporary worktree that borrows this
+# Makes the stable tree a checkout of the commit $1. A checkout rewrites only
+# the files that differ, so every other file keeps its modification time and
+# Cargo keeps its builds. Returns 1 when that fails.
+refresh_stable_tree() {
+    local sha="$1" listing
+    # Drops the registration of a tree whose directory is gone.
+    git worktree prune >/dev/null 2>&1
+    listing="$(git worktree list --porcelain)"
+    if [ -d "$STABLE_TREE" ] && grep -Fxq "worktree $STABLE_TREE" <<<"$listing"; then
+        (cd "$STABLE_TREE" && git checkout --quiet --force --detach "$sha" && git clean -fdq)
+        return
+    fi
+    # A directory that is not a registered worktree is removed and added again.
+    rm -rf "$STABLE_TREE"
+    git worktree prune >/dev/null 2>&1
+    git worktree add --quiet --detach "$STABLE_TREE" "$sha" >&2
+}
+
+# Points the stable tree's web/node_modules at this checkout's copy when the
+# lockfiles match. Otherwise the tree has no link, and ensure_web_deps installs
+# its own copy when the web checks need one.
+link_stable_node_modules() {
+    if [ -L "$STABLE_TREE/web/node_modules" ]; then
+        rm -f "$STABLE_TREE/web/node_modules"
+    fi
+    if [ -d "$REPO_ROOT/web/node_modules" ] && cmp -s "$REPO_ROOT/web/package-lock.json" "$STABLE_TREE/web/package-lock.json"; then
+        # A real directory is left by an npm ci run in the tree; the link replaces it.
+        if [ -d "$STABLE_TREE/web/node_modules" ]; then
+            rm -rf "$STABLE_TREE/web/node_modules"
+        fi
+        ln -s "$REPO_ROOT/web/node_modules" "$STABLE_TREE/web/node_modules"
+    fi
+}
+
+# Checks out the commit $1 in the stable tree under the stable lock. Returns 1,
+# having said why, when another live push holds the lock or the tree cannot be
+# prepared, and the caller then uses a temporary worktree. Never call it in a
+# subshell: the lock and the cleanup trap need the variables it sets.
+prepare_stable_tree() {
+    local sha="$1" holder=""
+    if ! mkdir -p "$STABLE_DIR"; then
+        note "couldn't create $STABLE_DIR; checking in a temporary worktree instead."
+        return 1
+    fi
+    if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
+        holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
+        if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+            note "another push (pid $holder) is using the stable pre-push tree; checking in a temporary worktree instead."
+            return 1
+        fi
+        note "the stable pre-push tree's lock was held by pid ${holder:-unknown}, which is no longer running; taking it over."
+        rm -rf "$STABLE_LOCK"
+        if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
+            note "another push took the stable pre-push tree first; checking in a temporary worktree instead."
+            return 1
+        fi
+    fi
+    LOCK_HELD=1
+    printf '%s\n' "$$" >"$STABLE_LOCK/pid"
+    TEMP_TREE="$STABLE_TREE"
+    if ! refresh_stable_tree "$sha"; then
+        note "couldn't prepare the stable pre-push tree at $STABLE_TREE; checking in a temporary worktree instead."
+        cleanup
+        return 1
+    fi
+    link_stable_node_modules
+    TREE_NAME="the stable pre-push tree"
+}
+
+# Checks out the commit $1 in a new temporary worktree that borrows this
 # checkout's node_modules. Leaves its path in TEMP_TREE. Returns 1 on failure.
 # Never call it in a subshell: the cleanup trap needs the paths it sets.
-prepare_worktree() {
+prepare_temp_worktree() {
     local sha="$1"
-    cleanup
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/residuum-pre-push.XXXXXX")" || return 1
     TEMP_TREE="$TEMP_DIR/tree"
     git worktree add --quiet --detach "$TEMP_TREE" "$sha" >&2 || return 1
@@ -183,6 +272,24 @@ prepare_worktree() {
     if [ -d "$REPO_ROOT/web/node_modules" ] && cmp -s "$REPO_ROOT/web/package-lock.json" "$TEMP_TREE/web/package-lock.json"; then
         ln -s "$REPO_ROOT/web/node_modules" "$TEMP_TREE/web/node_modules"
     fi
+    TREE_NAME="a temporary worktree"
+}
+
+# Checks out the pushed commit $1 in the stable tree when it can be used, and
+# otherwise in a temporary worktree. Leaves the tree's path in TEMP_TREE and
+# names the tree in TREE_NAME. Returns 1 on failure.
+# Never call it in a subshell: the cleanup trap needs the paths it sets.
+prepare_worktree() {
+    local sha="$1"
+    cleanup
+    # Cargo reads .cargo/config.toml from every parent directory, so a tree below
+    # the checkout would build with the checkout's configuration as well as its own.
+    if [ -d "$REPO_ROOT/.cargo" ]; then
+        note "$REPO_ROOT/.cargo exists, and Cargo would read its configuration in the stable tree; checking in a temporary worktree instead."
+    elif prepare_stable_tree "$sha"; then
+        return 0
+    fi
+    prepare_temp_worktree "$sha"
 }
 
 # Whether the Rust source file $1 declares the module $2 (`mod name;`, with or
@@ -467,17 +574,39 @@ generated_types_check() {
     return 1
 }
 
+# Whether web/dist must be built before the Rust checks of the commit $2 in the
+# tree $1, which the caller has entered. The stable tree reuses its dist while
+# no web source differs from the commit the dist was built from, Markdown aside.
+# Any other tree rebuilds when the push changes web/, and always when it has no
+# dist of its own: a temporary worktree has none, and the checkout's dist is
+# rebuilt when it is missing.
+web_dist_needs_build() {
+    local dir="$1" sha="$2" recorded=""
+    if [ "$dir" = "$STABLE_TREE" ]; then
+        recorded="$(cat "$DIST_COMMIT_FILE" 2>/dev/null)"
+        [ -n "$recorded" ] && [ -f web/dist/index.html ] && [ -f web/dist/sw.js ] &&
+            git diff --quiet "$recorded" "$sha" -- web ':(exclude)web/**/*.md' && return 1
+        return 0
+    fi
+    [ "$dir" != "$REPO_ROOT" ] || [ "$TOUCHES_WEB" = 1 ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]
+}
+
 run_rust_checks() {
-    local dir="$1"
+    local dir="$1" sha="$2"
     (
         cd "$dir" || exit 1
         # build.rs refuses to compile without web/dist, and the gateway's tests
-        # read the built service worker. A push that changes web/ rebuilds it
-        # from the sources being checked, and a temporary worktree has no dist
-        # of its own. Otherwise an existing dist is reused.
-        if [ "$dir" != "$REPO_ROOT" ] || [ "$TOUCHES_WEB" = 1 ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]; then
+        # read the built service worker, so the Rust checks build it when
+        # web_dist_needs_build says the dist is not the one they need.
+        if web_dist_needs_build "$dir" "$sha"; then
             ensure_web_deps web || exit 1
             echo "Building web/dist..."
+            # The stable tree's record names the commit the dist came from, so it
+            # goes once the build has replaced the dist, and is written after
+            # the build succeeds.
+            if [ "$dir" = "$STABLE_TREE" ]; then
+                rm -f "$DIST_COMMIT_FILE"
+            fi
             # Vite's output, chunk-size advice included, only matters when the
             # build fails.
             local build_output
@@ -485,6 +614,12 @@ run_rust_checks() {
                 echo "$build_output" >&2
                 exit 1
             }
+            if [ "$dir" = "$STABLE_TREE" ]; then
+                printf '%s\n' "$sha" >"$DIST_COMMIT_FILE" || {
+                    echo "couldn't record the commit web/dist was built from in $DIST_COMMIT_FILE" >&2
+                    exit 1
+                }
+            fi
         fi
     ) || {
         FAILED+=("${CHECK_SCOPE}web build for the Rust checks")
@@ -605,7 +740,6 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
         PRE_PUSH_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
         echo -e "${BOLD}Checking $local_ref in place.${NC}"
     else
-        echo -e "${BOLD}Checking $local_ref in a temporary worktree.${NC}"
         if ! prepare_worktree "$local_sha"; then
             cleanup
             FAILED+=("${CHECK_SCOPE}temporary worktree")
@@ -614,10 +748,11 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
         fi
         dir="$TEMP_TREE"
         PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
+        echo -e "${BOLD}Checking $local_ref in $TREE_NAME.${NC}"
     fi
 
     if [ "$TOUCHES_RUST" = 1 ]; then
-        run_rust_checks "$dir"
+        run_rust_checks "$dir" "$local_sha"
     fi
     [ "$TOUCHES_WEB" = 1 ] && run_web_checks "$dir"
     cleanup
