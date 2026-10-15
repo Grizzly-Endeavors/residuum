@@ -6,9 +6,13 @@
 //! only stops a test that would otherwise hang.
 //!
 //! - [`wait`]: waits on channels, watches and polled conditions.
+//! - [`bus_wait`]: waits on what the bus and the hub publish.
 //! - [`clock`]: moving a paused clock, for code with no real I/O.
 //! - [`gate`]: holding a call open until the test lets it through.
+//! - [`log`]: capturing the log events a test causes.
 //! - [`model`]: a model server and provider that answer through a gate.
+//! - [`ports`]: loopback ports for a test that tells a component which port to
+//!   bind.
 //! - [`script`]: writing a fake tool the test then runs, so its exec never
 //!   fails with "Text file busy" when another test forks.
 //!
@@ -21,11 +25,14 @@
 //! either; it writes scripts through [`script`]. `CONTRIBUTING.md` ("Waiting
 //! in tests") describes which wait fits which situation.
 
+pub(crate) mod bus_wait;
 pub(crate) mod clock;
 mod crypto;
 pub(crate) mod gate;
+pub(crate) mod log;
 mod manifest_scan;
 pub(crate) mod model;
+pub(crate) mod ports;
 pub(crate) mod script;
 mod source_scan;
 pub(crate) mod wait;

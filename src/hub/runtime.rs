@@ -1119,7 +1119,8 @@ pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
+    use crate::hub::test_support::{mount_reply, write_agent};
+    use crate::testing::ports::reserve_port;
     use wiremock::MockServer;
 
     /// What the hub said about one config reload.
@@ -1467,7 +1468,7 @@ mod tests {
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
         let (boot_id, _) = hub.team_events().await;
-        let new_port = crate::util::test_ports::unprobed_port_after(hub.gateway_port);
+        let new_port = crate::testing::ports::unprobed_port_after(hub.gateway_port);
 
         std::fs::write(
             hub.hub_config_path(),
@@ -1499,7 +1500,7 @@ mod tests {
 
     #[test]
     fn an_a2a_bind_failure_is_worded_by_its_io_cause() {
-        let port = crate::util::test_ports::free_port();
+        let port = crate::testing::ports::free_port();
         let in_use = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::AddrInUse))
             .context(format!(
                 "failed to bind the A2A listener on 127.0.0.1:{port}"

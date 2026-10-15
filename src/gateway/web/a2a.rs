@@ -630,7 +630,7 @@ pub(super) async fn api_a2a_card(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::test_ports::free_port;
+    use crate::testing::ports::free_port;
 
     fn hub_state(dir: &std::path::Path) -> HubApiState {
         HubApiState::for_test(dir)

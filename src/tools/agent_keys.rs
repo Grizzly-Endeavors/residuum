@@ -183,7 +183,7 @@ impl Tool for AgentKeyDeleteTool {
 mod tests {
     use super::*;
     use crate::agent_keys::AgentKeys;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
 
     #[tokio::test]
     async fn list_shows_metadata_never_values() {
@@ -326,7 +326,7 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "delete should succeed: {}", result.output);
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             notices.drain().is_empty(),
             "deleting the agent's own key should not notify"

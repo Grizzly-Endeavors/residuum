@@ -1694,6 +1694,7 @@ async fn update_and_publish_usage(
 mod tests {
     use super::*;
     use crate::inference::Role;
+    use crate::testing::bus_wait;
     use crate::testing::gate::{Gate, GateEntry};
     use crate::testing::wait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1746,7 +1747,7 @@ mod tests {
 
         // Both still reach the main conversation.
         for want in ["hello", "a note"] {
-            let event = wait::next_event("a reply in the main conversation", &mut main).await;
+            let event = bus_wait::next_event("a reply in the main conversation", &mut main).await;
             assert!(
                 matches!(&event, MainConversationEvent::Response { content, .. } if content == want),
                 "{event:?}"
@@ -1952,7 +1953,8 @@ mod tests {
             .publish_intermediate("checking the build now", 0)
             .await;
 
-        let event = wait::next_event("a SessionResponseEvent to be published", &mut conv_sub).await;
+        let event =
+            bus_wait::next_event("a SessionResponseEvent to be published", &mut conv_sub).await;
         assert_eq!(event.content, "checking the build now");
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
@@ -1962,7 +1964,7 @@ mod tests {
             "intermediate turn text must not be marked as the run's final output"
         );
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             intermediate_sub.drain().is_empty(),
             "a conversation session's intermediate text must never publish IntermediateEvent, \
@@ -1971,7 +1973,8 @@ mod tests {
         );
 
         let session_event =
-            wait::next_event("the session-stream event to be published", &mut session_sub).await;
+            bus_wait::next_event("the session-stream event to be published", &mut session_sub)
+                .await;
         assert_eq!(session_event.address, address);
         assert_eq!(session_event.run_id, "run-1");
         assert!(
@@ -2005,7 +2008,7 @@ mod tests {
 
         events.publish_intermediate("thinking...", 0).await;
 
-        let event = wait::next_event("an IntermediateEvent to be published", &mut sub).await;
+        let event = bus_wait::next_event("an IntermediateEvent to be published", &mut sub).await;
         assert_eq!(event.content, "thinking...");
         assert_eq!(event.correlation_id, "corr-1");
     }
@@ -2035,7 +2038,8 @@ mod tests {
         };
         events.publish_intermediate("thinking...", 0).await;
 
-        let event = wait::next_event("the main conversation to get the text", &mut main_sub).await;
+        let event =
+            bus_wait::next_event("the main conversation to get the text", &mut main_sub).await;
         assert!(
             matches!(
                 &event,
@@ -2044,7 +2048,7 @@ mod tests {
             ),
             "{event:?}"
         );
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             endpoint_sub.drain().is_empty(),
             "the web UI's endpoint topic has no subscriber for a turn's intermediate text"
@@ -2070,7 +2074,7 @@ mod tests {
         };
         events.publish_intermediate("nothing to see", 0).await;
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             sub.drain().is_empty(),
             "with no output endpoint there is nowhere to publish intermediate text"
@@ -2830,7 +2834,8 @@ mod tests {
         /// The next usage event, passing over the conversation's other events.
         async fn next(&mut self) -> TurnUsageEvent {
             loop {
-                let event = wait::next_event("a usage event to be published", &mut self.0).await;
+                let event =
+                    bus_wait::next_event("a usage event to be published", &mut self.0).await;
                 if let MainConversationEvent::TurnUsage(usage) = event {
                     return usage;
                 }
@@ -2927,7 +2932,7 @@ mod tests {
             )
             .await;
 
-        let event = wait::next_event("a SessionEvent to be published", &mut sub).await;
+        let event = bus_wait::next_event("a SessionEvent to be published", &mut sub).await;
         assert_eq!(event.address, address);
         assert_eq!(event.run_id, "run-1");
         assert!(matches!(
@@ -3387,7 +3392,8 @@ mod tests {
         .expect("a truncated response is still a completed turn, not an error");
         assert_eq!(texts, vec!["cut off mid-sen".to_string()]);
 
-        let notice = wait::next_event("a truncation notice to be published", &mut notices).await;
+        let notice =
+            bus_wait::next_event("a truncation notice to be published", &mut notices).await;
         assert!(
             notice.message.contains("64-token output limit"),
             "the notice should name the configured limit: {}",
@@ -3874,7 +3880,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        let mut next = async || bus_wait::next_event("a notice", &mut notices).await.message;
         assert_eq!(
             next().await,
             "This model can't see images, so 1 image was left out of the request.",
@@ -4000,7 +4006,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        let mut next = async || bus_wait::next_event("a notice", &mut notices).await.message;
         assert_eq!(next().await, THINKING_DROPPED_NOTICE);
         assert_eq!(next().await, "end of turn 0", "one notice for two requests");
         assert_eq!(

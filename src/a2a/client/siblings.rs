@@ -669,7 +669,7 @@ mod tests {
     async fn losing_the_directory_address_keeps_previously_registered_siblings() {
         let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
-        let log = crate::hub::test_support::EventLog::default();
+        let log = crate::testing::log::EventLog::default();
         let _capture = log.capture();
         let (tx, task) = start(fanout_of(&hub).await);
 

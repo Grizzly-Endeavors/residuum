@@ -11,9 +11,6 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, watch};
 
-use crate::bus::WorkbenchEvent;
-use crate::bus::{BusHandle, Subscriber, topics};
-
 /// The suite's one deadline: how long a wait runs before the test is taken to
 /// have hung.
 pub(crate) const HANG_GUARD: Duration = Duration::from_secs(60);
@@ -139,18 +136,6 @@ impl<T> Recv for mpsc::UnboundedReceiver<T> {
     }
 }
 
-impl Recv for crate::hub::agent_watch::AgentChangeReceiver {
-    type Item = crate::hub::agent_watch::AgentChange;
-
-    async fn recv_next(&mut self) -> Option<Self::Item> {
-        self.recv().await
-    }
-
-    fn try_next(&mut self) -> Option<Self::Item> {
-        self.try_recv()
-    }
-}
-
 /// A lagged receiver missed messages, so a test reading it can't conclude
 /// anything from what it saw: it fails instead.
 impl<T: Clone> Recv for broadcast::Receiver<T> {
@@ -184,20 +169,6 @@ pub(crate) async fn next<R: Recv>(what: impl Display, rx: &mut R) -> R::Item {
     match guarded(&what, rx.recv_next()).await {
         Some(item) => item,
         None => panic!("the sender went away while waiting for {what}"),
-    }
-}
-
-/// The next event a bus subscriber receives, waiting for one. A bus subscriber
-/// has no non-blocking receive, so it is waited on here rather than through
-/// [`Recv`].
-pub(crate) async fn next_event<E>(what: impl Display, sub: &mut Subscriber<E>) -> E
-where
-    E: Clone + Send + Sync + 'static,
-{
-    match guarded(&what, sub.recv()).await {
-        Ok(Some(event)) => event,
-        Ok(None) => panic!("the broker shut down while waiting for {what}"),
-        Err(e) => panic!("a bus subscriber failed to receive while waiting for {what}: {e}"),
     }
 }
 
@@ -261,30 +232,6 @@ where
 /// a sync point that proves everything the test cares about has been sent.
 pub(crate) fn drain<R: Recv>(rx: &mut R) -> Vec<R::Item> {
     std::iter::from_fn(|| rx.try_next()).collect()
-}
-
-/// Returns once every event `bus` was sent before this call has been handed
-/// to every subscriber. The broker takes commands in order and fans each one
-/// out before the next, so a barrier event that comes back proves the earlier
-/// publishes were fanned out too. Then `drain` on a subscriber shows exactly
-/// what it was sent.
-pub(crate) async fn bus_barrier(bus: &BusHandle) {
-    let mut barrier: Subscriber<WorkbenchEvent> = bus
-        .subscribe(topics::Workbench)
-        .await
-        .expect("the broker is running");
-    bus.publisher()
-        .publish(
-            topics::Workbench,
-            WorkbenchEvent::Updated {
-                name: "barrier".to_string(),
-            },
-        )
-        .await
-        .expect("the broker is running");
-    guarded("the bus barrier", barrier.recv())
-        .await
-        .expect("the broker is running");
 }
 
 #[cfg(test)]
@@ -365,94 +312,5 @@ mod tests {
             3
         );
         assert_eq!(drain(&mut rx), vec![4]);
-    }
-
-    #[tokio::test]
-    async fn next_event_reads_the_next_bus_event() {
-        let bus = crate::bus::spawn_broker();
-        let mut sub: Subscriber<WorkbenchEvent> = bus.subscribe(topics::Workbench).await.unwrap();
-        bus.publisher()
-            .publish(
-                topics::Workbench,
-                WorkbenchEvent::Updated {
-                    name: "first".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            next_event("the first workbench event", &mut sub).await,
-            WorkbenchEvent::Updated {
-                name: "first".to_string()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn next_where_returns_everything_up_to_the_match() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        for n in 1..=4 {
-            tx.send(n).unwrap();
-        }
-        assert_eq!(
-            next_where("an even item past 2", &mut rx, |n| *n == 4).await,
-            vec![1, 2, 3, 4]
-        );
-        assert!(drain(&mut rx).is_empty());
-    }
-
-    #[tokio::test]
-    #[should_panic(expected = "last received: [1, 2]")]
-    async fn next_where_reports_what_it_saw_when_the_sender_goes() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        tx.send(1).unwrap();
-        tx.send(2).unwrap();
-        drop(tx);
-        next_where("a 3", &mut rx, |n| *n == 3).await;
-    }
-
-    #[tokio::test]
-    async fn bus_barrier_follows_every_earlier_publish() {
-        let bus = crate::bus::spawn_broker();
-        let mut sub: Subscriber<WorkbenchEvent> = bus.subscribe(topics::Workbench).await.unwrap();
-        bus.publisher()
-            .publish(
-                topics::Workbench,
-                WorkbenchEvent::Updated {
-                    name: "earlier".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-        bus_barrier(&bus).await;
-        assert_eq!(
-            sub.drain(),
-            vec![
-                WorkbenchEvent::Updated {
-                    name: "earlier".to_string()
-                },
-                WorkbenchEvent::Updated {
-                    name: "barrier".to_string()
-                },
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_broadcast_receiver_reads_in_order() {
-        let (tx, mut rx) = broadcast::channel(4);
-        tx.send("a").unwrap();
-        tx.send("b").unwrap();
-        assert_eq!(next("the first message", &mut rx).await, "a");
-        assert_eq!(drain(&mut rx), vec!["b"]);
-    }
-
-    #[tokio::test]
-    #[should_panic(expected = "missed 1 messages")]
-    async fn a_lagged_broadcast_receiver_fails_the_test() {
-        let (tx, mut rx) = broadcast::channel(1);
-        tx.send(1).unwrap();
-        tx.send(2).unwrap();
-        drain(&mut rx);
     }
 }

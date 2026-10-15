@@ -445,7 +445,7 @@ mod tests {
         sink.notice("the main model is unavailable".to_string())
             .await;
 
-        let event = crate::testing::wait::next_event("a notice", &mut notices).await;
+        let event = crate::testing::bus_wait::next_event("a notice", &mut notices).await;
         assert_eq!(event.message, "the main model is unavailable");
     }
 }

@@ -7,8 +7,8 @@
 //! whole file (harness and tests alike) only exists in test builds.
 
 use crate::testing::gate::{Gate, GateEntry};
+use crate::testing::ports::{ReservedPort, reserve_port};
 use crate::testing::wait;
-use crate::util::test_ports::{ReservedPort, reserve_port};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;

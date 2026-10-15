@@ -667,7 +667,7 @@ pub(crate) async fn api_session_message(
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
     use chrono::{Duration, TimeZone, Utc};
     use tokio_util::sync::CancellationToken;
 
@@ -1122,7 +1122,7 @@ mod tests {
     async fn next_spawn(
         spawns: &mut crate::bus::Subscriber<SpawnRequestEvent>,
     ) -> SpawnRequestEvent {
-        wait::next_event("a spawn request", spawns).await
+        bus_wait::next_event("a spawn request", spawns).await
     }
 
     async fn subscribe_spawns(fx: &Fixture) -> crate::bus::Subscriber<SpawnRequestEvent> {
@@ -1142,7 +1142,7 @@ mod tests {
         .await;
 
         assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
-        wait::bus_barrier(&fx.bus).await;
+        bus_wait::bus_barrier(&fx.bus).await;
         assert!(
             spawns.drain().is_empty(),
             "a refused start must not spawn anything"
@@ -1242,7 +1242,7 @@ mod tests {
         .await;
 
         assert_eq!(refused.status, StatusCode::BAD_REQUEST);
-        wait::bus_barrier(&fx.bus).await;
+        bus_wait::bus_barrier(&fx.bus).await;
         assert!(
             spawns.drain().is_empty(),
             "a refused start must not spawn anything"

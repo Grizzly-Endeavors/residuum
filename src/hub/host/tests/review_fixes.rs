@@ -2,7 +2,7 @@
 //! shows up in logs and in the messages agents hand each other.
 
 use super::*;
-use crate::hub::test_support::EventLog;
+use crate::testing::log::EventLog;
 use crate::tools::Tool as _;
 use crate::tools::agent_lifecycle::AgentCreateTool;
 

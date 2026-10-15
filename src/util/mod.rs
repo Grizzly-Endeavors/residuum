@@ -9,8 +9,6 @@ pub(crate) mod fs;
 pub mod secret_compare;
 mod spawn;
 pub mod telemetry;
-#[cfg(test)]
-pub(crate) mod test_ports;
 mod xml;
 
 pub use backoff_tracker::{BackoffTracker, NoticeAction, RetryGate};
