@@ -491,8 +491,8 @@ mod tests {
         assert_no_problems("rule 1", &lints_problems(&ws));
 
         let no_lints = format!("[package]\nname = \"residuum-a\"\n{PACKAGE_INHERITS}");
-        let ws = Workspace::from_toml(HAND_ROOT, &[("a", no_lints.as_str())], &[]);
-        assert_flagged("rule 1", &lints_problems(&ws), &["crates/a/Cargo.toml"]);
+        let broken = Workspace::from_toml(HAND_ROOT, &[("a", no_lints.as_str())], &[]);
+        assert_flagged("rule 1", &lints_problems(&broken), &["crates/a/Cargo.toml"]);
     }
 
     #[test]
@@ -502,14 +502,14 @@ mod tests {
 
         let core = member_toml("core", "");
         let lib = member_toml("residuum-a", "[lib]\nname = \"x\"\n");
-        let ws = Workspace::from_toml(
+        let broken = Workspace::from_toml(
             HAND_ROOT,
             &[("core", core.as_str()), ("a", lib.as_str())],
             &[],
         );
         assert_flagged(
             "rule 2",
-            &member_name_problems(&ws),
+            &member_name_problems(&broken),
             &[
                 "crates/core/Cargo.toml: `package.name` is `core`",
                 "crates/a/Cargo.toml: `[lib] name` is set",
@@ -524,10 +524,10 @@ mod tests {
 
         let edition =
             member_toml("residuum-a", "").replace("edition.workspace = true", "edition = \"2024\"");
-        let ws = Workspace::from_toml(HAND_ROOT, &[("a", edition.as_str())], &[]);
+        let broken = Workspace::from_toml(HAND_ROOT, &[("a", edition.as_str())], &[]);
         assert_flagged(
             "rule 3",
-            &inherited_package_problems(&ws),
+            &inherited_package_problems(&broken),
             &["crates/a/Cargo.toml: `package.edition` must be"],
         );
     }
@@ -539,10 +539,10 @@ mod tests {
 
         let rest = "[dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n\n[target.'cfg(unix)'.dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n";
         let leaks = member_toml("residuum-a", rest);
-        let ws = Workspace::from_toml(HAND_ROOT, &[("a", leaks.as_str())], &[]);
+        let broken = Workspace::from_toml(HAND_ROOT, &[("a", leaks.as_str())], &[]);
         assert_flagged(
             "rule 4",
-            &test_support_in_normal_dependency_problems(&ws),
+            &test_support_in_normal_dependency_problems(&broken),
             &[
                 "`[dependencies]` enables `test-support` on `residuum-core`",
                 "`[target.cfg(unix).dependencies]` enables `test-support` on `residuum-core`",
@@ -589,14 +589,14 @@ mod tests {
         assert_no_problems("rule 6", &member_pattern_problems(&ws));
 
         let a = member_toml("residuum-a", "");
-        let ws = Workspace::from_toml(
+        let broken = Workspace::from_toml(
             "[workspace]\nmembers = [\"crates/a\"]\ndefault-members = [\"crates/a\"]\n",
             &[("a", a.as_str())],
             &["b"],
         );
         assert_flagged(
             "rule 6",
-            &member_pattern_problems(&ws),
+            &member_pattern_problems(&broken),
             &[
                 "`workspace.members` does not match `crates/b`",
                 "`workspace.default-members` does not match `crates/b`",
@@ -610,10 +610,10 @@ mod tests {
         assert_no_problems("rule 7", &member_directory_problems(&ws));
 
         let bar = member_toml("residuum-bar", "");
-        let ws = Workspace::from_toml(HAND_ROOT, &[("foo", bar.as_str())], &[]);
+        let broken = Workspace::from_toml(HAND_ROOT, &[("foo", bar.as_str())], &[]);
         assert_flagged(
             "rule 7",
-            &member_directory_problems(&ws),
+            &member_directory_problems(&broken),
             &["crates/foo/Cargo.toml"],
         );
     }
@@ -628,14 +628,14 @@ mod tests {
             "residuum-a",
             "[dev-dependencies]\nresiduum-core = { workspace = true }\n",
         );
-        let ws = Workspace::from_toml(
+        let broken = Workspace::from_toml(
             HAND_ROOT,
             &[("core", core.as_str()), ("a", a.as_str())],
             &[],
         );
         assert_flagged(
             "rule 8",
-            &test_support_in_dev_dependency_problems(&ws),
+            &test_support_in_dev_dependency_problems(&broken),
             &[
                 "crates/a/Cargo.toml: `[dev-dependencies]` `residuum-core` depends on `residuum-core`",
             ],
