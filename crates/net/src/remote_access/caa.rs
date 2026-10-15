@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(CaaSettings::default().resolver.to_string(), "1.1.1.1:53");
     }
 
-    // Pebble integration tests: `cargo test --quiet pebble -- --ignored` (needs Docker).
+    // Pebble integration tests: `cargo test --quiet -p residuum-net --lib pebble -- --ignored` (needs Docker).
 
     use crate::remote_access::pebble_support::PebbleHarness;
 

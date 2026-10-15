@@ -58,7 +58,15 @@ pub struct GateState {
 /// gate, so nothing a client sends can fake it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedDevice {
-    pub id: String,
+    pub(crate) id: String,
+}
+
+impl AuthenticatedDevice {
+    /// The paired device's id.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 /// Refuse remote requests that carry no valid device credential. See the

@@ -27,9 +27,8 @@ use crate::pairing::types::{
 };
 use crate::pairing::{
     AuthenticatedDevice, DevicePairing, Issued, PAIRING_PAGE_PATH, PairingError, PollOutcome,
-    Surface, cookie_header, qr,
+    RemoteContext, Surface, cookie_header, qr, remote_context,
 };
-use crate::pairing::{RemoteContext, remote_context};
 use crate::workbench::ArtifactsOrigin;
 
 const NO_STORE: (HeaderName, HeaderValue) =
@@ -231,7 +230,7 @@ async fn list_devices(State(pairing): State<DevicePairing>, parts: Parts) -> Res
     let current = parts
         .extensions
         .get::<AuthenticatedDevice>()
-        .map(|d| d.id.clone());
+        .map(|d| d.id().to_string());
     no_store(Json(DeviceListResponse {
         devices: pairing.devices(current.as_deref()),
         pending: pairing.pending(),
@@ -289,7 +288,7 @@ async fn workbench_handoff(State(pairing): State<DevicePairing>, parts: Parts) -
             "This browser isn't a paired device. Opened on the machine Residuum runs on, the workbench needs no handoff.",
         );
     };
-    match pairing.mint_handoff(&device.id) {
+    match pairing.mint_handoff(device.id()) {
         Ok((token, expires_in_secs)) => no_store(Json(WorkbenchHandoffResponse {
             token,
             expires_in_secs,

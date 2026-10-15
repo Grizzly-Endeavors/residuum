@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Builds a sibling's origin (`https://{slug}.{user}.{base}`) from its slug.
-pub type OriginFor = Arc<dyn Fn(&str) -> String + Send + Sync>;
+pub(crate) type OriginFor = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 /// Everything discovery uses. Nothing in it comes from a relay frame except
 /// the directory token, and that goes only to the directory URL derived here.

@@ -2,7 +2,7 @@
 //! server in Docker, for tests that need a real CA.
 //!
 //! Tests that use it are `#[ignore]`d and run with
-//! `cargo test --quiet pebble -- --ignored`; they need Docker and pull the images on first use.
+//! `cargo test --quiet -p residuum-net --lib pebble -- --ignored`; they need Docker and pull the images on first use.
 //!
 //! To move to a newer Pebble: pick the release at
 //! <https://github.com/letsencrypt/pebble/releases>, change [`PEBBLE_VERSION`]

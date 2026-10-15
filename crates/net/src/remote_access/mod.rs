@@ -28,8 +28,7 @@ mod system_tests;
 pub(crate) mod tls;
 pub(crate) mod types;
 
-pub use siblings::discovery::{OriginFor, SecureDiscovery};
-pub use slot::TunnelStart;
+pub use siblings::discovery::SecureDiscovery;
 
 /// Path Microsoft posts Teams activities to; configured as the bot's messaging
 /// endpoint. Remote access forwards it, so it owns the path.

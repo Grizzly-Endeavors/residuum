@@ -546,7 +546,7 @@ mod tests {
         assert!(store.load().is_none());
     }
 
-    // Pebble integration tests: `cargo test --quiet pebble -- --ignored` (needs Docker).
+    // Pebble integration tests: `cargo test --quiet -p residuum-net --lib pebble -- --ignored` (needs Docker).
 
     use crate::remote_access::challenge::san_dns_names;
     use crate::remote_access::pebble_support::PebbleHarness;

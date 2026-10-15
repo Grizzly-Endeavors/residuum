@@ -134,6 +134,7 @@ pub struct Landing {
 }
 
 impl Landing {
+    /// A page with `title` and `message`, and no detail or link.
     pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             title: title.into(),

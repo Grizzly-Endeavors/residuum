@@ -76,7 +76,7 @@ stress *args: _web-dist
     if [ "$status" -eq 0 ]; then scripts/test-filters.sh check stress target/stress/*/*.log -- "$@"; fi
     exit "$status"
 
-# Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker
+# Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker, without the web build
 [group('rust')]
 pebble:
     cargo test --quiet -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
