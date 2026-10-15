@@ -2226,7 +2226,7 @@ mod tests {
 
     #[tokio::test]
     async fn temperature_dropped_with_one_warning_for_model_that_rejects_it() {
-        let log = crate::hub::test_support::EventLog::default();
+        let log = crate::testing::log::EventLog::default();
         let _guard = log.capture();
         let server = MockServer::start().await;
         mount_ok(&server).await;
@@ -2267,7 +2267,7 @@ mod tests {
 
     #[tokio::test]
     async fn temperature_still_sent_to_older_model_without_warning() {
-        let log = crate::hub::test_support::EventLog::default();
+        let log = crate::testing::log::EventLog::default();
         let _guard = log.capture();
         let server = MockServer::start().await;
         mount_ok(&server).await;
@@ -2298,7 +2298,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_warning_for_model_that_rejects_temperature_when_none_is_set() {
-        let log = crate::hub::test_support::EventLog::default();
+        let log = crate::testing::log::EventLog::default();
         let _guard = log.capture();
         let server = MockServer::start().await;
         mount_ok(&server).await;

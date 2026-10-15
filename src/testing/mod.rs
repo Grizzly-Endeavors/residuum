@@ -8,6 +8,7 @@
 //! - [`wait`]: waits on channels, watches and polled conditions.
 //! - [`clock`]: moving a paused clock, for code with no real I/O.
 //! - [`gate`]: holding a call open until the test lets it through.
+//! - [`log`]: capturing the log events a test causes.
 //! - [`model`]: a model server and provider that answer through a gate.
 //! - [`script`]: writing a fake tool the test then runs, so its exec never
 //!   fails with "Text file busy" when another test forks.
@@ -24,6 +25,7 @@
 pub(crate) mod clock;
 mod crypto;
 pub(crate) mod gate;
+pub(crate) mod log;
 mod manifest_scan;
 pub(crate) mod model;
 pub(crate) mod script;

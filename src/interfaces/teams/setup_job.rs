@@ -1577,7 +1577,7 @@ exit 0
         let mgr = TeamsSetupJobManager::with_overrides(root, overrides);
         // Unit tests have no tracing subscriber, so capture the reason
         // `detect_tool` logs when it reports a tool as not found.
-        let log = crate::hub::test_support::EventLog::default();
+        let log = crate::testing::log::EventLog::default();
         let prereqs = {
             let _guard = log.capture();
             mgr.get_prereqs("agent-1").await
