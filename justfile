@@ -85,7 +85,7 @@ test *args: _web-dist
 test-crate crate *args:
     cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
 
-# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
+# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress hub::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
 stress *args: _web-dist
