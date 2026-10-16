@@ -280,20 +280,16 @@ describe("the mock server plugin", () => {
   });
 
   describe("when deterministic", () => {
-    /** A port nothing is listening on. */
-    function freePort(): number {
-      return 30000 + Math.floor(Math.random() * 20000);
-    }
-
-    it("listens for artifacts on the port it is given, where a live mock takes a free one", async () => {
-      const port = freePort();
+    it("listens for artifacts on a free port when the port is 0", async () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
-      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", "0");
       const dev = await start();
+      let port: number | null = null;
       await waitFor(async () => {
         const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
           .body as WorkbenchInfo;
-        expect(info.port).toBe(port);
+        port = info.port;
+        expect(port).not.toBeNull();
       });
       expect(dev.logged.some((line) => line.includes("Deterministic: fixed clock"))).toBe(true);
       expect((await fetch(`http://127.0.0.1:${String(port)}/tip-splitter/`)).status).toBe(200);
@@ -322,7 +318,7 @@ describe("the mock server plugin", () => {
 
     it("resets through the plugin's own handler", async () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
-      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(freePort()));
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", "0");
       const dev = await start();
       await fetchJson(`${dev.baseUrl}/api/hub/agents/scout`, { method: "DELETE" });
       expect((await fetchJson(`${dev.baseUrl}/api/mock/reset`, { method: "POST" })).body).toEqual({

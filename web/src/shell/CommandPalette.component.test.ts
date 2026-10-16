@@ -1,6 +1,6 @@
 import { cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "../test/component";
 import { actionRegistry, type AppAction } from "../lib/action-registry.svelte";
 import { router } from "../lib/router.svelte";
@@ -34,14 +34,10 @@ const ACTIONS: readonly AppAction[] = [
   },
 ];
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
   // jsdom lays nothing out, so it has no scrolling into view.
   Element.prototype.scrollIntoView = vi.fn();
-});
-
-afterAll(() => {
-  router.stop();
 });
 
 beforeEach(() => {
