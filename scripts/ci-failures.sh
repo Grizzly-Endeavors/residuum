@@ -7,10 +7,10 @@
 # elsewhere is marked likely flake. Every other failure is presumed to come from
 # this change.
 #
-# For a PR number whose own runs show no failure, the latest merge queue batch of
-# the PR is listed as well when it did not succeed: a PR ejected from the queue
-# failed there, on a commit that is not its head. The batch is labelled with its
-# commit.
+# For a PR number, the latest merge queue batch of the PR is listed as well when it
+# did not succeed: the full suite runs only in the queue, on a commit that is not
+# the PR's head, so a PR ejected from the queue failed there. The batch is
+# labelled with its commit.
 #
 # Usage: scripts/ci-failures.sh [PR-number | branch | vYYYY.MM.DD[-N] | commit]
 #        `just ci-failures` runs it for the current branch.
@@ -176,18 +176,18 @@ jq -c -s --arg excluded "$EXCLUDED_WORKFLOW" '
     | {id, name, run_attempt, status, conclusion, head_branch, head_sha, html_url}
 ' "$work/target-raw.json" > "$work/target.jsonl" || die "could not read the CI runs for ${sha:0:7}"
 
-if [[ ! -s "$work/target.jsonl" ]]; then
-    echo "CI failures for $label at ${sha:0:7}: no CI runs for this commit yet."
-    exit 0
+# The branch whose runs are this change's own, so the seen-elsewhere search skips them.
+if [[ -n "$queue_prefix" ]]; then
+    target_branch="$(jq -r .headRefName <<<"$pr_json")"
+else
+    target_branch="$(jq -r '.head_branch' "$work/target.jsonl" | sed -n 1p)"
 fi
 
-target_branch="$(jq -r '.head_branch' "$work/target.jsonl" | sed -n 1p)"
-
-# A PR that merge queue ejected can have green runs on its head while its failing
-# batch ran only on the queue branch, so its head runs are not the whole story.
-# When no head run failed, the latest queue run of each workflow that was created
-# after the head commit is added, unless it succeeded.
-if [[ -n "$queue_prefix" ]] && ! jq -s -e 'any(.[]; .conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")' "$work/target.jsonl" >/dev/null; then
+# A PR's head runs only the early warnings; the full suite runs on its merge queue
+# batches, on the queue branch. So for a PR the latest queue run of each workflow
+# that was created after the head commit is added, unless it succeeded, whether or
+# not a head run failed, and even when the head has no runs at all.
+if [[ -n "$queue_prefix" ]]; then
     head_epoch="$(git show -s --format=%ct "$sha")" || die "could not read the commit time of ${sha:0:7}"
     if gh api "repos/$repo/actions/runs?event=merge_group&per_page=100" > "$work/queue-raw.json"; then
         jq -c -s -f "$script_dir/ci-failures-queue.jq" --arg prefix "$queue_prefix" \
@@ -197,6 +197,11 @@ if [[ -n "$queue_prefix" ]] && ! jq -s -e 'any(.[]; .conclusion == "failure" or 
         echo "warning: could not list the merge queue runs; a batch that failed is not listed" >&2
         query_errors=$((query_errors + 1))
     fi
+fi
+
+if [[ ! -s "$work/target.jsonl" ]]; then
+    echo "CI failures for $label at ${sha:0:7}: no CI runs for this commit yet."
+    exit 0
 fi
 
 # Recent completed runs on other branches, for the seen-elsewhere flag: the
