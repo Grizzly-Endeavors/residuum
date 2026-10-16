@@ -1,7 +1,8 @@
-//! Web-facing view of agent sessions: turning registry entries, store
-//! records, and bus events into protocol types, and carrying out the
-//! send-message and stop commands the session panel (over the WebSocket)
-//! and workbench artifacts (over HTTP) share.
+//! Web-facing view of agent sessions: summarizing store records as protocol
+//! types, and carrying out the send-message and stop commands the session
+//! panel (over the WebSocket) and workbench artifacts (over HTTP) share.
+//! Live registry entries and bus events become frames in
+//! `crate::protocol::frames`.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use crate::background::registry::{SessionRegistry, StopSessionError, stop_named_session};
