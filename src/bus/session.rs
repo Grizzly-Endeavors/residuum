@@ -220,8 +220,9 @@ pub struct SessionInfo {
     /// When this run started.
     pub started_at: DateTime<Utc>,
     /// This run's cumulative token usage, updated after every model call —
-    /// see [`SessionRegistry::accumulate_usage`]. Mirrored into the run's
-    /// store record at completion so a finished run's totals survive too.
+    /// see `SessionRegistry::accumulate_usage` in the background registry.
+    /// Mirrored into the run's store record at completion so a finished
+    /// run's totals survive too.
     pub usage: crate::bus::usage::SessionUsageTotals,
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. See [`PulseOverlap`].
