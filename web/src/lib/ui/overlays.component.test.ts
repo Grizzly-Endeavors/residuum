@@ -40,10 +40,6 @@ beforeEach(() => {
   router.startForOverlays();
 });
 
-afterEach(() => {
-  router.stop();
-});
-
 // Unmounting closes what a test left open, and that goes back in the history:
 // let it land before the next test opens anything.
 afterEach(async () => {

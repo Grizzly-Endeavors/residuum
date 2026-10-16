@@ -30,10 +30,6 @@ beforeEach(() => {
   router.startForOverlays();
 });
 
-afterEach(() => {
-  router.stop();
-});
-
 beforeEach(() => {
   created = [];
   createFails = false;

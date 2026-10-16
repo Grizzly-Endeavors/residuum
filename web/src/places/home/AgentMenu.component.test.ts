@@ -40,10 +40,6 @@ beforeEach(() => {
   router.startForOverlays();
 });
 
-afterEach(() => {
-  router.stop();
-});
-
 beforeEach(() => {
   calls = [];
   patchFails = false;

@@ -1162,6 +1162,26 @@ describe("a traversal the browser never reports", () => {
       vi.useRealTimers();
     }
   });
+
+  it("queued by a close that is followed by stop with no microtask between is dropped", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openPlace(files("scout"));
+    const go = vi.spyOn(window.history, "go").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      // Unmounting an open modal closes it and stops the router in the same tick.
+      page.router.openOverlay(() => undefined).close();
+      page.router.stop();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(go).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(page.router.openPlace(chat("atlas"))).resolves.toBe(true);
+      expect(page.router.place).toEqual(chat("atlas"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("following the browser", () => {

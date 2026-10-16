@@ -40,10 +40,6 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 
-afterEach(() => {
-  router.stop();
-});
-
 beforeEach(() => {
   vi.clearAllMocks();
   // Nor media queries: the palette asks one for its placeholder.

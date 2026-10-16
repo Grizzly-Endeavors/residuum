@@ -10,10 +10,6 @@ beforeEach(() => {
   router.startForOverlays();
 });
 
-afterEach(() => {
-  router.stop();
-});
-
 afterEach(async () => {
   vi.useRealTimers();
   cleanup();

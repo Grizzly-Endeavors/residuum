@@ -146,6 +146,8 @@ class Router {
   private traversals: Promise<void> = Promise.resolve();
   /** Settles the traversal in flight; set while the router waits for the browser to report it. */
   private settleTraversal: (() => void) | null = null;
+  /** Bumped by `stop()`; a traversal queued under an earlier value is dropped when its turn comes. */
+  private stopGeneration = 0;
 
   /** Read the current URL and follow the browser's history from then on. */
   start(): void {
@@ -177,8 +179,11 @@ class Router {
    * Stop following the browser's history. A traversal still waiting on the
    * browser is settled here, since its report would no longer be heard: its
    * timer is cleared, so it cannot fire after the page it belonged to is gone.
+   * Traversals queued but not yet started are settled without moving the
+   * history, so none of them runs after the page it belonged to is gone.
    */
   stop(): void {
+    this.stopGeneration += 1;
     this.settleTraversal?.();
     if (!this.started) return;
     this.started = false;
@@ -483,8 +488,13 @@ class Router {
   /** Go `delta` entries through the history. Resolves once the browser reports arriving. */
   private traverse(delta: number): Promise<void> {
     this.queued += 1;
+    const queuedUnderGeneration = this.stopGeneration;
     const run = (): Promise<void> =>
       new Promise<void>((resolve) => {
+        if (this.stopGeneration !== queuedUnderGeneration) {
+          resolve();
+          return;
+        }
         // Captured now: the timer may fire after a test environment has torn
         // down the global `window`, and settling must not read it then.
         const view: Window = window;

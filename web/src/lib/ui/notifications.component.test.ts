@@ -13,10 +13,6 @@ beforeEach(() => {
   router.startForOverlays();
 });
 
-afterEach(() => {
-  router.stop();
-});
-
 beforeEach(() => {
   notifications.history = [];
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
