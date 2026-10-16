@@ -82,7 +82,7 @@ pub fn display_name_key(canonical: &str) -> String {
 }
 
 /// The folder name derived from a cleaned typed name: ASCII letters, digits,
-/// and hyphens, at most [`MAX_AGENT_NAME_LEN`] characters. A name with no
+/// and hyphens, at most `MAX_AGENT_NAME_LEN` characters. A name with no
 /// ASCII letters becomes a stable `n` plus eight hex digits.
 #[must_use]
 pub fn slug_base(display: &str) -> String {

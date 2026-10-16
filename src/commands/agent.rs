@@ -661,15 +661,17 @@ mod tests {
 
     #[tokio::test]
     async fn hub_not_running_gives_plain_message() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        drop(listener);
+        // The reservation keeps the port bound but not listening, so nothing
+        // answers on it, and no other test can be handed the port meanwhile.
+        let reserved = residuum_core::testing::ports::reserve_port();
+        let addr = format!("127.0.0.1:{}", reserved.port());
 
         let out = message(execute(&AgentCommand::List, &addr).await);
         assert_eq!(
             out,
             "Residuum isn't running. Start it with `residuum serve`."
         );
+        drop(reserved);
     }
 
     #[tokio::test]

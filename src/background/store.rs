@@ -4,7 +4,7 @@
 //! organized by date (`YYYY-MM/DD/<run_id>.json`). While the run is live,
 //! its transcript is durably appended to a sibling `<run_id>.transcript.jsonl`
 //! file after every model response and tool result (see
-//! [`TranscriptSink`]/[`RunTranscriptSink`]), so a crash mid-turn loses at
+//! `TranscriptSink`/`RunTranscriptSink`), so a crash mid-turn loses at
 //! most the message currently in flight. On completion, the full transcript
 //! is folded into the metadata file itself, so a finished run's web-facing
 //! read path is a single file; the sibling JSONL is read only for runs that
@@ -67,7 +67,7 @@ pub struct RunRecord {
     /// The run's full message transcript, filled in at completion (empty
     /// until then — the durable record while the run is live is the sibling
     /// `<run_id>.transcript.jsonl` file, appended to by
-    /// [`SessionStore::append_transcript`]).
+    /// `SessionStore::append_transcript`).
     #[serde(default)]
     pub transcript: Vec<Message>,
     /// This run's cumulative token usage, for the session panel's Details.

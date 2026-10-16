@@ -264,8 +264,14 @@ pub fn map_provision_error(exit_code: Option<i32>, output_text: &str) -> String 
     }
 }
 
-/// Optional path overrides for injected test executables without global PATH modification.
-#[derive(Debug, Clone, Default)]
+/// Timeout for each `--version` probe in [`detect_prereqs`].
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Timeout for the `atk auth list m365` sign-in check in [`check_signed_in`].
+pub(crate) const SIGN_IN_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Optional path and timeout overrides for injected test executables without global PATH modification.
+#[derive(Debug, Clone)]
 pub struct AtkRunnerOverrides {
     /// Injected path for `node`.
     pub node_bin: Option<PathBuf>,
@@ -273,6 +279,10 @@ pub struct AtkRunnerOverrides {
     pub npm_bin: Option<PathBuf>,
     /// Injected path for `atk`.
     pub atk_bin: Option<PathBuf>,
+    /// Timeout for each `--version` probe.
+    pub probe_timeout: Duration,
+    /// Timeout for the `atk auth list m365` sign-in check.
+    pub sign_in_check_timeout: Duration,
 }
 
 /// Result of a streaming process execution.
@@ -441,7 +451,7 @@ pub async fn detect_prereqs(
     overrides: Option<&AtkRunnerOverrides>,
 ) -> TeamsSetupPrereqs {
     let cancel = CancellationToken::new();
-    let timeout = Duration::from_secs(10);
+    let timeout = overrides.map_or(PROBE_TIMEOUT, |o| o.probe_timeout);
 
     // 1. Detect node
     let default_node = if cfg!(windows) {
@@ -543,9 +553,13 @@ async fn is_teams_configured_for_agent(residuum_root: &Path, agent_name: &str) -
     content.contains("[teams]")
 }
 
-/// Check if the user is already signed in to Microsoft 365 via `atk auth list m365`.
-pub async fn check_signed_in(atk_bin: &Path, log: &BoundedLog, cancel: &CancellationToken) -> bool {
-    let timeout = Duration::from_secs(15);
+/// Check if the user is already signed in to Microsoft 365 via `atk auth list m365`, waiting at most `timeout`.
+pub async fn check_signed_in(
+    atk_bin: &Path,
+    log: &BoundedLog,
+    cancel: &CancellationToken,
+    timeout: Duration,
+) -> bool {
     match run_command_streaming(
         atk_bin,
         &["auth", "list", "m365"],
@@ -808,7 +822,7 @@ impl AgentLoginManager {
         // Process is not running; check if signed in or failed
         let dummy_log = BoundedLog::new(10);
         let cancel = CancellationToken::new();
-        if check_signed_in(&paths.atk_bin, &dummy_log, &cancel).await {
+        if check_signed_in(&paths.atk_bin, &dummy_log, &cancel, SIGN_IN_CHECK_TIMEOUT).await {
             if let Err(e) = tokio::fs::remove_file(&pid_path).await
                 && e.kind() != std::io::ErrorKind::NotFound
             {

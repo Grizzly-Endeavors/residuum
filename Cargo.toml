@@ -253,7 +253,9 @@ jsonschema = { workspace = true }
 # holds it, so it never sees the use here.
 ignored = ["ctor"]
 
-# Line tables keep backtraces at file:line; full debug info is most of the link time and target/ size.
+# Full debug info is most of the link time and target/ size, so it is cut back. Workspace crates get
+# line tables, so backtraces show file:line for their frames. Dependencies get no debug info at all (the
+# `"*"` override below), so their frames show no file:line.
 [profile.dev]
 debug = "line-tables-only"
 

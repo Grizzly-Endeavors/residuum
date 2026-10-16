@@ -11,7 +11,7 @@
 //!   announced, and saves them to `hub/remote-access.json`.
 //! - [`device_gate`] is the middleware in front of the main and workbench
 //!   routers.
-//! - [`remote`] decides which requests are remote, and holds the cross-site
+//! - `remote` decides which requests are remote, and holds the cross-site
 //!   rule they must pass.
 //! - The pairing API's handlers live with the hub's other routes, in
 //!   `hub::http::pairing`.
@@ -33,9 +33,7 @@ pub mod types;
 pub use cookies::cookie_header;
 pub use error::PairingError;
 pub(crate) use gate::HANDOFF_PAGE_PATH;
-pub use gate::{
-    AuthenticatedDevice, DEVICE_REQUIRED_CODE, GateState, PAIRING_PAGE_PATH, device_gate,
-};
+pub use gate::{AuthenticatedDevice, GateState, PAIRING_PAGE_PATH, device_gate};
 pub use remote::{RemoteContext, RemoteTransport, remote_context};
 pub use service::{CreatedRequest, DevicePairing, MintedPairToken};
 pub use state::{AuthHit, Issued, PollOutcome};

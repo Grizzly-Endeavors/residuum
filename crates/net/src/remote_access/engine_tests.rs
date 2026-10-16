@@ -641,7 +641,7 @@ async fn instance_host_serves_nothing_else() {
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a2a_is_rate_limited_per_peer() {
     let h = harness(None, BTreeMap::new(), true);
     let host = h.names.instance.clone();

@@ -7,12 +7,12 @@
 //! their own [`WatchSet`], and the workbench derives artifact reloads from the
 //! same stream.
 //!
-//! - [`batcher`] coalesces raw notifications (300 ms quiet, 2 s at most) and
+//! - `batcher` coalesces raw notifications (300 ms quiet, 2 s at most) and
 //!   resolves each touched path to a final change kind.
-//! - [`classify`] maps one OS notification to workspace-relative raw changes.
-//! - [`feed`] runs the OS watcher (native, falling back to polling) and the
+//! - `classify` maps one OS notification to workspace-relative raw changes.
+//! - `feed` runs the OS watcher (native, falling back to polling) and the
 //!   batching loop.
-//! - [`watch_set`] owns a connection's prefixes and segment-based matching.
+//! - `watch_set` owns a connection's prefixes and segment-based matching.
 
 mod batcher;
 mod classify;

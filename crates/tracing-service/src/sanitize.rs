@@ -33,7 +33,7 @@ const REDACTED: &str = "[REDACTED]";
 /// Strips field values matching known sensitive field names and replaces
 /// event messages with `[REDACTED]`. Structural metadata (span names,
 /// targets, levels, timing, hierarchy) is preserved.
-pub fn sanitize_spans(spans: &mut [CompletedSpan]) {
+pub(crate) fn sanitize_spans(spans: &mut [CompletedSpan]) {
     for span in spans {
         sanitize_fields(&mut span.fields);
         for event in &mut span.events {
@@ -51,7 +51,7 @@ pub fn sanitize_spans(spans: &mut [CompletedSpan]) {
 /// Value-based, so it runs regardless of `sanitize_content`: the name-based
 /// pass above only covers fields it knows to be content-bearing, and a
 /// credential can surface in any field (an error string, a URL, a command).
-pub fn redact_agent_key_values(spans: &mut [CompletedSpan], redactor: &Redactor) {
+pub(crate) fn redact_agent_key_values(spans: &mut [CompletedSpan], redactor: &Redactor) {
     if redactor.is_empty() {
         return;
     }

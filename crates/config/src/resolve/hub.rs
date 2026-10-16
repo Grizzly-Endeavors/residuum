@@ -127,7 +127,7 @@ fn resolve_hub_push_config(
 
 /// Check that `contact` is what a push service accepts in the VAPID `sub`
 /// claim: a `mailto:` address or an `https:` URL. The error completes the
-/// sentence "[push] contact ...".
+/// sentence "\[push\] contact ...".
 fn validate_push_contact(contact: &str) -> Result<(), String> {
     if let Some(address) = contact.strip_prefix("mailto:") {
         let well_formed = address

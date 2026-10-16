@@ -307,6 +307,7 @@ async fn api_teams_setup_cleanup(
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::time::Duration;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -360,7 +361,6 @@ mod tests {
                 r#"$cmd = $args[0]
 $sub = $args[1]
 if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
-if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: user@example.com."; exit 0 }
 if ($cmd -eq "auth" -and $sub -eq "logout") { exit 0 }
 if ($cmd -eq "install") { exit 0 }
 if ($cmd -eq "provision") {
@@ -391,7 +391,7 @@ exit 0
             .unwrap();
             make_script(
                 &mock_atk,
-                "@echo off\nif \"%~1\"==\"--version\" ( echo 1.1.17 & exit /b 0 )\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\nexit /b %ERRORLEVEL%\n",
+                "@echo off\nif \"%~1\"==\"--version\" ( echo 1.1.17 & exit /b 0 )\nif \"%~1\"==\"auth\" if \"%~2\"==\"list\" ( echo Your Microsoft 365 account is: user@example.com. & exit /b 0 )\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\nexit /b %ERRORLEVEL%\n",
             );
         } else {
             make_script(
@@ -426,10 +426,16 @@ exit 0
             );
         }
 
+        // No probe or sign-in check may time out in these tests: a timeout is a failure on
+        // elapsed time, and on a loaded runner it would send the job down another path. Each
+        // test waits for the process to exit instead, and `Duration::MAX` is a deadline no
+        // run reaches.
         let overrides = AtkRunnerOverrides {
             node_bin: Some(mock_node),
             npm_bin: Some(mock_npm),
             atk_bin: Some(mock_atk),
+            probe_timeout: Duration::MAX,
+            sign_in_check_timeout: Duration::MAX,
         };
 
         (root, overrides)

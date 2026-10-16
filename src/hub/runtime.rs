@@ -3,7 +3,7 @@
 //!
 //! [`run_hub`] starts the HTTP server, the relay tunnel, the A2A listener,
 //! the workbench server, tracing, and the updater, builds the services every
-//! agent shares (see [`HubServices`]), and hands the agents to the
+//! agent shares (see `HubServices`), and hands the agents to the
 //! [`AgentHost`]. It runs until the process is told to stop, then stops every
 //! agent gracefully.
 
@@ -1441,7 +1441,7 @@ mod tests {
 
     #[test]
     fn an_a2a_bind_failure_is_worded_by_its_io_cause() {
-        let port = residuum_core::testing::ports::free_port();
+        let port: u16 = 8475;
         let in_use = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::AddrInUse))
             .context(format!(
                 "failed to bind the A2A listener on 127.0.0.1:{port}"

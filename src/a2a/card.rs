@@ -140,7 +140,7 @@ pub struct CardRuntime {
 impl CardRuntime {
     /// Build runtime facts for `agent_name` from the resolved `[a2a]` config,
     /// the gateway's bind address, and the instance's A2A base (`{instance origin}/a2a`,
-    /// see [`super::public_url::relay_a2a_base`]) when the tunnel is
+    /// see `super::public_url::relay_a2a_base`) when the tunnel is
     /// connected: `public_url` plus `/agents/<name>` when set, otherwise the
     /// agent's relay address, otherwise the local listener address plus
     /// `/agents/<name>`.

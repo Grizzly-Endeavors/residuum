@@ -52,7 +52,7 @@ pub struct TunnelStart {
     pub shutdown: watch::Receiver<bool>,
 }
 
-/// Where the HTTP API reaches the running [`RemoteAccess`].
+/// Where the HTTP API reaches the running `RemoteAccess`.
 #[derive(Clone)]
 pub struct RemoteAccessSlot {
     status: Arc<watch::Sender<RemoteAccessStatus>>,

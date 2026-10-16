@@ -237,7 +237,7 @@ impl AgentChangeReceiver {
     }
 
     /// The next change if one is already queued, without waiting. Since
-    /// [`AgentChangeFeed::publish`] queues for every subscriber before it
+    /// `AgentChangeFeed::publish` queues for every subscriber before it
     /// returns, a caller that knows a change was published can read it here.
     pub fn try_recv(&mut self) -> Option<AgentChange> {
         let change = self.rx.try_recv().ok();

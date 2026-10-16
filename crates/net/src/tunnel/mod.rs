@@ -3,7 +3,7 @@
 //! Keeps a persistent WebSocket connection to the cloud relay open on the
 //! relay's `/tunnel/v2/register` endpoint. The relay hands this instance raw
 //! byte streams, one per browser connection, and the instance terminates TLS
-//! itself (see [`v2`]).
+//! itself (see `v2`).
 
 mod connection;
 pub(crate) mod v2;

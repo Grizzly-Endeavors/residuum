@@ -95,8 +95,8 @@ pub(crate) struct SessionSpawnRequest {
     pub trigger: EventTrigger,
     /// Skill the session runs with, if any.
     pub agent_skill: Option<SkillName>,
-    /// The agent that requested this spawn, if any (see [`SpawnRequestEvent`]
-    /// via [`crate::bus::SpawnRequestEvent`]).
+    /// The agent that requested this spawn, if any (see
+    /// [`crate::bus::SpawnRequestEvent`]).
     pub spawner: Option<SessionAddress>,
     /// Depth from the main agent this session runs at (main = 0).
     pub depth: u32,
@@ -316,10 +316,10 @@ impl SessionRuntime {
     /// and being recorded, so a graceful shutdown doesn't leave sessions for
     /// startup recovery to pick up.
     ///
-    /// Waits up to `timeout` by polling the registry; logs a warning and
-    /// returns if sessions are still live once the deadline passes (their
-    /// runs remain in the store as `running` and get swept by startup
-    /// recovery on the next boot).
+    /// Waits up to `timeout` for the registry to empty, waking as each run
+    /// leaves it; logs a warning and returns if sessions are still live once
+    /// the deadline passes (their runs remain in the store as `running` and
+    /// get swept by startup recovery on the next boot).
     pub(crate) async fn shutdown(&self, timeout: Duration) {
         let signalled = self.registry.stop_all();
         if signalled == 0 {
@@ -327,13 +327,12 @@ impl SessionRuntime {
         }
         tracing::info!(sessions = signalled, "stopping live sessions for shutdown");
 
-        let deadline = tokio::time::Instant::now() + timeout;
-        while tokio::time::Instant::now() < deadline {
-            if self.registry.list_live().is_empty() {
-                tracing::info!("all sessions completed for shutdown");
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        if tokio::time::timeout(timeout, self.registry.wait_until_empty())
+            .await
+            .is_ok()
+        {
+            tracing::info!("all sessions completed for shutdown");
+            return;
         }
         tracing::warn!(
             remaining = self.registry.list_live().len(),
@@ -3131,7 +3130,15 @@ mod tests {
         )
         .await;
 
-        runtime.shutdown(Duration::from_secs(2)).await;
+        // The stopped run's teardown (memory merge, store record) has
+        // no fixed duration, so shutdown gets a deadline past the
+        // hang guard: the test waits on the run leaving the registry, and only
+        // the guard can end the wait early.
+        wait::guarded(
+            "shutdown to wait out the stopped session's teardown",
+            runtime.shutdown(wait::HANG_GUARD * 2),
+        )
+        .await;
 
         assert!(
             runtime.registry.get(&address).is_none(),
@@ -3465,17 +3472,16 @@ mod tests {
         }
     }
 
-    /// Build a runtime with a longer, fixed idle window (rather than
-    /// `test_runtime`'s 20ms) so a test has a reliable window to deliver a
-    /// message while the session is genuinely idle, without racing a
-    /// timeout that would complete the run out from under it.
-    async fn test_runtime_with_idle_window(
-        idle_window: Duration,
-    ) -> (
+    /// Build a runtime whose idle window outlasts any test, rather than
+    /// `test_runtime`'s 20ms: a session stays idle until the test delivers to
+    /// it or stops it, so the test never races the idle timeout completing
+    /// the run out from under it.
+    async fn test_runtime_held_idle() -> (
         SessionRuntime,
         crate::bus::Subscriber<AgentResultEvent>,
         crate::bus::BusHandle,
     ) {
+        let idle_window = Duration::from_hours(1);
         let bus_handle = crate::bus::spawn_broker();
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
@@ -3510,6 +3516,27 @@ mod tests {
             },
         );
         (runtime, sub, bus_handle)
+    }
+
+    /// Skip `events` to the next time the session at `address` reports
+    /// going `idle`, so each call matches one turn's idle and a test can tell
+    /// a second turn's idle from the first one's.
+    async fn next_idle(
+        events: &mut crate::bus::Subscriber<crate::bus::SessionEvent>,
+        address: &SessionAddress,
+        what: &str,
+    ) {
+        loop {
+            let event = bus_wait::next_event(what, events).await;
+            if &event.address == address
+                && matches!(
+                    event.kind,
+                    SessionEventKind::StateChanged(SessionState::Idle)
+                )
+            {
+                return;
+            }
+        }
     }
 
     #[tokio::test]
@@ -3571,19 +3598,21 @@ mod tests {
 
     #[tokio::test]
     async fn idle_session_wakes_for_agent_message_and_runs_a_second_turn() {
-        let (runtime, mut sub, bus_handle) =
-            test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        // The idle window outlasts the test, so the session stays idle until
+        // the test acts on it however slowly the test runs; the test ends the
+        // run with a stop once the second turn has gone idle.
+        let (runtime, mut sub, bus_handle) = test_runtime_held_idle().await;
+        let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
         let address = SessionAddress::from("spawned-researcher-0008");
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(
-            &runtime,
+        next_idle(
+            &mut session_events,
             &address,
             "the session to go idle after its first turn",
-            |info| info.state == SessionState::Idle,
         )
         .await;
 
@@ -3601,6 +3630,17 @@ mod tests {
             ),
             crate::background::registry::DeliverOutcome::Delivered,
             "the idle session should still be live in the registry"
+        );
+
+        next_idle(
+            &mut session_events,
+            &address,
+            "the session to go idle after the woken second turn",
+        )
+        .await;
+        assert!(
+            runtime.registry.stop(&address),
+            "the session should still be live after its second turn"
         );
 
         let event = bus_wait::next_event("the run to complete", &mut sub).await;
@@ -3649,19 +3689,21 @@ mod tests {
 
     #[tokio::test]
     async fn idle_conversation_session_wakes_for_a_new_message_and_runs_a_second_turn() {
-        let (runtime, mut sub, _bus_handle) =
-            test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        // The idle window outlasts the test, as in the agent-message wake
+        // test above: the test ends the run with a stop once the second turn
+        // has gone idle.
+        let (runtime, mut sub, bus_handle) = test_runtime_held_idle().await;
+        let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
         let address = SessionAddress::from("external-discord-idle-wake");
         runtime.spawn(
             sample_conversation_request(address.as_ref()),
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(
-            &runtime,
+        next_idle(
+            &mut session_events,
             &address,
             "the session to go idle after its first turn",
-            |info| info.state == SessionState::Idle,
         )
         .await;
 
@@ -3674,6 +3716,17 @@ mod tests {
             ),
             crate::background::registry::DeliverOutcome::Delivered,
             "the idle session should still be live in the registry"
+        );
+
+        next_idle(
+            &mut session_events,
+            &address,
+            "the session to go idle after the woken second turn",
+        )
+        .await;
+        assert!(
+            runtime.registry.stop(&address),
+            "the session should still be live after its second turn"
         );
 
         let event = bus_wait::next_event("the run to complete", &mut sub).await;
@@ -3883,19 +3936,12 @@ mod tests {
         (resources, layout)
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn staging_runs_after_every_turn_not_just_once() {
-        // Unlike the other idle-wake tests, this run's completion genuinely
-        // depends on its *second* idle wait timing out with no further input
-        // — there's no explicit stop here, so the idle timeout is the only
-        // thing that ever moves the run from `idle` to `completing`. Pausing
-        // the clock (`start_paused = true`) makes that wait resolve the
-        // instant nothing else is progressing, regardless of host speed,
-        // instead of requiring a real sleep to survive a slow or throttled
-        // CI runner. The 300ms window itself is unchanged; only the wait
-        // for it is now driven by virtual, not wall-clock, time.
-        let (runtime, mut sub, _bus_handle) =
-            test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        // The idle window outlasts the test, as in the wake tests above: the
+        // test ends the run with a stop once the second turn has gone idle.
+        let (runtime, mut sub, bus_handle) = test_runtime_held_idle().await;
+        let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
         let address = SessionAddress::from("spawned-researcher-0009");
         let (resources, layout) = make_sequenced_resources_with_eager_observer(vec![
             "first turn done",
@@ -3903,11 +3949,10 @@ mod tests {
         ]);
         runtime.spawn(sample_request(address.as_ref()), Some(resources));
 
-        wait_for(
-            &runtime,
+        next_idle(
+            &mut session_events,
             &address,
             "the session to go idle after its first turn",
-            |info| info.state == SessionState::Idle,
         )
         .await;
 
@@ -3924,8 +3969,17 @@ mod tests {
             crate::background::registry::DeliverOutcome::Delivered
         );
 
-        // The run's completion is driven by the (instant) SequencedProvider and
-        // the bus's own delivery, not by wall-clock timing.
+        next_idle(
+            &mut session_events,
+            &address,
+            "the session to go idle after the woken second turn",
+        )
+        .await;
+        assert!(
+            runtime.registry.stop(&address),
+            "the session should still be live after its second turn"
+        );
+
         let event = bus_wait::next_event("the run to complete", &mut sub).await;
         assert_eq!(event.summary, "second turn done");
 
@@ -4106,8 +4160,7 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_an_idle_session_reports_cancelled() {
-        let (runtime, mut results, _bus_handle) =
-            test_runtime_with_idle_window(Duration::from_hours(1)).await;
+        let (runtime, mut results, _bus_handle) = test_runtime_held_idle().await;
         let address = SessionAddress::from("spawned-researcher-idle-stop");
         let (layout, observer, merge_writer) = test_memory_extras();
         let mut request = sample_request(address.as_ref());

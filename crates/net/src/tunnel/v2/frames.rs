@@ -15,7 +15,7 @@ pub(crate) struct WireHosts {
     pub instance: String,
 }
 
-/// One agent this hub advertises to the relay in a [`V2Frame::AgentsUpdate`]
+/// One agent this hub advertises to the relay in a `V2Frame::AgentsUpdate`
 /// frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {

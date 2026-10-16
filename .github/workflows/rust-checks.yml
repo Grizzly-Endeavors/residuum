@@ -1,6 +1,6 @@
 name: Rust Checks
 
-# The Rust format, clippy (host and Windows), test, generated-types,
+# The Rust format, clippy (host and Windows), rustdoc, test, generated-types,
 # dependency (audit and unused) and crate isolation checks. ci.yml calls it on
 # merge queue batches that change Rust code, and on pull requests that change
 # Rust code for the Windows clippy alone (`windows_clippy_only`); release.yml
@@ -89,7 +89,8 @@ jobs:
 
       # The checks below run whether or not an earlier one failed, so one run
       # lists every failure. Format and the dependency audit need only the
-      # toolchain; clippy also needs the web build, which the Rust build embeds.
+      # toolchain; clippy and rustdoc also need the web build, which the Rust
+      # build embeds.
       - name: Check formatting
         id: fmt
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
@@ -115,6 +116,16 @@ jobs:
         run: |
           read -ra packages <<<"$PACKAGES"
           cargo clippy --all-targets --all-features "${packages[@]}" -- -D warnings
+
+      # Rustdoc with warnings denied, documenting private items too, so a broken
+      # intra-doc link fails the run wherever it is written. The same command as
+      # `just doc`, and it reuses the dependency metadata clippy has built.
+      - name: Rustdoc
+        id: rustdoc
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+        run: cargo doc --workspace --no-deps --all-features --document-private-items
 
       - name: Dependency audit
         id: deny
@@ -179,6 +190,7 @@ jobs:
             echo "| Web assets | ${{ steps.web_assets.outcome }} |"
             echo "| Format | ${{ steps.fmt.outcome }} |"
             echo "| Clippy | ${{ steps.clippy.outcome }} |"
+            echo "| Rustdoc | ${{ steps.rustdoc.outcome }} |"
             echo "| Deny | ${{ steps.deny.outcome }} |"
             echo "| Shear install | ${{ steps.shear_install.outcome }} |"
             echo "| Shear | ${{ steps.shear.outcome }} |"

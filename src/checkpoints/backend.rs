@@ -1,6 +1,6 @@
 //! `gix` (gitoxide) wrapper: the only file in the checkpoints system that
 //! knows about the git object model. Every other module works with plain
-//! [`CheckpointSummary`]/[`ChangedPath`]/`String` ids, so swapping the git
+//! [`super::types::CheckpointSummary`]/[`super::types::ChangedPath`]/`String` ids, so swapping the git
 //! library later only touches this file.
 //!
 //! Each checkpoint repository is a bare git directory (no work tree of its

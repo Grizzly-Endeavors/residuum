@@ -21,7 +21,7 @@
 //! marked completed leaves the run `running`, and startup recovery re-runs
 //! the pipeline from the same transcript. `merge` refuses to create a
 //! duplicate episode for a run id already recorded in
-//! [`crate::merged_run_log`].
+//! `crate::merged_run_log`.
 
 use std::sync::Arc;
 
@@ -87,7 +87,7 @@ struct MergeState {
 /// allocated, the observation log is appended, and the reflector is checked.
 pub struct MemoryMergeWriter {
     /// Serializes episode id allocation and the durable per-episode writes
-    /// in [`Self::persist_episode`] (transcript, observation archives, chunk
+    /// in `Self::persist_episode` (transcript, observation archives, chunk
     /// index, merged-run record, completion marker), so episode numbering
     /// never races. Released before indexing, embedding, or reflection run.
     merge_lock: Mutex<()>,
@@ -206,7 +206,7 @@ impl MemoryMergeWriter {
     }
 
     /// Whether `tag` names a session run that has already been durably
-    /// merged into an episode, per the [`crate::merged_run_log`]
+    /// merged into an episode, per the `crate::merged_run_log`
     /// record. Always `Ok(None)` for the main agent's own merges
     /// (`SourceTag::main` carries no run id).
     ///
@@ -269,7 +269,7 @@ impl MemoryMergeWriter {
     /// whether the reflector should run.
     ///
     /// Episode id allocation and the durable per-episode writes in
-    /// [`Self::persist_episode`] are serialized against every other merge
+    /// `Self::persist_episode` are serialized against every other merge
     /// (main agent or session) through the writer's merge lock, so episode
     /// numbering and log appends never race. That lock is released before
     /// indexing, embedding, and the reflector check run, and none of those

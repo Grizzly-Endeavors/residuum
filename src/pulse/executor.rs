@@ -37,7 +37,7 @@ pub struct PulseContext {
 /// run itself in the session panel (see `crate::gateway::event_loop::pulse`).
 ///
 /// `context` is `Some` when `pulse.context_from` names another pulse — see
-/// [`PulseContext`] — and is folded into the prompt by [`build_pulse_prompt`].
+/// [`PulseContext`] — and is folded into the prompt by `build_pulse_prompt`.
 ///
 /// `scripts` lines up with `pulse.tasks`: each task's script run, already
 /// finished, whose output (or failure) joins that task's section of the

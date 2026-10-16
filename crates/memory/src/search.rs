@@ -272,7 +272,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn index_chunks(&self, chunks: &[IndexChunk]) -> anyhow::Result<Vec<String>> {
+    pub(crate) fn index_chunks(&self, chunks: &[IndexChunk]) -> anyhow::Result<Vec<String>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
@@ -293,7 +293,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn delete_documents(&self, ids: &[String]) -> anyhow::Result<()> {
+    pub(crate) fn delete_documents(&self, ids: &[String]) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -1128,12 +1128,6 @@ impl HybridSearcher {
             below_threshold,
             semantic,
         })
-    }
-
-    /// Get a reference to the underlying BM25 index.
-    #[must_use]
-    pub fn bm25(&self) -> &MemoryIndex {
-        &self.bm25
     }
 }
 

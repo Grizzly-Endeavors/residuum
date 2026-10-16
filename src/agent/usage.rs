@@ -112,7 +112,7 @@ impl SessionUsageTotals {
 /// main agent's own workspace file ([`MainUsageSink`]), or a background
 /// session's registry entry (mirrored into its store record at
 /// completion — see `crate::background::registry::SessionUsageSink`).
-/// Mirrors [`crate::agent::turn::TranscriptSink`]'s split between the main
+/// Mirrors `crate::agent::turn::TranscriptSink`'s split between the main
 /// agent's own persistence and a session's.
 #[async_trait]
 pub trait UsageSink: Send + Sync {

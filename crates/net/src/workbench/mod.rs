@@ -3,7 +3,7 @@
 //! An artifact is either a single page, `team/workbench/<name>.html`, or a
 //! folder, `team/workbench/<name>/` with an `index.html` and any other
 //! files it loads. `<name>` is kebab-case. The artifacts listener
-//! ([`server`]) serves them on their own origin at `/<name>/`; the web UI
+//! (`server`) serves them on their own origin at `/<name>/`; the web UI
 //! lists them at `/team/workbench` and opens each in a tab of its own on
 //! that origin. Files beside an artifact that share its `<name>.` prefix
 //! (for example `<name>.state.json`) are that artifact's saved data: not part
@@ -45,7 +45,7 @@ pub struct ArtifactSummary {
     pub title: String,
     /// When the page was last modified (RFC 3339, UTC).
     #[ts(type = "string")]
-    pub modified_at: DateTime<Utc>,
+    pub(crate) modified_at: DateTime<Utc>,
     /// Page size in bytes.
     #[ts(type = "number")]
     pub size: u64,

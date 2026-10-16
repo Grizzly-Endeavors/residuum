@@ -11,11 +11,12 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, Request, Response, StatusCode};
+use tokio::time::Instant;
 use tracing::{error, warn};
 
 use super::engine_limit::PeerRateLimiter;

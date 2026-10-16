@@ -11,7 +11,7 @@ mod types;
 pub use client::{SystemOneClient, SystemOneEndpoint};
 pub use error::{SystemOneError, SystemOneOutageKind};
 pub use health::{SystemOneOutage, SystemOneStatus};
-pub use service::{SystemOneService, client_for_config, endpoint_from_config};
+pub use service::{SystemOneService, client_for_config};
 pub use types::{
     Answer, NoulCriteria, Question, SystemOneModel, SystemOneResponse, SystemOneUsage,
 };

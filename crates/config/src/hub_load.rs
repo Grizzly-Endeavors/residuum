@@ -35,7 +35,7 @@ impl HubConfig {
     /// Load `hub/config.toml` the way process start does.
     ///
     /// With no agent under `residuum_root`, a missing timezone loads anyway
-    /// (see [`super::resolve::hub::from_file_and_env_for_onboarding`]) so the setup
+    /// (see `super::resolve::hub::from_file_and_env_for_onboarding`) so the setup
     /// wizard can run. Once an agent exists, a missing timezone is fatal,
     /// the same as [`Self::load_at`]. An invalid timezone name is fatal
     /// either way.

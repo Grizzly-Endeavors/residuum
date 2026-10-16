@@ -85,11 +85,35 @@ test *args: _web-dist
 test-crate crate *args:
     cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
 
-# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
+# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress hub::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`, which skips the web build. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
-stress *args: _web-dist
+stress *args:
     #!/usr/bin/env bash
+    # The root package's build script needs web/dist; a member crate's tests do not.
+    # The root is stressed without a package option, or with `-p residuum` among them.
+    has_package=0 has_root=0 value_next=0
+    for arg in "$@"; do
+        if [ "$value_next" -eq 1 ]; then
+            value_next=0
+            if [ "$arg" = residuum ]; then has_root=1; fi
+            continue
+        fi
+        case $arg in
+            -p | --package)
+                has_package=1
+                value_next=1
+                ;;
+            --package=*)
+                has_package=1
+                if [ "${arg#--package=}" = residuum ]; then has_root=1; fi
+                ;;
+            *) break ;;
+        esac
+    done
+    if [ "$has_root" -eq 1 ] || [ "$has_package" -eq 0 ]; then
+        {{ quote(just_executable()) }} _web-dist || exit "$?"
+    fi
     scripts/test-filters.sh note stress "$@"
     scripts/stress-tests.sh "$@"
     status="$?"
@@ -115,6 +139,11 @@ types-check: _web-dist
 [group('rust')]
 clippy: _web-dist
     cargo clippy --all-targets --all-features -- -D warnings
+
+# Build the rustdoc of every package, private items included, with rustdoc warnings denied, so broken intra-doc links fail, exactly as CI runs it
+[group('rust')]
+doc: _web-dist
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Format Rust code
 [group('rust')]
@@ -268,7 +297,7 @@ web-check: _web-deps
 # Everything CI's rust job runs. Runs every check and lists the failures.
 [group('check')]
 rust-check: _web-dist
-    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy test types-check deny shear
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy doc test types-check deny shear
 
 # Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist, so a broken web build stops rust-check before its checks run. Runs every check and lists the failures.
 [group('check')]

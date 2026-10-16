@@ -147,7 +147,7 @@ pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpSe
 
 /// Diagnostics for `content` as `config/mcp.json`.
 ///
-/// Reuses [`resolve_mcp_server`], the same per-entry check
+/// Reuses `resolve_mcp_server`, the same per-entry check
 /// [`load_mcp_servers_map`] applies, so a diagnostic can never disagree with
 /// what loading skips. A JSON syntax error carries `serde_json`'s own
 /// line/column.
@@ -357,7 +357,7 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
 
 /// Diagnostics for `content` as `config/channels.toml`.
 ///
-/// Reuses [`resolve_channel_kind`] and [`retired_channel_keys`], the same
+/// Reuses `resolve_channel_kind` and `retired_channel_keys`, the same
 /// per-entry checks [`load_channel_configs`] applies, so a diagnostic can
 /// never disagree with what loading skips or ignores. A TOML syntax error
 /// carries the parser's own line/column.

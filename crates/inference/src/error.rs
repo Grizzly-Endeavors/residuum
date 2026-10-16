@@ -39,7 +39,7 @@ impl InferenceError {
     ///   rate limit, Groq's capacity refusal or a server error); otherwise when
     ///   the message indicates rate-limiting, overload or a server-side failure
     #[must_use]
-    pub fn is_retryable(&self) -> bool {
+    pub(crate) fn is_retryable(&self) -> bool {
         match self {
             Self::Request(_) | Self::Timeout(_) | Self::Stalled(_) | Self::StreamInterrupted(_) => {
                 true

@@ -11,7 +11,7 @@ mod otel;
 mod sanitize;
 mod submit;
 
-pub use sanitize::{redact_agent_key_values, sanitize_spans};
+pub(crate) use sanitize::{redact_agent_key_values, sanitize_spans};
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
@@ -557,7 +557,7 @@ impl TracingService {
     /// Builds a synthetic [`BugReport`] (severity `broken`) from
     /// `error_context` and submits it through the same path as a manual
     /// report, attaching the current span buffer. Submissions are rate
-    /// limited (see [`ErrorReportLimiter`]) so a tight error loop can't
+    /// limited (see `ErrorReportLimiter`) so a tight error loop can't
     /// exhaust the relay's per-IP submission budget; suppressed reports are
     /// logged at debug level.
     ///
