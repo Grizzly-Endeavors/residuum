@@ -22,11 +22,11 @@ use std::ops::ControlFlow;
 
 use async_trait::async_trait;
 
+use crate::bus::attachment::FileAttachment;
 use crate::bus::{
     BusError, ConversationTypingEvent, ErrorEvent, IntermediateEvent, MessageEvent, ResponseEvent,
     SessionResponseEvent, TurnLifecycleEvent, topics,
 };
-use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::notify_main_of_undeliverable_session_output;
 
 use super::BaseSubscribers;
@@ -472,7 +472,7 @@ async fn tell_main<C: ChatOutbound>(chat: &C, note: String) {
 async fn report_failing_replies<C: ChatOutbound>(chat: &C, reason: &str) {
     let platform = chat.display_name();
     let next_step = next_step_for(chat, reason);
-    crate::gateway::helpers::publish_error(
+    crate::bus::notice::publish_error(
         chat.publisher(),
         format!(
             "Replies to {platform} aren't getting through, so messages there look unanswered. \
@@ -501,7 +501,7 @@ async fn report_failing_replies<C: ChatOutbound>(chat: &C, reason: &str) {
 /// to set that up, and main hears that the output went nowhere.
 async fn report_no_owner<C: ChatOutbound>(chat: &C) {
     let platform = chat.display_name();
-    crate::gateway::helpers::publish_notice(
+    crate::bus::notice::publish_notice(
         chat.publisher(),
         format!(
             "The agent tried to send you something on {platform}, but you haven't messaged the \
@@ -559,7 +559,7 @@ async fn report_undelivered_message<C: ChatOutbound>(
             reason,
         ),
     };
-    crate::gateway::helpers::publish_error(chat.publisher(), message, details).await;
+    crate::bus::notice::publish_error(chat.publisher(), message, details).await;
     let fix_note = chat
         .explain_failure(reason)
         .map(|fix| format!(" {fix}"))

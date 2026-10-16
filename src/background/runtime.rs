@@ -16,9 +16,9 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::hop::HopCounter;
-use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::MessageEvent;
+use crate::bus::interrupt::Interrupt;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget,
     ConversationTypingEvent, EndpointName, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
@@ -28,16 +28,14 @@ use crate::bus::{
 use crate::config::BackgroundConfig;
 use crate::tracing_service::{ClientContext, TracingService};
 
-use super::events::publish_session_event;
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
-use super::registry::{
-    DeliverOutcome, ResumePoint, SessionCategory, SessionInfo, SessionRegistry, SessionState,
-    generate_run_id,
-};
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
 use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
+use crate::background::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
+use crate::bus::session::publish_session_event;
+use crate::bus::session::{SessionCategory, SessionInfo, SessionState, generate_run_id};
 
 /// Idle timeouts per category, resolved once from config at construction.
 ///
@@ -218,7 +216,7 @@ impl SessionRuntime {
             resolved_model,
             conversation_target: req.conversation_target,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: req.overlap,
         };
 
@@ -1537,9 +1535,9 @@ mod tests {
     use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
 
-    use super::super::registry::{MAIN_ADDRESS, MAIN_DEPTH};
     use super::super::subagent::test_memory_extras;
     use crate::bus::MessageEvent;
+    use crate::bus::session::{MAIN_ADDRESS, MAIN_DEPTH};
 
     /// A throwaway checkpoint engine for tests that need a `SessionRuntime`
     /// but don't exercise checkpointing behavior themselves.
@@ -1746,7 +1744,7 @@ mod tests {
             provider: Box::new(MockProvider {
                 response: response.to_string(),
             }),
-            tools: crate::tools::ToolRegistry::new(),
+            tools: crate::agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
             skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
             identity: IdentityFiles::default(),
@@ -1770,7 +1768,7 @@ mod tests {
             max_tool_iterations: None,
             repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(GatedProvider::new(gate, response)),
-            tools: crate::tools::ToolRegistry::new(),
+            tools: crate::agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
             skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
             identity: IdentityFiles::default(),
@@ -1815,12 +1813,12 @@ mod tests {
         MessageEvent {
             id: "conv-msg-1".to_string(),
             content: content.to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: None,
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    kind: crate::bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,
@@ -1888,7 +1886,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let mut rx = registry
@@ -1911,7 +1909,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
         };
-        let register_error = super::super::registry::RegisterError {
+        let register_error = crate::background::registry::RegisterError {
             address: address.clone(),
         };
 
@@ -1956,7 +1954,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -2001,7 +1999,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
         };
-        let register_error = super::super::registry::RegisterError {
+        let register_error = crate::background::registry::RegisterError {
             address: address.clone(),
         };
         deliver_losing_spawn_input(
@@ -2061,7 +2059,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
         };
-        let register_error = super::super::registry::RegisterError {
+        let register_error = crate::background::registry::RegisterError {
             address: address.clone(),
         };
         deliver_losing_spawn_input(
@@ -2148,7 +2146,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let mut winner_rx = runtime
@@ -2575,7 +2573,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         store.begin_run(&info).await;
@@ -2653,7 +2651,7 @@ mod tests {
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),
@@ -2697,7 +2695,7 @@ mod tests {
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),
@@ -2794,7 +2792,7 @@ mod tests {
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),
@@ -2875,7 +2873,7 @@ mod tests {
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(PanickingProvider),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),
@@ -2932,7 +2930,7 @@ mod tests {
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(PanickingProvider),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),
@@ -3022,7 +3020,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         store.begin_run(&info).await;
@@ -3106,7 +3104,7 @@ mod tests {
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),
@@ -3310,7 +3308,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let event = build_result_event(
@@ -3358,7 +3356,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let summary = "Found something worth flagging. The instruction to omit \
@@ -3395,7 +3393,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let event = build_result_event(
@@ -3456,7 +3454,7 @@ mod tests {
             max_tool_iterations: None,
             repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(SequencedProvider::new(responses)),
-            tools: crate::tools::ToolRegistry::new(),
+            tools: crate::agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
             skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
             identity: IdentityFiles::default(),
@@ -3919,7 +3917,7 @@ mod tests {
             max_tool_iterations: None,
             repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(SequencedProvider::new(responses)),
-            tools: crate::tools::ToolRegistry::new(),
+            tools: crate::agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
             skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
             identity: IdentityFiles::default(),
@@ -4089,7 +4087,7 @@ mod tests {
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),
@@ -4173,7 +4171,7 @@ mod tests {
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
                 skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
                 identity: IdentityFiles::default(),

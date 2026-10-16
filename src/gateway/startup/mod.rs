@@ -15,11 +15,11 @@ use crate::background::conversation_router::ConversationRouter;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
+use crate::background::team::TeamLink;
 use crate::bus::EndpointRegistry;
 use crate::config::SharedToolsPath;
 use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::hub::services::HubServices;
-use crate::hub::team::TeamLink;
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -27,6 +27,7 @@ use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::notify::channels::InboxChannel;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
+use crate::tools::registration::RegistryInjections;
 use crate::util::FatalError;
 use crate::workspace::bootstrap::ensure_workspace_labeled;
 use crate::workspace::identity::IdentityFiles;
@@ -34,13 +35,17 @@ use crate::workspace::team_files::TeamWriteCoordinator;
 
 use crate::background::spawn_context::SpawnContext;
 
-use tools::{CreateAgentArgs, ToolRegistryDeps};
+use crate::tools::main_tools::{self, ToolRegistryDeps};
+use tools::CreateAgentArgs;
 
 /// All subsystems initialized before the gateway event loop.
 pub(crate) struct GatewayComponents {
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
+    /// What main's registry injected into its tools at registration, for
+    /// the reloads that re-register one of them.
+    pub tool_injections: RegistryInjections,
     pub observer: Observer,
     pub merge_writer: Arc<MemoryMergeWriter>,
     pub subconscious: Arc<crate::subconscious::Subconscious>,
@@ -53,7 +58,7 @@ pub(crate) struct GatewayComponents {
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub pulse_enabled: bool,
     pub endpoint_registry: EndpointRegistry,
-    pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    pub channel_configs: Vec<crate::config::ExternalChannelConfig>,
     pub http_client: SharedHttpClient,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
@@ -61,7 +66,12 @@ pub(crate) struct GatewayComponents {
     pub agent_messenger: Arc<AgentMessenger>,
     pub conversation_router: Arc<ConversationRouter>,
     pub spawn_context: Arc<SpawnContext>,
+    /// How this agent's tools reach the hub, for the session tool factory a
+    /// config reload rebuilds.
+    pub lifecycle: crate::tools::LifecycleAccess,
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// The agent's Auto Mode, shared by main's tools and every session's.
+    pub auto_mode: crate::agent::auto_mode::SharedAutoMode,
     /// The hub's team write coordinator, shared with every agent's file tools
     /// and the web file API.
     pub team: TeamWriteCoordinator,
@@ -209,14 +219,14 @@ async fn init_action_store(
     let action_store = match ActionStore::load(&actions_path).await {
         Ok((store, rejected, moved_aside)) => {
             if !rejected.is_empty() {
-                super::helpers::publish_notice(
+                crate::bus::notice::publish_notice(
                     publisher,
                     crate::actions::store::rejected_actions_notice(&rejected),
                 )
                 .await;
             }
             if let Some(moved_to) = moved_aside {
-                super::helpers::publish_notice(
+                crate::bus::notice::publish_notice(
                     publisher,
                     crate::actions::store::corrupt_actions_notice(&moved_to),
                 )
@@ -272,7 +282,7 @@ async fn init_skills(
         }
     };
     for notice in skill_index.notices() {
-        super::helpers::publish_notice(publisher, notice.clone()).await;
+        crate::bus::notice::publish_notice(publisher, notice.clone()).await;
     }
     SkillState::new_shared(skill_index, cfg.skills.dirs.clone())
 }
@@ -318,7 +328,8 @@ fn build_session_memory_components(
 }
 
 /// Inputs to [`build_startup_spawn_context`], gathered because
-/// `SpawnContext` itself has this many independent dependencies (mirrors
+/// `SpawnContext` and the session tool factory between them have this many
+/// independent dependencies (mirrors
 /// `reload::build_spawn_context`'s equivalent construction from a live
 /// `AgentRuntime`, which doesn't exist yet at startup).
 struct StartupSpawnContextInputs<'a> {
@@ -349,6 +360,8 @@ struct StartupSpawnContextInputs<'a> {
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     /// Runtime client context snapshot, built alongside `tracing_service`.
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+    /// The running build, for the session tools' feedback client context.
+    build: crate::build_info::BuildInfo,
     /// Standalone web search backend config, mirroring `cfg.web_search.standalone_backend`.
     web_search_backend: Option<crate::config::StandaloneBackendConfig>,
     /// Main's tool `PATH`, write policy, and agent key store — shared, not
@@ -364,9 +377,36 @@ struct StartupSpawnContextInputs<'a> {
     model_catalog: &'a crate::config::SharedModelCatalog,
 }
 
-/// Build the `SpawnContext` every session forks from, at startup.
+/// Build the `SpawnContext` every session forks from, at startup, with the
+/// session tool factory that builds each fork's tools.
 fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<SpawnContext> {
-    let messenger = Arc::clone(inputs.messenger);
+    let session_tools = Arc::new(crate::tools::SessionTools {
+        path_policy: Arc::clone(inputs.path_policy),
+        tools_path: Arc::clone(inputs.tools_path),
+        agent_keys: Arc::clone(inputs.agent_keys),
+        checkpoints: Arc::clone(inputs.checkpoints),
+        publisher: inputs.publisher.clone(),
+        endpoint_registry: inputs.endpoint_registry.clone(),
+        session_registry: Arc::clone(inputs.session_registry),
+        action_store: Arc::clone(inputs.action_store),
+        action_notify: Arc::clone(inputs.action_notify),
+        hybrid_searcher: Arc::clone(inputs.hybrid_searcher),
+        tracing_service: Arc::clone(inputs.tracing_service),
+        tracing_client_context: Arc::clone(inputs.tracing_client_context),
+        build: inputs.build,
+        web_search_backend: inputs.web_search_backend,
+        model_catalog: Arc::clone(inputs.model_catalog),
+        a2a_hub: Arc::clone(inputs.a2a_hub),
+        a2a_tracker: Arc::clone(inputs.a2a_tracker),
+        lifecycle: inputs.lifecycle.clone(),
+        messenger: Arc::clone(inputs.messenger),
+        layout: inputs.layout.clone(),
+        config_dir: inputs.cfg.config_dir.clone(),
+        hub_dir: inputs.hub_dir.to_path_buf(),
+        tz: inputs.tz,
+        depth_cap: inputs.cfg.background.subagent_depth_cap,
+        auto_mode: Some(Arc::clone(inputs.auto_mode)),
+    });
     Arc::new(SpawnContext {
         background_config: inputs.cfg.background.clone(),
         main_provider_specs: inputs.cfg.main.clone(),
@@ -383,33 +423,16 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
         repeat_call_guard: inputs.cfg.agent.repeat_call_guard,
         layout: inputs.layout.clone(),
-        config_dir: inputs.cfg.config_dir.clone(),
-        hub_dir: inputs.hub_dir.to_path_buf(),
-        tz: inputs.tz,
         role_overrides: inputs.cfg.role_overrides.clone(),
+        session_tools,
         session_runtime: Arc::clone(inputs.session_runtime),
         session_registry: Arc::clone(inputs.session_registry),
-        endpoint_registry: inputs.endpoint_registry.clone(),
         publisher: inputs.publisher.clone(),
-        action_store: Arc::clone(inputs.action_store),
-        action_notify: Arc::clone(inputs.action_notify),
-        hybrid_searcher: Arc::clone(inputs.hybrid_searcher),
         skill_state: Arc::clone(inputs.skill_state),
         mcp_registry: Arc::clone(inputs.mcp_registry),
         observer: Arc::clone(inputs.session_observer),
         merge_writer: Arc::clone(inputs.merge_writer),
-        messenger,
-        tracing_service: Arc::clone(inputs.tracing_service),
-        tracing_client_context: Arc::clone(inputs.tracing_client_context),
-        web_search_backend: inputs.web_search_backend,
-        tools_path: Arc::clone(inputs.tools_path),
-        path_policy: Arc::clone(inputs.path_policy),
-        auto_mode: Some(Arc::clone(inputs.auto_mode)),
-        agent_keys: Arc::clone(inputs.agent_keys),
-        a2a_hub: Arc::clone(inputs.a2a_hub),
-        a2a_tracker: Arc::clone(inputs.a2a_tracker),
-        checkpoints: Arc::clone(inputs.checkpoints),
-        lifecycle: inputs.lifecycle.clone(),
+        messenger: Arc::clone(inputs.messenger),
         bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
         ),
     })
@@ -555,7 +578,7 @@ async fn init_mcp_servers(
 
 /// The MCP server entry for a standalone web search backend, or `None` for
 /// no backend or `"ollama"` (a native tool, not an MCP server — see
-/// `ToolRegistry::register_ollama_web_search_tool`).
+/// `tools::registration::register_ollama_web_search_tool`).
 fn web_search_mcp_entry(
     backend: &crate::config::StandaloneBackendConfig,
 ) -> Option<crate::mcp::types::McpServerEntry> {
@@ -658,10 +681,7 @@ fn init_channels_and_registry(
     layout: &WorkspaceLayout,
     cfg: &Config,
     degradations: &mut Vec<String>,
-) -> (
-    Vec<crate::notify::types::ExternalChannelConfig>,
-    EndpointRegistry,
-) {
+) -> (Vec<crate::config::ExternalChannelConfig>, EndpointRegistry) {
     let channel_configs =
         match crate::workspace::config::load_channel_configs(&layout.channels_toml()) {
             Ok(configs) => configs,
@@ -681,7 +701,7 @@ struct NetworkingComponents {
     tools_path: SharedToolsPath,
     agent_keys: crate::agent_keys::SharedAgentKeys,
     mcp_registry: SharedMcpRegistry,
-    channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    channel_configs: Vec<crate::config::ExternalChannelConfig>,
     endpoint_registry: EndpointRegistry,
 }
 
@@ -727,7 +747,7 @@ async fn init_networking(
 /// The inbox subscribes to `TopicId::Inbox`.
 pub(crate) async fn spawn_notify_subscribers(
     bus_handle: &crate::bus::BusHandle,
-    channel_configs: &[crate::notify::types::ExternalChannelConfig],
+    channel_configs: &[crate::config::ExternalChannelConfig],
     http: &SharedHttpClient,
     layout: &WorkspaceLayout,
     tz: chrono_tz::Tz,
@@ -736,7 +756,8 @@ pub(crate) async fn spawn_notify_subscribers(
     use crate::notify::subscriber::run_notify_subscriber;
 
     let external_channels =
-        crate::workspace::config::build_external_channels(channel_configs, http.client()).await;
+        crate::notify::channel_builder::build_external_channels(channel_configs, http.client())
+            .await;
 
     let mut handles = Vec::new();
 
@@ -777,8 +798,11 @@ pub(crate) async fn spawn_notify_subscribers(
 /// Snapshot the agent's runtime client context, used by the bug-report tools
 /// and HTTP handlers. The tracing service itself is the hub's, shared by
 /// every agent.
-fn init_tracing_client_context(cfg: &Config) -> Arc<crate::tracing_service::ClientContext> {
-    Arc::new(crate::client_context::gather_for_bug_report(cfg))
+fn init_tracing_client_context(
+    cfg: &Config,
+    build: crate::build_info::BuildInfo,
+) -> Arc<crate::tracing_service::ClientContext> {
+    Arc::new(crate::tracing_service::client_context::gather_for_bug_report(build, cfg))
 }
 
 /// Inputs to [`build_tools_and_agent`], gathered because building the tool
@@ -814,12 +838,13 @@ async fn build_tools_and_agent(
     inputs: ToolsAndAgentInputs<'_>,
 ) -> (
     Agent,
+    RegistryInjections,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
-    let (tools, output_topic_override_tx) = tools::init_tool_registry(
+    let (tools, tool_injections, output_topic_override_tx) = main_tools::init_tool_registry(
         inputs.cfg,
         inputs.layout,
-        inputs.mem,
+        &inputs.mem.hybrid_searcher,
         inputs.tz,
         &inputs.tool_deps,
     );
@@ -849,9 +874,9 @@ async fn build_tools_and_agent(
         inputs.degradations,
     )
     .await;
-    agent.set_team(inputs.tool_deps.agent_messenger.team().clone());
+    agent.set_team(Arc::new(inputs.tool_deps.agent_messenger.team().clone()));
 
-    (agent, output_topic_override_tx)
+    (agent, tool_injections, output_topic_override_tx)
 }
 
 /// Inputs to [`build_main_agent`], gathered because building the main agent
@@ -874,6 +899,8 @@ struct MainAgentInputs<'a> {
     session_registry: &'a Arc<SessionRegistry>,
     publisher: &'a crate::bus::Publisher,
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    /// The running build, for the feedback tools' client context.
+    build: crate::build_info::BuildInfo,
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
     agent_messenger: &'a Arc<AgentMessenger>,
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
@@ -895,6 +922,7 @@ async fn build_main_agent(
     inputs: MainAgentInputs<'_>,
 ) -> (
     Agent,
+    RegistryInjections,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
     // Main's current-turn hop counter, created once and shared between the
@@ -919,6 +947,7 @@ async fn build_main_agent(
             endpoint_registry: &inputs.net.endpoint_registry,
             publisher: inputs.publisher,
             tracing_service: inputs.tracing_service,
+            build: inputs.build,
             tracing_client_context: inputs.tracing_client_context,
             agent_messenger: inputs.agent_messenger,
             hop_counter: &hop_counter,
@@ -951,7 +980,8 @@ struct AgentInitInputs<'a> {
     tz: chrono_tz::Tz,
     http_client: SharedHttpClient,
     mem: &'a memory::MemoryComponents,
-    net: &'a NetworkingComponents,
+    /// The networking, path policy, Auto Mode, A2A and config-reload handles.
+    infra: &'a SupportingInfra,
     session_runtime: &'a Arc<SessionRuntime>,
     session_registry: &'a Arc<SessionRegistry>,
     session_observer: &'a Arc<Observer>,
@@ -962,36 +992,37 @@ struct AgentInitInputs<'a> {
     publisher: &'a crate::bus::Publisher,
     agent_messenger: &'a Arc<AgentMessenger>,
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
-    tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
-    path_policy: &'a crate::tools::SharedPathPolicy,
-    auto_mode: &'a crate::agent::auto_mode::SharedAutoMode,
-    a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
-    a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    build: crate::build_info::BuildInfo,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
-    directory: &'a crate::hub::DirectoryHandle,
+    directory: &'a crate::background::team::DirectoryHandle,
     identity: IdentityFiles,
     provider: Box<dyn crate::inference::InferenceProvider>,
     options: crate::inference::CompletionOptions,
     /// See `ToolsAndAgentInputs::degradations`.
     degradations: &'a mut Vec<String>,
-    /// See `ToolRegistryDeps::config_reload_tracker`.
-    config_reload_tracker: &'a crate::tools::SharedConfigReloadTracker,
+}
+
+/// What [`build_spawn_context_and_agent`] builds.
+struct SpawnContextAndAgent {
+    spawn_context: Arc<SpawnContext>,
+    /// How this agent's tools (main's and every session's) reach the hub,
+    /// kept for the session tool factory a config reload rebuilds.
+    lifecycle: crate::tools::LifecycleAccess,
+    agent: Agent,
+    /// What main's registry injected into its tools at registration.
+    tool_injections: RegistryInjections,
+    output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 }
 
 /// Build the `SpawnContext` every session forks from, and the main agent
 /// itself, from one bundle of inputs shared between the two.
-async fn build_spawn_context_and_agent(
-    inputs: AgentInitInputs<'_>,
-) -> (
-    Arc<SpawnContext>,
-    Agent,
-    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
-) {
+async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnContextAndAgent {
     let lifecycle =
         crate::tools::LifecycleAccess::new(inputs.directory.clone(), inputs.cfg.agent_name.clone());
     // One live catalog shared by every session and every tool that checks an
     // explicit model; config reloads replace its contents in place.
     let model_catalog = inputs.cfg.model_catalog.clone().into_shared();
+    let infra = inputs.infra;
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg: inputs.cfg,
         hub_dir: inputs.hub_dir,
@@ -1000,61 +1031,69 @@ async fn build_spawn_context_and_agent(
         http_client: inputs.http_client,
         session_runtime: inputs.session_runtime,
         session_registry: inputs.session_registry,
-        endpoint_registry: &inputs.net.endpoint_registry,
+        endpoint_registry: &infra.net.endpoint_registry,
         publisher: inputs.publisher,
         action_store: inputs.action_store,
         action_notify: inputs.action_notify,
         hybrid_searcher: &inputs.mem.hybrid_searcher,
         skill_state: inputs.skill_state,
-        mcp_registry: &inputs.net.mcp_registry,
+        mcp_registry: &infra.net.mcp_registry,
         session_observer: inputs.session_observer,
         merge_writer: inputs.merge_writer,
         messenger: inputs.agent_messenger,
         tracing_service: inputs.tracing_service,
-        tracing_client_context: inputs.tracing_client_context,
+        tracing_client_context: &infra.tracing_client_context,
+        build: inputs.build,
         web_search_backend: inputs.cfg.web_search.standalone_backend.clone(),
-        tools_path: &inputs.net.tools_path,
-        path_policy: inputs.path_policy,
-        auto_mode: inputs.auto_mode,
-        agent_keys: &inputs.net.agent_keys,
-        a2a_hub: inputs.a2a_hub,
-        a2a_tracker: inputs.a2a_tracker,
+        tools_path: &infra.net.tools_path,
+        path_policy: &infra.path_policy,
+        auto_mode: &infra.auto_mode,
+        agent_keys: &infra.net.agent_keys,
+        a2a_hub: &infra.a2a_hub,
+        a2a_tracker: &infra.a2a_tracker,
         checkpoints: inputs.checkpoints,
         lifecycle: &lifecycle,
         model_catalog: &model_catalog,
     });
 
-    let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
+    let (agent, tool_injections, output_topic_override_tx) = build_main_agent(MainAgentInputs {
         cfg: inputs.cfg,
         hub_dir: inputs.hub_dir,
         layout: inputs.layout,
         mem: inputs.mem,
         tz: inputs.tz,
+        build: inputs.build,
         identity: inputs.identity,
         provider: inputs.provider,
         options: inputs.options,
-        net: inputs.net,
-        path_policy: inputs.path_policy,
-        auto_mode: inputs.auto_mode,
+        net: &infra.net,
+        path_policy: &infra.path_policy,
+        auto_mode: &infra.auto_mode,
         action_store: inputs.action_store,
         action_notify: inputs.action_notify,
         skill_state: inputs.skill_state,
         session_registry: inputs.session_registry,
         publisher: inputs.publisher,
         tracing_service: inputs.tracing_service,
-        tracing_client_context: inputs.tracing_client_context,
+        tracing_client_context: &infra.tracing_client_context,
         agent_messenger: inputs.agent_messenger,
-        a2a_hub: inputs.a2a_hub,
-        a2a_tracker: inputs.a2a_tracker,
+        a2a_hub: &infra.a2a_hub,
+        a2a_tracker: &infra.a2a_tracker,
         checkpoints: inputs.checkpoints,
         lifecycle: &lifecycle,
         model_catalog: &model_catalog,
         degradations: inputs.degradations,
-        config_reload_tracker: inputs.config_reload_tracker,
+        config_reload_tracker: &infra.config_reload_tracker,
     })
     .await;
 
-    (spawn_context, agent, output_topic_override_tx)
+    SpawnContextAndAgent {
+        spawn_context,
+        lifecycle,
+        agent,
+        tool_injections,
+        output_topic_override_tx,
+    }
 }
 
 /// The shared path policy for file tools, with the config-derived write blocks.
@@ -1073,7 +1112,7 @@ fn build_path_policy(
 /// Publish the grouped startup-degradation notice, if anything degraded.
 async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradations: &[String]) {
     if let Some(message) = degradation_notice(degradations) {
-        super::helpers::publish_notice(publisher, message).await;
+        crate::bus::notice::publish_notice(publisher, message).await;
     }
 }
 
@@ -1086,7 +1125,7 @@ async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradati
 /// hub, which publishes them once for the whole process.
 async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
     for notice in &cfg.load_notices {
-        super::helpers::publish_notice(publisher, notice.clone()).await;
+        crate::bus::notice::publish_notice(publisher, notice.clone()).await;
     }
 }
 
@@ -1225,7 +1264,7 @@ async fn init_supporting_infra(
         degradations,
     )
     .await;
-    let tracing_client_context = init_tracing_client_context(cfg);
+    let tracing_client_context = init_tracing_client_context(cfg, shared.control.build);
     let path_policy = build_path_policy(cfg, layout, hub, &shared.team);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
     let auto_mode = crate::agent::auto_mode::AutoModeGate::new_shared(
@@ -1351,46 +1390,41 @@ pub(crate) async fn initialize(
     )
     .await;
 
-    let (spawn_context, agent, output_topic_override_tx) =
-        build_spawn_context_and_agent(AgentInitInputs {
-            cfg,
-            hub_dir: &hub.config_dir,
-            layout: &layout,
-            tz,
-            http_client: http.clone(),
-            mem: &mem,
-            net: &infra.net,
-            session_runtime: &session_runtime,
-            session_registry: &sess.session_registry,
-            session_observer: &sess.session_observer,
-            merge_writer: &sess.merge_writer,
-            action_store: &sess.action_store,
-            action_notify: &sess.action_notify,
-            skill_state: &sess.skill_state,
-            publisher,
-            agent_messenger: &sess.agent_messenger,
-            tracing_service: &shared.tracing_service,
-            tracing_client_context: &infra.tracing_client_context,
-            path_policy: &infra.path_policy,
-            auto_mode: &infra.auto_mode,
-            a2a_hub: &infra.a2a_hub,
-            a2a_tracker: &infra.a2a_tracker,
-            checkpoints: &checkpoints,
-            directory: &shared.directory,
-            identity,
-            provider: providers.provider,
-            options: providers.options,
-            degradations: &mut degradations,
-            config_reload_tracker: &infra.config_reload_tracker,
-        })
-        .await;
+    let main = build_spawn_context_and_agent(AgentInitInputs {
+        cfg,
+        hub_dir: &hub.config_dir,
+        layout: &layout,
+        tz,
+        http_client: http.clone(),
+        mem: &mem,
+        infra: &infra,
+        session_runtime: &session_runtime,
+        session_registry: &sess.session_registry,
+        session_observer: &sess.session_observer,
+        merge_writer: &sess.merge_writer,
+        action_store: &sess.action_store,
+        action_notify: &sess.action_notify,
+        skill_state: &sess.skill_state,
+        publisher,
+        agent_messenger: &sess.agent_messenger,
+        tracing_service: &shared.tracing_service,
+        build: shared.control.build,
+        checkpoints: &checkpoints,
+        directory: &shared.directory,
+        identity,
+        provider: providers.provider,
+        options: providers.options,
+        degradations: &mut degradations,
+    })
+    .await;
 
     publish_degradation_notice(publisher, &degradations).await;
 
     Ok(GatewayComponents {
         layout,
         tz,
-        agent,
+        agent: main.agent,
+        tool_injections: main.tool_injections,
         observer: providers.observer,
         merge_writer: sess.merge_writer,
         subconscious,
@@ -1410,10 +1444,12 @@ pub(crate) async fn initialize(
         session_store: sess.session_store,
         agent_messenger: sess.agent_messenger,
         conversation_router: sess.conversation_router,
-        spawn_context,
+        spawn_context: main.spawn_context,
+        lifecycle: main.lifecycle,
         path_policy: infra.path_policy,
+        auto_mode: infra.auto_mode,
         team: shared.team.clone(),
-        output_topic_override_tx,
+        output_topic_override_tx: main.output_topic_override_tx,
         a2a_hub: infra.a2a_hub,
         a2a_tracker: infra.a2a_tracker,
         checkpoints,

@@ -4,11 +4,11 @@
 use chrono::Duration;
 
 use super::*;
-use crate::background::registry::SessionState;
+use crate::background::team::{A2aVisibility, AgentLastError};
 use crate::bus::SessionAddress;
+use crate::bus::session::SessionState;
 use crate::hub::agent_watch::{MainTurnEnded, WatchedPath};
 use crate::hub::team_events::{PageQuery, TeamEvent};
-use crate::hub::types::{A2aVisibility, AgentLastError};
 
 fn recorder() -> Recorder {
     Recorder::new(TeamEventLog::new("boot"))
@@ -86,7 +86,7 @@ fn session_info(
         resolved_model: None,
         conversation_target: None,
         started_at: Utc::now(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
+        usage: crate::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     })
 }

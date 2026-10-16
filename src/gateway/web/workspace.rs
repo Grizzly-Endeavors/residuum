@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::gateway::ReloadSignal;
+use crate::bus::control::ReloadSignal;
 use crate::workspace::access::{dir_holds_internal_data, is_blocked_path};
 use crate::workspace::team_files::{TeamFiles, TeamPathGuard};
 use crate::workspace::version::{modified_unix_ms, version_token};
@@ -734,7 +734,7 @@ fn diagnose_write_content(
         // Every file this module understands is text (YAML/TOML/JSON/MD), so
         // non-UTF-8 content on a recognized path is itself worth reporting,
         // even though there's no parser to run on bytes that aren't text.
-        return if crate::diagnostics_dispatch::is_recognized(path, &paths) {
+        return if crate::a2a::diagnostics_dispatch::is_recognized(path, &paths) {
             vec![crate::diagnostics::Diagnostic::error(
                 "content is not valid UTF-8 text",
             )]
@@ -743,7 +743,7 @@ fn diagnose_write_content(
         };
     };
 
-    crate::diagnostics_dispatch::diagnose(path, text, &paths).unwrap_or_default()
+    crate::a2a::diagnostics_dispatch::diagnose(path, text, &paths).unwrap_or_default()
 }
 
 /// `POST /api/agents/{name}/workspace/validate` — diagnostics for `content` as if it were
@@ -955,7 +955,7 @@ pub(super) async fn api_workspace_raw_read(
     })?;
 
     let version = version_token(&metadata);
-    let mime_type = crate::interfaces::attachment::detect_mime_type(&path);
+    let mime_type = crate::bus::attachment::detect_mime_type(&path);
 
     let mut response = bytes.into_response();
     let response_headers = response.headers_mut();
@@ -2041,7 +2041,7 @@ mod tests {
         tokio::fs::create_dir_all(&team_dir).await.unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let mut state = make_state(root.join("scout"));
         state.reload_tx = Some(tx);
 
@@ -2059,7 +2059,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let state = super::super::ConfigApiState {
             team: None,
             hub_dir: dir.path().to_path_buf(),
@@ -2700,7 +2700,7 @@ mod tests {
             .unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let state = super::super::ConfigApiState {
             team: None,
             hub_dir: dir.path().to_path_buf(),
@@ -3296,7 +3296,7 @@ mod tests {
             .unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let state = super::super::ConfigApiState {
             team: None,
             hub_dir: dir.path().to_path_buf(),

@@ -13,12 +13,12 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use super::error::{json_error, lifecycle_error_response};
+use crate::background::team::{
+    Actor, AgentState, AgentSummary, CreateAgentRequest, LifecycleError,
+};
 use crate::gateway::web::cloud::CloudStatusResponse;
 use crate::hub::types::{AgentListResponse, DeletedAgentListResponse};
-use crate::hub::{
-    Actor, AgentDirectory, AgentPatch, AgentState, AgentSummary, CreateAgentRequest,
-    LifecycleError, RestoreAgentRequest,
-};
+use crate::hub::{AgentDirectory, AgentPatch, RestoreAgentRequest};
 
 /// What the lifecycle and status routes read.
 #[derive(Clone)]
@@ -27,6 +27,7 @@ pub(super) struct LifecycleState {
     pub hub_dir: std::path::PathBuf,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     pub started_at: std::time::Instant,
+    pub build: crate::build_info::BuildInfo,
 }
 
 /// The agent list, create, per-agent lifecycle, stop-all, and status routes.
@@ -201,7 +202,7 @@ async fn hub_status(
         crate::pairing::remote_context(&parts.extensions).is_some(),
     );
     Json(json!({
-        "version": crate::update::CURRENT_VERSION,
+        "version": state.build.version,
         "uptime_secs": state.started_at.elapsed().as_secs(),
         "tunnel": tunnel,
         "agents": {

@@ -15,14 +15,14 @@ use teloxide_core::types::{
 };
 
 use crate::background::registry::SessionRegistry;
+use crate::bus::control::{ServerCommand, StopRequest};
+use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
 use crate::bus::{EndpointName, Publisher};
-use crate::gateway::event_loop::AdapterSenders;
-use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
+use crate::interfaces::AdapterSenders;
 use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
 use crate::interfaces::context_buffer::{BufferedMessage, render_context};
-use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
@@ -45,7 +45,7 @@ struct TelegramContext<'a> {
     inbox_dir: &'a Path,
     /// Main's saved conversation, which `/multitask` forks.
     main_conversation: &'a Path,
-    reload_tx: &'a crate::gateway::types::ReloadSender,
+    reload_tx: &'a crate::bus::control::ReloadSender,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: &'a SessionRegistry,
@@ -712,7 +712,7 @@ async fn handle_attachment(
     from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
 ) {
-    use crate::interfaces::attachment::{
+    use crate::inbox::attachment::{
         AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
     };
     use teloxide_core::net::Download;
@@ -837,7 +837,7 @@ mod tests {
         publisher: Publisher,
         inbox_dir: PathBuf,
         main_conversation: PathBuf,
-        reload_tx: crate::gateway::types::ReloadSender,
+        reload_tx: crate::bus::control::ReloadSender,
         command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
         session_registry: Arc<SessionRegistry>,
@@ -866,9 +866,8 @@ mod tests {
             publisher: bus.publisher(),
             inbox_dir: dir.path().to_path_buf(),
             main_conversation: dir.path().join("recent_messages.json"),
-            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
-            )
-            .0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>()
+                .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),

@@ -19,7 +19,7 @@
     reason = "test code uses wildcard for unreachable branches"
 )]
 
-use residuum::notify::types::ExternalChannelKind;
+use residuum::config::ExternalChannelKind;
 
 #[test]
 fn external_channel_kind_macos_variant_exists() {

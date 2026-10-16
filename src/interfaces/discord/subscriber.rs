@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serenity::http::Http;
 use serenity::model::id::ChannelId;
 
-use crate::interfaces::attachment::FileAttachment;
+use crate::bus::attachment::FileAttachment;
 use crate::interfaces::chunking::chunk_text;
 use crate::interfaces::outbound::ChatOutbound;
 

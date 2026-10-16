@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::inference::ToolDefinition;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Default page size returned per call, to avoid context window blowout.

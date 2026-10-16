@@ -2,29 +2,13 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
 use crate::background::registry::SessionRegistry;
 use crate::config::Config;
-use crate::gateway::types::{GatewayState, ServerCommand, StopRequest};
+use crate::gateway::types::GatewayState;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
-
-/// Bundled senders for spawning a chat adapter (Discord or Telegram).
-#[derive(Clone)]
-pub struct AdapterSenders {
-    pub publisher: crate::bus::Publisher,
-    pub bus_handle: crate::bus::BusHandle,
-    pub reload: crate::gateway::types::ReloadSender,
-    pub command: mpsc::Sender<ServerCommand>,
-    pub stop: mpsc::Sender<StopRequest>,
-    /// Looked up when a `/stop` command targets a conversation session
-    /// rather than main — see [`crate::interfaces::dispatch_stop_request`].
-    pub session_registry: Arc<SessionRegistry>,
-    /// Where the adapter registers the conversations it can reach.
-    pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
-}
+use crate::interfaces::AdapterSenders;
 
 /// State bundle for the smaller, cross-cutting API routers, grouped so
 /// [`build_gateway_app`] doesn't grow another positional parameter for each
@@ -37,6 +21,8 @@ pub struct ExtraApiStates {
     pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     /// The live model catalog, for the sessions API to check a start's model.
     pub model_catalog: crate::config::SharedModelCatalog,
+    /// The running build, for the agent status route.
+    pub build: crate::build_info::BuildInfo,
 }
 
 /// The agent-scoped routers [`build_gateway_app`] merges in, built once by
@@ -118,6 +104,7 @@ pub fn build_gateway_app(
     use axum::routing::get;
 
     let state_tunnel_status_rx = extra.tunnel_status_rx.clone();
+    let build = extra.build;
     let live_updates = state.workspace_watch_health.clone();
     let file_registry = state.file_registry.clone();
     let routers = build_feature_routers(&state, extra);
@@ -141,6 +128,7 @@ pub fn build_gateway_app(
             file_registry,
         )))
         .merge(web::agent_status_api_router(web::AgentStatusState {
+            build,
             config: config_api_state,
             live_updates,
         }))

@@ -516,7 +516,7 @@ async fn read_workspace_file(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file");
-    let mime_type = crate::interfaces::attachment::detect_mime_type(&canonical_target);
+    let mime_type = crate::bus::attachment::detect_mime_type(&canonical_target);
     Ok(respond_with_file(bytes, &mime_type, filename))
 }
 
@@ -917,7 +917,7 @@ mod tests {
             let id = registry
                 .register(
                     outside.path().join(name),
-                    crate::interfaces::attachment::detect_mime_type(&outside.path().join(name)),
+                    crate::bus::attachment::detect_mime_type(&outside.path().join(name)),
                     name.to_string(),
                 )
                 .await;

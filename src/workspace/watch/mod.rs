@@ -19,49 +19,10 @@ mod classify;
 mod feed;
 mod watch_set;
 
-use serde::{Deserialize, Serialize};
-use ts_rs::TS;
+use serde::Serialize;
 
 pub(crate) use feed::spawn_change_feed;
 pub use watch_set::{InvalidWatchPrefix, MAX_CHANGES_PER_FRAME, WatchSet, WatchedChanges};
-
-/// One changed workspace path in a `workspace_changed` frame.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct WorkspaceChange {
-    /// Workspace-relative path, `/`-separated. A directory change stands for
-    /// its whole subtree.
-    pub path: String,
-    /// What happened to the path over the batch.
-    pub kind: WorkspaceChangeKind,
-}
-
-/// What happened to a path over one batch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export)]
-pub enum WorkspaceChangeKind {
-    /// The path appeared (including a file renamed or atomically written
-    /// into place).
-    Created,
-    /// The path's content or metadata changed.
-    Modified,
-    /// The path is gone (including renamed away).
-    Removed,
-}
-
-/// Why a watching connection's view of the workspace may be stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export)]
-pub enum WorkspaceResyncReason {
-    /// Changes were lost (the OS dropped notifications) or too many matched
-    /// one batch to list.
-    Overflow,
-    /// The watcher was restarted, so changes around the restart may be
-    /// missing.
-    WatcherRestarted,
-}
 
 /// Whether the change feed is running, and how. An agent's
 /// `/api/agents/{name}/status` reports it as `live_updates`.

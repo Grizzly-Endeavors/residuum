@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::{Tool, publish_notice};
+use super::publish_notice;
+use crate::agent::Tool;
 use crate::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };

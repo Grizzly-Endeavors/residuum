@@ -4,12 +4,12 @@
 //! independently. Channels are configured in `channels.toml`.
 
 pub mod batch_aggregator;
+pub mod channel_builder;
 pub mod channels;
 pub mod external;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod router;
 pub mod subscriber;
-pub mod types;
 #[cfg(target_os = "windows")]
 pub mod windows;

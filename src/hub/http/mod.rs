@@ -69,6 +69,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         hub_dir: hub.hub_dir.clone(),
         tunnel_status_rx: hub.tunnel_status_rx.clone(),
         started_at: hub.started_at,
+        build: hub.build,
     };
     let ws_state = ws::HubWsState {
         directory: Arc::clone(&directory),

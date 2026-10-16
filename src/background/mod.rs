@@ -3,16 +3,17 @@
 //! behavior and `README.md` for how the pieces fit together.
 
 pub mod conversation_router;
-pub(crate) mod events;
 pub(crate) mod listener;
 pub mod messaging;
 pub(crate) mod owner_session;
 pub mod registry;
 pub(crate) mod runtime;
 pub(crate) mod session_memory;
+pub mod session_tools;
 pub(crate) mod spawn_context;
 pub mod store;
 pub mod subagent;
+pub mod team;
 pub mod types;
 
 pub use crate::agent::hop::HopCounter;

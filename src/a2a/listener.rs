@@ -1,6 +1,6 @@
 //! The hub's dedicated A2A protocol listener: one port, every agent under
 //! `/agents/{name}/`, authenticated per request. Each agent's routes come
-//! from [`crate::hub::AgentDirectory::agent_a2a_router`]. See
+//! from [`crate::background::team::TeamDirectory::agent_a2a_router`]. See
 //! `docs/systems-usage/a2a.md`.
 
 use std::sync::Arc;
@@ -22,8 +22,8 @@ use axum::response::{IntoResponse, Response};
 use futures_util::stream::BoxStream;
 use tower::ServiceExt as _;
 
+use crate::background::team::{self, LifecycleError, TeamDirectory};
 use crate::config::A2aVisibility;
-use crate::hub::{self, AgentDirectory, LifecycleError};
 
 use super::auth::{Admission, AuthState, authorize};
 use super::card::SharedCardState;
@@ -153,7 +153,7 @@ pub fn agent_handler_router<H: a2a_server::RequestHandler>(
 }
 
 /// The hub's A2A app: routes `/agents/{name}/...` to the named agent's
-/// router (from [`AgentDirectory::agent_a2a_router`]) and answers everything
+/// router (from [`TeamDirectory::agent_a2a_router`]) and answers everything
 /// else `404`.
 ///
 /// Per request, in order: an unknown agent is `404`; the caller is
@@ -161,7 +161,7 @@ pub fn agent_handler_router<H: a2a_server::RequestHandler>(
 /// [`super::auth::authorize`]); an agent that isn't running is `503` with a
 /// body saying so. The agent's router sees the request with the
 /// `/agents/{name}` prefix stripped, so it is rooted at `/`.
-pub fn hub_a2a_app(directory: Arc<dyn AgentDirectory>, auth: AuthState) -> Router {
+pub fn hub_a2a_app(directory: Arc<dyn TeamDirectory>, auth: AuthState) -> Router {
     Router::new()
         .fallback(dispatch_to_agent)
         .with_state(HubA2aState { directory, auth })
@@ -169,7 +169,7 @@ pub fn hub_a2a_app(directory: Arc<dyn AgentDirectory>, auth: AuthState) -> Route
 
 #[derive(Clone)]
 struct HubA2aState {
-    directory: Arc<dyn AgentDirectory>,
+    directory: Arc<dyn TeamDirectory>,
     auth: AuthState,
 }
 
@@ -201,10 +201,10 @@ fn with_path(mut req: Request<Body>, path: &str) -> Result<Request<Body>, axum::
     Ok(req)
 }
 
-fn visibility_for_auth(visibility: hub::A2aVisibility) -> A2aVisibility {
+fn visibility_for_auth(visibility: team::A2aVisibility) -> A2aVisibility {
     match visibility {
-        hub::A2aVisibility::Public => A2aVisibility::Public,
-        hub::A2aVisibility::Private => A2aVisibility::Private,
+        team::A2aVisibility::Public => A2aVisibility::Public,
+        team::A2aVisibility::Private => A2aVisibility::Private,
     }
 }
 
@@ -272,7 +272,7 @@ async fn dispatch_to_agent(State(state): State<HubA2aState>, req: Request<Body>)
 pub struct A2aListener {
     bind: String,
     port: u16,
-    directory: Arc<dyn AgentDirectory>,
+    directory: Arc<dyn TeamDirectory>,
     auth: AuthState,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     /// A socket already bound to the address, served instead of binding at start.
@@ -286,7 +286,7 @@ impl A2aListener {
     pub fn new(
         bind: String,
         port: u16,
-        directory: Arc<dyn AgentDirectory>,
+        directory: Arc<dyn TeamDirectory>,
         keys: SharedA2aKeys,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {

@@ -3,8 +3,8 @@
 //! agent is answered from its files.
 
 use super::*;
+use crate::background::team::{TeamLink, parse_team_address};
 use crate::hub::overview::{AgentOverview, LastMessageRole};
-use crate::hub::team::{TeamLink, parse_team_address};
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;
 
@@ -91,8 +91,7 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
     let mut turns = hub.host.agent_changes().subscribe();
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();

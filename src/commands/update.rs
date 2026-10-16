@@ -25,18 +25,19 @@ pub(super) struct UpdateArgs {
 /// the install script cannot be executed.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalError> {
-    use residuum::update::{self, CURRENT_VERSION};
+    use residuum::hub::update;
 
+    let current = residuum::BUILD_INFO.version;
     println!("residuum: checking for updates...");
 
     let latest = update::fetch_latest_version().await?;
 
-    if update::is_up_to_date(CURRENT_VERSION, &latest) {
-        println!("residuum: already up to date ({CURRENT_VERSION})");
+    if update::is_up_to_date(current, &latest) {
+        println!("residuum: already up to date ({current})");
         return Ok(());
     }
 
-    println!("residuum: current version: {CURRENT_VERSION}");
+    println!("residuum: current version: {current}");
     println!("residuum: latest version:  {latest}");
 
     if args.check {
@@ -45,7 +46,7 @@ pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalErr
 
     println!("residuum: downloading and installing {latest}...");
 
-    let installed = update::download_and_install(&latest).await?;
+    let installed = update::download_and_install(current, &latest).await?;
     println!("residuum: updated to {latest}");
     if installed.verification == update::ReleaseVerification::Unverified {
         println!(

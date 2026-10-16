@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::bus::EndpointRegistry;
+use crate::bus::origin::ConversationKind;
 use crate::inference::ToolDefinition;
-use crate::interfaces::types::ConversationKind;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Tool for listing reachable DMs, group chats, and channels per chat interface.
@@ -111,7 +111,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::interfaces::conversations::{ConversationSource, KnownConversation};
+    use crate::bus::conversations::{ConversationSource, KnownConversation};
 
     struct Fixed(anyhow::Result<Vec<KnownConversation>, String>);
 

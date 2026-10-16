@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use serde_json::json;
 
-use crate::hub::LifecycleError;
+use crate::background::team::LifecycleError;
 
 /// A `{ "error": message }` response with `status`.
 pub(super) fn json_error(status: StatusCode, message: impl Into<String>) -> Response {

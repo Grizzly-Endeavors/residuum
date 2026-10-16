@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::ToolDefinition;
 use crate::inference::{ToolError, ToolResult};
 use crate::memory::search::{HybridSearcher, SearchFilters};

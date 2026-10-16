@@ -36,6 +36,7 @@ use crate::background::HopLimits;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::runtime::{SessionRuntime, SessionSpawnRequest};
+use crate::background::session_tools::{SessionToolFactory as _, SessionToolScope};
 use crate::background::store::SessionStore;
 use crate::background::subagent::{SubAgentResources, test_memory_extras};
 use crate::background::types::SubAgentConfig;
@@ -49,7 +50,7 @@ use crate::inference::{
 };
 use crate::mcp::McpRegistry;
 use crate::skills::{SkillIndex, SkillState};
-use crate::tools::{SubagentToolDeps, ToolRegistry};
+use crate::tools::SessionTools;
 use crate::workspace::identity::IdentityFiles;
 
 /// The name of the one agent the harness serves.
@@ -267,7 +268,7 @@ async fn setup_workspace(
     (tempdir, workspace_dir, layout, skill_state)
 }
 
-/// The shared, mostly-inert dependencies `SubagentToolDeps` requires but
+/// The shared, mostly-inert dependencies `SessionTools` requires but
 /// none of these tests actually exercise (search, feedback tools).
 fn build_support_deps(
     workspace_dir: &std::path::Path,
@@ -291,7 +292,12 @@ fn build_support_deps(
         cfg.tracing.clone(),
         span_buffer,
     ));
-    let tracing_client_context = Arc::new(crate::client_context::gather_for_bug_report(&cfg));
+    let tracing_client_context = Arc::new(
+        crate::tracing_service::client_context::gather_for_bug_report(
+            crate::testing::HARNESS_BUILD,
+            &cfg,
+        ),
+    );
     (hybrid_searcher, tracing_service, tracing_client_context)
 }
 
@@ -329,7 +335,6 @@ fn start_scripted_sessions(
         publisher: deps.bus_handle.publisher(),
         queue: Arc::clone(&queue),
         seen: Arc::clone(&seen),
-        workspace_dir: deps.workspace_dir.clone(),
         layout: deps.layout.clone(),
         action_store: Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(
             deps.layout.scheduled_actions_json(),
@@ -376,7 +381,7 @@ fn start_a2a_listener(
 
     let directory = StaticAgentDirectory::new().with_agent(
         AGENT_NAME,
-        crate::hub::A2aVisibility::Public,
+        crate::background::team::A2aVisibility::Public,
         agent_handler_router(handler, Arc::clone(card_state)),
     );
 
@@ -545,7 +550,6 @@ struct MiniListenerDeps {
     publisher: Publisher,
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
-    workspace_dir: PathBuf,
     layout: WorkspaceLayout,
     action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: Arc<tokio::sync::Notify>,
@@ -604,49 +608,44 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
 fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> SubAgentResources {
     let (layout, observer, merge_writer) = test_memory_extras();
     let hop_counter = HopCounter::new(event.hop_count);
-    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
-        tracker: crate::tools::FileTracker::new_shared(),
+    let session_tools = SessionTools {
         path_policy: Arc::clone(&deps.path_policy),
         tools_path: Arc::clone(&deps.tools_path),
         agent_keys: Arc::clone(&deps.agent_keys),
-        skill_state: Arc::clone(&deps.skill_state),
-        tz: chrono_tz::UTC,
-        hybrid_searcher: Arc::clone(&deps.hybrid_searcher),
-        workspace_dir: deps.workspace_dir.clone(),
-        config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
-        hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),
-        episodes_dir: deps.layout.episodes_dir(),
-        sessions_dir: deps.layout.sessions_dir(),
-        agent_inbox_dir: deps.layout.agent_inbox_dir(),
-        agent_inbox_archive_dir: deps.layout.agent_inbox_archive_dir(),
-        user_inbox_dir: deps.layout.user_inbox_dir(),
-        user_inbox_attachments_dir: deps.layout.user_inbox_attachments_dir(),
-        session_registry: Arc::clone(&deps.session_registry),
-        endpoint_registry: deps.endpoint_registry.clone(),
+        checkpoints: Arc::clone(&deps.checkpoints),
         publisher: deps.publisher.clone(),
+        endpoint_registry: deps.endpoint_registry.clone(),
+        session_registry: Arc::clone(&deps.session_registry),
         action_store: Arc::clone(&deps.action_store),
         action_notify: Arc::clone(&deps.action_notify),
-        own_address: event.address.clone(),
-        own_depth: event.depth,
-        depth_cap: 2,
-        session_category: crate::background::registry::SessionCategory::from_trigger(&event.source)
-            .as_str()
-            .to_string(),
-        trigger: event.source.clone(),
-        conversation_target: event.conversation.clone(),
-        messenger: Arc::clone(&deps.messenger),
-        hop_counter: hop_counter.clone(),
+        hybrid_searcher: Arc::clone(&deps.hybrid_searcher),
         tracing_service: Arc::clone(&deps.tracing_service),
         tracing_client_context: Arc::clone(&deps.tracing_client_context),
+        build: crate::testing::HARNESS_BUILD,
         web_search_backend: None,
+        model_catalog: crate::config::ModelCatalog::default().into_shared(),
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
-        checkpoints: Arc::clone(&deps.checkpoints),
         lifecycle: crate::tools::LifecycleAccess::new(
-            crate::hub::DirectoryHandle::unbound(),
+            crate::background::team::DirectoryHandle::unbound(),
             "test",
         ),
-        model_catalog: crate::config::ModelCatalog::default().into_shared(),
+        messenger: Arc::clone(&deps.messenger),
+        layout: deps.layout.clone(),
+        config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
+        hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),
+        tz: chrono_tz::UTC,
+        depth_cap: 2,
+        auto_mode: None,
+    };
+    let tools = session_tools.build(SessionToolScope {
+        own_address: event.address.clone(),
+        own_depth: event.depth,
+        category: crate::bus::session::SessionCategory::from_trigger(&event.source),
+        trigger: event.source.clone(),
+        conversation_target: event.conversation.clone(),
+        hop_counter: hop_counter.clone(),
+        skill_state: Arc::clone(&deps.skill_state),
     });
 
     SubAgentResources {
@@ -1208,13 +1207,13 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
 /// own, returning its address.
 fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> SessionAddress {
     let child_address = SessionAddress::from("spawned-fake-child-0001");
-    let child_info = crate::background::registry::SessionInfo {
+    let child_info = crate::bus::session::SessionInfo {
         address: child_address.clone(),
         run_id: "run-fake-child".to_string(),
-        category: crate::background::registry::SessionCategory::Spawned,
+        category: crate::bus::session::SessionCategory::Spawned,
         trigger: crate::bus::EventTrigger::Agent,
         source_label: "agent:fake-child".to_string(),
-        state: crate::background::registry::SessionState::Running,
+        state: crate::bus::session::SessionState::Running,
         spawner: Some(spawner.clone()),
         depth: 2,
         purpose: "pretending to work".to_string(),
@@ -1223,7 +1222,7 @@ fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> Sess
         resolved_model: None,
         conversation_target: None,
         started_at: chrono::Utc::now(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
+        usage: crate::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     };
     harness

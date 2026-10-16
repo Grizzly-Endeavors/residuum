@@ -4,9 +4,9 @@
 
 use super::agent_watch::agent_bus;
 use super::*;
+use crate::bus::origin::MessageOrigin;
 use crate::bus::{MessageEvent, topics};
 use crate::inference::MessageSender;
-use crate::interfaces::types::MessageOrigin;
 
 type AgentSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -107,14 +107,13 @@ async fn deliver(hub: &Fixture, agent: &str, message: MessageEvent) {
 
 /// A teammate's message to `agent`, which starts a background turn.
 async fn message_from_teammate(hub: &Fixture, agent: &str, text: &str) {
-    use crate::hub::team::{TeamLink, parse_team_address};
+    use crate::background::team::{TeamLink, parse_team_address};
 
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address(&format!("agent:{agent}"))
         .unwrap()
         .unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, text.to_string(), 0)
         .await
         .unwrap();

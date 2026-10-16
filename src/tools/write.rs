@@ -3,11 +3,11 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::Tool;
 use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
-use crate::diagnostics_dispatch::DiagnosticsPaths;
+use crate::a2a::diagnostics_dispatch::DiagnosticsPaths;
+use crate::agent::Tool;
 use crate::inference::ToolDefinition;
 use crate::inference::{ToolError, ToolResult};
 use crate::workspace::team_files::{TeamFiles, TeamPathGuard};
@@ -269,7 +269,7 @@ pub(super) fn append_diagnostics(
     diagnostics_paths: &DiagnosticsPaths,
 ) {
     let Some(diagnostics) =
-        crate::diagnostics_dispatch::diagnose(file_path, content, diagnostics_paths)
+        crate::a2a::diagnostics_dispatch::diagnose(file_path, content, diagnostics_paths)
     else {
         return;
     };

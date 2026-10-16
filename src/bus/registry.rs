@@ -3,10 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::Config;
-use crate::config::WEB_UI_ENDPOINT;
-use crate::interfaces::conversations::ConversationDirectory;
-use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
+use crate::bus::conversations::ConversationDirectory;
+use crate::config::{Config, ExternalChannelConfig, ExternalChannelKind, WEB_UI_ENDPOINT};
 
 use super::endpoint::EndpointCapabilities;
 use super::types::EndpointId;
@@ -118,8 +116,8 @@ impl EndpointRegistry {
 
         if config.teams.is_some() {
             entries.push(EndpointEntry {
-                id: EndpointId::from(crate::interfaces::teams::ENDPOINT),
-                topic: TopicId::Endpoint(EndpointName::from(crate::interfaces::teams::ENDPOINT)),
+                id: EndpointId::from(crate::config::TEAMS_ENDPOINT),
+                topic: TopicId::Endpoint(EndpointName::from(crate::config::TEAMS_ENDPOINT)),
                 capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Microsoft Teams".to_string(),
             });
@@ -128,7 +126,7 @@ impl EndpointRegistry {
         // No `INTERACTIVE` capability: A2A callers never reach a session
         // through `send_message`/`list_endpoints` — they are answered only
         // inside a task, by the A2A executor delivering straight into the
-        // session (see `crate::a2a::executor`). No `ConversationSource`
+        // session (see the A2A session executor). No `ConversationSource`
         // either, for the same reason.
         if config.a2a.enabled {
             entries.push(EndpointEntry {

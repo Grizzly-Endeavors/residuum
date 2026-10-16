@@ -6,7 +6,7 @@
 //! claim, `respond_to_others`, standing) is decided upstream by each
 //! interface handler before the message ever reaches the bus. This router
 //! only decides who handles an already-admitted message:
-//! [`crate::interfaces::types::MessageOrigin::belongs_to_main`] is the actual
+//! [`crate::bus::origin::MessageOrigin::belongs_to_main`] is the actual
 //! routing predicate; this module is the delivery side once that predicate
 //! says a message is not main's.
 
@@ -102,7 +102,7 @@ impl ConversationRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
+    use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
     use crate::testing::bus_wait;
     use residuum_core::testing::wait;
 
@@ -134,10 +134,10 @@ mod tests {
     fn router() -> (
         ConversationRouter,
         crate::bus::BusHandle,
-        Arc<super::super::registry::SessionRegistry>,
+        Arc<crate::background::registry::SessionRegistry>,
     ) {
         let bus_handle = crate::bus::spawn_broker();
-        let registry = Arc::new(super::super::registry::SessionRegistry::new());
+        let registry = Arc::new(crate::background::registry::SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(super::super::store::SessionStore::new(
             dir.path().to_path_buf(),
@@ -226,13 +226,13 @@ mod tests {
         // the way a live session's own tool loop drains it continuously.
         let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-1");
-        let info = crate::background::registry::SessionInfo {
+        let info = crate::bus::session::SessionInfo {
             address: address.clone(),
             run_id: "run-1".to_string(),
-            category: crate::background::registry::SessionCategory::External,
+            category: crate::bus::session::SessionCategory::External,
             trigger: crate::bus::EventTrigger::Conversation,
             source_label: "discord:#builds".to_string(),
-            state: crate::background::registry::SessionState::Idle,
+            state: crate::bus::session::SessionState::Idle,
             spawner: None,
             depth: 1,
             purpose: "chat".to_string(),
@@ -244,7 +244,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         // The receiver must stay alive and be drained below like a live
@@ -261,7 +261,7 @@ mod tests {
             assert!(matches!(
                 registry.deliver(
                     &address,
-                    crate::agent::interrupt::Interrupt::UserMessage(inbound(
+                    crate::bus::interrupt::Interrupt::UserMessage(inbound(
                         "discord",
                         "chan-1",
                         Some("#builds"),
@@ -285,18 +285,18 @@ mod tests {
             |interrupt| {
                 matches!(
                     interrupt,
-                    crate::agent::interrupt::Interrupt::UserMessage(m) if m.id == "the-new-message"
+                    crate::bus::interrupt::Interrupt::UserMessage(m) if m.id == "the-new-message"
                 )
             },
         )
         .await;
         match interrupt {
-            crate::agent::interrupt::Interrupt::UserMessage(m) => {
+            crate::bus::interrupt::Interrupt::UserMessage(m) => {
                 assert_eq!(m.content, "can anyone see this?");
             }
-            crate::agent::interrupt::Interrupt::AgentMessage(_)
-            | crate::agent::interrupt::Interrupt::Subconscious(_)
-            | crate::agent::interrupt::Interrupt::Stopped => {
+            crate::bus::interrupt::Interrupt::AgentMessage(_)
+            | crate::bus::interrupt::Interrupt::Subconscious(_)
+            | crate::bus::interrupt::Interrupt::Stopped => {
                 panic!("the new user message should be the one delivered")
             }
         }
@@ -311,13 +311,13 @@ mod tests {
         // blocking on however long that teardown takes.
         let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-2");
-        let info = crate::background::registry::SessionInfo {
+        let info = crate::bus::session::SessionInfo {
             address: address.clone(),
             run_id: "run-1".to_string(),
-            category: crate::background::registry::SessionCategory::External,
+            category: crate::bus::session::SessionCategory::External,
             trigger: crate::bus::EventTrigger::Conversation,
             source_label: "discord:#builds".to_string(),
-            state: crate::background::registry::SessionState::Completing,
+            state: crate::bus::session::SessionState::Completing,
             spawner: None,
             depth: 1,
             purpose: "chat".to_string(),
@@ -329,7 +329,7 @@ mod tests {
                 conversation_id: "chan-2".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         registry

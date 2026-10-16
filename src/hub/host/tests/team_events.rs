@@ -2,8 +2,8 @@
 //! from the thing that really causes it, and nothing else does.
 
 use super::*;
+use crate::background::team::{TeamLink, parse_team_address};
 use crate::hub::agent_watch::AgentChangeKind;
-use crate::hub::team::{TeamLink, parse_team_address};
 use crate::hub::team_events::{
     PageQuery, TeamEvent, TeamEventKind, TeamEventLevel, TeamEventTarget,
 };
@@ -228,8 +228,7 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
     // A teammate's message starts a background turn that still replies.
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();

@@ -327,8 +327,8 @@ impl<E: 'static> Drop for Subscriber<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::origin::MessageOrigin;
     use crate::bus::{EndpointName, IntermediateEvent, MessageEvent, spawn_broker, topics};
-    use crate::interfaces::types::MessageOrigin;
 
     fn test_message(id: &str, content: &str) -> MessageEvent {
         MessageEvent {

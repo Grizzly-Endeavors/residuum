@@ -289,9 +289,9 @@ mod tests {
         MessageEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent, WorkbenchEvent,
     };
     use crate::bus::handle::ErasedEvent;
+    use crate::bus::origin::MessageOrigin;
     use crate::bus::topics;
     use crate::bus::types::{EndpointName, NotifyName, SYSTEM_CHANNEL};
-    use crate::interfaces::types::MessageOrigin;
     use residuum_core::testing::clock;
 
     fn test_timestamp() -> chrono::NaiveDateTime {

@@ -3,18 +3,19 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::Publisher;
+use crate::bus::origin::MessageOrigin;
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
-use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
-use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::hop::HopCounter;
-use super::interrupt;
 use super::recent_messages::RecentMessages;
+use super::tool::ToolRegistry;
 use super::turn::{EventContext, EventTarget, TurnOutput, TurnResources, execute_turn};
-use super::usage::{MainUsageSink, SessionUsageTotals};
+use super::usage::MainUsageSink;
+use crate::bus::interrupt;
+use crate::bus::usage::SessionUsageTotals;
 
 /// Configuration for creating a new `Agent`.
 pub struct AgentConfig {
@@ -56,9 +57,9 @@ pub struct Agent {
     /// Workspace layout for per-turn identity reloads. `None` pins identity to
     /// the construction-time snapshot (test constructors).
     layout: Option<crate::config::WorkspaceLayout>,
-    /// The agent's handle on the hub's team router, read for the `TEAM`
-    /// roster at each turn entry. `None` leaves the prompt without a roster.
-    team: Option<crate::hub::team::TeamLink>,
+    /// The team roster read for the `TEAM` block at each turn entry. `None`
+    /// leaves the prompt without a roster.
+    team: Option<std::sync::Arc<dyn super::TeamRoster>>,
     /// Told as each endpoint reply of a turn reaches the main conversation,
     /// so the hub counts it read or unread at that moment. `None` counts
     /// nothing.
@@ -143,7 +144,7 @@ impl Agent {
         };
         match IdentityFiles::load(layout).await {
             Ok(identity) => match &self.team {
-                Some(team) => identity.with_team_roster(team),
+                Some(team) => identity.with_team_roster(team.prompt_block()),
                 None => identity,
             },
             Err(e) => {
@@ -155,7 +156,7 @@ impl Agent {
 
     /// Show this agent's teammates in its prompt: the `TEAM` block is rebuilt
     /// from `team` at every turn entry.
-    pub fn set_team(&mut self, team: crate::hub::team::TeamLink) {
+    pub fn set_team(&mut self, team: std::sync::Arc<dyn super::TeamRoster>) {
         self.team = Some(team);
     }
 
@@ -197,25 +198,15 @@ impl Agent {
         self.options = options;
     }
 
-    /// Apply a new user timezone to future turns: the turn timestamps and
-    /// every tool that captured the timezone when it was registered.
-    pub fn set_timezone(
-        &mut self,
-        tz: chrono_tz::Tz,
-        action_store: std::sync::Arc<tokio::sync::Mutex<crate::actions::store::ActionStore>>,
-        action_notify: std::sync::Arc<tokio::sync::Notify>,
-        models: crate::config::SharedModelCatalog,
-        layout: &crate::config::WorkspaceLayout,
-    ) {
+    /// Apply a new user timezone to future turns' timestamps.
+    pub fn set_timezone(&mut self, tz: chrono_tz::Tz) {
         self.tz = tz;
-        self.tools.reload_timezone_tools(
-            action_store,
-            action_notify,
-            models,
-            layout.user_inbox_dir(),
-            layout.user_inbox_attachments_dir(),
-            tz,
-        );
+    }
+
+    /// The agent's tool registry, for re-registering tools in place (e.g.
+    /// after a config reload).
+    pub fn tools_mut(&mut self) -> &mut ToolRegistry {
+        &mut self.tools
     }
 
     /// Set the maximum tool-call iterations for future turns (e.g. at
@@ -228,35 +219,6 @@ impl Agent {
     /// or after a config reload).
     pub fn set_repeat_call_guard(&mut self, config: crate::config::RepeatCallGuardConfig) {
         self.repeat_call_guard = config;
-    }
-
-    /// Reload the `ollama_web_search` tool in place from the current
-    /// standalone web search backend config (e.g. after a config reload).
-    ///
-    /// Mirrors `gateway::startup::tools::init_tool_registry`'s startup-time
-    /// gating: removes any existing `ollama_web_search` tool, then re-adds
-    /// it with the current API key/base URL if `backend` names the
-    /// `"ollama"` backend. A no-op call (backend unchanged) still removes
-    /// and re-adds the tool — harmless, since the tool itself is stateless
-    /// beyond the credentials it's constructed with.
-    pub fn reload_ollama_web_search_tool(
-        &mut self,
-        backend: Option<&crate::config::StandaloneBackendConfig>,
-    ) {
-        let was_registered = self.tools.remove("ollama_web_search");
-        if let Some(backend) = backend
-            && backend.name == "ollama"
-        {
-            let base_url = backend
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.ollama.com".to_string());
-            self.tools
-                .register_ollama_web_search_tool(backend.api_key.clone(), base_url);
-            tracing::info!("reloaded ollama_web_search tool from config");
-        } else if was_registered {
-            tracing::info!("removed ollama_web_search tool: no longer configured");
-        }
     }
 
     /// Reload observations from the observation log file.
@@ -502,10 +464,10 @@ impl Agent {
 )]
 mod tests {
     use super::*;
+    use crate::agent::testing::{CountingTool, EchoTool};
     use crate::bus;
     use crate::inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::tools::{FileTracker, PathPolicy};
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -514,14 +476,12 @@ mod tests {
         McpRegistry::new_shared()
     }
 
-    /// Directories that don't correspond to any real strictly-parsed file,
-    /// so `register_defaults` in these tests gets no diagnostics behavior.
-    fn test_diagnostics_paths() -> crate::diagnostics_dispatch::DiagnosticsPaths {
-        crate::diagnostics_dispatch::DiagnosticsPaths {
-            config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
-            workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
-            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
-        }
+    /// A registry holding only the echo tool, for a turn that needs some
+    /// tool to call.
+    fn echo_registry() -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        registry
     }
 
     /// Create a test publisher and endpoint for bus-based tests.
@@ -591,7 +551,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hi",
@@ -659,7 +619,7 @@ mod tests {
         let (publisher, ep) = test_bus();
 
         for msg in ["hi", "again"] {
-            let mut irx = interrupt::dead_interrupt_rx();
+            let mut irx = crate::bus::testing::dead_interrupt_rx();
             agent
                 .process_message(
                     msg,
@@ -719,21 +679,15 @@ mod tests {
 
     #[tokio::test]
     async fn tool_loop_then_text() {
-        let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let provider = MockProvider::new(vec![
             InferenceResponse::new(
                 String::new(),
                 vec![ToolCall {
                     id: "call_1".to_string(),
-                    name: "exec".to_string(),
-                    arguments: serde_json::json!({"command": "echo test"}),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({}),
                     server: None,
                 }],
             ),
@@ -754,7 +708,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "run echo test",
@@ -779,13 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
-        let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -793,8 +741,8 @@ mod tests {
                 "Let me check that for you...".to_string(),
                 vec![ToolCall {
                     id: "call_1".to_string(),
-                    name: "exec".to_string(),
-                    arguments: serde_json::json!({"command": "echo test"}),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({}),
                     server: None,
                 }],
             ),
@@ -815,7 +763,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "what does echo test print?",
@@ -852,8 +800,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: format!("call_{i}"),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": format!("echo loop {i}")}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({"loop": i}),
                         server: None,
                     }],
                 )
@@ -861,13 +809,7 @@ mod tests {
             .collect();
         responses.push(InferenceResponse::new("done".to_string(), vec![]));
 
-        let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -885,7 +827,7 @@ mod tests {
         // max_tool_iterations left unset: unlimited by default.
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop past the old cap",
@@ -917,21 +859,15 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: format!("call_{i}"),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo loop"}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({"loop": 0}),
                         server: None,
                     }],
                 )
             })
             .collect();
 
-        let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -949,7 +885,7 @@ mod tests {
         agent.set_max_tool_iterations(Some(limit));
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop forever",
@@ -1225,7 +1161,7 @@ mod tests {
         crate::bus::MessageEvent {
             id: id.to_string(),
             content: content.to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "test".to_string(),
                 sender: None,
                 conversation: None,
@@ -1239,13 +1175,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
-        let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1256,8 +1186,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo test"}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({}),
                         server: None,
                     }],
                 ),
@@ -1320,13 +1250,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
-        let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1336,8 +1260,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo test"}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({}),
                         server: None,
                     }],
                 ),
@@ -1484,7 +1408,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let stop_token = CancellationToken::new();
         stop_token.cancel();
 
@@ -1525,17 +1449,12 @@ mod tests {
 
     #[tokio::test]
     async fn stopped_interrupt_ends_turn_after_tool_completes() {
-        // The tool call in response 0 must run to completion before the
-        // Interrupt::Stopped queued alongside it is observed — proving a
-        // stop mid-tool-execution doesn't sever the tool, only stops the
-        // loop at its next checkpoint.
+        // An Interrupt::Stopped that arrives while the turn is working lets
+        // the queued tool call run to completion, and stops the loop at its
+        // next checkpoint.
+        let tool_runs = Arc::new(AtomicUsize::new(0));
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        registry.register(Box::new(CountingTool::new(Arc::clone(&tool_runs))));
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
@@ -1544,8 +1463,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo test"}),
+                        name: "counting_tool".to_string(),
+                        arguments: serde_json::json!({}),
                         server: None,
                     }],
                 ),
@@ -1598,6 +1517,11 @@ mod tests {
             1,
             "the tool's model call runs, but the model is never called again after the stop"
         );
+        assert_eq!(
+            tool_runs.load(Ordering::SeqCst),
+            1,
+            "the tool queued with the stop should run exactly once"
+        );
         let messages = agent.messages_since(0);
         assert!(
             messages
@@ -1633,7 +1557,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hello",
@@ -2029,100 +1953,6 @@ mod tests {
         assert!(
             calls[0][0].content.contains("cached soul"),
             "system prompt should fall back to the cached soul snapshot"
-        );
-    }
-
-    fn test_agent(tools: ToolRegistry) -> Agent {
-        Agent::new(
-            Box::new(MockProvider::new(vec![])),
-            tools,
-            empty_mcp(),
-            IdentityFiles::default(),
-            AgentConfig {
-                options: CompletionOptions::default(),
-                tz: chrono_tz::UTC,
-                layout: None,
-            },
-            crate::agent::HopCounter::new(0),
-        )
-    }
-
-    #[test]
-    fn reload_ollama_web_search_tool_adds_it_when_backend_is_ollama() {
-        let mut agent = test_agent(ToolRegistry::new());
-        assert!(
-            !agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string()),
-            "should start without the tool"
-        );
-
-        let backend = crate::config::StandaloneBackendConfig {
-            name: "ollama".to_string(),
-            api_key: "key".to_string(),
-            base_url: None,
-        };
-        agent.reload_ollama_web_search_tool(Some(&backend));
-
-        assert!(
-            agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string()),
-            "should register the tool once the backend names ollama"
-        );
-    }
-
-    #[test]
-    fn reload_ollama_web_search_tool_removes_it_when_backend_changes_away() {
-        let mut agent = test_agent(ToolRegistry::new());
-        let backend = crate::config::StandaloneBackendConfig {
-            name: "ollama".to_string(),
-            api_key: "key".to_string(),
-            base_url: None,
-        };
-        agent.reload_ollama_web_search_tool(Some(&backend));
-        assert!(
-            agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string())
-        );
-
-        agent.reload_ollama_web_search_tool(None);
-        assert!(
-            !agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string()),
-            "should remove the tool once no standalone backend is configured"
-        );
-    }
-
-    #[test]
-    fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
-        let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
-        let mut agent = test_agent(registry);
-
-        let backend = crate::config::StandaloneBackendConfig {
-            name: "ollama".to_string(),
-            api_key: "key".to_string(),
-            base_url: None,
-        };
-        agent.reload_ollama_web_search_tool(Some(&backend));
-        agent.reload_ollama_web_search_tool(None);
-
-        let names = agent.tools.tool_names();
-        assert!(
-            names.contains(&"exec".to_string()),
-            "unrelated tools should survive reload"
         );
     }
 }

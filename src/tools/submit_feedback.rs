@@ -7,21 +7,24 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::client_context;
+use crate::build_info::BuildInfo;
 use crate::inference::ToolDefinition;
+use crate::tracing_service::client_context;
 use crate::tracing_service::{Feedback, TracingService};
 
-use super::{Tool, require_str};
+use super::require_str;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Built-in tool that submits a feedback message through the tracing service.
 pub(crate) struct SubmitFeedbackTool {
     service: Arc<TracingService>,
+    build: BuildInfo,
 }
 
 impl SubmitFeedbackTool {
-    pub(crate) fn new(service: Arc<TracingService>) -> Self {
-        Self { service }
+    pub(crate) fn new(service: Arc<TracingService>, build: BuildInfo) -> Self {
+        Self { service, build }
     }
 }
 
@@ -68,7 +71,7 @@ impl Tool for SubmitFeedbackTool {
         let feedback = Feedback {
             message,
             category,
-            client: client_context::gather_for_feedback(),
+            client: client_context::gather_for_feedback(self.build),
         };
 
         match self.service.send_feedback(feedback).await {

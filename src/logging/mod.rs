@@ -11,20 +11,9 @@ pub mod format;
 use std::sync::OnceLock;
 
 use crate::config::LogLevel;
+use crate::hub::FilterReload;
 
 // ── Runtime filter reload ────────────────────────────────────────────
-
-/// Trait for runtime log level switching.
-///
-/// Type-erases the `tracing_subscriber::reload::Handle` so it can be stored
-/// globally without naming the full subscriber stack type.
-pub trait FilterReload: Send + Sync {
-    /// Replace the active `EnvFilter` with one for the given log level.
-    ///
-    /// # Errors
-    /// Returns an error if the filter cannot be applied.
-    fn set_filter(&self, level: LogLevel) -> Result<(), String>;
-}
 
 /// Process-global filter reload handle, set once during daemon tracing init.
 static FILTER_HANDLE: OnceLock<Box<dyn FilterReload>> = OnceLock::new();

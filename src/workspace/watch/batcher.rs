@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::{WorkspaceChange, WorkspaceChangeKind};
+use crate::bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
 
 /// A batch is flushed once no notification has arrived for this long.
 pub(super) const QUIET_PERIOD: Duration = Duration::from_millis(300);

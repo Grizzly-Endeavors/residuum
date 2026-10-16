@@ -24,7 +24,8 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::directory::AgentDirectory;
-use super::types::{A2aVisibility, AgentState, AgentSummary, HubEvent};
+use super::types::HubEvent;
+use crate::background::team::{A2aVisibility, AgentState, AgentSummary};
 use crate::tunnel::AgentInfo;
 
 /// How long a burst of changes is allowed to gather before one update goes
@@ -185,7 +186,7 @@ async fn settle(events: &mut broadcast::Receiver<HubEvent>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a2a::StaticAgentDirectory;
+    use crate::hub::static_directory::StaticHubDirectory;
     use axum::Router;
     use residuum_core::testing::{clock, wait};
 
@@ -202,8 +203,8 @@ mod tests {
         }
     }
 
-    fn directory(agents: &[(&str, A2aVisibility)]) -> Arc<StaticAgentDirectory> {
-        let mut directory = StaticAgentDirectory::new();
+    fn directory(agents: &[(&str, A2aVisibility)]) -> Arc<StaticHubDirectory> {
+        let mut directory = StaticHubDirectory::new();
         for (name, visibility) in agents {
             directory = directory.with_agent(*name, *visibility, Router::new());
         }

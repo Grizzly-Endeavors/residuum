@@ -28,23 +28,23 @@ use serde::{Deserialize, Serialize};
 use super::chat::HistoryMessage;
 use crate::background::messaging::AgentMessenger;
 use crate::background::owner_session::{OwnerSessionStart, load_main_conversation};
-use crate::background::registry::{
-    MAIN_DEPTH, SessionCategory, SessionRegistry, artifact_sender_address, generate_address,
-};
+use crate::background::registry::SessionRegistry;
 use crate::background::store::{RunCursor, RunFilter, SessionStore, is_valid_run_id};
+use crate::bus::session::{MAIN_DEPTH, SessionCategory, artifact_sender_address, generate_address};
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
 use crate::config::ModelSelector;
-use crate::gateway::protocol::{
-    SessionCommandErrorCode, SessionDeliveryOutcome, SessionListResponse, SessionSummary,
-};
 use crate::gateway::sessions::{
     SessionCommandError, SessionMessageAuthor, send_session_message, stop_session,
-    summary_from_live, summary_from_record,
+    summary_from_record,
 };
 use crate::gateway::web::artifact_identity::artifact_identity;
 use crate::inference::Message;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;
+use crate::protocol::frames::summary_from_live;
+use crate::protocol::{
+    SessionCommandErrorCode, SessionDeliveryOutcome, SessionListResponse, SessionSummary,
+};
 use crate::skills::SharedSkillState;
 use crate::workbench::is_valid_artifact_name;
 
@@ -672,9 +672,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::background::registry::{MAIN_ADDRESS, SessionInfo, SessionState};
+    use crate::bus::session::{MAIN_ADDRESS, SessionInfo, SessionState};
     use crate::bus::{EventTrigger, SessionAddress};
-    use crate::gateway::protocol::SessionListResponse;
+    use crate::protocol::SessionListResponse;
 
     fn info(address: &str, run_id: &str, trigger: EventTrigger, minutes: i64) -> SessionInfo {
         SessionInfo {
@@ -693,7 +693,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc.with_ymd_and_hms(2026, 9, 20, 12, 0, 0).unwrap()
                 + Duration::minutes(minutes),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -1035,8 +1035,8 @@ mod tests {
     use axum::http::{HeaderValue, Request};
     use tower::ServiceExt;
 
-    use crate::agent::interrupt::Interrupt;
     use crate::background::registry::ResumePoint;
+    use crate::bus::interrupt::Interrupt;
 
     /// A response's status and JSON body.
     struct Answer {
@@ -1425,10 +1425,7 @@ mod tests {
         let Some(Interrupt::AgentMessage(owner_msg)) = rx.try_recv().ok() else {
             panic!("the session should have received the owner's message");
         };
-        assert_eq!(
-            owner_msg.from.as_ref(),
-            crate::background::registry::OWNER_ADDRESS
-        );
+        assert_eq!(owner_msg.from.as_ref(), crate::bus::session::OWNER_ADDRESS);
         assert!(
             owner_msg
                 .format_for_agent()

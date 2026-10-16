@@ -25,8 +25,8 @@ pub(super) fn ensure_hub_config_loads_or_has_fallback(
     match residuum::config::HubConfig::load_at_for_start(hub_dir, residuum_root) {
         Ok(_) => Ok(()),
         Err(err) => {
-            let had_last_known_good = residuum::gateway::has_hub_last_known_good(hub_dir);
-            match residuum::gateway::load_hub_last_known_good(hub_dir) {
+            let had_last_known_good = residuum::hub::last_known_good::hub::exists(hub_dir);
+            match residuum::hub::last_known_good::hub::load(hub_dir) {
                 Ok(_) => {
                     tracing::warn!(error = %err, "hub config failed to load; the hub will fall back to its last-known-good copy");
                     Ok(())

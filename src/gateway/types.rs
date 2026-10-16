@@ -10,6 +10,7 @@ use crate::background::SessionRuntime;
 use crate::background::registry::SessionRegistry;
 use crate::background::spawn_context::SpawnContext;
 use crate::background::store::SessionStore;
+use crate::bus::control::{ServerCommand, StopRequest};
 use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
 use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::inference::SharedHttpClient;
@@ -21,117 +22,12 @@ use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
 
-/// Describes what kind of configuration reload was requested.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReloadSignal {
-    /// Agent config reload (the agent's own `config.toml`/`providers.toml`
-    /// changed).
-    Agent,
-    /// Hub config reload (`hub/config.toml` changed).
-    Hub,
-    /// Workspace-level reload (`mcp.json`, `channels.toml`, or
-    /// `agent-card.json` changed).
-    Workspace,
-}
-
-/// Sending half of the reload queue. Every signal sent is delivered, so two
-/// files changing close together each get their own reload.
-pub type ReloadSender = mpsc::UnboundedSender<ReloadSignal>;
-
-/// Receiving half of the reload queue, consumed by the event loop.
-pub type ReloadReceiver = mpsc::UnboundedReceiver<ReloadSignal>;
-
-/// Outcome of the gateway main loop.
-pub enum GatewayExit {
-    /// Clean shutdown (inbound channel closed).
-    Shutdown,
-    /// Restart requested (binary updated, re-exec needed).
-    Restart,
-}
-
-/// Platform-aware termination signal.
-///
-/// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`
-/// pends forever — graceful shutdown is handled via the HTTP `/api/hub/shutdown` endpoint
-/// or the cross-platform Ctrl+C handler instead.
-pub struct TermSignal {
-    #[cfg(unix)]
-    inner: tokio::signal::unix::Signal,
-}
-
-impl TermSignal {
-    /// Register the SIGTERM listener.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error if the signal handler cannot be registered.
-    #[cfg(unix)]
-    pub fn new() -> std::io::Result<Self> {
-        let inner = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        Ok(Self { inner })
-    }
-
-    /// Create the termination signal. Nothing to register on this platform.
-    #[cfg(not(unix))]
-    #[must_use]
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    /// Wait for the termination signal. On non-Unix platforms this never resolves.
-    #[cfg(unix)]
-    pub async fn recv(&mut self) {
-        self.inner.recv().await;
-    }
-
-    /// Wait for the termination signal. On non-Unix platforms this never resolves.
-    #[cfg(not(unix))]
-    pub async fn recv(&mut self) {
-        std::future::pending::<()>().await;
-    }
-}
-
-/// A named command dispatched from any client channel to the server event loop.
-pub struct ServerCommand {
-    /// Command name (e.g. "observe", "reflect", "context").
-    pub name: String,
-    /// Optional argument text.
-    pub args: Option<String>,
-    /// Optional oneshot sender for routing a response back to the sender only.
-    ///
-    /// `Ok` carries a successful command's reply text (e.g. "context"); the
-    /// WS layer intentionally ignores it since the outcome is already
-    /// reflected via the normal bus broadcast. `Err` carries a rejection
-    /// reason (e.g. an unknown command name) and is routed to the sender as
-    /// an error, never broadcast to other clients.
-    pub reply_tx: Option<tokio::sync::oneshot::Sender<Result<String, String>>>,
-}
-
-/// A request to stop the currently running main-agent turn.
-///
-/// Delivered outside the `ServerCommand`/`command_tx` pipeline because that
-/// pipeline is only drained *between* turns (the event loop blocks on
-/// `handle_inbound_message` for the whole turn) — a stop needs to reach a
-/// turn while it is running, so it travels its own channel that the active
-/// turn's select loop watches directly.
-pub struct StopRequest {
-    /// Correlation id of the turn to stop, when the sender knows it (e.g. a
-    /// WebSocket client stopping the turn it's watching). `None` means "stop
-    /// whichever turn is currently running" — used by chat commands, which
-    /// don't track turn ids and only ever have at most one turn to stop.
-    pub reply_to: Option<String>,
-    /// Reports whether a running turn actually matched and was signalled to
-    /// stop, so the caller can tell a successful stop from "nothing was
-    /// running" without guessing from a timeout.
-    pub result_tx: Option<tokio::sync::oneshot::Sender<bool>>,
-}
-
 /// One agent's long-lived communication channels and bus.
 ///
 /// Created when the agent starts and persists across configuration reloads.
 /// The senders are cloned into adapters, the web server, and event loop state.
 pub(crate) struct GatewayCore {
-    pub reload_tx: crate::gateway::types::ReloadSender,
+    pub reload_tx: crate::bus::control::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
     /// The agent's own `config/` directory (`~/.residuum/<agent>/config`).
@@ -147,7 +43,7 @@ pub(crate) struct GatewayCore {
 
 /// Receiver halves consumed by the event loop.
 pub(crate) struct CoreReceivers {
-    pub reload: crate::gateway::types::ReloadReceiver,
+    pub reload: crate::bus::control::ReloadReceiver,
     pub command: mpsc::Receiver<ServerCommand>,
     pub stop: mpsc::Receiver<StopRequest>,
 }
@@ -159,7 +55,7 @@ impl GatewayCore {
         hub_dir: std::path::PathBuf,
     ) -> (Self, CoreReceivers) {
         let (reload_tx, reload_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
         let (stop_tx, stop_rx) = mpsc::channel::<StopRequest>(8);
         let bus_handle = crate::bus::spawn_broker();
@@ -187,7 +83,7 @@ impl GatewayCore {
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
 pub(crate) struct GatewayState {
-    pub reload_tx: crate::gateway::types::ReloadSender,
+    pub reload_tx: crate::bus::control::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
     pub agent_inbox_dir: std::path::PathBuf,
@@ -238,6 +134,8 @@ pub(crate) struct AgentRuntime {
     pub name: String,
     /// Shared services the hub passed in.
     pub services: crate::hub::services::HubServices,
+    /// The running build, read by the bug-report and feedback client contexts.
+    pub build: crate::build_info::BuildInfo,
     // Current running config (for diffing on reload)
     pub cfg: Config,
     /// Current running hub config, reloaded independently of `cfg` — see
@@ -247,6 +145,10 @@ pub(crate) struct AgentRuntime {
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
+    /// What main's tool registry injected into its tools at registration,
+    /// so a reload that re-registers one of them (the timezone tools)
+    /// injects the same handles.
+    pub tool_injections: crate::tools::registration::RegistryInjections,
     /// `Arc`-shared with the post-turn background worker (see
     /// `crate::gateway::post_turn`) so an automatic observe cycle's LLM call
     /// can run off the event loop while a config reload still safely swaps
@@ -304,7 +206,7 @@ pub(crate) struct AgentRuntime {
     pub pulse_enabled: bool,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
     /// Notification channels from `channels.toml`, kept to rebuild the endpoint registry on reload.
-    pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    pub channel_configs: Vec<crate::config::ExternalChannelConfig>,
     /// Shared with the agent's webhook route; replaced on config reload.
     pub webhooks: crate::interfaces::webhook::WebhookTable,
     /// Bus infrastructure handles (bridge, result router, registry) — not restarted on reload.
@@ -344,7 +246,7 @@ pub(crate) struct AgentRuntime {
     pub last_output_endpoint: Option<EndpointName>,
     /// Sender for clearing the output endpoint override on user message.
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<EndpointName>>,
-    pub reload_rx: crate::gateway::types::ReloadReceiver,
+    pub reload_rx: crate::bus::control::ReloadReceiver,
     pub command_rx: mpsc::Receiver<ServerCommand>,
     /// Stop requests for the currently running turn. Watched by the outer
     /// event loop when idle (responds "nothing running") and by the active
@@ -396,13 +298,16 @@ pub(crate) struct AgentRuntime {
     /// Derives artifact reloads from the change feed.
     pub workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Cloned core senders for rebuilding adapters on reload.
-    pub reload_tx: crate::gateway::types::ReloadSender,
+    pub reload_tx: crate::bus::control::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// How this agent's tools reach the hub, for the session tool factory
+    /// each config reload rebuilds.
+    pub lifecycle: crate::tools::LifecycleAccess,
     /// Shared Auto Mode, updated with the agent's `[auto_mode]` on reload.
-    pub auto_mode: Option<crate::agent::auto_mode::SharedAutoMode>,
+    pub auto_mode: crate::agent::auto_mode::SharedAutoMode,
     /// Shared tracing service for observability API.
     pub tracing_service: Arc<TracingService>,
     /// Main-conversation activity for the rail and Home.
@@ -435,6 +340,7 @@ impl Drop for AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::control::ReloadSignal;
 
     #[tokio::test]
     async fn core_channels_survive_reload_signal() {

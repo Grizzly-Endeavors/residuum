@@ -15,7 +15,7 @@ use crate::config::ModelSelector;
 use crate::inference::Message;
 use crate::memory::recent_messages::load_recent_messages;
 
-use super::registry::{MAIN_DEPTH, generate_address};
+use crate::bus::session::{MAIN_DEPTH, generate_address};
 
 /// What the owner asked for when starting a session.
 pub(crate) struct OwnerSessionStart {
@@ -98,7 +98,7 @@ pub(crate) async fn load_main_conversation(path: &Path) -> anyhow::Result<Vec<Me
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::SessionCategory;
+    use crate::bus::session::SessionCategory;
     use crate::memory::recent_messages::append_recent_messages;
     use crate::memory::types::Visibility;
 

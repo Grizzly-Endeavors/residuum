@@ -7,7 +7,7 @@
 //! relays them: onto the harness's feed.
 
 use super::*;
-use crate::background::registry::{SessionCategory, SessionInfo, SessionState};
+use crate::bus::session::{SessionCategory, SessionInfo, SessionState};
 use crate::bus::{
     AgentResultStatus, EventTrigger, SessionAddress, SessionEvent, SessionEventKind, ToolCallEvent,
     ToolResultEvent,
@@ -34,7 +34,7 @@ fn session_info(address: &str, label: &str) -> SessionInfo {
         resolved_model: None,
         conversation_target: None,
         started_at: Utc::now(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
+        usage: crate::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     }
 }

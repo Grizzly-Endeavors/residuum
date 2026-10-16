@@ -29,16 +29,16 @@ use tokio_util::sync::CancellationToken;
 
 use residuum::agent::Agent;
 use residuum::agent::context::PromptContext;
-use residuum::agent::interrupt;
+use residuum::agent::{Tool, ToolRegistry};
+use residuum::bus::interrupt::Interrupt;
 use residuum::bus::{EndpointName, MainConversationEvent, TurnOrigin, spawn_broker, topics};
-use residuum::gateway::protocol::{ClientMessage, ServerMessage};
 use residuum::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, StreamDelta,
     StreamSink, ToolCall, ToolDefinition,
 };
 use residuum::inference::{ToolError, ToolResult};
 use residuum::memory::types::Visibility;
-use residuum::tools::{Tool, ToolRegistry};
+use residuum::protocol::{ClientMessage, ServerMessage};
 use residuum::workspace::identity::IdentityFiles;
 
 /// Mock provider that returns configurable responses in sequence.
@@ -223,7 +223,7 @@ async fn start_test_gateway(
     let ep = EndpointName::from("ws");
 
     let file_registry = residuum::gateway::file_server::FileRegistry::new("scout");
-    let mut subs = residuum::interfaces::websocket::subscriber::WsSubscribers::new(
+    let mut subs = residuum::gateway::websocket::subscriber::WsSubscribers::new(
         &bus,
         &bus,
         ep.clone(),
@@ -312,7 +312,7 @@ async fn run_test_turn_loop(
             drop(publisher.publish(topics::MainConversation, event).await);
         }
 
-        let mut irx = interrupt::dead_interrupt_rx();
+        let (_, mut irx) = tokio::sync::mpsc::unbounded_channel::<Interrupt>();
         let outcome = agent
             .process_message(
                 &inbound.content,

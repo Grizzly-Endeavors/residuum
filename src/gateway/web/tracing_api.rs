@@ -8,8 +8,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
-use crate::client_context;
+use crate::build_info::BuildInfo;
 use crate::config::OtelEndpoint;
+use crate::tracing_service::client_context;
 use crate::tracing_service::{
     BugReport, ClientContext, ExportResult, ExportTarget, Feedback, Severity, SubmissionReceipt,
     TracingService, TracingStatus,
@@ -19,6 +20,8 @@ use crate::tracing_service::{
 #[derive(Clone)]
 pub(crate) struct TracingApiState {
     pub service: Arc<TracingService>,
+    /// The running build, attached to each feedback submission's client context.
+    pub build: BuildInfo,
     /// Snapshot of the static runtime client context (version, model, OS,
     /// etc.), gathered at gateway startup (or reload). Bug-report handlers
     /// attach this to every submission, overlaying a fresh
@@ -226,7 +229,7 @@ pub(crate) async fn api_tracing_feedback(
     let feedback = Feedback {
         message: body.message,
         category: body.category,
-        client: client_context::gather_for_feedback(),
+        client: client_context::gather_for_feedback(state.build),
     };
     state
         .service

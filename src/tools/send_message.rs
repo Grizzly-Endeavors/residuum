@@ -10,7 +10,7 @@ use crate::bus::{
 use crate::config::WEB_UI_ENDPOINT;
 use crate::inference::ToolDefinition;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Error returned to a session that tries to reach the owner directly.
@@ -104,9 +104,9 @@ fn platform_attachment_limit(endpoint_name: &str) -> Option<u64> {
 async fn validate_file_attachment(
     fp: &str,
     endpoint_name: &str,
-) -> Result<crate::interfaces::attachment::FileAttachment, String> {
+) -> Result<crate::bus::attachment::FileAttachment, String> {
     let path = std::path::Path::new(fp);
-    let att = crate::interfaces::attachment::FileAttachment::from_path(path).await?;
+    let att = crate::bus::attachment::FileAttachment::from_path(path).await?;
 
     if let Some(limit) = platform_attachment_limit(endpoint_name)
         && att.size > limit
@@ -583,13 +583,13 @@ mod tests {
     struct OneChannel;
 
     #[async_trait]
-    impl crate::interfaces::conversations::ConversationSource for OneChannel {
+    impl crate::bus::conversations::ConversationSource for OneChannel {
         async fn conversations(
             &self,
-        ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
-            Ok(vec![crate::interfaces::conversations::KnownConversation {
+        ) -> anyhow::Result<Vec<crate::bus::conversations::KnownConversation>> {
+            Ok(vec![crate::bus::conversations::KnownConversation {
                 id: "19:builds".to_string(),
-                kind: crate::interfaces::types::ConversationKind::Channel,
+                kind: crate::bus::origin::ConversationKind::Channel,
                 label: "#builds (Eng Team)".to_string(),
             }])
         }
@@ -682,13 +682,13 @@ mod tests {
     struct ChannelWithOwner;
 
     #[async_trait]
-    impl crate::interfaces::conversations::ConversationSource for ChannelWithOwner {
+    impl crate::bus::conversations::ConversationSource for ChannelWithOwner {
         async fn conversations(
             &self,
-        ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
-            Ok(vec![crate::interfaces::conversations::KnownConversation {
+        ) -> anyhow::Result<Vec<crate::bus::conversations::KnownConversation>> {
+            Ok(vec![crate::bus::conversations::KnownConversation {
                 id: "19:builds".to_string(),
-                kind: crate::interfaces::types::ConversationKind::Channel,
+                kind: crate::bus::origin::ConversationKind::Channel,
                 label: "#builds (Eng Team)".to_string(),
             }])
         }
@@ -741,13 +741,13 @@ mod tests {
     struct ChannelWithoutOwner;
 
     #[async_trait]
-    impl crate::interfaces::conversations::ConversationSource for ChannelWithoutOwner {
+    impl crate::bus::conversations::ConversationSource for ChannelWithoutOwner {
         async fn conversations(
             &self,
-        ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
-            Ok(vec![crate::interfaces::conversations::KnownConversation {
+        ) -> anyhow::Result<Vec<crate::bus::conversations::KnownConversation>> {
+            Ok(vec![crate::bus::conversations::KnownConversation {
                 id: "19:builds".to_string(),
-                kind: crate::interfaces::types::ConversationKind::Channel,
+                kind: crate::bus::origin::ConversationKind::Channel,
                 label: "#builds (Eng Team)".to_string(),
             }])
         }

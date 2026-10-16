@@ -17,11 +17,11 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::broadcast::{self, error::RecvError};
 
 use super::ws::{Outbound, notice_frame, send_frame};
-use crate::background::registry::ARTIFACT_SENDER_PREFIX;
-use crate::gateway::sessions::session_event_to_server_message;
+use crate::bus::session::ARTIFACT_SENDER_PREFIX;
 use crate::hub::AgentDirectory;
 use crate::hub::agent_watch::{AgentChangeFeed, AgentSessionEvent};
 use crate::hub::types::{HubSocketFrame, SessionSubscriptionKind};
+use crate::protocol::frames::session_event_to_server_message;
 
 /// What one hub socket connection follows, and its end of the relay.
 pub(super) struct SessionRelay {
