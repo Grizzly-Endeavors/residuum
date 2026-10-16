@@ -19,7 +19,7 @@ use crate::interfaces::teams::atk::{
     scaffold_atk_project, validate_png_dimensions,
 };
 use crate::interfaces::teams::atk_runner::{
-    AtkRunnerOverrides, BoundedLog, check_signed_in, detect_prereqs,
+    AtkRunnerOverrides, BoundedLog, SIGN_IN_CHECK_TIMEOUT, check_signed_in, detect_prereqs,
     forward_redirect_with_port_check, install_cli, map_install_app_error, map_provision_error,
     parse_login_url_and_port, run_command_streaming,
 };
@@ -784,7 +784,11 @@ impl TeamsSetupJobManager {
             lock.log.clone()
         };
 
-        if check_signed_in(&atk_bin, &log, cancel).await {
+        let sign_in_timeout = self
+            .overrides
+            .as_ref()
+            .map_or(SIGN_IN_CHECK_TIMEOUT, |o| o.sign_in_check_timeout);
+        if check_signed_in(&atk_bin, &log, cancel, sign_in_timeout).await {
             log.push(
                 LogStream::Info,
                 "Already signed in to Microsoft 365.".to_string(),
@@ -1508,33 +1512,59 @@ if ($cmd -eq "provision") {
 exit 0
 "#;
 
-    fn make_ps1_or_sh_script(path: &Path, unix_script: &str, win_ps1: &str) {
+    /// The Windows `.cmd` shim answers `auth list` itself, with these `cmd` commands, so the
+    /// sign-in check never starts PowerShell. The `.ps1` script still handles the other commands.
+    const WIN_SIGNED_IN_AUTH_LIST: &str =
+        "echo Your Microsoft 365 account is: test@contoso.com. & exit /b 0";
+    const WIN_SIGNED_OUT_AUTH_LIST: &str = "echo No account signed in. 1>&2 & exit /b 1";
+
+    fn make_ps1_or_sh_script(path: &Path, unix_script: &str, win_ps1: &str, win_auth_list: &str) {
         if cfg!(windows) {
             let ps1_path = path.with_extension("ps1");
             std::fs::write(&ps1_path, win_ps1).unwrap();
-            make_script(
-                path,
-                "@echo off\nif \"%~1\"==\"--version\" ( echo 1.1.17 & exit /b 0 )\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\nexit /b %ERRORLEVEL%\n",
+            let shim = format!(
+                "@echo off\nif \"%~1\"==\"--version\" ( echo 1.1.17 & exit /b 0 )\nif \"%~1\"==\"auth\" if \"%~2\"==\"list\" ( {win_auth_list} )\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\nexit /b %ERRORLEVEL%\n"
             );
+            make_script(path, &shim);
         } else {
             make_script(path, unix_script);
         }
     }
 
     fn make_fake_atk_script(path: &Path) {
-        make_ps1_or_sh_script(path, FAKE_ATK_UNIX, FAKE_ATK_WIN_PS1);
+        make_ps1_or_sh_script(
+            path,
+            FAKE_ATK_UNIX,
+            FAKE_ATK_WIN_PS1,
+            WIN_SIGNED_IN_AUTH_LIST,
+        );
     }
 
     fn make_slow_atk_script(path: &Path) {
-        make_ps1_or_sh_script(path, SLOW_ATK_UNIX, SLOW_ATK_WIN_PS1);
+        make_ps1_or_sh_script(
+            path,
+            SLOW_ATK_UNIX,
+            SLOW_ATK_WIN_PS1,
+            WIN_SIGNED_IN_AUTH_LIST,
+        );
     }
 
     fn make_login_atk_script(path: &Path) {
-        make_ps1_or_sh_script(path, LOGIN_ATK_UNIX, LOGIN_ATK_WIN_PS1);
+        make_ps1_or_sh_script(
+            path,
+            LOGIN_ATK_UNIX,
+            LOGIN_ATK_WIN_PS1,
+            WIN_SIGNED_OUT_AUTH_LIST,
+        );
     }
 
     fn make_fail_atk_script(path: &Path) {
-        make_ps1_or_sh_script(path, FAIL_ATK_UNIX, FAIL_ATK_WIN_PS1);
+        make_ps1_or_sh_script(
+            path,
+            FAIL_ATK_UNIX,
+            FAIL_ATK_WIN_PS1,
+            WIN_SIGNED_IN_AUTH_LIST,
+        );
     }
 
     fn setup_mock_env(temp: &tempfile::TempDir) -> (PathBuf, AtkRunnerOverrides) {
@@ -1566,10 +1596,16 @@ exit 0
         let atk_path = bin_dir.join(format!("fake_atk{ext}"));
         make_fake_atk_script(&atk_path);
 
+        // No probe or sign-in check may time out in these tests: a timeout is a failure on
+        // elapsed time, and on a loaded runner it would send the job down another path. Each
+        // test waits for the process to exit instead, and `Duration::MAX` is a deadline no
+        // run reaches.
         let overrides = AtkRunnerOverrides {
             node_bin: Some(node_path),
             npm_bin: Some(npm_path),
             atk_bin: Some(atk_path),
+            probe_timeout: Duration::MAX,
+            sign_in_check_timeout: Duration::MAX,
         };
         (root, overrides)
     }

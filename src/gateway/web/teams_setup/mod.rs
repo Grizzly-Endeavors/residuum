@@ -430,6 +430,7 @@ exit 0
             node_bin: Some(mock_node),
             npm_bin: Some(mock_npm),
             atk_bin: Some(mock_atk),
+            ..AtkRunnerOverrides::default()
         };
 
         (root, overrides)
