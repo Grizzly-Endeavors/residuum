@@ -346,7 +346,9 @@ mod tests {
     use crate::background::HopLimits;
     use crate::background::messaging::AgentMessenger;
     use crate::background::registry::SessionRegistry;
+    use crate::background::session_tools::{SessionToolFactory as _, SessionToolScope};
     use crate::background::store::SessionStore;
+    use crate::bus::session::SessionCategory;
     use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
     use crate::config::RetryConfig;
     use crate::config::{
@@ -357,14 +359,15 @@ mod tests {
     use crate::hub::AgentDirectory as _;
     use crate::memory::search::{HybridSearcher, MemoryIndex};
     use crate::skills::{SkillIndex, SkillState};
-    use crate::tools::{FileTracker, PathPolicy};
+    use crate::tools::PathPolicy;
     use crate::tracing_service::TracingService;
     use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
     use std::collections::HashMap;
 
     /// Tools that must stay main-only, never registered for a session. This
-    /// is the one documented exclusion from `crate::tools::build_subagent_registry`
-    /// (see its doc comment) — keep the two lists in sync.
+    /// is the one documented exclusion from the session registry
+    /// `crate::tools::SessionTools` builds (see its `build` doc comment) —
+    /// keep the two lists in sync.
     const MAIN_ONLY_TOOLS: &[&str] = &["switch_endpoint"];
 
     /// Tools registered only for a session, never for main — the reverse of
@@ -561,49 +564,46 @@ mod tests {
         category: &str,
         conversation_target: Option<crate::bus::ConversationTarget>,
     ) -> crate::agent::ToolRegistry {
-        crate::tools::build_subagent_registry(&crate::tools::SubagentToolDeps {
-            tracker: FileTracker::new_shared(),
+        let session_tools = crate::tools::SessionTools {
             path_policy: Arc::clone(&h.path_policy),
             tools_path: Arc::clone(&h.tools_path),
             agent_keys: Arc::clone(&h.agent_keys),
-            skill_state: Arc::clone(&h.skill_state),
-            tz: chrono_tz::UTC,
-            hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
-            workspace_dir: h.layout.root().to_path_buf(),
-            config_dir: h.cfg.config_dir.clone(),
-            hub_dir: h.hub_dir.clone(),
-            episodes_dir: h.layout.episodes_dir(),
-            sessions_dir: h.layout.sessions_dir(),
-            agent_inbox_dir: h.layout.agent_inbox_dir(),
-            agent_inbox_archive_dir: h.layout.agent_inbox_archive_dir(),
-            user_inbox_dir: h.layout.user_inbox_dir(),
-            user_inbox_attachments_dir: h.layout.user_inbox_attachments_dir(),
-            session_registry: Arc::clone(&h.session_registry),
-            endpoint_registry: h.endpoint_registry.clone(),
+            checkpoints: Arc::clone(&h.checkpoints),
             publisher: h.publisher.clone(),
+            endpoint_registry: h.endpoint_registry.clone(),
+            session_registry: Arc::clone(&h.session_registry),
             action_store: Arc::clone(&h.action_store),
             action_notify: Arc::clone(&h.action_notify),
-            own_address: SessionAddress::from(address),
-            own_depth: 1,
-            depth_cap: h.cfg.background.subagent_depth_cap,
-            session_category: category.to_string(),
-            trigger: crate::bus::EventTrigger::Agent,
-            conversation_target,
-            messenger: Arc::clone(&h.agent_messenger),
-            hop_counter: h.hop_counter.clone(),
+            hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
             tracing_service: Arc::clone(&h.tracing_service),
             tracing_client_context: Arc::clone(&h.tracing_client_context),
             web_search_backend: h.cfg.web_search.standalone_backend.clone(),
+            model_catalog: crate::config::ModelCatalog::default().into_shared(),
             a2a_hub: Arc::clone(&h.a2a_hub),
             a2a_tracker: Arc::clone(&h.a2a_tracker),
-            checkpoints: Arc::clone(&h.checkpoints),
             lifecycle: h.lifecycle.clone(),
-            model_catalog: crate::config::ModelCatalog::default().into_shared(),
+            messenger: Arc::clone(&h.agent_messenger),
+            layout: h.layout.clone(),
+            config_dir: h.cfg.config_dir.clone(),
+            hub_dir: h.hub_dir.clone(),
+            tz: chrono_tz::UTC,
+            depth_cap: h.cfg.background.subagent_depth_cap,
+            auto_mode: None,
+        };
+        session_tools.build(SessionToolScope {
+            own_address: SessionAddress::from(address),
+            own_depth: 1,
+            category: SessionCategory::from_label(category)
+                .expect("the harness names a known session category"),
+            trigger: crate::bus::EventTrigger::Agent,
+            conversation_target,
+            hop_counter: h.hop_counter.clone(),
+            skill_state: Arc::clone(&h.skill_state),
         })
     }
 
     /// A `ConversationTarget` naming the `a2a` endpoint, as an a2a
-    /// conversation session's `SubagentToolDeps` carries.
+    /// conversation session's tool scope carries.
     fn a2a_conversation_target() -> crate::bus::ConversationTarget {
         crate::bus::ConversationTarget {
             endpoint: "a2a".to_string(),

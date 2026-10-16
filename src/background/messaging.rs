@@ -165,7 +165,7 @@ impl AgentMessenger {
     }
 
     /// The bus publisher this messenger sends agent-to-agent deliveries
-    /// through — reused by callers (e.g. [`crate::a2a::RemoteTaskTracker`])
+    /// through — reused by callers (e.g. the A2A `RemoteTaskTracker`)
     /// that need to publish a user-facing notice alongside an agent-facing
     /// one, rather than threading a second `Publisher` through their own
     /// constructor.

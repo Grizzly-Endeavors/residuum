@@ -5,15 +5,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use anyhow::Context as _;
-use tokio::sync::{Mutex, Notify};
 
-use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
 use crate::agent::context::loading::{load_observations, load_recent_context_narrative};
 use crate::background::registry::SessionRegistry;
 use crate::background::runtime::SessionRuntime;
 use crate::bus::session::SessionCategory;
-use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
+use crate::bus::{Publisher, SessionAddress};
 use crate::config::ProviderSpec;
 use crate::config::RetryConfig;
 use crate::config::{
@@ -26,11 +24,11 @@ use crate::inference::{
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
-use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
 
 use super::messaging::AgentMessenger;
+use super::session_tools::SessionToolFactory;
 use super::subagent::{SubAgentResources, build_subagent_resources};
 use super::types::SubAgentBuildConfig;
 
@@ -80,27 +78,14 @@ pub(crate) struct SpawnContext {
     /// Guards against a model repeating the exact same tool call, mirroring
     /// `cfg.agent.repeat_call_guard`.
     pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
-    /// The main agent's Auto Mode, shared so session tool calls are checked
-    /// against the same live rules. `None` in tests that need no checks.
-    pub(crate) auto_mode: Option<crate::agent::auto_mode::SharedAutoMode>,
     pub(crate) layout: WorkspaceLayout,
-    /// The agent's own `config/` directory (`<agent>/config`), for a
-    /// session's `write_file`/`edit_file` tools to recognize `config.toml`/
-    /// `providers.toml` and diagnose them the same way main's do.
-    pub(crate) config_dir: std::path::PathBuf,
-    /// The hub's directory (`~/.residuum/hub`), needed to resolve the hub
-    /// config those diagnostics run against.
-    pub(crate) hub_dir: std::path::PathBuf,
-    pub(crate) tz: chrono_tz::Tz,
     pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
-    // ── Session tool dependencies ────────────────────────────────────
+    /// Builds every fork's tool registry, scoped to that session; it holds
+    /// the shared handles only the session's tools read.
+    pub(crate) session_tools: Arc<dyn SessionToolFactory>,
     pub(crate) session_runtime: Arc<SessionRuntime>,
     pub(crate) session_registry: Arc<SessionRegistry>,
-    pub(crate) endpoint_registry: EndpointRegistry,
     pub(crate) publisher: Publisher,
-    pub(crate) action_store: Arc<Mutex<ActionStore>>,
-    pub(crate) action_notify: Arc<Notify>,
-    pub(crate) hybrid_searcher: Arc<HybridSearcher>,
     /// Main agent skill state — cloned per fork into isolated session state.
     pub(crate) skill_state: SharedSkillState,
     /// Shared MCP registry (ref-counted across sessions).
@@ -114,44 +99,9 @@ pub(crate) struct SpawnContext {
     /// agent so episode numbering and log appends never race between a
     /// session's completion pipeline and the main agent's own observations.
     pub(crate) merge_writer: Arc<MemoryMergeWriter>,
-    /// Shared agent-messaging service, threaded into every fork so its
-    /// `message_agent` tool can identify itself as the sender.
+    /// Shared agent-messaging service, whose team link gives every fork's
+    /// identity its team roster.
     pub(crate) messenger: Arc<AgentMessenger>,
-    /// Shared tracing service, threaded into every fork's own
-    /// `file_bug_report`/`submit_feedback` tools — the same instance the
-    /// main agent's tools register against, so config updates (see
-    /// `crate::gateway::reload::reload_tracing`) reach sessions too since
-    /// they share the `Arc`.
-    pub(crate) tracing_service: Arc<crate::tracing_service::TracingService>,
-    /// Runtime client context snapshot for forks' bug-report submissions,
-    /// rebuilt alongside the rest of `SpawnContext` on every config reload
-    /// (see `crate::gateway::reload::build_spawn_context`) so it reflects
-    /// the currently active model/provider.
-    pub(crate) tracing_client_context: Arc<crate::tracing_service::ClientContext>,
-    /// Standalone web search backend config, if one is configured — mirrors
-    /// `cfg.web_search.standalone_backend`, rebuilt on every config reload so
-    /// a newly forked session gates `ollama_web_search` the same way the
-    /// main agent's own (startup-time) check does.
-    pub(crate) web_search_backend: Option<crate::config::StandaloneBackendConfig>,
-    /// Main's live tool `PATH`, shared so a session's `exec` resolves the
-    /// same binaries and sees config reloads.
-    pub(crate) tools_path: crate::config::SharedToolsPath,
-    /// Main's write policy, shared so a session is blocked from the same
-    /// config and credential files and sees config reloads.
-    pub(crate) path_policy: crate::tools::SharedPathPolicy,
-    /// The shared agent key store.
-    pub(crate) agent_keys: crate::agent_keys::SharedAgentKeys,
-    /// Remote A2A agents this instance's client can reach, shared with main.
-    pub(crate) a2a_hub: Arc<crate::a2a::A2aClientHub>,
-    /// Outbound A2A tasks this instance started on other agents, shared with
-    /// main.
-    pub(crate) a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
-    /// Workspace and config checkpoint repositories, shared with main —
-    /// backs the `workspace_history`/`workspace_restore` tools.
-    pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
-    /// How a fork's `agent_create`/`agent_delete` reach the hub, acting as
-    /// this agent.
-    pub(crate) lifecycle: crate::tools::LifecycleAccess,
     /// Shared failover-transition counters for the background model tiers —
     /// see [`BackgroundTierActiveIndex`].
     pub(crate) bg_tier_active_index: BackgroundTierActiveIndex,
@@ -165,16 +115,16 @@ pub(crate) struct NewSessionContext {
     pub(crate) own_address: SessionAddress,
     /// This new session's own depth from the main agent (main = 0).
     pub(crate) own_depth: u32,
-    /// This session's category, carried into `SubAgentBuildConfig` so its
+    /// This session's category, carried into its tools' scope so its
     /// `message_agent` tool can report it.
     pub(crate) category: SessionCategory,
     /// Hop count of this session's first turn (see
     /// [`super::types::SubAgentConfig::hop_count`]).
     pub(crate) hop_count: u32,
-    /// What triggered this session, carried into its `SubagentToolDeps`.
+    /// What triggered this session, carried into its tools' scope.
     pub(crate) trigger: crate::bus::EventTrigger,
     /// The conversation this session replies to, for a conversation-triggered
-    /// session, carried into its `SubagentToolDeps`. `None` for every other
+    /// session, carried into its tools' scope. `None` for every other
     /// trigger.
     pub(crate) conversation_target: Option<crate::bus::ConversationTarget>,
 }
@@ -313,12 +263,12 @@ async fn load_fork_identity_and_memory(
 /// address and depth, threaded into its `subagent_spawn` tool so any session
 /// it spawns in turn records the right spawner and depth (see "Nesting" in
 /// the design). `session.own_address` and `session.category` are also
-/// carried into `SubAgentBuildConfig` so the fork's `message_agent` tool can
-/// name itself as the sender of any message it sends. `session.trigger` and
-/// `session.conversation_target` are carried the same way into the session's
-/// `SubagentToolDeps`, so a tool running in this session can tell what
-/// started it and, for a conversation-triggered session, which endpoint and
-/// conversation it replies to.
+/// carried into the session's tool scope so the fork's `message_agent` tool
+/// can name itself as the sender of any message it sends. `session.trigger`
+/// and `session.conversation_target` are carried the same way, so a tool
+/// running in this session can tell what started it and, for a
+/// conversation-triggered session, which endpoint and conversation it
+/// replies to.
 ///
 /// # Errors
 /// Returns an error if an explicit model doesn't resolve, provider
@@ -378,56 +328,32 @@ pub(crate) async fn build_spawn_resources(
 
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
-        config_dir: ctx.config_dir.clone(),
-        hub_dir: ctx.hub_dir.clone(),
         identity,
         options,
         max_tool_iterations: ctx.max_tool_iterations,
         repeat_call_guard: ctx.repeat_call_guard,
-        tz: ctx.tz,
         skill: skill.map(str::to_string),
         observations,
         recent_context,
-        session_registry: Arc::clone(&ctx.session_registry),
-        endpoint_registry: ctx.endpoint_registry.clone(),
-        publisher: ctx.publisher.clone(),
-        action_store: Arc::clone(&ctx.action_store),
-        action_notify: Arc::clone(&ctx.action_notify),
-        hybrid_searcher: Arc::clone(&ctx.hybrid_searcher),
         observer: Arc::clone(&ctx.observer),
         merge_writer: Arc::clone(&ctx.merge_writer),
         episode_skip_token_floor: ctx.background_config.episode_skip_token_floor,
+        session_tools: Arc::clone(&ctx.session_tools),
         own_address,
         own_depth,
-        subagent_depth_cap: ctx.background_config.subagent_depth_cap,
         session_category: category,
         trigger,
         conversation_target,
-        messenger: Arc::clone(&ctx.messenger),
         hop_counter: HopCounter::new(hop_count),
-        tracing_service: Arc::clone(&ctx.tracing_service),
-        tracing_client_context: Arc::clone(&ctx.tracing_client_context),
-        web_search_backend: ctx.web_search_backend.clone(),
-        tools_path: Arc::clone(&ctx.tools_path),
-        path_policy: Arc::clone(&ctx.path_policy),
-        agent_keys: Arc::clone(&ctx.agent_keys),
-        a2a_hub: Arc::clone(&ctx.a2a_hub),
-        a2a_tracker: Arc::clone(&ctx.a2a_tracker),
-        checkpoints: Arc::clone(&ctx.checkpoints),
-        lifecycle: ctx.lifecycle.clone(),
-        model_catalog: Arc::clone(&ctx.model_catalog),
     };
 
-    let mut resources = build_subagent_resources(
+    let resources = build_subagent_resources(
         provider,
         &ctx.skill_state,
         Arc::clone(&ctx.mcp_registry),
         build_config,
     )
     .await?;
-    if let Some(auto_mode) = &ctx.auto_mode {
-        resources.tools.set_auto_mode(Arc::clone(auto_mode));
-    }
     Ok(SpawnResources {
         resources,
         resolved_model,

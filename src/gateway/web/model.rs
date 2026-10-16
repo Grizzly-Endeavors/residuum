@@ -29,8 +29,8 @@ const WEB_UI_IDENTITY: &str = "web-ui";
 /// The subset of `SpawnContext` `POST /api/agents/{name}/model/complete` needs: enough to
 /// resolve the small tier's provider chain and its `bg_small` overrides,
 /// kept separate from `SpawnContext` so the HTTP layer doesn't carry every
-/// session-fork dependency (session registries, MCP, action store, ...)
-/// that type also holds.
+/// session-fork dependency (session registries, MCP, the session tool
+/// factory, ...) that type also holds.
 pub(crate) struct ModelCallResources {
     background_models: BackgroundModelsConfig,
     main_provider_specs: Vec<ProviderSpec>,
