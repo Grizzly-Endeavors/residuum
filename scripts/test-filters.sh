@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks the test filters given to `just test` and `just stress`. A filter whose
 # first `::` segment names a member crate, or a module inside one, gets a note
-# pointing at `just test-crate`; a run that was given filters and matched no
+# pointing at `just test-crate`, and for `just test` a note for each tests/it module
+# whose covers line names that crate; a run that was given filters and matched no
 # test gets a warning. Both go to stderr and neither changes the run's status:
 # the recipes call this after cargo or the stress run has finished.
 #
@@ -116,6 +117,29 @@ crates_named_by() {
     return 0
 }
 
+# Prints one note for each tests/it module whose covers line names residuum-<name>,
+# with the command that runs that module's tests.
+it_modules_covering() { # crate name
+    local name="$1" file rest module covers
+    for file in tests/it/*.rs tests/it/*/mod.rs; do
+        [ -f "$file" ] || continue
+        rest=${file#tests/it/}
+        module=${rest%%/*}
+        module=${module%.rs}
+        if [ "$module" = main ]; then
+            continue
+        fi
+        covers="$(sed -n 's|^//! covers: ||p' "$file" | head -n 1)"
+        covers=${covers// /}
+        case ",$covers," in
+            *",residuum-$name,"*)
+                echo "note: $file covers residuum-$name; run cargo test --quiet --test it $module::" >&2
+                ;;
+        esac
+    done
+    return 0
+}
+
 note_for() {
     local filter="$1" mode="$2" seg rest sp kind name
     case $filter in
@@ -150,6 +174,7 @@ note_for() {
                 echo "note: $seg is a module of residuum-$name, so its tests are that crate's; run just test-crate $name $filter or just test -p residuum-$name $filter" >&2
                 ;;
         esac
+        it_modules_covering "$name"
     done
     return 0
 }

@@ -2,6 +2,8 @@
 //!
 //! Exercises the real config → `Subconscious::build` wiring and the
 //! `evaluate` path with a mock provider, through the crate's public API.
+//!
+//! covers: residuum-agent
 
 #![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #![expect(

@@ -1,6 +1,8 @@
 //! End-to-end integration tests for the proactivity subsystem (Phase 3).
 //!
 //! Tests the pulse and cron systems using mock providers and temporary workspaces.
+//!
+//! covers: residuum-proactivity
 
 #![expect(
     clippy::tests_outside_test_module,
