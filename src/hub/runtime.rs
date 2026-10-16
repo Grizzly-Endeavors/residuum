@@ -990,7 +990,7 @@ async fn setup_finished(setup_done_rx: &mut Option<watch::Receiver<bool>>) {
 /// # Errors
 /// Returns `FatalError::Gateway` if the hub-level checkpoint repositories
 /// can't be opened.
-pub(super) fn build_app(
+pub(crate) fn build_app(
     host: &Arc<AgentHost>,
     services: &HubServices,
     team_events: &Arc<TeamEventLog>,
