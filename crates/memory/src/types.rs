@@ -280,7 +280,7 @@ pub struct IndexChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestFileEntry {
     /// File modification time as ISO string.
-    pub mtime: String,
+    pub(crate) mtime: String,
     /// Document IDs that were indexed from this file.
     pub doc_ids: Vec<String>,
     /// Whether this file's observations/chunks have been embedded in the vector store.

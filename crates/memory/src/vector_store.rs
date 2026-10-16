@@ -32,7 +32,7 @@ pub struct VectorSearchResult {
     /// Line range end (chunks only).
     pub line_end: Option<usize>,
     /// Cosine distance from query vector (lower = more similar).
-    pub distance: f64,
+    pub(crate) distance: f64,
 }
 
 /// Filters for narrowing vector search results.
