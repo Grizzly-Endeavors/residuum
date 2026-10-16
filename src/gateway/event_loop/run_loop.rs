@@ -754,6 +754,7 @@ async fn build_runtime(
         .set_reply_audience(Arc::clone(&channels.activity) as Arc<dyn crate::agent::ReplyAudience>);
     Ok(AgentRuntime {
         name: channels.name,
+        build: channels.services.control.build,
         services: channels.services,
         layout: parts.layout,
         tz: parts.tz,
@@ -1245,7 +1246,7 @@ async fn log_adapter_task_exit(
     rt.tracing_service
         .on_error(
             &described,
-            crate::client_context::gather_for_bug_report(crate::BUILD_INFO, &rt.cfg),
+            crate::client_context::gather_for_bug_report(rt.build, &rt.cfg),
         )
         .await;
 }

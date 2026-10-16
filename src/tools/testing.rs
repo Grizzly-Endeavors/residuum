@@ -135,7 +135,7 @@ impl RegistryHarness {
         let (_, span_buffer) = SpanBufferLayer::new(&SpanBufferConfig::default());
         let tracing_service = Arc::new(TracingService::new(cfg.tracing.clone(), span_buffer));
         let tracing_client_context = Arc::new(crate::client_context::gather_for_bug_report(
-            crate::BUILD_INFO,
+            crate::testing::HARNESS_BUILD,
             &cfg,
         ));
 
@@ -220,6 +220,7 @@ impl RegistryHarness {
             hybrid_searcher: Arc::clone(&self.hybrid_searcher),
             tracing_service: Arc::clone(&self.tracing_service),
             tracing_client_context: Arc::clone(&self.tracing_client_context),
+            build: crate::testing::HARNESS_BUILD,
             web_search_backend: self.cfg.web_search.standalone_backend.clone(),
             model_catalog: crate::config::ModelCatalog::default().into_shared(),
             a2a_hub: Arc::clone(&self.a2a_hub),

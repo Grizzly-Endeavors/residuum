@@ -1260,7 +1260,7 @@ mod tests {
             let a2a = a2a_reservation.into_tokio_listener();
             let inputs = HubInputs {
                 root: root.path().to_path_buf(),
-                build: crate::BUILD_INFO,
+                build: crate::testing::HARNESS_BUILD,
                 on_ready: Box::new(|dir| {
                     std::fs::write(crate::config::HubPaths::new(dir).ready_file(), "ready")
                         .unwrap();

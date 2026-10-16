@@ -32,6 +32,8 @@ pub(crate) struct ToolRegistryDeps<'a> {
     pub session_registry: &'a Arc<SessionRegistry>,
     pub endpoint_registry: &'a EndpointRegistry,
     pub publisher: &'a crate::bus::Publisher,
+    /// The running build, for the feedback tools' client context.
+    pub build: crate::build_info::BuildInfo,
     pub tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     pub tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
     pub agent_messenger: &'a Arc<AgentMessenger>,
@@ -222,6 +224,7 @@ pub(crate) fn init_tool_registry(
 
     registration::register_feedback_tools(
         &mut tools,
+        deps.build,
         Arc::clone(deps.tracing_service),
         Arc::clone(deps.tracing_client_context),
         Arc::clone(deps.session_registry),
@@ -308,6 +311,7 @@ mod tests {
             session_registry: &h.session_registry,
             endpoint_registry: &h.endpoint_registry,
             publisher: &h.publisher,
+            build: crate::testing::HARNESS_BUILD,
             tracing_service: &h.tracing_service,
             tracing_client_context: &h.tracing_client_context,
             agent_messenger: &h.agent_messenger,
