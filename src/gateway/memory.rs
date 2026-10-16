@@ -449,7 +449,7 @@ mod tests {
     fn test_agent() -> Agent {
         Agent::new(
             Box::new(crate::inference::NullProvider),
-            crate::tools::ToolRegistry::new(),
+            crate::agent::ToolRegistry::new(),
             crate::mcp::McpRegistry::new_shared(),
             crate::workspace::identity::IdentityFiles::default(),
             AgentConfig {

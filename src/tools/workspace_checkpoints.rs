@@ -17,7 +17,8 @@ use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger,
 use crate::inference::ToolDefinition;
 use crate::workspace::team_files::TeamWriter;
 
-use super::{Tool, require_str};
+use super::require_str;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// The checkpoint repository a tool call targets: the `repo` argument

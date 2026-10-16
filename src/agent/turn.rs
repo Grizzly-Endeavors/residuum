@@ -18,7 +18,6 @@ use crate::inference::{
 use crate::inference::{ToolError, ToolResult};
 use crate::interfaces::types::chat_interface_endpoint;
 use crate::mcp::SharedMcpRegistry;
-use crate::tools::{CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 
@@ -27,6 +26,10 @@ use super::hop::HopCounter;
 use super::interrupt::{Interrupt, InterruptSource};
 use super::recent_messages::RecentMessages;
 use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
+use super::tool::{
+    CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry, is_plausible_tool_name,
+    truncate_tool_name_for_display,
+};
 use super::usage::{SessionUsageTotals, TurnUsage, UsageSink};
 
 /// Told each time one of a main turn's replies reaches the main
@@ -1365,11 +1368,11 @@ async fn dispatch_tool_call(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
 ) -> (Result<ToolResult, ToolError>, bool) {
-    if !crate::tools::is_plausible_tool_name(&tool_call.name) {
+    if !is_plausible_tool_name(&tool_call.name) {
         return (
-            Err(ToolError::MalformedName(
-                crate::tools::truncate_tool_name_for_display(&tool_call.name),
-            )),
+            Err(ToolError::MalformedName(truncate_tool_name_for_display(
+                &tool_call.name,
+            ))),
             false,
         );
     }
@@ -1443,7 +1446,7 @@ async fn run_dispatched_tool_call(
             };
             tracing::warn!(
                 error = %e,
-                tool_name = %crate::tools::truncate_tool_name_for_display(&tool_call.name),
+                tool_name = %truncate_tool_name_for_display(&tool_call.name),
                 tool_call_id = %tool_call.id,
                 source,
                 "tool execution failed"
@@ -2162,7 +2165,9 @@ mod tests {
 
         let mut tools = ToolRegistry::new();
         tools.set_agent_keys(keys);
-        tools.register_defaults(
+        crate::tools::registration::register_defaults(
+            &mut tools,
+            &crate::tools::registration::RegistryInjections::default(),
             crate::tools::FileTracker::new_shared(),
             crate::tools::PathPolicy::new_shared(),
             crate::diagnostics_dispatch::DiagnosticsPaths {
@@ -2376,7 +2381,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::tools::Tool for BlockingTool {
+    impl crate::agent::Tool for BlockingTool {
         fn name(&self) -> &'static str {
             "blocking_tool"
         }
@@ -2467,7 +2472,7 @@ mod tests {
         assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
         assert_eq!(
             msg.content,
-            crate::tools::CANCELLED_WHILE_RUNNING,
+            crate::agent::tool::CANCELLED_WHILE_RUNNING,
             "the transcript should say the tool was cancelled, not that it failed"
         );
     }
@@ -2521,7 +2526,7 @@ mod tests {
             .first()
             .expect("a tool-result message should have been recorded");
         assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
-        assert_eq!(msg.content, crate::tools::CANCELLED_BEFORE_START);
+        assert_eq!(msg.content, crate::agent::tool::CANCELLED_BEFORE_START);
     }
 
     /// Returns a two-tool-call response exactly once; a second call means
@@ -2650,7 +2655,7 @@ mod tests {
                 .first()
                 .expect("checked above: exactly 2 results")
                 .content,
-            crate::tools::CANCELLED_WHILE_RUNNING,
+            crate::agent::tool::CANCELLED_WHILE_RUNNING,
             "the call that was running when the stop landed was interrupted"
         );
         assert_eq!(
@@ -2658,7 +2663,7 @@ mod tests {
                 .get(1)
                 .expect("checked above: exactly 2 results")
                 .content,
-            crate::tools::CANCELLED_BEFORE_START,
+            crate::agent::tool::CANCELLED_BEFORE_START,
             "the second call in the batch must never have started"
         );
         assert!(
@@ -2787,7 +2792,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::tools::Tool for CountingTool {
+    impl crate::agent::Tool for CountingTool {
         fn name(&self) -> &'static str {
             "counting_tool"
         }
@@ -3580,7 +3585,7 @@ mod tests {
         );
         assert_eq!(
             seventh.as_str(),
-            crate::tools::CANCELLED_BEFORE_START,
+            crate::agent::tool::CANCELLED_BEFORE_START,
             "the 7th call should be skipped outright, not attempted"
         );
     }

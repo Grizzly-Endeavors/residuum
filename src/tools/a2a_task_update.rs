@@ -11,8 +11,8 @@ use crate::bus::{A2aTaskSignalEvent, A2aTaskSignalState, Publisher, SessionAddre
 use crate::inference::ToolDefinition;
 use crate::workspace::team_files::TeamFiles;
 
-use super::Tool;
 use super::path_policy::SharedPathPolicy;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Hard cap on one artifact file's size (matches the plan's ~20 MB budget).

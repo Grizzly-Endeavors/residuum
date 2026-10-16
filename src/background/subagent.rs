@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::ToolRegistry;
 use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
 #[cfg(test)]
@@ -21,7 +22,7 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::skills::{SharedSkillState, SkillState};
-use crate::tools::{FileTracker, SubagentToolDeps, ToolRegistry};
+use crate::tools::{FileTracker, SubagentToolDeps};
 use crate::workspace::identity::IdentityFiles;
 
 use super::types::SubAgentBuildConfig;
@@ -275,7 +276,7 @@ pub async fn build_subagent_resources(
     let (skill_state, skills_index) =
         prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
-    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
+    let tools = crate::tools::build_subagent_registry(&SubagentToolDeps {
         // Fresh file tracker (tracks reads within this sub-agent turn only)
         tracker: FileTracker::new_shared(),
         path_policy,

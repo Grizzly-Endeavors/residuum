@@ -8,6 +8,7 @@ pub mod interrupt;
 pub mod recent_messages;
 mod stream;
 mod think_tags;
+mod tool;
 pub(crate) mod turn;
 #[cfg(test)]
 mod turn_conversation_tests;
@@ -15,4 +16,5 @@ pub mod usage;
 
 pub use core::{Agent, AgentConfig};
 pub use hop::HopCounter;
+pub use tool::{Tool, ToolRegistry};
 pub use turn::{LiveOutputEndpoint, ReplyAudience, TurnOutput};

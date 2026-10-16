@@ -2,7 +2,7 @@
 //! shows up in logs and in the messages agents hand each other.
 
 use super::*;
-use crate::tools::Tool as _;
+use crate::agent::Tool as _;
 use crate::tools::agent_lifecycle::AgentCreateTool;
 use residuum_core::testing::log::EventLog;
 

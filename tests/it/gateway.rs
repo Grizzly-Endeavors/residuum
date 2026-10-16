@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 use residuum::agent::Agent;
 use residuum::agent::context::PromptContext;
 use residuum::agent::interrupt;
+use residuum::agent::{Tool, ToolRegistry};
 use residuum::bus::{EndpointName, MainConversationEvent, TurnOrigin, spawn_broker, topics};
 use residuum::gateway::protocol::{ClientMessage, ServerMessage};
 use residuum::inference::{
@@ -36,7 +37,6 @@ use residuum::inference::{
 };
 use residuum::inference::{ToolError, ToolResult};
 use residuum::memory::types::Visibility;
-use residuum::tools::{Tool, ToolRegistry};
 use residuum::workspace::identity::IdentityFiles;
 
 /// Mock provider that returns configurable responses in sequence.

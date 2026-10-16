@@ -197,7 +197,8 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`crate::memory::tokens`** — `estimate_message_tokens()`, for the episode skip token floor check.
 - **`crate::mcp`** — `SharedMcpRegistry`, shared across the main agent and every session.
 - **`crate::skills`** — `SkillState`, `SharedSkillState`. Each session gets an isolated clone.
-- **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. Each session gets fresh isolated instances.
+- **`crate::agent`** — `ToolRegistry`, the container of each session's tools.
+- **`crate::tools`** — `build_subagent_registry`, `PathPolicy`, `FileTracker`. Each session gets a fresh registry and `FileTracker`.
 - **`crate::workspace`** — `IdentityFiles`.
 - **`crate::bus`** — `EventTrigger`, `SessionAddress`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`, `AgentMessageEvent`, `MessageEvent`, `Publisher`, `topics`.
 - **`crate::interfaces::types`** — `MessageOrigin`, for the `MessageEvent` `AgentMessenger` publishes to main.

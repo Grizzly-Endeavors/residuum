@@ -49,7 +49,7 @@ use crate::inference::{
 };
 use crate::mcp::McpRegistry;
 use crate::skills::{SkillIndex, SkillState};
-use crate::tools::{SubagentToolDeps, ToolRegistry};
+use crate::tools::{SubagentToolDeps, build_subagent_registry};
 use crate::workspace::identity::IdentityFiles;
 
 /// The name of the one agent the harness serves.
@@ -604,7 +604,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
 fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> SubAgentResources {
     let (layout, observer, merge_writer) = test_memory_extras();
     let hop_counter = HopCounter::new(event.hop_count);
-    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
+    let tools = build_subagent_registry(&SubagentToolDeps {
         tracker: crate::tools::FileTracker::new_shared(),
         path_policy: Arc::clone(&deps.path_policy),
         tools_path: Arc::clone(&deps.tools_path),

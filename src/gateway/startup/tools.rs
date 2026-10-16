@@ -10,10 +10,11 @@ use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
 
+use crate::agent::ToolRegistry;
 use crate::bus::{EndpointRegistry, SessionAddress};
 use crate::config::WorkspaceLayout;
 use crate::skills::SharedSkillState;
-use crate::tools::ToolRegistry;
+use crate::tools::registration::{self, RegistryInjections};
 use crate::workspace::identity::IdentityFiles;
 
 use super::memory::MemoryComponents;
@@ -87,42 +88,54 @@ fn register_main_session_tools(
     cfg: &Config,
     deps: &ToolRegistryDeps<'_>,
 ) {
-    tools.register_background_tools(
+    registration::register_background_tools(
+        tools,
         Arc::clone(deps.session_registry),
         SessionAddress::from(MAIN_ADDRESS),
         Arc::clone(deps.a2a_hub),
         Arc::clone(deps.a2a_tracker),
         deps.agent_messenger.team().clone(),
     );
-    tools.register_spawn_tool(crate::tools::background::SpawnToolDeps {
-        publisher: deps.publisher.clone(),
-        skill_state: Arc::clone(deps.skill_state),
-        spawner_address: SessionAddress::from(MAIN_ADDRESS),
-        depth: MAIN_DEPTH,
-        depth_cap: cfg.background.subagent_depth_cap,
-        hop_counter: deps.hop_counter.clone(),
-        models: Arc::clone(deps.model_catalog),
-    });
-    tools.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
+    registration::register_spawn_tool(
+        tools,
+        crate::tools::background::SpawnToolDeps {
+            publisher: deps.publisher.clone(),
+            skill_state: Arc::clone(deps.skill_state),
+            spawner_address: SessionAddress::from(MAIN_ADDRESS),
+            depth: MAIN_DEPTH,
+            depth_cap: cfg.background.subagent_depth_cap,
+            hop_counter: deps.hop_counter.clone(),
+            models: Arc::clone(deps.model_catalog),
+        },
+    );
+    registration::register_agent_lifecycle_tools(
+        tools,
+        deps.lifecycle.clone(),
+        deps.hop_counter.clone(),
+    );
 }
 
-/// Build the tool registry with all default and domain-specific tools.
-pub(super) fn init_tool_registry(
+/// The shared handles main's registry injects into its tools at
+/// registration, kept beside the agent so a reload that re-registers a tool
+/// injects the same ones.
+pub(super) fn main_registry_injections(deps: &ToolRegistryDeps<'_>) -> RegistryInjections {
+    RegistryInjections {
+        tools_path: Some(Arc::clone(deps.tools_path)),
+        checkpoints: Some(Arc::clone(deps.checkpoints)),
+        publisher: Some(deps.publisher.clone()),
+    }
+}
+
+/// Main's file, key, memory, action-scheduling, skill, and inbox tools.
+fn register_main_workspace_tools(
+    tools: &mut ToolRegistry,
+    injections: &RegistryInjections,
     cfg: &Config,
     layout: &WorkspaceLayout,
     mem: &MemoryComponents,
     tz: chrono_tz::Tz,
     deps: &ToolRegistryDeps<'_>,
-) -> (
-    ToolRegistry,
-    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
-    let mut tools = ToolRegistry::new();
-    tools.set_tools_path(Arc::clone(deps.tools_path));
-    tools.set_agent_keys(Arc::clone(deps.agent_keys));
-    tools.set_checkpoints(Arc::clone(deps.checkpoints));
-    tools.set_publisher(deps.publisher.clone());
-    tools.set_auto_mode(Arc::clone(deps.auto_mode));
     let file_tracker = crate::tools::FileTracker::new_shared();
     let diagnostics_paths = crate::diagnostics_dispatch::DiagnosticsPaths {
         config_dir: cfg.config_dir.clone(),
@@ -137,38 +150,73 @@ pub(super) fn init_tool_registry(
         ),
         tracker: deps.config_reload_tracker.clone(),
     };
-    tools.register_defaults(
+    registration::register_defaults(
+        tools,
+        injections,
         file_tracker,
         Arc::clone(deps.path_policy),
         diagnostics_paths,
         Some(config_watch),
     );
-    tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
+    registration::register_agent_key_tools(
+        tools,
+        injections,
+        Arc::clone(deps.agent_keys),
+        Arc::clone(deps.checkpoints),
+    );
     let (episodes_dir, sessions_dir) = (layout.episodes_dir(), layout.sessions_dir());
-    tools.register_memory_tools(Arc::clone(&mem.hybrid_searcher), episodes_dir, sessions_dir);
-    tools.register_action_tools(
+    registration::register_memory_tools(
+        tools,
+        Arc::clone(&mem.hybrid_searcher),
+        episodes_dir,
+        sessions_dir,
+    );
+    registration::register_action_tools(
+        tools,
         Arc::clone(deps.action_store),
         Arc::clone(deps.action_notify),
         Arc::clone(deps.model_catalog),
         tz,
     );
-    tools.register_skill_tools(Arc::clone(deps.skill_state));
-    tools.register_inbox_tools(
+    registration::register_skill_tools(tools, Arc::clone(deps.skill_state));
+    registration::register_inbox_tools(
+        tools,
+        injections,
         layout.agent_inbox_dir(),
         layout.agent_inbox_archive_dir(),
         layout.user_inbox_dir(),
         layout.user_inbox_attachments_dir(),
         tz,
     );
+}
+
+/// Build the tool registry with all default and domain-specific tools.
+pub(super) fn init_tool_registry(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+    mem: &MemoryComponents,
+    tz: chrono_tz::Tz,
+    deps: &ToolRegistryDeps<'_>,
+) -> (
+    ToolRegistry,
+    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
+) {
+    let injections = main_registry_injections(deps);
+    let mut tools = ToolRegistry::new();
+    tools.set_agent_keys(Arc::clone(deps.agent_keys));
+    tools.set_auto_mode(Arc::clone(deps.auto_mode));
+    register_main_workspace_tools(&mut tools, &injections, cfg, layout, mem, tz, deps);
     register_main_session_tools(&mut tools, cfg, deps);
 
-    tools.register_send_message_tool(
+    registration::register_send_message_tool(
+        &mut tools,
         deps.endpoint_registry.clone(),
         deps.publisher.clone(),
         false,
     );
-    tools.register_list_endpoints_tool(deps.endpoint_registry.clone());
-    tools.register_message_agent_tool(
+    registration::register_list_endpoints_tool(&mut tools, deps.endpoint_registry.clone());
+    registration::register_message_agent_tool(
+        &mut tools,
         SessionAddress::from(MAIN_ADDRESS),
         MAIN_ADDRESS.to_string(),
         Arc::clone(deps.agent_messenger),
@@ -179,22 +227,25 @@ pub(super) fn init_tool_registry(
 
     let override_tx = tokio::sync::watch::Sender::new(None);
     let override_tx_for_runtime = override_tx.clone();
-    tools.register_switch_endpoint_tool(
+    registration::register_switch_endpoint_tool(
+        &mut tools,
         deps.endpoint_registry.clone(),
         override_tx,
         deps.publisher.clone(),
     );
 
-    tools.register_web_fetch_tool();
+    registration::register_web_fetch_tool(&mut tools);
 
-    tools.register_feedback_tools(
+    registration::register_feedback_tools(
+        &mut tools,
         Arc::clone(deps.tracing_service),
         Arc::clone(deps.tracing_client_context),
         Arc::clone(deps.session_registry),
     );
 
     // Workspace checkpoint history (workspace repository only)
-    tools.register_workspace_checkpoint_tools(
+    registration::register_workspace_checkpoint_tools(
+        &mut tools,
         Arc::clone(deps.checkpoints),
         Arc::clone(deps.path_policy),
     );
@@ -207,7 +258,11 @@ pub(super) fn init_tool_registry(
             .base_url
             .clone()
             .unwrap_or_else(|| "https://api.ollama.com".to_string());
-        tools.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+        registration::register_ollama_web_search_tool(
+            &mut tools,
+            backend.api_key.clone(),
+            base_url,
+        );
         tracing::info!("registered ollama_web_search tool");
     }
 
@@ -307,7 +362,7 @@ mod tests {
     use std::collections::HashMap;
 
     /// Tools that must stay main-only, never registered for a session. This
-    /// is the one documented exclusion from `ToolRegistry::build_subagent_registry`
+    /// is the one documented exclusion from `crate::tools::build_subagent_registry`
     /// (see its doc comment) — keep the two lists in sync.
     const MAIN_ONLY_TOOLS: &[&str] = &["switch_endpoint"];
 
@@ -501,8 +556,8 @@ mod tests {
         address: &str,
         category: &str,
         conversation_target: Option<crate::bus::ConversationTarget>,
-    ) -> crate::tools::ToolRegistry {
-        crate::tools::ToolRegistry::build_subagent_registry(&crate::tools::SubagentToolDeps {
+    ) -> crate::agent::ToolRegistry {
+        crate::tools::build_subagent_registry(&crate::tools::SubagentToolDeps {
             tracker: FileTracker::new_shared(),
             path_policy: Arc::clone(&h.path_policy),
             tools_path: Arc::clone(&h.tools_path),
@@ -783,7 +838,7 @@ mod tests {
                 options: crate::inference::CompletionOptions::default(),
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
-                tools: crate::tools::ToolRegistry::new(),
+                tools: crate::agent::ToolRegistry::new(),
                 identity: IdentityFiles::default(),
                 hop_counter: HopCounter::new(0),
             },

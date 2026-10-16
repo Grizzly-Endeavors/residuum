@@ -520,12 +520,15 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
 /// notification channel and the session runtime, which are shared handles
 /// built once at startup.
 async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
-    rt.agent.set_timezone(
-        new_cfg.timezone,
+    rt.agent.set_timezone(new_cfg.timezone);
+    crate::tools::registration::reload_timezone_tools(
+        rt.agent.tools_mut(),
+        &rt.tool_injections,
         Arc::clone(&rt.action_store),
         Arc::clone(&rt.action_notify),
         Arc::clone(&rt.spawn_context.model_catalog),
         &rt.layout,
+        new_cfg.timezone,
     );
     if new_cfg.discord.is_some() {
         reload_discord_adapter(rt, new_cfg).await;
@@ -745,7 +748,7 @@ async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: 
 /// Reload main's standalone web search setup from the new config.
 ///
 /// `ollama_web_search` is a native tool, so it reloads in place via
-/// `Agent::reload_ollama_web_search_tool` — called unconditionally, like
+/// `tools::registration::reload_ollama_web_search_tool` — called unconditionally, like
 /// every other cheap component, since removing and re-adding a
 /// not-actually-changed tool is harmless.
 ///
@@ -762,8 +765,10 @@ async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: 
 /// way `reload_providers`'s does: a `warn` log plus an operator-facing
 /// notice, rather than silently leaving the old (or no) server running.
 async fn reload_web_search(rt: &mut AgentRuntime, new_cfg: &Config) {
-    rt.agent
-        .reload_ollama_web_search_tool(new_cfg.web_search.standalone_backend.as_ref());
+    crate::tools::registration::reload_ollama_web_search_tool(
+        rt.agent.tools_mut(),
+        new_cfg.web_search.standalone_backend.as_ref(),
+    );
 
     if rt.cfg.web_search.standalone_backend == new_cfg.web_search.standalone_backend {
         return;

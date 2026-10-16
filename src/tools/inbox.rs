@@ -10,7 +10,7 @@ use crate::bus::{Publisher, UserInboxAddedEvent, topics};
 use crate::inbox::{self, InboxItem};
 use crate::inference::ToolDefinition;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 // ─── inbox_list ─────────────────────────────────────────────────────────────

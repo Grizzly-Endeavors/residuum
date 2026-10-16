@@ -9,7 +9,6 @@ use std::ops::Range;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::Tool;
 use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
@@ -17,6 +16,7 @@ use super::read::format_numbered_line;
 use super::write::{
     append_diagnostics, check_reserved_target, commit_team_write, lock_team_target, resolve,
 };
+use crate::agent::Tool;
 use crate::diagnostics_dispatch::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
 use crate::inference::{ToolError, ToolResult};

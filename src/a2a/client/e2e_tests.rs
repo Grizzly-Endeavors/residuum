@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::a2a::client::hub::AgentSource;
 use crate::a2a::{A2aClientHub, RemoteTaskTracker};
 use crate::agent::HopCounter;
+use crate::agent::Tool;
 use crate::agent::interrupt::Interrupt;
 use crate::background::HopLimits;
 use crate::background::messaging::AgentMessenger;
@@ -26,7 +27,6 @@ use crate::background::registry::{
 use crate::background::store::SessionStore;
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::ModelSelector;
-use crate::tools::Tool;
 use crate::tools::background::StopAgentTool;
 use crate::tools::message_agent::MessageAgentTool;
 use residuum_core::testing::wait;
