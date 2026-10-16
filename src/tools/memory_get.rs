@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::background::store::{RunRecord, SessionStore};
 use crate::inference::{Message, ToolDefinition};
 use crate::inference::{ToolError, ToolResult};

@@ -6,13 +6,13 @@ use crate::bus::Publisher;
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
-use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::hop::HopCounter;
 use super::interrupt;
 use super::recent_messages::RecentMessages;
+use super::tool::ToolRegistry;
 use super::turn::{EventContext, EventTarget, TurnOutput, TurnResources, execute_turn};
 use super::usage::{MainUsageSink, SessionUsageTotals};
 
@@ -197,25 +197,15 @@ impl Agent {
         self.options = options;
     }
 
-    /// Apply a new user timezone to future turns: the turn timestamps and
-    /// every tool that captured the timezone when it was registered.
-    pub fn set_timezone(
-        &mut self,
-        tz: chrono_tz::Tz,
-        action_store: std::sync::Arc<tokio::sync::Mutex<crate::actions::store::ActionStore>>,
-        action_notify: std::sync::Arc<tokio::sync::Notify>,
-        models: crate::config::SharedModelCatalog,
-        layout: &crate::config::WorkspaceLayout,
-    ) {
+    /// Apply a new user timezone to future turns' timestamps.
+    pub fn set_timezone(&mut self, tz: chrono_tz::Tz) {
         self.tz = tz;
-        self.tools.reload_timezone_tools(
-            action_store,
-            action_notify,
-            models,
-            layout.user_inbox_dir(),
-            layout.user_inbox_attachments_dir(),
-            tz,
-        );
+    }
+
+    /// The agent's tool registry, for re-registering tools in place (e.g.
+    /// after a config reload).
+    pub fn tools_mut(&mut self) -> &mut ToolRegistry {
+        &mut self.tools
     }
 
     /// Set the maximum tool-call iterations for future turns (e.g. at
@@ -228,35 +218,6 @@ impl Agent {
     /// or after a config reload).
     pub fn set_repeat_call_guard(&mut self, config: crate::config::RepeatCallGuardConfig) {
         self.repeat_call_guard = config;
-    }
-
-    /// Reload the `ollama_web_search` tool in place from the current
-    /// standalone web search backend config (e.g. after a config reload).
-    ///
-    /// Mirrors `gateway::startup::tools::init_tool_registry`'s startup-time
-    /// gating: removes any existing `ollama_web_search` tool, then re-adds
-    /// it with the current API key/base URL if `backend` names the
-    /// `"ollama"` backend. A no-op call (backend unchanged) still removes
-    /// and re-adds the tool — harmless, since the tool itself is stateless
-    /// beyond the credentials it's constructed with.
-    pub fn reload_ollama_web_search_tool(
-        &mut self,
-        backend: Option<&crate::config::StandaloneBackendConfig>,
-    ) {
-        let was_registered = self.tools.remove("ollama_web_search");
-        if let Some(backend) = backend
-            && backend.name == "ollama"
-        {
-            let base_url = backend
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.ollama.com".to_string());
-            self.tools
-                .register_ollama_web_search_tool(backend.api_key.clone(), base_url);
-            tracing::info!("reloaded ollama_web_search tool from config");
-        } else if was_registered {
-            tracing::info!("removed ollama_web_search tool: no longer configured");
-        }
     }
 
     /// Reload observations from the observation log file.
@@ -505,6 +466,9 @@ mod tests {
     use crate::bus;
     use crate::inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
     use crate::mcp::McpRegistry;
+    use crate::tools::registration::{
+        RegistryInjections, register_defaults, reload_ollama_web_search_tool,
+    };
     use crate::tools::{FileTracker, PathPolicy};
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -720,7 +684,9 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -780,7 +746,9 @@ mod tests {
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -862,7 +830,9 @@ mod tests {
         responses.push(InferenceResponse::new("done".to_string(), vec![]));
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -926,7 +896,9 @@ mod tests {
             .collect();
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -1240,7 +1212,9 @@ mod tests {
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -1321,7 +1295,9 @@ mod tests {
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -1530,7 +1506,9 @@ mod tests {
         // stop mid-tool-execution doesn't sever the tool, only stops the
         // loop at its next checkpoint.
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -2063,7 +2041,7 @@ mod tests {
             api_key: "key".to_string(),
             base_url: None,
         };
-        agent.reload_ollama_web_search_tool(Some(&backend));
+        reload_ollama_web_search_tool(agent.tools_mut(), Some(&backend));
 
         assert!(
             agent
@@ -2082,7 +2060,7 @@ mod tests {
             api_key: "key".to_string(),
             base_url: None,
         };
-        agent.reload_ollama_web_search_tool(Some(&backend));
+        reload_ollama_web_search_tool(agent.tools_mut(), Some(&backend));
         assert!(
             agent
                 .tools
@@ -2090,7 +2068,7 @@ mod tests {
                 .contains(&"ollama_web_search".to_string())
         );
 
-        agent.reload_ollama_web_search_tool(None);
+        reload_ollama_web_search_tool(agent.tools_mut(), None);
         assert!(
             !agent
                 .tools
@@ -2103,7 +2081,9 @@ mod tests {
     #[test]
     fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
@@ -2116,8 +2096,8 @@ mod tests {
             api_key: "key".to_string(),
             base_url: None,
         };
-        agent.reload_ollama_web_search_tool(Some(&backend));
-        agent.reload_ollama_web_search_tool(None);
+        reload_ollama_web_search_tool(agent.tools_mut(), Some(&backend));
+        reload_ollama_web_search_tool(agent.tools_mut(), None);
 
         let names = agent.tools.tool_names();
         assert!(

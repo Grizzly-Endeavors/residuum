@@ -759,6 +759,7 @@ async fn build_runtime(
         layout: parts.layout,
         tz: parts.tz,
         agent: parts.agent,
+        tool_injections: parts.tool_injections,
         observer: Arc::new(parts.observer),
         merge_writer: parts.merge_writer,
         subconscious: parts.subconscious,

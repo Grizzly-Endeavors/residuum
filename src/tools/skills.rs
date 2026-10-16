@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 // ─── skill_activate ──────────────────────────────────────────────────────────

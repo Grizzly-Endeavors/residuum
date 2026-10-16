@@ -15,6 +15,7 @@ use super::context::{MemoryContext, PromptContext};
 use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
 use super::turn::{EventContext, EventTarget, TranscriptSink, TurnResources, execute_turn};
+use crate::agent::{Tool, ToolRegistry};
 use crate::bus::{
     AgentMessageEvent, EndpointName, IntermediateEvent, MainConversationEvent, MessageEvent,
     SessionAddress, Subscriber, topics,
@@ -25,7 +26,6 @@ use crate::inference::{
 };
 use crate::inference::{ToolError, ToolResult};
 use crate::interfaces::types::MessageOrigin;
-use crate::tools::{Tool, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 /// What a scripted provider does while a model call is in flight.

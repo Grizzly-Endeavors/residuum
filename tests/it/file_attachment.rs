@@ -10,6 +10,7 @@
 )]
 #[cfg(test)]
 mod tests {
+    use residuum::agent::Tool;
     use residuum::bus::{
         EndpointCapabilities, EndpointEntry, EndpointId, EndpointName, EndpointRegistry,
         ResponseEvent, TopicId, topics,
@@ -17,7 +18,6 @@ mod tests {
     use residuum::gateway::file_server::FileRegistry;
     use residuum::gateway::protocol::ServerMessage;
     use residuum::interfaces::websocket::subscriber::WsSubscribers;
-    use residuum::tools::Tool;
     use residuum::tools::send_message::SendMessageTool;
 
     fn make_registry() -> EndpointRegistry {

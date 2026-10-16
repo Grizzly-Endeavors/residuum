@@ -2269,7 +2269,7 @@ mod tests {
     fn test_agent(provider: impl crate::inference::InferenceProvider + 'static) -> Agent {
         Agent::new(
             Box::new(provider),
-            crate::tools::ToolRegistry::new(),
+            crate::agent::ToolRegistry::new(),
             crate::mcp::McpRegistry::new_shared(),
             crate::workspace::identity::IdentityFiles::default(),
             crate::agent::AgentConfig {

@@ -19,6 +19,7 @@ pub mod message_agent;
 pub(crate) mod ollama_web_search;
 pub mod path_policy;
 mod read;
+pub mod registration;
 mod registry;
 pub mod send_message;
 pub mod skills;
@@ -34,62 +35,11 @@ pub use agent_lifecycle::LifecycleAccess;
 pub use config_reload_tracker::{ConfigWriteWatch, SharedConfigReloadTracker};
 pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
-pub use registry::{SubagentToolDeps, ToolRegistry};
+pub use registry::{SubagentToolDeps, build_subagent_registry};
 
-use async_trait::async_trait;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
 
-use crate::inference::{ToolDefinition, ToolError, ToolResult};
-
-/// Reported when a tool call is interrupted mid-execution because the turn
-/// was stopped — a user stop, a session's own stop, or daemon shutdown.
-pub(crate) const CANCELLED_WHILE_RUNNING: &str =
-    "cancelled: the turn was stopped while this tool was running";
-
-/// Reported for a tool call in a batch that never ran because the turn had
-/// already been stopped by the time its turn came up.
-pub(crate) const CANCELLED_BEFORE_START: &str =
-    "cancelled: the turn was stopped before this tool call started";
-
-/// Maximum length of a well-formed tool name.
-///
-/// Matches the `[a-zA-Z0-9_-]{1,64}` shape OpenAI-compatible APIs require of
-/// function names, which every built-in and MCP tool name in this codebase
-/// already satisfies.
-const MAX_PLAUSIBLE_TOOL_NAME_LEN: usize = 64;
-
-/// Number of characters kept when a malformed tool name is logged or reported
-/// back to the model, so a large blob of leaked markup doesn't flood the log
-/// or the transcript.
-const TOOL_NAME_DISPLAY_LIMIT: usize = 80;
-
-/// Whether `name` could plausibly be a real tool name.
-///
-/// Every built-in and MCP tool name in this codebase is `[a-zA-Z0-9_-]`, at
-/// most 64 characters. Anything else — whitespace, angle brackets, control
-/// characters — means a model's tool-call name field was not cleanly parsed
-/// by the inference provider, not that a genuinely unknown tool was
-/// requested.
-#[must_use]
-pub fn is_plausible_tool_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_PLAUSIBLE_TOOL_NAME_LEN
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-/// Truncate a raw, possibly-malformed tool name for safe logging or display.
-#[must_use]
-pub fn truncate_tool_name_for_display(name: &str) -> String {
-    if name.chars().count() <= TOOL_NAME_DISPLAY_LIMIT {
-        name.to_string()
-    } else {
-        let head: String = name.chars().take(TOOL_NAME_DISPLAY_LIMIT).collect();
-        format!("{head}...")
-    }
-}
+use crate::inference::ToolError;
 
 pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
     args.get(field)
@@ -116,169 +66,5 @@ pub(super) async fn publish_notice(publisher: Option<&crate::bus::Publisher>, me
         .await
     {
         tracing::warn!(error = %e, "failed to publish tool notice to bus");
-    }
-}
-
-/// Trait for tool implementations that the agent can invoke.
-#[async_trait]
-pub trait Tool: Send + Sync {
-    /// The unique name of this tool.
-    fn name(&self) -> &'static str;
-
-    /// The tool definition sent to the model.
-    fn definition(&self) -> ToolDefinition;
-
-    /// Execute the tool with the given arguments.
-    ///
-    /// # Errors
-    /// Returns `ToolError` if the arguments are invalid or execution fails.
-    async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError>;
-
-    /// Execute the tool, racing it against turn-level cancellation.
-    ///
-    /// `cancel` is cancelled when the turn this tool call belongs to is
-    /// stopped — by the user, by a session's own stop, or by daemon
-    /// shutdown. The default implementation drops `execute()`'s future
-    /// outright the moment that happens and reports a generic cancellation
-    /// result, which is correct for every tool that owns no external
-    /// resource needing cleanup. `ExecTool` overrides this to kill its
-    /// child process tree first and return whatever output it had already
-    /// captured, instead of discarding it.
-    ///
-    /// # Errors
-    /// Returns `ToolError` if the arguments are invalid or execution fails.
-    async fn execute_cancellable(
-        &self,
-        arguments: Value,
-        cancel: &CancellationToken,
-    ) -> Result<ToolResult, ToolError> {
-        tokio::select! {
-            biased;
-            () = cancel.cancelled() => Ok(ToolResult::cancelled(CANCELLED_WHILE_RUNNING)),
-            result = self.execute(arguments) => result,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use residuum_core::testing::clock;
-
-    #[test]
-    fn tool_result_cancelled_is_not_an_error() {
-        let result = ToolResult::cancelled(CANCELLED_WHILE_RUNNING);
-        assert!(
-            !result.is_error,
-            "a cancellation is not a failure and must not be flagged as one"
-        );
-        assert_eq!(result.output, CANCELLED_WHILE_RUNNING);
-    }
-
-    /// A tool whose `execute()` blocks forever, so the default
-    /// `execute_cancellable()` can only ever return via the cancellation
-    /// branch — proving it actually races rather than always awaiting
-    /// `execute()` to completion.
-    struct ForeverTool;
-
-    #[async_trait]
-    impl Tool for ForeverTool {
-        fn name(&self) -> &'static str {
-            "forever"
-        }
-
-        fn definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: self.name().to_string(),
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }
-        }
-
-        async fn execute(&self, _arguments: Value) -> Result<ToolResult, ToolError> {
-            std::future::pending().await
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn default_execute_cancellable_drops_execute_on_cancellation() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-
-        let result = clock::within(
-            std::time::Duration::from_secs(2),
-            ForeverTool.execute_cancellable(serde_json::json!({}), &cancel),
-        )
-        .await
-        .expect("an already-cancelled token must not wait for execute() at all")
-        .expect("cancellation reports Ok, not a ToolError");
-
-        assert!(!result.is_error, "cancellation is not a failure");
-        assert_eq!(result.output, CANCELLED_WHILE_RUNNING);
-    }
-
-    #[test]
-    fn plausible_tool_name_accepts_real_tool_names() {
-        for name in [
-            "write_file",
-            "read_file",
-            "skill_activate",
-            "exec",
-            "a",
-            "a-b_c9",
-        ] {
-            assert!(is_plausible_tool_name(name), "'{name}' should be plausible");
-        }
-    }
-
-    #[test]
-    fn plausible_tool_name_rejects_leaked_glm_markup() {
-        // Mirrors the malformed name Fireworks/vLLM have shipped for GLM tool
-        // calls when the model's native `<arg_key>`/`<arg_value>` template
-        // syntax isn't cleanly parsed into structured `tool_calls`.
-        let name = "write_file\tcontent</arg_key><arg_value># Hello";
-        assert!(
-            !is_plausible_tool_name(name),
-            "leaked markup should be rejected"
-        );
-    }
-
-    #[test]
-    fn plausible_tool_name_rejects_empty_and_oversized() {
-        assert!(!is_plausible_tool_name(""), "empty name should be rejected");
-        let too_long = "a".repeat(MAX_PLAUSIBLE_TOOL_NAME_LEN + 1);
-        assert!(
-            !is_plausible_tool_name(&too_long),
-            "oversized name should be rejected"
-        );
-        let exactly_max = "a".repeat(MAX_PLAUSIBLE_TOOL_NAME_LEN);
-        assert!(
-            is_plausible_tool_name(&exactly_max),
-            "max-length name should be accepted"
-        );
-    }
-
-    #[test]
-    fn plausible_tool_name_rejects_whitespace_and_angle_brackets() {
-        for name in ["write file", "write\nfile", "<tool_call>", "write_file>"] {
-            assert!(!is_plausible_tool_name(name), "'{name}' should be rejected");
-        }
-    }
-
-    #[test]
-    fn truncate_tool_name_leaves_short_names_untouched() {
-        assert_eq!(truncate_tool_name_for_display("write_file"), "write_file");
-    }
-
-    #[test]
-    fn truncate_tool_name_caps_long_names() {
-        let raw = "x".repeat(200);
-        let truncated = truncate_tool_name_for_display(&raw);
-        assert_eq!(
-            truncated.chars().count(),
-            TOOL_NAME_DISPLAY_LIMIT + 3,
-            "should keep the limit plus the ellipsis"
-        );
-        assert!(truncated.ends_with("..."), "should be marked as truncated");
     }
 }

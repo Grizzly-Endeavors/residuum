@@ -15,7 +15,7 @@ use crate::bus::session::{MAIN_ADDRESS, SessionCategory};
 use crate::hub::team::{TeamTarget, parse_team_address};
 use crate::inference::ToolDefinition;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Why an `artifact` session's message to `main` is refused: its work

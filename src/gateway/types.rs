@@ -247,6 +247,10 @@ pub(crate) struct AgentRuntime {
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
+    /// What main's tool registry injected into its tools at registration,
+    /// so a reload that re-registers one of them (the timezone tools)
+    /// injects the same handles.
+    pub tool_injections: crate::tools::registration::RegistryInjections,
     /// `Arc`-shared with the post-turn background worker (see
     /// `crate::gateway::post_turn`) so an automatic observe cycle's LLM call
     /// can run off the event loop while a config reload still safely swaps

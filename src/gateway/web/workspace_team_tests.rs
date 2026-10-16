@@ -841,7 +841,7 @@ async fn agent_only_actions_keep_the_workspace_checkpoint_shape() {
 // ── Restore and undo go through the team write coordinator ──────────
 
 async fn tool_call(
-    tools: &crate::tools::ToolRegistry,
+    tools: &crate::agent::ToolRegistry,
     name: &str,
     args: Value,
 ) -> crate::inference::ToolResult {

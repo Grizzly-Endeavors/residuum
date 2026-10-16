@@ -6,7 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{Tool, publish_notice, require_str};
+use super::{publish_notice, require_str};
+use crate::agent::Tool;
 use crate::agent_keys::{AgentKeyError, KeyCreator, SharedAgentKeys};
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};

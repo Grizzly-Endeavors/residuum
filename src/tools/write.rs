@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::Tool;
 use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
+use crate::agent::Tool;
 use crate::diagnostics_dispatch::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
 use crate::inference::{ToolError, ToolResult};

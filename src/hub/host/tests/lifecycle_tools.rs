@@ -3,8 +3,8 @@
 //! nothing in the user inbox.
 
 use super::*;
+use crate::agent::Tool as _;
 use crate::inference::ToolError;
-use crate::tools::Tool as _;
 use crate::tools::agent_lifecycle::{AgentCreateTool, AgentDeleteTool};
 
 fn lifecycle_tools(hub: &Fixture, as_agent: &str) -> (AgentCreateTool, AgentDeleteTool) {

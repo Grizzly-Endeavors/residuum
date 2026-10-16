@@ -10,7 +10,7 @@ use crate::bus::{
 use crate::config::WEB_UI_ENDPOINT;
 use crate::inference::ToolDefinition;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Error returned to a session that tries to reach the owner directly.

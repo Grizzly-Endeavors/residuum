@@ -8,7 +8,7 @@ use tracing::debug;
 
 use crate::inference::ToolDefinition;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Default number of search results to return.

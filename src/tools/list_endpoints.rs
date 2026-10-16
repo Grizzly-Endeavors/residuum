@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::bus::EndpointRegistry;
 use crate::inference::ToolDefinition;
 
-use super::Tool;
+use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
 
 /// Tool for listing available endpoints grouped by category.

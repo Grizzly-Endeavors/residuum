@@ -27,6 +27,7 @@ use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::notify::channels::InboxChannel;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
+use crate::tools::registration::RegistryInjections;
 use crate::util::FatalError;
 use crate::workspace::bootstrap::ensure_workspace_labeled;
 use crate::workspace::identity::IdentityFiles;
@@ -41,6 +42,9 @@ pub(crate) struct GatewayComponents {
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
+    /// What main's registry injected into its tools at registration, for
+    /// the reloads that re-register one of them.
+    pub tool_injections: RegistryInjections,
     pub observer: Observer,
     pub merge_writer: Arc<MemoryMergeWriter>,
     pub subconscious: Arc<crate::subconscious::Subconscious>,
@@ -555,7 +559,7 @@ async fn init_mcp_servers(
 
 /// The MCP server entry for a standalone web search backend, or `None` for
 /// no backend or `"ollama"` (a native tool, not an MCP server — see
-/// `ToolRegistry::register_ollama_web_search_tool`).
+/// `tools::registration::register_ollama_web_search_tool`).
 fn web_search_mcp_entry(
     backend: &crate::config::StandaloneBackendConfig,
 ) -> Option<crate::mcp::types::McpServerEntry> {
@@ -817,8 +821,10 @@ async fn build_tools_and_agent(
     inputs: ToolsAndAgentInputs<'_>,
 ) -> (
     Agent,
+    RegistryInjections,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
+    let tool_injections = tools::main_registry_injections(&inputs.tool_deps);
     let (tools, output_topic_override_tx) = tools::init_tool_registry(
         inputs.cfg,
         inputs.layout,
@@ -854,7 +860,7 @@ async fn build_tools_and_agent(
     .await;
     agent.set_team(inputs.tool_deps.agent_messenger.team().clone());
 
-    (agent, output_topic_override_tx)
+    (agent, tool_injections, output_topic_override_tx)
 }
 
 /// Inputs to [`build_main_agent`], gathered because building the main agent
@@ -898,6 +904,7 @@ async fn build_main_agent(
     inputs: MainAgentInputs<'_>,
 ) -> (
     Agent,
+    RegistryInjections,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
     // Main's current-turn hop counter, created once and shared between the
@@ -981,15 +988,18 @@ struct AgentInitInputs<'a> {
     config_reload_tracker: &'a crate::tools::SharedConfigReloadTracker,
 }
 
+/// What [`build_spawn_context_and_agent`] builds.
+struct SpawnContextAndAgent {
+    spawn_context: Arc<SpawnContext>,
+    agent: Agent,
+    /// What main's registry injected into its tools at registration.
+    tool_injections: RegistryInjections,
+    output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
+}
+
 /// Build the `SpawnContext` every session forks from, and the main agent
 /// itself, from one bundle of inputs shared between the two.
-async fn build_spawn_context_and_agent(
-    inputs: AgentInitInputs<'_>,
-) -> (
-    Arc<SpawnContext>,
-    Agent,
-    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
-) {
+async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnContextAndAgent {
     let lifecycle =
         crate::tools::LifecycleAccess::new(inputs.directory.clone(), inputs.cfg.agent_name.clone());
     // One live catalog shared by every session and every tool that checks an
@@ -1027,7 +1037,7 @@ async fn build_spawn_context_and_agent(
         model_catalog: &model_catalog,
     });
 
-    let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
+    let (agent, tool_injections, output_topic_override_tx) = build_main_agent(MainAgentInputs {
         cfg: inputs.cfg,
         hub_dir: inputs.hub_dir,
         layout: inputs.layout,
@@ -1057,7 +1067,12 @@ async fn build_spawn_context_and_agent(
     })
     .await;
 
-    (spawn_context, agent, output_topic_override_tx)
+    SpawnContextAndAgent {
+        spawn_context,
+        agent,
+        tool_injections,
+        output_topic_override_tx,
+    }
 }
 
 /// The shared path policy for file tools, with the config-derived write blocks.
@@ -1354,46 +1369,46 @@ pub(crate) async fn initialize(
     )
     .await;
 
-    let (spawn_context, agent, output_topic_override_tx) =
-        build_spawn_context_and_agent(AgentInitInputs {
-            cfg,
-            hub_dir: &hub.config_dir,
-            layout: &layout,
-            tz,
-            http_client: http.clone(),
-            mem: &mem,
-            net: &infra.net,
-            session_runtime: &session_runtime,
-            session_registry: &sess.session_registry,
-            session_observer: &sess.session_observer,
-            merge_writer: &sess.merge_writer,
-            action_store: &sess.action_store,
-            action_notify: &sess.action_notify,
-            skill_state: &sess.skill_state,
-            publisher,
-            agent_messenger: &sess.agent_messenger,
-            tracing_service: &shared.tracing_service,
-            tracing_client_context: &infra.tracing_client_context,
-            path_policy: &infra.path_policy,
-            auto_mode: &infra.auto_mode,
-            a2a_hub: &infra.a2a_hub,
-            a2a_tracker: &infra.a2a_tracker,
-            checkpoints: &checkpoints,
-            directory: &shared.directory,
-            identity,
-            provider: providers.provider,
-            options: providers.options,
-            degradations: &mut degradations,
-            config_reload_tracker: &infra.config_reload_tracker,
-        })
-        .await;
+    let main = build_spawn_context_and_agent(AgentInitInputs {
+        cfg,
+        hub_dir: &hub.config_dir,
+        layout: &layout,
+        tz,
+        http_client: http.clone(),
+        mem: &mem,
+        net: &infra.net,
+        session_runtime: &session_runtime,
+        session_registry: &sess.session_registry,
+        session_observer: &sess.session_observer,
+        merge_writer: &sess.merge_writer,
+        action_store: &sess.action_store,
+        action_notify: &sess.action_notify,
+        skill_state: &sess.skill_state,
+        publisher,
+        agent_messenger: &sess.agent_messenger,
+        tracing_service: &shared.tracing_service,
+        tracing_client_context: &infra.tracing_client_context,
+        path_policy: &infra.path_policy,
+        auto_mode: &infra.auto_mode,
+        a2a_hub: &infra.a2a_hub,
+        a2a_tracker: &infra.a2a_tracker,
+        checkpoints: &checkpoints,
+        directory: &shared.directory,
+        identity,
+        provider: providers.provider,
+        options: providers.options,
+        degradations: &mut degradations,
+        config_reload_tracker: &infra.config_reload_tracker,
+    })
+    .await;
 
     publish_degradation_notice(publisher, &degradations).await;
 
     Ok(GatewayComponents {
         layout,
         tz,
-        agent,
+        agent: main.agent,
+        tool_injections: main.tool_injections,
         observer: providers.observer,
         merge_writer: sess.merge_writer,
         subconscious,
@@ -1413,10 +1428,10 @@ pub(crate) async fn initialize(
         session_store: sess.session_store,
         agent_messenger: sess.agent_messenger,
         conversation_router: sess.conversation_router,
-        spawn_context,
+        spawn_context: main.spawn_context,
         path_policy: infra.path_policy,
         team: shared.team.clone(),
-        output_topic_override_tx,
+        output_topic_override_tx: main.output_topic_override_tx,
         a2a_hub: infra.a2a_hub,
         a2a_tracker: infra.a2a_tracker,
         checkpoints,
