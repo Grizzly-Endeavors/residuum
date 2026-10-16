@@ -33,7 +33,7 @@ use crate::bus::control::{ServerCommand, StopRequest};
 use crate::bus::conversations::{ConversationSource, KnownConversation};
 use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
-use crate::gateway::event_loop::AdapterSenders;
+use crate::interfaces::AdapterSenders;
 use crate::interfaces::context_buffer::ContextBuffer;
 use crate::interfaces::reply_targets::ReplyTargets;
 use crate::remote_access::TEAMS_MESSAGES_PATH;

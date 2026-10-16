@@ -11,7 +11,6 @@ pub(crate) mod reply_targets;
 pub mod teams;
 pub mod telegram;
 pub mod webhook;
-pub mod websocket;
 
 use std::path::Path;
 
@@ -52,6 +51,21 @@ impl BaseSubscribers {
             turn_error: bus_handle.subscribe(topics::Endpoint(ep)).await?,
         })
     }
+}
+
+/// Bundled senders for spawning a chat adapter (Discord or Telegram).
+#[derive(Clone)]
+pub struct AdapterSenders {
+    pub publisher: crate::bus::Publisher,
+    pub bus_handle: BusHandle,
+    pub reload: crate::bus::control::ReloadSender,
+    pub command: tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
+    pub stop: tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
+    /// Looked up when a `/stop` command targets a conversation session
+    /// rather than main — see [`dispatch_stop_request`].
+    pub session_registry: std::sync::Arc<SessionRegistry>,
+    /// Where the adapter registers the conversations it can reach.
+    pub(crate) conversations: crate::bus::conversations::ConversationDirectory,
 }
 
 /// Tell `main` that a conversation session's turn output could not be
@@ -238,13 +252,13 @@ async fn start_multitask(
 
 /// Stop a named session — `/stop <name>` — through the same registry stop
 /// path as the web UI's per-session stop button
-/// ([`crate::gateway::sessions::stop_session`]): a running turn is
+/// ([`crate::background::registry::stop_named_session`]): a running turn is
 /// interrupted and an idle session is ended, so a session listed by
 /// `/sessions` can always be stopped by name.
 fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
-    match crate::gateway::sessions::stop_session(session_registry, name) {
+    match crate::background::registry::stop_named_session(session_registry, name) {
         Ok(()) => format!("stopping session '{name}'."),
-        Err(e) => e.message,
+        Err(e) => e.to_string(),
     }
 }
 

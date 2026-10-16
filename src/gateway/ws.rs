@@ -15,8 +15,8 @@ use crate::bus::origin::MessageOrigin;
 use crate::config::WEB_UI_ENDPOINT;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
+use crate::gateway::websocket::subscriber::WsSubscribers;
 use crate::inference::ImageData;
-use crate::interfaces::websocket::subscriber::WsSubscribers;
 use crate::workbench::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
