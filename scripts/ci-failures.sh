@@ -16,9 +16,11 @@
 #        `just ci-failures` runs it for the current branch.
 #
 # touched          a file the failure names is in the change: the test's file, and
-#                  for a Rust failure also the file its panic was raised in. The
-#                  diff is against the merge base with origin/main, or for a release
-#                  tag the diff since the previous release tag
+#                  for a Rust failure also the file its panic was raised in. A test
+#                  of an integration module (tests/it) is also touched when the change
+#                  reaches a package the module's covers line names. The diff is
+#                  against the merge base with origin/main, or for a release tag the
+#                  diff since the previous release tag
 # seen elsewhere   the same failure was in a failed run on another branch or tag
 #                  in the last 14 days. The search covers the 150 most recent
 #                  completed runs, and a run that failed and was then rerun to
@@ -409,14 +411,66 @@ module_files() { # a::b::c::test -> the repo files that hold module a::b::c
         # An integration test is named by its module in tests/it/, and a standalone
         # test target is tests/<name>.rs. Both can exist for one name, so every
         # candidate that exists counts.
+        # A top-level tests/it module is a file or a directory with a mod.rs; a
+        # nested path can also name a file of that directory.
         if [[ -n "${repo_files[tests/it/${segs[0]}.rs]:-}" ]]; then
             out="$out tests/it/${segs[0]}.rs"
+        fi
+        if [[ -n "${repo_files[tests/it/${segs[0]}/mod.rs]:-}" ]]; then
+            out="$out tests/it/${segs[0]}/mod.rs"
+        fi
+        if [[ -n "${repo_files[tests/it/${segs[0]}/${segs[1]}.rs]:-}" ]]; then
+            out="$out tests/it/${segs[0]}/${segs[1]}.rs"
         fi
         if [[ -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
             out="$out tests/${segs[0]}.rs"
         fi
     fi
     echo "${out# }"
+}
+
+# The tests/it file of the module that holds a test named by its path: the top-level
+# module a::b::test is in, as tests/it/a.rs or tests/it/a/mod.rs. Prints nothing for
+# a bare name or a member crate's test.
+it_module_file() { # a::b::test -> tests/it/a.rs or tests/it/a/mod.rs
+    local name="$1" seg0 cand
+    if [[ "$name" != *::* || "$name" =~ ^residuum_ ]]; then
+        return 0
+    fi
+    seg0="${name%%::*}"
+    for cand in "tests/it/$seg0.rs" "tests/it/$seg0/mod.rs"; do
+        if [[ -n "${repo_files[$cand]:-}" ]]; then
+            echo "$cand"
+            return 0
+        fi
+    done
+}
+
+# The packages a tests/it module's covers line names, one per line, read at the
+# commit under test. A module without a covers line names none.
+module_covers() { # tests/it file -> package names
+    local file="$1" content line
+    content="$(git show "$sha:$file" 2>/dev/null)" || content=""
+    line="$(awk '/^\/\/! covers:/ { sub(/^\/\/! covers: */, ""); print; exit }' <<<"$content")"
+    tr ',' '\n' <<<"$line" | sed 's/^ *//; s/ *$//' | awk 'NF'
+}
+
+# The package a changed path belongs to: crates/<dir>/ is residuum-<dir>, and any
+# other path takes the package of the longest pending-crates.txt line that is a
+# prefix of it, or residuum when no line is.
+package_of() { # path -> package
+    local path="$1" best_len=0 best_pkg=residuum pattern pkg
+    if [[ "$path" =~ ^crates/([^/]+)/ ]]; then
+        echo "residuum-${BASH_REMATCH[1]}"
+        return 0
+    fi
+    while read -r pattern pkg; do
+        if [[ -n "$pattern" && "$path" == "$pattern"* && ${#pattern} -gt $best_len ]]; then
+            best_len=${#pattern}
+            best_pkg="$pkg"
+        fi
+    done <<<"$pending_lines"
+    echo "$best_pkg"
 }
 
 print_messages() { # messages indent
@@ -431,6 +485,14 @@ print_messages() { # messages indent
         fi
     done
 }
+
+# The packages the change touches, for the covers check. The pending-crates map is
+# read at the commit under test; a commit without one maps every root path to residuum.
+declare -A changed_pkgs=()
+pending_lines="$(git show "$sha:scripts/pending-crates.txt" 2>/dev/null || true)"
+for file in "${!changed[@]}"; do
+    changed_pkgs["$(package_of "$file")"]=1
+done
 
 if [[ "$changed_known" == yes ]]; then
     diff_text="$changed_count files changed against ${base_desc}"
@@ -528,6 +590,19 @@ while IFS= read -r run_line; do
                         break
                     fi
                 done
+                # An it test whose module is not edited is still touched when the
+                # change reaches a package the module's covers line names.
+                if [[ "$touched" == no ]]; then
+                    it_file="$(it_module_file "$title")"
+                    if [[ -n "$it_file" ]]; then
+                        while read -r covered; do
+                            if [[ -n "${changed_pkgs[$covered]:-}" ]]; then
+                                touched=yes
+                                break
+                            fi
+                        done < <(module_covers "$it_file")
+                    fi
+                fi
             fi
             seen="$(seen_on "$key")"
             flake=no
