@@ -79,7 +79,7 @@ pub enum HubExit {
 /// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`
 /// pends forever — graceful shutdown is handled via the HTTP `/api/hub/shutdown` endpoint
 /// or the cross-platform Ctrl+C handler instead.
-pub struct TermSignal {
+struct TermSignal {
     #[cfg(unix)]
     inner: tokio::signal::unix::Signal,
 }
@@ -91,7 +91,7 @@ impl TermSignal {
     ///
     /// Returns an I/O error if the signal handler cannot be registered.
     #[cfg(unix)]
-    pub fn new() -> std::io::Result<Self> {
+    fn new() -> std::io::Result<Self> {
         let inner = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         Ok(Self { inner })
     }
@@ -99,27 +99,20 @@ impl TermSignal {
     /// Create the termination signal. Nothing to register on this platform.
     #[cfg(not(unix))]
     #[must_use]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {}
     }
 
     /// Wait for the termination signal. On non-Unix platforms this never resolves.
     #[cfg(unix)]
-    pub async fn recv(&mut self) {
+    async fn recv(&mut self) {
         self.inner.recv().await;
     }
 
     /// Wait for the termination signal. On non-Unix platforms this never resolves.
     #[cfg(not(unix))]
-    pub async fn recv(&mut self) {
+    async fn recv(&mut self) {
         std::future::pending::<()>().await;
-    }
-}
-
-#[cfg(not(unix))]
-impl Default for TermSignal {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

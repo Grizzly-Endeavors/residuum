@@ -27,10 +27,4 @@ The file lives at `src/tools/TOOLS.md`.
 
   The reverse also happens: a tool that only makes sense for a session, never for main (`a2a_task_update`, registered only for sessions started from the `a2a` endpoint), goes in `SESSION_ONLY_TOOLS` next to `MAIN_ONLY_TOOLS` in the same test file, with the same kind of comment explaining why main doesn't get it.
 
-  `tools::main_tools::tests::session_registry_matches_main_minus_documented_allowlist`
-  enforces both directions: it builds both registries from equivalent config
-  (every optional tool gate turned on) and asserts the session registry's
-  tool names equal main's, minus `MAIN_ONLY_TOOLS` and plus
-  `SESSION_ONLY_TOOLS`. Forgetting to wire a new tool into one of the two
-  surfaces, or into the matching allowlist, fails this test instead of
-  drifting silently.
+  `tools::main_tools::tests::session_registry_matches_main_minus_documented_allowlist` enforces both directions: it builds both registries from equivalent config (every optional tool gate turned on) and asserts the session registry's tool names equal main's, minus `MAIN_ONLY_TOOLS` and plus `SESSION_ONLY_TOOLS`. Forgetting to wire a new tool into one of the two surfaces, or into the matching allowlist, fails this test instead of drifting silently.

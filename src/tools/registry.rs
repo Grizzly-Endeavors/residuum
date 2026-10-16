@@ -98,15 +98,16 @@ impl SessionToolFactory for SessionTools {
     /// Includes every tool available to the main agent, with the same config
     /// gating, except `switch_endpoint` — the one tool that stays main-only,
     /// because it redirects main's background-turn output and is meaningless
-    /// for a session. `tools::main_tools::tests::session_registry_matches_main_minus_documented_allowlist`
-    /// enforces this: it builds both registries from equivalent config and
-    /// asserts the session registry's tool names equal main's minus that one
-    /// documented exclusion, so a tool added to one registration surface but
-    /// not the other fails the build instead of drifting silently.
+    /// for a session. The parity test `session_registry_matches_main_minus_documented_allowlist`
+    /// in `src/tools/main_tools.rs`'s tests enforces this: it builds both
+    /// registries from equivalent config and asserts the session registry's
+    /// tool names equal main's minus that one documented exclusion, so a tool
+    /// added to one registration surface but not the other fails the build
+    /// instead of drifting silently.
     ///
     /// `scope.conversation_target` gates `a2a_task_update`, registered only
-    /// when its endpoint is `"a2a"` (see `SESSION_ONLY_TOOLS` in
-    /// `tools::main_tools`). No tool reads `scope.trigger`.
+    /// when its endpoint is `"a2a"` (see `SESSION_ONLY_TOOLS` in the same
+    /// test module). No tool reads `scope.trigger`.
     fn build(&self, scope: SessionToolScope) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.set_agent_keys(Arc::clone(&self.agent_keys));
