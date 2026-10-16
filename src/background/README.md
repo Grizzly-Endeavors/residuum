@@ -201,7 +201,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`crate::tools`** — `build_subagent_registry`, `PathPolicy`, `FileTracker`. Each session gets a fresh registry and `FileTracker`.
 - **`crate::workspace`** — `IdentityFiles`.
 - **`crate::bus`** — `EventTrigger`, `SessionAddress`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`, `AgentMessageEvent`, `MessageEvent`, `Publisher`, `topics`.
-- **`crate::interfaces::types`** — `MessageOrigin`, for the `MessageEvent` `AgentMessenger` publishes to main.
+- **`crate::bus::origin`** — `MessageOrigin`, for the `MessageEvent` `AgentMessenger` publishes to main.
 - **`tokio`** — `tokio::sync::{Semaphore, Mutex, Notify, mpsc}`, `tokio_util::sync::CancellationToken`.
 - **`chrono`, `chrono_tz`** — timestamps throughout; timezone conversion for `AgentResultEvent`.
 - **`anyhow`**, **`serde_json`/`serde`** — error handling and (de)serialization of `RunRecord`.

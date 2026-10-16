@@ -9,6 +9,9 @@
 /// posts to the web with `send_message`, files included.
 pub const WEB_UI_ENDPOINT: &str = "ws";
 
+/// Endpoint and interface name for Teams on the bus.
+pub const TEAMS_ENDPOINT: &str = "teams";
+
 /// Default base URL for the Anthropic API.
 pub(super) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 

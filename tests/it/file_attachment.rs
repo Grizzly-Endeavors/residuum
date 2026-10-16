@@ -93,7 +93,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let att = residuum::interfaces::attachment::FileAttachment {
+        let att = residuum::bus::attachment::FileAttachment {
             path: file_path.clone(),
             filename: "photo.jpg".to_string(),
             mime_type: "image/jpeg".to_string(),

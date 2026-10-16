@@ -904,12 +904,12 @@ mod tests {
         let inbound = MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: Some(sample_sender()),
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    kind: crate::bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,
@@ -1007,12 +1007,12 @@ mod tests {
         tx.send(Interrupt::UserMessage(MessageEvent {
             id: "m2".to_string(),
             content: "any updates?".to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: Some(sample_sender()),
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    kind: crate::bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,

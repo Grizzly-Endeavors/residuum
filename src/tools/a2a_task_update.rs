@@ -111,7 +111,7 @@ async fn build_artifact(
     let part = if let Ok(text) = String::from_utf8(bytes.clone()) {
         a2a::Part::text(text).with_filename(filename.clone())
     } else {
-        let media_type = crate::interfaces::attachment::detect_mime_type(&resolved);
+        let media_type = crate::bus::attachment::detect_mime_type(&resolved);
         a2a::Part::raw(bytes)
             .with_filename(filename.clone())
             .with_media_type(media_type)

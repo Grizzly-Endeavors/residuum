@@ -10,7 +10,9 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::interfaces::attachment::FileAttachment;
+use crate::bus::attachment::FileAttachment;
+
+pub mod attachment;
 
 /// Workspace-root-relative directory that user inbox attachments are copied into,
 /// one subdirectory per item ID. Mirrors `WorkspaceLayout::user_inbox_attachments_dir`
@@ -80,7 +82,7 @@ pub async fn resolve_attachments(
         match tokio::fs::metadata(&path).await {
             Ok(meta) => resolved.push(InboxAttachment {
                 filename: file_name.to_string(),
-                mime_type: crate::interfaces::attachment::detect_mime_type(&path),
+                mime_type: crate::bus::attachment::detect_mime_type(&path),
                 size: meta.len(),
                 url: format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
             }),

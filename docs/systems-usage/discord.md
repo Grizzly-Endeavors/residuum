@@ -81,4 +81,4 @@ Changing any `[discord]` value restarts the Discord connection on reload.
 
 ## Code
 
-`src/interfaces/discord/`: `mod.rs` (connection, shared state, reply routing), `handler.rs` (inbound messages and slash commands), `channels.rs` (server channel labels, mention handling, conversation listing), `subscriber.rs` (outbound delivery). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Telegram and Teams; the directory `list_conversations` reads is `src/interfaces/conversations.rs`. The unmentioned-message buffer is `src/interfaces/context_buffer.rs`, shared with Telegram and Teams.
+`src/interfaces/discord/`: `mod.rs` (connection, shared state, reply routing), `handler.rs` (inbound messages and slash commands), `channels.rs` (server channel labels, mention handling, conversation listing), `subscriber.rs` (outbound delivery). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Telegram and Teams; the directory `list_conversations` reads is `src/bus/conversations.rs`. The unmentioned-message buffer is `src/interfaces/context_buffer.rs`, shared with Telegram and Teams.

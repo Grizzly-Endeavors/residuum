@@ -4,9 +4,9 @@
 
 use super::agent_watch::agent_bus;
 use super::*;
+use crate::bus::origin::MessageOrigin;
 use crate::bus::{MessageEvent, topics};
 use crate::inference::MessageSender;
-use crate::interfaces::types::MessageOrigin;
 
 type AgentSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

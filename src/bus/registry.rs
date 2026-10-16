@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::bus::conversations::ConversationDirectory;
 use crate::config::Config;
 use crate::config::WEB_UI_ENDPOINT;
-use crate::interfaces::conversations::ConversationDirectory;
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 use super::endpoint::EndpointCapabilities;
@@ -118,8 +118,8 @@ impl EndpointRegistry {
 
         if config.teams.is_some() {
             entries.push(EndpointEntry {
-                id: EndpointId::from(crate::interfaces::teams::ENDPOINT),
-                topic: TopicId::Endpoint(EndpointName::from(crate::interfaces::teams::ENDPOINT)),
+                id: EndpointId::from(crate::config::TEAMS_ENDPOINT),
+                topic: TopicId::Endpoint(EndpointName::from(crate::config::TEAMS_ENDPOINT)),
                 capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Microsoft Teams".to_string(),
             });

@@ -1,29 +1,26 @@
 //! Communication interfaces between the user and the agent.
 
-pub mod attachment;
 pub(crate) mod boot_retry;
 pub(crate) mod chat_state;
 pub mod chunking;
 pub mod commands;
 pub(crate) mod context_buffer;
-pub(crate) mod conversations;
 pub mod discord;
 mod outbound;
 pub(crate) mod reply_targets;
 pub mod teams;
 pub mod telegram;
-pub mod types;
 pub mod webhook;
 pub mod websocket;
 
 use std::path::Path;
 
 use crate::background::registry::{SessionRegistry, conversation_session_address};
+use crate::bus::origin::{ConversationContext, ConversationKind};
 use crate::bus::{
     BusError, BusHandle, ConversationTypingEvent, EndpointName, ErrorEvent, IntermediateEvent,
     ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
 };
-use crate::interfaces::types::{ConversationContext, ConversationKind};
 
 /// Common subscriber fields shared by Discord, Telegram, and similar interfaces.
 pub(crate) struct BaseSubscribers {
@@ -291,7 +288,7 @@ fn format_elapsed(elapsed: chrono::Duration) -> String {
 
 /// Where a `/stop` command should be aimed, resolved from the conversation
 /// it was typed in — the same routing rule as an ordinary message (see
-/// [`crate::interfaces::types::MessageOrigin::belongs_to_main`]): the
+/// [`crate::bus::origin::MessageOrigin::belongs_to_main`]): the
 /// owner's own DM (or an interface with no conversation concept, i.e. the
 /// web UI) targets main, every other admitted conversation — a group chat,
 /// a channel, or a non-owner DM — targets that conversation's own session

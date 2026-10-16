@@ -36,10 +36,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::bus::origin::MessageOrigin;
 use crate::bus::{MessageEvent, PostTurnActivityEvent, PostTurnActivityKind, Publisher, topics};
 use crate::gateway::memory::{self, MemorySubsystems};
 use crate::inference::Message;
-use crate::interfaces::types::MessageOrigin;
 use crate::subconscious::{
     EvalPhase, Finding, LearnSignal, LearningState, Severity, Subconscious, TurnScratch,
 };

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::interfaces::attachment::FileAttachment;
+use crate::bus::attachment::FileAttachment;
 use crate::interfaces::outbound::ChatOutbound;
 
 use super::TeamsRuntime;

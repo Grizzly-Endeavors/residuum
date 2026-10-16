@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::bus::EndpointRegistry;
+use crate::bus::origin::ConversationKind;
 use crate::inference::ToolDefinition;
-use crate::interfaces::types::ConversationKind;
 
 use crate::agent::Tool;
 use crate::inference::{ToolError, ToolResult};
@@ -111,7 +111,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::interfaces::conversations::{ConversationSource, KnownConversation};
+    use crate::bus::conversations::{ConversationSource, KnownConversation};
 
     struct Fixed(anyhow::Result<Vec<KnownConversation>, String>);
 

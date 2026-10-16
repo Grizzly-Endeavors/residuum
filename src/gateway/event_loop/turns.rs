@@ -13,12 +13,12 @@ use crate::bus::{
     ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, TurnOrigin, topics,
 };
 
+use crate::bus::origin::{BACKGROUND_ENDPOINT, MessageOrigin, chat_interface_endpoint};
 use crate::config::Config;
 use crate::gateway::queued_messages::{CheckpointTake, QueuedMessages};
 use crate::gateway::types::{AgentRuntime, StopRequest};
 use crate::hub::activity::ActivityTracker;
 use crate::inference::ImageData;
-use crate::interfaces::types::{BACKGROUND_ENDPOINT, MessageOrigin, chat_interface_endpoint};
 use crate::memory::types::Visibility;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
@@ -2470,12 +2470,12 @@ mod tests {
         crate::bus::MessageEvent {
             id: "group-msg-1".to_string(),
             content: "anyone around?".to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: None,
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::GroupChat,
+                    kind: crate::bus::origin::ConversationKind::GroupChat,
                     is_owner: true,
                 }),
                 agent_sender: None,
@@ -2607,7 +2607,7 @@ mod tests {
         crate::bus::MessageEvent {
             id: "leftover-1".to_string(),
             content: content.to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "background".to_string(),
                 sender: None,
                 conversation: None,

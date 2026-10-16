@@ -99,7 +99,7 @@ impl AgentControl {
                 let event = crate::bus::MessageEvent {
                     id: format!("hub-{}", uuid::Uuid::new_v4()),
                     content,
-                    origin: crate::interfaces::types::MessageOrigin {
+                    origin: crate::bus::origin::MessageOrigin {
                         endpoint: "ws".to_string(),
                         sender: None,
                         conversation: None,

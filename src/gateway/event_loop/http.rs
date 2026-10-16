@@ -23,7 +23,7 @@ pub struct AdapterSenders {
     /// rather than main — see [`crate::interfaces::dispatch_stop_request`].
     pub session_registry: Arc<SessionRegistry>,
     /// Where the adapter registers the conversations it can reach.
-    pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
+    pub(crate) conversations: crate::bus::conversations::ConversationDirectory,
 }
 
 /// State bundle for the smaller, cross-cutting API routers, grouped so
