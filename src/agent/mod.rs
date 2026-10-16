@@ -6,6 +6,8 @@ mod core;
 pub mod hop;
 pub mod recent_messages;
 mod stream;
+#[cfg(test)]
+pub(crate) mod testing;
 mod think_tags;
 mod tool;
 pub(crate) mod turn;

@@ -1692,9 +1692,10 @@ async fn update_and_publish_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::testing::{BlockingTool, CountingTool, FixedOutputTool};
     use crate::inference::Role;
     use crate::testing::bus_wait;
-    use residuum_core::testing::gate::{Gate, GateEntry};
+    use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
@@ -2145,7 +2146,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn execute_tool_redacts_agent_key_values_before_recording() {
         let dir = tempfile::tempdir().unwrap();
@@ -2159,30 +2159,19 @@ mod tests {
         .await
         .unwrap();
 
+        // The tool hands back the raw key value, as a command that printed
+        // an exposed key would; only the registry's redactor stands between
+        // it and history.
         let mut tools = ToolRegistry::new();
         tools.set_agent_keys(keys);
-        crate::tools::registration::register_defaults(
-            &mut tools,
-            &crate::tools::registration::RegistryInjections::default(),
-            crate::tools::FileTracker::new_shared(),
-            crate::tools::PathPolicy::new_shared(),
-            crate::diagnostics_dispatch::DiagnosticsPaths {
-                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
-                // Must exist: this test's tool call actually runs `exec`,
-                // which now starts the spawned command here.
-                workspace_dir: dir.path().to_path_buf(),
-                hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
-            },
-            None,
-        );
+        tools.register(Box::new(FixedOutputTool::new(
+            "Authorization: Bearer sk-live-redactme42",
+        )));
 
         let tool_call = ToolCall {
             id: "call-1".to_string(),
-            name: "exec".to_string(),
-            arguments: serde_json::json!({
-                "command": "echo \"Authorization: Bearer $API_KEY\"",
-                "keys": ["api_key"]
-            }),
+            name: "fixed_output".to_string(),
+            arguments: serde_json::json!({}),
             server: None,
         };
 
@@ -2284,9 +2273,7 @@ mod tests {
 
         let runs = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&runs),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&runs))));
         tools.set_auto_mode(gate);
 
         let tool_call = ToolCall {
@@ -2357,43 +2344,6 @@ mod tests {
         let (runs, output) = run_counting_tool_under_auto_mode(None).await;
         assert_eq!(runs, 1, "an outage degrades to running unchecked");
         assert_eq!(output, "ok");
-    }
-
-    /// A tool whose `execute()` never resolves, so the default
-    /// `execute_cancellable()` can only return via its cancellation branch —
-    /// proving dispatch actually races against the stop token instead of
-    /// waiting for the tool to finish.
-    /// Holds at its gate, so a test can stop the turn while the tool runs.
-    struct BlockingTool {
-        entry: GateEntry,
-    }
-
-    impl BlockingTool {
-        fn new(gate: &Gate) -> Self {
-            Self {
-                entry: gate.entry(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl crate::agent::Tool for BlockingTool {
-        fn name(&self) -> &'static str {
-            "blocking_tool"
-        }
-
-        fn definition(&self) -> crate::inference::ToolDefinition {
-            crate::inference::ToolDefinition {
-                name: self.name().to_string(),
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }
-        }
-
-        async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
-            self.entry.pass().await;
-            std::future::pending().await
-        }
     }
 
     #[tokio::test]
@@ -2778,33 +2728,6 @@ mod tests {
             1,
             "a different tool name should reset the streak"
         );
-    }
-
-    /// Records how many times it actually ran, so a test can prove the
-    /// repeat-call guard's stop threshold prevented a call from executing
-    /// rather than merely producing a cancelled-looking result some other way.
-    struct CountingTool {
-        calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl crate::agent::Tool for CountingTool {
-        fn name(&self) -> &'static str {
-            "counting_tool"
-        }
-
-        fn definition(&self) -> crate::inference::ToolDefinition {
-            crate::inference::ToolDefinition {
-                name: self.name().to_string(),
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }
-        }
-
-        async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ToolResult::success("ok"))
-        }
     }
 
     /// Build a `counting_tool` call with the given id, always carrying the
@@ -3239,9 +3162,7 @@ mod tests {
     async fn execute_turn_counts_every_parallel_tool_call_in_a_batch() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
 
         let provider = ToolsThenTextProvider {
             served: AtomicBool::new(false),
@@ -3413,9 +3334,7 @@ mod tests {
     async fn repeat_guard_steers_at_the_configured_threshold_without_blocking_the_call() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
         let batch = vec![
             counting_tool_call("c1"),
             counting_tool_call("c2"),
@@ -3503,9 +3422,7 @@ mod tests {
     async fn repeat_guard_stops_at_the_configured_threshold_without_running_that_call() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
         let batch: Vec<ToolCall> = (0..7)
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
@@ -3590,9 +3507,7 @@ mod tests {
     async fn repeat_guard_disabled_never_steers_or_stops() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
         let batch: Vec<ToolCall> = (0..10)
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
@@ -3688,9 +3603,7 @@ mod tests {
     async fn execute_turn_stops_when_the_model_repeats_the_same_call_past_the_stop_threshold() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
 
         let provider = RepeatingCallProvider {
             completions: AtomicUsize::new(0),
@@ -3809,9 +3722,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::new(AtomicUsize::new(0)),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::new(AtomicUsize::new(0)))));
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3940,9 +3851,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::new(AtomicUsize::new(0)),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::new(AtomicUsize::new(0)))));
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();

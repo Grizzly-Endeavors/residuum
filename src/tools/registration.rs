@@ -614,4 +614,77 @@ mod tests {
             "should have exec tool"
         );
     }
+
+    fn ollama_backend() -> crate::config::StandaloneBackendConfig {
+        crate::config::StandaloneBackendConfig {
+            name: "ollama".to_string(),
+            api_key: "key".to_string(),
+            base_url: None,
+        }
+    }
+
+    #[test]
+    fn reload_ollama_web_search_tool_adds_it_when_backend_is_ollama() {
+        let mut registry = ToolRegistry::new();
+        assert!(
+            !registry
+                .tool_names()
+                .contains(&"ollama_web_search".to_string()),
+            "should start without the tool"
+        );
+
+        reload_ollama_web_search_tool(&mut registry, Some(&ollama_backend()));
+
+        assert!(
+            registry
+                .tool_names()
+                .contains(&"ollama_web_search".to_string()),
+            "should register the tool once the backend names ollama"
+        );
+    }
+
+    #[test]
+    fn reload_ollama_web_search_tool_removes_it_when_backend_changes_away() {
+        let mut registry = ToolRegistry::new();
+        reload_ollama_web_search_tool(&mut registry, Some(&ollama_backend()));
+        assert!(
+            registry
+                .tool_names()
+                .contains(&"ollama_web_search".to_string())
+        );
+
+        reload_ollama_web_search_tool(&mut registry, None);
+        assert!(
+            !registry
+                .tool_names()
+                .contains(&"ollama_web_search".to_string()),
+            "should remove the tool once no standalone backend is configured"
+        );
+    }
+
+    #[test]
+    fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
+        let mut registry = ToolRegistry::new();
+        register_defaults(
+            &mut registry,
+            &RegistryInjections::default(),
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            crate::diagnostics_dispatch::DiagnosticsPaths {
+                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
+                workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+                hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
+            },
+            None,
+        );
+
+        reload_ollama_web_search_tool(&mut registry, Some(&ollama_backend()));
+        reload_ollama_web_search_tool(&mut registry, None);
+
+        let names = registry.tool_names();
+        assert!(
+            names.contains(&"exec".to_string()),
+            "unrelated tools should survive reload"
+        );
+    }
 }

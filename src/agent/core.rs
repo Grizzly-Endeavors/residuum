@@ -464,13 +464,10 @@ impl Agent {
 )]
 mod tests {
     use super::*;
+    use crate::agent::testing::{CountingTool, EchoTool};
     use crate::bus;
     use crate::inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::tools::registration::{
-        RegistryInjections, register_defaults, reload_ollama_web_search_tool,
-    };
-    use crate::tools::{FileTracker, PathPolicy};
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -479,14 +476,12 @@ mod tests {
         McpRegistry::new_shared()
     }
 
-    /// Directories that don't correspond to any real strictly-parsed file,
-    /// so `register_defaults` in these tests gets no diagnostics behavior.
-    fn test_diagnostics_paths() -> crate::diagnostics_dispatch::DiagnosticsPaths {
-        crate::diagnostics_dispatch::DiagnosticsPaths {
-            config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
-            workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
-            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
-        }
+    /// A registry holding only the echo tool, for a turn that needs some
+    /// tool to call.
+    fn echo_registry() -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        registry
     }
 
     /// Create a test publisher and endpoint for bus-based tests.
@@ -684,23 +679,15 @@ mod tests {
 
     #[tokio::test]
     async fn tool_loop_then_text() {
-        let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let provider = MockProvider::new(vec![
             InferenceResponse::new(
                 String::new(),
                 vec![ToolCall {
                     id: "call_1".to_string(),
-                    name: "exec".to_string(),
-                    arguments: serde_json::json!({"command": "echo test"}),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({}),
                     server: None,
                 }],
             ),
@@ -746,15 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
-        let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -762,8 +741,8 @@ mod tests {
                 "Let me check that for you...".to_string(),
                 vec![ToolCall {
                     id: "call_1".to_string(),
-                    name: "exec".to_string(),
-                    arguments: serde_json::json!({"command": "echo test"}),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({}),
                     server: None,
                 }],
             ),
@@ -821,8 +800,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: format!("call_{i}"),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": format!("echo loop {i}")}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({"loop": i}),
                         server: None,
                     }],
                 )
@@ -830,15 +809,7 @@ mod tests {
             .collect();
         responses.push(InferenceResponse::new("done".to_string(), vec![]));
 
-        let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -888,23 +859,15 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: format!("call_{i}"),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo loop"}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({"loop": 0}),
                         server: None,
                     }],
                 )
             })
             .collect();
 
-        let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -1212,15 +1175,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
-        let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1231,8 +1186,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo test"}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({}),
                         server: None,
                     }],
                 ),
@@ -1295,15 +1250,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
-        let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        let registry = echo_registry();
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1313,8 +1260,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo test"}),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({}),
                         server: None,
                     }],
                 ),
@@ -1506,15 +1453,9 @@ mod tests {
         // Interrupt::Stopped queued alongside it is observed — proving a
         // stop mid-tool-execution doesn't sever the tool, only stops the
         // loop at its next checkpoint.
+        let tool_runs = Arc::new(AtomicUsize::new(0));
         let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
+        registry.register(Box::new(CountingTool::new(Arc::clone(&tool_runs))));
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
@@ -1523,8 +1464,8 @@ mod tests {
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
-                        name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo test"}),
+                        name: "counting_tool".to_string(),
+                        arguments: serde_json::json!({}),
                         server: None,
                     }],
                 ),
@@ -1576,6 +1517,11 @@ mod tests {
             call_count.load(Ordering::SeqCst),
             1,
             "the tool's model call runs, but the model is never called again after the stop"
+        );
+        assert_eq!(
+            tool_runs.load(Ordering::SeqCst),
+            1,
+            "the tool queued with the stop should run exactly once"
         );
         let messages = agent.messages_since(0);
         assert!(
@@ -2008,102 +1954,6 @@ mod tests {
         assert!(
             calls[0][0].content.contains("cached soul"),
             "system prompt should fall back to the cached soul snapshot"
-        );
-    }
-
-    fn test_agent(tools: ToolRegistry) -> Agent {
-        Agent::new(
-            Box::new(MockProvider::new(vec![])),
-            tools,
-            empty_mcp(),
-            IdentityFiles::default(),
-            AgentConfig {
-                options: CompletionOptions::default(),
-                tz: chrono_tz::UTC,
-                layout: None,
-            },
-            crate::agent::HopCounter::new(0),
-        )
-    }
-
-    #[test]
-    fn reload_ollama_web_search_tool_adds_it_when_backend_is_ollama() {
-        let mut agent = test_agent(ToolRegistry::new());
-        assert!(
-            !agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string()),
-            "should start without the tool"
-        );
-
-        let backend = crate::config::StandaloneBackendConfig {
-            name: "ollama".to_string(),
-            api_key: "key".to_string(),
-            base_url: None,
-        };
-        reload_ollama_web_search_tool(agent.tools_mut(), Some(&backend));
-
-        assert!(
-            agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string()),
-            "should register the tool once the backend names ollama"
-        );
-    }
-
-    #[test]
-    fn reload_ollama_web_search_tool_removes_it_when_backend_changes_away() {
-        let mut agent = test_agent(ToolRegistry::new());
-        let backend = crate::config::StandaloneBackendConfig {
-            name: "ollama".to_string(),
-            api_key: "key".to_string(),
-            base_url: None,
-        };
-        reload_ollama_web_search_tool(agent.tools_mut(), Some(&backend));
-        assert!(
-            agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string())
-        );
-
-        reload_ollama_web_search_tool(agent.tools_mut(), None);
-        assert!(
-            !agent
-                .tools
-                .tool_names()
-                .contains(&"ollama_web_search".to_string()),
-            "should remove the tool once no standalone backend is configured"
-        );
-    }
-
-    #[test]
-    fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
-        let mut registry = ToolRegistry::new();
-        register_defaults(
-            &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            test_diagnostics_paths(),
-            None,
-        );
-        let mut agent = test_agent(registry);
-
-        let backend = crate::config::StandaloneBackendConfig {
-            name: "ollama".to_string(),
-            api_key: "key".to_string(),
-            base_url: None,
-        };
-        reload_ollama_web_search_tool(agent.tools_mut(), Some(&backend));
-        reload_ollama_web_search_tool(agent.tools_mut(), None);
-
-        let names = agent.tools.tool_names();
-        assert!(
-            names.contains(&"exec".to_string()),
-            "unrelated tools should survive reload"
         );
     }
 }
