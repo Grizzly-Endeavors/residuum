@@ -10,8 +10,7 @@
 //! Other crates' tests (and the root's, through `test-support`) can use
 //! [`GatedModel::in_front_of`], [`GatedModel::uri`], [`GatedModel::gate`] and
 //! [`GatedProvider::new`]. Only inference's own tests can use
-//! `GatedModel::replying`, which answers with a fixed reply, and
-//! `GatedModel::calls`, which returns the calls the model recorded.
+//! `GatedModel::replying`, which answers with a fixed reply.
 
 use std::sync::Arc;
 
@@ -28,16 +27,6 @@ use crate::{
 };
 use residuum_core::testing::gate::{Gate, GateEntry};
 
-/// One call the model received.
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct RecordedCall {
-    pub(crate) method: Method,
-    /// The path and query.
-    pub(crate) target: String,
-    pub(crate) body: Bytes,
-}
-
 /// What the server does with a call once the gate lets it through.
 enum Answer {
     /// Forward it to this base URL and return what comes back.
@@ -50,20 +39,16 @@ enum Answer {
     Reply(String),
 }
 
+/// The state each call is answered from.
 struct Shared {
     entry: GateEntry,
     answer: Answer,
-    #[cfg(test)]
-    calls: std::sync::Mutex<Vec<RecordedCall>>,
 }
 
 /// A model server whose answers wait at a gate. Dropping it stops the server.
 pub struct GatedModel {
     uri: String,
     gate: Gate,
-    /// Read by `calls`; the server's own handle keeps the state alive.
-    #[cfg(test)]
-    shared: Arc<Shared>,
     task: JoinHandle<()>,
 }
 
@@ -97,24 +82,14 @@ impl GatedModel {
         let shared = Arc::new(Shared {
             entry: gate.entry(),
             answer,
-            #[cfg(test)]
-            calls: std::sync::Mutex::new(Vec::new()),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let uri = format!("http://{}", listener.local_addr().unwrap());
-        let app = axum::Router::new()
-            .fallback(answer_call)
-            .with_state(Arc::clone(&shared));
+        let app = axum::Router::new().fallback(answer_call).with_state(shared);
         let task = residuum_core::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        Self {
-            uri,
-            gate,
-            #[cfg(test)]
-            shared,
-            task,
-        }
+        Self { uri, gate, task }
     }
 
     /// The base URL to point a provider at.
@@ -127,12 +102,6 @@ impl GatedModel {
     #[must_use]
     pub fn gate(&self) -> &Gate {
         &self.gate
-    }
-
-    /// Every call received so far, recorded on arrival, before the gate.
-    #[cfg(test)]
-    pub(crate) fn calls(&self) -> Vec<RecordedCall> {
-        self.shared.calls.lock().unwrap().clone()
     }
 }
 
@@ -152,12 +121,6 @@ async fn answer_call(
     let target = uri
         .path_and_query()
         .map_or_else(|| uri.path().to_string(), ToString::to_string);
-    #[cfg(test)]
-    shared.calls.lock().unwrap().push(RecordedCall {
-        method: method.clone(),
-        target: target.clone(),
-        body: body.clone(),
-    });
     shared.entry.pass().await;
     match &shared.answer {
         #[cfg(test)]
@@ -291,12 +254,13 @@ mod tests {
         let (status, _) = wait::guarded("the held call's answer", held).await.unwrap();
         assert_eq!(status, 201);
 
-        let calls = model.calls();
-        assert_eq!(calls.len(), 2);
-        let held_call = calls.last().unwrap();
-        assert_eq!(held_call.method, Method::POST);
-        assert_eq!(held_call.target, "/chat/completions?model=m");
-        assert_eq!(held_call.body, Bytes::from_static(br#"{"n":2}"#));
+        let received = upstream.received_requests().await.unwrap();
+        assert_eq!(received.len(), 2);
+        let held_call = received.last().unwrap();
+        assert_eq!(held_call.method.to_string(), "POST");
+        assert_eq!(held_call.url.path(), "/chat/completions");
+        assert_eq!(held_call.url.query(), Some("model=m"));
+        assert_eq!(held_call.body, br#"{"n":2}"#.to_vec());
     }
 
     #[tokio::test]

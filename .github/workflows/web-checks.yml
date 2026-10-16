@@ -176,9 +176,16 @@ jobs:
 
       # How much CPU the shard had, whether its limit throttled it, and how
       # long the node kept it waiting: the suite's timing depends on all three.
+      # The table goes to the job summary and, between CI METRICS markers, to
+      # the job log (`gh run view <id> --log` reads it).
       - name: CPU report
         if: always()
-        run: scripts/ci-cpu-report.sh report | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          scripts/ci-cpu-report.sh report > "$RUNNER_TEMP/ci-metrics.md"
+          cat "$RUNNER_TEMP/ci-metrics.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '===== BEGIN CI METRICS (Web E2E shard ${{ matrix.shard }} of 4) ====='
+          cat "$RUNNER_TEMP/ci-metrics.md"
+          echo '===== END CI METRICS (Web E2E shard ${{ matrix.shard }} of 4) ====='
 
       - name: Upload Playwright report and traces
         if: always() && steps.web_e2e.outcome == 'failure'

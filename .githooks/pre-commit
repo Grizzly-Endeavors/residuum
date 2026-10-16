@@ -15,7 +15,6 @@
 set -uo pipefail
 
 RED='\033[0;31m'
-YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
@@ -148,13 +147,10 @@ restage "$STAGED_RUST"
 restage "$STAGED_WEB_FORMAT"
 
 if [ -n "$STAGED_MANIFEST" ]; then
-    if command -v cargo-deny >/dev/null 2>&1; then
-        echo "Auditing dependencies..."
-        cargo deny check || fail "ERROR: cargo deny found issues."
-    else
-        echo -e "${YELLOW}NOTE: cargo-deny not installed — skipping dependency audit.${NC}"
-        echo "      Install with: cargo install cargo-deny"
-    fi
+    command -v cargo-deny >/dev/null 2>&1 \
+        || fail "ERROR: cargo-deny is not installed, so the dependency audit of the staged manifest cannot run. Install it with: cargo install --locked cargo-deny"
+    echo "Auditing dependencies..."
+    cargo deny check || fail "ERROR: cargo deny found issues."
 fi
 
 if [ -n "$STAGED_CI_FAILURES" ]; then

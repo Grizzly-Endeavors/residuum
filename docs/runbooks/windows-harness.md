@@ -25,7 +25,7 @@ The guest is set up as follows:
 - A local administrator `dev` that logs on automatically at every boot, so a desktop session exists for toasts and screenshots.
 - OpenSSH server with PowerShell as the default shell, accepting only the generated key.
 - Automatic Windows Update and update reboots turned off; sleep, lock screen, and password expiry disabled.
-- Git, Node.js LTS, WinLibs MinGW-w64 GCC (msvcrt, with CMake and NASM), and Rust stable with the `x86_64-pc-windows-gnu` host toolchain, matching the release target. The gnu toolchain bundles a linker but no C compiler, and the build compiles C through the `cc` crate (bundled SQLite, zstd, ring), so GCC is required.
+- Git, Node.js LTS, WinLibs MinGW-w64 GCC (msvcrt), and Rust stable with the `x86_64-pc-windows-gnu` host toolchain, matching the release target. The gnu toolchain bundles a linker but no C compiler, and the build compiles C through the `cc` crate (bundled SQLite, zstd, ring), so GCC is required.
 - Defender exclusions for the harness directory, cargo, rustup, and the compiler.
 
 ## Daily use

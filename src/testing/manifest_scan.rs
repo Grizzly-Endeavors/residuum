@@ -368,7 +368,16 @@ mod tests {
         problems
     }
 
-    fn test_support_in_normal_dependency_problems(ws: &Workspace) -> Vec<String> {
+    /// Whether a `[features]` value turns on another package's `test-support`: `<package>/test-support` or `<package>?/test-support`.
+    fn forwards_test_support(value: &str, packages: &BTreeSet<String>) -> bool {
+        value.split_once('/').is_some_and(|(package, feature)| {
+            feature == "test-support" && packages.contains(package.trim_end_matches('?'))
+        })
+    }
+
+    /// Rule 4: a normal build never turns on `test-support`, through a dependency table or a `[features]` entry that lists another package's `test-support` or the crate's own.
+    fn test_support_in_normal_build_problems(ws: &Workspace) -> Vec<String> {
+        let packages: BTreeSet<String> = all(ws).map(package_name).collect();
         let mut problems = Vec::new();
         for manifest in all(ws) {
             for dep in dependencies_of(ws, manifest) {
@@ -377,6 +386,33 @@ mod tests {
                         "{}: `[{}]` enables `test-support` on `{}`; enable it in `[dev-dependencies]` only",
                         manifest.display, dep.table, dep.key
                     ));
+                }
+            }
+            let Some(features) = sub_table(&manifest.table, "features") else {
+                continue;
+            };
+            for (feature, values) in features {
+                // A crate's own `test-support` feature is the one entry that may turn on other members' `test-support`: rules 4 and 8 together keep it enabled only from `[dev-dependencies]`.
+                if feature == "test-support" {
+                    continue;
+                }
+                for value in values
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    if value == "test-support" {
+                        problems.push(format!(
+                            "{}: `[features]` entry `{feature}` enables the crate's own `test-support`; only a dev-dependency may turn it on",
+                            manifest.display
+                        ));
+                    } else if forwards_test_support(value, &packages) {
+                        problems.push(format!(
+                            "{}: `[features]` entry `{feature}` enables `{value}`; only a crate's own `test-support` feature may turn on another crate's `test-support`",
+                            manifest.display
+                        ));
+                    }
                 }
             }
         }
@@ -537,21 +573,81 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rule_4_test_support_stays_out_of_normal_dependencies() {
+    fn manifest_rule_4_test_support_stays_out_of_normal_builds() {
         let ws = Workspace::load();
-        assert_no_problems("rule 4", &test_support_in_normal_dependency_problems(&ws));
+        assert_no_problems("rule 4", &test_support_in_normal_build_problems(&ws));
 
         let rest = "[dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n\n[target.'cfg(unix)'.dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n";
         let leaks = member_toml("residuum-a", rest);
-        let broken = Workspace::from_toml(HAND_ROOT, &[("a", leaks.as_str())], &[]);
+        let dependency_leak = Workspace::from_toml(HAND_ROOT, &[("a", leaks.as_str())], &[]);
         assert_flagged(
             "rule 4",
-            &test_support_in_normal_dependency_problems(&broken),
+            &test_support_in_normal_build_problems(&dependency_leak),
             &[
                 "`[dependencies]` enables `test-support` on `residuum-core`",
                 "`[target.cfg(unix).dependencies]` enables `test-support` on `residuum-core`",
             ],
         );
+
+        let core = member_toml("residuum-core", "[features]\ntest-support = []\n");
+        let default_on = member_toml(
+            "residuum-a",
+            "[dependencies]\nresiduum-core = { workspace = true, optional = true }\n\n[features]\ndefault = [\"residuum-core/test-support\"]\n",
+        );
+        let default_leak = Workspace::from_toml(
+            HAND_ROOT,
+            &[("core", core.as_str()), ("a", default_on.as_str())],
+            &[],
+        );
+        assert_flagged(
+            "rule 4",
+            &test_support_in_normal_build_problems(&default_leak),
+            &[
+                "crates/a/Cargo.toml: `[features]` entry `default` enables `residuum-core/test-support`",
+            ],
+        );
+
+        let named_on = member_toml(
+            "residuum-a",
+            "[dependencies]\nresiduum-core = { workspace = true, optional = true }\n\n[features]\nfoo = [\"dep:residuum-core\", \"residuum-core?/test-support\"]\n",
+        );
+        let named_leak = Workspace::from_toml(
+            HAND_ROOT,
+            &[("core", core.as_str()), ("a", named_on.as_str())],
+            &[],
+        );
+        assert_flagged(
+            "rule 4",
+            &test_support_in_normal_build_problems(&named_leak),
+            &[
+                "crates/a/Cargo.toml: `[features]` entry `foo` enables `residuum-core?/test-support`",
+            ],
+        );
+
+        let self_on = member_toml(
+            "residuum-a",
+            "[features]\ntest-support = []\ndefault = [\"test-support\"]\nfoo = [\"test-support\"]\n",
+        );
+        let self_leak = Workspace::from_toml(HAND_ROOT, &[("a", self_on.as_str())], &[]);
+        assert_flagged(
+            "rule 4",
+            &test_support_in_normal_build_problems(&self_leak),
+            &[
+                "crates/a/Cargo.toml: `[features]` entry `default` enables the crate's own `test-support`",
+                "crates/a/Cargo.toml: `[features]` entry `foo` enables the crate's own `test-support`",
+            ],
+        );
+
+        let forwarding = member_toml(
+            "residuum-a",
+            "[dev-dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n\n[features]\ntest-support = [\"residuum-core/test-support\"]\n",
+        );
+        let passing = Workspace::from_toml(
+            HAND_ROOT,
+            &[("core", core.as_str()), ("a", forwarding.as_str())],
+            &[],
+        );
+        assert_no_problems("rule 4", &test_support_in_normal_build_problems(&passing));
     }
 
     #[test]

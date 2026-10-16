@@ -1535,7 +1535,7 @@ mod tests {
             result.thinking,
             vec![
                 ThinkingBlock::text("step by step reasoning")
-                    .from_origin(&ThinkingOrigin::new(ProviderApi::Ollama, "deepseek-r1"))
+                    .with_origin(&ThinkingOrigin::new(ProviderApi::Ollama, "deepseek-r1"))
             ],
             "thinking should be extracted from response"
         );
@@ -1719,7 +1719,7 @@ mod tests {
             server: None,
         };
         let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-4-5");
-        let own = |text: &str| ThinkingBlock::text(text).from_origin(&test_origin());
+        let own = |text: &str| ThinkingBlock::text(text).with_origin(&test_origin());
         let mut old = Message::assistant("old", Some(vec![call("c0")]));
         old.thinking = vec![own("old thinking")];
         let mut plain = Message::assistant("done", None);
@@ -1727,19 +1727,19 @@ mod tests {
         let mut current = Message::assistant("", Some(vec![call("c1")]));
         current.thinking = vec![
             own("current thinking"),
-            ThinkingBlock::text("readable text from another provider").from_origin(&anthropic),
+            ThinkingBlock::text("readable text from another provider").with_origin(&anthropic),
             ThinkingBlock::text("readable text saved with no origin"),
             ThinkingBlock {
                 text: "signed elsewhere".to_string(),
                 signature: Some("sig".to_string()),
                 ..ThinkingBlock::default()
             }
-            .from_origin(&anthropic),
+            .with_origin(&anthropic),
             ThinkingBlock {
                 redacted: Some("ENC".to_string()),
                 ..ThinkingBlock::default()
             }
-            .from_origin(&anthropic),
+            .with_origin(&anthropic),
         ];
         vec![
             Message::user("one"),
@@ -1795,7 +1795,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             response.thinking,
-            vec![ThinkingBlock::text("hmm").from_origin(&test_origin())],
+            vec![ThinkingBlock::text("hmm").with_origin(&test_origin())],
             "the block names Ollama and the model that answered"
         );
     }
@@ -1956,7 +1956,7 @@ mod tests {
         assert_eq!(streamed.content, "Hello w\u{f6}rld \u{1f600}", "text");
         assert_eq!(
             streamed.thinking,
-            vec![ThinkingBlock::text("Let me think.").from_origin(&test_origin())],
+            vec![ThinkingBlock::text("Let me think.").with_origin(&test_origin())],
             "thinking"
         );
         let ids: Vec<&str> = streamed.tool_calls.iter().map(|c| c.id.as_str()).collect();
@@ -2054,7 +2054,7 @@ mod tests {
         assert_eq!(result.content, "Answer", "no tags in the content");
         assert_eq!(
             result.thinking,
-            vec![ThinkingBlock::text("weigh it").from_origin(&test_origin())],
+            vec![ThinkingBlock::text("weigh it").with_origin(&test_origin())],
             "tagged text is the thinking"
         );
         assert_eq!(sink.text(), "Answer", "only the answer streams as text");

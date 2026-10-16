@@ -667,10 +667,9 @@ impl McpRegistry {
         self.resolve_tool(name)?.call_tool(name, args).await
     }
 
-    /// Mark a server as running (used in tests without a live client).
-    // `pub` (not `#[cfg(test)]`) because integration tests in tests/ need this.
-    #[doc(hidden)]
-    pub fn mark_running(&mut self, name: &str) {
+    /// Mark a server as running without a live client.
+    #[cfg(test)]
+    pub(crate) fn mark_running(&mut self, name: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
             server.status = McpStatus::Running;
         }
@@ -678,13 +677,13 @@ impl McpRegistry {
 
     /// Mark a server as stopped and remove it from tracking.
     #[cfg(test)]
-    pub fn mark_stopped(&mut self, name: &str) {
+    pub(crate) fn mark_stopped(&mut self, name: &str) {
         self.servers.retain(|s| s.name != name);
     }
 
     /// Mark a server as failed with a reason.
     #[cfg(test)]
-    pub fn mark_failed(&mut self, name: &str, reason: &str) {
+    pub(crate) fn mark_failed(&mut self, name: &str, reason: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
             server.status = McpStatus::Failed(reason.to_string());
         }
@@ -695,7 +694,7 @@ impl McpRegistry {
     /// Returns names of servers that were running or pending.
     /// Clients are dropped (child processes killed via `ChildWithCleanup::drop`).
     #[cfg(test)]
-    pub fn stop_all(&mut self) -> Vec<String> {
+    pub(crate) fn stop_all(&mut self) -> Vec<String> {
         let names: Vec<String> = self
             .servers
             .iter()

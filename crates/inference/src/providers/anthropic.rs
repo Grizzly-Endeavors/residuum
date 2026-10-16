@@ -2386,7 +2386,7 @@ mod tests {
         );
         assert_eq!(
             resp.thinking,
-            vec![ThinkingBlock::text("Let me reason about this...").from_origin(&test_origin())],
+            vec![ThinkingBlock::text("Let me reason about this...").with_origin(&test_origin())],
             "thinking should be extracted separately"
         );
     }
@@ -3345,7 +3345,7 @@ mod tests {
                 "",
                 Some(vec![call("t1")]),
                 vec![
-                    ThinkingBlock::text("an unsigned summary").from_origin(&test_origin()),
+                    ThinkingBlock::text("an unsigned summary").with_origin(&test_origin()),
                     signed("keeps a signature", ""),
                     signed("", "sig-empty-text"),
                 ],
@@ -4057,7 +4057,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         assert_eq!(
             result.unwrap().thinking,
-            vec![ThinkingBlock::text("unsigned musing").from_origin(&test_origin())],
+            vec![ThinkingBlock::text("unsigned musing").with_origin(&test_origin())],
             "an empty signature is no signature, and a block with nothing in it is dropped"
         );
     }

@@ -3,11 +3,12 @@
 # Pre-push gate: the slow checks, once per push, on each pushed commit as pushed.
 #
 # Rust changes in the pushed range run clippy, the tests of the code those
-# changes touch plus the source scans, and the generated-types check. Web
-# changes run ESLint and the style lint, svelte-check, and the web tests that
-# import a changed file. CI runs the whole suites; this hook runs what the push
-# can have changed. Every check runs even after one fails, so a push reports all
-# of its problems at once, and a summary at the end lists what failed.
+# changes touch plus the source scans, the generated-types check, and the
+# unused-dependency check (cargo shear). Web changes run ESLint and the style
+# lint, svelte-check, and the web tests that import a changed file. CI runs the
+# whole suites; this hook runs what the push can have changed. Every check runs
+# even after one fails, so a push reports all of its problems at once, and a
+# summary at the end lists what failed.
 #
 # The hook does not merge main into the commit. The merge queue tests every
 # pull request merged with main before it lands, so a conflict with main shows
@@ -152,6 +153,8 @@ ensure_web_deps() {
 TEMP_DIR=""
 TEMP_TREE=""
 LOCK_HELD=0
+# The takeover claim this hook holds while it replaces a stale stable lock.
+TAKEOVER_CLAIM=""
 # What prepare_worktree checked the commit in, for the line that names it.
 TREE_NAME=""
 TEST_LOG=""
@@ -180,6 +183,10 @@ cleanup() {
         TEMP_DIR=""
     fi
     TEMP_TREE=""
+    if [ -n "$TAKEOVER_CLAIM" ]; then
+        rmdir "$TAKEOVER_CLAIM" 2>/dev/null
+        TAKEOVER_CLAIM=""
+    fi
     if [ "$LOCK_HELD" = 1 ]; then
         rm -rf "$STABLE_LOCK"
         LOCK_HELD=0
@@ -224,34 +231,60 @@ link_stable_node_modules() {
     fi
 }
 
+# Takes over the stable lock left by the dead holder $1. Two pushes can find the
+# same dead holder at once, so each first claims the takeover with mkdir of a
+# directory named for that pid: mkdir succeeds for one push only. The winner
+# checks under the claim that the lock still names the dead pid before it
+# replaces the lock, so a lock another push has already taken over is left
+# alone. The claim is removed before returning. Returns 1 when another push holds
+# the claim or the lock has moved on. The cleanup trap removes a claim this push
+# still holds when it is interrupted.
+take_over_stale_lock() {
+    local dead="$1" claim="$STABLE_DIR/tree.lock-takeover-$1" holder="" status=1
+    mkdir "$claim" 2>/dev/null || return 1
+    TAKEOVER_CLAIM="$claim"
+    holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
+    if [ "$holder" = "$dead" ]; then
+        rm -rf "$STABLE_LOCK"
+        mkdir "$STABLE_LOCK" 2>/dev/null && status=0
+    fi
+    rmdir "$claim"
+    TAKEOVER_CLAIM=""
+    return $status
+}
+
+# Creates the stable lock directory for this push. Returns 1, having said why,
+# when a live push holds the lock or took over a stale one first. A lock with no
+# pid yet is held: the window between creating the lock directory and writing
+# the pid is too short to call it stale, and a holder that died in that window
+# needs the lock removed by hand. Never call it in a subshell.
+acquire_stable_lock() {
+    local holder=""
+    mkdir "$STABLE_LOCK" 2>/dev/null && return 0
+    holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
+    if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
+        note "the stable pre-push tree is locked${holder:+ by pid $holder}; checking in a temporary worktree instead. If no push is running, remove $STABLE_LOCK."
+        return 1
+    fi
+    note "the stable pre-push tree's lock was held by pid $holder, which is no longer running; taking it over."
+    if take_over_stale_lock "$holder"; then
+        return 0
+    fi
+    note "another push is taking over the stable pre-push tree's lock, or took it first; checking in a temporary worktree instead. If no push is running and this repeats, remove $STABLE_LOCK and $STABLE_DIR/tree.lock-takeover-*."
+    return 1
+}
+
 # Checks out the commit $1 in the stable tree under the stable lock. Returns 1,
 # having said why, when another push holds the lock or the tree cannot be
-# prepared, and the caller then uses a temporary worktree. A lock with no pid
-# yet is held: the window between creating the lock directory and writing the
-# pid is too short to call it stale, and a holder that died in that window needs
-# the lock removed by hand. A stale lock taken over by two pushes at the same
-# moment can still race; that needs two pushes after one crashed holder, and the
-# result is a second push checking in the same tree. Never call it in a
+# prepared, and the caller then uses a temporary worktree. Never call it in a
 # subshell: the lock and the cleanup trap need the variables it sets.
 prepare_stable_tree() {
-    local sha="$1" holder=""
+    local sha="$1"
     if ! mkdir -p "$STABLE_DIR"; then
         note "couldn't create $STABLE_DIR; checking in a temporary worktree instead."
         return 1
     fi
-    if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
-        holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
-        if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
-            note "the stable pre-push tree is locked${holder:+ by pid $holder}; checking in a temporary worktree instead. If no push is running, remove $STABLE_LOCK."
-            return 1
-        fi
-        note "the stable pre-push tree's lock was held by pid $holder, which is no longer running; taking it over."
-        rm -rf "$STABLE_LOCK"
-        if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
-            note "another push took the stable pre-push tree first; checking in a temporary worktree instead."
-            return 1
-        fi
-    fi
+    acquire_stable_lock || return 1
     LOCK_HELD=1
     printf '%s\n' "$$" >"$STABLE_LOCK/pid"
     TEMP_TREE="$STABLE_TREE"
@@ -591,8 +624,34 @@ web_dist_needs_build() {
     [ "$dir" != "$REPO_ROOT" ] || [ "$TOUCHES_WEB" = 1 ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]
 }
 
+# The unused-dependency check. cargo-shear reads the manifests and sources and
+# builds nothing, so it needs neither web/dist nor a target directory, and
+# runs even when the web build fails. CI pins its version in rust-checks.yml,
+# which this reads from the tree being checked. cargo-shear is a separate
+# install, so a machine without it does not refuse the push: SHEAR_NOTE makes
+# the summary say the check did not run and how to install it, and CI runs it.
+# A different installed version still runs, with a note, because its findings
+# can differ from CI's.
+SHEAR_NOTE=""
+shear_check() {
+    local dir="$1" pinned installed
+    pinned="$(sed -n 's/^ *CARGO_SHEAR_VERSION: \(.*\)$/\1/p' "$dir/.github/workflows/rust-checks.yml" 2>/dev/null)"
+    # A tree with no pin predates the check, so CI does not run it on that tree.
+    [ -n "$pinned" ] || return 0
+    if ! command -v cargo-shear >/dev/null 2>&1; then
+        SHEAR_NOTE="cargo-shear is not installed, so the unused-dependency check did not run here (CI runs it). Install v${pinned}: cargo install --locked cargo-shear --version ${pinned}"
+        return
+    fi
+    installed="$(cargo shear --version 2>/dev/null | sed -n 's/^Version: //p')"
+    if [ "$installed" != "$pinned" ]; then
+        SHEAR_NOTE="cargo-shear ${installed:-of unknown version} is installed and CI pins ${pinned}, so this check's findings can differ from CI's. Install v${pinned}: cargo install --locked cargo-shear --version ${pinned}"
+    fi
+    run_check "cargo shear" cargo_in "$dir" shear --locked --deny-warnings
+}
+
 run_rust_checks() {
     local dir="$1" sha="$2"
+    shear_check "$dir"
     (
         cd "$dir" || exit 1
         # build.rs refuses to compile without web/dist, and the gateway's tests
@@ -769,6 +828,9 @@ done
 for name in ${FAILED[@]+"${FAILED[@]}"}; do
     echo -e "${RED}  FAILED: $name${NC}" >&2
 done
+if [ -n "$SHEAR_NOTE" ]; then
+    echo -e "${YELLOW}  NOTE: $SHEAR_NOTE${NC}" >&2
+fi
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
     echo -e "${RED}${BOLD}Pre-push checks failed (${#FAILED[@]}).${NC} Each check's output is above. Fix every failure, commit, and push again." >&2

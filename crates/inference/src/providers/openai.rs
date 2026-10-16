@@ -2409,7 +2409,7 @@ mod tests {
 
     /// Reasoning text as `plain_client`'s model returns it.
     fn test_model_text(text: &str) -> ThinkingBlock {
-        ThinkingBlock::text(text).from_origin(&ThinkingOrigin::new(
+        ThinkingBlock::text(text).with_origin(&ThinkingOrigin::new(
             ProviderApi::OpenAiCompatible,
             "test-model",
         ))
@@ -2944,7 +2944,7 @@ mod tests {
             arguments: json!({}),
             server: None,
         };
-        let own = |text: &str| ThinkingBlock::text(text).from_origin(&test_origin());
+        let own = |text: &str| ThinkingBlock::text(text).with_origin(&test_origin());
         let gemini = ThinkingOrigin::new(ProviderApi::Gemini, "gemini-3-pro-preview");
         let mut old = Message::assistant("old", Some(vec![call("c0")]));
         old.thinking = vec![own("old reasoning")];
@@ -2953,14 +2953,14 @@ mod tests {
         let mut current = Message::assistant("", Some(vec![call("c1")]));
         current.thinking = vec![
             own("current reasoning"),
-            ThinkingBlock::text("readable text from another provider").from_origin(&gemini),
+            ThinkingBlock::text("readable text from another provider").with_origin(&gemini),
             ThinkingBlock::text("readable text saved with no origin"),
             ThinkingBlock {
                 text: "signed elsewhere".to_string(),
                 signature: Some("sig".to_string()),
                 ..ThinkingBlock::default()
             }
-            .from_origin(&gemini),
+            .with_origin(&gemini),
         ];
         vec![
             Message::user("one"),
@@ -3096,11 +3096,11 @@ mod tests {
                 signature: Some("sig".to_string()),
                 ..ThinkingBlock::default()
             }
-            .from_origin(&anthropic),
+            .with_origin(&anthropic),
         ];
         let mut after = Message::assistant("", Some(vec![call("c2")]));
         if let Some(text) = own {
-            after.thinking = vec![ThinkingBlock::text(text).from_origin(&test_origin())];
+            after.thinking = vec![ThinkingBlock::text(text).with_origin(&test_origin())];
         }
         vec![
             Message::user("one"),

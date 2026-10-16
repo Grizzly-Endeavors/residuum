@@ -15,7 +15,9 @@
 //! `wall_clock_backlog`, where the counts only go down. Test code may not
 //! make a file executable itself either; it writes scripts through core's
 //! `testing::script`. `CONTRIBUTING.md` ("Waiting in tests") describes which
-//! wait fits which situation.
+//! wait fits which situation. `source_scan`'s `unused_pub` rule fails on a
+//! member crate's `pub` item that nothing outside that crate's own tests uses,
+//! which rustc does not warn about.
 //!
 //! `manifest_scan` holds the rules the workspace's `Cargo.toml` files keep.
 //!

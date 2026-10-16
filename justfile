@@ -54,7 +54,27 @@ test *args: _web-dist
     scripts/test-filters.sh note test "$@"
     log="$(mktemp)"
     trap 'rm -f "$log"' EXIT
-    cargo test --quiet --no-fail-fast "$@" 2>&1 | tee "$log"
+    # The output goes through tee, so neither cargo nor the test harness sees a terminal. On a terminal, CARGO_TERM_COLOR keeps cargo's own lines coloured and --color=always keeps the harness's (FAILED, test result, panics); a CARGO_TERM_COLOR or a harness --color the caller sets wins. The log check gets the caller's arguments, without the harness flag.
+    cargo_args=("$@")
+    if [ -t 1 ]; then
+        export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
+        if [ "$CARGO_TERM_COLOR" = always ]; then
+            after_dd=no
+            harness_colour=no
+            for arg in "$@"; do
+                if [ "$after_dd" = yes ]; then
+                    case $arg in --color | --color=*) harness_colour=yes ;; esac
+                elif [ "$arg" = "--" ]; then
+                    after_dd=yes
+                fi
+            done
+            if [ "$harness_colour" = no ]; then
+                if [ "$after_dd" = no ]; then cargo_args+=(--); fi
+                cargo_args+=(--color=always)
+            fi
+        fi
+    fi
+    cargo test --quiet --no-fail-fast "${cargo_args[@]}" 2>&1 | tee "$log"
     status="${PIPESTATUS[0]}"
     if [ "$status" -eq 0 ]; then scripts/test-filters.sh check test "$log" -- "$@"; fi
     exit "$status"
@@ -248,7 +268,7 @@ web-check: _web-deps
 # Everything CI's rust job runs. Runs every check and lists the failures.
 [group('check')]
 rust-check: _web-dist
-    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy test types-check deny
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy test types-check deny shear
 
 # Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist, so a broken web build stops rust-check before its checks run. Runs every check and lists the failures.
 [group('check')]
@@ -276,6 +296,18 @@ actionlint:
     [ "$installed" = "$pinned" ] || { echo "actionlint ${installed} is installed; CI pins ${pinned}" >&2; exit 1; }
     command -v shellcheck >/dev/null || { echo "shellcheck is not installed, so actionlint would skip its shell checks: install it (apt install shellcheck, or v${shellcheck_pinned} from https://github.com/koalaman/shellcheck/releases)" >&2; exit 1; }
     actionlint
+
+# Unused dependencies, unused workspace dependencies and unlinked source files, with cargo-shear at the version CI pins in .github/workflows/rust-checks.yml
+[group('check')]
+shear:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pinned="$(sed -n 's/^ *CARGO_SHEAR_VERSION: \(.*\)$/\1/p' .github/workflows/rust-checks.yml)"
+    install="install v${pinned} with: cargo install --locked cargo-shear --version ${pinned} (or unpack the cargo-shear-<target>.tar.gz of that release from https://github.com/Boshen/cargo-shear/releases into a directory on PATH)"
+    command -v cargo-shear >/dev/null || { echo "cargo-shear is not installed: ${install}" >&2; exit 1; }
+    installed="$(cargo shear --version | sed -n 's/^Version: //p')"
+    [ "$installed" = "$pinned" ] || { echo "cargo-shear ${installed} is installed; CI pins ${pinned}: ${install}" >&2; exit 1; }
+    cargo shear --locked --deny-warnings
 
 # Every failing test in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
 [group('check')]
