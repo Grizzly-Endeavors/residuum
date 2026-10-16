@@ -259,12 +259,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_unused_pub_rule_counts_other_crates_and_production_code_only() {
-        let sources = [
-            fixture(
-                "crates/alpha/src/lib.rs",
-                r#"
+    /// The first crate of the counting fixture: one `pub` item for each way a mention does or does not count.
+    const ALPHA_LIB_ZQ: &str = r#"
 pub use inner::{
     reexported_only_zq,
 };
@@ -339,8 +335,12 @@ mod tests {
 mod inner {
     pub fn reexported_only_zq() {}
 }
-"#,
-            ),
+"#;
+
+    #[test]
+    fn the_unused_pub_rule_counts_other_crates_and_production_code_only() {
+        let sources = [
+            fixture("crates/alpha/src/lib.rs", ALPHA_LIB_ZQ),
             fixture(
                 "crates/alpha/src/other.rs",
                 "// commented_only_zq is named here\nlet note = 1; // and here: commented_only_zq\n",
