@@ -203,12 +203,6 @@ impl HubPaths {
             .join(format!("{agent}.providers.last-known-good.toml"))
     }
 
-    /// `hub/config.example.toml` — regenerated on every startup.
-    #[must_use]
-    pub fn config_example_toml(&self) -> PathBuf {
-        self.root.join("config.example.toml")
-    }
-
     /// `hub/secrets.toml.enc` — the encrypted provider-credential secret store.
     #[must_use]
     pub fn secrets_enc(&self) -> PathBuf {
@@ -304,12 +298,6 @@ impl HubPaths {
     #[must_use]
     pub fn pid_file(&self) -> PathBuf {
         self.root.join("residuum.pid")
-    }
-
-    /// `hub/residuum.lock` — the lock guarding [`Self::pid_file`].
-    #[must_use]
-    pub fn lock_file(&self) -> PathBuf {
-        self.root.join("residuum.lock")
     }
 
     /// `hub/residuum.ready`.
