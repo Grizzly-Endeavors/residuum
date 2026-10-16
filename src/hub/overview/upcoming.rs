@@ -20,7 +20,7 @@ use crate::time::format_rfc3339;
 pub(super) const MOST_UPCOMING: usize = 3;
 
 /// What reading an agent's upcoming runs found.
-pub(super) struct UpcomingRead {
+pub(crate) struct UpcomingRead {
     /// The next runs, soonest first, at most [`MOST_UPCOMING`].
     pub runs: Vec<UpcomingRun>,
     /// What could not be read, one plain sentence each, which the service
@@ -38,7 +38,7 @@ type Run = (DateTime<Utc>, UpcomingKind, String);
 /// can't run an action either. An unreadable `scheduled_actions.json` costs
 /// only the actions, and a `HEARTBEAT.yml` with a problem lists the pulses
 /// that loaded. The agent's own scheduler reports the pulse problems.
-pub(super) async fn read(agent: &str, files: &AgentFiles, now: DateTime<Utc>) -> UpcomingRead {
+pub(crate) async fn read(agent: &str, files: &AgentFiles, now: DateTime<Utc>) -> UpcomingRead {
     // The pulse files are read by the code the agent's own scheduler uses, which
     // logs on the agent's behalf.
     read_files(files, now)

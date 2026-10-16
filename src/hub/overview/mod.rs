@@ -17,7 +17,7 @@ pub mod preview;
 mod service;
 mod tracker;
 pub mod types;
-mod upcoming;
+pub(crate) mod upcoming;
 
 pub use preview::{PREVIEW_CHARS, plain_preview};
 pub use service::{COALESCE_WINDOW, TeamOverview};
