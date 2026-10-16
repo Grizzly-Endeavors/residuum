@@ -30,13 +30,13 @@ use residuum::agent::context::PromptContext;
 use residuum::agent::{Tool, ToolRegistry};
 use residuum::bus::interrupt::Interrupt;
 use residuum::bus::{EndpointName, MainConversationEvent, TurnOrigin, spawn_broker, topics};
-use residuum::gateway::protocol::{ClientMessage, ServerMessage};
 use residuum::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, StreamDelta,
     StreamSink, ToolCall, ToolDefinition,
 };
 use residuum::inference::{ToolError, ToolResult};
 use residuum::memory::types::Visibility;
+use residuum::protocol::{ClientMessage, ServerMessage};
 use residuum::workspace::identity::IdentityFiles;
 
 /// Mock provider that returns configurable responses in sequence.

@@ -34,7 +34,7 @@ use crate::background::registry::SessionRegistry;
 use crate::background::store::{RunFilter, SessionStore};
 use crate::bus::session::SessionCategory;
 use crate::config::WorkspaceLayout;
-use crate::gateway::protocol::{
+use crate::protocol::{
     ActionInfo, PulseInfo, ScheduledCurrentRun, ScheduledRunOutcome, SessionRunStatus,
 };
 use crate::pulse::next_run::{load_last_runs, next_run_at};

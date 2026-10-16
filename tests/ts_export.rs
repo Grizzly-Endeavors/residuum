@@ -20,9 +20,6 @@ use residuum::background::team::{
 use residuum::checkpoints::{
     CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
-use residuum::gateway::protocol::{
-    ActionInfo, ClientMessage, PulseInfo, ServerMessage, SessionListResponse, WorkbenchInfo,
-};
 use residuum::gateway::teams_setup::types::{
     AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine, LogStream,
     SetupError, SetupResult, SignInPrompt, SuggestedEndpointSource, TeamsSetupForm, TeamsSetupJob,
@@ -50,6 +47,9 @@ use residuum::pairing::types::{
     PairedResponse, PairingPollResponse, PairingRequestCreated, PairingRequestStatus,
     PairingStateResponse, PendingPairingInfo, PollPairingBody, RecoveryCodeBody,
     RecoveryCodesResponse, RedeemTokenBody, WorkbenchHandoffResponse,
+};
+use residuum::protocol::{
+    ActionInfo, ClientMessage, PulseInfo, ServerMessage, SessionListResponse, WorkbenchInfo,
 };
 use residuum::remote_access::status::{
     CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,

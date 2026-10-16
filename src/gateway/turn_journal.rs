@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 
 use crate::bus::{BusError, BusHandle, MainConversationEvent, topics};
-use crate::gateway::protocol::QueuedMessage;
+use crate::protocol::QueuedMessage;
 
 /// An event of the main conversation, numbered in the order the journal saw it.
 #[derive(Debug)]

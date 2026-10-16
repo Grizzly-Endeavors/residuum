@@ -36,8 +36,6 @@ use tokio::sync::{broadcast, watch};
 use super::artifact_events::ArtifactEvents;
 use super::session_relay::SessionRelay;
 use crate::bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
-use crate::gateway::protocol::ServerMessage;
-use crate::gateway::websocket::subscriber::workspace_frame;
 use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::{AgentOverview, TeamOverview};
 use crate::hub::push::{Presence, PresenceConnection};
@@ -45,6 +43,8 @@ use crate::hub::team_events::{TeamEvent, TeamEventLog};
 use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
 use crate::hub::{AgentDirectory, HubEvent};
 use crate::inference::system_one::{SystemOneService, SystemOneStatus};
+use crate::protocol::ServerMessage;
+use crate::protocol::frames::workspace_frame;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// The namespace prefix of team paths in the change feed.
