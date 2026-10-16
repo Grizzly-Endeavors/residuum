@@ -7,5 +7,7 @@ pub mod identity;
 pub mod mcp_patch;
 pub mod team;
 pub mod team_files;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod version;
 pub mod watch;

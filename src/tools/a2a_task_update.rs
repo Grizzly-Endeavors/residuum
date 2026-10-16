@@ -378,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn attaches_an_artifact_from_the_team_folder() {
         let bus = spawn_broker();
-        let hub = crate::tools::team_namespace_tests::Hub::new();
+        let hub = crate::workspace::testing::TeamHub::new();
         std::fs::write(hub.team().join("summary.md"), "team summary").unwrap();
         let agent_dir = hub.agent_dir("scout");
         std::fs::write(agent_dir.join("summary.md"), "private summary").unwrap();

@@ -2,7 +2,7 @@
 //! same registry the agent's file tools are registered in.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
@@ -10,57 +10,31 @@ use super::{FileTracker, PathPolicy};
 use crate::a2a::diagnostics_dispatch::DiagnosticsPaths;
 use crate::agent::ToolRegistry;
 use crate::inference::ToolResult;
-use crate::workspace::team_files::{TeamWriteCoordinator, TeamWriter};
+use crate::workspace::team_files::TeamWriter;
+use crate::workspace::testing::TeamHub;
 
-/// A hub directory with a team directory and any number of agent directories.
-pub(crate) struct Hub {
-    pub(crate) dir: tempfile::TempDir,
-    pub(crate) coordinator: TeamWriteCoordinator,
-}
-
-impl Hub {
-    pub(crate) fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("team")).unwrap();
-        let coordinator = TeamWriteCoordinator::new(&crate::config::paths::TeamPaths::new(
-            dir.path().join("team"),
-        ));
-        Self { dir, coordinator }
-    }
-
-    pub(crate) fn team(&self) -> PathBuf {
-        self.dir.path().join("team")
-    }
-
-    pub(crate) fn agent_dir(&self, name: &str) -> PathBuf {
-        let dir = self.dir.path().join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    /// A fresh tool set for the agent `name`: its own read tracker, sharing
-    /// the hub's coordinator.
-    pub(crate) fn tools_for(&self, name: &str) -> ToolRegistry {
-        let agent_dir = self.agent_dir(name);
-        let policy = PathPolicy::new_shared_with_team(
-            HashSet::new(),
-            self.coordinator.view_for_agent(name, &agent_dir),
-        );
-        let mut registry = ToolRegistry::new();
-        super::registration::register_defaults(
-            &mut registry,
-            &super::registration::RegistryInjections::default(),
-            FileTracker::new_shared(),
-            policy,
-            DiagnosticsPaths {
-                config_dir: agent_dir.join("config"),
-                workspace_dir: agent_dir,
-                hub_dir: self.dir.path().join("hub"),
-            },
-            None,
-        );
-        registry
-    }
+/// A fresh tool set for the agent `name` over `hub`: its own read tracker,
+/// sharing the hub's coordinator.
+pub(crate) fn tools_for(hub: &TeamHub, name: &str) -> ToolRegistry {
+    let agent_dir = hub.agent_dir(name);
+    let policy = PathPolicy::new_shared_with_team(
+        HashSet::new(),
+        hub.coordinator.view_for_agent(name, &agent_dir),
+    );
+    let mut registry = ToolRegistry::new();
+    super::registration::register_defaults(
+        &mut registry,
+        &super::registration::RegistryInjections::default(),
+        FileTracker::new_shared(),
+        policy,
+        DiagnosticsPaths {
+            config_dir: agent_dir.join("config"),
+            workspace_dir: agent_dir,
+            hub_dir: hub.dir.path().join("hub"),
+        },
+        None,
+    );
+    registry
 }
 
 async fn call(tools: &ToolRegistry, name: &str, args: Value) -> ToolResult {
@@ -95,11 +69,11 @@ fn path_str(path: &Path) -> &str {
 
 #[tokio::test]
 async fn read_resolves_team_paths_into_the_team_directory() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     std::fs::create_dir_all(hub.team().join("wiki")).unwrap();
     std::fs::write(hub.team().join("wiki").join("a.md"), "shared page").unwrap();
     std::fs::write(hub.agent_dir("scout").join("notes.md"), "private notes").unwrap();
-    let tools = hub.tools_for("scout");
+    let tools = tools_for(&hub, "scout");
 
     let shared = read(&tools, "team/wiki/a.md").await;
     assert!(!shared.is_error, "{}", shared.output);
@@ -112,8 +86,8 @@ async fn read_resolves_team_paths_into_the_team_directory() {
 
 #[tokio::test]
 async fn write_and_edit_resolve_team_paths_into_the_team_directory() {
-    let hub = Hub::new();
-    let tools = hub.tools_for("scout");
+    let hub = TeamHub::new();
+    let tools = tools_for(&hub, "scout");
 
     let created = write(&tools, "team/wiki/new.md", "one two").await;
     assert!(!created.is_error, "{}", created.output);
@@ -131,8 +105,8 @@ async fn write_and_edit_resolve_team_paths_into_the_team_directory() {
 
 #[tokio::test]
 async fn absolute_team_paths_keep_working() {
-    let hub = Hub::new();
-    let tools = hub.tools_for("scout");
+    let hub = TeamHub::new();
+    let tools = tools_for(&hub, "scout");
     let absolute = hub.team().join("abs.md");
 
     let created = write(&tools, path_str(&absolute), "absolute").await;
@@ -147,8 +121,8 @@ async fn absolute_team_paths_keep_working() {
 
 #[tokio::test]
 async fn the_agent_directory_cannot_gain_a_team_entry() {
-    let hub = Hub::new();
-    let tools = hub.tools_for("scout");
+    let hub = TeamHub::new();
+    let tools = tools_for(&hub, "scout");
     let inside = hub.agent_dir("scout").join("team").join("x.md");
 
     let created = write(&tools, path_str(&inside), "nope").await;
@@ -166,10 +140,10 @@ async fn the_agent_directory_cannot_gain_a_team_entry() {
 
 #[tokio::test]
 async fn a_stale_write_is_refused_and_names_the_teammate() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     std::fs::write(hub.team().join("shared.md"), "start").unwrap();
-    let robin = hub.tools_for("robin");
-    let sam = hub.tools_for("sam");
+    let robin = tools_for(&hub, "robin");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&robin, "team/shared.md").await.is_error);
     assert!(!read(&sam, "team/shared.md").await.is_error);
 
@@ -203,10 +177,10 @@ async fn a_stale_write_is_refused_and_names_the_teammate() {
 
 #[tokio::test]
 async fn a_stale_edit_is_refused_and_names_the_teammate() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     std::fs::write(hub.team().join("shared.md"), "alpha beta").unwrap();
-    let robin = hub.tools_for("robin");
-    let sam = hub.tools_for("sam");
+    let robin = tools_for(&hub, "robin");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&robin, "team/shared.md").await.is_error);
     assert!(!read(&sam, "team/shared.md").await.is_error);
 
@@ -227,10 +201,10 @@ async fn a_stale_edit_is_refused_and_names_the_teammate() {
 
 #[tokio::test]
 async fn concurrent_writers_leave_exactly_one_winner() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     std::fs::write(hub.team().join("shared.md"), "start").unwrap();
-    let robin = hub.tools_for("robin");
-    let sam = hub.tools_for("sam");
+    let robin = tools_for(&hub, "robin");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&robin, "team/shared.md").await.is_error);
     assert!(!read(&sam, "team/shared.md").await.is_error);
 
@@ -257,9 +231,9 @@ async fn concurrent_writers_leave_exactly_one_winner() {
 
 #[tokio::test]
 async fn a_web_write_is_named_as_the_user() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     std::fs::write(hub.team().join("shared.md"), "start").unwrap();
-    let sam = hub.tools_for("sam");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&sam, "team/shared.md").await.is_error);
 
     let path = hub.team().join("shared.md");
@@ -277,9 +251,9 @@ async fn a_web_write_is_named_as_the_user() {
 
 #[tokio::test]
 async fn an_outside_change_is_an_unknown_writer() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     std::fs::write(hub.team().join("shared.md"), "start").unwrap();
-    let sam = hub.tools_for("sam");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&sam, "team/shared.md").await.is_error);
 
     std::fs::write(hub.team().join("shared.md"), "changed by an editor").unwrap();
@@ -298,9 +272,9 @@ async fn an_outside_change_is_an_unknown_writer() {
 
 #[tokio::test]
 async fn two_agents_creating_the_same_file_leave_one_winner() {
-    let hub = Hub::new();
-    let robin = hub.tools_for("robin");
-    let sam = hub.tools_for("sam");
+    let hub = TeamHub::new();
+    let robin = tools_for(&hub, "robin");
+    let sam = tools_for(&hub, "sam");
 
     let (from_robin, from_sam) = tokio::join!(
         write(&robin, "team/new.md", "robin"),
@@ -325,8 +299,8 @@ async fn two_agents_creating_the_same_file_leave_one_winner() {
 
 #[tokio::test]
 async fn an_agents_own_writes_do_not_conflict_with_each_other() {
-    let hub = Hub::new();
-    let sam = hub.tools_for("sam");
+    let hub = TeamHub::new();
+    let sam = tools_for(&hub, "sam");
     assert!(!write(&sam, "team/mine.md", "one").await.is_error);
     assert!(!write(&sam, "team/mine.md", "two!").await.is_error);
     assert!(!edit(&sam, "team/mine.md", "two", "three").await.is_error);
@@ -338,10 +312,10 @@ async fn an_agents_own_writes_do_not_conflict_with_each_other() {
 
 #[tokio::test]
 async fn agent_private_files_are_overwritten_when_changed_elsewhere() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     let private = hub.agent_dir("sam").join("notes.md");
     std::fs::write(&private, "start").unwrap();
-    let sam = hub.tools_for("sam");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&sam, "notes.md").await.is_error);
 
     // Changed behind the agent's back: a private file is still overwritten,
@@ -361,8 +335,8 @@ async fn agent_private_files_are_overwritten_when_changed_elsewhere() {
 
 #[tokio::test]
 async fn team_files_get_the_same_diagnostics_as_agent_files() {
-    let hub = Hub::new();
-    let tools = hub.tools_for("scout");
+    let hub = TeamHub::new();
+    let tools = tools_for(&hub, "scout");
 
     let result = write(&tools, "team/skills/broken/SKILL.md", "no frontmatter here").await;
     assert!(!result.is_error, "{}", result.output);
@@ -375,7 +349,7 @@ async fn team_files_get_the_same_diagnostics_as_agent_files() {
 
 /// Delete `path` under the coordinator as the user, the way the web file API
 /// does.
-async fn delete_as_user(hub: &Hub, path: &Path) {
+async fn delete_as_user(hub: &TeamHub, path: &Path) {
     let guard = hub.coordinator.lock(path).await;
     std::fs::remove_file(path).unwrap();
     guard.record_removed(&TeamWriter::User);
@@ -383,10 +357,10 @@ async fn delete_as_user(hub: &Hub, path: &Path) {
 
 #[tokio::test]
 async fn a_write_after_a_deletion_conflicts_once_then_recreates() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     let path = hub.team().join("x.md");
     std::fs::write(&path, "start").unwrap();
-    let sam = hub.tools_for("sam");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&sam, "team/x.md").await.is_error);
 
     delete_as_user(&hub, &path).await;
@@ -411,10 +385,10 @@ async fn a_write_after_a_deletion_conflicts_once_then_recreates() {
 
 #[tokio::test]
 async fn a_deletion_outside_residuum_clears_after_a_reread() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     let path = hub.team().join("x.md");
     std::fs::write(&path, "start").unwrap();
-    let sam = hub.tools_for("sam");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&sam, "team/x.md").await.is_error);
 
     std::fs::remove_file(&path).unwrap();
@@ -428,11 +402,11 @@ async fn a_deletion_outside_residuum_clears_after_a_reread() {
 
 #[tokio::test]
 async fn an_edit_after_a_deletion_and_recreation_is_still_checked() {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     let path = hub.team().join("x.md");
     std::fs::write(&path, "one two").unwrap();
-    let sam = hub.tools_for("sam");
-    let robin = hub.tools_for("robin");
+    let sam = tools_for(&hub, "sam");
+    let robin = tools_for(&hub, "robin");
     assert!(!read(&sam, "team/x.md").await.is_error);
 
     delete_as_user(&hub, &path).await;
@@ -459,7 +433,7 @@ async fn concurrent_role_pages_keep_every_index_entry() {
     use crate::config::paths::TeamPaths;
     use crate::workspace::team::{ensure_agent_role_page, ensure_team};
 
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     let team = TeamPaths::new(hub.team());
     ensure_team(&team, None, None).await.unwrap();
 
@@ -490,10 +464,10 @@ async fn a_role_page_write_conflicts_a_reader_of_the_roster_index() {
     use crate::config::paths::TeamPaths;
     use crate::workspace::team::{ensure_agent_role_page, ensure_team};
 
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     let team = TeamPaths::new(hub.team());
     ensure_team(&team, None, None).await.unwrap();
-    let sam = hub.tools_for("sam");
+    let sam = tools_for(&hub, "sam");
     assert!(!read(&sam, "team/wiki/agents/index.md").await.is_error);
 
     ensure_agent_role_page(&team, &hub.coordinator, "robin", None)
