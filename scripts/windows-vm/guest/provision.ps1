@@ -1,9 +1,11 @@
 # Installs the residuum build toolchain in the Windows VM. Safe to re-run:
 # anything already present is left alone unless -Upgrade is given.
-# Run from the host with scripts/windows-vm/vm.sh provision.
+# Run from the host with scripts/windows-vm/vm.sh provision, which passes the
+# Rust version that rust-toolchain.toml pins as -RustToolchain.
 # Written for Windows PowerShell 5.1.
 param(
-    [switch]$Upgrade
+    [switch]$Upgrade,
+    [string]$RustToolchain = 'stable'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,12 +90,18 @@ if ($Upgrade -or -not (Test-Path (Join-Path $mingwBin 'gcc.exe'))) {
 }
 Add-MachinePath $mingwBin
 
-Write-Information '==> Rust (stable, x86_64-pc-windows-gnu host)'
+Write-Information "==> Rust ($RustToolchain, x86_64-pc-windows-gnu host)"
 if (Test-Command rustup) {
-    if ($Upgrade) { rustup update stable }
+    $present = rustup toolchain list | Select-String -Pattern "^$([regex]::Escape($RustToolchain))-"
+    if ($Upgrade -or -not $present) {
+        rustup toolchain install $RustToolchain --profile minimal --component clippy --component rustfmt
+        if ($LASTEXITCODE) { throw "rustup toolchain install failed with exit code $LASTEXITCODE" }
+    }
+    rustup default $RustToolchain
+    if ($LASTEXITCODE) { throw "rustup default failed with exit code $LASTEXITCODE" }
 } else {
     $rustupInit = Save-Download 'https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-gnu/rustup-init.exe' 'rustup-init.exe'
-    & $rustupInit -y --default-host x86_64-pc-windows-gnu --default-toolchain stable --profile minimal --component clippy --component rustfmt
+    & $rustupInit -y --default-host x86_64-pc-windows-gnu --default-toolchain $RustToolchain --profile minimal --component clippy --component rustfmt
     if ($LASTEXITCODE) { throw "rustup-init failed with exit code $LASTEXITCODE" }
     Import-RegistryPath
 }

@@ -81,9 +81,12 @@ case "$cmd" in
         ;;
     provision)
         require_ssh
+        # Install the compiler the git hooks and CI use, not whatever stable is.
+        rust_toolchain="$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' "$REPO_ROOT/rust-toolchain.toml")"
+        [[ "$rust_toolchain" =~ ^[0-9A-Za-z._-]+$ ]] || die "no usable channel in $REPO_ROOT/rust-toolchain.toml"
         guest_ps "New-Item -ItemType Directory -Force '$GUEST_ROOT' | Out-Null"
         guest_copy_to "$HARNESS_DIR/guest/provision.ps1" "$GUEST_ROOT_FWD/provision.ps1"
-        guest_ps "& '$GUEST_ROOT\\provision.ps1' $*"
+        guest_ps "& '$GUEST_ROOT\\provision.ps1' -RustToolchain '$rust_toolchain' $*"
         ;;
     snapshot)
         require_vm
