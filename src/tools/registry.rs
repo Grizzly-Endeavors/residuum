@@ -53,7 +53,7 @@ pub struct SessionTools {
     /// Standalone web search backend config, if one is configured — mirrors
     /// main's `cfg.web_search.standalone_backend`: `ollama_web_search` is
     /// registered only when it names the `"ollama"` backend, exactly like
-    /// `gateway::startup::tools::init_tool_registry`.
+    /// `tools::main_tools::init_tool_registry`.
     pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
     /// The live catalog a session's `subagent_spawn` and `schedule_action`
     /// check an explicit model against, shared with main.
@@ -109,7 +109,7 @@ impl SessionToolFactory for SessionTools {
     /// Includes every tool available to the main agent, with the same config
     /// gating, except `switch_endpoint` — the one tool that stays main-only,
     /// because it redirects main's background-turn output and is meaningless
-    /// for a session. `tests::session_registry_matches_main_minus_documented_allowlist`
+    /// for a session. `tools::main_tools::tests::session_registry_matches_main_minus_documented_allowlist`
     /// enforces this: it builds both registries from equivalent config and
     /// asserts the session registry's tool names equal main's minus that one
     /// documented exclusion, so a tool added to one registration surface but
@@ -117,7 +117,7 @@ impl SessionToolFactory for SessionTools {
     ///
     /// `scope.conversation_target` gates `a2a_task_update`, registered only
     /// when its endpoint is `"a2a"` (see `SESSION_ONLY_TOOLS` in
-    /// `gateway::startup::tools`). No tool reads `scope.trigger`.
+    /// `tools::main_tools`). No tool reads `scope.trigger`.
     fn build(&self, scope: SessionToolScope) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.set_agent_keys(Arc::clone(&self.agent_keys));

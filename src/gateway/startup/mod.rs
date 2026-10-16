@@ -35,7 +35,8 @@ use crate::workspace::team_files::TeamWriteCoordinator;
 
 use crate::background::spawn_context::SpawnContext;
 
-use tools::{CreateAgentArgs, ToolRegistryDeps};
+use crate::tools::main_tools::{self, ToolRegistryDeps};
+use tools::CreateAgentArgs;
 
 /// All subsystems initialized before the gateway event loop.
 pub(crate) struct GatewayComponents {
@@ -839,11 +840,10 @@ async fn build_tools_and_agent(
     RegistryInjections,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
-    let tool_injections = tools::main_registry_injections(&inputs.tool_deps);
-    let (tools, output_topic_override_tx) = tools::init_tool_registry(
+    let (tools, tool_injections, output_topic_override_tx) = main_tools::init_tool_registry(
         inputs.cfg,
         inputs.layout,
-        inputs.mem,
+        &inputs.mem.hybrid_searcher,
         inputs.tz,
         &inputs.tool_deps,
     );
