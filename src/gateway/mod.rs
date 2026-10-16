@@ -16,5 +16,3 @@ pub(crate) mod types;
 pub(crate) mod web;
 pub mod websocket;
 mod ws;
-
-pub use web::teams_setup;
