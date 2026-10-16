@@ -134,6 +134,44 @@ else
 fi
 chmod 644 crates/b/Cargo.toml
 
+# The hub reads two of the paths by path: web/app-shell-csp.txt from
+# crates/hub/src/web/assets.rs and .github/workflows/release.yml from
+# crates/hub/src/update.rs. Each goes to residuum-hub only while the hub's
+# manifest and the file that reads it exist, and to the root otherwise. The
+# hub is added here, after the cases above, which run without it.
+
+# readers <state> <csp --affected> <csp --members> <release --affected> <release --members>
+readers() {
+    check "web/app-shell-csp.txt, $1" --affected web/app-shell-csp.txt "$2"
+    check "web/app-shell-csp.txt, $1" --members web/app-shell-csp.txt "$3"
+    check ".github/workflows/release.yml, $1" --affected .github/workflows/release.yml "$4"
+    check ".github/workflows/release.yml, $1" --members .github/workflows/release.yml "$5"
+}
+
+mkdir -p crates/hub/src/web
+cat > crates/hub/Cargo.toml <<'EOF'
+[package]
+name = "residuum-hub"
+version.workspace = true
+EOF
+touch crates/hub/src/web/assets.rs crates/hub/src/update.rs
+readers "hub member with both readers" "-p residuum-hub" "-p residuum-hub" "-p residuum-hub" "-p residuum-hub"
+
+rm crates/hub/src/web/assets.rs
+readers "hub member without the CSP reader" "-p residuum" "" "-p residuum-hub" "-p residuum-hub"
+
+touch crates/hub/src/web/assets.rs
+rm crates/hub/src/update.rs
+readers "hub member without the workflow reader" "-p residuum-hub" "-p residuum-hub" "-p residuum" ""
+
+rm crates/hub/src/web/assets.rs
+readers "hub member without either reader" "-p residuum" "" "-p residuum" ""
+
+touch crates/hub/src/web/assets.rs crates/hub/src/update.rs
+rm crates/hub/Cargo.toml
+readers "readers without the hub manifest" "-p residuum" "" "-p residuum" ""
+rm -rf crates/hub
+
 if [ "$status" -eq 0 ]; then
     echo "affected-packages: every path class, mode, fallback and the graph match"
 fi
