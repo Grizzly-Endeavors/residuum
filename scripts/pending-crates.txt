@@ -23,7 +23,5 @@ src/gateway/watcher.rs residuum-hub
 src/gateway/last_known_good.rs residuum-hub
 src/update.rs residuum-hub
 src/features.rs residuum-hub
-src/gateway/protocol.rs residuum-protocol
-src/gateway/sessions.rs residuum-protocol
 src/gateway/startup/tools.rs residuum-tools
 src/protocol/ residuum-protocol
