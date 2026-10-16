@@ -6,8 +6,8 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::Context as _;
 
-use crate::agent::HopCounter;
 use crate::agent::context::loading::{load_observations, load_recent_context_narrative};
+use crate::agent::{HopCounter, TeamRoster};
 use crate::background::registry::SessionRegistry;
 use crate::background::runtime::SessionRuntime;
 use crate::bus::session::SessionCategory;
