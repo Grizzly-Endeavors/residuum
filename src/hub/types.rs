@@ -12,7 +12,7 @@ use super::directory::AgentDirectory;
 use super::overview::AgentOverview;
 use super::team_events::TeamEvent;
 use crate::background::team::{A2aVisibility, Actor, AgentSummary};
-use crate::gateway::protocol::ServerMessage;
+use crate::protocol::ServerMessage;
 
 /// Body of `PATCH /api/hub/agents/{name}`: at least one field is set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, TS)]

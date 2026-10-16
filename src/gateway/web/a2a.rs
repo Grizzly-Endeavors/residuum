@@ -24,7 +24,7 @@ use crate::a2a::{
     AgentSource, AgentStatus, CardError, CardRuntime, RemoteTaskTracker, build_agent_card,
 };
 use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT, WorkspaceLayout};
-use crate::gateway::protocol::OutboundA2aTaskSummary;
+use crate::protocol::OutboundA2aTaskSummary;
 use crate::tunnel::TunnelStatus;
 
 use super::config::ValidateResponse;

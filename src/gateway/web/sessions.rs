@@ -33,17 +33,18 @@ use crate::background::store::{RunCursor, RunFilter, SessionStore, is_valid_run_
 use crate::bus::session::{MAIN_DEPTH, SessionCategory, artifact_sender_address, generate_address};
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
 use crate::config::ModelSelector;
-use crate::gateway::protocol::{
-    SessionCommandErrorCode, SessionDeliveryOutcome, SessionListResponse, SessionSummary,
-};
 use crate::gateway::sessions::{
     SessionCommandError, SessionMessageAuthor, send_session_message, stop_session,
-    summary_from_live, summary_from_record,
+    summary_from_record,
 };
 use crate::gateway::web::artifact_identity::artifact_identity;
 use crate::inference::Message;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;
+use crate::protocol::frames::summary_from_live;
+use crate::protocol::{
+    SessionCommandErrorCode, SessionDeliveryOutcome, SessionListResponse, SessionSummary,
+};
 use crate::skills::SharedSkillState;
 use crate::workbench::is_valid_artifact_name;
 
@@ -673,7 +674,7 @@ mod tests {
     use super::*;
     use crate::bus::session::{MAIN_ADDRESS, SessionInfo, SessionState};
     use crate::bus::{EventTrigger, SessionAddress};
-    use crate::gateway::protocol::SessionListResponse;
+    use crate::protocol::SessionListResponse;
 
     fn info(address: &str, run_id: &str, trigger: EventTrigger, minutes: i64) -> SessionInfo {
         SessionInfo {

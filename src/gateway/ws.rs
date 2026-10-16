@@ -13,10 +13,10 @@ use tracing::Instrument;
 use crate::bus::EndpointName;
 use crate::bus::origin::MessageOrigin;
 use crate::config::WEB_UI_ENDPOINT;
-use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::gateway::websocket::subscriber::WsSubscribers;
 use crate::inference::ImageData;
+use crate::protocol::{ClientMessage, ServerMessage};
 use crate::workbench::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 

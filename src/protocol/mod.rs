@@ -1,5 +1,7 @@
 //! WebSocket protocol types: client and server message frames.
 
+pub mod frames;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

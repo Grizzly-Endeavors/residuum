@@ -26,3 +26,4 @@ src/features.rs residuum-hub
 src/gateway/protocol.rs residuum-protocol
 src/gateway/sessions.rs residuum-protocol
 src/gateway/startup/tools.rs residuum-tools
+src/protocol/ residuum-protocol

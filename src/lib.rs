@@ -33,6 +33,7 @@ pub mod inbox;
 pub mod interfaces;
 pub mod logging;
 pub mod notify;
+pub mod protocol;
 pub mod pulse;
 pub mod setup_wizard;
 pub mod subconscious;

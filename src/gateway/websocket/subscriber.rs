@@ -6,12 +6,12 @@ use crate::bus::{
     Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
-use crate::gateway::protocol::{QueuedMessage, ServerMessage, SnapshotFrame, TurnInProgress};
 use crate::gateway::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
+use crate::protocol::frames::{session_event_to_server_message, workspace_frame};
+use crate::protocol::{QueuedMessage, ServerMessage, SnapshotFrame, TurnInProgress};
 use tokio::sync::mpsc;
 
-use crate::bus::workspace_change::WorkspaceResyncReason;
-use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges};
+use crate::workspace::watch::WatchSet;
 
 /// The frame for one event of the main agent's conversation.
 #[expect(
@@ -155,9 +155,9 @@ fn turn_in_progress(record: TurnRecord) -> TurnInProgress {
 fn post_turn_activity_frame(event: PostTurnActivityEvent) -> ServerMessage {
     ServerMessage::PostTurnActivity {
         kind: match event.kind {
-            PostTurnActivityKind::Memory => crate::gateway::protocol::PostTurnActivityKind::Memory,
+            PostTurnActivityKind::Memory => crate::protocol::PostTurnActivityKind::Memory,
             PostTurnActivityKind::Subconscious => {
-                crate::gateway::protocol::PostTurnActivityKind::Subconscious
+                crate::protocol::PostTurnActivityKind::Subconscious
             }
         },
         active: event.active,
@@ -172,30 +172,6 @@ fn turn_usage_frame(usage: TurnUsageEvent) -> ServerMessage {
         has_usage: usage.has_usage,
         tool_calls: usage.tool_calls,
         session_totals: usage.session_totals,
-    }
-}
-
-/// The frame a workspace change-feed event becomes for a connection watching
-/// `watch_set`, if any. A connection watching nothing gets nothing.
-pub(crate) fn workspace_frame(
-    watch_set: &WatchSet,
-    event: WorkspaceEvent,
-) -> Option<ServerMessage> {
-    if watch_set.is_empty() {
-        return None;
-    }
-    match event {
-        WorkspaceEvent::Changed(changes) => match watch_set.filter(&changes) {
-            WatchedChanges::None => None,
-            WatchedChanges::Changes(changes) => Some(ServerMessage::WorkspaceChanged { changes }),
-            WatchedChanges::TooMany => Some(ServerMessage::WorkspaceResync {
-                reason: WorkspaceResyncReason::Overflow,
-            }),
-        },
-        WorkspaceEvent::Resync(reason) => Some(ServerMessage::WorkspaceResync { reason }),
-        WorkspaceEvent::Unavailable => Some(ServerMessage::WorkspaceWatchUnavailable {
-            message: LIVE_UPDATES_OFF_MESSAGE.to_string(),
-        }),
     }
 }
 
@@ -388,7 +364,7 @@ impl WsSubscribers {
                 },
                 event = self.session.recv() => match event {
                     Ok(Some(session_event)) => Some(
-                        crate::gateway::sessions::session_event_to_server_message(session_event),
+                        session_event_to_server_message(session_event),
                     ),
                     _ => return None,
                 },
@@ -1067,11 +1043,6 @@ mod tests {
         tokio::sync::watch::channel(WatchSet::default()).1
     }
 
-    fn watching(prefixes: &[&str]) -> tokio::sync::watch::Receiver<WatchSet> {
-        let set = WatchSet::parse(prefixes.iter().map(ToString::to_string).collect()).unwrap();
-        tokio::sync::watch::channel(set).1
-    }
-
     fn modified(path: &str) -> WorkspaceChange {
         WorkspaceChange {
             path: path.to_string(),
@@ -1081,68 +1052,6 @@ mod tests {
 
     fn batch(paths: &[&str]) -> WorkspaceEvent {
         WorkspaceEvent::Changed(paths.iter().map(|p| modified(p)).collect())
-    }
-
-    #[test]
-    fn a_connection_receives_only_changes_under_its_prefixes() {
-        let frame = workspace_frame(
-            &watching(&["wiki"]).borrow(),
-            batch(&["wiki/a.md", "wikipedia/b.md", "notes/c.md"]),
-        );
-        assert!(
-            matches!(&frame, Some(ServerMessage::WorkspaceChanged { changes }) if changes == &[modified("wiki/a.md")]),
-            "{frame:?}"
-        );
-        assert!(
-            workspace_frame(&watching(&["notes/other"]).borrow(), batch(&["wiki/a.md"])).is_none()
-        );
-    }
-
-    #[test]
-    fn a_connection_watching_nothing_receives_nothing() {
-        let set = no_watch_set();
-        assert!(workspace_frame(&set.borrow(), batch(&["wiki/a.md"])).is_none());
-        assert!(
-            workspace_frame(
-                &set.borrow(),
-                WorkspaceEvent::Resync(WorkspaceResyncReason::WatcherRestarted)
-            )
-            .is_none()
-        );
-        assert!(workspace_frame(&set.borrow(), WorkspaceEvent::Unavailable).is_none());
-    }
-
-    #[test]
-    fn too_many_matching_changes_become_an_overflow_resync() {
-        let paths: Vec<String> = (0..=crate::workspace::watch::MAX_CHANGES_PER_FRAME)
-            .map(|i| format!("wiki/{i}.md"))
-            .collect();
-        let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-        let frame = workspace_frame(&watching(&["wiki"]).borrow(), batch(&paths));
-        assert!(matches!(
-            frame,
-            Some(ServerMessage::WorkspaceResync {
-                reason: WorkspaceResyncReason::Overflow
-            })
-        ));
-    }
-
-    #[test]
-    fn resyncs_and_outages_reach_every_watching_connection() {
-        let set = watching(&["wiki"]);
-        assert!(matches!(
-            workspace_frame(
-                &set.borrow(),
-                WorkspaceEvent::Resync(WorkspaceResyncReason::Overflow)
-            ),
-            Some(ServerMessage::WorkspaceResync {
-                reason: WorkspaceResyncReason::Overflow
-            })
-        ));
-        assert!(matches!(
-            workspace_frame(&set.borrow(), WorkspaceEvent::Unavailable),
-            Some(ServerMessage::WorkspaceWatchUnavailable { .. })
-        ));
     }
 
     #[tokio::test]
