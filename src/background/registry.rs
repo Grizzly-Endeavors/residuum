@@ -498,8 +498,8 @@ impl SessionRegistry {
     /// Unbounded, like [`Self::wait_until_clear`]: the caller bounds it
     /// (graceful shutdown wraps it in its own deadline). Driven by
     /// the `cleared` notifier with the same check-then-wait ordering, so the
-    /// removal of the last session wakes it at once rather than on a poll.
-    pub async fn wait_until_empty(&self) {
+    /// removal of the last session wakes it at once.
+    pub(crate) async fn wait_until_empty(&self) {
         loop {
             let notified = self.cleared.notified();
             if self.lock().is_empty() {

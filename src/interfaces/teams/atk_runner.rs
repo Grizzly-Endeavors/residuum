@@ -265,14 +265,12 @@ pub fn map_provision_error(exit_code: Option<i32>, output_text: &str) -> String 
 }
 
 /// Timeout for each `--version` probe in [`detect_prereqs`].
-pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Timeout for the `atk auth list m365` sign-in check in [`check_signed_in`].
-pub const SIGN_IN_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const SIGN_IN_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Optional path and timeout overrides for injected test executables without global PATH modification.
-///
-/// The default carries the production timeouts; a field left at its default runs the production value.
 #[derive(Debug, Clone)]
 pub struct AtkRunnerOverrides {
     /// Injected path for `node`.
@@ -285,18 +283,6 @@ pub struct AtkRunnerOverrides {
     pub probe_timeout: Duration,
     /// Timeout for the `atk auth list m365` sign-in check.
     pub sign_in_check_timeout: Duration,
-}
-
-impl Default for AtkRunnerOverrides {
-    fn default() -> Self {
-        Self {
-            node_bin: None,
-            npm_bin: None,
-            atk_bin: None,
-            probe_timeout: PROBE_TIMEOUT,
-            sign_in_check_timeout: SIGN_IN_CHECK_TIMEOUT,
-        }
-    }
 }
 
 /// Result of a streaming process execution.
