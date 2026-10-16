@@ -1,5 +1,5 @@
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary } from "../lib/hub-types";
 import { hub } from "../lib/hub.svelte";
 import { notifications } from "../lib/notifications.svelte";
@@ -26,11 +26,11 @@ function agent(name: string): AgentSummary {
 let created: Record<string, unknown>[] = [];
 let createFails = false;
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
 });
 
-afterAll(() => {
+afterEach(() => {
   router.stop();
 });
 

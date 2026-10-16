@@ -1,5 +1,5 @@
 import userEvent from "@testing-library/user-event";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "../lib/router.svelte";
 import { render, screen, settle } from "../test/component";
 import ConnectionStatusDialog from "./ConnectionStatusDialog.svelte";
@@ -19,11 +19,11 @@ function stubClipboard(writeText: (text: string) => Promise<void>): ReturnType<t
   return spy;
 }
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
 });
 
-afterAll(() => {
+afterEach(() => {
   router.stop();
 });
 

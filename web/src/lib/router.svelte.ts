@@ -173,8 +173,13 @@ class Router {
     window.history.replaceState(this.entry, "", currentUrl());
   }
 
-  /** Stop following the browser's history. */
+  /**
+   * Stop following the browser's history. A traversal still waiting on the
+   * browser is settled here, since its report would no longer be heard: its
+   * timer is cleared, so it cannot fire after the page it belonged to is gone.
+   */
   stop(): void {
+    this.settleTraversal?.();
     if (!this.started) return;
     this.started = false;
     this.overlaysOnly = false;
@@ -480,14 +485,17 @@ class Router {
     this.queued += 1;
     const run = (): Promise<void> =>
       new Promise<void>((resolve) => {
+        // Captured now: the timer may fire after a test environment has torn
+        // down the global `window`, and settling must not read it then.
+        const view: Window = window;
         const finish = (): void => {
-          window.clearTimeout(timer);
+          view.clearTimeout(timer);
           this.settleTraversal = null;
           resolve();
         };
-        const timer = window.setTimeout(finish, TRAVERSAL_TIMEOUT_MS);
+        const timer = view.setTimeout(finish, TRAVERSAL_TIMEOUT_MS);
         this.settleTraversal = finish;
-        window.history.go(delta);
+        view.history.go(delta);
       });
     this.traversals = this.traversals.then(run).then(() => {
       this.queued -= 1;

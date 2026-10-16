@@ -1,6 +1,6 @@
 import { cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, settle } from "../test/component";
 import { FeedStore } from "../lib/feed.svelte";
 import { router } from "../lib/router.svelte";
@@ -36,11 +36,11 @@ const opener = (n: number): HTMLElement =>
 /** The picture the viewer shows. */
 const shown = (): HTMLElement => screen.getByRole("dialog").querySelector("img") as HTMLElement;
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
 });
 
-afterAll(() => {
+afterEach(() => {
   router.stop();
 });
 

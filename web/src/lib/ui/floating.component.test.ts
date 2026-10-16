@@ -1,16 +1,16 @@
 import { act, cleanup, fireEvent } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "../../test/component";
 import FloatingHarness from "../../test/ui/FloatingHarness.svelte";
 import { router } from "../router.svelte";
 import { waitFor } from "../../test/wait";
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
 });
 
-afterAll(() => {
+afterEach(() => {
   router.stop();
 });
 
