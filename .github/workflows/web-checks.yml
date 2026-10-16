@@ -1,10 +1,11 @@
 name: Web Checks
 
 # The web format, lint, type, unit, build and end-to-end checks, and the visual
-# comparisons. ci.yml calls it on pull requests and merge queue batches that
-# change the web app, and release.yml on every release tag. It is also
-# runnable by hand from the Actions tab, to try a change on the runners
-# without opening a pull request.
+# comparisons. ci.yml calls it on merge queue batches that change the web app,
+# without the visual comparisons, and on pull requests that change the web app
+# for the visual comparisons alone (`visual_only`); release.yml calls it on
+# every release tag. It is also runnable by hand from the Actions tab, to try a
+# change on the runners without opening a pull request.
 #
 # Every check is its own job so they run side by side, on lab-runners-wide
 # (grizzly-platform ADR-081): the web jobs split well across runners.
@@ -15,6 +16,10 @@ on:
         description: Run the web visual comparisons, which compare component screenshots against the committed baselines in their own job and never fail the workflow; turn off to leave them out
         type: boolean
         default: true
+      visual_only:
+        description: Run only the web visual comparisons (web-visual), as the pull request lane does, whatever `visual` says
+        type: boolean
+        default: false
     outputs:
       visual_status:
         description: How the visual comparisons ended; match, differ, error or skipped, and empty when the job did not run or did not finish
@@ -28,6 +33,10 @@ on:
         description: Run the web visual comparisons, which compare component screenshots against the committed baselines in their own job and never fail the workflow; turn off to leave them out
         type: boolean
         default: true
+      visual_only:
+        description: Run only the web visual comparisons (web-visual), whatever `visual` says
+        type: boolean
+        default: false
 
 jobs:
   # Every check runs even when an earlier one fails, so one run lists every
@@ -35,6 +44,7 @@ jobs:
   # and the job still fails if any step failed.
   web:
     name: Web Checks
+    if: ${{ !inputs.visual_only }}
     runs-on: lab-runners-wide
 
     steps:
@@ -111,6 +121,7 @@ jobs:
   # what Web Checks runs.
   web-node:
     name: Web Tests (Node ${{ matrix.node }})
+    if: ${{ !inputs.visual_only }}
     runs-on: lab-runners-wide
 
     strategy:
@@ -146,6 +157,7 @@ jobs:
   # comparisons are not part of these shards; they run in `web-visual` below.
   web-e2e:
     name: Web End-to-End (${{ matrix.shard }}/4)
+    if: ${{ !inputs.visual_only }}
     runs-on: lab-runners-wide
 
     strategy:
@@ -220,7 +232,7 @@ jobs:
   # the outputs are set whatever happened.
   web-visual:
     name: Web Visual Comparisons
-    if: inputs.visual
+    if: inputs.visual || inputs.visual_only
     runs-on: lab-runners-wide
     continue-on-error: true
 

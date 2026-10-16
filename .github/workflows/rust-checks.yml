@@ -1,10 +1,11 @@
 name: Rust Checks
 
 # The Rust format, clippy (host and Windows), test, generated-types,
-# dependency (audit and unused) and crate isolation checks. ci.yml calls it on pull requests and merge queue batches
-# that change Rust code, and release.yml on every release tag. It is also
-# runnable by hand from the Actions tab, to try a change on the runners
-# without opening a pull request.
+# dependency (audit and unused) and crate isolation checks. ci.yml calls it on
+# merge queue batches that change Rust code, and on pull requests that change
+# Rust code for the Windows clippy alone (`windows_clippy_only`); release.yml
+# calls it on every release tag. It is also runnable by hand from the Actions
+# tab, to try a change on the runners without opening a pull request.
 #
 # Every check is its own job so they run side by side. Each job names the
 # runner pool that suits it (grizzly-platform ADR-081): the jobs that build and
@@ -26,6 +27,10 @@ on:
         description: Check each member crate alone (rust-isolation), as the merge queue does
         type: boolean
         default: true
+      windows_clippy_only:
+        description: Run only the Windows clippy (rust-lint-windows), as the pull request lane does; the other inputs but packages then do nothing
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       pebble:
@@ -40,6 +45,10 @@ on:
         description: Check each member crate alone (rust-isolation)
         type: boolean
         default: true
+      windows_clippy_only:
+        description: Run only the Windows clippy (rust-lint-windows); the other inputs but packages then do nothing
+        type: boolean
+        default: false
 
 env:
   # CI checkouts are fresh, so incremental state is never reused here, and with
@@ -54,6 +63,7 @@ jobs:
   # and the job still fails if any step failed.
   rust-lint:
     name: Rust Lint
+    if: ${{ !inputs.windows_clippy_only }}
     runs-on: lab-runners-fast
 
     # cargo-shear is pinned here, with its archive digests in the install step.
@@ -227,6 +237,7 @@ jobs:
   # (nightly-stress.yml), which files each failure as an issue.
   rust-test:
     name: Rust Tests
+    if: ${{ !inputs.windows_clippy_only }}
     runs-on: lab-runners-fast
 
     steps:
@@ -334,7 +345,7 @@ jobs:
   # is set (the merge queue and releases).
   rust-isolation:
     name: Crate Isolation
-    if: inputs.isolation
+    if: inputs.isolation && !inputs.windows_clippy_only
     runs-on: lab-runners-wide
 
     steps:
