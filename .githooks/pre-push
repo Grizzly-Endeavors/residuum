@@ -342,6 +342,12 @@ is_member() {
     [ -f "$1/crates/$2/Cargo.toml" ]
 }
 
+# Whether the tree $1 has the hub as a member crate that holds the source file $2,
+# the file whose tests read a path (scripts/affected-packages.sh, reader_package).
+hub_reads() {
+    is_member "$1" hub && [ -f "$1/crates/hub/$2" ]
+}
+
 # The root unit-test filters of the push being planned, space-separated. The
 # source scans are always among them.
 UNIT_FILTERS=""
@@ -397,8 +403,12 @@ pick_packages() {
 #   other tests/*/*                every integration test
 #   web/src/styles/tokens.css      the member tests of residuum-net, which
 #                                  embeds it (crates/net/src/browser_landing.rs)
-#   web/app-shell-csp.txt, .github/workflows/release.yml
-#                                  every root unit test
+#   web/app-shell-csp.txt          the member tests of residuum-hub, which reads it
+#                                  (crates/hub/src/web/assets.rs), or every root
+#                                  unit test while the hub is not a member crate
+#   .github/workflows/release.yml  the member tests of residuum-hub, which reads it
+#                                  (crates/hub/src/update.rs), or every root unit
+#                                  test while the hub is not a member crate
 # Clippy checks the packages scripts/affected-packages.sh --affected picks for
 # all the changed paths, and every package when there is no list of them.
 # The source scans (testing::source_scan) run whenever the Rust checks run at
@@ -500,10 +510,25 @@ plan_rust_tests() {
         web/src/styles/tokens.css)
             member_paths="$member_paths$path"$'\n'
             ;;
+        web/app-shell-csp.txt)
+            if hub_reads "$dir" src/web/assets.rs; then
+                member_paths="$member_paths$path"$'\n'
+            else
+                unit_all=1
+                unit_reason="$path is read by unit tests"
+            fi
+            ;;
+        .github/workflows/release.yml)
+            if hub_reads "$dir" src/update.rs; then
+                member_paths="$member_paths$path"$'\n'
+            else
+                unit_all=1
+                unit_reason="$path is read by unit tests"
+            fi
+            ;;
         *)
             # Only paths the Rust checks cover count: a docs or web file that no
-            # test reads selects nothing. Those that reach here are files tests
-            # read by path (web/app-shell-csp.txt, .github/workflows/release.yml).
+            # test reads selects nothing.
             if grep -qE "$RUST_PATHS_RE" <<<"$path"; then
                 unit_all=1
                 unit_reason="$path is read by unit tests"
