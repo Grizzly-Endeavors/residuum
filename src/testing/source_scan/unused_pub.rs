@@ -165,12 +165,15 @@ fn mentions<'a>(
             continue;
         }
         let crate_dir = member_crate(&file.path);
+        let in_literal = starts_inside_literal(&file.lines);
         let mut in_use = false;
         for (idx, (line, own_test)) in file.lines.iter().zip(&file.own_test).enumerate() {
             let Some(code) = without_comment(line) else {
                 continue;
             };
-            in_use = in_use || use_start.is_match(code);
+            // A string literal's continuation line can start with `use `.
+            let starts_in_literal = in_literal.get(idx).copied().unwrap_or(false);
+            in_use = in_use || (!starts_in_literal && use_start.is_match(code));
             let import = in_use;
             if code.contains(';') {
                 in_use = false;
@@ -305,6 +308,16 @@ pub fn unused_support_zq() {}
 pub const SAMPLE_ZQ: &str = "
 pub fn inside_a_literal_zq() {}
 ";
+
+pub fn used_after_a_use_string_zq() -> u8 { 0 }
+
+fn message_zq() -> String {
+    format!(
+        "a wrapped message \
+         use this wording {}",
+        used_after_a_use_string_zq(),
+    )
+}
 
 macro_rules! make_zq {
     () => {
