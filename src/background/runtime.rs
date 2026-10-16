@@ -316,10 +316,10 @@ impl SessionRuntime {
     /// and being recorded, so a graceful shutdown doesn't leave sessions for
     /// startup recovery to pick up.
     ///
-    /// Waits up to `timeout` by polling the registry; logs a warning and
-    /// returns if sessions are still live once the deadline passes (their
-    /// runs remain in the store as `running` and get swept by startup
-    /// recovery on the next boot).
+    /// Waits up to `timeout` for the registry to empty, waking as each run
+    /// leaves it; logs a warning and returns if sessions are still live once
+    /// the deadline passes (their runs remain in the store as `running` and
+    /// get swept by startup recovery on the next boot).
     pub(crate) async fn shutdown(&self, timeout: Duration) {
         let signalled = self.registry.stop_all();
         if signalled == 0 {
@@ -327,13 +327,12 @@ impl SessionRuntime {
         }
         tracing::info!(sessions = signalled, "stopping live sessions for shutdown");
 
-        let deadline = tokio::time::Instant::now() + timeout;
-        while tokio::time::Instant::now() < deadline {
-            if self.registry.list_live().is_empty() {
-                tracing::info!("all sessions completed for shutdown");
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        if tokio::time::timeout(timeout, self.registry.wait_until_empty())
+            .await
+            .is_ok()
+        {
+            tracing::info!("all sessions completed for shutdown");
+            return;
         }
         tracing::warn!(
             remaining = self.registry.list_live().len(),
@@ -3131,7 +3130,15 @@ mod tests {
         )
         .await;
 
-        runtime.shutdown(Duration::from_secs(2)).await;
+        // The stopped run's teardown (memory merge, store record) has
+        // no fixed duration, so shutdown gets a deadline past the
+        // hang guard: the test waits on the run leaving the registry, and only
+        // the guard can end the wait early.
+        wait::guarded(
+            "shutdown to wait out the stopped session's teardown",
+            runtime.shutdown(wait::HANG_GUARD * 2),
+        )
+        .await;
 
         assert!(
             runtime.registry.get(&address).is_none(),
