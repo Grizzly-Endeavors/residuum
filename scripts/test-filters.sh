@@ -129,7 +129,7 @@ it_modules_covering() { # crate name
         if [ "$module" = main ]; then
             continue
         fi
-        covers="$(sed -n 's|^//! covers: *||p' "$file" | head -n 1)"
+        covers="$(sed -n 's|^//! covers: ||p' "$file" | head -n 1)"
         covers=${covers// /}
         case ",$covers," in
             *",residuum-$name,"*)
