@@ -4,6 +4,7 @@
 //! content sanitization, and error reporting. Called by both CLI (via HTTP to
 //! the daemon) and web API handlers.
 
+pub mod client_context;
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;
@@ -162,7 +163,7 @@ pub struct BugReport {
     pub what_doing: String,
     /// Severity selected by the user.
     pub severity: Severity,
-    /// Runtime metadata gathered by the root crate's `client_context` module.
+    /// Runtime metadata, built by the `client_context` module.
     pub client: ClientContext,
 }
 

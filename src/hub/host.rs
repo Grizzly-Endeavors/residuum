@@ -869,7 +869,7 @@ impl AgentHost {
             .tracing_service
             .on_error(
                 &format!("agent failed: {reason}"),
-                crate::client_context::gather_for_agent(
+                crate::tracing_service::client_context::gather_for_agent(
                     self.services.control.build,
                     &slot.name,
                     cfg,

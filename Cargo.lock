@@ -5238,6 +5238,7 @@ dependencies = [
  "rustls 0.23.46",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

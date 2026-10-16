@@ -9,8 +9,8 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::build_info::BuildInfo;
-use crate::client_context;
 use crate::config::OtelEndpoint;
+use crate::tracing_service::client_context;
 use crate::tracing_service::{
     BugReport, ClientContext, ExportResult, ExportTarget, Feedback, Severity, SubmissionReceipt,
     TracingService, TracingStatus,

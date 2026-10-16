@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::build_info::BuildInfo;
-use crate::client_context;
 use crate::inference::ToolDefinition;
+use crate::tracing_service::client_context;
 use crate::tracing_service::{Feedback, TracingService};
 
 use super::require_str;
