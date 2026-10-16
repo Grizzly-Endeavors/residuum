@@ -1,7 +1,7 @@
 name: Rust Checks
 
 # The Rust format, clippy (host and Windows), test, generated-types,
-# dependency and crate isolation checks. ci.yml calls it on pull requests and merge queue batches
+# dependency (audit and unused) and crate isolation checks. ci.yml calls it on pull requests and merge queue batches
 # that change Rust code, and release.yml on every release tag. It is also
 # runnable by hand from the Actions tab, to try a change on the runners
 # without opening a pull request.
@@ -56,6 +56,12 @@ jobs:
     name: Rust Lint
     runs-on: lab-runners-fast
 
+    # cargo-shear is pinned here, with its archive digests in the install step.
+    # The `shear` recipe in the justfile and the pre-push hook read the version
+    # from this file, so the local checks and this job cannot drift apart.
+    env:
+      CARGO_SHEAR_VERSION: 1.14.0
+
     steps:
       - uses: actions/checkout@v7
 
@@ -105,6 +111,44 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo deny check
 
+      # cargo-shear reads the manifests and sources and builds nothing, so it
+      # needs only the toolchain's cargo, for `cargo metadata`. The archive is
+      # checked against its pinned sha256 before it is unpacked, so the run uses
+      # exactly the pinned build. The release publishes no checksums file, so the
+      # digests are pinned here, taken from the GitHub release asset digests;
+      # change them together with CARGO_SHEAR_VERSION. The musl builds are
+      # statically linked and need nothing from the runner image.
+      - name: Install cargo-shear
+        id: shear_install
+        if: ${{ !cancelled() }}
+        run: |
+          case "$(uname -m)" in
+            x86_64)
+              target=x86_64-unknown-linux-musl
+              sha=9004df4eb031a456026c4326ae0d0ce545321527a67be90f4524c1be729dc40e
+              ;;
+            aarch64)
+              target=aarch64-unknown-linux-musl
+              sha=d83f7c5b02c4c237d0454697c12df041df0bd83ffecc1aba46c6e06315fd47e1
+              ;;
+            *) echo "no cargo-shear build for $(uname -m)" >&2; exit 1 ;;
+          esac
+          work="$RUNNER_TEMP/cargo-shear"
+          mkdir -p "$work/bin"
+          archive="cargo-shear-${target}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$archive" "https://github.com/Boshen/cargo-shear/releases/download/v${CARGO_SHEAR_VERSION}/$archive"
+          echo "$sha  $work/$archive" | sha256sum -c -
+          tar -xzf "$work/$archive" -C "$work/bin" cargo-shear
+          echo "$work/bin" >> "$GITHUB_PATH"
+
+      # --locked keeps the scan from rewriting Cargo.lock, and --deny-warnings
+      # fails on a warning (an unlinked file, an ignore that suppresses nothing)
+      # as it does on an unused dependency.
+      - name: Unused dependencies
+        id: shear
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.shear_install.outcome == 'success' }}
+        run: cargo shear --version && cargo shear --locked --deny-warnings
+
       - name: Build summary
         if: always()
         run: |
@@ -117,6 +161,8 @@ jobs:
             echo "| Format | ${{ steps.fmt.outcome }} |"
             echo "| Clippy | ${{ steps.clippy.outcome }} |"
             echo "| Deny | ${{ steps.deny.outcome }} |"
+            echo "| Shear install | ${{ steps.shear_install.outcome }} |"
+            echo "| Shear | ${{ steps.shear.outcome }} |"
             echo ''
             echo '### Compiler cache (sccache)'
             echo ''
