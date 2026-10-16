@@ -181,7 +181,7 @@ pub(crate) fn saturating_i32(n: usize) -> i32 {
 
 /// Mirrors `a2a_server::task_store::apply_history_length`, which is
 /// crate-private in the SDK — duplicated here rather than widened upstream.
-/// Shared with [`super::handler::ResiduumA2aHandler::list_tasks`], which
+/// Shared with `ResiduumA2aHandler::list_tasks` in `handler.rs`, which
 /// bypasses the SDK's own list path to filter by caller first.
 pub(crate) fn apply_history_length(task: &mut Task, history_length: Option<i32>) {
     let Some(requested) = history_length else {

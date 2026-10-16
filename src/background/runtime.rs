@@ -95,8 +95,8 @@ pub(crate) struct SessionSpawnRequest {
     pub trigger: EventTrigger,
     /// Skill the session runs with, if any.
     pub agent_skill: Option<SkillName>,
-    /// The agent that requested this spawn, if any (see [`SpawnRequestEvent`]
-    /// via [`crate::bus::SpawnRequestEvent`]).
+    /// The agent that requested this spawn, if any (see
+    /// [`crate::bus::SpawnRequestEvent`]).
     pub spawner: Option<SessionAddress>,
     /// Depth from the main agent this session runs at (main = 0).
     pub depth: u32,

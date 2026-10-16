@@ -725,7 +725,7 @@ pub(crate) fn diagnose_heartbeat(content: &str) -> Vec<crate::diagnostics::Diagn
     diagnostics
 }
 
-/// Turn a [`HeartbeatProblem`] into a [`Diagnostic`] located at the pulse it
+/// Turn a [`HeartbeatProblem`] into a [`crate::diagnostics::Diagnostic`] located at the pulse it
 /// names: a warning for a setting with no effect, an error otherwise.
 fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> crate::diagnostics::Diagnostic {
     use crate::diagnostics::{Diagnostic, Location};

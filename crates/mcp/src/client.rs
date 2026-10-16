@@ -255,7 +255,7 @@ impl McpClientHandle {
 ///
 /// `Err(d)` reports the configured duration `d` that elapsed before `fut`
 /// finished; the caller turns that into a plain-language timeout error. This
-/// is split out from [`McpClient::call_tool`] so the timeout/no-timeout
+/// is split out from [`McpClientHandle::call_tool`] so the timeout/no-timeout
 /// behavior itself is testable against a plain future, without a live MCP
 /// connection.
 async fn run_with_optional_timeout<T>(
