@@ -579,22 +579,27 @@ mod tests {
         assert!(adds_and_announces(&registry, &bus).await, "after a reload");
     }
 
-    #[test]
-    fn registry_with_defaults() {
-        let mut registry = ToolRegistry::new();
-        let policy = PathPolicy::new_shared();
+    /// Registers the default tools with no injections, the way a session's
+    /// registry does, with `workspace_dir` as the directory `exec` starts in.
+    fn register_defaults_in(registry: &mut ToolRegistry, workspace_dir: PathBuf) {
         register_defaults(
-            &mut registry,
+            registry,
             &RegistryInjections::default(),
             FileTracker::new_shared(),
-            policy,
+            PathPolicy::new_shared(),
             crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
-                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
-                workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
-                hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),
+                config_dir: PathBuf::from("/tmp/residuum-test-config-unused"),
+                workspace_dir,
+                hub_dir: PathBuf::from("/tmp/residuum-test-hub-unused"),
             },
             None,
         );
+    }
+
+    #[test]
+    fn registry_with_defaults() {
+        let mut registry = ToolRegistry::new();
+        register_defaults_in(&mut registry, PathBuf::from("/tmp/residuum-test-workspace"));
         let defs = registry.definitions();
         assert!(
             defs.iter().any(|d| d.name == "read_file"),
@@ -664,17 +669,9 @@ mod tests {
     #[test]
     fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
         let mut registry = ToolRegistry::new();
-        register_defaults(
+        register_defaults_in(
             &mut registry,
-            &RegistryInjections::default(),
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
-                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
-                workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
-                hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
-            },
-            None,
+            PathBuf::from("/tmp/residuum-test-workspace-unused"),
         );
 
         reload_ollama_web_search_tool(&mut registry, Some(&ollama_backend()));
@@ -684,6 +681,57 @@ mod tests {
         assert!(
             names.contains(&"exec".to_string()),
             "unrelated tools should survive reload"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn register_defaults_gives_exec_the_registrys_agent_keys() {
+        let keys_dir = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let keys = crate::agent_keys::AgentKeys::new_shared(keys_dir.path());
+        keys.set(
+            "api_key",
+            "sk-live-redactme42",
+            None,
+            crate::agent_keys::KeyCreator::User,
+        )
+        .await
+        .unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.set_agent_keys(keys);
+        register_defaults_in(&mut registry, workspace.path().to_path_buf());
+
+        let result = registry
+            .execute(
+                "exec",
+                serde_json::json!({
+                    "command": "echo \"Authorization: Bearer $API_KEY\"",
+                    "keys": ["api_key"]
+                }),
+            )
+            .await
+            .unwrap();
+        // exec received the registry's key store, so the child saw the value.
+        assert!(!result.is_error, "{}", result.output);
+        assert!(
+            result
+                .output
+                .contains("Authorization: Bearer sk-live-redactme42"),
+            "{}",
+            result.output
+        );
+        // The registry's redactor, which the turn loop applies to tool output,
+        // covers the value exec exposed.
+        let redacted = registry
+            .redactor()
+            .await
+            .redact(&result.output)
+            .into_owned();
+        assert!(!redacted.contains("sk-live-redactme42"), "{redacted}");
+        assert!(
+            redacted.contains("Authorization: Bearer [agent-key:api_key]"),
+            "{redacted}"
         );
     }
 }
