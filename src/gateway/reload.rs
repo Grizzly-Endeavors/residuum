@@ -624,7 +624,9 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.endpoint_registry.refresh(new_cfg, &rt.channel_configs);
 }
 
-/// Build a new `SpawnContext` from the current runtime and new config.
+/// Build a new `SpawnContext`, with a new session tool factory, from the
+/// current runtime and new config. A session already running keeps the
+/// registry it was built with.
 fn build_spawn_context(
     rt: &AgentRuntime,
     new_cfg: &Config,
@@ -642,6 +644,44 @@ fn build_spawn_context(
             Arc::clone(&rt.spawn_context.observer)
         }
     };
+
+    let session_tools = Arc::new(crate::tools::SessionTools {
+        path_policy: Arc::clone(&rt.path_policy),
+        tools_path: Arc::clone(&rt.tools_path),
+        agent_keys: Arc::clone(&rt.agent_keys),
+        checkpoints: Arc::clone(&rt.checkpoints),
+        publisher: rt.publisher.clone(),
+        endpoint_registry: rt.endpoint_registry.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
+        action_store: Arc::clone(&rt.action_store),
+        action_notify: Arc::clone(&rt.action_notify),
+        hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
+        // Shared `Arc`, same instance `reload_tracing` updates in place —
+        // sessions forked after this reload see the same config, no rebuild
+        // needed here.
+        tracing_service: Arc::clone(&rt.tracing_service),
+        // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
+        // builds for the HTTP tracing API, so a session forked after this
+        // reload reports the currently active model/provider.
+        tracing_client_context: Arc::new(crate::client_context::gather_for_bug_report(
+            crate::BUILD_INFO,
+            new_cfg,
+        )),
+        web_search_backend: new_cfg.web_search.standalone_backend.clone(),
+        // The same live catalog as before the reload, which main's tools hold
+        // too; `reload_model_catalog` has already replaced its contents.
+        model_catalog: Arc::clone(&rt.spawn_context.model_catalog),
+        a2a_hub: Arc::clone(&rt.a2a_hub),
+        a2a_tracker: Arc::clone(&rt.a2a_tracker),
+        lifecycle: rt.lifecycle.clone(),
+        messenger: Arc::clone(&rt.agent_messenger),
+        layout: rt.layout.clone(),
+        config_dir: new_cfg.config_dir.clone(),
+        hub_dir: rt.hub_dir.clone(),
+        tz: rt.tz,
+        depth_cap: new_cfg.background.subagent_depth_cap,
+        auto_mode: rt.auto_mode.clone(),
+    });
 
     Arc::new(SpawnContext {
         background_config: new_cfg.background.clone(),
@@ -661,42 +701,16 @@ fn build_spawn_context(
         max_tool_iterations: new_cfg.agent.max_tool_iterations,
         repeat_call_guard: new_cfg.agent.repeat_call_guard,
         layout: rt.layout.clone(),
-        config_dir: new_cfg.config_dir.clone(),
-        hub_dir: rt.hub_dir.clone(),
-        tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
+        session_tools,
         session_runtime: Arc::clone(&rt.session_runtime),
         session_registry: Arc::clone(&rt.session_registry),
-        endpoint_registry: rt.endpoint_registry.clone(),
         publisher: rt.publisher.clone(),
-        action_store: Arc::clone(&rt.action_store),
-        action_notify: Arc::clone(&rt.action_notify),
-        hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
         skill_state: Arc::clone(&rt.skill_state),
         mcp_registry: Arc::clone(&rt.mcp_registry),
         observer,
         merge_writer: Arc::clone(&rt.merge_writer),
         messenger: Arc::clone(&rt.agent_messenger),
-        // Shared `Arc`, same instance `reload_tracing` updates in place —
-        // sessions forked after this reload see the same config, no rebuild
-        // needed here.
-        tracing_service: Arc::clone(&rt.tracing_service),
-        // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
-        // builds for the HTTP tracing API, so a session forked after this
-        // reload reports the currently active model/provider.
-        tracing_client_context: Arc::new(crate::client_context::gather_for_bug_report(
-            crate::BUILD_INFO,
-            new_cfg,
-        )),
-        web_search_backend: new_cfg.web_search.standalone_backend.clone(),
-        tools_path: Arc::clone(&rt.tools_path),
-        path_policy: Arc::clone(&rt.path_policy),
-        auto_mode: rt.auto_mode.clone(),
-        agent_keys: Arc::clone(&rt.agent_keys),
-        a2a_hub: Arc::clone(&rt.a2a_hub),
-        a2a_tracker: Arc::clone(&rt.a2a_tracker),
-        checkpoints: Arc::clone(&rt.checkpoints),
-        lifecycle: rt.spawn_context.lifecycle.clone(),
         bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
         ),
     })

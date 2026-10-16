@@ -35,7 +35,7 @@ pub use agent_lifecycle::LifecycleAccess;
 pub use config_reload_tracker::{ConfigWriteWatch, SharedConfigReloadTracker};
 pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
-pub use registry::{SubagentToolDeps, build_subagent_registry};
+pub use registry::SessionTools;
 
 use serde_json::Value;
 

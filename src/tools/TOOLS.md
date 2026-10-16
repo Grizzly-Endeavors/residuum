@@ -863,7 +863,7 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 - **completing session** — the run no longer accepts messages into itself. `AgentMessenger` hands the wait to a detached task (`wait_until_clear()` on a `tokio::sync::Notify`, not polling) and returns immediately; once the run actually leaves the registry (its resume point is always recorded before that happens), the task re-checks the address before acting: if another message already resumed it in the meantime, this one delivers straight into that live run; otherwise it resumes the session, same as a completed session below. That re-check is what lets two messages queued to one completing session both land, as exactly one new run, instead of the second racing a duplicate spawn and losing. A message still queued in a run's own interrupt channel when its teardown drains it (e.g. one delivered just as `stop_agent` lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
 - **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model, the delivered message's own hop count as the new run's starting hop count, and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. `SessionRegistry::register` is a compare-and-swap: if a spawn/resume for this address raced another one that already registered it live, the loser delivers its own input into the winning run as a message instead of clobbering it. The listener applies the same fallback for a spawn/resume request that arrives for an address it can see is already running/idle/forking — the normal outcome of two messages resuming the same completing session, not an error case.
 
-**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, each instance identifying itself with its own address and category (`"main"` for the main agent), and holding a clone of that agent's current-turn `HopCounter`.
+**Available to sessions:** registered in both the main agent's registry and every session's (`SessionTools`), each instance identifying itself with its own address and category (`"main"` for the main agent), and holding a clone of that agent's current-turn `HopCounter`.
 
 ---
 
@@ -900,7 +900,7 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 
 Calls `TeamDirectory::create` as `Actor::Agent(<caller>)` with `models_from` set to the caller and the caller's A2A visibility. The hub copies the caller's `providers.toml`, starts the agent, delivers the description as its first message when one was given, publishes `agent_created` naming the caller (a toast for the user), and files an item in the caller's user inbox. The creation runs on its own task, so cancelling the calling turn does not stop it half-way. See `docs/systems-usage/agent-lifecycle.md`.
 
-**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`; a session acts as the agent it belongs to.
+**Available to sessions:** registered in both the main agent's registry and every session's (`SessionTools`); a session acts as the agent it belongs to.
 
 ---
 
@@ -972,7 +972,7 @@ On execution error:
 
 **Source:** `ollama_web_search.rs` · `OllamaWebSearchTool`
 
-**Conditional registration:** only registered when `web_search.standalone_backend.name == "ollama"` in config. Registered on both the main agent's registry and every session's (`build_subagent_registry()`), gated by the same check. Live on config reload: main's copy is added/removed in place by `tools::registration::reload_ollama_web_search_tool`, and a session forked after the reload picks up the new gating automatically since its registry is built fresh from the reloaded `SpawnContext`.
+**Conditional registration:** only registered when `web_search.standalone_backend.name == "ollama"` in config. Registered on both the main agent's registry and every session's (`SessionTools`), gated by the same check. Live on config reload: main's copy is added/removed in place by `tools::registration::reload_ollama_web_search_tool`, and a session forked after the reload picks up the new gating automatically since its registry is built by the session tool factory the reload rebuilds.
 
 **Description sent to LLM:**
 > Search the web using Ollama Cloud. Returns search results with titles, URLs, and snippets.
@@ -1031,7 +1031,7 @@ On submission failure (network issue, upstream rejection, rate limit): `is_error
 
 **Side effects:** Submits a sanitized OTLP trace dump and the runtime client context (version, OS, model, and an allowlist of configuration toggles, counts, and enums: never keys, paths, URLs, or names) to the developer ingest service via `agent-residuum.com/api/v1/bug-report`. Span content is forcibly sanitized regardless of the runtime `sanitize_content` toggle.
 
-**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, against the same shared `TracingService` and a runtime client context snapshot taken at fork time.
+**Available to sessions:** registered in both the main agent's registry and every session's (`SessionTools`), against the same shared `TracingService` and a runtime client context snapshot taken at fork time.
 
 ---
 
@@ -1057,7 +1057,7 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 
 **Side effects:** Submits the message + version-only client context to `agent-residuum.com/api/v1/feedback`. No trace dump is attached.
 
-**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, against the same shared `TracingService`.
+**Available to sessions:** registered in both the main agent's registry and every session's (`SessionTools`), against the same shared `TracingService`.
 
 ---
 
@@ -1139,4 +1139,4 @@ On error: an unknown `state`, an empty `message`, or an artifact path that's emp
 
 **Side effect:** Publishes an `A2aTaskSignalEvent` on the bus, which the session's A2A task executor is waiting on to end the task's execution stream with the matching status. Each requested artifact is read into an A2A part first (UTF-8 text becomes a text part; anything else becomes a raw part with a detected media type) — a read failure fails the whole call before anything is published, so a caller never sees a partial update.
 
-**Available to sessions:** registered only in a session whose `SubagentToolDeps.conversation_target` names the `a2a` endpoint — never in the main agent's registry, and never in a session started any other way. See `docs/systems-usage/a2a.md`.
+**Available to sessions:** registered only in a session whose tool scope's `conversation_target` names the `a2a` endpoint — never in the main agent's registry, and never in a session started any other way. See `docs/systems-usage/a2a.md`.

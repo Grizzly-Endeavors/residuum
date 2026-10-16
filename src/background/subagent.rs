@@ -22,9 +22,9 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::skills::{SharedSkillState, SkillState};
-use crate::tools::{FileTracker, SubagentToolDeps};
 use crate::workspace::identity::IdentityFiles;
 
+use super::session_tools::SessionToolScope;
 use super::types::SubAgentBuildConfig;
 
 /// What kicks off one of a session's turns.
@@ -208,9 +208,9 @@ async fn prepare_session_skill_state(
 ///
 /// Clones the skill index so the session starts with the same view of
 /// available skills, but operates on its own independent copy of
-/// `SkillState`. The `McpRegistry`, write `PathPolicy`, tool `PATH`, and
-/// agent key store are shared (ref-counted) with the main agent, so servers
-/// are not duplicated and a session is held to the same write policy.
+/// `SkillState`. The `McpRegistry` is shared (ref-counted) with the main
+/// agent, so servers are not duplicated. The session's tools come from
+/// `config.session_tools`, scoped to this session and its own skill state.
 ///
 /// When `config.skill` is set, that skill is activated on the session's own
 /// skill state so its body arrives as the session's role instructions.
@@ -220,11 +220,6 @@ async fn prepare_session_skill_state(
 /// read — a session without the instructions that define its job is not worth
 /// running, so the spawn fails instead.
 #[tracing::instrument(skip_all)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "a flat field-for-field hand-off from SubAgentBuildConfig into the session's \
-              tool deps and resources; splitting it only moves the field list elsewhere"
-)]
 pub async fn build_subagent_resources(
     provider: Box<dyn InferenceProvider>,
     main_skill_state: &SharedSkillState,
@@ -233,88 +228,36 @@ pub async fn build_subagent_resources(
 ) -> anyhow::Result<SubAgentResources> {
     let SubAgentBuildConfig {
         workspace_layout,
-        config_dir,
-        hub_dir,
         identity,
         options,
         max_tool_iterations,
         repeat_call_guard,
-        tz,
         skill,
         observations,
         recent_context,
-        session_registry,
-        endpoint_registry,
-        publisher,
-        action_store,
-        action_notify,
-        hybrid_searcher,
         observer,
         merge_writer,
         episode_skip_token_floor,
+        session_tools,
         own_address,
         own_depth,
-        subagent_depth_cap,
         session_category,
         trigger,
         conversation_target,
-        messenger,
         hop_counter,
-        tracing_service,
-        tracing_client_context,
-        web_search_backend,
-        tools_path,
-        path_policy,
-        agent_keys,
-        a2a_hub,
-        a2a_tracker,
-        checkpoints,
-        lifecycle,
-        model_catalog,
     } = config;
 
     let (skill_state, skills_index) =
         prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
-    let tools = crate::tools::build_subagent_registry(&SubagentToolDeps {
-        // Fresh file tracker (tracks reads within this sub-agent turn only)
-        tracker: FileTracker::new_shared(),
-        path_policy,
-        tools_path,
-        agent_keys,
-        skill_state: Arc::clone(&skill_state),
-        tz,
-        hybrid_searcher,
-        workspace_dir: workspace_layout.root().to_path_buf(),
-        config_dir,
-        hub_dir,
-        episodes_dir: workspace_layout.episodes_dir(),
-        sessions_dir: workspace_layout.sessions_dir(),
-        agent_inbox_dir: workspace_layout.agent_inbox_dir(),
-        agent_inbox_archive_dir: workspace_layout.agent_inbox_archive_dir(),
-        user_inbox_dir: workspace_layout.user_inbox_dir(),
-        user_inbox_attachments_dir: workspace_layout.user_inbox_attachments_dir(),
-        session_registry,
-        endpoint_registry,
-        publisher,
-        action_store,
-        action_notify,
+    let tools = session_tools.build(SessionToolScope {
         own_address,
         own_depth,
-        depth_cap: subagent_depth_cap,
-        session_category: session_category.as_str().to_string(),
+        category: session_category,
         trigger,
         conversation_target,
-        messenger,
         hop_counter: hop_counter.clone(),
-        tracing_service,
-        tracing_client_context,
-        web_search_backend,
-        a2a_hub,
-        a2a_tracker,
-        checkpoints,
-        lifecycle,
-        model_catalog,
+        skill_state: Arc::clone(&skill_state),
     });
 
     Ok(SubAgentResources {
