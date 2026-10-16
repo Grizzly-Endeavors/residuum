@@ -1,6 +1,6 @@
 import type { AgentLastError } from "../src/lib/generated/protocol";
 
-/** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
+/** Stand-in for the running build's version (`residuum::BUILD_INFO.version`), embedded the way the real artifacts listener does. */
 export const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
 
 /** The `agentName` of the state that holds hub-level and team-level data. */
