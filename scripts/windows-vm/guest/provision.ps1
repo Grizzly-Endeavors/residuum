@@ -70,9 +70,8 @@ if ($Upgrade -or -not (Test-Command node)) {
 }
 
 # The gnu Rust toolchain bundles a linker but no C compiler, and this build
-# compiles C through the cc crate (bundled SQLite, zstd, ring). WinLibs
-# ships GCC with CMake and NASM; the msvcrt build matches the runtime the
-# release cross-compiler targets.
+# compiles C through the cc crate (bundled SQLite, zstd, ring). The msvcrt
+# build matches the runtime the release cross-compiler targets.
 Write-Information '==> MinGW-w64 GCC (WinLibs, msvcrt)'
 $mingwBin = 'C:\winlibs\mingw64\bin'
 if ($Upgrade -or -not (Test-Path (Join-Path $mingwBin 'gcc.exe'))) {
@@ -103,7 +102,5 @@ Write-Information '==> Installed versions'
 git --version
 node --version
 gcc --version | Select-Object -First 1
-cmake --version | Select-Object -First 1
-nasm -v
 rustc --version
 cargo --version
