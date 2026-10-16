@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use super::{EvalPhase, Finding, Severity, Subconscious, TurnScratch};
-use crate::agent::interrupt::Interrupt;
+use crate::bus::interrupt::Interrupt;
 use crate::inference::Message;
 
 /// Record a correction the watch actually delivered to the agent this turn.

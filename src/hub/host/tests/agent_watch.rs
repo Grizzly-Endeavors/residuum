@@ -220,7 +220,7 @@ async fn outbound_task_changes_on_the_agents_bus_reach_the_feed() {
     hub.host.start("scout").await.unwrap();
 
     let now = chrono::Utc::now();
-    let task = crate::a2a::TrackedTask {
+    let task = crate::bus::remote_task::TrackedTask {
         sender_address: "main".to_string(),
         agent: "laptop".to_string(),
         task_id: "t1".to_string(),

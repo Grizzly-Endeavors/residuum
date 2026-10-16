@@ -10,9 +10,8 @@ use crate::gateway::protocol::{QueuedMessage, ServerMessage, SnapshotFrame, Turn
 use crate::gateway::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
 use tokio::sync::mpsc;
 
-use crate::workspace::watch::{
-    LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges, WorkspaceResyncReason,
-};
+use crate::bus::workspace_change::WorkspaceResyncReason;
+use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges};
 
 /// The frame for one event of the main agent's conversation.
 #[expect(
@@ -452,8 +451,8 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
+    use crate::bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
     use crate::bus::{ReloadOutcome, ReloadedFiles, ToolCallEvent, ToolResultEvent};
-    use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind};
 
     fn ts() -> chrono::NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 3, 13)
@@ -812,7 +811,7 @@ mod tests {
     async fn turn_usage_maps_to_server_message() {
         let (handle, mut subs) = subscribed().await;
 
-        let mut totals = crate::agent::usage::SessionUsageTotals::default();
+        let mut totals = crate::bus::usage::SessionUsageTotals::default();
         totals.accumulate(Some(crate::inference::Usage {
             input_tokens: 100,
             output_tokens: 20,
@@ -1034,7 +1033,7 @@ mod tests {
             .publish(
                 topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
                 OutboundA2aTaskEvent {
-                    task: crate::a2a::TrackedTask {
+                    task: crate::bus::remote_task::TrackedTask {
                         sender_address: "main".into(),
                         agent: "laptop".into(),
                         task_id: "t1".into(),

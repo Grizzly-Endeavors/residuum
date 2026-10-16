@@ -692,7 +692,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc.with_ymd_and_hms(2026, 9, 20, 12, 0, 0).unwrap()
                 + Duration::minutes(minutes),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -1034,8 +1034,8 @@ mod tests {
     use axum::http::{HeaderValue, Request};
     use tower::ServiceExt;
 
-    use crate::agent::interrupt::Interrupt;
     use crate::background::registry::ResumePoint;
+    use crate::bus::interrupt::Interrupt;
 
     /// A response's status and JSON body.
     struct Answer {

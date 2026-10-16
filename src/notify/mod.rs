@@ -10,6 +10,5 @@ pub mod external;
 pub mod macos;
 pub mod router;
 pub mod subscriber;
-pub mod types;
 #[cfg(target_os = "windows")]
 pub mod windows;

@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::context::{PromptContext, SkillsContext};
-use crate::agent::interrupt::{Interrupt, InterruptSource};
 use crate::agent::{Agent, LiveOutputEndpoint, TurnOutput};
+use crate::bus::interrupt::{Interrupt, InterruptSource};
 use crate::bus::{
     EndpointName, ErrorEvent, MainConversationEvent, MessageEvent, NotifyName, Publisher,
     ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, TurnOrigin, topics,
@@ -3428,7 +3428,7 @@ mod tests {
         let recent_path = dir.path().join("recent_messages.json");
 
         let before = agent.message_count();
-        let mut interrupts = crate::agent::interrupt::dead_interrupt_rx();
+        let mut interrupts = crate::bus::testing::dead_interrupt_rx();
         let failed = agent
             .process_message(
                 "are you there?",

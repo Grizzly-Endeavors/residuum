@@ -14,12 +14,12 @@ use chrono::{DateTime, Duration as TimeDelta, TimeZone as _};
 
 use super::overview::{changed, expect_no_frame, move_to, next_overview, overview_of};
 use super::*;
-use crate::a2a::TrackedTask;
-use crate::a2a::client::tracker::UNREACHABLE_NOTICE_AFTER;
 use crate::actions::store::ActionStore;
 use crate::actions::types::ScheduledAction;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
+use crate::bus::remote_task::TrackedTask;
+use crate::bus::remote_task::UNREACHABLE_NOTICE_AFTER;
 use crate::gateway::web::scheduled::{ScheduledApiState, scheduled_api_router};
 use crate::hub::agent_watch::{AgentChangeKind, WatchedPath};
 use crate::hub::overview::AgentOverview;

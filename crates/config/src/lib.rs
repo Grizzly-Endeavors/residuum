@@ -14,6 +14,7 @@
 pub mod agent_keys;
 mod agent_name;
 mod bootstrap;
+pub mod channels;
 mod constants;
 mod deserialize;
 mod hub_load;
@@ -39,6 +40,7 @@ pub use agent_name::{
     allocate_slug, canonicalize_display_name, display_name_in_toml, display_name_key,
     set_display_name_toml, slug_base,
 };
+pub use channels::{ExternalChannelConfig, ExternalChannelKind};
 pub use constants::{
     DEFAULT_A2A_PORT, DEFAULT_CLOUD_RELAY_URL, DEFAULT_GATEWAY_PORT,
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,

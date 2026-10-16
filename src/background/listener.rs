@@ -12,12 +12,12 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use crate::agent::interrupt::Interrupt;
 use crate::background::registry::{DeliverOutcome, SessionRegistry};
 use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
 use crate::bus::MessageEvent;
+use crate::bus::interrupt::Interrupt;
 use crate::bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
 use crate::bus::{
     AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
@@ -519,7 +519,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }

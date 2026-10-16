@@ -117,7 +117,7 @@ fn session_info(label: &str, state: SessionState) -> SessionInfo {
         resolved_model: None,
         conversation_target: None,
         started_at: Utc.with_ymd_and_hms(2026, 9, 30, 9, 30, 0).unwrap(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
+        usage: crate::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     }
 }

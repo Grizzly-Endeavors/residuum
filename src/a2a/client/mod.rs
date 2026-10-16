@@ -22,7 +22,7 @@ pub use config::{
     A2aAgentEntry, is_valid_agent_name, load_a2a_agents_map, validate_a2a_agents_json,
 };
 pub use hub::{A2aClientHub, AgentSnapshot, AgentSource, AgentStatus, HubError, NegotiatedClient};
-pub use tracker::{RemoteTaskTracker, TrackedTask};
+pub use tracker::RemoteTaskTracker;
 
 pub use siblings::SiblingFanout;
 pub(crate) use siblings::spawn_sibling_discovery;

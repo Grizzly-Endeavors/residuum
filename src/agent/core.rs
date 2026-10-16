@@ -10,11 +10,12 @@ use crate::workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::hop::HopCounter;
-use super::interrupt;
 use super::recent_messages::RecentMessages;
 use super::tool::ToolRegistry;
 use super::turn::{EventContext, EventTarget, TurnOutput, TurnResources, execute_turn};
-use super::usage::{MainUsageSink, SessionUsageTotals};
+use super::usage::MainUsageSink;
+use crate::bus::interrupt;
+use crate::bus::usage::SessionUsageTotals;
 
 /// Configuration for creating a new `Agent`.
 pub struct AgentConfig {
@@ -555,7 +556,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hi",
@@ -623,7 +624,7 @@ mod tests {
         let (publisher, ep) = test_bus();
 
         for msg in ["hi", "again"] {
-            let mut irx = interrupt::dead_interrupt_rx();
+            let mut irx = crate::bus::testing::dead_interrupt_rx();
             agent
                 .process_message(
                     msg,
@@ -720,7 +721,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "run echo test",
@@ -783,7 +784,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "what does echo test print?",
@@ -855,7 +856,7 @@ mod tests {
         // max_tool_iterations left unset: unlimited by default.
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop past the old cap",
@@ -921,7 +922,7 @@ mod tests {
         agent.set_max_tool_iterations(Some(limit));
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop forever",
@@ -1460,7 +1461,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let stop_token = CancellationToken::new();
         stop_token.cancel();
 
@@ -1611,7 +1612,7 @@ mod tests {
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
+        let mut irx = crate::bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hello",

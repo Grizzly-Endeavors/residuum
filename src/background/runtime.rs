@@ -16,9 +16,9 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::hop::HopCounter;
-use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::MessageEvent;
+use crate::bus::interrupt::Interrupt;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget,
     ConversationTypingEvent, EndpointName, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
@@ -216,7 +216,7 @@ impl SessionRuntime {
             resolved_model,
             conversation_target: req.conversation_target,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: req.overlap,
         };
 
@@ -1886,7 +1886,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let mut rx = registry
@@ -1954,7 +1954,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -2146,7 +2146,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let mut winner_rx = runtime
@@ -2573,7 +2573,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         store.begin_run(&info).await;
@@ -3020,7 +3020,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         store.begin_run(&info).await;
@@ -3308,7 +3308,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let event = build_result_event(
@@ -3356,7 +3356,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let summary = "Found something worth flagging. The instruction to omit \
@@ -3393,7 +3393,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         let event = build_result_event(

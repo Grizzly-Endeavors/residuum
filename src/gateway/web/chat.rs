@@ -6,7 +6,8 @@ use axum::response::Json;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::usage::{SessionUsageTotals, load_session_usage_totals};
+use crate::agent::usage::load_session_usage_totals;
+use crate::bus::usage::SessionUsageTotals;
 use crate::inference::{Message, readable_thinking};
 use crate::memory::episode_store::{older_main_episode_id, read_episode_jsonl};
 use crate::memory::recent_messages::{RecentMessage, load_recent_messages};

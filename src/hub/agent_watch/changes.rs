@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use chrono::{DateTime, Utc};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::a2a::TrackedTask;
+use crate::bus::remote_task::TrackedTask;
 use crate::bus::session::{SessionInfo, SessionState};
 use crate::bus::{AgentResultStatus, SessionAddress, SessionEvent};
 use crate::memory::types::Visibility;

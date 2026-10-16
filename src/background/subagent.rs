@@ -9,13 +9,13 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::ToolRegistry;
 use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
-#[cfg(test)]
-use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{
     EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
 };
 use crate::bus::MessageEvent;
+#[cfg(test)]
+use crate::bus::interrupt::Interrupt;
 use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
 use crate::inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
 use crate::mcp::SharedMcpRegistry;
@@ -379,7 +379,7 @@ pub(crate) struct TurnExecution<'a> {
     /// boundary. Between turns, the caller drains the same channel itself to
     /// decide whether to wake for another turn (see
     /// `crate::background::runtime`).
-    pub(crate) interrupt_rx: &'a mut dyn crate::agent::interrupt::InterruptSource,
+    pub(crate) interrupt_rx: &'a mut dyn crate::bus::interrupt::InterruptSource,
 }
 
 /// Execute one turn of a session's run.
@@ -526,7 +526,7 @@ pub(crate) fn test_memory_extras() -> (
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::interrupt::dead_interrupt_rx;
+    use crate::bus::testing::dead_interrupt_rx;
     use crate::config::SkillDir;
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;

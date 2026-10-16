@@ -23,14 +23,15 @@ use anyhow::Context;
 
 use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
 use super::hop::HopCounter;
-use super::interrupt::{Interrupt, InterruptSource};
 use super::recent_messages::RecentMessages;
 use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
 use super::tool::{
     CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry, is_plausible_tool_name,
     truncate_tool_name_for_display,
 };
-use super::usage::{SessionUsageTotals, TurnUsage, UsageSink};
+use super::usage::{TurnUsage, UsageSink};
+use crate::bus::interrupt::{Interrupt, InterruptSource};
+use crate::bus::usage::SessionUsageTotals;
 
 /// Told each time one of a main turn's replies reaches the main
 /// conversation on its way to an endpoint. Whoever counts unread replies
@@ -1490,7 +1491,7 @@ async fn execute_tool(
     };
     let blocked = auto_mode
         .as_ref()
-        .filter(|v| v.decision == crate::agent::auto_mode::AutoModeDecision::Blocked);
+        .filter(|v| v.decision == crate::bus::auto_mode::AutoModeDecision::Blocked);
 
     let (mut output, is_error, images) = if let Some(verdict) = blocked {
         (verdict.blocked_message(), true, vec![])

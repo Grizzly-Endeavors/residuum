@@ -4,7 +4,6 @@ pub mod auto_mode;
 pub mod context;
 mod core;
 pub mod hop;
-pub mod interrupt;
 pub mod recent_messages;
 mod stream;
 mod think_tags;

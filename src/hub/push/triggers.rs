@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 
 use super::service::PushService;
 use super::types::{PushEvent, PushMessage, PushPayload};
-use crate::a2a::TrackedTask;
+use crate::bus::remote_task::TrackedTask;
 use crate::hub::agent_watch::{AgentChange, AgentChangeKind, AgentChangeReceiver};
 use crate::hub::directory::AgentDirectory;
 use crate::hub::inbox;

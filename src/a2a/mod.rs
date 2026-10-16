@@ -34,7 +34,7 @@ pub use card::{
 };
 pub use client::{
     A2aClientHub, AgentSnapshot, AgentSource, AgentStatus, HubError, RemoteTaskTracker,
-    SiblingFanout, TrackedTask, validate_a2a_agents_json,
+    SiblingFanout, validate_a2a_agents_json,
 };
 pub use executor::SessionExecutor;
 pub use handler::{ResiduumA2aHandler, resume_in_progress_tasks};

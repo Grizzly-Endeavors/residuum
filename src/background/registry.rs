@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::interrupt::Interrupt;
+use crate::bus::interrupt::Interrupt;
 use crate::bus::session::{SessionInfo, SessionState, slugify};
 use crate::bus::{ConversationTarget, EventTrigger, SessionAddress, SkillName};
 use crate::config::ModelSelector;
@@ -360,7 +360,7 @@ impl SessionRegistry {
         &self,
         address: &SessionAddress,
         usage: Option<crate::inference::Usage>,
-    ) -> Option<crate::agent::usage::SessionUsageTotals> {
+    ) -> Option<crate::bus::usage::SessionUsageTotals> {
         let mut guard = self.lock();
         let entry = guard.get_mut(address)?;
         entry.info.usage.accumulate(usage);
@@ -377,7 +377,7 @@ impl SessionRegistry {
         &self,
         address: &SessionAddress,
         n: u32,
-    ) -> Option<crate::agent::usage::SessionUsageTotals> {
+    ) -> Option<crate::bus::usage::SessionUsageTotals> {
         let mut guard = self.lock();
         let entry = guard.get_mut(address)?;
         entry.info.usage.record_tool_calls(n);
@@ -536,13 +536,13 @@ impl crate::agent::usage::UsageSink for SessionUsageSink<'_> {
     async fn accumulate(
         &self,
         usage: Option<crate::inference::Usage>,
-    ) -> crate::agent::usage::SessionUsageTotals {
+    ) -> crate::bus::usage::SessionUsageTotals {
         self.registry
             .accumulate_usage(&self.address, usage)
             .unwrap_or_default()
     }
 
-    async fn record_tool_calls(&self, n: u32) -> crate::agent::usage::SessionUsageTotals {
+    async fn record_tool_calls(&self, n: u32) -> crate::bus::usage::SessionUsageTotals {
         self.registry
             .accumulate_tool_calls(&self.address, n)
             .unwrap_or_default()
@@ -654,7 +654,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -968,7 +968,7 @@ mod tests {
         let totals = crate::agent::usage::UsageSink::accumulate(&sink, Some(usage(10, 5))).await;
         assert_eq!(
             totals,
-            crate::agent::usage::SessionUsageTotals::default(),
+            crate::bus::usage::SessionUsageTotals::default(),
             "a session no longer in the registry has nowhere to accumulate; the sink degrades to a no-op"
         );
     }

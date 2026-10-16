@@ -1226,7 +1226,7 @@ fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> Sess
         resolved_model: None,
         conversation_target: None,
         started_at: chrono::Utc::now(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
+        usage: crate::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     };
     harness
