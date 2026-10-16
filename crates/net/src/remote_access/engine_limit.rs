@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 /// Sustained requests per minute one peer may make.
 pub(crate) const REFILL_PER_MINUTE: f64 = 300.0;

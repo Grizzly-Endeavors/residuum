@@ -3,7 +3,7 @@
 //! by the join id only the requester knows, so there is no device gate.
 
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
@@ -15,6 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use chrono::Utc;
 use serde_json::{Value, json};
+use tokio::time::Instant;
 
 use super::host::{HostError, JoinHost};
 use super::protocol::{NONCE_PATH, REQUEST_PATH};
