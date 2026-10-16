@@ -8,11 +8,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::build_info::BuildInfo;
-use crate::config::Config;
-use crate::config::{ThinkingConfig, ThinkingLevel};
+use residuum_config::{Config, ThinkingConfig, ThinkingLevel};
+use residuum_core::build_info::BuildInfo;
 
-use crate::tracing_service::{ClientContext, FeedbackClient};
+use crate::{ClientContext, FeedbackClient};
 
 /// Gather the static part of the client context for a bug report.
 ///
@@ -186,7 +185,7 @@ mod tests {
             "[providers.private-provider]\ntype = \"anthropic\"\napi_key = \"sk-provider-secret\"\n\n[models]\nmain = \"private-provider/claude-sonnet-4-6\"\n",
         )
         .unwrap();
-        let hub = crate::config::HubConfig::load_at(&hub_dir).unwrap();
+        let hub = residuum_config::HubConfig::load_at(&hub_dir).unwrap();
         Config::load_agent_at(&agent_dir, &hub).unwrap()
     }
 

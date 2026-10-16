@@ -802,7 +802,7 @@ fn init_tracing_client_context(
     cfg: &Config,
     build: crate::build_info::BuildInfo,
 ) -> Arc<crate::tracing_service::ClientContext> {
-    Arc::new(crate::client_context::gather_for_bug_report(build, cfg))
+    Arc::new(crate::tracing_service::client_context::gather_for_bug_report(build, cfg))
 }
 
 /// Inputs to [`build_tools_and_agent`], gathered because building the tool

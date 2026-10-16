@@ -134,10 +134,12 @@ impl RegistryHarness {
 
         let (_, span_buffer) = SpanBufferLayer::new(&SpanBufferConfig::default());
         let tracing_service = Arc::new(TracingService::new(cfg.tracing.clone(), span_buffer));
-        let tracing_client_context = Arc::new(crate::client_context::gather_for_bug_report(
-            crate::testing::HARNESS_BUILD,
-            &cfg,
-        ));
+        let tracing_client_context = Arc::new(
+            crate::tracing_service::client_context::gather_for_bug_report(
+                crate::testing::HARNESS_BUILD,
+                &cfg,
+            ),
+        );
 
         let session_store = Arc::new(SessionStore::new(layout.sessions_dir()));
         let agent_messenger = Arc::new(AgentMessenger::new(
