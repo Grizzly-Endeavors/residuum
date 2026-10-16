@@ -152,7 +152,7 @@ impl DiscordInterface {
         let (chat_store, chat_state_notice) =
             ChatStateStore::load(layout.discord_state_json()).await?;
         if let Some(notice) = chat_state_notice {
-            crate::gateway::helpers::publish_notice(&self.senders.publisher, notice).await;
+            crate::bus::notice::publish_notice(&self.senders.publisher, notice).await;
         }
         let state = Arc::new(DiscordState {
             respond_to_others: self.cfg.respond_to_others,

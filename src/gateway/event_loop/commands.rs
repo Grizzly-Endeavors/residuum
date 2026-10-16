@@ -1,8 +1,8 @@
 //! Server command handler in the event loop.
 
+use crate::bus::control::ServerCommand;
 use crate::bus::{InlineOutputEvent, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
 use crate::gateway::types::AgentRuntime;
-use crate::gateway::types::ServerCommand;
 
 use super::turns::load_prompt_context_strings;
 use crate::gateway::memory::MemorySubsystems;

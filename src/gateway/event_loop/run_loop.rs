@@ -11,10 +11,9 @@ use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::Instrument;
 
+use crate::bus::control::{ReloadSender, ReloadSignal};
 use crate::config::{Config, HubConfig};
-use crate::gateway::types::{
-    AgentRuntime, CoreReceivers, GatewayCore, GatewayState, ReloadSender, ReloadSignal,
-};
+use crate::gateway::types::{AgentRuntime, CoreReceivers, GatewayCore, GatewayState};
 use crate::hub::activity::ActivityTracker;
 use crate::hub::services::HubServices;
 use crate::pulse::scheduler::PulseScheduler;
@@ -216,7 +215,7 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
             error = %problem,
             "startup fell back to the last-known-good config"
         );
-        crate::gateway::helpers::publish_notice(
+        crate::bus::notice::publish_notice(
             &core.publisher,
             format!(
                 "residuum couldn't start using your current config ({problem}). It's running on the last configuration that worked instead — fix the files above, then reload (or restart residuum) to apply your changes."
@@ -1327,7 +1326,7 @@ async fn apply_bus_event(
 /// arm, so a request only reaches this arm when there is genuinely nothing
 /// to stop — reply `false` immediately rather than leaving the caller to
 /// time out.
-fn handle_idle_stop_request(stop_req: Option<crate::gateway::types::StopRequest>) {
+fn handle_idle_stop_request(stop_req: Option<crate::bus::control::StopRequest>) {
     let Some(req) = stop_req else {
         return;
     };
@@ -1346,7 +1345,7 @@ fn handle_idle_stop_request(stop_req: Option<crate::gateway::types::StopRequest>
 /// because one reload of that kind picks up every edit made so far.
 fn drain_pending_reloads(
     first: ReloadSignal,
-    rx: &mut crate::gateway::types::ReloadReceiver,
+    rx: &mut crate::bus::control::ReloadReceiver,
 ) -> Vec<ReloadSignal> {
     let mut pending = vec![first];
     while let Ok(next) = rx.try_recv() {
@@ -1547,8 +1546,9 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
 #[cfg(test)]
 mod tests {
     use super::{agent_last_known_good_fallback, drain_pending_reloads};
+    use crate::bus::control::ReloadSignal;
     use crate::config::HubConfig;
-    use crate::gateway::types::{GatewayCore, ReloadSignal};
+    use crate::gateway::types::GatewayCore;
     use crate::hub::services::HubServices;
     use crate::util::FatalError;
 

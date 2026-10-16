@@ -292,7 +292,7 @@ async fn handle_client_message(
             local_tx.send(ServerMessage::Reloading).ok();
             state
                 .reload_tx
-                .send(crate::gateway::types::ReloadSignal::Agent)
+                .send(crate::bus::control::ReloadSignal::Agent)
                 .ok();
         }
         ClientMessage::ServerCommand { name, args } => {
@@ -300,7 +300,7 @@ async fn handle_client_message(
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             state
                 .command_tx
-                .send(crate::gateway::types::ServerCommand {
+                .send(crate::bus::control::ServerCommand {
                     name,
                     args,
                     reply_tx: Some(reply_tx),
@@ -328,7 +328,7 @@ async fn handle_client_message(
             tracing::info!(reply_to = %reply_to, "stop requested by client");
             if state
                 .stop_tx
-                .try_send(crate::gateway::types::StopRequest {
+                .try_send(crate::bus::control::StopRequest {
                     reply_to: Some(reply_to),
                     result_tx: None,
                 })
@@ -478,7 +478,7 @@ fn send_queued_now(
     tracing::info!(msg_id = %id, "sending a waiting message now: stopping the running turn");
     if state
         .stop_tx
-        .try_send(crate::gateway::types::StopRequest {
+        .try_send(crate::bus::control::StopRequest {
             reply_to: None,
             result_tx: None,
         })

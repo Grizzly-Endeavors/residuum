@@ -13,10 +13,11 @@ use crate::bus::{
     ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, TurnOrigin, topics,
 };
 
+use crate::bus::control::StopRequest;
 use crate::bus::origin::{BACKGROUND_ENDPOINT, MessageOrigin, chat_interface_endpoint};
 use crate::config::Config;
 use crate::gateway::queued_messages::{CheckpointTake, QueuedMessages};
-use crate::gateway::types::{AgentRuntime, StopRequest};
+use crate::gateway::types::AgentRuntime;
 use crate::hub::activity::ActivityTracker;
 use crate::inference::ImageData;
 use crate::memory::types::Visibility;

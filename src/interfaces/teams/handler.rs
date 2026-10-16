@@ -600,9 +600,8 @@ mod tests {
             reply_targets: crate::interfaces::reply_targets::ReplyTargets::default(),
             inbound_tx,
             publisher: bus.publisher(),
-            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
-            )
-            .0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>()
+                .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(crate::background::registry::SessionRegistry::new()),

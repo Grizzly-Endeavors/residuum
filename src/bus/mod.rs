@@ -9,11 +9,13 @@
 pub mod attachment;
 pub mod auto_mode;
 mod broker;
+pub mod control;
 pub mod conversations;
 mod endpoint;
 mod events;
 mod handle;
 pub mod interrupt;
+pub mod notice;
 pub mod origin;
 mod registry;
 pub mod remote_task;

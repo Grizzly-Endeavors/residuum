@@ -1,19 +1,19 @@
-//! Gateway-specific helpers: bus notifications.
+//! Publishing notices and errors to the system notification channel.
 
-use crate::bus::{
+use super::{
     ErrorEvent, NoticeEvent, NotifyName, Publisher, ReloadOutcome, ReloadedFiles, SYSTEM_CHANNEL,
     topics,
 };
 
 /// Publish a notice to the system notification channel.
-pub(crate) async fn publish_notice(publisher: &Publisher, message: String) {
+pub async fn publish_notice(publisher: &Publisher, message: String) {
     publish_notice_event(publisher, NoticeEvent::new(message)).await;
 }
 
 /// Publish the outcome of a reload of the files `of` to the system
 /// notification channel. `message` is the agent's own account of it, which
 /// the web keeps as the detail behind its own wording of `outcome`.
-pub(crate) async fn publish_reload_notice(
+pub async fn publish_reload_notice(
     publisher: &Publisher,
     outcome: ReloadOutcome,
     of: ReloadedFiles,
@@ -37,7 +37,7 @@ async fn publish_notice_event(publisher: &Publisher, notice: NoticeEvent) {
 /// Publish an error to the system notification channel. `message` must be
 /// plain language safe to show as-is; `details` carries the technical cause
 /// chain behind a web UI details toggle (see [`ErrorEvent`]).
-pub(crate) async fn publish_error(publisher: &Publisher, message: String, details: Option<String>) {
+pub async fn publish_error(publisher: &Publisher, message: String, details: Option<String>) {
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),

@@ -226,7 +226,10 @@ pub(super) async fn api_hub_config_raw_put(
         .await
         .map_err(|e| internal_error("write hub config", e))?;
 
-    state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
+    state
+        .reload_tx
+        .send(crate::bus::control::ReloadSignal::Hub)
+        .ok();
 
     Ok(Json(ValidateResponse::from_diagnostics(
         diagnostics,
@@ -370,7 +373,10 @@ pub(super) async fn api_hub_config_patch(
         .await
         .map_err(|e| hub_patch_failed(e, &config_path))?;
 
-    state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
+    state
+        .reload_tx
+        .send(crate::bus::control::ReloadSignal::Hub)
+        .ok();
 
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
@@ -442,7 +448,9 @@ pub(super) async fn api_config_raw_put(
 
     // Trigger reload if in running mode
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Agent).ok();
+        reload_tx
+            .send(crate::bus::control::ReloadSignal::Agent)
+            .ok();
     }
 
     Ok(Json(ValidateResponse::from_diagnostics(
@@ -532,7 +540,9 @@ pub(super) async fn api_config_patch(
         })?;
 
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Agent).ok();
+        reload_tx
+            .send(crate::bus::control::ReloadSignal::Agent)
+            .ok();
     }
 
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
@@ -617,7 +627,9 @@ pub(super) async fn api_mcp_raw_put(
     })?;
 
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Workspace).ok();
+        reload_tx
+            .send(crate::bus::control::ReloadSignal::Workspace)
+            .ok();
     }
 
     Ok(Json(ValidateResponse::from_diagnostics(
@@ -699,7 +711,9 @@ pub(super) async fn api_mcp_patch(
         })?;
 
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Workspace).ok();
+        reload_tx
+            .send(crate::bus::control::ReloadSignal::Workspace)
+            .ok();
     }
 
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
@@ -897,7 +911,10 @@ pub(super) async fn api_complete_setup(
 
     // The hub picks up the new hub config, and whoever is waiting on setup
     // learns the first agent is on disk.
-    state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
+    state
+        .reload_tx
+        .send(crate::bus::control::ReloadSignal::Hub)
+        .ok();
     if let Some(done_sender) = &state.setup_done {
         done_sender.send(true).ok();
     }

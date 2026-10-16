@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::gateway::ReloadSignal;
+use crate::bus::control::ReloadSignal;
 use crate::workspace::access::{dir_holds_internal_data, is_blocked_path};
 use crate::workspace::team_files::{TeamFiles, TeamPathGuard};
 use crate::workspace::version::{modified_unix_ms, version_token};
@@ -2041,7 +2041,7 @@ mod tests {
         tokio::fs::create_dir_all(&team_dir).await.unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let mut state = make_state(root.join("scout"));
         state.reload_tx = Some(tx);
 
@@ -2059,7 +2059,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let state = super::super::ConfigApiState {
             team: None,
             hub_dir: dir.path().to_path_buf(),
@@ -2700,7 +2700,7 @@ mod tests {
             .unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let state = super::super::ConfigApiState {
             team: None,
             hub_dir: dir.path().to_path_buf(),
@@ -3296,7 +3296,7 @@ mod tests {
             .unwrap();
 
         let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+            tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>();
         let state = super::super::ConfigApiState {
             team: None,
             hub_dir: dir.path().to_path_buf(),

@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 
-use super::ReloadSignal;
+use crate::bus::control::ReloadSignal;
 
 /// Tracks a file's modification time for change detection.
 struct WatchedFile {
@@ -52,7 +52,7 @@ pub(super) fn spawn_workspace_watcher(
     channels_path: PathBuf,
     agent_card_path: PathBuf,
     a2a_agents_path: PathBuf,
-    reload_tx: crate::gateway::types::ReloadSender,
+    reload_tx: crate::bus::control::ReloadSender,
 ) -> JoinHandle<()> {
     // Read before the task starts, so an edit made before it first runs is
     // seen as a change rather than taken as the starting point.
@@ -112,7 +112,7 @@ pub(super) fn spawn_workspace_watcher(
 pub(super) fn spawn_root_config_watcher(
     config_toml_path: PathBuf,
     providers_toml_path: PathBuf,
-    reload_tx: crate::gateway::types::ReloadSender,
+    reload_tx: crate::bus::control::ReloadSender,
 ) -> JoinHandle<()> {
     // Read before the task starts; see `spawn_workspace_watcher`.
     let mut config_file = WatchedFile::new(config_toml_path);
@@ -159,7 +159,7 @@ pub(super) fn spawn_root_config_watcher(
 /// sends `ReloadSignal::Hub`.
 pub(crate) fn spawn_hub_config_watcher(
     hub_config_toml_path: PathBuf,
-    reload_tx: crate::gateway::types::ReloadSender,
+    reload_tx: crate::bus::control::ReloadSender,
 ) -> JoinHandle<()> {
     // Read before the task starts; see `spawn_workspace_watcher`.
     let mut hub_config_file = WatchedFile::new(hub_config_toml_path);

@@ -29,11 +29,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::background::registry::SessionRegistry;
+use crate::bus::control::{ServerCommand, StopRequest};
 use crate::bus::conversations::{ConversationSource, KnownConversation};
 use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
 use crate::gateway::event_loop::AdapterSenders;
-use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::interfaces::context_buffer::ContextBuffer;
 use crate::interfaces::reply_targets::ReplyTargets;
 use crate::remote_access::TEAMS_MESSAGES_PATH;
@@ -58,7 +58,7 @@ pub(super) struct TeamsRuntime {
     reply_targets: ReplyTargets<ConversationRef>,
     inbound_tx: tokio::sync::mpsc::Sender<activity::Activity>,
     publisher: Publisher,
-    reload_tx: crate::gateway::types::ReloadSender,
+    reload_tx: crate::bus::control::ReloadSender,
     command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: Arc<SessionRegistry>,
@@ -166,7 +166,7 @@ impl TeamsInterface {
             .context("failed to build teams http client")?;
         let (store, chat_state_notice) = TeamsStore::load(self.layout.teams_state_json()).await?;
         if let Some(notice) = chat_state_notice {
-            crate::gateway::helpers::publish_notice(&self.senders.publisher, notice).await;
+            crate::bus::notice::publish_notice(&self.senders.publisher, notice).await;
         }
         let subs = crate::interfaces::BaseSubscribers::new(
             &self.senders.bus_handle,

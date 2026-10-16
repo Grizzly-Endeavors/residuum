@@ -3,12 +3,12 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::background::registry::SessionRegistry;
+use crate::bus::notice::publish_notice;
 use crate::bus::session::SessionCategory;
 use crate::bus::{
     AgentResultEvent, AgentResultStatus, BusError, EventTrigger, NotificationEvent, Publisher,
     PulseOverlap, ResultDisposition, SpawnRequestEvent, topics,
 };
-use crate::gateway::helpers::publish_notice;
 use crate::gateway::types::AgentRuntime;
 use crate::pulse::executor::{PulseContext, build_pulse_execution};
 use crate::pulse::scheduler::PulseScheduler;

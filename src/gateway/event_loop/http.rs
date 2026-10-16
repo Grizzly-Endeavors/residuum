@@ -5,8 +5,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::background::registry::SessionRegistry;
+use crate::bus::control::{ServerCommand, StopRequest};
 use crate::config::Config;
-use crate::gateway::types::{GatewayState, ServerCommand, StopRequest};
+use crate::gateway::types::GatewayState;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
@@ -16,7 +17,7 @@ use crate::gateway::ws::ws_handler;
 pub struct AdapterSenders {
     pub publisher: crate::bus::Publisher,
     pub bus_handle: crate::bus::BusHandle,
-    pub reload: crate::gateway::types::ReloadSender,
+    pub reload: crate::bus::control::ReloadSender,
     pub command: mpsc::Sender<ServerCommand>,
     pub stop: mpsc::Sender<StopRequest>,
     /// Looked up when a `/stop` command targets a conversation session

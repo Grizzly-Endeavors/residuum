@@ -364,7 +364,9 @@ pub(super) async fn api_a2a_agents_raw_put(
         })?;
 
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Workspace).ok();
+        reload_tx
+            .send(crate::bus::control::ReloadSignal::Workspace)
+            .ok();
     }
 
     Ok(Json(ValidateResponse::from_diagnostics(
