@@ -152,6 +152,8 @@ ensure_web_deps() {
 TEMP_DIR=""
 TEMP_TREE=""
 LOCK_HELD=0
+# The takeover claim this hook holds while it replaces a stale stable lock.
+TAKEOVER_CLAIM=""
 # What prepare_worktree checked the commit in, for the line that names it.
 TREE_NAME=""
 TEST_LOG=""
@@ -180,6 +182,10 @@ cleanup() {
         TEMP_DIR=""
     fi
     TEMP_TREE=""
+    if [ -n "$TAKEOVER_CLAIM" ]; then
+        rmdir "$TAKEOVER_CLAIM" 2>/dev/null
+        TAKEOVER_CLAIM=""
+    fi
     if [ "$LOCK_HELD" = 1 ]; then
         rm -rf "$STABLE_LOCK"
         LOCK_HELD=0
@@ -224,34 +230,60 @@ link_stable_node_modules() {
     fi
 }
 
+# Takes over the stable lock left by the dead holder $1. Two pushes can find the
+# same dead holder at once, so each first claims the takeover with mkdir of a
+# directory named for that pid: mkdir succeeds for one push only. The winner
+# checks under the claim that the lock still names the dead pid before it
+# replaces the lock, so a lock another push has already taken over is left
+# alone. The claim is removed before returning. Returns 1 when another push holds
+# the claim or the lock has moved on. The cleanup trap removes a claim this push
+# still holds when it is interrupted.
+take_over_stale_lock() {
+    local dead="$1" claim="$STABLE_DIR/tree.lock-takeover-$1" holder="" status=1
+    mkdir "$claim" 2>/dev/null || return 1
+    TAKEOVER_CLAIM="$claim"
+    holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
+    if [ "$holder" = "$dead" ]; then
+        rm -rf "$STABLE_LOCK"
+        mkdir "$STABLE_LOCK" 2>/dev/null && status=0
+    fi
+    rmdir "$claim"
+    TAKEOVER_CLAIM=""
+    return $status
+}
+
+# Creates the stable lock directory for this push. Returns 1, having said why,
+# when a live push holds the lock or took over a stale one first. A lock with no
+# pid yet is held: the window between creating the lock directory and writing
+# the pid is too short to call it stale, and a holder that died in that window
+# needs the lock removed by hand. Never call it in a subshell.
+acquire_stable_lock() {
+    local holder=""
+    mkdir "$STABLE_LOCK" 2>/dev/null && return 0
+    holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
+    if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
+        note "the stable pre-push tree is locked${holder:+ by pid $holder}; checking in a temporary worktree instead. If no push is running, remove $STABLE_LOCK."
+        return 1
+    fi
+    note "the stable pre-push tree's lock was held by pid $holder, which is no longer running; taking it over."
+    if take_over_stale_lock "$holder"; then
+        return 0
+    fi
+    note "another push is taking over the stable pre-push tree's lock, or took it first; checking in a temporary worktree instead. If no push is running and this repeats, remove $STABLE_LOCK and $STABLE_DIR/tree.lock-takeover-*."
+    return 1
+}
+
 # Checks out the commit $1 in the stable tree under the stable lock. Returns 1,
 # having said why, when another push holds the lock or the tree cannot be
-# prepared, and the caller then uses a temporary worktree. A lock with no pid
-# yet is held: the window between creating the lock directory and writing the
-# pid is too short to call it stale, and a holder that died in that window needs
-# the lock removed by hand. A stale lock taken over by two pushes at the same
-# moment can still race; that needs two pushes after one crashed holder, and the
-# result is a second push checking in the same tree. Never call it in a
+# prepared, and the caller then uses a temporary worktree. Never call it in a
 # subshell: the lock and the cleanup trap need the variables it sets.
 prepare_stable_tree() {
-    local sha="$1" holder=""
+    local sha="$1"
     if ! mkdir -p "$STABLE_DIR"; then
         note "couldn't create $STABLE_DIR; checking in a temporary worktree instead."
         return 1
     fi
-    if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
-        holder="$(cat "$STABLE_LOCK/pid" 2>/dev/null)"
-        if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then
-            note "the stable pre-push tree is locked${holder:+ by pid $holder}; checking in a temporary worktree instead. If no push is running, remove $STABLE_LOCK."
-            return 1
-        fi
-        note "the stable pre-push tree's lock was held by pid $holder, which is no longer running; taking it over."
-        rm -rf "$STABLE_LOCK"
-        if ! mkdir "$STABLE_LOCK" 2>/dev/null; then
-            note "another push took the stable pre-push tree first; checking in a temporary worktree instead."
-            return 1
-        fi
-    fi
+    acquire_stable_lock || return 1
     LOCK_HELD=1
     printf '%s\n' "$$" >"$STABLE_LOCK/pid"
     TEMP_TREE="$STABLE_TREE"
