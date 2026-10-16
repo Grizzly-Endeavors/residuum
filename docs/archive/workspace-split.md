@@ -1,6 +1,6 @@
 # Workspace split, round 1: the lower layers as their own crates
 
-**Status:** designed, not started. The starting point is `main` once PR #691 (`perf/build-speed`) has merged; §1 says what that tree looks like. Implementation follows the chunk plan in §14; its first two chunks (A0, M0) record the baseline in §15. When the last chunk lands, the resulting layout is described in a "Workspace layout" section of `CONTRIBUTING.md` (written by chunk F2; it is a developer concern, not product behavior, so it does not go in `docs/systems-usage/`) and this document moves to `docs/archive/`.
+**Status:** round 1 is complete. The layout it produced is described in the [Workspace layout](../../CONTRIBUTING.md#workspace-layout) section of `CONTRIBUTING.md`. This document keeps the design, the chunk plan and the measurements in §15.
 
 ## 1. Summary
 
@@ -714,7 +714,7 @@ The common gate, run before the chunk is handed back:
 
   Tests that move are renamed (their crate-relative path changes), not lost; a module that loses its `#[cfg(test)] mod tests;` declaration shows up here.
 - `just stress <filter>` for any test the chunk adds or rewrites (`CLAUDE.md`, Testing).
-- **Docs follow the files.** Every `.md` reference to a path the chunk moved or renamed is updated in the chunk: `git grep -nF '<old path>' -- '*.md' ':!docs/archive' ':!docs/design/workspace-split.md' ':!reference-mats'` prints nothing for each moved path. This covers `docs/systems-usage/` (authoritative, with its mirrors under `assets/bundled-skills/residuum-system/references/`), `src/background/README.md`, `CLAUDE.md` and `AGENTS.md` (which change together), `CONTRIBUTING.md` and the per-module `CLAUDE.md` files.
+- **Docs follow the files.** Every `.md` reference to a path the chunk moved or renamed is updated in the chunk: `git grep -nF '<old path>' -- '*.md' ':!docs/archive' ':!docs/archive/workspace-split.md' ':!reference-mats'` prints nothing for each moved path. This covers `docs/systems-usage/` (authoritative, with its mirrors under `assets/bundled-skills/residuum-system/references/`), `src/background/README.md`, `CLAUDE.md` and `AGENTS.md` (which change together), `CONTRIBUTING.md` and the per-module `CLAUDE.md` files.
 - Push through the pre-push hook; open a PR whose description lists what the chunk made `pub` (§6) and the test-count delta; enqueue it (`gh pr merge <n> --merge --auto`, `CLAUDE.md`, Merging). The merge queue's run, whole workspace plus isolation once A4 has landed, is the final gate. Chunks that change any `Cargo.toml` also run the cross-compile checks in the queue.
 
 Each extraction (E-chunk) also verifies:
@@ -759,7 +759,7 @@ Prefixes: M measure, A tooling and preparation that works on the single crate, B
 | **E8** extract `residuum-mcp` | `src/mcp` into `crates/mcp` (with its `CLAUDE.md`); the crypto include. | | 0 | E4 |
 | **F1** integration-test waits | `tests/it/support/{until,guarded}.rs` replaced by `residuum_core::testing::wait`; their source-scan exemptions removed. | `grep -rn 'mod until\|mod guarded' tests/it/support` prints nothing. | 0 | E1 |
 | **F3** measure | Re-run §15's protocol; fill in the result column; open an `investigate` issue for any target missed, with the `--timings` report attached. | | 0 | E1-E8 |
-| **F2** docs | `CLAUDE.md`/`AGENTS.md` (the lint location, `just test-crate`, test filters, `RUST_LOG` crate names, where test helpers live, the workspace layout under Key References), `CONTRIBUTING.md` ("Waiting in tests", the hook and CI descriptions, and a new "Workspace layout" section describing the crates, their dependency rules, the facade, the API policy and §12's sccache finding with its recipe); this document moves to `docs/archive/` with its measured results. The per-module `CLAUDE.md` files (`src/config/CLAUDE.md`, `src/mcp/CLAUDE.md`) move with their modules in E2/E8, and their paths are corrected there. | The final stale-path sweep prints nothing: `git grep -nE 'src/(util|time\.rs|diagnostics|config|agent_keys|skills|inference|tracing_service|memory|mcp|tunnel|remote_access|pairing|workbench|gateway/(browser_landing|cross_site|remote_control_guard)\.rs|workspace/layout\.rs|hub/test_support\.rs|testing/(wait|gate|clock|script|model|crypto)\.rs)\b' -- '*.md' ':!docs/archive' ':!docs/design/workspace-split.md' ':!reference-mats'`. | 0 | F1, F3 |
+| **F2** docs | `CLAUDE.md`/`AGENTS.md` (the lint location, `just test-crate`, test filters, `RUST_LOG` crate names, where test helpers live, the workspace layout under Key References), `CONTRIBUTING.md` ("Waiting in tests", the hook and CI descriptions, and a new "Workspace layout" section describing the crates, their dependency rules, the facade, the API policy and §12's sccache finding with its recipe); this document moves to `docs/archive/` with its measured results. The per-module `CLAUDE.md` files (`src/config/CLAUDE.md`, `src/mcp/CLAUDE.md`) move with their modules in E2/E8, and their paths are corrected there. | The final stale-path sweep prints nothing: `git grep -nE 'src/(util|time\.rs|diagnostics|config|agent_keys|skills|inference|tracing_service|memory|mcp|tunnel|remote_access|pairing|workbench|gateway/(browser_landing|cross_site|remote_control_guard)\.rs|workspace/layout\.rs|hub/test_support\.rs|testing/(wait|gate|clock|script|model|crypto)\.rs)\b' -- '*.md' ':!docs/archive' ':!docs/archive/workspace-split.md' ':!reference-mats'`. | 0 | F1, F3 |
 
 **A1's check.** `Cargo.lock` and the dependency tree are unchanged, and a checkout of a pre-A1 commit nested inside the A1 checkout still builds, while the same checkout without the `exclude` entry would not:
 
@@ -807,7 +807,7 @@ The two reports are in the main checkout at `target/cargo-timings/cargo-timing-2
 
 ### Protocol
 
-M0 runs it on `main` after #691 and A0; F3 runs it after E8; a row that cannot exist on M0's tree is measured first by the chunk that makes it possible (row 3b, by E7), and that value goes in the M0 column marked so. Every run is on thermaltake-tower, in a checkout on the SSD (`/dev/sda5`), with:
+The baseline (M0) ran it on `main` after #691 and A0, and the split ran it after E8. A row that cannot exist on the baseline tree was measured on the split alone (row 3b, which needs `residuum-memory`). Every run is on thermaltake-tower, in a checkout on the SSD (`/dev/sda5`), with:
 
 - **The machine's jobserver**, as interactive shells get it: `CARGO_MAKEFLAGS` set the way `~/.bashrc` sets it (`-j --jobserver-auth=fifo:${XDG_RUNTIME_DIR:-/run/user/$UID}/build-jobserver.fifo`, exported only while `build-jobserver` runs; a non-interactive shell has to export it itself), and no other build running (`build-jobserver status` shows 0 tokens in use and `pgrep -c rustc` prints 0 before each run).
 - **Recorded conditions**, next to the results: the commit, `rustc --version`, `sccache --version`, and the token count from `build-jobserver status` (12 when this was written).
@@ -819,7 +819,7 @@ M0 runs it on `main` after #691 and A0; F3 runs it after E8; a row that cannot e
 2. **Rebuild after a root edit.** Warm: one untimed `CARGO_TARGET_DIR="$PWD/target/measure/row2" cargo test --quiet --no-run`; then, three times, `touch src/lib.rs` and a timed `cargo test --quiet --no-run --timings` with the same `CARGO_TARGET_DIR`, sccache on as usual. Record the per-unit times of the root's units (lib, lib test, bin test, `it`, `ts_export`) from each report.
 3. **Rebuild after a lower-crate edit.** 3a, warm, in `target/measure/row3a`: as row 2 with `touch src/memory/search.rs` (`crates/memory/src/search.rs` once memory is a crate). 3b, warm, in `target/measure/row3b`, from E7 on: one untimed `cargo test --quiet --no-run -p residuum-memory`, then three times `touch crates/memory/src/search.rs` and a timed `cargo test --quiet --no-run -p residuum-memory --timings`.
 4. **Clippy after a root edit.** Warm, in `target/measure/row4`: one untimed `cargo clippy --all-targets --all-features -- -D warnings`, then three times `touch src/lib.rs` and a timed run of the same command.
-5. **CI build step.** Three throwaway pull requests, each a branch off `main` with one commit that appends one comment line to one root file (`// measure row 5` to `src/hub/runtime.rs`, `src/gateway/mod.rs` and `src/agent/mod.rs` respectively), opened against `main` and titled `measure: row 5 (<file>)`. They run only the pull request lane; they are never enqueued, and each is closed with `gh pr close <n> --delete-branch` once its run has finished. F3 opens the same three edits. For each run record the "Build test binaries" step's duration (`gh run view <run-id> --json jobs --jq '.jobs[] | select(.name == "Rust / Rust Tests") | .steps[] | select(.name == "Build test binaries") | [.startedAt, .completedAt]'`), the job's average CPU from A0's CPU table in the job summary (runner CPU used ÷ job seconds; it covers the whole job, `npm ci`, the web build and the tests included, not the step alone), and the sccache stats from the same summary. After the split also record which member crates were cache hits.
+5. **CI build step.** Three throwaway pull requests, each a branch off `main` with one commit that appends one comment line to one root file (`// measure row 5` to `src/hub/runtime.rs`, `src/gateway/mod.rs` and `src/agent/mod.rs` respectively), opened against `main` and titled `measure: row 5 (<file>)`. They run only the pull request lane; they are never enqueued, and each is closed with `gh pr close <n> --delete-branch` once its run has finished. The split ran the same three edits against its own branch. For each run record the "Build test binaries" step's duration (`gh run view <run-id> --json jobs --jq '.jobs[] | select(.name == "Rust / Rust Tests") | .steps[] | select(.name == "Build test binaries") | [.startedAt, .completedAt]'`), the job's average CPU from A0's CPU table in the job summary (runner CPU used ÷ job seconds; it covers the whole job, `npm ci`, the web build and the tests included, not the step alone), and the sccache stats from the same summary. After the split also record which member crates were cache hits.
 6. **pre-push.** Warm, checked in place, the hook run directly (no push), with `export CARGO_TARGET_DIR="$PWD/target/measure/row6"` (the hook checks in place into `CARGO_TARGET_DIR` when it is set). Let `P` be the commit of `main` being measured. Make three sibling branches off `P`, `m0-row6-1` to `m0-row6-3`, each with one commit that appends a different comment (`// measure row 6 run <k>`) to the row's file: `src/hub/runtime.rs` for 6a, `src/memory/search.rs` for 6b (`crates/memory/src/search.rs` once memory is a crate). For each `k`, with a clean working tree:
 
    ```bash
@@ -835,19 +835,32 @@ M0 runs it on `main` after #691 and A0; F3 runs it after E8; a row that cannot e
 
 ### Results and targets
 
-The M0 column is filled by M0 (row 3b by E7) and the result column by F3. Targets are relative to M0.
+The M0 column is the baseline and the result column is the split, each measured as described above; split results are shown as a percentage of M0. Targets are relative to M0.
 
 | measure | M0 | result | target | expected because |
 |---|---|---|---|---|
-| 1. cold `cargo test --no-run`: wall, `D`, workspace phase | | | workspace phase ≤ 90% | the lower crates compile in parallel with each other and the root's harness starts once their metadata exists; the critical path becomes core, config and inference metadata, then the root's 184k lines instead of 260k |
-| 2. rebuild, root edit | | | ≤ 85% | only the root's units rebuild, and their front end covers 70% of today's lines; linking each root test binary still includes every lower crate's code, which does not shrink with the split |
-| 3a. rebuild, lower-crate edit, whole workspace | | | ≤ 110% | the lower crate and the root both rebuild; incremental compilation limits the root's share |
-| 3b. rebuild, lower-crate edit, `-p residuum-memory` | (measured at E7) | | ≤ 25% of M0's 3a | only memory's harness rebuilds, and nothing above memory is in the build |
-| 4. clippy, root edit | | | ≤ 80% | only the root is checked again |
-| 5. CI build step, root-only PR | | | ≤ 75%, with every member's library a cache hit | `CARGO_INCREMENTAL=0` (in M0 already) makes members cacheable, and package selection leaves out the lower crates' test harnesses; the step is near-serial, so what shrinks is the root units' size, not parallelism |
-| 6a. pre-push, root-only push | | | ≤ 85% | clippy checks only the root, and the root's harness is smaller |
-| 6b. pre-push, memory-only push | | | ≤ 105% | memory's tests run in their own harness, but the source scans and the generated-types check still build the root's lib, lib harness and `ts_export` |
-| 7. test run | | | ≤ 110% | the same tests in eight more test binaries (the members' harnesses, twelve in all) plus eight more empty doctest passes |
+| 1. cold `cargo test --no-run`: wall, `D`, workspace phase | wall 202.98s; `D` 65.21s; workspace phase 137.77s | wall 85% (172.74s); `D` 115% (75.21s); workspace phase 71% (97.73s) | workspace phase ≤ 90% | the lower crates compile in parallel with each other and the root's harness starts once their metadata exists; the critical path becomes core, config and inference metadata, then the root's 184k lines instead of 260k |
+| 2. rebuild, root edit | 27.26s | 72% (19.62s) | ≤ 85% | only the root's units rebuild, and their front end covers 70% of today's lines; linking each root test binary still includes every lower crate's code, which does not shrink with the split |
+| 3a. rebuild, lower-crate edit, whole workspace | 27.36s | 74% (20.37s) | ≤ 110% | the lower crate and the root both rebuild; incremental compilation limits the root's share |
+| 3b. rebuild, lower-crate edit, `-p residuum-memory` | not measured on the baseline (no `residuum-memory` there) | 6.5% of M0's 3a (1.79s) | ≤ 25% of M0's 3a | only memory's harness rebuilds, and nothing above memory is in the build |
+| 4. clippy, root edit | 27.16s | 71% (19.17s) | ≤ 80% | only the root is checked again |
+| 5. CI build step, root-only PR | 163s | 56% (92s); cache hits not recorded | ≤ 75%, with every member's library a cache hit | `CARGO_INCREMENTAL=0` (in M0 already) makes members cacheable, and package selection leaves out the lower crates' test harnesses; the step is near-serial, so what shrinks is the root units' size, not parallelism |
+| 6a. pre-push, root-only push | 85.28s | 76% (65.01s) | ≤ 85% | clippy checks only the root, and the root's harness is smaller |
+| 6b. pre-push, memory-only push | not measured | not measured | ≤ 105% | memory's tests run in their own harness, but the source scans and the generated-types check still build the root's lib, lib harness and `ts_export` |
+| 7. test run | not measured | not measured | ≤ 110% | the same tests in eight more test binaries (the members' harnesses, twelve in all) plus eight more empty doctest passes |
+
+**Conditions.** Rows 1 to 4 and 6a compare the baseline at `5e2a128c` (`origin/main`) with the split at `ccf45d60` (`split/workspace`), measured side by side in one session at the end of the work, baseline first in each row, on the same toolchain: rustc 1.99.0 and sccache 0.18.0 on thermaltake-tower, with the machine's 12 jobserver tokens. Values are medians of three runs. Touch-only rebuilds recorded sccache compile requests but no cache hits or misses, so rows 2, 3, 4 and 6a measure incremental recompiles rather than cache retrieval; row 1's sccache deltas were zero, which confirms the bypass. Load averages were between 2 and 6 with no rustc running during any timed run, and other sessions' non-rustc load was present throughout for both trees. Row 5 ran in CI on throwaway pull requests, one per root file: the baseline pull requests were branched from `main` (at 9e07bc71, with A0 cherry-picked) and the split's from the split branch. CI's CPU and sccache stats appear only in the job summary, which the API can't read, so row 5 reports build-step durations only.
+
+Verdicts, one per target:
+
+- Row 1: met. The workspace phase is 71% of M0 against at most 90%. `D` rose to 115% of M0, which the protocol does not predict and which was not investigated.
+- Row 2: met, at 72% against at most 85%.
+- Row 3a: met, at 74% against at most 110%.
+- Row 3b: met, at 6.5% of M0's 3a against at most 25%.
+- Row 4: met, at 71% against at most 80%.
+- Row 5: met on the build step, at 56% against at most 75%; the clause that every member's library is a cache hit is not verified, because the sccache stats are only in the job summary.
+- Row 6a: met, at 76% against at most 85%.
+- Rows 6b and 7: not measured.
 
 A missed target is investigated from the `--timings` reports and the sccache stats before anything is changed. A missed build-time target alone is not a reason to revert an extraction: the crates also give per-crate test runs and an acyclic lower layer that round 2 builds on.
 
