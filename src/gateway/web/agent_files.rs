@@ -16,7 +16,7 @@ use crate::bus::control::ReloadSender;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointError, CheckpointTrigger};
 use crate::gateway::file_server::{self, FileRegistry};
 
-use super::{ConfigApiState, a2a, chat, inbox};
+use super::{ConfigApiState, chat, hub_a2a, hub_inbox};
 
 /// Opens an agent's checkpoint repositories.
 type OpenCheckpoints = dyn Fn() -> Result<Arc<CheckpointEngine>, CheckpointError> + Send + Sync;
@@ -139,16 +139,22 @@ pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
     axum::Router::new()
         .route("/api/chat/history", get(chat::api_chat_history))
         .route("/api/usage", get(chat::api_usage))
-        .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
-        .route("/api/a2a/agents/raw", put(a2a::api_a2a_agents_raw_put))
-        .route("/api/inbox", get(inbox::api_inbox_list))
-        .route("/api/inbox/archive", get(inbox::api_inbox_archive_list))
-        .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
-        .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
-        .route("/api/inbox/{id}/restore", post(inbox::api_inbox_restore))
+        .route("/api/a2a/agents/raw", get(hub_a2a::api_a2a_agents_raw_get))
+        .route("/api/a2a/agents/raw", put(hub_a2a::api_a2a_agents_raw_put))
+        .route("/api/inbox", get(hub_inbox::api_inbox_list))
+        .route("/api/inbox/archive", get(hub_inbox::api_inbox_archive_list))
+        .route("/api/inbox/{id}/read", put(hub_inbox::api_inbox_read))
+        .route(
+            "/api/inbox/{id}/archive",
+            post(hub_inbox::api_inbox_archive),
+        )
+        .route(
+            "/api/inbox/{id}/restore",
+            post(hub_inbox::api_inbox_restore),
+        )
         .route(
             "/api/inbox/{id}/attachments/{index}",
-            get(inbox::api_inbox_attachment),
+            get(hub_inbox::api_inbox_attachment),
         )
         .with_state(state)
         .merge(file_links)
