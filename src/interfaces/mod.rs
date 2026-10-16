@@ -104,7 +104,7 @@ pub(crate) struct CommandDispatch<'a> {
     pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
     pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
     /// Looked up to stop a conversation session's turn — see
-    /// [`dispatch_stop_request`] — never touched by any other command.
+    /// `dispatch_stop_request` — never touched by any other command.
     pub(crate) session_registry: &'a SessionRegistry,
     pub(crate) inbox_dir: &'a Path,
     pub(crate) tz: chrono_tz::Tz,

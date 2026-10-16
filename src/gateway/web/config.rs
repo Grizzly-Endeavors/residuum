@@ -6,7 +6,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::features;
+use crate::hub::features;
 
 use super::{ConfigApiState, HubApiState};
 

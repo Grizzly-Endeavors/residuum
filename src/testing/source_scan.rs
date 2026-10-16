@@ -552,7 +552,7 @@ const EXEC_GRANT_HELPERS: &[&str] = &[
 /// a program.
 const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
     (
-        "src/update.rs",
+        "src/hub/update.rs",
         2,
         "makes a directory read-only (0o555) and restores it (0o755)",
     ),

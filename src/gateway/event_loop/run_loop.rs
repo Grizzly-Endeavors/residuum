@@ -25,7 +25,8 @@ use super::http::{A2aServingDeps, build_agent_a2a, build_gateway_app, spawn_adap
 use super::pulse::{handle_pulse_result_event, handle_pulse_tick};
 use super::turns::handle_inbound_message;
 
-use crate::gateway::{actions, idle, last_known_good, reload, watcher, web};
+use crate::gateway::{actions, idle, reload, web};
+use crate::hub::{config_watcher, last_known_good};
 
 /// What the hub gives [`start_agent`].
 pub(crate) struct AgentStartInputs {
@@ -481,14 +482,14 @@ fn spawn_config_watchers(
     parts: &crate::gateway::startup::GatewayComponents,
     core: &GatewayCore,
 ) -> (WatcherHandle, WatcherHandle) {
-    let watcher_handle = Some(watcher::spawn_workspace_watcher(
+    let watcher_handle = Some(config_watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
         parts.layout.agent_card_json(),
         parts.layout.a2a_agents_json(),
         core.reload_tx.clone(),
     ));
-    let root_config_watcher_handle = Some(watcher::spawn_root_config_watcher(
+    let root_config_watcher_handle = Some(config_watcher::spawn_root_config_watcher(
         cfg.config_dir.join("config.toml"),
         cfg.config_dir.join("providers.toml"),
         core.reload_tx.clone(),

@@ -7,16 +7,21 @@
 //! removes agent directories; [`push`] sends Web Push notifications;
 //! [`team_events`] is the log of what happened across the team;
 //! [`overview`] is what Home shows about each agent;
-//! [`http`] is the hub's HTTP app. See
-//! `docs/systems-usage/hub.md` and `docs/systems-usage/hub-http.md`.
+//! [`http`] is the hub's HTTP app; [`update`], [`features`],
+//! [`last_known_good`] and [`config_watcher`] are the process-level pieces
+//! the hub runs with. See `docs/systems-usage/hub.md` and
+//! `docs/systems-usage/hub-http.md`.
 
 pub mod activity;
 pub mod agent_watch;
+pub mod config_watcher;
 mod deleted;
 pub mod directory;
+pub mod features;
 pub mod host;
 pub mod http;
 pub mod inbox;
+pub mod last_known_good;
 pub mod overview;
 pub mod provision;
 pub mod push;
@@ -30,6 +35,7 @@ pub mod team_events;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod types;
+pub mod update;
 pub(crate) mod workbench_watcher;
 
 pub use directory::{AgentDirectory, AgentFiles};
@@ -38,5 +44,5 @@ pub use provision::{
     AgentSpec, RestoreSource, copy_providers_from, deprovision_agent, first_message,
     provision_agent, restore_agent,
 };
-pub use runtime::run_hub;
+pub use runtime::{FilterReload, HubExit, HubInputs, run_hub};
 pub use types::{AgentActivity, AgentPatch, DeletedAgent, HubEvent, RestoreAgentRequest};

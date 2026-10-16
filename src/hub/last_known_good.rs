@@ -53,7 +53,7 @@ fn providers_copy_path(agent_config_dir: &Path) -> Option<PathBuf> {
 /// half-written copy for a later fallback to load. Best-effort: a copy
 /// failure is logged, not fatal, and leaves the previous last-known-good
 /// copy (if any) in place.
-pub(crate) fn save(agent_config_dir: &Path) {
+pub fn save(agent_config_dir: &Path) {
     for (src_name, dst_path) in [
         ("config.toml", config_copy_path(agent_config_dir)),
         ("providers.toml", providers_copy_path(agent_config_dir)),
@@ -105,7 +105,7 @@ pub fn exists(agent_config_dir: &Path) -> bool {
 /// Returns `FatalError::Config` if no last-known-good pair is saved, or the
 /// saved copies themselves fail to load — the latter shouldn't happen,
 /// since they were only ever saved right after a successful start.
-pub(crate) fn load(agent_dir: &Path, hub: &HubConfig) -> Result<Config, FatalError> {
+pub fn load(agent_dir: &Path, hub: &HubConfig) -> Result<Config, FatalError> {
     let agent_config_dir = agent_dir.join("config");
     if !exists(&agent_config_dir) {
         return Err(FatalError::Config(
@@ -134,7 +134,7 @@ pub(crate) fn load(agent_dir: &Path, hub: &HubConfig) -> Result<Config, FatalErr
 }
 
 /// The hub's own last-known-good config, independent of any agent's.
-pub(crate) mod hub {
+pub mod hub {
     use std::path::Path;
 
     use crate::config::{HubConfig, HubPaths};

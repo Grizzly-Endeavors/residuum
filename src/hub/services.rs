@@ -18,12 +18,12 @@ use crate::checkpoints::SharedCheckpointRepos;
 use crate::config::paths::TeamPaths;
 use crate::config::{HubConfig, HubPaths};
 use crate::hub::push::PushService;
+use crate::hub::update::SharedUpdateStatus;
 use crate::inference::EmbeddingProvider;
 use crate::inference::system_one::SystemOneService;
 use crate::memory::team_wiki::TeamWikiIndex;
 use crate::tracing_service::TracingService;
 use crate::tunnel::TunnelStatus;
-use crate::update::SharedUpdateStatus;
 use crate::util::FatalError;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::WatchHealth;
@@ -273,7 +273,7 @@ impl HubServices {
             tunnel_status_rx,
             HubControl {
                 build: crate::BUILD_INFO,
-                update_status: crate::update::shared_update_status(crate::BUILD_INFO.version),
+                update_status: crate::hub::update::shared_update_status(crate::BUILD_INFO.version),
                 restart_tx,
                 shutdown_tx,
             },

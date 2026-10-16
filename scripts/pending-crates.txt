@@ -19,9 +19,5 @@ src/interfaces/teams/setup_job.rs residuum-hub
 src/interfaces/teams/setup_types.rs residuum-hub
 src/gateway/web/ residuum-hub
 src/gateway/file_server.rs residuum-hub
-src/gateway/watcher.rs residuum-hub
-src/gateway/last_known_good.rs residuum-hub
-src/update.rs residuum-hub
-src/features.rs residuum-hub
 src/gateway/startup/tools.rs residuum-tools
 src/protocol/ residuum-protocol
