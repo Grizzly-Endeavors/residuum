@@ -6,7 +6,8 @@ use serde_json::Value;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 // ─── skill_activate ──────────────────────────────────────────────────────────
 
@@ -116,7 +117,8 @@ impl Tool for SkillDeactivateTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::{SkillDir, SkillIndex, SkillState};
+    use crate::config::SkillDir;
+    use crate::skills::{SkillIndex, SkillState};
     use std::sync::Arc;
 
     #[test]
@@ -180,7 +182,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
         let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(

@@ -703,7 +703,8 @@ mod tests {
 
         let reply = fx.multitask(&owner_dm("dm-1"), "price out the paint").await;
 
-        let spawn = crate::testing::wait::next_event("the fork's spawn request", &mut spawns).await;
+        let spawn =
+            crate::testing::bus_wait::next_event("the fork's spawn request", &mut spawns).await;
         assert!(reply.contains(spawn.address.as_ref()), "{reply}");
         assert_eq!(spawn.prompt, "price out the paint");
         assert_eq!(spawn.spawner, None, "its replies never go to main");

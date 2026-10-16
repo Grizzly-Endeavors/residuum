@@ -1,0 +1,164 @@
+//! Compile-time constants: default values for configuration fields, and fixed
+//! names the configuration refers to.
+
+/// The web UI's endpoint name: always the owner's own channel, with no
+/// conversation concept to post elsewhere within.
+///
+/// The web UI follows the main agent's turns through the main conversation
+/// topic. What is published to its endpoint topic is only what the agent
+/// posts to the web with `send_message`, files included.
+pub const WEB_UI_ENDPOINT: &str = "ws";
+
+/// Default base URL for the Anthropic API.
+pub(super) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
+
+/// Default base URL for a local Ollama instance.
+pub(super) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+/// Default base URL for `TypeSafe`'s System 1 API.
+pub(super) const DEFAULT_TYPESAFE_URL: &str = "https://api.typesafe.ai";
+
+/// Default `TypeSafe` model: the alias for the latest stable Jev.
+pub(super) const DEFAULT_TYPESAFE_MODEL: &str = "jev-latest";
+
+/// Environment variable `TypeSafe`'s own SDKs read the API key from.
+pub(super) const TYPESAFE_API_KEY_ENV: &str = "TYPESAFE_API_KEY";
+
+/// Default base URL for the `OpenAI` API.
+pub(super) const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
+
+/// Default base URL for the Google Gemini API.
+pub(super) const DEFAULT_GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+
+/// Default base URL for the Fireworks AI OpenAI-compatible inference API.
+pub(super) const DEFAULT_FIREWORKS_URL: &str = "https://api.fireworks.ai/inference/v1";
+
+/// Default request timeout in seconds.
+pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+/// Default gateway bind address.
+pub(super) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
+
+/// Default gateway port.
+pub const DEFAULT_GATEWAY_PORT: u16 = 7700;
+
+/// Default upstream endpoint for bug-report and feedback submissions.
+/// Points at the relay; the relay attaches the upstream auth header.
+pub(super) const DEFAULT_FEEDBACK_ENDPOINT: &str = "https://agent-residuum.com";
+
+/// Default max tokens for model responses.
+pub(super) const DEFAULT_MAX_TOKENS: u32 = 16_384;
+
+/// Whether an agent's pulse system runs when its `config.toml` doesn't say.
+pub(crate) const DEFAULT_PULSE_ENABLED: bool = true;
+
+/// Default observer token threshold before firing.
+pub const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
+
+/// Default reflector token threshold before compressing.
+pub const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
+
+/// Default observer cooldown period in seconds before observation fires.
+pub const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
+
+/// Default force-observe token threshold (bypasses cooldown).
+pub const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
+
+/// Default subconscious mid-turn evaluation cadence (every N tool iterations).
+pub const DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS: usize = 3;
+
+/// Default token cap for the transcript sent to the subconscious classifier.
+pub const DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS: usize = 12_000;
+
+/// Default cooldown in minutes between learner sub-agent spawns.
+pub(crate) const DEFAULT_LEARNING_COOLDOWN_MINUTES: u64 = 240;
+
+/// Default turn count before the fallback learning nudge fires (0 = disabled).
+pub(crate) const DEFAULT_LEARNING_NUDGE_AFTER_TURNS: u32 = 0;
+
+/// Default weight for vector similarity in hybrid search merge.
+pub(super) const DEFAULT_SEARCH_VECTOR_WEIGHT: f64 = 0.7;
+
+/// Default weight for BM25 text scores in hybrid search merge.
+pub(super) const DEFAULT_SEARCH_TEXT_WEIGHT: f64 = 0.3;
+
+/// Default minimum hybrid score threshold.
+pub(super) const DEFAULT_SEARCH_MIN_SCORE: f64 = 0.35;
+
+/// Default candidate multiplier for hybrid search over-fetch.
+pub(super) const DEFAULT_SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
+
+/// Whether temporal decay is enabled for search scoring by default.
+pub(super) const DEFAULT_SEARCH_TEMPORAL_DECAY: bool = false;
+
+/// Default half-life in days for temporal decay scoring.
+pub(super) const DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+
+/// Default maximum number of concurrent background tasks.
+pub(super) const DEFAULT_MAX_CONCURRENT_BACKGROUND: usize = 3;
+
+/// Whether the agent can modify MCP server configurations by default.
+pub(super) const DEFAULT_AGENT_MODIFY_MCP: bool = true;
+
+/// Whether the agent can modify notification channels by default.
+pub(super) const DEFAULT_AGENT_MODIFY_CHANNELS: bool = true;
+
+/// Default idle timeout in minutes (30 minutes).
+pub(super) const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 30;
+
+/// Default idle timeout for `scheduled` sessions (pulses, actions; also used
+/// by webhook sessions) before they complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_SCHEDULED_MINUTES: u64 = 2;
+
+/// Default idle timeout for `spawned` sessions before they complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES: u64 = 10;
+
+/// Default idle timeout for non-webhook `external` sessions before they
+/// complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES: u64 = 30;
+
+/// Default idle timeout for `artifact` sessions (started by a workbench
+/// artifact) before they complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_ARTIFACT_MINUTES: u64 = 10;
+
+/// Default token floor below which a completed run with nothing staged
+/// produces no episode.
+pub(super) const DEFAULT_EPISODE_SKIP_TOKEN_FLOOR: usize = 2_000;
+
+/// Default maximum depth a `subagent_spawn`-created session may have (main is
+/// depth 0; a `scheduled`/`external` session is depth 1).
+pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 3;
+
+/// Default hop count at or above which a delivered agent message carries a
+/// note asking the receiver to reply only if a reply is actually needed.
+pub(super) const DEFAULT_HOP_SOFT_LIMIT: u32 = 8;
+
+/// Default hop count at or above which agent message delivery is refused
+/// outright, to bound message loops.
+pub(super) const DEFAULT_HOP_HARD_LIMIT: u32 = 32;
+
+/// Default number of earlier Teams group chat / channel messages handed to the agent on @mention.
+pub(super) const DEFAULT_TEAMS_CONTEXT_MESSAGES: usize = 20;
+
+/// Default number of earlier unmentioned Discord server messages handed to the agent on @mention.
+pub(super) const DEFAULT_DISCORD_CONTEXT_MESSAGES: usize = 20;
+
+/// Default number of earlier unmentioned Telegram group messages handed to the agent when addressed.
+pub(super) const DEFAULT_TELEGRAM_CONTEXT_MESSAGES: usize = 20;
+
+/// Default port for the dedicated Teams messaging listener.
+pub const DEFAULT_TEAMS_PORT: u16 = 7701;
+
+/// Default port for the dedicated A2A protocol listener.
+pub const DEFAULT_A2A_PORT: u16 = 7702;
+
+/// Default relay WebSocket URL.
+pub const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/v2/register";
+
+/// Default consecutive identical tool-call count at which the repeat-call
+/// guard appends a steering note to the tool's result.
+pub(super) const DEFAULT_REPEAT_CALL_STEER_AFTER: u32 = 3;
+
+/// Default consecutive identical tool-call count at which the repeat-call
+/// guard ends the turn instead of running the call again.
+pub(super) const DEFAULT_REPEAT_CALL_STOP_AFTER: u32 = 6;

@@ -59,7 +59,7 @@ jobs:
             fi
           elif [ "$HAS_LABEL" = true ]; then
             run=true; reason="PR has the cross-compile label"
-          elif git diff --name-only "$BASE_SHA...$HEAD_SHA" -- Cargo.toml Cargo.lock build.rs rust-toolchain.toml | grep -q .; then
+          elif git diff --name-only "$BASE_SHA...$HEAD_SHA" -- Cargo.toml Cargo.lock build.rs rust-toolchain.toml ':(glob)crates/*/Cargo.toml' | grep -q .; then
             run=true; reason="dependency or toolchain change"
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -73,7 +73,12 @@ jobs:
     if: needs.decide.outputs.run == 'true'
     runs-on: lab-runners-wide
 
+    # CI checkouts are fresh, so incremental state is never reused here, and with
+    # it off sccache can cache the library build of every workspace crate. No job
+    # may set CARGO_TARGET_DIR: sccache hashes its value, so a per-job target
+    # directory would miss every crate.
     env:
+      CARGO_INCREMENTAL: '0'
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
     steps:

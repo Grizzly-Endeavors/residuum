@@ -10,14 +10,16 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::{SharedToolsPath, Tool, ToolError, ToolResult, publish_notice};
+use super::{Tool, publish_notice};
 use crate::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
+use crate::config::{SharedToolsPath, apply_tools_path};
 use crate::inference::ToolDefinition;
-use crate::util::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
+use crate::inference::{ToolError, ToolResult};
+use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// Maximum output size from a command (100KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -382,7 +384,7 @@ impl Tool for ExecTool {
         cmd.current_dir(&self.workspace_root);
 
         if let Some(handle) = &self.tools_path {
-            super::apply_tools_path(&mut cmd, handle).await;
+            apply_tools_path(&mut cmd, handle).await;
         }
         for (var, value) in &key_env {
             cmd.env(var, value);
@@ -543,7 +545,7 @@ fn format_output(output: &Output) -> ToolResult {
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     /// A workspace root for tests that don't care where commands start —
     /// the system temp dir, which always exists.
@@ -702,7 +704,7 @@ mod tests {
             return;
         };
         wait::until_true("the killed process to be gone", || {
-            !crate::util::process::is_process_running(pid_u32)
+            !crate::process::is_process_running(pid_u32)
         })
         .await;
     }

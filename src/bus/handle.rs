@@ -5,11 +5,14 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::topics::{Carries, Topic};
-use super::types::{BusError, TopicId};
+use super::events::NoticeEvent;
+use super::topics::{self, Carries, Topic};
+use super::types::{BusError, NotifyName, SYSTEM_CHANNEL, TopicId};
+use crate::inference::NoticeSink;
 
 // ---------------------------------------------------------------------------
 // Type-erased event wrapper
@@ -191,6 +194,23 @@ impl Publisher {
             })
             .await
             .map_err(|_closed| BusError::BrokerShutdown)
+    }
+}
+
+#[async_trait]
+impl NoticeSink for Publisher {
+    /// Publishes the notice on the system channel. A failed publish is logged
+    /// at `warn`, since the notice has no other way to reach the user.
+    async fn notice(&self, message: String) {
+        if let Err(e) = self
+            .publish(
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                NoticeEvent::new(message),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to publish failover notice");
+        }
     }
 }
 
@@ -411,5 +431,21 @@ mod tests {
             sub.drain().is_empty(),
             "a second drain after everything was taken must return nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn notice_sink_delivers_the_notice_on_the_system_channel() {
+        let handle = spawn_broker();
+        let mut notices: Subscriber<NoticeEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let sink: Arc<dyn NoticeSink> = Arc::new(handle.publisher());
+
+        sink.notice("the main model is unavailable".to_string())
+            .await;
+
+        let event = crate::testing::bus_wait::next_event("a notice", &mut notices).await;
+        assert_eq!(event.message, "the main model is unavailable");
     }
 }

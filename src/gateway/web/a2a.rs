@@ -23,10 +23,9 @@ use crate::a2a::{
     A2aClientHub, A2aKeyError, A2aKeyInfo, A2aKeys, AUTH_CHECK_PATH, AgentCardFile, AgentSnapshot,
     AgentSource, AgentStatus, CardError, CardRuntime, RemoteTaskTracker, build_agent_card,
 };
-use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT};
+use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT, WorkspaceLayout};
 use crate::gateway::protocol::OutboundA2aTaskSummary;
 use crate::tunnel::TunnelStatus;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::config::ValidateResponse;
 use super::{AgentFilesState, ConfigApiState, HubApiState};
@@ -305,8 +304,7 @@ const DEFAULT_A2A_AGENTS_JSON: &str = r#"{"agents":{}}"#;
 pub(super) async fn api_a2a_agents_raw_get(
     State(state): State<AgentFilesState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let path =
-        crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
+    let path = crate::config::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
     let contents = match tokio::fs::read_to_string(&path).await {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_A2A_AGENTS_JSON.to_string(),
@@ -343,8 +341,7 @@ pub(super) async fn api_a2a_agents_raw_put(
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
     let diagnostics = crate::a2a::client::config::diagnose_a2a_json(&body);
 
-    let path =
-        crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
+    let path = crate::config::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
@@ -377,7 +374,7 @@ pub(super) async fn api_a2a_agents_raw_put(
 }
 
 /// `[a2a]` settings as currently written in `config.toml`, resolved with the
-/// same defaults `crate::config::resolve::resolve_a2a_config` uses. Parsed
+/// same defaults config's a2a resolution (`crates/config/src/resolve/a2a.rs`) uses. Parsed
 /// standalone from the raw file — rather than through `Config::load_at`, which
 /// validates the whole config — so an unrelated broken section elsewhere in
 /// `config.toml` never breaks this status check.
@@ -600,7 +597,7 @@ pub(super) async fn api_a2a_status(State(state): State<A2aStatusState>) -> Json<
             "http://{}:{}{}/{}",
             cfg.gateway_bind,
             cfg.port,
-            crate::a2a::public_url::AGENTS_PATH_PREFIX,
+            crate::remote_access::A2A_AGENTS_PATH_PREFIX,
             config.agent_name
         ),
         relay_access,
@@ -633,7 +630,7 @@ pub(super) async fn api_a2a_card(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::test_ports::free_port;
+    use residuum_core::testing::ports::free_port;
 
     fn hub_state(dir: &std::path::Path) -> HubApiState {
         HubApiState::for_test(dir)

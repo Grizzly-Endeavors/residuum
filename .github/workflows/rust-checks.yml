@@ -1,7 +1,7 @@
 name: Rust Checks
 
-# The Rust format, clippy (host and Windows), test, generated-types and
-# dependency checks. ci.yml calls it on pull requests and merge queue batches
+# The Rust format, clippy (host and Windows), test, generated-types,
+# dependency and crate isolation checks. ci.yml calls it on pull requests and merge queue batches
 # that change Rust code, and release.yml on every release tag. It is also
 # runnable by hand from the Actions tab, to try a change on the runners
 # without opening a pull request.
@@ -18,12 +18,35 @@ on:
         description: Run the Pebble tests, which issue certificates from the Let's Encrypt test CA in Docker
         type: boolean
         default: true
+      packages:
+        description: The cargo package arguments for clippy and the tests, --workspace or -p residuum-<crate> pairs
+        type: string
+        default: --workspace
+      isolation:
+        description: Check each member crate alone (rust-isolation), as the merge queue does
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       pebble:
         description: Run the Pebble tests, which issue certificates from the Let's Encrypt test CA in Docker
         type: boolean
         default: true
+      packages:
+        description: The cargo package arguments for clippy and the tests, --workspace or -p residuum-<crate> pairs
+        type: string
+        default: --workspace
+      isolation:
+        description: Check each member crate alone (rust-isolation)
+        type: boolean
+        default: true
+
+env:
+  # CI checkouts are fresh, so incremental state is never reused here, and with
+  # it off sccache can cache the library build of every workspace crate. No job
+  # may set CARGO_TARGET_DIR: sccache hashes its value, so a per-job target
+  # directory would miss every crate.
+  CARGO_INCREMENTAL: '0'
 
 jobs:
   # Every check runs even when an earlier one fails, so one run lists every
@@ -56,10 +79,26 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo fmt --all --check
 
+      - name: Check the package selection
+        id: packages
+        if: ${{ !cancelled() }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+            echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
+            exit 1
+          fi
+
       - name: Clippy
         id: clippy
-        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' && steps.packages.outcome == 'success' }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo clippy --all-targets --all-features "${packages[@]}" -- -D warnings
 
       - name: Dependency audit
         id: deny
@@ -109,8 +148,25 @@ jobs:
       - name: Add target
         run: rustup target add x86_64-pc-windows-gnu
 
+      - name: Check the package selection
+        id: packages
+        if: ${{ !cancelled() }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+            echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
+            exit 1
+          fi
+
       - name: Clippy
-        run: cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo clippy --all-targets --all-features "${packages[@]}" --target x86_64-pc-windows-gnu -- -D warnings
 
   # The tests run once, on an otherwise idle runner. The suite under load (two
   # copies at once with every CPU busy) runs nightly on main
@@ -122,6 +178,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The node's CPU pressure is counted from here (scripts/ci-cpu-report.sh).
+      - name: Start the CPU report
+        run: scripts/ci-cpu-report.sh start
+
       - name: Install pinned Rust toolchain
         id: toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
@@ -131,18 +191,38 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cd web && npm ci && npm run build
 
+      - name: Check the package selection
+        id: packages
+        if: ${{ !cancelled() }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+            echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
+            exit 1
+          fi
+
       # Compiles every test binary before any test runs. The test steps depend on
       # this build, not on each other, so a compile error is reported here once.
       - name: Build test binaries
         id: build_tests
-        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
-        run: cargo test --quiet --no-run
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' && steps.packages.outcome == 'success' }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo test --quiet --no-run "${packages[@]}"
 
       # --no-fail-fast runs every test binary, so one run lists every failing test.
       - name: Tests
         id: test
         if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
-        run: cargo test --quiet --no-fail-fast
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          read -ra packages <<<"$PACKAGES"
+          cargo test --quiet --no-fail-fast "${packages[@]}"
 
       # Remote access issuance against Pebble, the Let's Encrypt test CA, in
       # Docker (see docs/systems-usage/secure-tunnel.md, "Tests"). The
@@ -153,13 +233,13 @@ jobs:
       - name: Pebble tests
         id: pebble
         if: ${{ !cancelled() && inputs.pebble && steps.build_tests.outcome == 'success' }}
-        run: cargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests
+        run: cargo test --quiet -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
 
       # Regenerates web/src/lib/generated from the Rust protocol types and
       # fails on any difference from what is committed.
       - name: Generated types are up to date
         id: types
-        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
         run: scripts/check-generated-types.sh
 
       - name: Build summary
@@ -181,4 +261,29 @@ jobs:
             echo '```'
             sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
             echo '```'
+            echo ''
+            scripts/ci-cpu-report.sh report
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Cargo unifies features across every package in one build, so a member can
+  # compile in a whole-workspace run only because another package turns on a
+  # feature it needs. Each member is checked alone, in its own cargo
+  # invocations, so nothing unifies across members. Runs only when `isolation`
+  # is set (the merge queue and releases).
+  rust-isolation:
+    name: Crate Isolation
+    if: inputs.isolation
+    runs-on: lab-runners-wide
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # build.rs refuses to compile without web/dist; the root library check builds it
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      - name: Check the root library and each member crate alone
+        run: scripts/check-crate-isolation.sh

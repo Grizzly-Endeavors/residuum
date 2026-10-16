@@ -12,7 +12,8 @@ use crate::actions::types::ScheduledAction;
 use crate::config::{ModelSelector, SharedModelCatalog};
 use crate::inference::ToolDefinition;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 // ─── schedule_action ─────────────────────────────────────────────────────────
 

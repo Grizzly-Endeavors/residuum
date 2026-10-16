@@ -1,29 +1,30 @@
-//! What the crate's tests share for waiting on what they check.
+//! The root crate's own test helpers and the rules its tests enforce on the
+//! workspace.
 //!
-//! A test waits on the event it checks, never on elapsed time: a duration that
-//! holds on an idle machine fails when several builds share it. Everything
-//! here waits on a signal, under one hang guard ([`wait::HANG_GUARD`]) that
-//! only stops a test that would otherwise hang.
+//! The waits, gates, the paused clock, log capture, test ports and fake-tool
+//! scripts every crate shares live in `residuum_core::testing` (its
+//! `test-support` feature). A test waits on the event it checks, never on
+//! elapsed time, under that module's one hang guard. What waits on the root's
+//! own types is here:
 //!
-//! - [`wait`]: waits on channels, watches and polled conditions.
-//! - [`clock`]: moving a paused clock, for code with no real I/O.
-//! - [`gate`]: holding a call open until the test lets it through.
-//! - [`model`]: a model server and provider that answer through a gate.
-//! - [`script`]: writing a fake tool the test then runs, so its exec never
-//!   fails with "Text file busy" when another test forks.
+//! - [`bus_wait`]: waits on what the bus and the hub publish.
 //!
 //! `source_scan` holds the tests that keep it that way: test code may not
-//! call `sleep`, `timeout` or wiremock's `set_delay` outside this module, and
-//! the waits that predate the rule are counted in `wall_clock_backlog`, where
-//! the counts only go down. Test code may not make a file executable itself
-//! either; it writes scripts through [`script`]. `CONTRIBUTING.md` ("Waiting
-//! in tests") describes which wait fits which situation.
+//! call `sleep`, `timeout` or wiremock's `set_delay` outside core's `wait`
+//! and `clock`, and the waits that predate the rule are counted in
+//! `wall_clock_backlog`, where the counts only go down. Test code may not
+//! make a file executable itself either; it writes scripts through core's
+//! `testing::script`. `CONTRIBUTING.md` ("Waiting in tests") describes which
+//! wait fits which situation.
+//!
+//! `manifest_scan` holds the rules the workspace's `Cargo.toml` files keep.
+//!
+//! A model server and provider that answer through a gate are inference's
+//! `testing::model`, reached as `crate::inference::testing::model`.
 
-pub(crate) mod clock;
+pub(crate) mod bus_wait;
+#[path = "../../crates/core/src/testing/crypto.rs"]
 mod crypto;
-pub(crate) mod gate;
-pub(crate) mod model;
-pub(crate) mod script;
+mod manifest_scan;
 mod source_scan;
-pub(crate) mod wait;
 mod wall_clock_backlog;

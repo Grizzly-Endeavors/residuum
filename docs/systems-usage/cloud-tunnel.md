@@ -2,7 +2,7 @@
 
 Residuum Cloud (`[cloud]` in `hub/config.toml`, Settings → All agents → Residuum Cloud) keeps one persistent WebSocket open from this gateway to a relay, so the web UI and the workbench reach it from anywhere without port forwarding. The tunnel client (`tunnel::start_tunnel`) registers at the relay's `/tunnel/v2/register` endpoint with `Authorization: Bearer {token}` and the capability `tls-passthrough` in `x-residuum-capabilities`. The relay hands this instance one raw byte stream per browser connection, and Residuum terminates TLS itself, so the relay sees only host names, addresses, timing and byte counts. Responses through Cloud have no size cap: the tunnel streams each connection's bytes under per-stream flow control, so large files, such as those the artifacts listener serves, arrive as they do on the local network. An install with `[cloud]` configured always uses this tunnel. To stay off the cloud, leave `[cloud]` out, set `enabled = false` in it, or disconnect in Settings.
 
-How the streams are served, the certificates and the identity checks are in [Secure Tunnel and Certificates](secure-tunnel.md). Which browsers may use the tunnel is [Remote access](remote-access.md). The code is in `src/tunnel/`.
+How the streams are served, the certificates and the identity checks are in [Secure Tunnel and Certificates](secure-tunnel.md). Which browsers may use the tunnel is [Remote access](remote-access.md). The code is in `crates/net/src/tunnel/`.
 
 `[cloud] relay_url` names the relay. The client always registers at `/tunnel/v2/register` on it: a URL that ends in `/tunnel/register` is rewritten to that path, and a URL that ends in neither is logged at `error` and never connected. A relay that answers `404` or `426` on the endpoint doesn't offer the secure tunnel; the status says so (`error`) and the client keeps retrying with backoff. A relay that answers `401` or `403` refused the token: the tunnel's status becomes `refused` (logged at `error` once, not on each retry), `GET /api/hub/cloud/status` reports `"status": "refused"`, and the client keeps trying once a minute. The status stays `refused` across those retries until one gets further; a tunnel started afresh, such as after a new sign-in reloads the hub, reads `connecting` on its first attempt. `local_port` and `remote_access` in `[cloud]` are still accepted so an existing config loads, and have no effect (a `remote_access = false` or a `local_port` is logged at `warn`).
 
@@ -28,7 +28,7 @@ A request is remote when the secure tunnel's engine marked it with the `RemoteTr
 Everything that treats remote requests differently asks that one question:
 
 - **The device gate** (`pairing::device_gate`), which refuses a remote request to the main gateway or the workbench listener unless it carries a paired device's credential, and applies the cross-site rule to it. The A2A and Teams listeners are not gated. See [Remote access](remote-access.md).
-- **The remote-control guard** (`gateway::remote_control_guard`), described below.
+- **The remote-control guard** (`crates/net/src/remote_control_guard.rs`), described below.
 - **`viewed_via_tunnel`** in the cloud status, below.
 
 ## Remote-Control Guard

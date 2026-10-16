@@ -681,9 +681,7 @@ fn build_spawn_context(
         // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
         // builds for the HTTP tracing API, so a session forked after this
         // reload reports the currently active model/provider.
-        tracing_client_context: Arc::new(
-            crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
-        ),
+        tracing_client_context: Arc::new(crate::client_context::gather_for_bug_report(new_cfg)),
         web_search_backend: new_cfg.web_search.standalone_backend.clone(),
         tools_path: Arc::clone(&rt.tools_path),
         path_policy: Arc::clone(&rt.path_policy),
@@ -1047,11 +1045,11 @@ async fn reload_a2a(rt: &mut AgentRuntime, new_cfg: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RetryConfig;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig,
         MemoryConfig, SkillsConfig, TelegramConfig, ToolsConfig,
     };
-    use crate::inference::retry::RetryConfig;
 
     /// Build a minimal test config.
     fn test_config() -> Config {
@@ -1408,7 +1406,7 @@ mod tests {
         new.max_tokens = 8192;
         new.memory.observer_threshold_tokens = 999;
         new.pulse_enabled = true;
-        new.skills.dirs = vec![crate::skills::SkillDir::configured("/new/skills")];
+        new.skills.dirs = vec![crate::config::SkillDir::configured("/new/skills")];
         new.agent.modify_mcp = false;
         new.background.max_concurrent = 10;
         new.idle.timeout = std::time::Duration::from_mins(5);

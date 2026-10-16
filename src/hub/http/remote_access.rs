@@ -19,7 +19,7 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 
 use super::error::json_error;
-use crate::pairing::remote::remote_context;
+use crate::pairing::remote_context;
 use crate::remote_access::manager::{ActionError, ResetError};
 use crate::remote_access::slot::RemoteAccessSlot;
 

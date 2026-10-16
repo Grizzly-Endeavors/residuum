@@ -440,7 +440,7 @@ mod tests {
     }
 
     async fn next_event(sub: &mut Subscriber<WorkspaceEvent>) -> WorkspaceEvent {
-        crate::testing::wait::guarded("a workspace event", sub.recv())
+        residuum_core::testing::wait::guarded("a workspace event", sub.recv())
             .await
             .unwrap()
             .unwrap()
@@ -629,9 +629,10 @@ mod tests {
             .send(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)))
             .await
             .unwrap();
-        let exit = crate::testing::wait::guarded("the feed to exit for a polling restart", h.task)
-            .await
-            .unwrap();
+        let exit =
+            residuum_core::testing::wait::guarded("the feed to exit for a polling restart", h.task)
+                .await
+                .unwrap();
         assert_eq!(exit, LoopExit::Restart(Mode::Polling));
     }
 
@@ -688,7 +689,7 @@ mod tests {
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
         let task = spawn_change_feed(root.clone(), None, bus.publisher(), health_tx);
-        crate::testing::wait::watch_until(
+        residuum_core::testing::wait::watch_until(
             "the change feed's watcher to start",
             &mut health_rx,
             |h| *h != WatchHealth::Starting,
@@ -731,7 +732,7 @@ mod tests {
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
         let task = spawn_change_feed(root.clone(), Some("team"), bus.publisher(), health_tx);
-        crate::testing::wait::watch_until(
+        residuum_core::testing::wait::watch_until(
             "the change feed's watcher to start",
             &mut health_rx,
             |h| *h != WatchHealth::Starting,

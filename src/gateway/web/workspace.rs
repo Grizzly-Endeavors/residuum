@@ -439,7 +439,7 @@ async fn is_identity_target(state: &ConfigApiState, relative: &str, resolved: &P
     if is_identity_file(relative) {
         return true;
     }
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir);
+    let layout = crate::config::WorkspaceLayout::new(&state.workspace_dir);
     let team = layout.team();
     let Some(team_root) = tokio::fs::canonicalize(team.root()).await.ok() else {
         return [team.agents_md(), team.user_md()]
@@ -734,7 +734,7 @@ fn diagnose_write_content(
         // Every file this module understands is text (YAML/TOML/JSON/MD), so
         // non-UTF-8 content on a recognized path is itself worth reporting,
         // even though there's no parser to run on bytes that aren't text.
-        return if crate::diagnostics::is_recognized(path, &paths) {
+        return if crate::diagnostics_dispatch::is_recognized(path, &paths) {
             vec![crate::diagnostics::Diagnostic::error(
                 "content is not valid UTF-8 text",
             )]
@@ -743,7 +743,7 @@ fn diagnose_write_content(
         };
     };
 
-    crate::diagnostics::diagnose(path, text, &paths).unwrap_or_default()
+    crate::diagnostics_dispatch::diagnose(path, text, &paths).unwrap_or_default()
 }
 
 /// `POST /api/agents/{name}/workspace/validate` — diagnostics for `content` as if it were

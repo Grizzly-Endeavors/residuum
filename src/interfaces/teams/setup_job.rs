@@ -28,7 +28,7 @@ use crate::interfaces::teams::setup_types::{
     SetupResult, SignInPrompt, TeamsSetupForm, TeamsSetupJob, TeamsSetupPhase, TeamsSetupPrereqs,
     TeamsSetupStart, TeamsSetupState,
 };
-use crate::util::process::{create_argv_command, kill_process_tree_sync};
+use crate::process::{create_argv_command, kill_process_tree_sync};
 
 /// Errors encountered when managing Teams setup jobs.
 #[derive(Debug, thiserror::Error)]
@@ -1248,8 +1248,8 @@ async fn spawn_login_process(atk_bin: &Path, log: &BoundedLog) -> Result<LoginSp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::script::write_executable as make_script;
-    use crate::testing::wait;
+    use residuum_core::testing::script::write_executable as make_script;
+    use residuum_core::testing::wait;
 
     const FAKE_ATK_UNIX: &str = r#"#!/bin/sh
 cmd="$1"
@@ -1682,7 +1682,7 @@ exit 0
         let mgr = TeamsSetupJobManager::with_overrides(root, overrides);
         // Unit tests have no tracing subscriber, so capture the reason
         // `detect_tool` logs when it reports a tool as not found.
-        let log = crate::hub::test_support::EventLog::default();
+        let log = residuum_core::testing::log::EventLog::default();
         let prereqs = {
             let _guard = log.capture();
             mgr.get_prereqs("agent-1").await
@@ -1824,7 +1824,7 @@ exit 0
 
         let pid =
             wait_for_provisioning_grandchild(&mgr, &root, "the grandchild to write its pid").await;
-        assert!(crate::util::process::is_process_running(pid));
+        assert!(crate::process::is_process_running(pid));
 
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
@@ -1841,11 +1841,11 @@ exit 0
 
         // Verify that the grandchild process tree is actually gone
         wait::until_true("the grandchild process tree to terminate", || {
-            !crate::util::process::is_process_running(pid)
+            !crate::process::is_process_running(pid)
         })
         .await;
         assert!(
-            !crate::util::process::is_process_running(pid),
+            !crate::process::is_process_running(pid),
             "grandchild process tree should be terminated after cancel"
         );
     }
@@ -2095,7 +2095,7 @@ exit 0
 
         mgr.cancel_job("agent-1").await.unwrap();
         wait::until_true("the provisioning process tree to terminate", || {
-            !crate::util::process::is_process_running(pid)
+            !crate::process::is_process_running(pid)
         })
         .await;
     }

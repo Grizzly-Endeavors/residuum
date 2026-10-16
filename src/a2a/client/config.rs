@@ -134,7 +134,7 @@ pub fn diagnose_a2a_json(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
 
 /// Load `config/a2a.json` as a name → entry map, expanding
 /// `${agent-key:<name>}` (via `crate::agent_keys::expand_references`) and
-/// `${ENV}` (via `crate::mcp::client::expand_env_vars`, the same helper MCP
+/// `${ENV}` (via `crate::util::expand_env_vars`, the same helper MCP
 /// server headers use) references in header values.
 ///
 /// An entry with an invalid name, an empty url, or a header referencing an
@@ -190,7 +190,7 @@ pub fn load_a2a_agents_map(
                         return None;
                     }
                 };
-                headers.insert(key, crate::mcp::client::expand_env_vars(&expanded));
+                headers.insert(key, crate::util::expand_env_vars(&expanded));
             }
             Some((
                 name.clone(),

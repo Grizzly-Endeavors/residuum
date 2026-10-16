@@ -5,18 +5,18 @@ use std::sync::Arc;
 
 use crate::bus::Publisher;
 use crate::config::Config;
+use crate::config::WorkspaceLayout;
 use crate::inference::{
     EmbeddingProvider, SharedHttpClient, build_provider_chain, build_provider_chain_with_notices,
 };
-use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
+use crate::memory::read_idx_jsonl;
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_obs_file};
 use crate::memory::team_wiki::TeamWikiIndex;
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::util::FatalError;
-use crate::workspace::layout::WorkspaceLayout;
 use anyhow::Context;
 
 /// Search index and vector store built during initialization.
@@ -56,7 +56,7 @@ pub(super) fn build_observer(
             cfg.max_tokens,
             http,
             cfg.retry.clone(),
-            publisher,
+            Arc::new(publisher),
             "the memory observer",
         )?
     } else {
@@ -110,7 +110,7 @@ pub(super) fn build_memory_components(
         cfg.max_tokens,
         http,
         cfg.retry.clone(),
-        publisher,
+        Arc::new(publisher),
         "the memory reflector",
     ) {
         Ok((reflector_provider, dropped)) => {

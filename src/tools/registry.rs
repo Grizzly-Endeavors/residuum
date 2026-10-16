@@ -13,18 +13,19 @@ use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, Publisher, SessionAddress};
-use crate::config::SharedModelCatalog;
+use crate::config::{SharedModelCatalog, SharedToolsPath};
 use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult,
-    a2a_task_update, actions, agent_keys, background, edit, exec, file_bug_report, inbox,
-    memory_get, memory_search, message_agent, ollama_web_search, read, send_message, skills,
-    submit_feedback, web_fetch, workspace_checkpoints, write,
+    SharedFileTracker, SharedPathPolicy, Tool, a2a_task_update, actions, agent_keys, background,
+    edit, exec, file_bug_report, inbox, memory_get, memory_search, message_agent,
+    ollama_web_search, read, send_message, skills, submit_feedback, web_fetch,
+    workspace_checkpoints, write,
 };
+use crate::inference::{ToolError, ToolResult};
 
 /// Registry of available tools.
 pub struct ToolRegistry {
@@ -362,7 +363,7 @@ impl ToolRegistry {
         &mut self,
         tracker: SharedFileTracker,
         policy: SharedPathPolicy,
-        diagnostics_paths: crate::diagnostics::DiagnosticsPaths,
+        diagnostics_paths: crate::diagnostics_dispatch::DiagnosticsPaths,
         config_watch: Option<super::config_reload_tracker::ConfigWriteWatch>,
     ) {
         // Every file/shell tool resolves a relative path (or spawns a child
@@ -613,7 +614,7 @@ impl ToolRegistry {
     fn register_session_workspace_tools(&mut self, deps: &SubagentToolDeps) {
         // Core I/O tools. `None`: a session never gets a `ConfigWriteWatch`
         // — see its doc comment.
-        let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+        let diagnostics_paths = crate::diagnostics_dispatch::DiagnosticsPaths {
             config_dir: deps.config_dir.clone(),
             workspace_dir: deps.workspace_dir.clone(),
             hub_dir: deps.hub_dir.clone(),
@@ -823,7 +824,7 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
     use crate::tools::{FileTracker, PathPolicy};
 
     #[tokio::test]
@@ -886,7 +887,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "{}", result.output);
-        wait::bus_barrier(bus).await;
+        bus_wait::bus_barrier(bus).await;
         !added.drain().is_empty()
     }
 
@@ -938,7 +939,7 @@ mod tests {
         registry.register_defaults(
             FileTracker::new_shared(),
             policy,
-            crate::diagnostics::DiagnosticsPaths {
+            crate::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
                 hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),

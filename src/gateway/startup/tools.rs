@@ -11,10 +11,10 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
 
 use crate::bus::{EndpointRegistry, SessionAddress};
+use crate::config::WorkspaceLayout;
 use crate::skills::SharedSkillState;
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::memory::MemoryComponents;
 
@@ -23,7 +23,7 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: &'a Arc<tokio::sync::Notify>,
     pub skill_state: &'a SharedSkillState,
-    pub tools_path: &'a crate::tools::SharedToolsPath,
+    pub tools_path: &'a crate::config::SharedToolsPath,
     /// Shared write policy — the same instance sessions fork with and
     /// config reloads update.
     pub path_policy: &'a crate::tools::SharedPathPolicy,
@@ -124,7 +124,7 @@ pub(super) fn init_tool_registry(
     tools.set_publisher(deps.publisher.clone());
     tools.set_auto_mode(Arc::clone(deps.auto_mode));
     let file_tracker = crate::tools::FileTracker::new_shared();
-    let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+    let diagnostics_paths = crate::diagnostics_dispatch::DiagnosticsPaths {
         config_dir: cfg.config_dir.clone(),
         workspace_dir: cfg.workspace_dir.clone(),
         hub_dir: deps.hub_dir.to_path_buf(),
@@ -292,13 +292,13 @@ mod tests {
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
     use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
+    use crate::config::RetryConfig;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, GatewayConfig, IdleConfig, LearningConfig,
         MemoryConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig, SubconsciousSettings,
         ToolsConfig, TracingConfig, WebSearchConfig,
     };
     use crate::hub::AgentDirectory as _;
-    use crate::inference::retry::RetryConfig;
     use crate::memory::search::{HybridSearcher, MemoryIndex};
     use crate::skills::{SkillIndex, SkillState};
     use crate::tools::{FileTracker, PathPolicy};
@@ -383,7 +383,7 @@ mod tests {
         action_store: Arc<tokio::sync::Mutex<ActionStore>>,
         action_notify: Arc<tokio::sync::Notify>,
         skill_state: SharedSkillState,
-        tools_path: crate::tools::SharedToolsPath,
+        tools_path: crate::config::SharedToolsPath,
         path_policy: crate::tools::SharedPathPolicy,
         agent_keys: crate::agent_keys::SharedAgentKeys,
         session_registry: Arc<SessionRegistry>,
@@ -423,7 +423,7 @@ mod tests {
         )));
         let action_notify = Arc::new(tokio::sync::Notify::new());
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let tools_path: crate::tools::SharedToolsPath = Arc::new(tokio::sync::RwLock::new(None));
+        let tools_path: crate::config::SharedToolsPath = Arc::new(tokio::sync::RwLock::new(None));
         let path_policy = PathPolicy::new_shared();
         let agent_keys = crate::agent_keys::AgentKeys::new_shared(dir);
         let session_registry = Arc::new(SessionRegistry::new());
@@ -432,8 +432,7 @@ mod tests {
 
         let (_, span_buffer) = SpanBufferLayer::new(&SpanBufferConfig::default());
         let tracing_service = Arc::new(TracingService::new(cfg.tracing.clone(), span_buffer));
-        let tracing_client_context =
-            Arc::new(crate::tracing_service::client_context::gather_for_bug_report(&cfg));
+        let tracing_client_context = Arc::new(crate::client_context::gather_for_bug_report(&cfg));
 
         let session_store = Arc::new(SessionStore::new(layout.sessions_dir()));
         let agent_messenger = Arc::new(AgentMessenger::new(
@@ -780,7 +779,7 @@ mod tests {
 
         let _agent = create_agent(
             CreateAgentArgs {
-                provider: Box::new(crate::inference::providers::null::NullProvider),
+                provider: Box::new(crate::inference::NullProvider),
                 options: crate::inference::CompletionOptions::default(),
                 max_tool_iterations: None,
                 repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),

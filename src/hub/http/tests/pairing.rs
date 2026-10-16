@@ -4,7 +4,7 @@
 use axum::http::request::Builder;
 
 use super::*;
-use crate::workbench::forward::HubApi;
+use crate::workbench::HubApi;
 
 const UI_ORIGIN: &str = "https://bear.agent-residuum.com";
 const WORKBENCH_ORIGIN: &str = "https://bear.workbench.agent-residuum.com";
@@ -37,7 +37,7 @@ fn remote(method: Method, uri: &str) -> Builder {
 /// `builder` delivered by the transport as coming from `peer_ip`, replacing
 /// any peer it carried.
 fn from_peer(builder: Builder, peer_ip: &str) -> Builder {
-    builder.extension(crate::pairing::remote::RemoteTransport {
+    builder.extension(crate::pairing::RemoteTransport {
         peer_ip: Some(peer_ip.to_string()),
         origin: None,
     })
@@ -625,7 +625,7 @@ async fn without_fetch_metadata_the_origin_must_match_and_neither_header_is_a_re
         let mut builder = Request::builder()
             .method(Method::POST)
             .uri("/api/hub/devices/recovery-codes")
-            .extension(crate::pairing::remote::RemoteTransport {
+            .extension(crate::pairing::RemoteTransport {
                 peer_ip: Some(PEER.to_string()),
                 origin: None,
             })
@@ -751,7 +751,16 @@ impl Workbench {
         let api = HubApi::new();
         api.bind(h.app.clone());
         Self {
-            router: crate::workbench::server::router(dir, api, h.pairing.clone(), 7700),
+            router: crate::workbench::router(
+                dir,
+                api,
+                h.pairing.clone(),
+                7700,
+                crate::workbench::SdkContext {
+                    version: "2026.09.23",
+                    features: &[],
+                },
+            ),
         }
     }
 

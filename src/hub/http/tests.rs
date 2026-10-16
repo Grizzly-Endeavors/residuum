@@ -25,6 +25,7 @@ use super::{HubHttpState, agent_repair_router, hub_router};
 use crate::background::registry::SessionInfo;
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
+use crate::config::WorkspaceLayout;
 use crate::config::paths::TeamPaths;
 use crate::gateway::ReloadSignal;
 use crate::gateway::web::{
@@ -39,11 +40,10 @@ use crate::hub::{
     AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
     RestoreAgentRequest,
 };
-use crate::testing::wait;
 use crate::tunnel::TunnelStatus;
-use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
+use residuum_core::testing::wait;
 
 mod artifacts_origin;
 mod events;
@@ -529,7 +529,7 @@ impl Harness {
                 agent: None,
             }),
             active_subagents: Arc::new(Vec::new),
-            workbench_serving: crate::workbench::server::WorkbenchServing::Unavailable {
+            workbench_serving: crate::workbench::WorkbenchServing::Unavailable {
                 reason: "not started in tests".to_string(),
             },
             team: TeamWriteCoordinator::new(&TeamPaths::new(root.path().join("team"))),
@@ -1944,7 +1944,7 @@ async fn through_the_tunnel(h: &Harness, method: Method, uri: &str) -> Request<B
     Request::builder()
         .method(method)
         .uri(uri)
-        .extension(crate::pairing::remote::RemoteTransport {
+        .extension(crate::pairing::RemoteTransport {
             peer_ip: Some("203.0.113.7".to_string()),
             origin: None,
         })

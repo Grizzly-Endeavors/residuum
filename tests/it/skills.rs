@@ -11,11 +11,11 @@
 
 use std::sync::Arc;
 
-use residuum::skills::{SkillDir, SkillIndex, SkillSource, SkillState};
+use residuum::config::{SkillDir, SkillSource, WorkspaceLayout};
+use residuum::skills::{SkillIndex, SkillState};
 use residuum::tools::Tool;
 use residuum::tools::skills::{SkillActivateTool, SkillDeactivateTool};
 use residuum::workspace::bootstrap::ensure_workspace;
-use residuum::workspace::layout::WorkspaceLayout;
 use residuum::workspace::team_files::TeamWriteCoordinator;
 
 /// Set up a workspace with skills directory and optional skill files.

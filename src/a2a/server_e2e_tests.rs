@@ -6,9 +6,9 @@
 //! Declared as `#[cfg(test)] mod server_e2e_tests;` from `mod.rs`, so this
 //! whole file (harness and tests alike) only exists in test builds.
 
-use crate::testing::gate::{Gate, GateEntry};
-use crate::testing::wait;
-use crate::util::test_ports::{ReservedPort, reserve_port};
+use residuum_core::testing::gate::{Gate, GateEntry};
+use residuum_core::testing::ports::{ReservedPort, reserve_port};
+use residuum_core::testing::wait;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -42,7 +42,7 @@ use crate::background::types::SubAgentConfig;
 use crate::bus::{
     BusHandle, EndpointRegistry, Publisher, SessionAddress, SpawnRequestEvent, topics,
 };
-use crate::config::{A2aConfig, A2aVisibility, Config, ModelSelector};
+use crate::config::{A2aConfig, A2aVisibility, Config, ModelSelector, WorkspaceLayout};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ToolCall,
     ToolDefinition,
@@ -51,7 +51,6 @@ use crate::mcp::McpRegistry;
 use crate::skills::{SkillIndex, SkillState};
 use crate::tools::{SubagentToolDeps, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// The name of the one agent the harness serves.
 const AGENT_NAME: &str = "solo";
@@ -105,12 +104,12 @@ impl InferenceProvider for ScriptedProvider {
 /// whole `Config` (`gather_for_bug_report`) — nothing here is exercised by
 /// the a2a path itself.
 fn test_config(dir: &std::path::Path) -> Config {
+    use crate::config::RetryConfig;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, GatewayConfig, IdleConfig, LearningConfig,
         MemoryConfig, SkillsConfig, SubconsciousSettings, ToolsConfig, TracingConfig,
         WebSearchConfig,
     };
-    use crate::inference::retry::RetryConfig;
 
     Config {
         agent_name: "test-agent".to_string(),
@@ -237,7 +236,7 @@ async fn setup_workspace(
         .await
         .unwrap();
 
-    let skill_dirs = vec![crate::skills::SkillDir::agent(layout.skills_dir())];
+    let skill_dirs = vec![crate::config::SkillDir::agent(layout.skills_dir())];
     if let Some((name, description)) = opts.workspace_skill {
         let skill_dir = layout.skills_dir().join(name);
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
@@ -292,8 +291,7 @@ fn build_support_deps(
         cfg.tracing.clone(),
         span_buffer,
     ));
-    let tracing_client_context =
-        Arc::new(crate::tracing_service::client_context::gather_for_bug_report(&cfg));
+    let tracing_client_context = Arc::new(crate::client_context::gather_for_bug_report(&cfg));
     (hybrid_searcher, tracing_service, tracing_client_context)
 }
 
@@ -552,7 +550,7 @@ struct MiniListenerDeps {
     action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: Arc<tokio::sync::Notify>,
     endpoint_registry: EndpointRegistry,
-    tools_path: crate::tools::SharedToolsPath,
+    tools_path: crate::config::SharedToolsPath,
     path_policy: crate::tools::SharedPathPolicy,
     agent_keys: crate::agent_keys::SharedAgentKeys,
     hybrid_searcher: Arc<crate::memory::search::HybridSearcher>,

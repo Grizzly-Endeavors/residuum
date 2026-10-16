@@ -77,7 +77,7 @@ impl TeamChangeFeed {
         let bus = span.in_scope(crate::bus::spawn_broker);
         let (health_tx, health) = watch::channel(WatchHealth::Starting);
         // Subscribed before the feed starts, so no batch goes unseen.
-        let workbench_task = crate::workbench::watcher::spawn_workbench_watcher(
+        let workbench_task = crate::hub::workbench_watcher::spawn_workbench_watcher(
             TeamPaths::new(team_root.clone()).workbench_dir(),
             &bus,
             bus.publisher(),
@@ -162,7 +162,7 @@ pub(crate) struct HubServices {
     /// Update and process-control handles.
     pub control: HubControl,
     /// Whether the workbench artifacts listener is running, and on which port.
-    pub workbench_serving: crate::workbench::server::WorkbenchServing,
+    pub workbench_serving: crate::workbench::WorkbenchServing,
     /// The one change feed over the team directory.
     pub team_feed: Arc<TeamChangeFeed>,
     /// Feeds relay-discovered sibling instances to every registered agent's
@@ -201,7 +201,7 @@ impl HubServices {
         hub: &HubConfig,
         tunnel_status_rx: watch::Receiver<TunnelStatus>,
         control: HubControl,
-        workbench_serving: crate::workbench::server::WorkbenchServing,
+        workbench_serving: crate::workbench::WorkbenchServing,
         pairing: crate::pairing::DevicePairing,
         team_embedding: Option<Arc<dyn EmbeddingProvider>>,
     ) -> Result<Self, FatalError> {
@@ -273,7 +273,7 @@ impl HubServices {
                 restart_tx,
                 shutdown_tx,
             },
-            crate::workbench::server::WorkbenchServing::Unavailable {
+            crate::workbench::WorkbenchServing::Unavailable {
                 reason: "not started in tests".to_string(),
             },
             crate::pairing::DevicePairing::open(&hub.config_dir),

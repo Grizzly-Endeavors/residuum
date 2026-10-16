@@ -33,13 +33,24 @@ if [ -n "${STRESS_TESTS_LOG:-}" ] && [ ! -f "$STRESS_TESTS_LOG" ]; then
     exit 1
 fi
 
+# Clears the previous run's logs before the build, so a run that fails to build
+# cannot leave them for the caller's summary to count.
+rm -rf "$out"
+
 # ts_export writes web/src/lib/generated, so concurrent copies would race on
-# the working tree. It has no timing to stress.
-mapfile -t binaries < <(
+# the working tree. It has no timing to stress. Each line is a binary's path and
+# its package's directory, tab-separated.
+mapfile -t binary_entries < <(
     cargo test --no-run --message-format=json \
-        | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null and .target.name != "ts_export") | .executable' \
+        | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null and .target.name != "ts_export") | [.executable, (.manifest_path | rtrimstr("/Cargo.toml"))] | @tsv' \
         | sort -u
 )
+binaries=()
+manifest_dirs=()
+for entry in "${binary_entries[@]}"; do
+    binaries+=("${entry%%$'\t'*}")
+    manifest_dirs+=("${entry#*$'\t'}")
+done
 if [ "${#binaries[@]}" -eq 0 ]; then
     echo "error: cargo built no test binaries; run 'cargo test --no-run' to see why." >&2
     exit 1
@@ -59,11 +70,6 @@ stop_burners() {
 }
 trap stop_burners EXIT INT TERM
 
-# libtest runs tests from the package root and reads its manifest dir at run
-# time in a few places; match what `cargo test` sets.
-export CARGO_MANIFEST_DIR="$PWD"
-
-rm -rf "$out"
 mkdir -p "$out"
 
 echo "Stress: ${#binaries[@]} test binaries, $copies copies at once, $burn CPU burners, $rounds round(s), on $(nproc) CPUs."
@@ -79,9 +85,13 @@ for round in $(seq 1 "$rounds"); do
     for copy in $(seq 1 "$copies"); do
         (
             status=0
-            for binary in "${binaries[@]}"; do
+            # Each binary runs from its package's directory with CARGO_MANIFEST_DIR
+            # set to it, as `cargo test` does: some tests read paths relative to it.
+            for index in "${!binaries[@]}"; do
+                binary="${binaries[$index]}"
+                dir="${manifest_dirs[$index]}"
                 echo "=== $(basename "$binary")"
-                "$binary" --quiet "$@" || {
+                (cd "$dir" && CARGO_MANIFEST_DIR="$dir" "$binary" --quiet "$@") || {
                     code=$?
                     echo "=== $(basename "$binary") exited $code"
                     status=1
@@ -99,17 +109,29 @@ for round in $(seq 1 "$rounds"); do
     echo "Round $round done. Load: $(cut -d' ' -f1-3 /proc/loadavg). inotify instances in use mid-run: $inotify_peak of $(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo '?')."
 done
 
-# A failing test is named in a "---- <name> stdout ----" header. A binary that
-# exited non-zero without naming one crashed or was killed, and counts too.
+# A failing test is named in a "---- <name> stdout ----" header. A test in a
+# member crate's binary (residuum_<x>-<hash>) is listed with its crate first,
+# residuum_<x>::<name>. A binary that exited non-zero without naming one crashed
+# or was killed, and counts too.
 {
-    for log in "$out"/*/*.log; do
-        sed -n 's/^---- \(.*\) stdout ----$/\1/p' "$log"
-        awk '
-            /^=== [^ ]+$/ { bin = $2; named = 0; next }
-            /^---- .* stdout ----$/ { named = 1; next }
-            /^=== [^ ]+ exited [0-9]+$/ && !named { print bin " (exited " $4 " without naming a failed test)" }
-        ' "$log"
-    done
+    awk '
+        FNR == 1 { bin = ""; named = 0 }
+        /^=== [^ ]+$/ { bin = $2; named = 0; next }
+        /^---- .* stdout ----$/ {
+            name = $0
+            sub(/^---- /, "", name)
+            sub(/ stdout ----$/, "", name)
+            if (bin ~ /^residuum_[a-z0-9_]+-[0-9a-f]+$/) {
+                crate = bin
+                sub(/-[0-9a-f]+$/, "", crate)
+                name = crate "::" name
+            }
+            print name
+            named = 1
+            next
+        }
+        /^=== [^ ]+ exited [0-9]+$/ && !named { print bin " (exited " $4 " without naming a failed test)" }
+    ' "$out"/*/*.log
 } | sort | uniq -c | sort -rn >"$out/counts.txt"
 
 # Writes one heading and its lines, or nothing when there are none.
@@ -128,9 +150,15 @@ if [ -s "$out/counts.txt" ]; then
         load_only="" both="" crashed=""
         while read -r count name; do
             line="$count $name"$'\n'
+            # The Tests step's log names a test by its path inside its crate, so the
+            # crate is dropped before the comparison.
+            bare="$name"
+            if [[ "$name" =~ ^residuum_[a-z0-9_]+:: ]]; then
+                bare="${name#*::}"
+            fi
             if [[ "$name" == *"(exited "* ]]; then
                 crashed+="$line"
-            elif grep -Fxq -- "$name" <<<"$tests_failed"; then
+            elif grep -Fxq -- "$bare" <<<"$tests_failed"; then
                 both+="$line"
             else
                 load_only+="$line"

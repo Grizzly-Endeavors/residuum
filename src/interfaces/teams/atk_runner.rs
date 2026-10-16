@@ -20,11 +20,11 @@ use crate::interfaces::teams::setup_types::{
     AtkStatus, LogLine, LogStream, SetupError, SuggestedEndpointSource, TeamsSetupPhase,
     TeamsSetupPrereqs, ToolStatus,
 };
-use crate::util::FatalError;
-use crate::util::process::{
+use crate::process::{
     ProcessTreeGuard, create_argv_command, is_process_running, kill_process_tree,
     kill_process_tree_sync,
 };
+use crate::util::FatalError;
 
 /// Default capacity for bounded execution log (1000 lines).
 pub const DEFAULT_LOG_CAPACITY: usize = 1000;

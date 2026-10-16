@@ -6,7 +6,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::*;
 use crate::hub::agent_watch::{AgentChangeKind, AgentChangeReceiver, MainTurnEnded};
-use crate::workbench::forward::HubApi;
+use crate::workbench::HubApi;
 
 type PageSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -29,11 +29,15 @@ async fn artifacts_port(hub: &Fixture) -> String {
     .unwrap();
     let api = HubApi::new();
     api.bind(app);
-    let router = crate::workbench::server::router(
+    let router = crate::workbench::router(
         hub.root.path().join("team/workbench"),
         api,
         hub.services.pairing.clone(),
         GATEWAY_PORT,
+        crate::workbench::SdkContext {
+            version: "2026.09.23",
+            features: &[],
+        },
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();

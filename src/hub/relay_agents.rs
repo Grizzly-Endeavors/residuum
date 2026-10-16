@@ -25,7 +25,7 @@ use tokio::time::Instant;
 
 use super::directory::AgentDirectory;
 use super::types::{A2aVisibility, AgentState, AgentSummary, HubEvent};
-use crate::tunnel::v2::frames::AgentInfo;
+use crate::tunnel::AgentInfo;
 
 /// How long a burst of changes is allowed to gather before one update goes
 /// out. Creating an agent publishes a creation and then a start-up state
@@ -186,8 +186,8 @@ async fn settle(events: &mut broadcast::Receiver<HubEvent>) -> bool {
 mod tests {
     use super::*;
     use crate::a2a::StaticAgentDirectory;
-    use crate::testing::{clock, wait};
     use axum::Router;
+    use residuum_core::testing::{clock, wait};
 
     fn summary(name: &str, state: AgentState, visibility: A2aVisibility) -> AgentSummary {
         AgentSummary {

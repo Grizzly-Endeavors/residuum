@@ -32,7 +32,7 @@ Editing `mcp.json` through the agent's `write_file`/`edit_file` tools, the Files
 
 ## Transports
 
-`McpServerEntry::transport` (`src/mcp/types.rs`) selects the connection strategy in `McpClient::connect` (`src/mcp/client.rs`):
+`McpServerEntry::transport` (`crates/mcp/src/types.rs`) selects the connection strategy in `McpClient::connect` (`crates/mcp/src/client.rs`):
 
 - **Stdio** (default): spawns `entry.command` with `entry.args` as a child process and speaks MCP over stdin/stdout (`TokioChildProcess`). The tool-PATH handle (see [tools.md](tools.md)) is applied to the child's `PATH` first, then the entry's own `env` — so an explicit `PATH` in the entry still wins.
 - **Http**: connects to `entry.command` (the URL) via Streamable HTTP (`StreamableHttpClientTransport`). If `headers` is non-empty, header values are expanded for env interpolation and attached as custom headers.
@@ -51,11 +51,11 @@ The setup wizard writes tool server keys this way. When a catalog server asks fo
 
 ## `${VAR}` / `${VAR:-default}` expansion
 
-`expand_env_vars` (`src/mcp/client.rs`) expands `${VAR}` and `${VAR:-default}` patterns against the process's own environment. It applies only to HTTP server **header values** at connect time (`expand_header_env_vars`), after agent key references are resolved — a missing variable with no default resolves to an empty string; an empty (but set) variable does **not** trigger the default, which diverges from POSIX shell semantics. Stdio `env` entries are passed through to the child process as literal strings without this expansion.
+`expand_env_vars` (`crates/core/src/util/env_expand.rs`) expands `${VAR}` and `${VAR:-default}` patterns against the process's own environment. It applies only to HTTP server **header values** at connect time (`expand_header_env_vars`), after agent key references are resolved — a missing variable with no default resolves to an empty string; an empty (but set) variable does **not** trigger the default, which diverges from POSIX shell semantics. Stdio `env` entries are passed through to the child process as literal strings without this expansion.
 
 ## Registry and reconciliation
 
-`McpRegistry` (`src/mcp/registry.rs`) tracks servers as a flat list of `TrackedServer { name, command, args, status, client, tools }`. Status is one of `Pending`, `Running`, or `Failed(reason)`.
+`McpRegistry` (`crates/mcp/src/registry.rs`) tracks servers as a flat list of `TrackedServer { name, command, args, status, client, tools }`. Status is one of `Pending`, `Running`, or `Failed(reason)`.
 
 - **`reconcile(desired)`** — pure diff, no I/O. Servers in `desired` that aren't already `Running`/`Pending` go into `to_start` (and are immediately re-tracked as `Pending`, replacing any stale entry). Tracked servers not in `desired` and currently `Running`/`Pending` go into `to_stop`. A `Failed` server whose name is still in `desired` is treated as absent and restarted.
 - **`reconcile_and_connect(desired)`** — runs `reconcile`, then connects everything in `to_start` and disconnects everything in `to_stop`, returning an `McpReconcileReport` (`started`, `stopped`, `failures: Vec<(name, error)>`). This is the workspace-level reconciliation path: it runs at startup against `config/mcp.json` and again on a live config reload (`handle_workspace_reload` in `src/gateway/event_loop/run_loop.rs`) — a config edit that removes a server tears it down, one that adds a server starts it, without a restart.
@@ -64,8 +64,8 @@ The setup wizard writes tool server keys this way. When a catalog server asks fo
 
 ## Consumption
 
-- **`tool_definitions()`** returns the flat union of `ToolDefinition`s from every `Running` server — this is what gets merged into the agent's available tool set. Names aren't guaranteed unique across servers or against built-ins, so a deterministic collision policy applies before this union is built: a built-in tool always wins, and among MCP servers the first-registered running one wins; the losing tool is shadowed (excluded from the union, never dispatched) and the collision is logged once at `warn`. See [`src/mcp/CLAUDE.md`](../../src/mcp/CLAUDE.md) for the implementation.
-- **`call_tool(name, args)`** finds the first `Running` server whose tool list contains `name` and routes the call to its `McpClient`. Unknown tool names return `ToolError::NotFound`; a found-but-broken client (an internal-consistency bug, not a user error) returns `ToolError::Execution` and is logged at `error`. A call has no automatic cutoff by default — it runs until it finishes or the user or agent stops the turn, since `stop_agent` already interrupts an in-flight tool call immediately (the turn loop races every MCP call against the turn's stop token; see [background-tasks.md](background-tasks.md) and `agent/turn.rs::execute_tool`). Setting `timeout_secs` on a server entry in `mcp.json` (see above) opts that server's calls back into a fixed timeout: a call that runs past it fails with a plain-language error naming the tool, the server, and the configured number of seconds.
+- **`tool_definitions()`** returns the flat union of `ToolDefinition`s from every `Running` server — this is what gets merged into the agent's available tool set. Names aren't guaranteed unique across servers or against built-ins, so a deterministic collision policy applies before this union is built: a built-in tool always wins, and among MCP servers the first-registered running one wins; the losing tool is shadowed (excluded from the union, never dispatched) and the collision is logged once at `warn`. See [`crates/mcp/src/CLAUDE.md`](../../crates/mcp/src/CLAUDE.md) for the implementation.
+- **`call_tool(name, args)`** finds the first `Running` server whose tool list contains `name` and routes the call to its `McpClient`. Unknown tool names return `ToolError::NotFound`; a found-but-broken client (an internal-consistency bug, not a user error) returns `ToolError::Execution` and is logged at `error`. A call has no automatic cutoff by default — it runs until it finishes or the user or agent stops the turn, since `stop_agent` already interrupts an in-flight tool call immediately (the turn loop races every MCP call against the turn's stop token; see [background-tasks.md](background-tasks.md) and `src/agent/turn.rs::execute_tool`). Setting `timeout_secs` on a server entry in `mcp.json` (see above) opts that server's calls back into a fixed timeout: a call that runs past it fails with a plain-language error naming the tool, the server, and the configured number of seconds.
 - Tool results only preserve text content blocks (`extract_text_content` joins them with newlines); non-text blocks (e.g. images) are silently dropped from the MCP path today.
 
 ## Interaction with Other Systems

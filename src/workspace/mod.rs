@@ -1,12 +1,10 @@
-//! Workspace management: directory layout, identity files, bootstrapping, and
-//! the change feed.
+//! Workspace management: identity files, bootstrapping, and the change feed.
 
 pub mod access;
 pub mod bootstrap;
 pub mod channel_builder;
 pub mod config;
 pub mod identity;
-pub mod layout;
 pub mod mcp_patch;
 pub mod team;
 pub mod team_files;

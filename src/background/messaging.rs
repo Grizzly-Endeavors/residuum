@@ -1175,7 +1175,8 @@ fn pointer_note(point: &ResumePoint) -> String {
 mod tests {
     use super::*;
     use crate::bus::{EventTrigger, SkillName, Subscriber};
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
+    use residuum_core::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     const NO_LIMIT: HopLimits = HopLimits { soft: 8, hard: 32 };
@@ -1421,7 +1422,7 @@ mod tests {
             "error message should be actionable: {err}"
         );
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             spawn_sub.drain().is_empty(),
             "a busy channel must never trigger a duplicate resume spawn"
@@ -1471,15 +1472,18 @@ mod tests {
         // Nothing should be published yet: the deferred task is still
         // waiting for the entry to clear.
         assert!(
-            crate::testing::clock::within(std::time::Duration::from_millis(50), spawn_sub.recv())
-                .await
-                .is_none(),
+            residuum_core::testing::clock::within(
+                std::time::Duration::from_millis(50),
+                spawn_sub.recv()
+            )
+            .await
+            .is_none(),
             "the resume must wait for the completing run to clear before publishing"
         );
 
         registry.remove(&address, &run_id);
 
-        let event = wait::next_event(
+        let event = bus_wait::next_event(
             "the deferred resume to publish once the entry clears",
             &mut spawn_sub,
         )
@@ -1538,7 +1542,7 @@ mod tests {
             }
         }
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             spawn_sub.drain().is_empty(),
             "no resume should ever be published once the address is already live"
@@ -1573,7 +1577,7 @@ mod tests {
         assert!(done, "resuming is a final outcome");
 
         let event =
-            wait::next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
+            bus_wait::next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("still there?"));
     }
@@ -1913,7 +1917,7 @@ mod tests {
         assert!(matches!(outcome, ConversationDeliveryOutcome::Queued(addr) if addr == address));
 
         assert!(
-            crate::testing::clock::within(std::time::Duration::from_millis(50), sub.recv())
+            residuum_core::testing::clock::within(std::time::Duration::from_millis(50), sub.recv())
                 .await
                 .is_none(),
             "the resume must wait for the completing run to clear before publishing"
@@ -1921,7 +1925,7 @@ mod tests {
 
         registry.remove(&address, &run_id);
 
-        let event = wait::next_event(
+        let event = bus_wait::next_event(
             "the deferred resume to publish once the entry clears",
             &mut sub,
         )
@@ -2054,7 +2058,7 @@ mod tests {
             "error should name the config setting that controls the limit, got: {err}"
         );
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             sub.drain().is_empty(),
             "a refused message must never actually reach the target"

@@ -154,7 +154,7 @@ impl HubApiState {
     /// team write coordinator.
     pub(super) async fn bootstrap_workspace(
         &self,
-        layout: &crate::workspace::layout::WorkspaceLayout,
+        layout: &crate::config::WorkspaceLayout,
         user_name: Option<&str>,
         timezone: &str,
         label: Option<&str>,
@@ -207,14 +207,14 @@ impl ConfigApiState {
     /// The paths the strictly-parsed-file diagnostics resolve against. The
     /// team scope has no agent config to recognize, so both point at the hub
     /// directory, where no team file lives.
-    fn diagnostics_paths(&self) -> crate::diagnostics::DiagnosticsPaths {
+    fn diagnostics_paths(&self) -> crate::diagnostics_dispatch::DiagnosticsPaths {
         match self.scope {
-            WorkspaceScope::Agent => crate::diagnostics::DiagnosticsPaths {
+            WorkspaceScope::Agent => crate::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: self.config_dir.clone(),
                 workspace_dir: self.workspace_dir.clone(),
                 hub_dir: self.hub_dir.clone(),
             },
-            WorkspaceScope::Team => crate::diagnostics::DiagnosticsPaths {
+            WorkspaceScope::Team => crate::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: self.hub_dir.clone(),
                 workspace_dir: self.hub_dir.clone(),
                 hub_dir: self.hub_dir.clone(),

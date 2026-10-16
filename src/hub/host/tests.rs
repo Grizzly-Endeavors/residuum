@@ -18,11 +18,13 @@ use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
-use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
-use crate::testing::gate::Gate;
-use crate::testing::model::GatedModel;
-use crate::testing::wait::{self};
+use crate::hub::test_support::{mount_reply, write_agent};
+use crate::inference::testing::model::GatedModel;
+use crate::testing::bus_wait;
 use crate::workspace::watch::WatchHealth;
+use residuum_core::testing::gate::Gate;
+use residuum_core::testing::ports::reserve_port;
+use residuum_core::testing::wait;
 
 /// A hub over a temp residuum root with running-capable agents, each talking
 /// to its own mock model server that answers "<name> here".
@@ -596,7 +598,7 @@ async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     std::fs::write(&report, "the report").unwrap();
     let id = crate::gateway::file_server::FileRegistry::for_agent(
         "scout",
-        &crate::workspace::layout::WorkspaceLayout::new(hub.root.path().join("scout")),
+        &crate::config::WorkspaceLayout::new(hub.root.path().join("scout")),
     )
     .register(report, "text/plain".to_string(), "report.txt".to_string())
     .await;
@@ -1320,7 +1322,7 @@ where
 fn is_hub_level(event: &CapturedEvent) -> bool {
     [
         "residuum::hub",
-        "residuum::tunnel",
+        "residuum_net::tunnel",
         "residuum::update",
         "residuum::daemon",
     ]
@@ -2487,7 +2489,7 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
         panic!("the WebSocket closed before it answered the ping");
     })
     .await;
-    wait::bus_barrier(&agent_watch::agent_bus(&hub, "alpha")).await;
+    bus_wait::bus_barrier(&agent_watch::agent_bus(&hub, "alpha")).await;
     hub.gate("alpha").open_all();
 
     let replies = wait::guarded("both messages to be answered", async {
@@ -2800,9 +2802,9 @@ async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
 /// Waits until the relay-facing list satisfies `check`, so a test doesn't
 /// depend on how the settle window lines up with the lifecycle call.
 async fn relay_list_where(
-    rx: &mut tokio::sync::watch::Receiver<Vec<crate::tunnel::v2::frames::AgentInfo>>,
-    check: impl Fn(&[crate::tunnel::v2::frames::AgentInfo]) -> bool,
-) -> Vec<crate::tunnel::v2::frames::AgentInfo> {
+    rx: &mut tokio::sync::watch::Receiver<Vec<crate::tunnel::AgentInfo>>,
+    check: impl Fn(&[crate::tunnel::AgentInfo]) -> bool,
+) -> Vec<crate::tunnel::AgentInfo> {
     wait::watch_until(
         "the relay's agent list to reach the expected state",
         rx,
@@ -2819,7 +2821,7 @@ async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
         true,
     );
     let mut rx = relay_agents.subscribe();
-    let enabled = |list: &[crate::tunnel::v2::frames::AgentInfo], name: &str| {
+    let enabled = |list: &[crate::tunnel::AgentInfo], name: &str| {
         list.iter().find(|a| a.name == name).map(|a| a.a2a_enabled)
     };
 

@@ -186,9 +186,8 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 
 ### Depends On
 
-- **`crate::config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`.
+- **`crate::config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`, `RetryConfig` (passed to provider construction), `WorkspaceLayout` (including `sessions_dir()`).
 - **`crate::inference`** — `InferenceProvider`, `CompletionOptions`, `SharedHttpClient`, `Message`. Used to build and call LLM providers for a session's turn.
-- **`crate::inference::retry`** — `RetryConfig`, passed to provider construction.
 - **`crate::agent::context`** — `assemble_system_prompt`/`build_system_content` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `crate::agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
 - **`crate::agent::turn`** — `execute_turn()`. The session executor calls this to run the turn loop, passing the session's `CancellationToken` as the stop token.
 - **`crate::agent::recent_messages`** — `RecentMessages`, the message buffer accumulated across a run's turns.
@@ -199,7 +198,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`crate::mcp`** — `SharedMcpRegistry`, shared across the main agent and every session.
 - **`crate::skills`** — `SkillState`, `SharedSkillState`. Each session gets an isolated clone.
 - **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. Each session gets fresh isolated instances.
-- **`crate::workspace`** — `IdentityFiles`, `WorkspaceLayout` (including `sessions_dir()`).
+- **`crate::workspace`** — `IdentityFiles`.
 - **`crate::bus`** — `EventTrigger`, `SessionAddress`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`, `AgentMessageEvent`, `MessageEvent`, `Publisher`, `topics`.
 - **`crate::interfaces::types`** — `MessageOrigin`, for the `MessageEvent` `AgentMessenger` publishes to main.
 - **`tokio`** — `tokio::sync::{Semaphore, Mutex, Notify, mpsc}`, `tokio_util::sync::CancellationToken`.
@@ -217,7 +216,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`src/subconscious/learning.rs`** — forks a `spawned` session running the `learner` skill.
 - **`src/tools/background.rs`** — `stop_agent`/`list_agents` (read the `SessionRegistry` directly), `subagent_spawn` (publishes a `SpawnRequestEvent` with a pre-generated address).
 - **`src/tools/message_agent.rs`** — `MessageAgentTool`, registered for main and (via `build_subagent_registry()`) every session; calls `AgentMessenger::send()`.
-- **`src/tracing_service/client_context.rs`** / **`src/tools/file_bug_report.rs`** / **`src/gateway/web/tracing_api.rs`** — read `SessionRegistry::subagent_snapshot()` to populate a bug report's `active_subagents`.
+- **`src/client_context.rs`** / **`src/tools/file_bug_report.rs`** / **`src/gateway/web/tracing_api.rs`** — read `SessionRegistry::subagent_snapshot()` to populate a bug report's `active_subagents`.
 - **`src/agent/turn.rs`** — `execute_turn()` is what a session's executor calls to run its turn loop; its `drain_interrupts()` is what actually delivers an `Interrupt::AgentMessage` mid-turn.
 - **`src/gateway/sessions.rs`** / **`src/gateway/web/sessions.rs`** / **`src/gateway/ws.rs`** / **`src/interfaces/websocket/subscriber.rs`** — the web UI's sessions surface (Activity and the session panel): map `SessionEvent`s to `session_*` WebSocket frames, list live sessions (`SessionRegistry::list_live()`) and completed runs (`SessionStore::list_completed_runs()`), serve transcripts (`SessionStore::read_run()`/`read_incremental_transcript()`), deliver the owner's messages from a session panel through `AgentMessenger::send()` as sender `OWNER_ADDRESS` at hop 0 (and an artifact's HTTP messages as sender `artifact:<name>`, category `artifact`), stop sessions via `SessionRegistry::stop()`, and start `artifact` sessions by publishing a `SpawnRequestEvent` with `EventTrigger::Artifact`.
 

@@ -92,7 +92,7 @@ impl AgentFilesState {
             agent_name: "test-agent".to_string(),
             file_registry: FileRegistry::for_agent(
                 "test-agent",
-                &crate::workspace::layout::WorkspaceLayout::new(&workspace_dir),
+                &crate::config::WorkspaceLayout::new(&workspace_dir),
             ),
             workspace_dir,
             memory_dir,

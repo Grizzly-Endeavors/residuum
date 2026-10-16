@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs scripts/stress-issues.sh as a dry run over logs in scripts/ci-failures-fixtures
 # and checks which issues it would open: one per failing test, a test named in two
-# logs once, a crashed test binary under a title without its build hash, one
+# logs once, a crashed test binary under a title without its build hash, a member
+# crate's test under its crate's name and a member binary apart from the root's, one
 # suite-wide issue when no log names a test, one for the run when more than ten
 # tests are new, one for a cancelled job, and none for a job that did not fail.
 set -euo pipefail
@@ -28,6 +29,11 @@ Nightly stress: hub::host::tests::reload_keeps_running_agents
 Nightly stress: residuum test binary
 Nightly stress: hub::host::tests::main_conversation::a_web_message_sent" \
     Rust failure "$fixtures/rust-stress-split.log" "$fixtures/two-failed-steps.log"
+
+expect_titles "a member crate's test, a root test with the same path below the crate, and a member binary's crash" "Nightly stress: residuum_core::util::fs::tests::x
+Nightly stress: util::fs::tests::x
+Nightly stress: residuum_core test binary" \
+    Rust failure "$fixtures/rust-stress-members.log"
 
 expect_titles "a test named in two logs" "Nightly stress: hub::runtime::tests::changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_running" \
     Rust failure "$fixtures/stress.log" "$fixtures/stress.log"

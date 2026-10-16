@@ -10,7 +10,8 @@ use crate::background::registry::SessionRegistry;
 use crate::inference::ToolDefinition;
 use crate::tracing_service::{BugReport, ClientContext, Severity, TracingService};
 
-use super::{Tool, ToolError, ToolResult, require_str};
+use super::{Tool, require_str};
+use crate::inference::{ToolError, ToolResult};
 
 /// Built-in tool that submits a bug report through the tracing service.
 pub(crate) struct FileBugReportTool {

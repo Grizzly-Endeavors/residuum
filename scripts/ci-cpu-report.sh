@@ -16,8 +16,9 @@
 # browsers of the web end-to-end suite run in the Docker sidecar, whose cgroup
 # a job can't read, so the node's pressure is what shows their contention.
 #
-# Called from .github/workflows/web-checks.yml (web-e2e) and nightly-stress.yml (web-stress). A counter it
-# can't read shows as "unavailable" rather than failing the job.
+# Called from .github/workflows/rust-checks.yml (rust-test), web-checks.yml
+# (web-e2e) and nightly-stress.yml (web-stress). A counter it can't read shows
+# as "unavailable" rather than failing the job.
 set -uo pipefail
 
 mode="${1:-report}"

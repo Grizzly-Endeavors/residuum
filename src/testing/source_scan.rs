@@ -1,16 +1,18 @@
-//! Rules checked by reading the crate's own source.
+//! Rules checked by reading the workspace's own source: the root crate's and
+//! every workspace member's `src` and `tests`.
 //!
 //! Both rules need to know which lines are test code, and a file is not split
 //! cleanly at its first `#[cfg(test)]`: plenty of files put the attribute on a
 //! `use` or an accessor near the top and carry on with production code. The
 //! classifier here goes by module declarations and by the shape rustfmt gives
 //! an item:
-//! - A whole file is test code when it is under `tests/`, or when a
-//!   `#[cfg(test)] mod x;` (or a `mod x;` inside a test file) declares it.
-//! - Elsewhere, a `#[cfg(test)]` line covers the item after it (past any further
-//!   attributes and comments). That item ends at its own line when the line
-//!   ends in `;`, or at the first later line at the item's indentation that
-//!   closes it (`}`, `)` or `]`).
+//! - A whole file is test code when it is under a `tests/` directory of a
+//!   scanned root, or when a `#[cfg(test)] mod x;` (or a `mod x;` inside a test
+//!   file) declares it.
+//! - Elsewhere, a `#[cfg(test)]` or `#[cfg(any(test, feature = "test-support"))]`
+//!   line covers the item after it (past any further attributes and comments).
+//!   That item ends at its own line when the line ends in `;`, or at the first
+//!   later line at the item's indentation that closes it (`}`, `)` or `]`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -20,9 +22,19 @@ use regex::Regex;
 
 use super::wall_clock_backlog::{ALLOWED, BACKLOG};
 
+/// Whether `line` is an attribute that makes the item after it test code: a
+/// `#[cfg(test)]`, or the `test-support` gate, which compiles the same helpers
+/// into another crate's test build.
+fn is_test_gate(line: &str) -> bool {
+    matches!(
+        line.trim(),
+        "#[cfg(test)]" | r#"#[cfg(any(test, feature = "test-support"))]"#
+    )
+}
+
 /// A source file, its lines, and which of them are test code.
 struct SourceFile {
-    /// Relative to the crate root, with `/` separators.
+    /// Relative to the repository root, with `/` separators.
     path: String,
     lines: Vec<String>,
     test: Vec<bool>,
@@ -62,6 +74,92 @@ fn without_comment(line: &str) -> Option<&str> {
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The `[workspace] members` the root manifest names; none when it has no
+/// `[workspace]` table or no `members` key.
+fn workspace_members(manifest: &toml::Table) -> Result<Vec<String>, String> {
+    let Some(members) = manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = members.as_array() else {
+        return Err("[workspace] members must be an array of strings".to_string());
+    };
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "[workspace] members must be an array of strings".to_string())
+        })
+        .collect()
+}
+
+/// The directories (relative to `root`) that `members` names. Only literal
+/// paths and a trailing `/*` glob are supported; a `/*` glob matches each
+/// directory under its prefix that holds a `Cargo.toml`.
+fn member_dirs(root: &Path, members: &[String]) -> Result<Vec<String>, String> {
+    let mut dirs = Vec::new();
+    for member in members {
+        if let Some(prefix) = member.strip_suffix("/*") {
+            if prefix.contains(['*', '?', '[']) {
+                return Err(format!(
+                    "unsupported workspace member pattern {member:?}: only literal paths and trailing `/*` globs are supported"
+                ));
+            }
+            let entries = std::fs::read_dir(root.join(prefix))
+                .map_err(|err| format!("failed to list workspace member {member:?}: {err}"))?;
+            let mut found = Vec::new();
+            for entry in entries {
+                let path = entry
+                    .map_err(|err| format!("failed to list workspace member {member:?}: {err}"))?
+                    .path();
+                if path.join("Cargo.toml").is_file() {
+                    found.push(relative(root, &path));
+                }
+            }
+            found.sort();
+            dirs.extend(found);
+        } else if member.contains(['*', '?', '[']) {
+            return Err(format!(
+                "unsupported workspace member pattern {member:?}: only literal paths and trailing `/*` globs are supported"
+            ));
+        } else {
+            dirs.push(member.clone());
+        }
+    }
+    Ok(dirs)
+}
+
+/// The `src` and `tests` directories to scan, relative to the repository root:
+/// the root's, then each workspace member's, keeping only those that exist.
+fn scan_roots() -> Result<Vec<String>, String> {
+    let root = crate_root();
+    let manifest_path = root.join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
+    let manifest: toml::Table = toml::from_str(&text)
+        .map_err(|err| format!("failed to parse {}: {err}", manifest_path.display()))?;
+    let members = workspace_members(&manifest)?;
+    let mut crate_dirs = vec![String::new()];
+    crate_dirs.extend(member_dirs(&root, &members)?);
+    let mut scanned = Vec::new();
+    for crate_dir in &crate_dirs {
+        for leaf in ["src", "tests"] {
+            let dir = if crate_dir.is_empty() {
+                leaf.to_string()
+            } else {
+                format!("{crate_dir}/{leaf}")
+            };
+            if root.join(&dir).is_dir() {
+                scanned.push(dir);
+            }
+        }
+    }
+    Ok(scanned)
 }
 
 fn rust_files_under(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -261,12 +359,18 @@ fn item_end(lines: &[String], in_literal: &[bool], start: usize) -> usize {
     lines.len().saturating_sub(1)
 }
 
-/// Every Rust file in `src/` and `tests/`, classified.
+/// Every Rust file in the scanned roots, classified.
 fn crate_sources() -> Vec<SourceFile> {
     let root = crate_root();
     let mut paths = Vec::new();
-    rust_files_under(&root.join("src"), &mut paths);
-    rust_files_under(&root.join("tests"), &mut paths);
+    let mut test_dirs = Vec::new();
+    for dir in scan_roots().expect("failed to read the workspace members") {
+        let abs = root.join(&dir);
+        rust_files_under(&abs, &mut paths);
+        if abs.file_name().is_some_and(|name| name == "tests") {
+            test_dirs.push(abs);
+        }
+    }
     paths.sort();
     let contents: BTreeMap<PathBuf, Vec<String>> = paths
         .iter()
@@ -277,10 +381,9 @@ fn crate_sources() -> Vec<SourceFile> {
         .collect();
 
     let mod_decl = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;").unwrap();
-    let tests_dir = root.join("tests");
     let mut test_files: BTreeSet<PathBuf> = paths
         .iter()
-        .filter(|path| path.starts_with(&tests_dir))
+        .filter(|path| test_dirs.iter().any(|dir| path.starts_with(dir)))
         .cloned()
         .collect();
     // Declarations under `#[cfg(test)]`, then everything a test file
@@ -288,7 +391,7 @@ fn crate_sources() -> Vec<SourceFile> {
     let mut pending: Vec<PathBuf> = Vec::new();
     for (path, lines) in &contents {
         for (idx, line) in lines.iter().enumerate() {
-            if line.trim() != "#[cfg(test)]" {
+            if !is_test_gate(line) {
                 continue;
             }
             let start = item_start(lines, idx);
@@ -323,10 +426,7 @@ fn crate_sources() -> Vec<SourceFile> {
                 let in_literal = starts_inside_literal(&lines);
                 let mut idx = 0;
                 while idx < lines.len() {
-                    if lines
-                        .get(idx)
-                        .is_some_and(|line| line.trim() == "#[cfg(test)]")
-                    {
+                    if lines.get(idx).is_some_and(|line| is_test_gate(line)) {
                         let end = item_end(&lines, &in_literal, item_start(&lines, idx));
                         for flag in test.iter_mut().take(end + 1).skip(idx) {
                             *flag = true;
@@ -349,13 +449,9 @@ fn crate_sources() -> Vec<SourceFile> {
 /// Files whose test code may wait on the clock: the waits that everything
 /// else goes through.
 const WAIT_HELPERS: &[&str] = &[
-    "src/testing/wait.rs",
-    "src/testing/clock.rs",
+    "crates/core/src/testing/wait.rs",
+    "crates/core/src/testing/clock.rs",
     "src/testing/source_scan.rs",
-    // Integration tests can't reach `crate::testing`; these are its two waits
-    // for them, under the same hang guard.
-    "tests/it/support/until.rs",
-    "tests/it/support/guarded.rs",
 ];
 
 /// A wall-clock wait in test code: a sleep, a timeout, an import that brings
@@ -396,7 +492,10 @@ fn wall_clock_waits(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, Stri
 
 /// Files that may grant execute permission in test code: the helper that does
 /// it safely, and this file, whose rule tests hold sample lines.
-const EXEC_GRANT_HELPERS: &[&str] = &["src/testing/script.rs", "src/testing/source_scan.rs"];
+const EXEC_GRANT_HELPERS: &[&str] = &[
+    "crates/core/src/testing/script.rs",
+    "src/testing/source_scan.rs",
+];
 
 /// Test code that sets an execute-bit mode on something that is not a script
 /// the test then runs, as `(file, count, why)`. A directory needs its execute
@@ -549,6 +648,22 @@ mod tests {
                 "{path} is test code throughout"
             );
         }
+        assert!(
+            is_test_gate("#[cfg(test)]"),
+            "the test gate marks test code"
+        );
+        assert!(
+            is_test_gate(r#"    #[cfg(any(test, feature = "test-support"))]"#),
+            "the test-support gate marks test code, since its helpers compile into other crates' test builds"
+        );
+        assert!(
+            !is_test_gate(r#"#[cfg(feature = "test-support")]"#),
+            "a bare test-support feature gate is production code: it compiles into release builds"
+        );
+        assert!(
+            !is_test_gate("#[cfg(not(test))]"),
+            "a negated test gate is production code"
+        );
     }
 
     /// An agent's tasks must carry its `agent` log field, and `tokio::spawn`
@@ -565,7 +680,7 @@ mod tests {
         ];
         let mut offenders = Vec::new();
         for file in crate_sources() {
-            if file.path == "src/util/spawn.rs" {
+            if file.path == "crates/core/src/util/spawn.rs" {
                 continue;
             }
             for (number, code) in file.code_lines(false) {
@@ -632,13 +747,13 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "test code waits on elapsed time. Wait on the event instead, with crate::testing::wait (channels, watches, polled conditions under one hang guard), crate::testing::gate (hold a call open until the test releases it) or crate::testing::clock (a paused clock, for code with no real I/O); CONTRIBUTING.md, \"Waiting in tests\", says which fits where.\n{problems}"
+            "test code waits on elapsed time. Wait on the event instead, with residuum_core::testing::wait (channels, watches, polled conditions under one hang guard), residuum_core::testing::gate (hold a call open until the test releases it) or residuum_core::testing::clock (a paused clock, for code with no real I/O); CONTRIBUTING.md, \"Waiting in tests\", says which fits where.\n{problems}"
         );
     }
 
     /// A test that writes a script and executes it fails with "Text file
     /// busy" when another test thread forks while the write descriptor is
-    /// open. `crate::testing::script::write_executable` writes through a child
+    /// open. `residuum_core::testing::script::write_executable` writes through a child
     /// shell instead, so test code makes nothing executable by itself.
     #[test]
     fn test_code_makes_scripts_executable_through_the_helper() {
@@ -667,7 +782,7 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "test code makes a file executable itself. Write the script with crate::testing::script::write_executable, which never holds a write descriptor that a forked child could inherit (\"Text file busy\"); a test that only needs some program to run links to a system binary (/bin/sh, /bin/echo). A directory restored to a mode with its execute bit goes in EXEC_MODE_ALLOWED in src/testing/source_scan.rs, with why. CONTRIBUTING.md, \"Waiting in tests\", has the details.\n{problems}"
+            "test code makes a file executable itself. Write the script with residuum_core::testing::script::write_executable, which never holds a write descriptor that a forked child could inherit (\"Text file busy\"); a test that only needs some program to run links to a system binary (/bin/sh, /bin/echo). A directory restored to a mode with its execute bit goes in EXEC_MODE_ALLOWED in src/testing/source_scan.rs, with why. CONTRIBUTING.md, \"Waiting in tests\", has the details.\n{problems}"
         );
     }
 
@@ -753,5 +868,69 @@ mod tests {
                 "{not_wait:?} is not a wall-clock wait"
             );
         }
+    }
+
+    /// The scan covers the root and every workspace member, and nothing else:
+    /// a member that is not scanned hides its waits from every rule here. The
+    /// expectation lists `crates/` from disk rather than reading `members`,
+    /// so a member missing from `members` fails here.
+    #[test]
+    fn the_scanned_roots_are_the_root_and_every_workspace_member() {
+        let root = crate_root();
+        let mut crate_dirs = vec![String::new()];
+        let crates_dir = root.join("crates");
+        if crates_dir.is_dir() {
+            for entry in std::fs::read_dir(&crates_dir).expect("list crates") {
+                let path = entry.expect("list crates").path();
+                if path.join("Cargo.toml").is_file() {
+                    crate_dirs.push(relative(&root, &path));
+                }
+            }
+        }
+        let mut expected: Vec<String> = crate_dirs
+            .iter()
+            .flat_map(|dir| {
+                ["src", "tests"].into_iter().map(move |leaf| {
+                    if dir.is_empty() {
+                        leaf.to_string()
+                    } else {
+                        format!("{dir}/{leaf}")
+                    }
+                })
+            })
+            .filter(|dir| root.join(dir).is_dir())
+            .collect();
+        expected.sort();
+        let mut actual = scan_roots().expect("scan roots");
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "the scanned roots are src and tests of the root and of each [workspace] member"
+        );
+    }
+
+    /// A hard-coded path names a file that exists, so a rename cannot leave an
+    /// exemption or a backlog entry silently pointing at nothing.
+    #[test]
+    fn the_hard_coded_paths_name_files_that_exist() {
+        let root = crate_root();
+        let source = std::fs::read_to_string(root.join("src/testing/source_scan.rs"))
+            .expect("read source_scan.rs");
+        let path_literal = Regex::new(r#""((?:src|tests|crates)/[^"\s]*\.rs)""#).unwrap();
+        let mut named: Vec<String> = path_literal
+            .captures_iter(&source)
+            .map(|caps| caps[1].to_string())
+            .collect();
+        named.extend(BACKLOG.iter().map(|(path, _)| (*path).to_string()));
+        named.extend(ALLOWED.iter().map(|(path, _, _)| (*path).to_string()));
+        let missing: Vec<&str> = named
+            .iter()
+            .map(String::as_str)
+            .filter(|path| !root.join(path).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these paths name no file (a rename left them behind?): {missing:?}"
+        );
     }
 }

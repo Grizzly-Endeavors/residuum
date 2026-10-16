@@ -7,10 +7,11 @@ use crate::bus::{
     EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, EventTrigger,
     NotificationEvent, NotifyName, Publisher, ResponseEvent, topics,
 };
+use crate::config::WEB_UI_ENDPOINT;
 use crate::inference::ToolDefinition;
-use crate::interfaces::types::WEB_UI_ENDPOINT;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 /// Error returned to a session that tries to reach the owner directly.
 const SESSION_OWNER_TARGET_REFUSED: &str = "sessions cannot message the owner directly; message \

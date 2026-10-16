@@ -14,7 +14,7 @@ use crate::interfaces::attachment::FileAttachment;
 
 /// Workspace-root-relative directory that user inbox attachments are copied into,
 /// one subdirectory per item ID. Mirrors `WorkspaceLayout::user_inbox_attachments_dir`
-/// as a string literal because this module doesn't depend on `workspace::layout`.
+/// as a string literal because this module doesn't depend on `config::WorkspaceLayout`.
 const USER_INBOX_ATTACHMENTS_REL: &str = "inbox/user/attachments";
 
 /// A single inbox item stored as a JSON file.
@@ -866,7 +866,7 @@ mod tests {
 
     #[test]
     fn archive_sibling_follows_the_workspace_layout() {
-        let layout = crate::workspace::layout::WorkspaceLayout::new("/tmp/ws");
+        let layout = crate::config::WorkspaceLayout::new("/tmp/ws");
         assert_eq!(
             archive_sibling(&layout.user_inbox_dir()),
             Some(layout.user_inbox_archive_dir()),
@@ -887,7 +887,7 @@ mod tests {
     #[tokio::test]
     async fn unique_filename_avoids_ids_held_by_the_archive() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.user_inbox_archive_dir())
             .await
             .unwrap();
@@ -912,7 +912,7 @@ mod tests {
     #[tokio::test]
     async fn a_new_item_after_archiving_the_same_title_leaves_both_intact() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         let inbox = layout.user_inbox_dir();
         let archive = layout.user_inbox_archive_dir();
         tokio::fs::create_dir_all(&inbox).await.unwrap();

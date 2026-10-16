@@ -23,8 +23,9 @@ use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     MessageSender, Role, StreamDelta, StreamSink, ThinkingBlock, ToolCall, ToolDefinition,
 };
+use crate::inference::{ToolError, ToolResult};
 use crate::interfaces::types::MessageOrigin;
-use crate::tools::{Tool, ToolError, ToolRegistry, ToolResult};
+use crate::tools::{Tool, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 /// What a scripted provider does while a model call is in flight.
@@ -123,7 +124,7 @@ impl InferenceProvider for ScriptedProvider {
         for push in step.pushes {
             match push {
                 Push::Delta(delta) => sink.push(delta),
-                Push::Wait(time) => crate::testing::clock::elapse(time).await,
+                Push::Wait(time) => residuum_core::testing::clock::elapse(time).await,
                 Push::Hang => std::future::pending().await,
             }
         }
@@ -226,7 +227,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     let ep = EndpointName::from(
         options
             .delivered_to
-            .unwrap_or(crate::interfaces::types::WEB_UI_ENDPOINT),
+            .unwrap_or(crate::config::WEB_UI_ENDPOINT),
     );
     let mut main: Subscriber<MainConversationEvent> =
         bus.subscribe(topics::MainConversation).await.unwrap();
@@ -774,7 +775,7 @@ async fn a_stopped_call_keeps_the_text_it_had_streamed_and_ends_quietly() {
     let stop = CancellationToken::new();
     let stopper = stop.clone();
     tokio::spawn(async move {
-        crate::testing::clock::elapse(Duration::from_millis(10)).await;
+        residuum_core::testing::clock::elapse(Duration::from_millis(10)).await;
         stopper.cancel();
     });
 

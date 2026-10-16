@@ -150,7 +150,7 @@ pub struct SubAgentResources {
     pub(crate) recent_context: Option<String>,
     /// Workspace layout, for the completion memory pipeline (episode
     /// storage, observer guidance files).
-    pub(crate) layout: crate::workspace::layout::WorkspaceLayout,
+    pub(crate) layout: crate::config::WorkspaceLayout,
     /// This session's own observer instance, for per-run threshold checks
     /// and extraction.
     pub(crate) observer: Arc<Observer>,
@@ -501,12 +501,12 @@ pub(crate) async fn execute_subagent(
 /// with `runtime`'s tests, which also build `SubAgentResources`.
 #[cfg(test)]
 pub(crate) fn test_memory_extras() -> (
-    crate::workspace::layout::WorkspaceLayout,
+    crate::config::WorkspaceLayout,
     Arc<Observer>,
     Arc<MemoryMergeWriter>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
+    let layout = crate::config::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
     let search_index = Arc::new(
         crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
     );
@@ -526,10 +526,11 @@ pub(crate) fn test_memory_extras() -> (
 mod tests {
     use super::*;
     use crate::agent::interrupt::dead_interrupt_rx;
+    use crate::config::SkillDir;
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::skills::{SkillDir, SkillIndex, SkillState};
-    use crate::testing::wait;
+    use crate::skills::{SkillIndex, SkillState};
+    use crate::testing::bus_wait;
     use async_trait::async_trait;
 
     /// A turn identity with no broker behind it: these tests exercise the
@@ -1268,7 +1269,7 @@ mod tests {
 
         assert_eq!(summary, "build is green");
 
-        let event = wait::next_event(
+        let event = bus_wait::next_event(
             "the intermediate text to reach the conversation",
             &mut conv_sub,
         )
@@ -1278,7 +1279,8 @@ mod tests {
         assert_eq!(event.conversation_id, "chan-1");
 
         let session_event =
-            wait::next_event("the session-stream event to be published", &mut session_sub).await;
+            bus_wait::next_event("the session-stream event to be published", &mut session_sub)
+                .await;
         assert_eq!(session_event.address, address);
         assert_eq!(session_event.run_id, "run-conv-tool");
         assert!(

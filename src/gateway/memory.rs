@@ -14,6 +14,7 @@ use std::sync::Arc;
 use super::helpers::{publish_error, publish_notice};
 use crate::agent::Agent;
 use crate::bus::Publisher;
+use crate::config::WorkspaceLayout;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -21,7 +22,6 @@ use crate::memory::recent_messages::{
     append_recent_messages, load_recent_messages, remove_observed_recent_messages,
 };
 use crate::memory::types::{SourceTag, Visibility};
-use crate::workspace::layout::WorkspaceLayout;
 
 /// Persist new messages and check whether observation thresholds are met.
 ///
@@ -442,13 +442,13 @@ mod tests {
     use crate::memory::recent_messages::append_recent_messages;
     use crate::memory::reflector::{Reflector, ReflectorConfig};
     use crate::memory::search::MemoryIndex;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::UTC;
 
     fn test_agent() -> Agent {
         Agent::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             crate::tools::ToolRegistry::new(),
             crate::mcp::McpRegistry::new_shared(),
             crate::workspace::identity::IdentityFiles::default(),
@@ -467,7 +467,7 @@ mod tests {
         // `check_thresholds` — only the `NullProvider`'s guaranteed error
         // matters.
         Observer::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             crate::memory::observer::ObserverConfig::default(),
         )
     }
@@ -476,7 +476,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 ..ReflectorConfig::default()
@@ -532,7 +532,7 @@ mod tests {
             "a failed cycle must not report a reload"
         );
         let first_notice =
-            wait::next_event("the first observer failure notice", &mut notices).await;
+            bus_wait::next_event("the first observer failure notice", &mut notices).await;
         assert!(
             first_notice.message.contains("observer"),
             "got: {}",
@@ -556,7 +556,7 @@ mod tests {
             !execute_observation(&mem, &tokio_util::sync::CancellationToken::new()).await,
             "backed off, so nothing should have run"
         );
-        wait::bus_barrier(&handle).await;
+        bus_wait::bus_barrier(&handle).await;
         assert!(
             notices.drain().is_empty(),
             "must not renotify while backing off from the same failure streak"
@@ -675,7 +675,7 @@ mod tests {
         };
         execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
-        let notice = wait::next_event("the published notice", &mut notices).await;
+        let notice = bus_wait::next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "There are no recent messages to summarize.");
     }
 
@@ -708,7 +708,7 @@ mod tests {
         };
         execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
-        let error = wait::next_event("the published error", &mut errors).await;
+        let error = bus_wait::next_event("the published error", &mut errors).await;
         assert_eq!(
             error.message,
             "Couldn't summarize older messages. Try again."
@@ -746,7 +746,7 @@ mod tests {
         .unwrap();
 
         let observer = Arc::new(Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 EXTRACT_RESPONSE,
             )),
             crate::memory::observer::ObserverConfig::default(),
@@ -763,7 +763,7 @@ mod tests {
         };
         execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
-        let notice = wait::next_event("the published notice", &mut notices).await;
+        let notice = bus_wait::next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "Summarized 2 older messages.");
     }
 
@@ -804,7 +804,7 @@ mod tests {
             !execute_forced_reflection(&mem, &tokio_util::sync::CancellationToken::new()).await
         );
 
-        let error = wait::next_event("the published error", &mut errors).await;
+        let error = bus_wait::next_event("the published error", &mut errors).await;
         assert_eq!(
             error.message,
             "Couldn't condense the memory log. Try again."
@@ -828,7 +828,7 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let reflector = Reflector::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 COMPRESSED_RESPONSE,
             )),
             ReflectorConfig::default(),
@@ -851,7 +851,7 @@ mod tests {
 
         assert!(execute_forced_reflection(&mem, &tokio_util::sync::CancellationToken::new()).await);
 
-        let notice = wait::next_event("the published notice", &mut notices).await;
+        let notice = bus_wait::next_event("the published notice", &mut notices).await;
         assert_eq!(
             notice.message,
             "Condensed the memory log into 1 observations."

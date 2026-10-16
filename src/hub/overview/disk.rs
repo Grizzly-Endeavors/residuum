@@ -10,13 +10,13 @@ use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 use super::preview::plain_preview;
 use super::types::{LastMessage, LastMessageRole, TimePrecision};
+use crate::config::WorkspaceLayout;
 use crate::hub::AgentFiles;
 use crate::inference::{Message, Role};
 use crate::memory::episode_store::{EpisodeMeta, read_episode_jsonl, transcripts_newest_first};
 use crate::memory::recent_messages::load_recent_messages;
 use crate::memory::types::Visibility;
 use crate::time::local_to_rfc3339;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// The newest message of the agent's main conversation that the user saw: in
 /// its recent history, else in the newest episode of the main conversation

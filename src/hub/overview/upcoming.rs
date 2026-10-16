@@ -10,11 +10,11 @@ use tracing::Instrument as _;
 use super::types::{UpcomingKind, UpcomingRun};
 use crate::actions::store::ActionStore;
 use crate::config::Config;
+use crate::config::WorkspaceLayout;
 use crate::hub::AgentFiles;
 use crate::pulse::next_run::{load_last_runs, next_run_at};
 use crate::pulse::types::load_heartbeat;
 use crate::time::format_rfc3339;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// How many upcoming runs an overview lists.
 pub(super) const MOST_UPCOMING: usize = 3;

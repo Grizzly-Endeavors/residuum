@@ -15,11 +15,10 @@ use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, StreamSink, ToolCall,
     ToolDefinition, joined_thinking_text,
 };
+use crate::inference::{ToolError, ToolResult};
 use crate::interfaces::types::chat_interface_endpoint;
 use crate::mcp::SharedMcpRegistry;
-use crate::tools::{
-    CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolError, ToolRegistry, ToolResult,
-};
+use crate::tools::{CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 
@@ -816,7 +815,7 @@ async fn finish_turn_with_notice(
 /// fall back to MCP servers when no built-in tool matches. Name collisions are
 /// resolved by the MCP registry before this merge: a built-in always wins and
 /// the colliding MCP tool is dropped from the union, so the model is never
-/// offered two definitions under one name. See `src/mcp/CLAUDE.md`.
+/// offered two definitions under one name. See `crates/mcp/src/CLAUDE.md`.
 ///
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are published through `events` as they are
@@ -874,7 +873,7 @@ pub(crate) async fn execute_turn(
         // Merge MCP tool definitions from all connected servers. The registry
         // has already dropped any MCP tool whose name collides with a built-in
         // or with an earlier server, so this union never carries a duplicate
-        // name (collision policy: src/mcp/CLAUDE.md).
+        // name (collision policy: crates/mcp/src/CLAUDE.md).
         let mcp_guard = resources.mcp_registry.read().await;
         tool_definitions.extend(mcp_guard.tool_definitions());
         drop(mcp_guard);
@@ -1387,7 +1386,7 @@ async fn dispatch_tool_call(
         // Try built-in tools first, fall back to MCP servers. This ordering
         // is the dispatch half of the collision policy: a built-in always
         // wins its name, and the registry has already hidden any shadowed
-        // MCP tool from the model (src/mcp/CLAUDE.md), so the fallback only
+        // MCP tool from the model (crates/mcp/src/CLAUDE.md), so the fallback only
         // ever reaches genuinely MCP-owned names.
         Err(ToolError::NotFound(_)) => {
             tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
@@ -1695,8 +1694,9 @@ async fn update_and_publish_usage(
 mod tests {
     use super::*;
     use crate::inference::Role;
-    use crate::testing::gate::{Gate, GateEntry};
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
+    use residuum_core::testing::gate::{Gate, GateEntry};
+    use residuum_core::testing::wait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
@@ -1747,7 +1747,7 @@ mod tests {
 
         // Both still reach the main conversation.
         for want in ["hello", "a note"] {
-            let event = wait::next_event("a reply in the main conversation", &mut main).await;
+            let event = bus_wait::next_event("a reply in the main conversation", &mut main).await;
             assert!(
                 matches!(&event, MainConversationEvent::Response { content, .. } if content == want),
                 "{event:?}"
@@ -1953,7 +1953,8 @@ mod tests {
             .publish_intermediate("checking the build now", 0)
             .await;
 
-        let event = wait::next_event("a SessionResponseEvent to be published", &mut conv_sub).await;
+        let event =
+            bus_wait::next_event("a SessionResponseEvent to be published", &mut conv_sub).await;
         assert_eq!(event.content, "checking the build now");
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
@@ -1963,7 +1964,7 @@ mod tests {
             "intermediate turn text must not be marked as the run's final output"
         );
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             intermediate_sub.drain().is_empty(),
             "a conversation session's intermediate text must never publish IntermediateEvent, \
@@ -1972,7 +1973,8 @@ mod tests {
         );
 
         let session_event =
-            wait::next_event("the session-stream event to be published", &mut session_sub).await;
+            bus_wait::next_event("the session-stream event to be published", &mut session_sub)
+                .await;
         assert_eq!(session_event.address, address);
         assert_eq!(session_event.run_id, "run-1");
         assert!(
@@ -2006,7 +2008,7 @@ mod tests {
 
         events.publish_intermediate("thinking...", 0).await;
 
-        let event = wait::next_event("an IntermediateEvent to be published", &mut sub).await;
+        let event = bus_wait::next_event("an IntermediateEvent to be published", &mut sub).await;
         assert_eq!(event.content, "thinking...");
         assert_eq!(event.correlation_id, "corr-1");
     }
@@ -2015,7 +2017,7 @@ mod tests {
     async fn publish_intermediate_for_the_web_ui_reaches_only_the_main_conversation() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let ep = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let ep = EndpointName::from(crate::config::WEB_UI_ENDPOINT);
         let mut endpoint_sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
             .subscribe(topics::Endpoint(ep.clone()))
             .await
@@ -2036,7 +2038,8 @@ mod tests {
         };
         events.publish_intermediate("thinking...", 0).await;
 
-        let event = wait::next_event("the main conversation to get the text", &mut main_sub).await;
+        let event =
+            bus_wait::next_event("the main conversation to get the text", &mut main_sub).await;
         assert!(
             matches!(
                 &event,
@@ -2045,7 +2048,7 @@ mod tests {
             ),
             "{event:?}"
         );
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             endpoint_sub.drain().is_empty(),
             "the web UI's endpoint topic has no subscriber for a turn's intermediate text"
@@ -2071,7 +2074,7 @@ mod tests {
         };
         events.publish_intermediate("nothing to see", 0).await;
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             sub.drain().is_empty(),
             "with no output endpoint there is nowhere to publish intermediate text"
@@ -2090,7 +2093,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let tools = ToolRegistry::new();
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
@@ -2162,7 +2165,7 @@ mod tests {
         tools.register_defaults(
             crate::tools::FileTracker::new_shared(),
             crate::tools::PathPolicy::new_shared(),
-            crate::diagnostics::DiagnosticsPaths {
+            crate::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
                 // Must exist: this test's tool call actually runs `exec`,
                 // which now starts the spawned command here.
@@ -2182,7 +2185,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -2291,7 +2294,7 @@ mod tests {
             arguments: serde_json::json!({}),
             server: None,
         };
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -2405,7 +2408,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -2479,7 +2482,7 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -2831,7 +2834,8 @@ mod tests {
         /// The next usage event, passing over the conversation's other events.
         async fn next(&mut self) -> TurnUsageEvent {
             loop {
-                let event = wait::next_event("a usage event to be published", &mut self.0).await;
+                let event =
+                    bus_wait::next_event("a usage event to be published", &mut self.0).await;
                 if let MainConversationEvent::TurnUsage(usage) = event {
                     return usage;
                 }
@@ -2928,7 +2932,7 @@ mod tests {
             )
             .await;
 
-        let event = wait::next_event("a SessionEvent to be published", &mut sub).await;
+        let event = bus_wait::next_event("a SessionEvent to be published", &mut sub).await;
         assert_eq!(event.address, address);
         assert_eq!(event.run_id, "run-1");
         assert!(matches!(
@@ -3388,7 +3392,8 @@ mod tests {
         .expect("a truncated response is still a completed turn, not an error");
         assert_eq!(texts, vec!["cut off mid-sen".to_string()]);
 
-        let notice = wait::next_event("a truncation notice to be published", &mut notices).await;
+        let notice =
+            bus_wait::next_event("a truncation notice to be published", &mut notices).await;
         assert!(
             notice.message.contains("64-token output limit"),
             "the notice should name the configured limit: {}",
@@ -3416,7 +3421,7 @@ mod tests {
             counting_tool_call("c3"),
         ];
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3504,7 +3509,7 @@ mod tests {
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3591,7 +3596,7 @@ mod tests {
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
 
-        let provider = crate::inference::providers::null::NullProvider;
+        let provider = crate::inference::NullProvider;
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3875,7 +3880,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        let mut next = async || bus_wait::next_event("a notice", &mut notices).await.message;
         assert_eq!(
             next().await,
             "This model can't see images, so 1 image was left out of the request.",
@@ -4001,7 +4006,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        let mut next = async || bus_wait::next_event("a notice", &mut notices).await.message;
         assert_eq!(next().await, THINKING_DROPPED_NOTICE);
         assert_eq!(next().await, "end of turn 0", "one notice for two requests");
         assert_eq!(

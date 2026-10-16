@@ -103,7 +103,8 @@ impl ConversationRouter {
 mod tests {
     use super::*;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
+    use residuum_core::testing::wait;
 
     fn inbound(endpoint: &str, conversation_id: &str, location: Option<&str>) -> MessageEvent {
         MessageEvent {
@@ -166,8 +167,8 @@ mod tests {
             .await;
 
         let address = conversation_session_address("discord", "chan-1");
-        let first = wait::next_event("the first message to start a session", &mut spawns).await;
-        let second = wait::next_event(
+        let first = bus_wait::next_event("the first message to start a session", &mut spawns).await;
+        let second = bus_wait::next_event(
             "the second message in the same conversation to route the same way",
             &mut spawns,
         )

@@ -29,14 +29,13 @@ use tracing::Instrument;
 
 use crate::background::registry::SessionInfo;
 use crate::config::paths::TeamPaths;
-use crate::config::{Config, HubConfig};
+use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::gateway::ReloadSignal;
 use crate::gateway::event_loop::{
     AgentCleanup, AgentControl, AgentExit, AgentStartInputs, agent_span, spawn_agent_loop,
     start_agent,
 };
 use crate::util::FatalError;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::activity::ActivityTracker;
 use super::agent_watch::{AgentChange, AgentChangeFeed, AgentChangeKind, AgentWatcher};
@@ -858,7 +857,7 @@ impl AgentHost {
             .tracing_service
             .on_error(
                 &format!("agent failed: {reason}"),
-                crate::tracing_service::client_context::gather_for_agent(&slot.name, cfg),
+                crate::client_context::gather_for_agent(&slot.name, cfg),
             )
             .await;
         self.set_state(

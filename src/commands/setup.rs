@@ -47,7 +47,8 @@ async fn run_setup_command_at(
     residuum_root: std::path::PathBuf,
     args: &SetupArgs,
 ) -> Result<(), FatalError> {
-    use residuum::config::{HubConfig, wizard};
+    use residuum::config::HubConfig;
+    use residuum::setup_wizard;
 
     let hub_dir = residuum::config::paths::hub_dir(&residuum_root);
     let hub_config_path = hub_dir.join("config.toml");
@@ -70,7 +71,7 @@ async fn run_setup_command_at(
         || args.web_search_base_url.is_some();
 
     let answers = if has_flags {
-        wizard::from_flags(&wizard::WizardFlags {
+        setup_wizard::from_flags(&setup_wizard::WizardFlags {
             user_name: args.user_name.as_deref(),
             agent_name: args.agent_name.as_deref(),
             timezone: args.timezone.as_deref(),
@@ -82,7 +83,7 @@ async fn run_setup_command_at(
             web_search_base_url: args.web_search_base_url.as_deref(),
         })?
     } else {
-        wizard::run_interactive()?
+        setup_wizard::run_interactive()?
     };
 
     // Bootstrap creates the hub directory + example config
@@ -96,7 +97,7 @@ async fn run_setup_command_at(
     .await;
 
     // Write the hub config and the first agent's workspace and config
-    wizard::write_config(&residuum_root, &answers).await?;
+    setup_wizard::write_config(&residuum_root, &answers).await?;
 
     // Validate the result
     let agent_dir = residuum_root.join(&answers.agent_name);

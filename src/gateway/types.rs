@@ -11,7 +11,7 @@ use crate::background::registry::SessionRegistry;
 use crate::background::spawn_context::SpawnContext;
 use crate::background::store::SessionStore;
 use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
-use crate::config::{Config, HubConfig};
+use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -20,7 +20,6 @@ use crate::memory::search::HybridSearcher;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
-use crate::workspace::layout::WorkspaceLayout;
 
 /// Describes what kind of configuration reload was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,7 +297,7 @@ pub(crate) struct AgentRuntime {
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,
     /// Shared, reloadable effective `PATH` for spawned children (exec + MCP stdio).
-    pub tools_path: crate::tools::SharedToolsPath,
+    pub tools_path: crate::config::SharedToolsPath,
     /// The hub's shared agent key store (exec, MCP, trace redaction, sessions).
     pub agent_keys: crate::agent_keys::SharedAgentKeys,
     pub skill_state: SharedSkillState,

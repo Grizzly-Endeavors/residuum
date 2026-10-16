@@ -413,7 +413,7 @@ mod tests {
     async fn next_turn(
         receiver: &mut crate::hub::agent_watch::AgentChangeReceiver,
     ) -> MainTurnEnded {
-        let change = crate::testing::wait::next("the turn hook's report", receiver).await;
+        let change = residuum_core::testing::wait::next("the turn hook's report", receiver).await;
         assert_eq!(change.agent, "scout");
         let AgentChangeKind::TurnEnded(turn) = change.kind else {
             panic!("expected a turn ending, got {:?}", change.kind);

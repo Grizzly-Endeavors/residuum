@@ -600,12 +600,12 @@ struct ChangeFeeds {
 /// reads it and publishes its reloads on the agent's own bus.
 async fn spawn_change_feed_tasks(
     core: &GatewayCore,
-    layout: &crate::workspace::layout::WorkspaceLayout,
+    layout: &crate::config::WorkspaceLayout,
     team_feed: &crate::hub::services::TeamChangeFeed,
 ) -> ChangeFeeds {
     let (health_tx, health) =
         tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
-    let workbench_watcher = match crate::workbench::watcher::spawn_workbench_watcher(
+    let workbench_watcher = match crate::hub::workbench_watcher::spawn_workbench_watcher(
         layout.team().workbench_dir(),
         &team_feed.bus,
         core.publisher.clone(),
@@ -1243,7 +1243,7 @@ async fn log_adapter_task_exit(
     rt.tracing_service
         .on_error(
             &described,
-            crate::tracing_service::client_context::gather_for_bug_report(&rt.cfg),
+            crate::client_context::gather_for_bug_report(&rt.cfg),
         )
         .await;
 }

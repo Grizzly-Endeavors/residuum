@@ -28,7 +28,7 @@ use crate::hub::{self, AgentDirectory, LifecycleError};
 use super::auth::{Admission, AuthState, authorize};
 use super::card::SharedCardState;
 use super::keys_runtime::SharedA2aKeys;
-use super::public_url::AGENTS_PATH_PREFIX;
+use crate::remote_access::A2A_AGENTS_PATH_PREFIX;
 use crate::remote_access::siblings::{NoSiblings, SiblingKeyVerifier};
 
 /// A [`a2a_server::RequestHandler`] that refuses every operation with
@@ -176,7 +176,9 @@ struct HubA2aState {
 /// Split `/agents/{name}[/rest]` into the agent name and the path the
 /// agent's router sees (`/` when nothing follows the name).
 fn split_agent_path(path: &str) -> Option<(&str, &str)> {
-    let after = path.strip_prefix(AGENTS_PATH_PREFIX)?.strip_prefix('/')?;
+    let after = path
+        .strip_prefix(A2A_AGENTS_PATH_PREFIX)?
+        .strip_prefix('/')?;
     let (name, rest) = match after.find('/') {
         Some(idx) => after.split_at(idx),
         None => (after, "/"),

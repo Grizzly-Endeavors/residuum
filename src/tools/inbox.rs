@@ -10,7 +10,8 @@ use crate::bus::{Publisher, UserInboxAddedEvent, topics};
 use crate::inbox::{self, InboxItem};
 use crate::inference::ToolDefinition;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 // ─── inbox_list ─────────────────────────────────────────────────────────────
 
@@ -512,7 +513,8 @@ impl Tool for UserInboxAddTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
+    use residuum_core::testing::wait;
 
     #[test]
     fn tool_names_correct() {
@@ -870,7 +872,7 @@ mod tests {
                 .is_file(),
             "the announced item is already saved"
         );
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(added.drain().is_empty(), "one item, one announcement");
     }
 
@@ -894,7 +896,7 @@ mod tests {
             .execute(serde_json::json!({"title": "lost", "body": "never saved"}))
             .await;
         assert!(result.is_err(), "saving into a file path fails");
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(
             added.drain().is_empty(),
             "an item that wasn't saved is not announced"

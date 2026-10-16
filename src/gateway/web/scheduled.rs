@@ -32,12 +32,12 @@ use serde::{Deserialize, Serialize};
 use crate::actions::store::ActionStore;
 use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::background::store::{RunFilter, SessionStore};
+use crate::config::WorkspaceLayout;
 use crate::gateway::protocol::{
     ActionInfo, PulseInfo, ScheduledCurrentRun, ScheduledRunOutcome, SessionRunStatus,
 };
 use crate::pulse::next_run::{load_last_runs, next_run_at};
 use crate::pulse::types::{HeartbeatProblem, PulseDef, load_heartbeat};
-use crate::workspace::layout::WorkspaceLayout;
 
 /// Shared state for the Schedule place API.
 #[derive(Clone)]

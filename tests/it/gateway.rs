@@ -34,8 +34,9 @@ use residuum::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, StreamDelta,
     StreamSink, ToolCall, ToolDefinition,
 };
+use residuum::inference::{ToolError, ToolResult};
 use residuum::memory::types::Visibility;
-use residuum::tools::{Tool, ToolError, ToolRegistry, ToolResult};
+use residuum::tools::{Tool, ToolRegistry};
 use residuum::workspace::identity::IdentityFiles;
 
 /// Mock provider that returns configurable responses in sequence.
@@ -483,7 +484,7 @@ async fn recv_msg(
         >,
     >,
 ) -> ServerMessage {
-    let frame = crate::support::guarded::guarded("the next server message", rx.next())
+    let frame = residuum_core::testing::wait::guarded("the next server message", rx.next())
         .await
         .expect("stream ended unexpectedly");
 

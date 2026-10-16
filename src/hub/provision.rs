@@ -12,9 +12,8 @@ use crate::checkpoints::{
     CheckpointContext, CheckpointEngine, CheckpointError, CheckpointTrigger, RepoKind,
 };
 use crate::config::paths::{TeamPaths, agent_dir, hub_dir, validate_agent_name};
-use crate::config::{Config, HubConfig};
+use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::workspace::bootstrap::blank_agent_template;
-use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team::{
     ensure_agent_role_page_as, remove_agent_role_page, restore_agent_role_page,
 };

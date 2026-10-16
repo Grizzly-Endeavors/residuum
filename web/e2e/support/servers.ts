@@ -26,7 +26,7 @@ import { availableParallelism } from "node:os";
  * the first range, the preview servers' in the second, so the two never
  * overlap. Both sit below Linux's ephemeral ports (32768 and up), which
  * outgoing connections take at random, and clear of 20000-30000, which the
- * Rust tests' port allocator owns (`src/util/test_ports.rs`).
+ * Rust tests' port allocator owns (`crates/core/src/testing/ports.rs`).
  */
 interface PortRange {
   from: number;

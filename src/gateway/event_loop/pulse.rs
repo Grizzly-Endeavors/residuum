@@ -509,7 +509,7 @@ mod tests {
 
     use crate::bus::{BusHandle, NotifyName, SYSTEM_CHANNEL, Subscriber};
     use crate::pulse::types::PulseTask;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
 
     fn scripted_deps(bus: &BusHandle, dir: &std::path::Path) -> ScriptedPulseDeps {
         ScriptedPulseDeps {
@@ -570,11 +570,11 @@ mod tests {
         )
         .await;
 
-        let result = wait::next_event("the script-only result", &mut results).await;
+        let result = bus_wait::next_event("the script-only result", &mut results).await;
         assert_eq!(result.disposition, ResultDisposition::Silent);
         assert!(matches!(result.status, AgentResultStatus::Completed));
         assert_eq!(result.source_label, "pulse:watch");
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(
             spawns.drain().is_empty(),
             "a script-only pulse never starts a session"
@@ -595,7 +595,7 @@ mod tests {
         )
         .await;
 
-        let item = wait::next_event("the inbox item", &mut inbox).await;
+        let item = bus_wait::next_event("the inbox item", &mut inbox).await;
         assert_eq!(item.title, "pulse:watch");
         assert_eq!(item.content.trim(), "site changed");
         assert!(!item.urgent, "no urgency unless the output asks for it");
@@ -619,7 +619,7 @@ mod tests {
         )
         .await;
 
-        let item = wait::next_event("the inbox item", &mut inbox).await;
+        let item = bus_wait::next_event("the inbox item", &mut inbox).await;
         assert!(
             item.content.contains("exited with code 4"),
             "{}",
@@ -630,7 +630,7 @@ mod tests {
             "{}",
             item.content
         );
-        let notice = wait::next_event("the failed-pulse notice", &mut notices).await;
+        let notice = bus_wait::next_event("the failed-pulse notice", &mut notices).await;
         assert!(notice.message.contains("watch"), "{}", notice.message);
         assert!(
             notice.message.contains("exited with code 4"),
@@ -654,7 +654,7 @@ mod tests {
         )
         .await;
 
-        let spawn = wait::next_event("the pulse's spawn request", &mut spawns).await;
+        let spawn = bus_wait::next_event("the pulse's spawn request", &mut spawns).await;
         assert_eq!(spawn.source_label, "pulse:watch");
         assert!(spawn.prompt.contains("Say whether anything changed."));
         assert!(spawn.prompt.contains("3 new posts"), "{}", spawn.prompt);
@@ -680,7 +680,7 @@ mod tests {
         )
         .await;
 
-        let item = wait::next_event("the inbox item", &mut inbox).await;
+        let item = bus_wait::next_event("the inbox item", &mut inbox).await;
         assert!(item.content.contains("'check'"), "{}", item.content);
         assert!(
             item.content.contains("exited with code 2"),
@@ -689,14 +689,14 @@ mod tests {
         );
         assert!(item.content.contains("exit code: 2"), "{}", item.content);
         assert!(item.content.contains("token expired"), "{}", item.content);
-        let notice = wait::next_event("the owner notice", &mut notices).await;
+        let notice = bus_wait::next_event("the owner notice", &mut notices).await;
         assert!(notice.message.contains("'watch'"), "{}", notice.message);
         assert!(
             notice.message.contains("exited with code 2"),
             "{}",
             notice.message
         );
-        let spawn = wait::next_event("the pulse's spawn request", &mut spawns).await;
+        let spawn = bus_wait::next_event("the pulse's spawn request", &mut spawns).await;
         assert!(spawn.prompt.contains("script failed"), "{}", spawn.prompt);
     }
 
@@ -714,7 +714,7 @@ mod tests {
         run_scripted_pulse(scripted_pulse("echo hi", true), None, None, deps.clone()).await;
         run_scripted_pulse(scripted_pulse("echo hi", false), None, None, deps).await;
 
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(results.drain().is_empty());
         assert!(spawns.drain().is_empty());
     }
@@ -746,7 +746,7 @@ mod tests {
         let with_session = scripted_pulse("check", false);
         deliver_scripted_pulse(&with_session, &[failed], None, None, &deps).await;
 
-        wait::bus_barrier(&bus).await;
+        bus_wait::bus_barrier(&bus).await;
         assert!(results.drain().is_empty(), "no result is filed");
         assert!(spawns.drain().is_empty(), "no session is started");
         assert!(inbox.drain().is_empty(), "no failure is filed");

@@ -40,7 +40,7 @@ pub(super) struct DeleteSecretResponse {
 /// `${ENV_VAR}`) rather than a literal to store — storing a reference
 /// verbatim would make the store return it unexpanded on lookup, handing
 /// callers the literal token instead of a usable credential (see
-/// `crate::config::resolve::resolve_secret_value`, which never re-expands a
+/// config's `resolve_secret_value`, which never re-expands a
 /// stored value).
 ///
 /// Acquires `secret_lock` to serialize concurrent writes and prevent

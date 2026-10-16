@@ -109,7 +109,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
             artifacts_origin::refuse_blocked_artifact_calls,
         ))
         .layer(axum::middleware::from_fn(
-            crate::gateway::cross_site::reject_cross_site_requests,
+            crate::cross_site::reject_cross_site_requests,
         ))
         .layer(axum::middleware::from_fn_with_state(
             crate::pairing::GateState {

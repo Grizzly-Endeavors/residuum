@@ -136,7 +136,7 @@ pub fn process_leftover_interrupts(
 pub(super) async fn inject_undelivered_messages(
     agent: &mut Agent,
     messenger: &crate::background::messaging::AgentMessenger,
-    layout: &crate::workspace::layout::WorkspaceLayout,
+    layout: &crate::config::WorkspaceLayout,
     tz: chrono_tz::Tz,
     messages: impl IntoIterator<Item = MessageEvent>,
 ) {
@@ -791,7 +791,7 @@ async fn publish_turn_outcome(
             tracing_service
                 .on_error(
                     &described.details,
-                    crate::tracing_service::client_context::gather_for_bug_report(cfg),
+                    crate::client_context::gather_for_bug_report(cfg),
                 )
                 .await;
             let event = ErrorEvent {
@@ -1144,8 +1144,9 @@ pub async fn handle_inbound_message(
 mod tests {
     use super::*;
     use crate::bus::Subscriber;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
     use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
+    use residuum_core::testing::wait;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
 
@@ -1183,7 +1184,7 @@ mod tests {
             webhooks: std::collections::HashMap::new(),
             skills: crate::config::SkillsConfig { dirs: vec![] },
             tools: crate::config::ToolsConfig { dirs: vec![] },
-            retry: crate::inference::retry::RetryConfig::default(),
+            retry: crate::config::RetryConfig::default(),
             background: crate::config::BackgroundConfig::default(),
             agent: crate::config::AgentAbilitiesConfig::default(),
             auto_mode: crate::config::AutoModeConfig::default(),
@@ -1243,7 +1244,7 @@ mod tests {
     }
 
     fn web() -> EndpointName {
-        EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT)
+        EndpointName::from(crate::config::WEB_UI_ENDPOINT)
     }
 
     /// The web UI and Telegram, both interactive, as a hub with Telegram
@@ -1256,7 +1257,7 @@ mod tests {
             display_name: id.to_string(),
         };
         crate::bus::EndpointRegistry::from_entries([
-            interactive(crate::interfaces::types::WEB_UI_ENDPOINT),
+            interactive(crate::config::WEB_UI_ENDPOINT),
             interactive("telegram"),
         ])
     }
@@ -1772,7 +1773,7 @@ mod tests {
         bus: &crate::bus::BusHandle,
         sub: &mut Subscriber<E>,
     ) {
-        wait::bus_barrier(bus).await;
+        bus_wait::bus_barrier(bus).await;
         assert!(
             sub.drain().is_empty(),
             "expected no event, but one was published"
@@ -1879,7 +1880,7 @@ mod tests {
     async fn a_turn_start_goes_to_a_chat_interface_but_not_to_the_web_ui() {
         let handle = crate::bus::spawn_broker();
         let publisher = handle.publisher();
-        let ws = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let ws = EndpointName::from(crate::config::WEB_UI_ENDPOINT);
         let mut chat: Subscriber<TurnLifecycleEvent> = handle
             .subscribe(topics::Endpoint(endpoint()))
             .await
@@ -1906,7 +1907,7 @@ mod tests {
     /// subscriber reads a turn's events.
     #[tokio::test]
     async fn a_turn_delivered_to_the_web_ui_publishes_nothing_to_its_endpoint_topic() {
-        let ws = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let ws = EndpointName::from(crate::config::WEB_UI_ENDPOINT);
         for outcome in [Ok(vec!["reply".to_string()]), Err(anyhow::anyhow!("boom"))] {
             let failed = outcome.is_err();
             let handle = crate::bus::spawn_broker();
@@ -1984,7 +1985,7 @@ mod tests {
         .await;
 
         // The bus barrier proves every event the turn published has reached `main`.
-        wait::bus_barrier(&handle).await;
+        bus_wait::bus_barrier(&handle).await;
         match main.drain().into_iter().next() {
             Some(MainConversationEvent::TurnEnded { turn_id }) => Some(turn_id),
             _ => None,
@@ -2564,7 +2565,7 @@ mod tests {
         // ever reaching main's turn.
         let address =
             crate::background::registry::conversation_session_address("discord", "chan-1");
-        let spawn_event = wait::next_event(
+        let spawn_event = bus_wait::next_event(
             "the group-chat message to start its own conversation session",
             &mut spawns,
         )
@@ -2784,7 +2785,7 @@ mod tests {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         messenger.restore_main_hop("leftover-1", 4);
 
         inject_undelivered_messages(
@@ -2805,7 +2806,7 @@ mod tests {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
             .await
             .unwrap();
@@ -2847,7 +2848,7 @@ mod tests {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let layout = crate::config::WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
             .await
             .unwrap();
@@ -3138,7 +3139,7 @@ mod tests {
         gate.notify_one();
         gate.notify_one();
         let (leftovers, ended) = wait::guarded("the turn to end", turn).await.unwrap();
-        wait::bus_barrier(ended.bus()).await;
+        bus_wait::bus_barrier(ended.bus()).await;
         events.extend(main.drain());
         let named = events
             .iter()
@@ -3251,7 +3252,7 @@ mod tests {
             0,
             "not injected as context on top of being delivered as a turn"
         );
-        wait::bus_barrier(rig.bus()).await;
+        bus_wait::bus_barrier(rig.bus()).await;
         assert!(
             rig.subscriber.drain().is_empty(),
             "requeueing is local, not a second broadcast on the bus"

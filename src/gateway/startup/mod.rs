@@ -16,7 +16,8 @@ use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
-use crate::config::{Config, HubConfig};
+use crate::config::SharedToolsPath;
+use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::hub::services::HubServices;
 use crate::hub::team::TeamLink;
 use crate::inference::SharedHttpClient;
@@ -26,11 +27,9 @@ use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::notify::channels::InboxChannel;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
-use crate::tools::SharedToolsPath;
 use crate::util::FatalError;
 use crate::workspace::bootstrap::ensure_workspace_labeled;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 
 use crate::background::spawn_context::SpawnContext;
@@ -779,7 +778,7 @@ pub(crate) async fn spawn_notify_subscribers(
 /// and HTTP handlers. The tracing service itself is the hub's, shared by
 /// every agent.
 fn init_tracing_client_context(cfg: &Config) -> Arc<crate::tracing_service::ClientContext> {
-    Arc::new(crate::tracing_service::client_context::gather_for_bug_report(cfg))
+    Arc::new(crate::client_context::gather_for_bug_report(cfg))
 }
 
 /// Inputs to [`build_tools_and_agent`], gathered because building the tool
@@ -827,7 +826,7 @@ async fn build_tools_and_agent(
 
     // Reserve the built-in tool namespace so any MCP tool (workspace or web
     // search) that reuses a built-in name is shadowed visibly instead of
-    // silently. See src/mcp/CLAUDE.md.
+    // silently. See crates/mcp/src/CLAUDE.md.
     inputs
         .mcp_registry
         .write()

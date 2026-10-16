@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
 use crate::background::store::{RunRecord, SessionStore};
 use crate::inference::{Message, ToolDefinition};
+use crate::inference::{ToolError, ToolResult};
 use crate::memory::episode_store::{
     DEFAULT_LINES, MAX_LINES, find_episode_path, format_message_line, read_episode_lines,
 };

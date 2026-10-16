@@ -46,7 +46,7 @@ pub(crate) struct CloudStatusResponse {
     /// Whether this response is being served to a browser that's viewing
     /// the gateway through the tunnel rather than directly. The web UI uses
     /// this to hide the disconnect control: disconnecting over the tunnel
-    /// is refused server-side (see `gateway::remote_control_guard`), so a
+    /// is refused server-side (see `remote_control_guard`), so a
     /// remote viewer should never see a button that can't work.
     viewed_via_tunnel: bool,
     /// Public origin of this user's web UI through the relay, while connected.
@@ -119,7 +119,7 @@ pub(crate) async fn api_cloud_status(
     Json(CloudStatusResponse::current(
         &state.hub_dir,
         &state.tunnel_status_rx,
-        crate::pairing::remote::remote_context(&parts.extensions).is_some(),
+        crate::pairing::remote_context(&parts.extensions).is_some(),
     ))
 }
 
@@ -691,7 +691,7 @@ enabled = false
         use tower::ServiceExt;
 
         let req = axum::http::Request::get("/api/cloud/status")
-            .extension(crate::pairing::remote::RemoteTransport::default())
+            .extension(crate::pairing::RemoteTransport::default())
             .body(Body::empty())
             .unwrap();
         let resp = status_router().oneshot(req).await.unwrap();

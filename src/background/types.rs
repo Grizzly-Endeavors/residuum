@@ -9,12 +9,12 @@ use crate::agent::HopCounter;
 use crate::bus::MessageEvent;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ModelSelector;
+use crate::config::WorkspaceLayout;
 use crate::inference::{ImageData, MessageSender};
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::messaging::AgentMessenger;
 use super::registry::SessionCategory;
@@ -159,7 +159,7 @@ pub struct SubAgentBuildConfig {
     /// gate `ollama_web_search` the same way the main agent's does.
     pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
     /// Main's live tool `PATH` (see [`crate::tools::SubagentToolDeps::tools_path`]).
-    pub tools_path: crate::tools::SharedToolsPath,
+    pub tools_path: crate::config::SharedToolsPath,
     /// Main's write policy (see [`crate::tools::SubagentToolDeps::path_policy`]).
     pub path_policy: crate::tools::SharedPathPolicy,
     /// The shared agent key store.

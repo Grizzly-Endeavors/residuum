@@ -555,7 +555,7 @@ pub(super) async fn api_config_validate(
 pub(super) async fn api_mcp_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
+    let mcp_path = crate::config::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
 
     let contents = match tokio::fs::read_to_string(&mcp_path).await {
         Ok(c) => c,
@@ -594,7 +594,7 @@ pub(super) async fn api_mcp_raw_put(
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
     let diagnostics = crate::workspace::config::diagnose_mcp_json(&body);
 
-    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
+    let mcp_path = crate::config::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
 
     if let Some(parent) = mcp_path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
@@ -648,7 +648,7 @@ pub(super) async fn api_mcp_patch(
         )
     };
 
-    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
+    let mcp_path = crate::config::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
     let existing = match tokio::fs::read_to_string(&mcp_path).await {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -724,7 +724,7 @@ fn internal_error(action: &str, e: impl std::fmt::Display) -> (StatusCode, Json<
 /// failure on an earlier write never leaves a discoverable half-configured
 /// agent behind.
 async fn write_first_agent_config_files(
-    layout: &crate::workspace::layout::WorkspaceLayout,
+    layout: &crate::config::WorkspaceLayout,
     body: &CompleteSetupRequest,
     config: &str,
 ) -> Result<(), (StatusCode, Json<ValidateResponse>)> {
@@ -831,20 +831,19 @@ pub(super) async fn api_complete_setup(
 
     // Parse and resolve the hub config on its own first — the agent config
     // resolves against it (timezone, gateway, ...).
-    let hub_file = toml::from_str::<crate::config::deserialize::HubConfigFile>(&body.hub_config)
+    let hub_file = toml::from_str::<crate::config::HubConfigFile>(&body.hub_config)
         .map_err(|e| err(format!("hub config.toml parse error: {e}")))?;
-    let hub = crate::config::resolve::resolve_hub_config(Some(&hub_file), &state.hub_dir)
+    let hub = crate::config::resolve_hub_config(Some(&hub_file), &state.hub_dir)
         .map_err(|e| err(format!("{e}")))?;
 
     let config = crate::config::set_display_name_toml(&body.config, &display_name).map_err(err)?;
-    let config_file = toml::from_str::<crate::config::deserialize::AgentConfigFile>(&config)
+    let config_file = toml::from_str::<crate::config::AgentConfigFile>(&config)
         .map_err(|e| err(format!("config.toml parse error: {e}")))?;
-    let providers_file =
-        toml::from_str::<crate::config::deserialize::ProvidersFile>(&body.providers)
-            .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
+    let providers_file = toml::from_str::<crate::config::ProvidersFile>(&body.providers)
+        .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
 
     // Validate the agent config together with the hub config and providers.
-    crate::config::resolve::from_file_and_env(
+    crate::config::from_file_and_env(
         Some(&config_file),
         Some(&providers_file),
         &agent_dir,
@@ -873,7 +872,7 @@ pub(super) async fn api_complete_setup(
 
     // Bootstrap the agent's full workspace (identity files, wiki, bundled
     // skills), personalized with the user's name.
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
+    let layout = crate::config::WorkspaceLayout::new(&agent_dir);
     state
         .bootstrap_workspace(
             &layout,
@@ -1091,8 +1090,7 @@ mod tests {
             !response.diagnostics.is_empty(),
             "response.diagnostics should not be empty"
         );
-        let mcp_path =
-            crate::workspace::layout::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
+        let mcp_path = crate::config::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
         let saved = tokio::fs::read_to_string(&mcp_path).await.unwrap();
         assert_eq!(
             saved, "not json",
@@ -1179,8 +1177,7 @@ mod tests {
     async fn mcp_patch_returns_the_checkpoint_taken_before_the_write() {
         let dir = tempfile::tempdir().unwrap();
         let state = super::super::test_support::watching_state(dir.path());
-        let mcp_path =
-            crate::workspace::layout::WorkspaceLayout::new(state.workspace_dir.clone()).mcp_json();
+        let mcp_path = crate::config::WorkspaceLayout::new(state.workspace_dir.clone()).mcp_json();
         std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
         let before = r#"{"mcpServers":{"fs":{"command":"npx","cwd":"/srv"}}}"#;
         std::fs::write(&mcp_path, before).unwrap();

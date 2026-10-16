@@ -335,13 +335,13 @@ mod tests {
     /// A hub whose only credential is a joined sibling's key.
     async fn state_with_sibling_key(dir: &std::path::Path) -> (AuthState, String) {
         let siblings = crate::remote_access::siblings::SiblingKeys::open(dir);
-        let inbound = crate::remote_access::siblings::keys::issue_key();
+        let inbound = crate::remote_access::siblings::issue_key();
         siblings
-            .upsert(crate::remote_access::siblings::keys::NewSibling {
+            .upsert(crate::remote_access::siblings::NewSibling {
                 slug: "desktop".to_string(),
                 display_name: "Desk".to_string(),
                 account_uri: "https://acme.test/acct/desktop".to_string(),
-                outbound_key: crate::remote_access::siblings::keys::issue_key(),
+                outbound_key: crate::remote_access::siblings::issue_key(),
                 inbound_key: inbound.clone(),
             })
             .await
@@ -404,7 +404,7 @@ mod tests {
             wrong.len() - 1..,
             if key.ends_with('a') { "b" } else { "a" },
         );
-        for token in [crate::remote_access::siblings::keys::issue_key(), wrong] {
+        for token in [crate::remote_access::siblings::issue_key(), wrong] {
             let req = Request::builder()
                 .method("POST")
                 .uri("/")
@@ -425,13 +425,13 @@ mod tests {
         let siblings = Arc::new(crate::remote_access::siblings::SiblingKeys::open(
             dir.path(),
         ));
-        let inbound = crate::remote_access::siblings::keys::issue_key();
+        let inbound = crate::remote_access::siblings::issue_key();
         siblings
-            .upsert(crate::remote_access::siblings::keys::NewSibling {
+            .upsert(crate::remote_access::siblings::NewSibling {
                 slug: "desktop".to_string(),
                 display_name: "Desk".to_string(),
                 account_uri: "https://acme.test/acct/desktop".to_string(),
-                outbound_key: crate::remote_access::siblings::keys::issue_key(),
+                outbound_key: crate::remote_access::siblings::issue_key(),
                 inbound_key: inbound.clone(),
             })
             .await

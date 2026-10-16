@@ -11,12 +11,13 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
 use crate::bus::EndpointName;
+use crate::config::WEB_UI_ENDPOINT;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
-use crate::interfaces::types::{MessageOrigin, WEB_UI_ENDPOINT};
+use crate::interfaces::types::MessageOrigin;
 use crate::interfaces::websocket::subscriber::WsSubscribers;
-use crate::workbench::forward::ArtifactsOrigin;
+use crate::workbench::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
@@ -652,7 +653,7 @@ fn validate_images(images: &[ImageData]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     #[test]
     fn set_verbose_updates_flag() {
@@ -935,7 +936,7 @@ mod tests {
                     workspace_dir.join("scheduled_actions.json"),
                 ),
             )),
-            layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            layout: crate::config::WorkspaceLayout::new(workspace_dir),
             activity: crate::hub::activity::ActivityTracker::new(
                 "test-agent",
                 tokio::sync::broadcast::channel(4).0,

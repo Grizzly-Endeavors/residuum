@@ -26,10 +26,10 @@ use crate::background::registry::{
 use crate::background::store::SessionStore;
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::ModelSelector;
-use crate::testing::wait;
 use crate::tools::Tool;
 use crate::tools::background::StopAgentTool;
 use crate::tools::message_agent::MessageAgentTool;
+use residuum_core::testing::wait;
 
 /// Test executor: a fresh task goes `WORKING` then
 /// `INPUT_REQUIRED`; a follow-up (the task already exists) completes with an

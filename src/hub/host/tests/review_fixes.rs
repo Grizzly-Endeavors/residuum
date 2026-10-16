@@ -2,9 +2,9 @@
 //! shows up in logs and in the messages agents hand each other.
 
 use super::*;
-use crate::hub::test_support::EventLog;
 use crate::tools::Tool as _;
 use crate::tools::agent_lifecycle::AgentCreateTool;
+use residuum_core::testing::log::EventLog;
 
 #[tokio::test]
 async fn a_refused_start_after_creation_or_restore_is_logged_with_its_reason() {

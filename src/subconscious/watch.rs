@@ -152,10 +152,10 @@ impl SubconsciousWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::test_helpers::MockMemoryProvider;
+    use crate::config::WorkspaceLayout;
+    use crate::memory::testing::MockMemoryProvider;
     use crate::subconscious::SubconsciousConfig;
-    use crate::testing::wait;
-    use crate::workspace::layout::WorkspaceLayout;
+    use residuum_core::testing::wait;
 
     const ACT_RESPONSE: &str = r#"{
         "findings": [

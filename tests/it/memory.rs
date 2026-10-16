@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use residuum::config::WorkspaceLayout;
 use residuum::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ToolDefinition,
@@ -28,7 +29,6 @@ use residuum::memory::recent_messages::{
 use residuum::memory::reflector::{Reflector, ReflectorConfig};
 use residuum::memory::search::{MemoryIndex, SearchFilters};
 use residuum::memory::types::{DocSource, IndexManifest, SourceTag, Visibility};
-use residuum::workspace::layout::WorkspaceLayout;
 
 /// Build a merge writer over a real search index but a disabled
 /// reflector, so tests that only care about the observe→merge path

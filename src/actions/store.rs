@@ -329,7 +329,7 @@ pub fn rejected_actions_notice(rejected: &[RejectedAction]) -> String {
          See {guide}.",
         count = rejected.len(),
         plural = if rejected.len() == 1 { "" } else { "s" },
-        guide = crate::util::MIGRATION_GUIDE_URL,
+        guide = crate::pulse::MIGRATION_GUIDE_URL,
     )
 }
 

@@ -1,0 +1,32 @@
+[package]
+name = "residuum-tracing-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+residuum-core = { workspace = true }
+residuum-config = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-proto = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+prost = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
+residuum-config = { workspace = true, features = ["test-support"] }
+ctor = { workspace = true }
+rustls = { workspace = true }

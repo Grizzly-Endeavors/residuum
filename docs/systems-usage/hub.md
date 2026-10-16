@@ -168,6 +168,26 @@ One router serves everything the hub offers: the hub, team and per-agent routes,
 
 There is one log level for the whole hub. Every log line and span an agent produces carries an `agent` field: the agent's tasks, and everything they spawn, run inside a root span named `agent`. `residuum logs --agent <name>` filters on it. The span buffer that feeds bug reports and trace exports gives every span inside an agent's root span the same `agent` field.
 
+Each line's target is shown in display form: `residuum::` is dropped from the front, and a crate target `residuum_<x>::…` shows as `<x>::…`. So `residuum::hub::runtime` shows as `hub::runtime` and `residuum_memory::search` as `memory::search`. A crate's root target `residuum_<x>` shows as `<x>`; any other target with one segment, such as `residuum`, shows unchanged.
+
+`residuum logs --module <value>` keeps a line when the value is a plain string prefix of its full target. It also matches when the value, with one leading `residuum::` removed, is a plain string prefix of the line's display form or of its module form (the target with its first segment removed). So `--module agent` matches `residuum::agent::core` and `residuum_config::agent_keys::store`, `--module memory` matches `residuum_memory::search`, `--module tunnel` matches `residuum_net::tunnel::v2`, and `--module residuum::mcp::client` matches `residuum_mcp::client`. A value can match lines from several crates; the result is their union.
+
+A `residuum logs` run without `--watch` that was given `--module`, `--level` or `--agent` and printed no entries writes one line to stderr after reading the whole file: `No log entries matched (--module <value>, --level <value>, --agent <value>).` It names only the filters given. The exit status is 0.
+
+`RUST_LOG` is a developer override; `log_level` in `hub/config.toml` is unaffected by it. Its directives match targets by prefix, so a directive names the crate a module lives in. Each module lives in one of these crates:
+
+- `residuum_core`: `util`, `time` and `diagnostics`, so `RUST_LOG=residuum_core::util::fs=trace`.
+- `residuum_config`: `config` and `agent_keys`, so `RUST_LOG=residuum_config=trace` for config loading and `RUST_LOG=residuum_config::agent_keys=trace` for the agent-key store.
+- `residuum_inference`: `inference`, so `RUST_LOG=residuum_inference=trace`, or `RUST_LOG=residuum_inference::providers::anthropic=trace` for one provider.
+- `residuum_memory`: `memory`, so `RUST_LOG=residuum_memory=trace`, or `RUST_LOG=residuum_memory::search=trace` for the search index.
+- `residuum_net`: `tunnel`, `remote_access`, `pairing`, `workbench`, `browser_landing`, `cross_site` and `remote_control_guard`, so `RUST_LOG=residuum_net::tunnel=trace` for the relay tunnel and `RUST_LOG=residuum_net::remote_access=trace` for the secure tunnel's certificates and pins.
+- `residuum_skills`: `skills`, so `RUST_LOG=residuum_skills=trace`.
+- `residuum_mcp`: `mcp`, so `RUST_LOG=residuum_mcp=trace`.
+- `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
+- `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.
+
+The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.
+
 ## Running in Docker
 
 The images (`docker/Dockerfile`, `docker/Dockerfile.release`) run `residuum serve --foreground` as the non-root `residuum` user with `RESIDUUM_GATEWAY_BIND=0.0.0.0`, and expose the gateway port `7700`. The volume `/home/residuum/.residuum` holds the whole layout: `hub/`, `team/`, and one directory per agent. On an empty volume the hub starts without an agent and the web app runs onboarding, so the first agent is created from the browser. The A2A listener (`7702`) is not published by `docker/docker-compose.yml`; publish it only for callers that should reach it directly.

@@ -14,10 +14,11 @@ use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::background::runtime::SessionRuntime;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
+use crate::config::RetryConfig;
 use crate::config::{
     BackgroundConfig, BackgroundModelTier, ModelCatalog, ModelSelector, SharedModelCatalog,
+    WorkspaceLayout,
 };
-use crate::inference::retry::RetryConfig;
 use crate::inference::{
     CompletionOptions, SharedHttpClient, build_provider_chain_with_shared_notices,
 };
@@ -27,7 +28,6 @@ use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
 use super::messaging::AgentMessenger;
 use super::subagent::{SubAgentResources, build_subagent_resources};
@@ -134,7 +134,7 @@ pub(crate) struct SpawnContext {
     pub(crate) web_search_backend: Option<crate::config::StandaloneBackendConfig>,
     /// Main's live tool `PATH`, shared so a session's `exec` resolves the
     /// same binaries and sees config reloads.
-    pub(crate) tools_path: crate::tools::SharedToolsPath,
+    pub(crate) tools_path: crate::config::SharedToolsPath,
     /// Main's write policy, shared so a session is blocked from the same
     /// config and credential files and sees config reloads.
     pub(crate) path_policy: crate::tools::SharedPathPolicy,
@@ -352,7 +352,7 @@ pub(crate) async fn build_spawn_resources(
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),
-        ctx.publisher.clone(),
+        Arc::new(ctx.publisher.clone()),
         chain.label,
         chain.active_index,
     )

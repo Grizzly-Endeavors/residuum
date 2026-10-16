@@ -6,11 +6,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{Tool, ToolError, ToolResult, publish_notice, require_str};
+use super::{Tool, publish_notice, require_str};
 use crate::agent_keys::{AgentKeyError, KeyCreator, SharedAgentKeys};
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
+use crate::inference::{ToolError, ToolResult};
 
 /// Lists agent keys: names, environment variables, creators, descriptions.
 pub struct AgentKeysListTool {
@@ -182,7 +183,7 @@ impl Tool for AgentKeyDeleteTool {
 mod tests {
     use super::*;
     use crate::agent_keys::AgentKeys;
-    use crate::testing::wait;
+    use crate::testing::bus_wait;
 
     #[tokio::test]
     async fn list_shows_metadata_never_values() {
@@ -325,7 +326,7 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "delete should succeed: {}", result.output);
 
-        wait::bus_barrier(&bus_handle).await;
+        bus_wait::bus_barrier(&bus_handle).await;
         assert!(
             notices.drain().is_empty(),
             "deleting the agent's own key should not notify"

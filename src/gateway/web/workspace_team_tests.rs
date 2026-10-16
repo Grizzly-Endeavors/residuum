@@ -844,7 +844,7 @@ async fn tool_call(
     tools: &crate::tools::ToolRegistry,
     name: &str,
     args: Value,
-) -> crate::tools::ToolResult {
+) -> crate::inference::ToolResult {
     tools.execute(name, args).await.unwrap()
 }
 
@@ -886,7 +886,7 @@ async fn a_restore_waits_for_a_write_holding_the_path_lock() {
     tokio::pin!(restoring);
     tokio::select! {
         () = &mut restoring => panic!("the restore must wait for the lock holder"),
-        () = crate::testing::wait::until_true("the restore to queue for the lock", || {
+        () = residuum_core::testing::wait::until_true("the restore to queue for the lock", || {
             f.hub.coordinator.lock_contenders(&file) == 2
         }) => {}
     }

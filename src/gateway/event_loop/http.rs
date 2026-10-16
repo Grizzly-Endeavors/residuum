@@ -267,7 +267,7 @@ pub(crate) async fn build_agent_a2a(
     cfg: &Config,
     deps: A2aServingDeps,
 ) -> Option<crate::a2a::AgentA2a> {
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir);
+    let layout = crate::config::WorkspaceLayout::new(&cfg.workspace_dir);
     match crate::a2a::agent_a2a_router(crate::a2a::AgentA2aState {
         name: cfg.agent_name.clone(),
         a2a: cfg.a2a.clone(),

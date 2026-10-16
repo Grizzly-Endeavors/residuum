@@ -2,8 +2,8 @@
 
 use crate::util::FatalError;
 
-use super::layout::WorkspaceLayout;
 use super::team_files::TeamWriteCoordinator;
+use crate::config::WorkspaceLayout;
 
 // ── Workspace bootstrap content (embedded at compile time from assets/) ──────
 

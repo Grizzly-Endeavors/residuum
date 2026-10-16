@@ -16,7 +16,8 @@ use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 
-use super::{Tool, ToolError, ToolResult};
+use super::Tool;
+use crate::inference::{ToolError, ToolResult};
 
 // ─── StopAgentTool ───────────────────────────────────────────────────────────
 
@@ -640,8 +641,8 @@ mod tests {
         .await
         .unwrap();
         let dirs = vec![
-            crate::skills::SkillDir::agent(agent_skills.path()),
-            crate::skills::SkillDir::team(team_skills.path()),
+            crate::config::SkillDir::agent(agent_skills.path()),
+            crate::config::SkillDir::team(team_skills.path()),
         ];
         let index = SkillIndex::scan(&dirs).await.unwrap();
 
@@ -679,14 +680,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+        let index = SkillIndex::scan(&[crate::config::SkillDir::agent(dir.path())])
             .await
             .unwrap();
 
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let skill_state =
-            SkillState::new_shared(index, vec![crate::skills::SkillDir::agent(dir.path())]);
+            SkillState::new_shared(index, vec![crate::config::SkillDir::agent(dir.path())]);
         let tool = SubagentSpawnTool::new(SpawnToolDeps {
             publisher,
             skill_state,

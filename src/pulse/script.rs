@@ -19,8 +19,8 @@ use crate::bus::{
     AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     ResultDisposition, ends_with_sentinel,
 };
-use crate::tools::SharedToolsPath;
-use crate::util::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
+use crate::config::SharedToolsPath;
+use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// How much of a failed script's stderr is kept: its last 2 KiB, where the
 /// error that ended it usually is.
@@ -150,7 +150,7 @@ async fn run_task_script(
 
     let mut cmd = shell_command(script);
     cmd.current_dir(&env.workspace_root);
-    crate::tools::apply_tools_path(&mut cmd, &env.tools_path).await;
+    crate::config::apply_tools_path(&mut cmd, &env.tools_path).await;
 
     tracing::info!(
         pulse = %pulse_name,
@@ -402,7 +402,7 @@ pub(crate) fn script_only_result(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::testing::wait;
+    use residuum_core::testing::wait;
 
     pub(crate) fn env(dir: &std::path::Path) -> ScriptEnv {
         ScriptEnv {
@@ -647,10 +647,11 @@ pub(crate) mod tests {
             runs = &mut run => panic!("the scripts ended before the shell was reaped: {runs:?}"),
         }
         tokio::time::pause();
-        let runs = crate::testing::clock::within(std::time::Duration::from_secs(3600), &mut run)
-            .await
-            .expect("the script ends at its timeout")
-            .unwrap();
+        let runs =
+            residuum_core::testing::clock::within(std::time::Duration::from_secs(3600), &mut run)
+                .await
+                .expect("the script ends at its timeout")
+                .unwrap();
         let Some(Some(ScriptRun::Failed(failure))) = runs.into_iter().next() else {
             panic!("expected a timeout failure");
         };

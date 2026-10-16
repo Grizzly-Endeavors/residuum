@@ -51,7 +51,7 @@ async fn result_routes_to_inbox_via_bus() {
         .await
         .unwrap();
 
-    crate::support::until::until("an inbox item to be created", || {
+    residuum_core::testing::wait::until("an inbox item to be created", || {
         let count = std::fs::read_dir(&inbox_dir)
             .unwrap()
             .filter_map(Result::ok)

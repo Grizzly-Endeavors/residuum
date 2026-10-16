@@ -374,8 +374,8 @@ mod tests {
 
     use super::*;
     use crate::bus::{AgentResultStatus, SessionEventKind, ToolCallEvent};
-    use crate::testing::{clock, wait};
     use crate::workspace::watch::{WorkspaceChangeKind, WorkspaceResyncReason};
+    use residuum_core::testing::{clock, wait};
 
     /// A watcher over a bare agent bus, with a receiver on the hub's feed.
     struct Rig {

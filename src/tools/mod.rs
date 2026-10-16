@@ -36,16 +36,11 @@ pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
 pub use registry::{SubagentToolDeps, ToolRegistry};
 
-use std::ffi::OsString;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde_json::Value;
-use thiserror::Error;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::inference::{ImageData, ToolDefinition};
+use crate::inference::{ToolDefinition, ToolError, ToolResult};
 
 /// Reported when a tool call is interrupted mid-execution because the turn
 /// was stopped — a user stop, a session's own stop, or daemon shutdown.
@@ -56,55 +51,6 @@ pub(crate) const CANCELLED_WHILE_RUNNING: &str =
 /// already been stopped by the time its turn came up.
 pub(crate) const CANCELLED_BEFORE_START: &str =
     "cancelled: the turn was stopped before this tool call started";
-
-/// Shared, reloadable effective `PATH` for spawned children.
-///
-/// Holds the tool-dir-prepended `PATH` (see [`crate::config::ToolsConfig::effective_path`]),
-/// or `None` when no override applies. Read at spawn time by the `exec` tool and
-/// MCP stdio spawner so config reloads take effect without rebuilding registries.
-pub type SharedToolsPath = Arc<RwLock<Option<OsString>>>;
-
-/// Give `cmd` the configured tools `PATH`, read live so a config reload
-/// applies to the next spawn. Leaves the inherited `PATH` alone when no
-/// override is configured.
-pub(crate) async fn apply_tools_path(
-    cmd: &mut tokio::process::Command,
-    tools_path: &SharedToolsPath,
-) {
-    if let Some(path) = tools_path.read().await.as_ref() {
-        cmd.env("PATH", path);
-    }
-}
-
-/// Errors from tool execution.
-#[derive(Error, Debug, PartialEq)]
-pub enum ToolError {
-    /// The requested tool was not found in the registry.
-    #[error("unknown tool: {0}")]
-    NotFound(String),
-
-    /// Tool execution failed.
-    #[error("tool execution failed: {0}")]
-    Execution(String),
-
-    /// Invalid arguments provided to the tool.
-    #[error("invalid arguments: {0}")]
-    InvalidArguments(String),
-
-    /// A model's tool call carried a name that isn't a plausible identifier
-    /// (whitespace, angle brackets, or other markup). Real tool names are
-    /// always `[a-zA-Z0-9_-]`, so this shape means the inference provider
-    /// failed to parse the model's native tool-call syntax into the
-    /// structured `tool_calls` field and leaked raw template markup into the
-    /// name instead — dispatching it to the tool or MCP registry would only
-    /// ever produce a confusing "unknown tool" lookup failure.
-    #[error(
-        "malformed tool name '{0}': the provider likely failed to parse your tool-call syntax \
-         into structured JSON; retry using the exact tool name as plain text with arguments as \
-         a JSON object"
-    )]
-    MalformedName(String),
-}
 
 /// Maximum length of a well-formed tool name.
 ///
@@ -142,64 +88,6 @@ pub fn truncate_tool_name_for_display(name: &str) -> String {
     } else {
         let head: String = name.chars().take(TOOL_NAME_DISPLAY_LIMIT).collect();
         format!("{head}...")
-    }
-}
-
-/// Result of a tool execution.
-#[derive(Debug, Clone)]
-pub struct ToolResult {
-    /// The output text from the tool.
-    pub output: String,
-    /// Whether the tool execution encountered an error.
-    pub is_error: bool,
-    /// Inline images returned by the tool (empty by default).
-    pub images: Vec<ImageData>,
-}
-
-impl ToolResult {
-    /// Create a successful tool result.
-    #[must_use]
-    pub fn success(output: impl Into<String>) -> Self {
-        Self {
-            output: output.into(),
-            is_error: false,
-            images: vec![],
-        }
-    }
-
-    /// Create a successful tool result with inline images.
-    #[must_use]
-    pub fn success_with_images(output: impl Into<String>, images: Vec<ImageData>) -> Self {
-        Self {
-            output: output.into(),
-            is_error: false,
-            images,
-        }
-    }
-
-    /// Create an error tool result.
-    #[must_use]
-    pub fn error(output: impl Into<String>) -> Self {
-        Self {
-            output: output.into(),
-            is_error: true,
-            images: vec![],
-        }
-    }
-
-    /// A tool call that did not run to completion because the turn was
-    /// stopped — either skipped entirely, or interrupted mid-execution.
-    ///
-    /// Distinct from `error`: this is not a failure, so the transcript
-    /// should read it as an intentional stop rather than something that
-    /// went wrong.
-    #[must_use]
-    pub fn cancelled(output: impl Into<String>) -> Self {
-        Self {
-            output: output.into(),
-            is_error: false,
-            images: vec![],
-        }
     }
 }
 
@@ -275,21 +163,7 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::clock;
-
-    #[test]
-    fn tool_result_success() {
-        let result = ToolResult::success("output");
-        assert!(!result.is_error, "success result should not be error");
-        assert_eq!(result.output, "output", "output should match");
-    }
-
-    #[test]
-    fn tool_result_error() {
-        let result = ToolResult::error("failed");
-        assert!(result.is_error, "error result should be error");
-        assert_eq!(result.output, "failed", "output should match");
-    }
+    use residuum_core::testing::clock;
 
     #[test]
     fn tool_result_cancelled_is_not_an_error() {
@@ -406,19 +280,5 @@ mod tests {
             "should keep the limit plus the ellipsis"
         );
         assert!(truncated.ends_with("..."), "should be marked as truncated");
-    }
-
-    #[test]
-    fn malformed_name_error_is_actionable() {
-        let err = ToolError::MalformedName("write_file\tcontent</arg_key>".to_string());
-        let message = err.to_string();
-        assert!(
-            message.contains("provider likely failed to parse"),
-            "message should explain the likely cause: {message}"
-        );
-        assert!(
-            message.contains("retry using the exact tool name"),
-            "message should tell the model how to recover: {message}"
-        );
     }
 }

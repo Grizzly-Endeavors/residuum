@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::config::WEB_UI_ENDPOINT;
 use crate::interfaces::conversations::ConversationDirectory;
-use crate::interfaces::types::WEB_UI_ENDPOINT;
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 use super::endpoint::EndpointCapabilities;
@@ -196,11 +196,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::config::RetryConfig;
     use crate::config::{
         BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, ToolsConfig,
         WebSearchConfig,
     };
-    use crate::inference::retry::RetryConfig;
 
     /// Minimal config for testing.
     fn minimal_config() -> Config {

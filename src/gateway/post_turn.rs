@@ -691,12 +691,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::bus::{NotifyName, SYSTEM_CHANNEL, Subscriber};
+    use crate::config::WorkspaceLayout;
+    use crate::inference::testing::model::GatedProvider;
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
-    use crate::testing::gate::Gate;
-    use crate::testing::model::GatedProvider;
-    use crate::testing::wait;
-    use crate::workspace::layout::WorkspaceLayout;
+    use crate::testing::bus_wait;
+    use residuum_core::testing::gate::Gate;
+    use residuum_core::testing::wait;
 
     const OBSERVER_RESPONSE: &str = r#"{
         "observations": [
@@ -781,7 +782,7 @@ mod tests {
         active: bool,
     ) {
         loop {
-            let event = wait::next_event("a memory cycle activity signal", activity).await;
+            let event = bus_wait::next_event("a memory cycle activity signal", activity).await;
             if event.kind == PostTurnActivityKind::Memory && event.active == active {
                 return;
             }
@@ -1111,7 +1112,7 @@ mod tests {
         }"#;
         let dir = tempfile::tempdir().unwrap();
         let subconscious = Subconscious::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+            Box::new(crate::memory::testing::MockMemoryProvider::new(
                 NOTE_RESPONSE,
             )),
             crate::subconscious::SubconsciousConfig {
@@ -1140,7 +1141,7 @@ mod tests {
     async fn failed_subconscious_evaluation_still_delivers_queued_notes() {
         let dir = tempfile::tempdir().unwrap();
         let subconscious = Subconscious::new(
-            Box::new(crate::inference::providers::null::NullProvider),
+            Box::new(crate::inference::NullProvider),
             crate::subconscious::SubconsciousConfig {
                 enabled: true,
                 ..crate::subconscious::SubconsciousConfig::default()
