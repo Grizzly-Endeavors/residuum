@@ -144,7 +144,7 @@ impl Agent {
         };
         match IdentityFiles::load(layout).await {
             Ok(identity) => match &self.team {
-                Some(team) => identity.with_team_roster(team),
+                Some(team) => identity.with_team_roster(team.prompt_block()),
                 None => identity,
             },
             Err(e) => {

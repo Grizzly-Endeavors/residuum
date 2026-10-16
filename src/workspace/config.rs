@@ -10,8 +10,6 @@ use anyhow::Context;
 use crate::config::{ExternalChannelConfig, ExternalChannelKind};
 use crate::mcp::types::{McpServerEntry, McpTransport};
 
-pub use super::channel_builder::build_external_channels;
-
 // ── MCP loader ───────────────────────────────────────────────────────────────
 
 /// Raw JSON structure for the MCP config file (Claude Code format).

@@ -1930,4 +1930,25 @@ pulses:
         let (_, problems) = load_problems(yaml);
         assert!(problems.is_empty(), "{problems:?}");
     }
+
+    fn pulse_names(yaml: &str) -> Vec<String> {
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        cfg.pulses.into_iter().map(|p| p.name).collect()
+    }
+
+    #[test]
+    fn first_agent_heartbeat_includes_wiki_lint() {
+        assert_eq!(
+            pulse_names(crate::workspace::team::first_agent_heartbeat()),
+            ["reflection", "memory_tending", "wiki_lint"]
+        );
+    }
+
+    #[test]
+    fn created_agent_heartbeat_keeps_memory_tending_without_wiki_lint() {
+        let template = crate::workspace::team::created_agent_heartbeat();
+        assert_eq!(pulse_names(template), ["reflection", "memory_tending"]);
+        assert!(!template.contains("wiki_lint"));
+        assert!(template.contains("# ── Starter pulses"));
+    }
 }

@@ -82,6 +82,8 @@ pulldown-cmark = { version = "0.13", default-features = false }
 rmcp = { version = "0.16", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde_yaml_ng = "0.10"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
+# Unix process signals (Linux + macOS)
+nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
 fd-lock = "4"
 unicode-normalization = "0.1.25"
 
@@ -228,7 +230,7 @@ block2 = "0.6"
 
 # Unix process signals (Linux + macOS)
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
+nix = { workspace = true }
 
 # Windows process management and notifications
 [target.'cfg(windows)'.dependencies]

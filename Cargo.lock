@@ -5077,6 +5077,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "futures-util",
+ "nix 0.29.0",
  "rand 0.8.6",
  "regex",
  "ring",
@@ -5086,6 +5087,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

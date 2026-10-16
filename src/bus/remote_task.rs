@@ -33,7 +33,7 @@ pub struct TrackedTask {
     #[serde(default)]
     pub unreachable_notified: bool,
     /// Whether a delivery has already fired for the current turn (since the
-    /// last [`RemoteTaskTracker::track`] call) — a direct cancel and the
+    /// last `track` call on the tracker) — a direct cancel and the
     /// background watcher can both observe the same terminal event for one
     /// turn, and only the first should reach the sender. Reset to `false`
     /// every time `track` records a new send or follow-up.
@@ -41,7 +41,7 @@ pub struct TrackedTask {
     pub notified_this_turn: bool,
     /// Set when the user stopped watching this task because its agent
     /// couldn't be reached to cancel it (see
-    /// [`RemoteTaskTracker::stop_watching`]). A late update from the agent
+    /// `stop_watching` on the tracker). A late update from the agent
     /// is ignored rather than reopening a task the user closed.
     #[serde(default)]
     pub stopped_by_user: bool,

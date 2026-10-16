@@ -230,7 +230,7 @@ async fn load_fork_identity_and_memory(
     let identity = IdentityFiles::load(layout)
         .await
         .context("failed to load identity files for session fork")?
-        .with_team_roster(team);
+        .with_team_roster(team.prompt_block());
 
     let observations = match load_observations(&layout.observations_json()).await {
         Ok(obs) => obs,

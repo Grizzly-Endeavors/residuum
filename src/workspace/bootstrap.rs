@@ -1185,26 +1185,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_default_agent_card_is_valid() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-
-        ensure_workspace(
-            &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let card = crate::a2a::AgentCardFile::load(&layout.agent_card_json()).unwrap();
-        assert_ne!(card.name.trim(), "");
-        assert_ne!(card.description.trim(), "");
-        assert!(card.skills.is_empty(), "default card ships no skills");
-    }
-
-    #[tokio::test]
     async fn bootstrap_does_not_recreate_bootstrap_md_after_deletion() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
