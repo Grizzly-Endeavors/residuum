@@ -3,6 +3,8 @@
 //! Verifies the full flow: accumulate messages → observer fires → observations created →
 //! observations.json updated → recent messages cleared → search indexes episode →
 //! reflector compresses.
+//!
+//! covers: residuum-memory
 
 #![expect(
     clippy::tests_outside_test_module,

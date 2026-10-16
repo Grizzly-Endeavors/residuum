@@ -1,6 +1,8 @@
 //! End-to-end integration tests for the inbox subsystem (Phase 4).
 //!
 //! Tests the full inbox lifecycle using temporary directories.
+//!
+//! covers: residuum-workspace
 
 #![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #![expect(

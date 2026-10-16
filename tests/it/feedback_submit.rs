@@ -3,6 +3,8 @@
 //! Verifies that `TracingService::send_bug_report` and `send_feedback`
 //! produce wire-compatible JSON, decode the documented receipt shape,
 //! and surface upstream errors (including 429 Retry-After) to the caller.
+//!
+//! covers: residuum-tracing-service
 
 #![expect(
     clippy::indexing_slicing,

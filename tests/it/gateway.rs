@@ -3,6 +3,8 @@
 //! Tests the gateway server using mock providers, verifying protocol
 //! behavior including ping/pong, message round-trip, verbose filtering,
 //! multi-client broadcast, and error handling.
+//!
+//! covers: residuum-agent, residuum-gateway
 
 #![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
