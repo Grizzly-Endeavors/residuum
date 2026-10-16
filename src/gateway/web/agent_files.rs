@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use axum::routing::{get, post, put};
 
+use crate::bus::control::ReloadSender;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointError, CheckpointTrigger};
 use crate::gateway::file_server::{self, FileRegistry};
-use crate::gateway::types::ReloadSender;
 
 use super::{ConfigApiState, a2a, chat, inbox};
 

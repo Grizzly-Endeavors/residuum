@@ -430,7 +430,9 @@ pub(super) async fn api_providers_raw_put(
 
     // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Agent).ok();
+        reload_tx
+            .send(crate::bus::control::ReloadSignal::Agent)
+            .ok();
     }
 
     Ok(Json(ValidateResponse::from_diagnostics(
@@ -516,7 +518,9 @@ pub(super) async fn api_providers_patch(
 
     // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Agent).ok();
+        reload_tx
+            .send(crate::bus::control::ReloadSignal::Agent)
+            .ok();
     }
 
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))

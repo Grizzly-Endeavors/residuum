@@ -8,8 +8,8 @@ use tokio::sync::{mpsc, watch};
 
 use crate::BuildInfo;
 use crate::bus::BusHandle;
+use crate::bus::control::ReloadSender;
 use crate::checkpoints::CheckpointEngine;
-use crate::gateway::types::ReloadSender;
 use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::TeamOverview;
 use crate::hub::push::PushService;

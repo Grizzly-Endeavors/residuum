@@ -17,8 +17,8 @@ use serenity::prelude::*;
 
 use crate::background::registry::SessionRegistry;
 use crate::bus::Publisher;
+use crate::bus::control::{ServerCommand, StopRequest};
 use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
-use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::inbox::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
@@ -43,7 +43,7 @@ pub(super) struct DiscordHandler {
     pub(super) inbox_dir: PathBuf,
     /// Main's saved conversation, which `/multitask` forks.
     pub(super) main_conversation: PathBuf,
-    pub(super) reload_tx: crate::gateway::types::ReloadSender,
+    pub(super) reload_tx: crate::bus::control::ReloadSender,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     pub(super) session_registry: Arc<SessionRegistry>,
@@ -436,9 +436,8 @@ mod tests {
             publisher: crate::bus::spawn_broker().publisher(),
             inbox_dir: std::env::temp_dir(),
             main_conversation: std::env::temp_dir().join("recent_messages.json"),
-            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
-            )
-            .0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>()
+                .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),

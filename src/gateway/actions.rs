@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
+use crate::bus::notice::publish_notice;
 use crate::bus::session::{MAIN_DEPTH, generate_address};
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
 use crate::config::{ModelCatalog, ModelSelector};
-use crate::gateway::helpers::publish_notice;
 
 /// Fork due scheduled actions as `scheduled` sessions.
 ///

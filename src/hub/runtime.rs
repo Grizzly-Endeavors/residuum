@@ -15,9 +15,10 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use crate::BuildInfo;
+use crate::bus::control::{ReloadReceiver, ReloadSignal};
 use crate::config::{Config, HubConfig};
 use crate::gateway::last_known_good;
-use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSignal};
+use crate::gateway::types::{GatewayExit, TermSignal};
 use crate::inference::EmbeddingProvider;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
@@ -897,7 +898,7 @@ pub(super) fn build_app(
     services: &HubServices,
     team_events: &Arc<TeamEventLog>,
     overview: &Arc<TeamOverview>,
-    reload_tx: crate::gateway::types::ReloadSender,
+    reload_tx: crate::bus::control::ReloadSender,
     setup_done: Option<Arc<watch::Sender<bool>>>,
 ) -> Result<axum::Router, FatalError> {
     let checkpoints = crate::checkpoints::CheckpointEngine::hub_scoped(

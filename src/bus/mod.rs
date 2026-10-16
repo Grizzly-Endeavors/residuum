@@ -8,10 +8,12 @@
 
 pub mod attachment;
 mod broker;
+pub mod control;
 pub mod conversations;
 mod endpoint;
 mod events;
 mod handle;
+pub mod notice;
 pub mod origin;
 mod registry;
 pub mod session;

@@ -27,10 +27,10 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::AbortHandle;
 use tracing::Instrument;
 
+use crate::bus::control::ReloadSignal;
 use crate::bus::session::SessionInfo;
 use crate::config::paths::TeamPaths;
 use crate::config::{Config, HubConfig, WorkspaceLayout};
-use crate::gateway::ReloadSignal;
 use crate::gateway::event_loop::{
     AgentCleanup, AgentControl, AgentExit, AgentStartInputs, agent_span, spawn_agent_loop,
     start_agent,

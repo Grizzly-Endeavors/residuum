@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use crate::bus::Publisher;
-use crate::gateway::helpers::publish_notice;
+use crate::bus::notice::publish_notice;
 
 /// Backoff between connect retries, doubling from this on each attempt.
 const BASE_BACKOFF: Duration = Duration::from_secs(2);

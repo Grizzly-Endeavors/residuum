@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use super::helpers::{publish_notice, publish_reload_notice};
 use crate::background::spawn_context::SpawnContext;
+use crate::bus::notice::{publish_notice, publish_reload_notice};
 use crate::bus::{ReloadOutcome, ReloadedFiles};
 use crate::config::Config;
 use crate::gateway::{last_known_good, startup};

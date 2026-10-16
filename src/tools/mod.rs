@@ -53,18 +53,7 @@ pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'
 /// action on the user's behalf (e.g. overwriting or deleting a key the user
 /// created) and need to surface it outside the transcript.
 pub(super) async fn publish_notice(publisher: Option<&crate::bus::Publisher>, message: String) {
-    let Some(publisher) = publisher else {
-        return;
-    };
-    if let Err(e) = publisher
-        .publish(
-            crate::bus::topics::Notification(crate::bus::NotifyName::from(
-                crate::bus::SYSTEM_CHANNEL,
-            )),
-            crate::bus::NoticeEvent::new(message),
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to publish tool notice to bus");
+    if let Some(publisher) = publisher {
+        crate::bus::notice::publish_notice(publisher, message).await;
     }
 }

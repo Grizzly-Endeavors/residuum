@@ -26,12 +26,12 @@ use crate::background::team::{
     A2aVisibility, Actor, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome,
     LifecycleError, TeamDirectory,
 };
+use crate::bus::control::ReloadSignal;
 use crate::bus::session::SessionInfo;
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
 use crate::config::WorkspaceLayout;
 use crate::config::paths::TeamPaths;
-use crate::gateway::ReloadSignal;
 use crate::gateway::web::{
     AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
     agent_files_api_router as agent_files_router,

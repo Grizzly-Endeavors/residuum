@@ -74,7 +74,7 @@ pub struct ConfigApiState {
     pub memory_dir: Option<PathBuf>,
     /// Signal the running agent to reload (None when there is no live agent
     /// to signal, as on a stopped agent's repair routes).
-    pub reload_tx: Option<crate::gateway::types::ReloadSender>,
+    pub reload_tx: Option<crate::bus::control::ReloadSender>,
     /// Workspace and config checkpoint repositories.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     /// The `team/` namespace and write coordination for the workspace file
@@ -102,7 +102,7 @@ pub(crate) struct HubApiState {
     /// hub `config.toml`.
     pub hub_dir: PathBuf,
     /// Signals the hub to reload after a hub-owned file changes.
-    pub reload_tx: crate::gateway::types::ReloadSender,
+    pub reload_tx: crate::bus::control::ReloadSender,
     /// Signalled once onboarding has written the first agent (None once the
     /// hub has agents and setup can no longer run).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,

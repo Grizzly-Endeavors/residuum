@@ -11,9 +11,9 @@
 
 use std::sync::Arc;
 
-use super::helpers::{publish_error, publish_notice};
 use crate::agent::Agent;
 use crate::bus::Publisher;
+use crate::bus::notice::{publish_error, publish_notice};
 use crate::config::WorkspaceLayout;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::{ObserveAction, Observer};

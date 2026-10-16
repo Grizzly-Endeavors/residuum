@@ -213,14 +213,14 @@ async fn init_action_store(
     let action_store = match ActionStore::load(&actions_path).await {
         Ok((store, rejected, moved_aside)) => {
             if !rejected.is_empty() {
-                super::helpers::publish_notice(
+                crate::bus::notice::publish_notice(
                     publisher,
                     crate::actions::store::rejected_actions_notice(&rejected),
                 )
                 .await;
             }
             if let Some(moved_to) = moved_aside {
-                super::helpers::publish_notice(
+                crate::bus::notice::publish_notice(
                     publisher,
                     crate::actions::store::corrupt_actions_notice(&moved_to),
                 )
@@ -276,7 +276,7 @@ async fn init_skills(
         }
     };
     for notice in skill_index.notices() {
-        super::helpers::publish_notice(publisher, notice.clone()).await;
+        crate::bus::notice::publish_notice(publisher, notice.clone()).await;
     }
     SkillState::new_shared(skill_index, cfg.skills.dirs.clone())
 }
@@ -1091,7 +1091,7 @@ fn build_path_policy(
 /// Publish the grouped startup-degradation notice, if anything degraded.
 async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradations: &[String]) {
     if let Some(message) = degradation_notice(degradations) {
-        super::helpers::publish_notice(publisher, message).await;
+        crate::bus::notice::publish_notice(publisher, message).await;
     }
 }
 
@@ -1104,7 +1104,7 @@ async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradati
 /// hub, which publishes them once for the whole process.
 async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
     for notice in &cfg.load_notices {
-        super::helpers::publish_notice(publisher, notice.clone()).await;
+        crate::bus::notice::publish_notice(publisher, notice.clone()).await;
     }
 }
 

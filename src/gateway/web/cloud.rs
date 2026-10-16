@@ -10,10 +10,10 @@ use serde::Serialize;
 use tokio::sync::watch;
 
 use super::config::{HubConfigPatchError, PreparedHubConfigPatch, prepare_hub_config_patch};
+use crate::bus::control::ReloadSignal;
 use crate::checkpoints::CheckpointEngine;
 use crate::config::HubConfig;
 use crate::config::secrets::SecretStore;
-use crate::gateway::types::ReloadSignal;
 use crate::tunnel::TunnelStatus;
 
 /// The `[cloud] token` value that names the sign-in token the callback stores
@@ -24,7 +24,7 @@ const CLOUD_TOKEN_REF: &str = "secret:cloud_token";
 #[derive(Clone)]
 pub(crate) struct CloudApiState {
     pub hub_dir: PathBuf,
-    pub reload_tx: crate::gateway::types::ReloadSender,
+    pub reload_tx: crate::bus::control::ReloadSender,
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
     /// The hub's checkpoint repositories, so the `config.toml` writes here
