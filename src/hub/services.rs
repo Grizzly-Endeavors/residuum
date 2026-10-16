@@ -47,7 +47,7 @@ impl HubControl {
     /// The controls of the running `build`, with a fresh update status for
     /// its version.
     pub(crate) fn new(
-        build: crate::BuildInfo,
+        build: crate::build_info::BuildInfo,
         restart_tx: mpsc::Sender<()>,
         shutdown_tx: mpsc::Sender<()>,
     ) -> Self {
