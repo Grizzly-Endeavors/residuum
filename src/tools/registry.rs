@@ -50,6 +50,8 @@ pub struct SessionTools {
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub tracing_service: Arc<crate::tracing_service::TracingService>,
     pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+    /// The running build, for the feedback tools' client context.
+    pub build: crate::build_info::BuildInfo,
     /// Standalone web search backend config, if one is configured — mirrors
     /// main's `cfg.web_search.standalone_backend`: `ollama_web_search` is
     /// registered only when it names the `"ollama"` backend, exactly like
@@ -252,6 +254,7 @@ fn register_session_messaging_tools(
 fn register_session_service_tools(tools: &mut ToolRegistry, shared: &SessionTools) {
     registration::register_feedback_tools(
         tools,
+        shared.build,
         Arc::clone(&shared.tracing_service),
         Arc::clone(&shared.tracing_client_context),
         Arc::clone(&shared.session_registry),

@@ -1277,7 +1277,7 @@ mod tests {
     }
 
     /// The build version and commit are read in one place, `src/lib.rs`, which
-    /// turns them into `residuum::BUILD_INFO`. A read anywhere else would
+    /// builds the `BuildInfo` value from them. A read anywhere else would
     /// compile, and a member crate's `option_env!` would quietly return
     /// `None` for the commit, so the rule covers every crate in the workspace.
     #[test]
@@ -1304,7 +1304,7 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "the build version is read outside src/lib.rs. Take the `BuildInfo` from `residuum::BUILD_INFO` and pass it down instead.\n{problems}"
+            "the build version is read outside src/lib.rs. Pass the `BuildInfo` down from the entry point instead.\n{problems}"
         );
     }
 

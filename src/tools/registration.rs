@@ -432,6 +432,7 @@ pub fn register_workspace_checkpoint_tools(
 /// registry so `active_subagents` reflects what's running right now.
 pub fn register_feedback_tools(
     tools: &mut ToolRegistry,
+    build: crate::build_info::BuildInfo,
     service: Arc<crate::tracing_service::TracingService>,
     client_context: Arc<crate::tracing_service::ClientContext>,
     session_registry: Arc<SessionRegistry>,
@@ -441,7 +442,9 @@ pub fn register_feedback_tools(
         client_context,
         session_registry,
     )));
-    tools.register(Box::new(submit_feedback::SubmitFeedbackTool::new(service)));
+    tools.register(Box::new(submit_feedback::SubmitFeedbackTool::new(
+        service, build,
+    )));
 }
 
 /// Register the `ollama_web_search` tool for Ollama Cloud web search.

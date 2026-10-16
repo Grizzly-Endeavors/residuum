@@ -665,9 +665,9 @@ fn build_spawn_context(
         // builds for the HTTP tracing API, so a session forked after this
         // reload reports the currently active model/provider.
         tracing_client_context: Arc::new(crate::client_context::gather_for_bug_report(
-            crate::BUILD_INFO,
-            new_cfg,
+            rt.build, new_cfg,
         )),
+        build: rt.build,
         web_search_backend: new_cfg.web_search.standalone_backend.clone(),
         // The same live catalog as before the reload, which main's tools hold
         // too; `reload_model_catalog` has already replaced its contents.

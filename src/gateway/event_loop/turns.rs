@@ -748,7 +748,7 @@ fn spawn_main_turn_end_checkpoint(
 /// delivered to.
 ///
 /// On failure, logs the error, auto-reports the failure through
-/// `tracing_service` (a no-op unless the user has enabled auto error
+/// `failure.tracing_service` (a no-op unless the user has enabled auto error
 /// reporting), and publishes an `ErrorEvent` to the output endpoint, so a chat
 /// interface can answer the conversation that started the turn, and on the
 /// system notification channel regardless of output endpoint, for the web UI.
@@ -759,8 +759,7 @@ async fn publish_turn_outcome(
     output_endpoint: Option<&EndpointName>,
     correlation_id: &str,
     tz: chrono_tz::Tz,
-    tracing_service: &TracingService,
-    cfg: &Config,
+    failure: &TurnFailureReport<'_>,
 ) {
     let output_endpoint = chat_interface_endpoint(output_endpoint);
     match turn_result {
@@ -789,10 +788,11 @@ async fn publish_turn_outcome(
         Err(e) => {
             let described = crate::inference::describe_turn_failure(&e);
             tracing::error!(error = %described.details, "agent processing error");
-            tracing_service
+            failure
+                .tracing_service
                 .on_error(
                     &described.details,
-                    crate::client_context::gather_for_bug_report(crate::BUILD_INFO, cfg),
+                    crate::client_context::gather_for_bug_report(failure.build, failure.cfg),
                 )
                 .await;
             let event = ErrorEvent {
@@ -828,6 +828,14 @@ async fn publish_turn_outcome(
         },
     )
     .await;
+}
+
+/// Where a failed turn reports: the tracing service that auto-reports it, the
+/// config its bug report is gathered from, and the running build.
+struct TurnFailureReport<'a> {
+    tracing_service: &'a TracingService,
+    cfg: &'a Config,
+    build: crate::build_info::BuildInfo,
 }
 
 /// The turn's last reply that has text, read before [`publish_turn_outcome`]
@@ -1110,8 +1118,11 @@ pub async fn handle_inbound_message(
         delivered_to.as_ref(),
         &reply_id,
         rt.tz,
-        &rt.tracing_service,
-        &rt.cfg,
+        &TurnFailureReport {
+            tracing_service: &rt.tracing_service,
+            cfg: &rt.cfg,
+            build: rt.build,
+        },
     )
     .await;
 
@@ -1326,8 +1337,11 @@ mod tests {
             after_idle.as_ref(),
             "bg-1",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1379,8 +1393,11 @@ mod tests {
             after_idle.as_ref(),
             "bg-2",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1583,8 +1600,11 @@ mod tests {
             live.get().as_ref(),
             "bg-follow",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
         AgentStartedTurnEnd {
@@ -1800,8 +1820,11 @@ mod tests {
             Some(&endpoint()),
             "corr-1",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1837,8 +1860,11 @@ mod tests {
             Some(&endpoint()),
             "corr-2",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1868,8 +1894,11 @@ mod tests {
             None,
             "corr-3",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1938,8 +1967,11 @@ mod tests {
                 Some(&ws),
                 "corr-web",
                 TEST_TZ,
-                &test_tracing_service(),
-                &test_config(),
+                &TurnFailureReport {
+                    tracing_service: &test_tracing_service(),
+                    cfg: &test_config(),
+                    build: crate::testing::HARNESS_BUILD,
+                },
             )
             .await;
 
@@ -1980,8 +2012,11 @@ mod tests {
             output_endpoint,
             "corr-5",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2045,8 +2080,11 @@ mod tests {
             Some(&endpoint()),
             "corr-4",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2100,8 +2138,11 @@ mod tests {
             None,
             "corr-5",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2155,8 +2196,11 @@ mod tests {
             None,
             "corr-6",
             TEST_TZ,
-            &tracing_service,
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &tracing_service,
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2207,8 +2251,11 @@ mod tests {
             Some(&endpoint()),
             "corr-7",
             TEST_TZ,
-            &tracing_service,
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &tracing_service,
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 

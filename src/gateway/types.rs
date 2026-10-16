@@ -134,6 +134,8 @@ pub(crate) struct AgentRuntime {
     pub name: String,
     /// Shared services the hub passed in.
     pub services: crate::hub::services::HubServices,
+    /// The running build, read by the bug-report and feedback client contexts.
+    pub build: crate::build_info::BuildInfo,
     // Current running config (for diffing on reload)
     pub cfg: Config,
     /// Current running hub config, reloaded independently of `cfg` — see

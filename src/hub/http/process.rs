@@ -82,6 +82,7 @@ pub(super) fn tracing_routes(hub: &HubHttpState) -> Router {
 
     let state = api::TracingApiState {
         service: Arc::clone(&hub.tracing_service),
+        build: hub.build,
         client_context: Arc::clone(&hub.client_context),
         active_subagents: Arc::clone(&hub.active_subagents),
     };

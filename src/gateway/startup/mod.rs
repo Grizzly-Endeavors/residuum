@@ -360,6 +360,8 @@ struct StartupSpawnContextInputs<'a> {
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     /// Runtime client context snapshot, built alongside `tracing_service`.
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+    /// The running build, for the session tools' feedback client context.
+    build: crate::build_info::BuildInfo,
     /// Standalone web search backend config, mirroring `cfg.web_search.standalone_backend`.
     web_search_backend: Option<crate::config::StandaloneBackendConfig>,
     /// Main's tool `PATH`, write policy, and agent key store — shared, not
@@ -391,6 +393,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         hybrid_searcher: Arc::clone(inputs.hybrid_searcher),
         tracing_service: Arc::clone(inputs.tracing_service),
         tracing_client_context: Arc::clone(inputs.tracing_client_context),
+        build: inputs.build,
         web_search_backend: inputs.web_search_backend,
         model_catalog: Arc::clone(inputs.model_catalog),
         a2a_hub: Arc::clone(inputs.a2a_hub),
@@ -795,11 +798,11 @@ pub(crate) async fn spawn_notify_subscribers(
 /// Snapshot the agent's runtime client context, used by the bug-report tools
 /// and HTTP handlers. The tracing service itself is the hub's, shared by
 /// every agent.
-fn init_tracing_client_context(cfg: &Config) -> Arc<crate::tracing_service::ClientContext> {
-    Arc::new(crate::client_context::gather_for_bug_report(
-        crate::BUILD_INFO,
-        cfg,
-    ))
+fn init_tracing_client_context(
+    cfg: &Config,
+    build: crate::build_info::BuildInfo,
+) -> Arc<crate::tracing_service::ClientContext> {
+    Arc::new(crate::client_context::gather_for_bug_report(build, cfg))
 }
 
 /// Inputs to [`build_tools_and_agent`], gathered because building the tool
@@ -896,6 +899,8 @@ struct MainAgentInputs<'a> {
     session_registry: &'a Arc<SessionRegistry>,
     publisher: &'a crate::bus::Publisher,
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    /// The running build, for the feedback tools' client context.
+    build: crate::build_info::BuildInfo,
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
     agent_messenger: &'a Arc<AgentMessenger>,
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
@@ -942,6 +947,7 @@ async fn build_main_agent(
             endpoint_registry: &inputs.net.endpoint_registry,
             publisher: inputs.publisher,
             tracing_service: inputs.tracing_service,
+            build: inputs.build,
             tracing_client_context: inputs.tracing_client_context,
             agent_messenger: inputs.agent_messenger,
             hop_counter: &hop_counter,
@@ -986,6 +992,7 @@ struct AgentInitInputs<'a> {
     publisher: &'a crate::bus::Publisher,
     agent_messenger: &'a Arc<AgentMessenger>,
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    build: crate::build_info::BuildInfo,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
     directory: &'a crate::background::team::DirectoryHandle,
     identity: IdentityFiles,
@@ -1036,6 +1043,7 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
         messenger: inputs.agent_messenger,
         tracing_service: inputs.tracing_service,
         tracing_client_context: &infra.tracing_client_context,
+        build: inputs.build,
         web_search_backend: inputs.cfg.web_search.standalone_backend.clone(),
         tools_path: &infra.net.tools_path,
         path_policy: &infra.path_policy,
@@ -1054,6 +1062,7 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
         layout: inputs.layout,
         mem: inputs.mem,
         tz: inputs.tz,
+        build: inputs.build,
         identity: inputs.identity,
         provider: inputs.provider,
         options: inputs.options,
@@ -1255,7 +1264,7 @@ async fn init_supporting_infra(
         degradations,
     )
     .await;
-    let tracing_client_context = init_tracing_client_context(cfg);
+    let tracing_client_context = init_tracing_client_context(cfg, shared.control.build);
     let path_policy = build_path_policy(cfg, layout, hub, &shared.team);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
     let auto_mode = crate::agent::auto_mode::AutoModeGate::new_shared(
@@ -1399,6 +1408,7 @@ pub(crate) async fn initialize(
         publisher,
         agent_messenger: &sess.agent_messenger,
         tracing_service: &shared.tracing_service,
+        build: shared.control.build,
         checkpoints: &checkpoints,
         directory: &shared.directory,
         identity,

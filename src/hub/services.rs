@@ -289,8 +289,10 @@ impl HubServices {
             hub,
             tunnel_status_rx,
             HubControl {
-                build: crate::BUILD_INFO,
-                update_status: crate::hub::update::shared_update_status(crate::BUILD_INFO.version),
+                build: crate::testing::HARNESS_BUILD,
+                update_status: crate::hub::update::shared_update_status(
+                    crate::testing::HARNESS_BUILD.version,
+                ),
                 restart_tx,
                 shutdown_tx,
             },
