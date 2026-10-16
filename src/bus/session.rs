@@ -275,3 +275,92 @@ pub fn slugify(s: &str) -> String {
         trimmed.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn category_from_trigger() {
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Pulse),
+            SessionCategory::Scheduled
+        );
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Action),
+            SessionCategory::Scheduled
+        );
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Agent),
+            SessionCategory::Spawned
+        );
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Webhook("gh".into())),
+            SessionCategory::External
+        );
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Conversation),
+            SessionCategory::External
+        );
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Artifact("wiki".into())),
+            SessionCategory::Artifact
+        );
+    }
+
+    #[test]
+    fn every_category_label_round_trips() {
+        for category in [
+            SessionCategory::Scheduled,
+            SessionCategory::External,
+            SessionCategory::Spawned,
+            SessionCategory::Artifact,
+        ] {
+            assert_eq!(
+                SessionCategory::from_label(category.as_str()),
+                Some(category)
+            );
+        }
+        assert_eq!(SessionCategory::from_label("mystery"), None);
+    }
+
+    #[test]
+    fn artifact_session_address_is_prefixed_with_its_category() {
+        let address = generate_address(&EventTrigger::Artifact("wiki".into()), "wiki graph");
+        assert!(
+            address.as_ref().starts_with("artifact-wiki-graph-"),
+            "got {address}"
+        );
+        assert!(
+            !address.as_ref().contains(':'),
+            "session addresses never contain ':', so they can't collide with an artifact sender"
+        );
+    }
+
+    #[test]
+    fn generate_address_has_category_prefix_and_slug() {
+        let addr = generate_address(&EventTrigger::Agent, "Research Helper");
+        assert!(addr.as_ref().starts_with("spawned-research-helper-"));
+    }
+
+    #[test]
+    fn generate_address_falls_back_when_qualifier_has_no_alnum() {
+        let addr = generate_address(&EventTrigger::Pulse, "!!!");
+        assert!(addr.as_ref().starts_with("scheduled-session-"));
+    }
+
+    #[test]
+    fn generate_address_is_unique_across_calls() {
+        let a = generate_address(&EventTrigger::Webhook("gh".into()), "gh");
+        let b = generate_address(&EventTrigger::Webhook("gh".into()), "gh");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn generate_run_id_is_unique() {
+        let a = generate_run_id();
+        let b = generate_run_id();
+        assert_ne!(a, b);
+        assert!(a.starts_with("run-"));
+    }
+}
