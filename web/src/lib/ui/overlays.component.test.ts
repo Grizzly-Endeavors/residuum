@@ -1,6 +1,6 @@
 import { act, cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, settle } from "../../test/component";
 import { htmlSnippet } from "../../test/snippets";
 import OverlayHarness from "../../test/ui/OverlayHarness.svelte";
@@ -36,11 +36,11 @@ function drag(element: HTMLElement, from: [number, number], to: [number, number]
   element.dispatchEvent(touch("touchend", ...to));
 }
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
 });
 
-afterAll(() => {
+afterEach(() => {
   router.stop();
 });
 
