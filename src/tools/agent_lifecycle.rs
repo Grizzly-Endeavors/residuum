@@ -1,6 +1,6 @@
 //! Teammate lifecycle tools: `agent_create` and `agent_delete`.
 //!
-//! Both call the hub's [`crate::hub::AgentDirectory`] as the calling agent,
+//! Both call the hub's [`crate::background::team::TeamDirectory`] as the calling agent,
 //! so the host publishes the event that names it, which becomes a toast and a
 //! team event. Neither has an approval gate: the user sees what happened and
 //! can restore a deleted agent from its checkpoint.
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::HopCounter;
-use crate::hub::{
+use crate::background::team::{
     Actor, AgentState, AgentSummary, CreateAgentRequest, DirectoryHandle, LifecycleError,
 };
 use crate::inference::ToolDefinition;
@@ -288,7 +288,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::hub::{A2aVisibility, AgentErrorKind, AgentLastError};
+    use crate::background::team::{A2aVisibility, AgentErrorKind, AgentLastError};
 
     fn summary(state: AgentState, last_error: Option<&str>) -> AgentSummary {
         AgentSummary {

@@ -14,10 +14,11 @@ use tokio::task::JoinHandle;
 
 use super::event::{NewTeamEvent, TeamEventKind, TeamEventLevel, TeamEventPlace, TeamEventTarget};
 use super::log::TeamEventLog;
+use crate::background::team::{Actor, AgentErrorKind, AgentState, AgentSummary};
 use crate::bus::session::{SessionCategory, SessionInfo};
 use crate::bus::{AgentResultStatus, EventTrigger};
 use crate::hub::agent_watch::{AgentChange, AgentChangeKind, AgentChangeReceiver};
-use crate::hub::types::{Actor, AgentErrorKind, AgentState, AgentSummary, HubEvent, NoticeLevel};
+use crate::hub::types::{HubEvent, NoticeLevel};
 use crate::memory::types::Visibility;
 
 /// A running recorder. It stops when dropped.

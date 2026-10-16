@@ -24,8 +24,8 @@ use crate::a2a::card::{CardRuntime, CardState};
 use crate::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
 use crate::a2a::listener::{A2aListener, StubHandler, agent_handler_router};
 use crate::a2a::static_directory::StaticAgentDirectory;
+use crate::background::team::{A2aVisibility, AgentState};
 use crate::config::A2aConfig;
-use crate::hub::{A2aVisibility, AgentState};
 use residuum_core::testing::wait;
 
 /// A handler that identifies its agent in every reply and gates its second

@@ -15,11 +15,11 @@ use crate::background::conversation_router::ConversationRouter;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
+use crate::background::team::TeamLink;
 use crate::bus::EndpointRegistry;
 use crate::config::SharedToolsPath;
 use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::hub::services::HubServices;
-use crate::hub::team::TeamLink;
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -978,7 +978,7 @@ struct AgentInitInputs<'a> {
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
-    directory: &'a crate::hub::DirectoryHandle,
+    directory: &'a crate::background::team::DirectoryHandle,
     identity: IdentityFiles,
     provider: Box<dyn crate::inference::InferenceProvider>,
     options: crate::inference::CompletionOptions,

@@ -19,7 +19,7 @@ use crate::workspace::team::{
 };
 use crate::workspace::team_files::{TeamWriteCoordinator, TeamWriter};
 
-use super::types::{A2aVisibility, LifecycleError};
+use crate::background::team::{A2aVisibility, LifecycleError};
 
 /// Marks a workspace whose first-run interview is over. Written to every
 /// created agent so `BOOTSTRAP.md` is never recreated.

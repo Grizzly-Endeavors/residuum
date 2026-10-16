@@ -12,6 +12,7 @@ pub(crate) mod session_memory;
 pub(crate) mod spawn_context;
 pub mod store;
 pub mod subagent;
+pub mod team;
 pub mod types;
 
 pub use crate::agent::hop::HopCounter;

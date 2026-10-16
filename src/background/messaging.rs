@@ -30,12 +30,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::hop::HopLimits;
 use crate::agent::interrupt::Interrupt;
+use crate::background::team::TeamLink;
 use crate::bus::{
     AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName,
     SpawnRequestEvent, topics,
 };
 use crate::config::ModelSelector;
-use crate::hub::team::TeamLink;
 use crate::inference::{ImageData, Message};
 
 use super::store::SessionStore;

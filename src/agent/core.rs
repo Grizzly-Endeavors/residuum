@@ -58,7 +58,7 @@ pub struct Agent {
     layout: Option<crate::config::WorkspaceLayout>,
     /// The agent's handle on the hub's team router, read for the `TEAM`
     /// roster at each turn entry. `None` leaves the prompt without a roster.
-    team: Option<crate::hub::team::TeamLink>,
+    team: Option<crate::background::team::TeamLink>,
     /// Told as each endpoint reply of a turn reaches the main conversation,
     /// so the hub counts it read or unread at that moment. `None` counts
     /// nothing.
@@ -155,7 +155,7 @@ impl Agent {
 
     /// Show this agent's teammates in its prompt: the `TEAM` block is rebuilt
     /// from `team` at every turn entry.
-    pub fn set_team(&mut self, team: crate::hub::team::TeamLink) {
+    pub fn set_team(&mut self, team: crate::background::team::TeamLink) {
         self.team = Some(team);
     }
 

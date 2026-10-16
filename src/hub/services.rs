@@ -173,10 +173,10 @@ pub(crate) struct HubServices {
     pub sibling_fanout: Arc<crate::a2a::SiblingFanout>,
     /// Carries `agent:` messages between the running agents. Each agent
     /// registers its messenger at start and unregisters at stop.
-    pub team_router: Arc<super::team::TeamRouter>,
+    pub team_router: Arc<crate::background::team::TeamRouter>,
     /// The agent host, for agent tools that create or delete teammates. The
     /// host binds itself when it is built.
-    pub directory: super::directory::DirectoryHandle,
+    pub directory: crate::background::team::DirectoryHandle,
     /// Web Push: registered devices and delivery. Triggers send through it.
     pub push: Arc<PushService>,
     /// The System 1 (decision model) client every agent shares, with its
@@ -228,7 +228,7 @@ impl HubServices {
                 ))
             })?;
         let team_feed = Arc::new(TeamChangeFeed::start(team_paths.root().to_path_buf()).await);
-        let directory = super::directory::DirectoryHandle::unbound();
+        let directory = crate::background::team::DirectoryHandle::unbound();
         let remote_access = crate::remote_access::slot::RemoteAccessSlot::new(&hub_dir);
         let sibling_fanout = crate::a2a::SiblingFanout::new_shared();
         crate::a2a::spawn_sibling_discovery(
@@ -253,7 +253,7 @@ impl HubServices {
             workbench_serving,
             team_feed,
             sibling_fanout,
-            team_router: super::team::TeamRouter::new_shared(directory.clone()),
+            team_router: crate::background::team::TeamRouter::new_shared(directory.clone()),
             directory,
             pairing,
             remote_access,

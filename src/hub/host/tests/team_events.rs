@@ -2,8 +2,8 @@
 //! from the thing that really causes it, and nothing else does.
 
 use super::*;
+use crate::background::team::{TeamLink, parse_team_address};
 use crate::hub::agent_watch::AgentChangeKind;
-use crate::hub::team::{TeamLink, parse_team_address};
 use crate::hub::team_events::{
     PageQuery, TeamEvent, TeamEventKind, TeamEventLevel, TeamEventTarget,
 };

@@ -275,7 +275,7 @@ pub(crate) struct SpawnResources {
 /// background work at all.
 async fn load_fork_identity_and_memory(
     layout: &WorkspaceLayout,
-    team: &crate::hub::team::TeamLink,
+    team: &crate::background::team::TeamLink,
 ) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
     let identity = IdentityFiles::load(layout)
         .await
@@ -535,10 +535,12 @@ mod tests {
             .await
             .unwrap();
 
-        let (identity, _, _) =
-            load_fork_identity_and_memory(&layout, &crate::hub::team::TeamLink::alone("agent"))
-                .await
-                .unwrap();
+        let (identity, _, _) = load_fork_identity_and_memory(
+            &layout,
+            &crate::background::team::TeamLink::alone("agent"),
+        )
+        .await
+        .unwrap();
         assert_eq!(identity.soul.as_deref(), Some("soul"));
         assert_eq!(identity.agents.as_deref(), Some("team rules"));
         assert_eq!(identity.user.as_deref(), Some("team user"));

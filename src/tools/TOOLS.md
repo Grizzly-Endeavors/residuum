@@ -849,7 +849,7 @@ The session runs in the background via the session runtime. Every turn's outcome
 
 ### Teammates (`to: "agent:<name>"` or `"agent:<name>/<session-address>"`)
 
-Routed through the hub's `TeamRouter` (`crate::hub::team`), reached from the tool through the agent's `AgentMessenger::team()` link. The router checks the target against the agent host (existence and state), takes the target's registered messenger, and calls its `send` with the sender's fully qualified address (`agent:<you>` for main, `agent:<you>/<session>` for a session) and category `"teammate"`, so delivery to main, a live session, or a completed session is the messenger's ordinary delivery. The receiver sees a header (`[Message from teammate agent:… , not the user. … to reply, call message_agent with to="agent:…".]`) and its history entry carries the structured `agent_sender`. The hop count passes through unchanged; the target's messenger applies the hub-level soft note and hard refusal, and on a refusal the sender's messenger notes it in the sender's transcript when the sender is a live session. Nothing queues for a teammate that isn't running.
+Routed through the hub's `TeamRouter` (`crate::background::team`), reached from the tool through the agent's `AgentMessenger::team()` link. The router checks the target against the agent host (existence and state), takes the target's registered messenger, and calls its `send` with the sender's fully qualified address (`agent:<you>` for main, `agent:<you>/<session>` for a session) and category `"teammate"`, so delivery to main, a live session, or a completed session is the messenger's ordinary delivery. The receiver sees a header (`[Message from teammate agent:… , not the user. … to reply, call message_agent with to="agent:…".]`) and its history entry carries the structured `agent_sender`. The hop count passes through unchanged; the target's messenger applies the hub-level soft note and hard refusal, and on a refusal the sender's messenger notes it in the sender's transcript when the sender is a live session. Nothing queues for a teammate that isn't running.
 
 ### Remote agents (`to: "a2a:<name>"`)
 
@@ -898,7 +898,7 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 
 ### Side effects
 
-Calls `AgentDirectory::create` as `Actor::Agent(<caller>)` with `models_from` set to the caller and the caller's A2A visibility. The hub copies the caller's `providers.toml`, starts the agent, delivers the description as its first message when one was given, publishes `agent_created` naming the caller (a toast for the user), and files an item in the caller's user inbox. The creation runs on its own task, so cancelling the calling turn does not stop it half-way. See `docs/systems-usage/agent-lifecycle.md`.
+Calls `TeamDirectory::create` as `Actor::Agent(<caller>)` with `models_from` set to the caller and the caller's A2A visibility. The hub copies the caller's `providers.toml`, starts the agent, delivers the description as its first message when one was given, publishes `agent_created` naming the caller (a toast for the user), and files an item in the caller's user inbox. The creation runs on its own task, so cancelling the calling turn does not stop it half-way. See `docs/systems-usage/agent-lifecycle.md`.
 
 **Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`; a session acts as the agent it belongs to.
 
@@ -932,7 +932,7 @@ Calls `AgentDirectory::create` as `Actor::Agent(<caller>)` with `models_from` se
 
 ### Side effects
 
-Calls `AgentDirectory::delete` as `Actor::Agent(<caller>)`: the agent is stopped, checkpointed, and removed, `agent_deleted` naming the caller is published (a toast), and an item is filed in the caller's user inbox. Deleting another agent runs on its own task, so cancelling the calling turn does not stop it half-way. Deleting yourself stops the turn running the call, so the delete runs on a detached task and the tool returns at once; if it fails, the hub publishes a warning notice naming the agent and the agent is left stopped.
+Calls `TeamDirectory::delete` as `Actor::Agent(<caller>)`: the agent is stopped, checkpointed, and removed, `agent_deleted` naming the caller is published (a toast), and an item is filed in the caller's user inbox. Deleting another agent runs on its own task, so cancelling the calling turn does not stop it half-way. Deleting yourself stops the turn running the call, so the delete runs on a detached task and the tool returns at once; if it fails, the hub publishes a warning notice naming the agent and the agent is left stopped.
 
 **Available to sessions:** registered in both registries, as for `agent_create`.
 

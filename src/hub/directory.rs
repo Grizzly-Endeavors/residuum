@@ -1,19 +1,17 @@
 //! The interface to the set of hosted agents.
 //!
-//! The agent host implements it; the hub HTTP API, the hub WebSocket, the
-//! A2A listener, and agent tools that create or delete teammates use it, so
-//! each can be built and tested against a fake.
+//! The agent host implements it; the hub HTTP API and the hub WebSocket use
+//! it, so each can be built and tested against a fake. Its supertrait,
+//! [`TeamDirectory`], is the part the runtime uses (the team router, the A2A
+//! listener, and agent tools that create or delete teammates).
 
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
-use super::types::{
-    Actor, AgentActivity, AgentPatch, AgentSummary, CreateAgentRequest, DeleteOutcome,
-    DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
-};
+use super::types::{AgentActivity, AgentPatch, DeletedAgent, HubEvent, RestoreAgentRequest};
+use crate::background::team::{Actor, AgentSummary, LifecycleError, TeamDirectory};
 use crate::bus::session::SessionInfo;
 
 /// Where one agent's files are, and the timezone the hub reads the naive local
@@ -30,16 +28,7 @@ pub struct AgentFiles {
 
 /// The hub's hosted agents: lookup, per-agent routing, and lifecycle.
 #[async_trait]
-pub trait AgentDirectory: Send + Sync {
-    /// Every agent, sorted by name.
-    fn list(&self) -> Vec<AgentSummary>;
-
-    /// One agent's summary.
-    ///
-    /// # Errors
-    /// [`LifecycleError::NotFound`] when no agent has this name.
-    fn summary(&self, name: &str) -> Result<AgentSummary, LifecycleError>;
-
+pub trait AgentDirectory: TeamDirectory {
     /// The agent's HTTP router: today's agent-scoped routes (including its
     /// WebSocket at `/ws`), rooted at `/` with its state applied. The hub
     /// serves it under `/api/agents/{name}/` by stripping that prefix.
@@ -75,14 +64,6 @@ pub trait AgentDirectory: Send + Sync {
     /// [`LifecycleError::NotFound`] for an unknown agent.
     fn agent_files(&self, name: &str) -> Result<AgentFiles, LifecycleError>;
 
-    /// The agent's A2A server router (card, JSON-RPC, REST), rooted at `/`.
-    /// The A2A listener serves it under `/agents/{name}/`.
-    ///
-    /// # Errors
-    /// [`LifecycleError::NotFound`] for an unknown agent;
-    /// [`LifecycleError::NotRunning`] when it isn't running.
-    fn agent_a2a_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
-
     /// Main-conversation activity for every agent.
     fn activity(&self) -> Vec<(String, AgentActivity)>;
 
@@ -101,23 +82,6 @@ pub trait AgentDirectory: Send + Sync {
     fn live_sessions(&self, _name: &str) -> Vec<SessionInfo> {
         Vec::new()
     }
-
-    /// Create an agent (see the design's creation order) and start it.
-    ///
-    /// # Errors
-    /// Name, request, or existence problems, or a failure writing or
-    /// starting the agent.
-    async fn create(
-        &self,
-        request: CreateAgentRequest,
-        by: Actor,
-    ) -> Result<AgentSummary, LifecycleError>;
-
-    /// Stop, checkpoint, and remove an agent and its role page.
-    ///
-    /// # Errors
-    /// [`LifecycleError::NotFound`], or a failure removing it.
-    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError>;
 
     /// The agents that were deleted and still have checkpoint history, by
     /// name, each with when it was deleted and the checkpoint a restore uses
@@ -169,37 +133,4 @@ pub trait AgentDirectory: Send + Sync {
     /// Subscribe to hub events (state changes, created, deleted, activity,
     /// notices), in publish order.
     fn subscribe(&self) -> broadcast::Receiver<HubEvent>;
-}
-
-/// A late-bound, weak reference to the hub's [`AgentDirectory`].
-///
-/// The host is built after the shared services every agent receives, and
-/// each agent's tools are built inside a host-started agent, so the services
-/// carry this handle and the host binds itself into it on construction. It
-/// is weak because the agents hold it and the host holds the agents; a
-/// strong reference would keep the host alive from inside its own agents.
-#[derive(Clone, Default)]
-pub struct DirectoryHandle {
-    inner: Arc<OnceLock<Weak<dyn AgentDirectory>>>,
-}
-
-impl DirectoryHandle {
-    /// A handle that points at nothing until [`Self::bind`] is called.
-    #[must_use]
-    pub fn unbound() -> Self {
-        Self::default()
-    }
-
-    /// Point the handle at `directory`. A handle binds once; later calls
-    /// leave the first binding in place.
-    pub fn bind(&self, directory: Weak<dyn AgentDirectory>) {
-        self.inner.set(directory).ok();
-    }
-
-    /// The directory, when it is bound and still alive (the hub is not
-    /// shutting down).
-    #[must_use]
-    pub fn get(&self) -> Option<Arc<dyn AgentDirectory>> {
-        self.inner.get().and_then(Weak::upgrade)
-    }
 }

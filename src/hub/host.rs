@@ -43,9 +43,12 @@ use super::directory::{AgentDirectory, AgentFiles};
 use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
-    A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentPatch, AgentState,
-    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, HubNoticeKind,
-    LifecycleError, NoticeLevel, RestoreAgentRequest,
+    AgentActivity, AgentPatch, DeletedAgent, HubEvent, HubNoticeKind, NoticeLevel,
+    RestoreAgentRequest,
+};
+use crate::background::team::{
+    A2aVisibility, Actor, AgentErrorKind, AgentLastError, AgentState, AgentSummary,
+    CreateAgentRequest, DeleteOutcome, LifecycleError, TeamDirectory,
 };
 use crate::workspace::team_files::TeamWriter;
 
@@ -343,7 +346,7 @@ impl AgentHost {
             // directory handle in the shared services.
             services
                 .directory
-                .bind(Weak::clone(me) as Weak<dyn AgentDirectory>);
+                .bind(Weak::clone(me) as Weak<dyn TeamDirectory>);
             Self {
                 me: Weak::clone(me),
                 services,
@@ -1893,7 +1896,7 @@ fn visibility_wire(visibility: A2aVisibility) -> &'static str {
 }
 
 #[async_trait]
-impl AgentDirectory for AgentHost {
+impl TeamDirectory for AgentHost {
     fn list(&self) -> Vec<AgentSummary> {
         self.slots()
             .iter()
@@ -1905,6 +1908,52 @@ impl AgentDirectory for AgentHost {
         Ok(self.summary_of(&*self.slot(name)?))
     }
 
+    fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
+        let slot = self.slot(name)?;
+        let guard = slot.lock();
+        match &guard.running {
+            Some(running) if guard.state == AgentState::Running => {
+                running.control.a2a_router.borrow().clone().ok_or_else(|| {
+                    LifecycleError::Failed(format!(
+                        "{name}'s A2A interface isn't available; check its log"
+                    ))
+                })
+            }
+            _ => Err(LifecycleError::NotRunning {
+                name: name.to_string(),
+                state: guard.state,
+            }),
+        }
+    }
+
+    async fn create(
+        &self,
+        request: CreateAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        self.create_agent(request, by).await
+    }
+
+    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
+        let result = self.delete_agent(name, by.clone()).await;
+        // An agent deleting itself is stopped by its own delete, so nothing is
+        // left to hear the error; the user has to.
+        if let (Err(e), Actor::Agent(actor)) = (&result, &by)
+            && actor == name
+        {
+            tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
+            self.notice(
+                NoticeLevel::Warn,
+                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state on Home."),
+                Some(name.to_string()),
+            );
+        }
+        result
+    }
+}
+
+#[async_trait]
+impl AgentDirectory for AgentHost {
     fn agent_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let slot = self.slot(name)?;
         let guard = slot.lock();
@@ -1935,24 +1984,6 @@ impl AgentDirectory for AgentHost {
             dir: slot.dir.clone(),
             timezone: self.hub_config().timezone,
         })
-    }
-
-    fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
-        let slot = self.slot(name)?;
-        let guard = slot.lock();
-        match &guard.running {
-            Some(running) if guard.state == AgentState::Running => {
-                running.control.a2a_router.borrow().clone().ok_or_else(|| {
-                    LifecycleError::Failed(format!(
-                        "{name}'s A2A interface isn't available; check its log"
-                    ))
-                })
-            }
-            _ => Err(LifecycleError::NotRunning {
-                name: name.to_string(),
-                state: guard.state,
-            }),
-        }
     }
 
     fn activity(&self) -> Vec<(String, AgentActivity)> {
@@ -1987,31 +2018,6 @@ impl AgentDirectory for AgentHost {
         registry
             .map(|registry| registry.list_live())
             .unwrap_or_default()
-    }
-
-    async fn create(
-        &self,
-        request: CreateAgentRequest,
-        by: Actor,
-    ) -> Result<AgentSummary, LifecycleError> {
-        self.create_agent(request, by).await
-    }
-
-    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        let result = self.delete_agent(name, by.clone()).await;
-        // An agent deleting itself is stopped by its own delete, so nothing is
-        // left to hear the error; the user has to.
-        if let (Err(e), Actor::Agent(actor)) = (&result, &by)
-            && actor == name
-        {
-            tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
-            self.notice(
-                NoticeLevel::Warn,
-                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state on Home."),
-                Some(name.to_string()),
-            );
-        }
-        result
     }
 
     async fn list_deleted(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {

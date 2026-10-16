@@ -12,9 +12,9 @@ use crate::agent::{HopCounter, ToolRegistry};
 use crate::agent_keys::SharedAgentKeys;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
+use crate::background::team::TeamLink;
 use crate::bus::{ConversationTarget, EndpointRegistry, Publisher, SessionAddress};
 use crate::config::{SharedModelCatalog, SharedToolsPath, WorkspaceLayout};
-use crate::hub::team::TeamLink;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 

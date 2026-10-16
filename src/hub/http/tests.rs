@@ -22,6 +22,10 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tower::ServiceExt;
 
 use super::{HubHttpState, agent_repair_router, hub_router};
+use crate::background::team::{
+    A2aVisibility, Actor, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome,
+    LifecycleError, TeamDirectory,
+};
 use crate::bus::session::SessionInfo;
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
@@ -36,8 +40,7 @@ use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::team_events::TeamEventLog;
 use crate::hub::{
-    A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentFiles, AgentPatch, AgentState,
-    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
+    AgentActivity, AgentDirectory, AgentFiles, AgentPatch, DeletedAgent, HubEvent,
     RestoreAgentRequest,
 };
 use crate::tunnel::TunnelStatus;
@@ -261,7 +264,7 @@ fn running_agent_router(name: &str) -> Router {
 }
 
 #[async_trait]
-impl AgentDirectory for FakeDirectory {
+impl TeamDirectory for FakeDirectory {
     fn list(&self) -> Vec<AgentSummary> {
         self.agents.lock().unwrap().clone()
     }
@@ -270,6 +273,50 @@ impl AgentDirectory for FakeDirectory {
         self.find(name)
     }
 
+    fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
+        Err(LifecycleError::Failed(format!(
+            "{name} has no a2a router in this fake"
+        )))
+    }
+
+    async fn create(
+        &self,
+        request: CreateAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        self.record(format!("create {} by {}", request.name, by.wire()));
+        let display_name = crate::config::canonicalize_display_name(&request.name)
+            .map_err(LifecycleError::InvalidName)?;
+        let slug = if crate::config::validate_agent_name(&display_name).is_ok() {
+            display_name.clone()
+        } else {
+            crate::config::slug_base(&display_name)
+        };
+        if self.find(&slug).is_ok() {
+            return Err(LifecycleError::AlreadyExists(display_name));
+        }
+        let mut created = summary(&slug, AgentState::Running);
+        created.display_name = display_name;
+        if let Some(visibility) = request.a2a_visibility {
+            created.a2a_visibility = visibility;
+        }
+        self.agents.lock().unwrap().push(created.clone());
+        Ok(created)
+    }
+
+    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
+        self.record(format!("delete {name} by {}", by.wire()));
+        self.find(name)?;
+        self.agents.lock().unwrap().retain(|a| a.name != name);
+        Ok(DeleteOutcome {
+            deleted: true,
+            checkpoint_id: Some("cp-1".to_string()),
+        })
+    }
+}
+
+#[async_trait]
+impl AgentDirectory for FakeDirectory {
     fn agent_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let agent = self.find(name)?;
         if agent.state != AgentState::Running {
@@ -322,12 +369,6 @@ impl AgentDirectory for FakeDirectory {
         })
     }
 
-    fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
-        Err(LifecycleError::Failed(format!(
-            "{name} has no a2a router in this fake"
-        )))
-    }
-
     fn activity(&self) -> Vec<(String, AgentActivity)> {
         self.activity.lock().unwrap().clone()
     }
@@ -344,41 +385,6 @@ impl AgentDirectory for FakeDirectory {
 
     fn stopping(&self) -> Vec<String> {
         self.stopping.lock().unwrap().clone()
-    }
-
-    async fn create(
-        &self,
-        request: CreateAgentRequest,
-        by: Actor,
-    ) -> Result<AgentSummary, LifecycleError> {
-        self.record(format!("create {} by {}", request.name, by.wire()));
-        let display_name = crate::config::canonicalize_display_name(&request.name)
-            .map_err(LifecycleError::InvalidName)?;
-        let slug = if crate::config::validate_agent_name(&display_name).is_ok() {
-            display_name.clone()
-        } else {
-            crate::config::slug_base(&display_name)
-        };
-        if self.find(&slug).is_ok() {
-            return Err(LifecycleError::AlreadyExists(display_name));
-        }
-        let mut created = summary(&slug, AgentState::Running);
-        created.display_name = display_name;
-        if let Some(visibility) = request.a2a_visibility {
-            created.a2a_visibility = visibility;
-        }
-        self.agents.lock().unwrap().push(created.clone());
-        Ok(created)
-    }
-
-    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        self.record(format!("delete {name} by {}", by.wire()));
-        self.find(name)?;
-        self.agents.lock().unwrap().retain(|a| a.name != name);
-        Ok(DeleteOutcome {
-            deleted: true,
-            checkpoint_id: Some("cp-1".to_string()),
-        })
     }
 
     async fn list_deleted(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {

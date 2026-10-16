@@ -107,7 +107,7 @@ async fn deliver(hub: &Fixture, agent: &str, message: MessageEvent) {
 
 /// A teammate's message to `agent`, which starts a background turn.
 async fn message_from_teammate(hub: &Fixture, agent: &str, text: &str) {
-    use crate::hub::team::{TeamLink, parse_team_address};
+    use crate::background::team::{TeamLink, parse_team_address};
 
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address(&format!("agent:{agent}"))

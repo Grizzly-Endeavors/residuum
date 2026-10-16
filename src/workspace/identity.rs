@@ -59,7 +59,7 @@ impl IdentityFiles {
     /// These files with the `TEAM` roster from `team`, as of now. An agent
     /// with no teammates gets no `TEAM` block.
     #[must_use]
-    pub fn with_team_roster(mut self, team: &crate::hub::team::TeamLink) -> Self {
+    pub fn with_team_roster(mut self, team: &crate::background::team::TeamLink) -> Self {
         self.team = team.prompt_block();
         self
     }

@@ -25,10 +25,10 @@ use super::types::{
     AgentOverview, LastMessage, LastMessageRole, LiveSession, OverviewResponse, TimePrecision,
 };
 use super::{disk, outbound, upcoming};
+use crate::background::team::AgentState;
 use crate::hub::AgentDirectory;
 use crate::hub::agent_watch::MainTurnEnded;
 use crate::hub::inbox::count_unread;
-use crate::hub::types::AgentState;
 use crate::memory::types::Visibility;
 use crate::time::format_rfc3339;
 
