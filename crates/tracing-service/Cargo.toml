@@ -30,3 +30,9 @@ residuum-core = { workspace = true, features = ["test-support"] }
 residuum-config = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 rustls = { workspace = true }
+
+[package.metadata.cargo-shear]
+# crates/core/src/testing/crypto.rs, which lib.rs includes by #[path], uses ctor and
+# rustls. cargo-shear reads a source file only for the package whose src/ directory
+# holds it, so it never sees the use here.
+ignored = ["ctor", "rustls"]

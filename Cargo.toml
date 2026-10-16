@@ -185,7 +185,6 @@ aes = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
-tantivy = { workspace = true }
 regex = { workspace = true }
 globset = { workspace = true }
 pulldown-cmark = { workspace = true }
@@ -205,7 +204,6 @@ rpassword = { workspace = true }
 axum = { workspace = true }
 tokio-tungstenite = { workspace = true }
 rustls = { workspace = true }
-hyper = { workspace = true }
 ring = { workspace = true }
 futures-util = { workspace = true }
 tower = { workspace = true }
@@ -247,8 +245,13 @@ ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
-hyper = { workspace = true, features = ["client"] }
 jsonschema = { workspace = true }
+
+[package.metadata.cargo-shear]
+# ctor is used by crates/core/src/testing/crypto.rs, which this package includes by
+# #[path]. cargo-shear reads a source file only for the package whose src/ directory
+# holds it, so it never sees the use here.
+ignored = ["ctor"]
 
 # Line tables keep backtraces at file:line; full debug info is most of the link time and target/ size.
 [profile.dev]

@@ -30,3 +30,8 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "net"] }
+
+[package.metadata.cargo-shear]
+# src/testing/crypto.rs is not a module of this crate: the crates and test binaries that
+# build an HTTP client include it by #[path].
+ignored-paths = ["src/testing/crypto.rs"]
