@@ -116,6 +116,11 @@ types-check: _web-dist
 clippy: _web-dist
     cargo clippy --all-targets --all-features -- -D warnings
 
+# Build the rustdoc of every package with rustdoc warnings denied, so broken intra-doc links fail, exactly as CI runs it
+[group('rust')]
+doc: _web-dist
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
 # Format Rust code
 [group('rust')]
 rust-fmt:
@@ -268,7 +273,7 @@ web-check: _web-deps
 # Everything CI's rust job runs. Runs every check and lists the failures.
 [group('check')]
 rust-check: _web-dist
-    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy test types-check deny shear
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy doc test types-check deny shear
 
 # Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist, so a broken web build stops rust-check before its checks run. Runs every check and lists the failures.
 [group('check')]
