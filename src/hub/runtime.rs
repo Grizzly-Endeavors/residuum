@@ -27,6 +27,7 @@ use super::directory::AgentDirectory;
 use super::host::AgentHost;
 use super::http::{HubHttpState, hub_router};
 use super::last_known_good;
+use super::launch::AgentLauncher;
 use super::overview::{OverviewTracker, TeamOverview};
 use super::push::{PushService, PushTriggers, TriggerInputs};
 use super::relay_agents::RelayAgents;
@@ -44,6 +45,8 @@ pub struct HubInputs {
     pub root: PathBuf,
     /// The version and commit of the running binary.
     pub build: BuildInfo,
+    /// Starts each agent's runtime.
+    pub launcher: Arc<dyn AgentLauncher>,
     /// Called once the servers are bound and the autostart agents have started
     /// or failed; the process uses it to write its readiness marker.
     pub on_ready: Box<dyn FnOnce(&Path) + Send>,
@@ -531,6 +534,7 @@ impl HubRuntime {
         let HubInputs {
             root,
             build,
+            launcher,
             on_ready,
             log_filter,
         } = inputs;
@@ -550,19 +554,14 @@ impl HubRuntime {
             &root,
             &hub_cfg,
             tunnel_status_rx,
-            HubControl {
-                build,
-                update_status: crate::hub::update::shared_update_status(build.version),
-                restart_tx,
-                shutdown_tx,
-            },
+            HubControl::new(build, restart_tx, shutdown_tx),
             workbench_serving,
             pairing,
             scan.team_embedding.as_ref().and_then(build_team_embedding),
         )
         .await?;
 
-        let host = AgentHost::new(services.clone(), hub_cfg.clone());
+        let host = AgentHost::new(services.clone(), hub_cfg.clone(), launcher);
         // Tracking comes first, so the hub's startup notices and every
         // agent's start reach the log, the overview and the push triggers:
         // nothing they listen to is replayed.
@@ -1261,6 +1260,7 @@ mod tests {
             let inputs = HubInputs {
                 root: root.path().to_path_buf(),
                 build: crate::BUILD_INFO,
+                launcher: Arc::new(crate::gateway::GatewayLauncher::new()),
                 on_ready: Box::new(|dir| {
                     std::fs::write(crate::config::HubPaths::new(dir).ready_file(), "ready")
                         .unwrap();

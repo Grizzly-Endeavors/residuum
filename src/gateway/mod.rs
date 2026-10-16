@@ -5,6 +5,7 @@ mod chat_adapters;
 pub(crate) mod event_loop;
 pub mod file_server;
 mod idle;
+mod launcher;
 mod memory;
 pub(crate) mod post_turn;
 pub(crate) mod queued_messages;
@@ -17,4 +18,5 @@ pub(crate) mod web;
 pub mod websocket;
 mod ws;
 
+pub use launcher::GatewayLauncher;
 pub use web::teams_setup;

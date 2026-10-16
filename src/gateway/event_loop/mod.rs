@@ -10,7 +10,4 @@ mod turns;
 pub(crate) use http::A2aServingDeps;
 pub(crate) use http::build_agent_a2a;
 pub(crate) use http::run_teams_adapter;
-pub(crate) use run_loop::{
-    AgentCleanup, AgentControl, AgentExit, AgentStartInputs, agent_span, agent_span_layer,
-    spawn_agent_loop, start_agent,
-};
+pub(crate) use run_loop::{agent_span_layer, start_agent};

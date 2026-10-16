@@ -31,7 +31,7 @@ use crate::workspace::watch::WatchHealth;
 /// The hub-level controls an agent's HTTP routes drive: the update status
 /// and the requests to restart or shut down the whole process.
 #[derive(Clone)]
-pub(crate) struct HubControl {
+pub struct HubControl {
     /// The running build. Every report of the running version reads it from
     /// here.
     pub build: crate::BuildInfo,
@@ -41,6 +41,23 @@ pub(crate) struct HubControl {
     pub restart_tx: mpsc::Sender<()>,
     /// Asks the hub to stop every agent and exit.
     pub shutdown_tx: mpsc::Sender<()>,
+}
+
+impl HubControl {
+    /// The controls of the running `build`, with a fresh update status for
+    /// its version.
+    pub(crate) fn new(
+        build: crate::BuildInfo,
+        restart_tx: mpsc::Sender<()>,
+        shutdown_tx: mpsc::Sender<()>,
+    ) -> Self {
+        Self {
+            build,
+            update_status: crate::hub::update::shared_update_status(build.version),
+            restart_tx,
+            shutdown_tx,
+        }
+    }
 }
 
 /// The hub's one change feed over the team directory.
@@ -55,7 +72,7 @@ pub(crate) struct HubControl {
 /// publishes a `WorkbenchEvent` on `topics::Workbench` of the same bus for
 /// every artifact added, changed or removed. The hub WebSocket sends them as
 /// artifact events, which therefore reach clients with no agent running.
-pub(crate) struct TeamChangeFeed {
+pub struct TeamChangeFeed {
     /// The bus the feed publishes on.
     pub bus: BusHandle,
     /// Whether the feed is running, so a client that starts watching can be
@@ -130,7 +147,7 @@ impl Drop for TeamChangeFeed {
 
 /// Shared services handed to every agent's runtime.
 #[derive(Clone)]
-pub(crate) struct HubServices {
+pub struct HubServices {
     /// The residuum root (`~/.residuum`): parent of `hub/`, `team/` and
     /// every agent directory.
     pub root: PathBuf,

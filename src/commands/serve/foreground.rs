@@ -84,13 +84,7 @@ async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
         "setup mode: config will be written under {}",
         tmp_root.display()
     );
-    let inputs = residuum::hub::HubInputs {
-        root: tmp_root,
-        build: residuum::BUILD_INFO,
-        on_ready: Box::new(residuum::daemon::write_ready_file),
-        log_filter: residuum::logging::global_filter_handle(),
-    };
-    match Box::pin(residuum::hub::run_hub(inputs)).await? {
+    match Box::pin(residuum::wiring::run_hub(&tmp_root)).await? {
         residuum::hub::HubExit::Shutdown => {}
         residuum::hub::HubExit::Restart => {
             // Relaunching would repeat `--setup`, which wipes the temp config.
@@ -131,13 +125,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     // fatal error no fallback could recover from. An agent that can't
     // start is `failed`; it doesn't end the hub.
     // Box::pin reduces stack frame size — this future is large
-    let inputs = residuum::hub::HubInputs {
-        root: residuum_root,
-        build: residuum::BUILD_INFO,
-        on_ready: Box::new(residuum::daemon::write_ready_file),
-        log_filter: residuum::logging::global_filter_handle(),
-    };
-    match Box::pin(residuum::hub::run_hub(inputs)).await? {
+    match Box::pin(residuum::wiring::run_hub(&residuum_root)).await? {
         residuum::hub::HubExit::Restart => Ok(ForegroundExit::Restart),
         residuum::hub::HubExit::Shutdown => Ok(ForegroundExit::Done),
     }
