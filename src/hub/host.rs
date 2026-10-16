@@ -1289,6 +1289,7 @@ impl AgentHost {
         };
         let message = super::provision::first_message(description);
         if let Err(reason) = control
+            .main_delivery
             .deliver_to_main(by, message, self.hub_config().timezone, hop_count)
             .await
         {

@@ -288,14 +288,7 @@ impl HubServices {
             root,
             hub,
             tunnel_status_rx,
-            HubControl {
-                build: crate::testing::HARNESS_BUILD,
-                update_status: crate::hub::update::shared_update_status(
-                    crate::testing::HARNESS_BUILD.version,
-                ),
-                restart_tx,
-                shutdown_tx,
-            },
+            HubControl::new(crate::testing::HARNESS_BUILD, restart_tx, shutdown_tx),
             crate::workbench::WorkbenchServing::Unavailable {
                 reason: "not started in tests".to_string(),
             },

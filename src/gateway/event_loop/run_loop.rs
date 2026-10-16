@@ -17,8 +17,8 @@ use crate::config::{Config, HubConfig};
 use crate::gateway::types::{AgentRuntime, CoreReceivers, GatewayCore, GatewayState};
 use crate::hub::activity::ActivityTracker;
 use crate::hub::launch::{
-    AgentCleanup, AgentControl, AgentExit, AgentStartInputs, SESSION_SHUTDOWN_TIMEOUT,
-    StartedAgent, agent_span,
+    AgentCleanup, AgentControl, AgentExit, AgentStartInputs, MainDelivery,
+    SESSION_SHUTDOWN_TIMEOUT, StartedAgent, agent_span,
 };
 use crate::hub::services::HubServices;
 use crate::interfaces::AdapterSenders;
@@ -34,8 +34,8 @@ use crate::gateway::{actions, idle, reload, web};
 use crate::hub::{config_watcher, last_known_good};
 
 /// Initialize the agent at `inputs.agent_dir` on the hub's shared services,
-/// spawn its adapters, watchers, and A2A serving state, and return it ready
-/// for [`run_agent_loop`].
+/// spawn its adapters, watchers, and A2A serving state, and return it with
+/// its event loop, [`run_agent_loop`], for the hub to run.
 ///
 /// If the agent's live config files fail to load, or load but the agent
 /// can't actually start on them (no usable main provider, etc.), the agent
@@ -92,22 +92,24 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         last_known_good::save(&cfg.config_dir);
     }
 
-    let control = AgentControl::new(
-        agent_span_layer(&name, spawned.router.clone()),
-        a2a_router_rx,
-        core.reload_tx.clone(),
-        agent_stop_tx,
-        reload_done_rx,
-        AgentCleanup::new(
+    let control = AgentControl {
+        router: agent_span_layer(&name, spawned.router.clone()),
+        a2a_router: a2a_router_rx,
+        reload_tx: core.reload_tx.clone(),
+        stop_tx: agent_stop_tx,
+        reload_done: reload_done_rx,
+        cleanup: AgentCleanup::new(
             Arc::clone(&parts.session_runtime),
             Arc::clone(&parts.mcp_registry),
         ),
-        Arc::clone(&parts.session_registry),
-        core.bus_handle.clone(),
-        spawned.workspace_watch_health.clone(),
-        core.publisher.clone(),
-        Arc::clone(&parts.agent_messenger),
-    );
+        session_registry: Arc::clone(&parts.session_registry),
+        bus: core.bus_handle.clone(),
+        workspace_watch_health: spawned.workspace_watch_health.clone(),
+        main_delivery: MainDelivery::new(
+            core.publisher.clone(),
+            Arc::clone(&parts.agent_messenger),
+        ),
+    };
     let sibling_fanout = Arc::clone(&services.sibling_fanout);
     let team_router = Arc::clone(&services.team_router);
     let team_messenger = Arc::clone(&parts.agent_messenger);

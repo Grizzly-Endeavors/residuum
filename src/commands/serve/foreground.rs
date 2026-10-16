@@ -84,7 +84,7 @@ async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
         "setup mode: config will be written under {}",
         tmp_root.display()
     );
-    match Box::pin(residuum::wiring::run_hub(&tmp_root)).await? {
+    match residuum::wiring::run_hub(&tmp_root).await? {
         residuum::hub::HubExit::Shutdown => {}
         residuum::hub::HubExit::Restart => {
             // Relaunching would repeat `--setup`, which wipes the temp config.
@@ -124,8 +124,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     // The hub handles reloads in-place and only returns on shutdown or a
     // fatal error no fallback could recover from. An agent that can't
     // start is `failed`; it doesn't end the hub.
-    // Box::pin reduces stack frame size — this future is large
-    match Box::pin(residuum::wiring::run_hub(&residuum_root)).await? {
+    match residuum::wiring::run_hub(&residuum_root).await? {
         residuum::hub::HubExit::Restart => Ok(ForegroundExit::Restart),
         residuum::hub::HubExit::Shutdown => Ok(ForegroundExit::Done),
     }
