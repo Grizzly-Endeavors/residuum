@@ -27,6 +27,7 @@ use crate::background::team::{
     LifecycleError, TeamDirectory,
 };
 use crate::bus::session::SessionInfo;
+use crate::bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
 use crate::config::WorkspaceLayout;
@@ -45,7 +46,7 @@ use crate::hub::{
 };
 use crate::tunnel::TunnelStatus;
 use crate::workspace::team_files::TeamWriteCoordinator;
-use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
+use crate::workspace::watch::WatchHealth;
 use residuum_core::testing::wait;
 
 mod artifacts_origin;
@@ -1246,7 +1247,7 @@ async fn seed_history(agent_dir: &Path, name: &str) {
 async fn chat_history_and_usage_are_served_from_disk_in_every_agent_state() {
     let h = Harness::new();
     h.add_failed_agent();
-    let mut totals = crate::agent::usage::SessionUsageTotals::default();
+    let mut totals = crate::bus::usage::SessionUsageTotals::default();
     totals.accumulate(Some(crate::inference::Usage {
         input_tokens: 300,
         output_tokens: 60,
@@ -1316,7 +1317,7 @@ async fn a_stopped_agent_with_no_history_answers_empty_not_an_error() {
         .await;
     assert_eq!(
         usage,
-        serde_json::to_value(crate::agent::usage::SessionUsageTotals::default()).unwrap()
+        serde_json::to_value(crate::bus::usage::SessionUsageTotals::default()).unwrap()
     );
 }
 
@@ -2931,7 +2932,7 @@ async fn a_resync_reaches_a_watching_client() {
         .publisher()
         .publish(
             topics::Workspace,
-            WorkspaceEvent::Resync(crate::workspace::watch::WorkspaceResyncReason::Overflow),
+            WorkspaceEvent::Resync(crate::bus::workspace_change::WorkspaceResyncReason::Overflow),
         )
         .await
         .unwrap();

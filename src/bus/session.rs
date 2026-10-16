@@ -222,7 +222,7 @@ pub struct SessionInfo {
     /// This run's cumulative token usage, updated after every model call —
     /// see [`SessionRegistry::accumulate_usage`]. Mirrored into the run's
     /// store record at completion so a finished run's totals survive too.
-    pub usage: crate::agent::usage::SessionUsageTotals,
+    pub usage: crate::bus::usage::SessionUsageTotals,
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,

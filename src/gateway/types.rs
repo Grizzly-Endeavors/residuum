@@ -308,7 +308,7 @@ pub(crate) struct AgentRuntime {
     pub pulse_enabled: bool,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
     /// Notification channels from `channels.toml`, kept to rebuild the endpoint registry on reload.
-    pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    pub channel_configs: Vec<crate::config::ExternalChannelConfig>,
     /// Shared with the agent's webhook route; replaced on config reload.
     pub webhooks: crate::interfaces::webhook::WebhookTable,
     /// Bus infrastructure handles (bridge, result router, registry) — not restarted on reload.

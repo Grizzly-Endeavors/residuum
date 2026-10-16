@@ -57,7 +57,7 @@ pub(crate) struct GatewayComponents {
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub pulse_enabled: bool,
     pub endpoint_registry: EndpointRegistry,
-    pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    pub channel_configs: Vec<crate::config::ExternalChannelConfig>,
     pub http_client: SharedHttpClient,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
@@ -677,10 +677,7 @@ fn init_channels_and_registry(
     layout: &WorkspaceLayout,
     cfg: &Config,
     degradations: &mut Vec<String>,
-) -> (
-    Vec<crate::notify::types::ExternalChannelConfig>,
-    EndpointRegistry,
-) {
+) -> (Vec<crate::config::ExternalChannelConfig>, EndpointRegistry) {
     let channel_configs =
         match crate::workspace::config::load_channel_configs(&layout.channels_toml()) {
             Ok(configs) => configs,
@@ -700,7 +697,7 @@ struct NetworkingComponents {
     tools_path: SharedToolsPath,
     agent_keys: crate::agent_keys::SharedAgentKeys,
     mcp_registry: SharedMcpRegistry,
-    channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    channel_configs: Vec<crate::config::ExternalChannelConfig>,
     endpoint_registry: EndpointRegistry,
 }
 
@@ -746,7 +743,7 @@ async fn init_networking(
 /// The inbox subscribes to `TopicId::Inbox`.
 pub(crate) async fn spawn_notify_subscribers(
     bus_handle: &crate::bus::BusHandle,
-    channel_configs: &[crate::notify::types::ExternalChannelConfig],
+    channel_configs: &[crate::config::ExternalChannelConfig],
     http: &SharedHttpClient,
     layout: &WorkspaceLayout,
     tz: chrono_tz::Tz,

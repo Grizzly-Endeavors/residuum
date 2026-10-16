@@ -320,7 +320,7 @@ pub struct ToolResultEvent {
     /// Whether the tool reported an error.
     pub is_error: bool,
     /// Auto Mode's verdict on the call, when Auto Mode checked it.
-    pub auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
+    pub auto_mode: Option<crate::bus::auto_mode::AutoModeVerdict>,
 }
 
 /// Intermediate model text emitted during a turn.
@@ -390,7 +390,7 @@ impl AgentResultEvent {
 
 /// A message one agent sends to another by address (`message_agent` tool).
 ///
-/// Delivered as an [`crate::agent::interrupt::Interrupt::AgentMessage`] to a
+/// Delivered as an `Interrupt::AgentMessage` to a
 /// live session (an interrupt when its turn is running, a new turn's input
 /// when it's idle). The main agent's own delivery reuses the existing
 /// `MessageEvent`/`UserMessage` bus path instead, which already implements
@@ -508,7 +508,7 @@ impl AgentMessageEvent {
 }
 
 /// Outcome a session declared through its `a2a_task_update` tool call,
-/// carried to the A2A [`crate::a2a::executor::SessionExecutor`] waiting on
+/// carried to the A2A session executor waiting on
 /// the session's address so it can end the task's execution stream with the
 /// right terminal (or input-required) status.
 #[derive(Debug, Clone)]
@@ -581,7 +581,7 @@ pub struct SpawnRequestEvent {
     /// a `Conversation`-triggered request. Carried alongside the already-
     /// extracted `prompt`/`context`/`sender` fields so that if this request
     /// loses the race for its target address (see
-    /// `crate::background::listener::race_guard_interrupt`), its content can
+    /// the background listener's race guard), its content can
     /// still be delivered as `Interrupt::UserMessage` — with the same sender
     /// attribution ordinary conversation delivery gets — instead of being
     /// misattributed as a plain agent message from `main`. `None` for every
@@ -713,7 +713,7 @@ pub enum ReloadedFiles {
     Workspace,
 }
 
-/// Which background post-turn cycle (see `crate::gateway::post_turn`) an
+/// Which background post-turn cycle (see the gateway's post-turn module) an
 /// activity signal is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostTurnActivityKind {
@@ -726,7 +726,7 @@ pub enum PostTurnActivityKind {
 /// A background post-turn cycle started or finished running, for the quiet
 /// status line under the last reply in the web UI ("Noting what matters from
 /// this conversation" / "Reviewing the last reply") — see
-/// `crate::gateway::post_turn`'s module docs for why this work no longer
+/// the gateway's post-turn module docs for why this work no longer
 /// blocks the event loop, and so needs a signal of its own instead of
 /// being implied by the turn indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -740,7 +740,7 @@ pub struct PostTurnActivityEvent {
 /// — for the web UI's list of tasks sent to other agents (Activity's Running now).
 #[derive(Debug, Clone)]
 pub struct OutboundA2aTaskEvent {
-    pub task: crate::a2a::TrackedTask,
+    pub task: crate::bus::remote_task::TrackedTask,
 }
 
 /// An item was added to the user inbox by the `user_inbox_add` tool.
@@ -841,7 +841,7 @@ pub enum SessionEventKind {
         /// Tool calls executed so far this turn.
         tool_calls: u32,
         /// Updated cumulative session totals, when the caller tracks them.
-        session_totals: Option<crate::agent::usage::SessionUsageTotals>,
+        session_totals: Option<crate::bus::usage::SessionUsageTotals>,
     },
     /// A turn's final text response.
     Response {
@@ -907,7 +907,7 @@ pub struct TurnUsageEvent {
     /// Tool calls executed so far this turn.
     pub tool_calls: u32,
     /// Updated cumulative session totals, when the caller tracks them.
-    pub session_totals: Option<crate::agent::usage::SessionUsageTotals>,
+    pub session_totals: Option<crate::bus::usage::SessionUsageTotals>,
 }
 
 /// Where a main-conversation turn came from.
@@ -1146,9 +1146,9 @@ pub enum WorkbenchEvent {
 pub enum WorkspaceEvent {
     /// The changes of one batch, sorted by path. Shared so every subscriber
     /// gets the batch without copying it.
-    Changed(std::sync::Arc<[crate::workspace::watch::WorkspaceChange]>),
+    Changed(std::sync::Arc<[crate::bus::workspace_change::WorkspaceChange]>),
     /// Changes may have been missed; watchers must reload what they show.
-    Resync(crate::workspace::watch::WorkspaceResyncReason),
+    Resync(crate::bus::workspace_change::WorkspaceResyncReason),
     /// The watcher stopped: live updates are off.
     Unavailable,
 }

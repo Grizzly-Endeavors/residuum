@@ -12,10 +12,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::HopCounter;
 use super::context::{MemoryContext, PromptContext};
-use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
 use super::turn::{EventContext, EventTarget, TranscriptSink, TurnResources, execute_turn};
 use crate::agent::{Tool, ToolRegistry};
+use crate::bus::interrupt::Interrupt;
 use crate::bus::origin::MessageOrigin;
 use crate::bus::{
     AgentMessageEvent, EndpointName, IntermediateEvent, MainConversationEvent, MessageEvent,

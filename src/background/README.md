@@ -194,7 +194,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`crate::agent::context`** — `assemble_system_prompt`/`build_system_content` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `crate::agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
 - **`crate::agent::turn`** — `execute_turn()`. The session executor calls this to run the turn loop, passing the session's `CancellationToken` as the stop token.
 - **`crate::agent::recent_messages`** — `RecentMessages`, the message buffer accumulated across a run's turns.
-- **`crate::agent::interrupt`** — `Interrupt` (specifically `Interrupt::AgentMessage`), the type a session's real interrupt channel carries.
+- **`crate::bus::interrupt`** — `Interrupt` (specifically `Interrupt::AgentMessage`), the type a session's real interrupt channel carries.
 - **`crate::memory::observer`** — `Observer`, `Extraction`. Each session gets its own `Observer` instance (built from the same `[observer]` config as the main agent's) for per-run threshold checks and extraction.
 - **`crate::memory::merge_writer`** — `MemoryMergeWriter`, `SourceTag`. Shared with the main agent so episode numbering, the observation log, indexing, embedding, and the reflector trigger are all serialized through one writer.
 - **`crate::memory::tokens`** — `estimate_message_tokens()`, for the episode skip token floor check.

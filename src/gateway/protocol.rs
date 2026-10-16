@@ -4,11 +4,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::agent::usage::SessionUsageTotals;
 use crate::bus::session::{SessionCategory, SessionState};
+use crate::bus::usage::SessionUsageTotals;
+use crate::bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
 use crate::bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
 use crate::inference::{AgentSender, ImageData, MessageSender};
-use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
 /// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -233,8 +233,8 @@ pub struct OutboundA2aTaskSummary {
     pub unreachable_since: Option<DateTime<Utc>>,
 }
 
-impl From<&crate::a2a::TrackedTask> for OutboundA2aTaskSummary {
-    fn from(task: &crate::a2a::TrackedTask) -> Self {
+impl From<&crate::bus::remote_task::TrackedTask> for OutboundA2aTaskSummary {
+    fn from(task: &crate::bus::remote_task::TrackedTask) -> Self {
         Self {
             task_id: task.task_id.clone(),
             agent: task.agent.clone(),
@@ -535,7 +535,7 @@ pub enum ServerMessage {
         /// Auto Mode's verdict on the call, when Auto Mode checked it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
+        auto_mode: Option<crate::bus::auto_mode::AutoModeVerdict>,
     },
     /// The agent's text response: the reply that ends a turn, or a message
     /// the agent posted to this endpoint with `send_message` (an empty
@@ -807,7 +807,7 @@ pub enum ServerMessage {
         /// Auto Mode's verdict on the call, when Auto Mode checked it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
+        auto_mode: Option<crate::bus::auto_mode::AutoModeVerdict>,
     },
     /// Token usage and tool-call progress for a session's turn still
     /// running — the session counterpart of `TurnUsage`.
@@ -1549,7 +1549,7 @@ mod tests {
         let changed = ServerMessage::WorkspaceChanged {
             changes: vec![WorkspaceChange {
                 path: "wiki/a.md".into(),
-                kind: crate::workspace::watch::WorkspaceChangeKind::Created,
+                kind: crate::bus::workspace_change::WorkspaceChangeKind::Created,
             }],
         };
         assert_eq!(

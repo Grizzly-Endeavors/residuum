@@ -244,7 +244,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         // The receiver must stay alive and be drained below like a live
@@ -261,7 +261,7 @@ mod tests {
             assert!(matches!(
                 registry.deliver(
                     &address,
-                    crate::agent::interrupt::Interrupt::UserMessage(inbound(
+                    crate::bus::interrupt::Interrupt::UserMessage(inbound(
                         "discord",
                         "chan-1",
                         Some("#builds"),
@@ -285,18 +285,18 @@ mod tests {
             |interrupt| {
                 matches!(
                     interrupt,
-                    crate::agent::interrupt::Interrupt::UserMessage(m) if m.id == "the-new-message"
+                    crate::bus::interrupt::Interrupt::UserMessage(m) if m.id == "the-new-message"
                 )
             },
         )
         .await;
         match interrupt {
-            crate::agent::interrupt::Interrupt::UserMessage(m) => {
+            crate::bus::interrupt::Interrupt::UserMessage(m) => {
                 assert_eq!(m.content, "can anyone see this?");
             }
-            crate::agent::interrupt::Interrupt::AgentMessage(_)
-            | crate::agent::interrupt::Interrupt::Subconscious(_)
-            | crate::agent::interrupt::Interrupt::Stopped => {
+            crate::bus::interrupt::Interrupt::AgentMessage(_)
+            | crate::bus::interrupt::Interrupt::Subconscious(_)
+            | crate::bus::interrupt::Interrupt::Stopped => {
                 panic!("the new user message should be the one delivered")
             }
         }
@@ -329,7 +329,7 @@ mod tests {
                 conversation_id: "chan-2".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         registry

@@ -16,9 +16,10 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use super::WatchHealth;
 use super::batcher::{ChangeBatcher, PathState, ReadyBatch, resolve_changes};
 use super::classify::{WorkspaceRoots, classify};
-use super::{WatchHealth, WorkspaceChange, WorkspaceResyncReason};
+use crate::bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
 use crate::bus::{Publisher, WorkspaceEvent, topics};
 
 /// Raw notifications buffered between the OS watcher's thread and the
@@ -430,7 +431,7 @@ mod tests {
 
     use super::*;
     use crate::bus::Subscriber;
-    use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind};
+    use crate::bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
 
     fn change(path: &str, kind: WorkspaceChangeKind) -> WorkspaceChange {
         WorkspaceChange {

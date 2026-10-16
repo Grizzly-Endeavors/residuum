@@ -86,7 +86,7 @@ fn session_info(
         resolved_model: None,
         conversation_target: None,
         started_at: Utc::now(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
+        usage: crate::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     })
 }

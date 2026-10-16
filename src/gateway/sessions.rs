@@ -349,9 +349,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::agent::interrupt::Interrupt;
     use crate::background::registry::ResumePoint;
     use crate::background::store::SessionStore;
+    use crate::bus::interrupt::Interrupt;
     use crate::bus::{EventTrigger, ToolCallEvent};
 
     fn live_info(address: &str, state: SessionState) -> SessionInfo {
@@ -370,7 +370,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }

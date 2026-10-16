@@ -7,16 +7,23 @@
 //! the topic and event type.
 
 pub mod attachment;
+pub mod auto_mode;
 mod broker;
 pub mod conversations;
 mod endpoint;
 mod events;
 mod handle;
+pub mod interrupt;
 pub mod origin;
 mod registry;
+pub mod remote_task;
 pub mod session;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod topics;
 mod types;
+pub mod usage;
+pub mod workspace_change;
 
 pub use broker::{BusHandle, spawn_broker};
 pub use endpoint::EndpointCapabilities;

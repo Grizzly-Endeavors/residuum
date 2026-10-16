@@ -76,7 +76,7 @@ pub struct RunRecord {
     /// this record is written, so a completed run keeps its
     /// final totals.
     #[serde(default)]
-    pub usage: crate::agent::usage::SessionUsageTotals,
+    pub usage: crate::bus::usage::SessionUsageTotals,
     /// How the run ended — `"completed"`, `"cancelled"`, or `"failed"` —
     /// filled in by [`SessionStore::complete_run`]. `None` while the run is
     /// still live (`state` says so already), and `None` for a record written
@@ -173,7 +173,7 @@ struct RunRecordHeader {
     #[serde(default)]
     episode_id: Option<String>,
     #[serde(default)]
-    usage: crate::agent::usage::SessionUsageTotals,
+    usage: crate::bus::usage::SessionUsageTotals,
     #[serde(default)]
     outcome: Option<String>,
     #[serde(default)]
@@ -957,7 +957,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -1079,7 +1079,7 @@ mod tests {
         let record = RunRecord::from(header);
         assert_eq!(
             record.usage,
-            crate::agent::usage::SessionUsageTotals::default()
+            crate::bus::usage::SessionUsageTotals::default()
         );
     }
 

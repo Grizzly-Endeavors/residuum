@@ -174,9 +174,9 @@ async fn file_item(hub: &Fixture, agent: &str, id: &str) {
 }
 
 /// A task sent to `laptop` whose unreachable streak is eleven minutes old.
-fn outbound_task(unreachable_notified: bool) -> crate::a2a::TrackedTask {
+fn outbound_task(unreachable_notified: bool) -> crate::bus::remote_task::TrackedTask {
     let now = Utc::now();
-    crate::a2a::TrackedTask {
+    crate::bus::remote_task::TrackedTask {
         sender_address: "main".to_string(),
         agent: "laptop".to_string(),
         task_id: "t1".to_string(),
@@ -193,7 +193,7 @@ fn outbound_task(unreachable_notified: bool) -> crate::a2a::TrackedTask {
     }
 }
 
-async fn announce_outbound(hub: &Fixture, agent: &str, task: crate::a2a::TrackedTask) {
+async fn announce_outbound(hub: &Fixture, agent: &str, task: crate::bus::remote_task::TrackedTask) {
     agent_bus(hub, agent)
         .publisher()
         .publish(

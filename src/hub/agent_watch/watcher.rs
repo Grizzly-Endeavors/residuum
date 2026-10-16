@@ -16,12 +16,13 @@ use super::changes::{
     AgentChange, AgentChangeFeed, AgentChangeKind, AgentSessionEvent, WatchedPath,
 };
 use crate::background::registry::SessionRegistry;
+use crate::bus::workspace_change::WorkspaceChange;
 use crate::bus::{
     BusError, BusHandle, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress,
     SessionEvent, SessionEventKind, Subscriber, UserInboxAddedEvent, WorkspaceEvent, topics,
 };
 use crate::gateway::event_loop::{AgentControl, agent_span};
-use crate::workspace::watch::{WatchHealth, WorkspaceChange};
+use crate::workspace::watch::WatchHealth;
 
 /// How often an agent is recomputed while its file watcher is down.
 const RECOMPUTE_WHILE_UNAVAILABLE: Duration = Duration::from_secs(60);
@@ -373,8 +374,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::bus::workspace_change::{WorkspaceChangeKind, WorkspaceResyncReason};
     use crate::bus::{AgentResultStatus, SessionEventKind, ToolCallEvent};
-    use crate::workspace::watch::{WorkspaceChangeKind, WorkspaceResyncReason};
     use residuum_core::testing::{clock, wait};
 
     /// A watcher over a bare agent bus, with a receiver on the hub's feed.
@@ -472,7 +473,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -598,7 +599,7 @@ mod tests {
                 if episode == "ep-7"
         ));
 
-        let task = crate::a2a::TrackedTask {
+        let task = crate::bus::remote_task::TrackedTask {
             sender_address: "main".to_string(),
             agent: "laptop".to_string(),
             task_id: "t1".to_string(),

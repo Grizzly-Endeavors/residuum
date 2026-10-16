@@ -18,11 +18,11 @@ use crate::a2a::client::hub::AgentSource;
 use crate::a2a::{A2aClientHub, RemoteTaskTracker};
 use crate::agent::HopCounter;
 use crate::agent::Tool;
-use crate::agent::interrupt::Interrupt;
 use crate::background::HopLimits;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
+use crate::bus::interrupt::Interrupt;
 use crate::bus::session::{MAIN_ADDRESS, SessionCategory, SessionInfo, SessionState};
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::ModelSelector;
@@ -264,7 +264,7 @@ fn sample_info(address: &str) -> SessionInfo {
         resolved_model: None,
         conversation_target: None,
         started_at: chrono::Utc::now(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
+        usage: crate::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     }
 }

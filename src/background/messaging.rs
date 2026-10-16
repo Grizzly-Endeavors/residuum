@@ -29,8 +29,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::hop::HopLimits;
-use crate::agent::interrupt::Interrupt;
 use crate::background::team::TeamLink;
+use crate::bus::interrupt::Interrupt;
 use crate::bus::{
     AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName,
     SpawnRequestEvent, topics,
@@ -1230,7 +1230,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }

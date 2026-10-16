@@ -27,8 +27,8 @@ use tokio_util::sync::CancellationToken;
 
 use residuum::agent::Agent;
 use residuum::agent::context::PromptContext;
-use residuum::agent::interrupt;
 use residuum::agent::{Tool, ToolRegistry};
+use residuum::bus::interrupt::Interrupt;
 use residuum::bus::{EndpointName, MainConversationEvent, TurnOrigin, spawn_broker, topics};
 use residuum::gateway::protocol::{ClientMessage, ServerMessage};
 use residuum::inference::{
@@ -310,7 +310,7 @@ async fn run_test_turn_loop(
             drop(publisher.publish(topics::MainConversation, event).await);
         }
 
-        let mut irx = interrupt::dead_interrupt_rx();
+        let (_, mut irx) = tokio::sync::mpsc::unbounded_channel::<Interrupt>();
         let outcome = agent
             .process_message(
                 &inbound.content,

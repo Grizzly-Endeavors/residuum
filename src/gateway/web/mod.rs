@@ -609,7 +609,7 @@ mod tests {
             None,
         );
         let Json(totals) = chat::api_usage(State(state)).await;
-        assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
+        assert_eq!(totals, crate::bus::usage::SessionUsageTotals::default());
     }
 
     #[tokio::test]
@@ -620,7 +620,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let memory_dir = dir.path().join("memory");
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
-        let mut totals = crate::agent::usage::SessionUsageTotals::default();
+        let mut totals = crate::bus::usage::SessionUsageTotals::default();
         totals.accumulate(Some(crate::inference::Usage {
             input_tokens: 300,
             output_tokens: 60,

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use crate::config::{ExternalChannelConfig, ExternalChannelKind};
 use crate::notify::channels::NotificationChannel;
 use crate::notify::external::{NtfyChannel, WebhookChannel};
-use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 /// Build external channel implementations from configs.
 #[tracing::instrument(skip_all, fields(count = configs.len()))]

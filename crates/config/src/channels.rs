@@ -1,4 +1,5 @@
-//! Notification types and channel configuration.
+//! The parsed `channels.toml` entries: one resolved external channel and its
+//! type-specific settings.
 
 /// A single resolved external channel configuration.
 #[derive(Debug, Clone)]
