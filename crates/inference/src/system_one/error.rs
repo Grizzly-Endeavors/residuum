@@ -37,7 +37,7 @@ pub enum SystemOneError {
 impl SystemOneError {
     /// Whether waiting and trying again may succeed.
     #[must_use]
-    pub fn is_retryable(&self) -> bool {
+    pub(crate) fn is_retryable(&self) -> bool {
         matches!(
             self,
             Self::Unreachable { .. }
@@ -51,13 +51,13 @@ impl SystemOneError {
     /// than one request being bad. A rejected request (an oversized or
     /// malformed state) leaves the service healthy for the next one.
     #[must_use]
-    pub fn affects_health(&self) -> bool {
+    pub(crate) fn affects_health(&self) -> bool {
         !matches!(self, Self::RequestRejected { .. })
     }
 
     /// The kind of outage this failure means, for the health status.
     #[must_use]
-    pub fn outage_kind(&self) -> SystemOneOutageKind {
+    pub(crate) fn outage_kind(&self) -> SystemOneOutageKind {
         match self {
             Self::NotConfigured => SystemOneOutageKind::NotConfigured,
             Self::Unreachable { .. }

@@ -26,7 +26,7 @@ use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 
 /// A live connection to a single MCP server process.
-pub struct McpClient {
+pub(crate) struct McpClient {
     service: RunningService<RoleClient, ()>,
     server_name: String,
     /// Optional per-server timeout for tool calls, from `McpServerEntry::timeout_secs`.
@@ -60,7 +60,7 @@ impl McpClient {
     /// Returns an error if the connection cannot be established or the MCP
     /// handshake fails.
     #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
-    pub async fn connect(
+    pub(crate) async fn connect(
         entry: &McpServerEntry,
         tools_path: Option<&OsStr>,
         workspace_root: Option<&Path>,
@@ -138,7 +138,7 @@ impl McpClient {
     /// # Errors
     /// Returns an error if the RPC call fails.
     #[tracing::instrument(skip_all, fields(mcp.server = %self.server_name))]
-    pub async fn list_tools(&self) -> Result<Vec<ToolDefinition>, anyhow::Error> {
+    pub(crate) async fn list_tools(&self) -> Result<Vec<ToolDefinition>, anyhow::Error> {
         let tools = self.service.peer().list_all_tools().await.map_err(|e| {
             anyhow::anyhow!(
                 "failed to list tools from mcp server '{}': {e}",
@@ -158,20 +158,12 @@ impl McpClient {
         Ok(definitions)
     }
 
-    /// Call a tool on this MCP server.
-    ///
-    /// # Errors
-    /// Returns `ToolError::Execution` if the RPC call fails.
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
-        self.handle().call_tool(name, args).await
-    }
-
     /// A cheap-to-clone handle to this connection's peer, so a caller (the
     /// registry) can drop whatever lock it holds before awaiting a
     /// potentially slow tool call, rather than holding it for the call's
     /// whole duration.
     #[must_use]
-    pub fn handle(&self) -> McpClientHandle {
+    pub(crate) fn handle(&self) -> McpClientHandle {
         McpClientHandle {
             peer: self.service.peer().clone(),
             server_name: self.server_name.clone(),
@@ -180,7 +172,7 @@ impl McpClient {
     }
 
     /// Gracefully shut down the MCP server connection.
-    pub async fn shutdown(self) {
+    pub(crate) async fn shutdown(self) {
         if let Err(e) = self.service.cancel().await {
             tracing::warn!(
                 server = %self.server_name,

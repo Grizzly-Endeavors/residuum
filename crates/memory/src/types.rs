@@ -70,7 +70,7 @@ impl DocSource {
     /// Returns `None` for any value the index should never contain — a signal
     /// of index corruption rather than a normal input.
     #[must_use]
-    pub fn from_index_value(value: &str) -> Option<Self> {
+    pub(crate) fn from_index_value(value: &str) -> Option<Self> {
         match value {
             "observation" => Some(Self::Observation),
             "chunk" => Some(Self::Chunk),
@@ -280,7 +280,7 @@ pub struct IndexChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestFileEntry {
     /// File modification time as ISO string.
-    pub mtime: String,
+    pub(crate) mtime: String,
     /// Document IDs that were indexed from this file.
     pub doc_ids: Vec<String>,
     /// Whether this file's observations/chunks have been embedded in the vector store.

@@ -27,7 +27,7 @@ const REQUEST_TIMEOUT_SECS: u64 = 120;
 
 /// The endpoint a [`SystemOneConfig`] describes.
 #[must_use]
-pub fn endpoint_from_config(cfg: &SystemOneConfig) -> SystemOneEndpoint {
+pub(crate) fn endpoint_from_config(cfg: &SystemOneConfig) -> SystemOneEndpoint {
     SystemOneEndpoint {
         provider: cfg.display_name(),
         base_url: cfg.url.clone(),

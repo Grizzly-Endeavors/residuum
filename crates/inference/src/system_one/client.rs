@@ -62,7 +62,7 @@ impl SystemOneClient {
 
     /// Replace the retry policy.
     #[must_use]
-    pub fn with_retry(mut self, retry: RetryConfig) -> Self {
+    pub(crate) fn with_retry(mut self, retry: RetryConfig) -> Self {
         self.retry = retry;
         self
     }

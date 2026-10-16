@@ -44,7 +44,7 @@ pub struct WikiPage {
 ///
 /// Syncs are serialized by an internal lock, so every handle to one indexer
 /// sees whole syncs, never interleaved ones.
-pub struct WikiIndexer {
+pub(crate) struct WikiIndexer {
     team_root: PathBuf,
     wiki_dir: PathBuf,
     /// Modification time of each page as of the last successful sync, keyed by

@@ -45,7 +45,7 @@ pub struct ArtifactSummary {
     pub title: String,
     /// When the page was last modified (RFC 3339, UTC).
     #[ts(type = "string")]
-    pub modified_at: DateTime<Utc>,
+    pub(crate) modified_at: DateTime<Utc>,
     /// Page size in bytes.
     #[ts(type = "number")]
     pub size: u64,
