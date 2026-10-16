@@ -354,7 +354,7 @@ pub(crate) struct AgentRuntime {
     /// each config reload rebuilds.
     pub lifecycle: crate::tools::LifecycleAccess,
     /// Shared Auto Mode, updated with the agent's `[auto_mode]` on reload.
-    pub auto_mode: Option<crate::agent::auto_mode::SharedAutoMode>,
+    pub auto_mode: crate::agent::auto_mode::SharedAutoMode,
     /// Shared tracing service for observability API.
     pub tracing_service: Arc<TracingService>,
     /// Main-conversation activity for the rail and Home.

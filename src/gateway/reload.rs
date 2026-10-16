@@ -680,7 +680,7 @@ fn build_spawn_context(
         hub_dir: rt.hub_dir.clone(),
         tz: rt.tz,
         depth_cap: new_cfg.background.subagent_depth_cap,
-        auto_mode: rt.auto_mode.clone(),
+        auto_mode: Some(rt.auto_mode.clone()),
     });
 
     Arc::new(SpawnContext {
@@ -917,9 +917,7 @@ async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
             &rt.layout,
             &rt.hub_dir,
         ));
-    if let Some(auto_mode) = &rt.auto_mode {
-        auto_mode.set_config(new_cfg.auto_mode.clone());
-    }
+    rt.auto_mode.set_config(new_cfg.auto_mode.clone());
     rt.agent
         .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);
     rt.agent
