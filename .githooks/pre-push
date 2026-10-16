@@ -605,13 +605,19 @@ plan_rust_tests() {
     if [ "$CHANGED_KNOWN" = 0 ]; then
         echo "Member tests: in the workspace unit run (no list of changed paths)."
     else
+        # --touched prints bare package names, which cargo takes only after -p;
+        # the fallback words are cargo arguments already and pass through as they are.
         if pick_packages "$dir" --touched "$CHANGED_PATHS" --workspace --exclude residuum; then
             member_reason="the member crates the changed paths are in"
+            for member in ${PICKED[@]+"${PICKED[@]}"}; do
+                MEMBER_ARGS+=(-p "$member")
+            done
         else
             member_reason="the selection failed"
+            MEMBER_ARGS=("${PICKED[@]}")
         fi
-        if [ "${#PICKED[@]}" -gt 0 ]; then
-            MEMBER_ARGS=("${PICKED[@]}" --lib --tests)
+        if [ "${#MEMBER_ARGS[@]}" -gt 0 ]; then
+            MEMBER_ARGS+=(--lib --tests)
             echo "Member tests: ${PICKED[*]} ($member_reason)."
         else
             echo "Member tests: none (no changed path is in a member crate)."
