@@ -11,12 +11,14 @@
 //! stop, so nothing is ever queued for an agent that isn't running. Each
 //! agent holds a [`TeamLink`], its handle on the router: it knows the
 //! agent's own name, sends on its behalf, and reads the roster that
-//! `list_agents` and the prompt's `TEAM` block show.
+//! `list_agents` shows. The agent's prompt reads the same roster through
+//! [`TeamRoster`].
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, PoisonError, RwLock};
 
+use crate::agent::TeamRoster;
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use crate::bus::SessionAddress;
 use crate::bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
@@ -391,12 +393,13 @@ impl TeamLink {
             .filter(|member| member.name != self.me)
             .collect()
     }
+}
 
+impl TeamRoster for TeamLink {
     /// The prompt's `TEAM` block, or `None` when this agent has no
     /// teammates. Built from the same roster `list_agents` returns, so it
     /// reflects state changes on the next turn.
-    #[must_use]
-    pub fn prompt_block(&self) -> Option<String> {
+    fn prompt_block(&self) -> Option<String> {
         let teammates = self.teammates();
         if teammates.is_empty() {
             return None;

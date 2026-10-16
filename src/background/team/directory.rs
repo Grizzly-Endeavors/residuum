@@ -3,8 +3,9 @@
 //! [`TeamDirectory`] is what the runtime asks of the hub: the team router
 //! reads the roster and each agent's state, the A2A listener finds an
 //! agent's A2A router, and the agent lifecycle tools create and delete
-//! teammates. The agent host implements it, as the hub's `AgentDirectory`
-//! does on top of it, so each user can be built and tested against a fake.
+//! teammates. The agent host implements it, and the hub's `AgentDirectory`
+//! extends it with the routes, lifecycle and events only the hub needs, so
+//! each user can be built and tested against a fake of this trait.
 
 use std::sync::{Arc, OnceLock, Weak};
 

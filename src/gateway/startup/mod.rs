@@ -874,7 +874,7 @@ async fn build_tools_and_agent(
         inputs.degradations,
     )
     .await;
-    agent.set_team(inputs.tool_deps.agent_messenger.team().clone());
+    agent.set_team(Arc::new(inputs.tool_deps.agent_messenger.team().clone()));
 
     (agent, tool_injections, output_topic_override_tx)
 }

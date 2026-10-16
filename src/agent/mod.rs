@@ -6,6 +6,7 @@ mod core;
 pub mod hop;
 pub mod recent_messages;
 mod stream;
+mod team_roster;
 #[cfg(test)]
 pub(crate) mod testing;
 mod think_tags;
@@ -17,5 +18,6 @@ pub mod usage;
 
 pub use core::{Agent, AgentConfig};
 pub use hop::HopCounter;
+pub use team_roster::TeamRoster;
 pub use tool::{Tool, ToolRegistry};
 pub use turn::{LiveOutputEndpoint, ReplyAudience, TurnOutput};
