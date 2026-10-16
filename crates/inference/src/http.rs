@@ -16,9 +16,9 @@ pub struct HttpClientConfig {
     /// length.
     pub timeout_secs: u64,
     /// Maximum idle connections per host (default: 10).
-    pub pool_max_idle_per_host: usize,
+    pub(crate) pool_max_idle_per_host: usize,
     /// HTTP/2 keep-alive interval in seconds (default: 30).
-    pub http2_keep_alive_secs: u64,
+    pub(crate) http2_keep_alive_secs: u64,
 }
 
 impl Default for HttpClientConfig {
@@ -88,7 +88,7 @@ impl SharedHttpClient {
     /// Get the HTTP client for streaming requests. It has no total timeout:
     /// a request fails only when no bytes arrive for the configured timeout.
     #[must_use]
-    pub fn streaming_client(&self) -> &Client {
+    pub(crate) fn streaming_client(&self) -> &Client {
         &self.stream_client
     }
 
