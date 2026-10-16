@@ -153,19 +153,7 @@ pub mod minute_format {
 #[cfg(test)]
 mod minute_format_opt {
     use chrono::NaiveDateTime;
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    /// # Errors
-    /// Returns a serializer error if the underlying serializer fails.
-    pub fn serialize<S>(dt: &Option<NaiveDateTime>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match dt {
-            Some(dt) => super::minute_format::serialize(dt, serializer),
-            None => serializer.serialize_none(),
-        }
-    }
+    use serde::{self, Deserialize, Deserializer};
 
     /// # Errors
     /// Returns a deserializer error if the string is present but not in `YYYY-MM-DDTHH:MM` format.
