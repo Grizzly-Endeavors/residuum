@@ -401,12 +401,13 @@ module_files() { # a::b::c::test -> the repo files that hold module a::b::c
         fi
     done
     if [[ "$member" == no ]]; then
-        # An integration test is named by its module in tests/it/, which can share
-        # a name with a src module, so both files count when both exist.
+        # An integration test is named by its module in tests/it/, and a standalone
+        # test target is tests/<name>.rs. Both can exist for one name, so every
+        # candidate that exists counts.
         if [[ -n "${repo_files[tests/it/${segs[0]}.rs]:-}" ]]; then
             out="$out tests/it/${segs[0]}.rs"
         fi
-        if [[ -z "$out" && -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
+        if [[ -n "${repo_files[tests/${segs[0]}.rs]:-}" ]]; then
             out="$out tests/${segs[0]}.rs"
         fi
     fi
