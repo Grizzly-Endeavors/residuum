@@ -8,7 +8,7 @@ name: CI
 # Merge queue lane: the Rust checks over the whole workspace with the Pebble
 # tests and the crate isolation check, the web checks without the visual
 # comparisons, a build of the source image (docker/Dockerfile) when the batch
-# changes what it builds from, cross-compile.yml when the batch changes
+# changes docker/ or .dockerignore, cross-compile.yml when the batch changes
 # dependencies or the toolchain, and actionlint.yml when a workflow changes.
 # `CI gate` fails the batch when any of them failed.
 #
@@ -80,10 +80,9 @@ jobs:
           QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           RUST_PATHS_RE: '^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
           WEB_PATHS_RE: '^web/|^scripts/(with-playwright-container|web-initial-route-size|ci-cpu-report)\.sh$|^\.github/workflows/(ci|web-checks)\.yml$'
-          # docker/Dockerfile copies the whole context that .dockerignore leaves,
-          # and builds the web app and the root package's release binary from it,
-          # so these are the files that build reads.
-          DOCKER_PATHS_RE: '^(docker|src|assets|crates|\.cargo|web)/|^(\.dockerignore|build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml)$|^\.github/workflows/ci\.yml$'
+          # The Docker files only: a source change that breaks the image build
+          # breaks the Rust or web checks too.
+          DOCKER_PATHS_RE: '^docker/|^\.dockerignore$'
           DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml|\.github/workflows/cross-compile\.yml)$|^crates/[^/]+/Cargo\.toml$'
           WORKFLOWS_PATHS_RE: '^\.github/(workflows/|actionlint\.yaml$)'
         run: |
@@ -98,7 +97,7 @@ jobs:
           rust=false web=false docker=false deps=false workflows=false
           if grep -qE "$RUST_PATHS_RE" <<<"$changed"; then rust=true; fi
           if grep -vE '^web/.*\.md$' <<<"$changed" | grep -qE "$WEB_PATHS_RE"; then web=true; fi
-          if grep -vE '\.md$' <<<"$changed" | grep -qE "$DOCKER_PATHS_RE"; then docker=true; fi
+          if grep -qE "$DOCKER_PATHS_RE" <<<"$changed"; then docker=true; fi
           if grep -qE "$DEPS_PATHS_RE" <<<"$changed"; then deps=true; fi
           if grep -qE "$WORKFLOWS_PATHS_RE" <<<"$changed"; then workflows=true; fi
 
