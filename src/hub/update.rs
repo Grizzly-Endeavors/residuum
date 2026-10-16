@@ -979,7 +979,7 @@ mod tests {
     fn release_asset_name_matches_every_release_build() {
         // The names must match what the release workflow uploads, or
         // self-update downloads a URL that 404s.
-        let release_workflow = include_str!("../.github/workflows/release.yml");
+        let release_workflow = include_str!("../../.github/workflows/release.yml");
         for (os, arch) in [
             ("linux", "x86_64"),
             ("linux", "aarch64"),

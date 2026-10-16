@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::BuildInfo;
-use crate::update::SharedUpdateStatus;
+use crate::hub::update::SharedUpdateStatus;
 
 /// Shared state for the update and lifecycle API routes.
 #[derive(Clone)]
@@ -20,7 +20,7 @@ pub(crate) struct UpdateApiState {
     pub restart_tx: mpsc::Sender<()>,
     pub gateway_shutdown_tx: mpsc::Sender<()>,
     /// Where to look for a rollback notice the update-rollback watchdog may
-    /// have left behind (see `crate::update::RollbackNotice`).
+    /// have left behind (see `crate::hub::update::RollbackNotice`).
     pub hub_dir: PathBuf,
 }
 
@@ -33,8 +33,8 @@ pub(crate) struct RollbackNoticeResponse {
     at: String,
 }
 
-impl From<crate::update::RollbackNotice> for RollbackNoticeResponse {
-    fn from(notice: crate::update::RollbackNotice) -> Self {
+impl From<crate::hub::update::RollbackNotice> for RollbackNoticeResponse {
+    fn from(notice: crate::hub::update::RollbackNotice) -> Self {
         Self {
             attempted_version: notice.attempted_version,
             reason: notice.reason,
@@ -50,8 +50,8 @@ pub(crate) struct UnverifiedUpdateResponse {
     at: String,
 }
 
-impl From<crate::update::UnverifiedUpdate> for UnverifiedUpdateResponse {
-    fn from(notice: crate::update::UnverifiedUpdate) -> Self {
+impl From<crate::hub::update::UnverifiedUpdate> for UnverifiedUpdateResponse {
+    fn from(notice: crate::hub::update::UnverifiedUpdate) -> Self {
         Self {
             version: notice.version,
             at: notice.at.to_rfc3339(),
@@ -87,13 +87,14 @@ pub(crate) async fn api_update_status(
 pub(crate) async fn api_update_check(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
-    crate::update::check_for_update(&state.update_status).await;
+    crate::hub::update::check_for_update(&state.update_status).await;
     Json(current_status(&state).await)
 }
 
 async fn current_status(state: &UpdateApiState) -> UpdateStatusResponse {
-    let rollback_notice = crate::update::read_rollback_notice(&state.hub_dir).map(Into::into);
-    let unverified_update = crate::update::read_unverified_update(&state.hub_dir).map(Into::into);
+    let rollback_notice = crate::hub::update::read_rollback_notice(&state.hub_dir).map(Into::into);
+    let unverified_update =
+        crate::hub::update::read_unverified_update(&state.hub_dir).map(Into::into);
     let s = state.update_status.read().await;
     UpdateStatusResponse {
         current: s.current.clone(),
@@ -123,9 +124,9 @@ pub(crate) async fn api_update_apply(
             )
         })?;
 
-    crate::update::download_and_install(state.build.version, &version)
+    crate::hub::update::download_and_install(state.build.version, &version)
         .await
-        .map_err(|e| match crate::update::rejection_message(&e) {
+        .map_err(|e| match crate::hub::update::rejection_message(&e) {
             // 422 so the Update page shows this text. A 500 is replaced
             // with a generic server fault, and a refused checksum is a
             // message the user has to see in order to retry.
@@ -195,7 +196,7 @@ mod tests {
         let build = crate::BUILD_INFO;
         UpdateApiState {
             build,
-            update_status: crate::update::shared_update_status(build.version),
+            update_status: crate::hub::update::shared_update_status(build.version),
             restart_tx,
             gateway_shutdown_tx,
             hub_dir,
@@ -214,9 +215,9 @@ mod tests {
     #[tokio::test]
     async fn status_surfaces_a_rollback_notice_left_by_the_watchdog() {
         let dir = tempfile::tempdir().unwrap();
-        crate::update::write_rollback_notice(
+        crate::hub::update::write_rollback_notice(
             dir.path(),
-            &crate::update::RollbackNotice {
+            &crate::hub::update::RollbackNotice {
                 attempted_version: "v2026.09.24".to_string(),
                 reason: "did not become healthy within 60s".to_string(),
                 at: chrono::Utc::now(),
@@ -235,9 +236,9 @@ mod tests {
     #[tokio::test]
     async fn status_surfaces_an_unverified_update() {
         let dir = tempfile::tempdir().unwrap();
-        crate::update::write_unverified_update(
+        crate::hub::update::write_unverified_update(
             dir.path(),
-            &crate::update::UnverifiedUpdate {
+            &crate::hub::update::UnverifiedUpdate {
                 version: "v2026.03.02".to_string(),
                 at: chrono::Utc::now(),
             },

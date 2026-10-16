@@ -6,7 +6,7 @@
 //! Every capability an artifact can detect has its id here.
 
 /// Feature ids this build supports.
-pub(crate) const FEATURES: &[&str] = &[
+pub const FEATURES: &[&str] = &[
     "workspace-tree",
     "workspace-read-batch",
     "model-complete",

@@ -522,7 +522,7 @@ impl Harness {
             checkpoints: crate::checkpoints::test_engine(),
             tunnel_status_rx: tunnel_rx,
             build: TEST_BUILD,
-            update_status: crate::update::shared_update_status(TEST_BUILD.version),
+            update_status: crate::hub::update::shared_update_status(TEST_BUILD.version),
             restart_tx,
             shutdown_tx,
             tracing_service: Arc::new(crate::tracing_service::TracingService::new(

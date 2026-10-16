@@ -84,9 +84,15 @@ async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
         "setup mode: config will be written under {}",
         tmp_root.display()
     );
-    match Box::pin(residuum::hub::run_hub(&tmp_root, residuum::BUILD_INFO)).await? {
-        residuum::gateway::GatewayExit::Shutdown => {}
-        residuum::gateway::GatewayExit::Restart => {
+    let inputs = residuum::hub::HubInputs {
+        root: tmp_root,
+        build: residuum::BUILD_INFO,
+        on_ready: Box::new(residuum::daemon::write_ready_file),
+        log_filter: residuum::logging::global_filter_handle(),
+    };
+    match Box::pin(residuum::hub::run_hub(inputs)).await? {
+        residuum::hub::HubExit::Shutdown => {}
+        residuum::hub::HubExit::Restart => {
             // Relaunching would repeat `--setup`, which wipes the temp config.
             tracing::warn!(
                 "restart requested in setup mode; exiting instead. Start residuum normally to run the updated binary"
@@ -125,9 +131,15 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     // fatal error no fallback could recover from. An agent that can't
     // start is `failed`; it doesn't end the hub.
     // Box::pin reduces stack frame size — this future is large
-    match Box::pin(residuum::hub::run_hub(&residuum_root, residuum::BUILD_INFO)).await? {
-        residuum::gateway::GatewayExit::Restart => Ok(ForegroundExit::Restart),
-        residuum::gateway::GatewayExit::Shutdown => Ok(ForegroundExit::Done),
+    let inputs = residuum::hub::HubInputs {
+        root: residuum_root,
+        build: residuum::BUILD_INFO,
+        on_ready: Box::new(residuum::daemon::write_ready_file),
+        log_filter: residuum::logging::global_filter_handle(),
+    };
+    match Box::pin(residuum::hub::run_hub(inputs)).await? {
+        residuum::hub::HubExit::Restart => Ok(ForegroundExit::Restart),
+        residuum::hub::HubExit::Shutdown => Ok(ForegroundExit::Done),
     }
 }
 
@@ -170,7 +182,7 @@ fn relaunch_command() -> Result<std::process::Command, FatalError> {
 /// Relaunch with the (potentially updated) binary.
 ///
 /// Takes the rollback-capable path — handing off to the update watchdog —
-/// when a self-update just swapped the binary (a [`residuum::update::PendingRollback`]
+/// when a self-update just swapped the binary (a [`residuum::hub::update::PendingRollback`]
 /// marker is present); otherwise takes the plain in-place path used for a
 /// restart that didn't change the binary.
 ///
@@ -192,7 +204,7 @@ fn relaunch(
     // could read stale success before that process has done anything.
     residuum::daemon::remove_ready_file(&config_dir);
 
-    if let Some(pending) = residuum::update::take_pending_rollback(&config_dir) {
+    if let Some(pending) = residuum::hub::update::take_pending_rollback(&config_dir) {
         return relaunch_with_watchdog(pid_lock, pid_path, &config_dir, &pending);
     }
     relaunch_plain(pid_lock, pid_path)
@@ -206,7 +218,7 @@ fn relaunch_with_watchdog(
     pid_lock: residuum::daemon::PidFileLock,
     pid_path: &std::path::Path,
     config_dir: &std::path::Path,
-    pending: &residuum::update::PendingRollback,
+    pending: &residuum::hub::update::PendingRollback,
 ) -> Result<(), FatalError> {
     remove_pid_file(pid_path);
     drop(pid_lock);

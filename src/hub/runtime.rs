@@ -7,7 +7,7 @@
 //! [`AgentHost`]. It runs until the process is told to stop, then stops every
 //! agent gracefully.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
@@ -16,17 +16,17 @@ use tokio::time::Duration;
 
 use crate::BuildInfo;
 use crate::bus::control::{ReloadReceiver, ReloadSignal};
-use crate::config::{Config, HubConfig};
-use crate::gateway::last_known_good;
-use crate::gateway::types::{GatewayExit, TermSignal};
+use crate::config::{Config, HubConfig, LogLevel};
 use crate::inference::EmbeddingProvider;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
 use crate::workbench::{HubApi, SdkContext};
 
+use super::config_watcher;
 use super::directory::AgentDirectory;
 use super::host::AgentHost;
 use super::http::{HubHttpState, hub_router};
+use super::last_known_good;
 use super::overview::{OverviewTracker, TeamOverview};
 use super::push::{PushService, PushTriggers, TriggerInputs};
 use super::relay_agents::RelayAgents;
@@ -37,6 +37,81 @@ use super::types::{HubEvent, HubNoticeKind, NoticeLevel};
 
 /// How often the hub checks for a newer version.
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(6);
+
+/// What the process hands the hub to run with.
+pub struct HubInputs {
+    /// The residuum root, which holds `hub/` and one directory per agent.
+    pub root: PathBuf,
+    /// The version and commit of the running binary.
+    pub build: BuildInfo,
+    /// Called once the servers are bound and the autostart agents have started
+    /// or failed; the process uses it to write its readiness marker.
+    pub on_ready: Box<dyn FnOnce(&Path) + Send>,
+    /// The global log filter, which a `[tracing]` reload changes.
+    pub log_filter: Option<&'static dyn FilterReload>,
+}
+
+/// Runtime log level switching.
+///
+/// Type-erases the `tracing_subscriber::reload::Handle` so it can be stored
+/// globally without naming the full subscriber stack type.
+pub trait FilterReload: Send + Sync {
+    /// Replace the active `EnvFilter` with one for the given log level.
+    ///
+    /// # Errors
+    /// Returns an error if the filter cannot be applied.
+    fn set_filter(&self, level: LogLevel) -> Result<(), String>;
+}
+
+/// Outcome of the hub's main loop.
+pub enum HubExit {
+    /// Clean shutdown (inbound channel closed).
+    Shutdown,
+    /// Restart requested (binary updated, re-exec needed).
+    Restart,
+}
+
+/// Platform-aware termination signal.
+///
+/// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`
+/// pends forever — graceful shutdown is handled via the HTTP `/api/hub/shutdown` endpoint
+/// or the cross-platform Ctrl+C handler instead.
+pub struct TermSignal {
+    #[cfg(unix)]
+    inner: tokio::signal::unix::Signal,
+}
+
+impl TermSignal {
+    /// Register the SIGTERM listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the signal handler cannot be registered.
+    #[cfg(unix)]
+    pub fn new() -> std::io::Result<Self> {
+        let inner = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        Ok(Self { inner })
+    }
+
+    /// Create the termination signal. Nothing to register on this platform.
+    #[cfg(not(unix))]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    /// Wait for the termination signal. On non-Unix platforms this never resolves.
+    #[cfg(unix)]
+    pub async fn recv(&mut self) {
+        self.inner.recv().await;
+    }
+
+    /// Wait for the termination signal. On non-Unix platforms this never resolves.
+    #[cfg(not(unix))]
+    pub async fn recv(&mut self) {
+        std::future::pending::<()>().await;
+    }
+}
 
 /// A running HTTP server task and the switch that stops it.
 struct HttpServer {
@@ -54,6 +129,24 @@ struct TunnelTask {
 struct A2aListenerTask {
     handle: JoinHandle<()>,
     shutdown_tx: watch::Sender<bool>,
+}
+
+/// Register the termination signal the run loop waits on. Only Unix can fail
+/// to register it.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "registering the termination signal can fail only on Unix"
+    )
+)]
+fn register_term_signal() -> Result<TermSignal, FatalError> {
+    #[cfg(unix)]
+    let sigterm = TermSignal::new()
+        .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
+    #[cfg(not(unix))]
+    let sigterm = TermSignal::new();
+    Ok(sigterm)
 }
 
 /// Load the hub config, falling back to its last-known-good copy if the live
@@ -415,19 +508,25 @@ struct HubRuntime {
     restart_rx: mpsc::Receiver<()>,
     shutdown_rx: mpsc::Receiver<()>,
     sigterm: TermSignal,
+    log_filter: Option<&'static dyn FilterReload>,
 }
 
 impl HubRuntime {
-    /// Start the hub on the residuum root `root`: build the shared services
+    /// Start the hub on the residuum root in `inputs`: build the shared services
     /// and the host, bring up the servers, and start the `autostart` agents.
     async fn start(
-        root: &Path,
-        build: BuildInfo,
+        inputs: HubInputs,
         hub_cfg: HubConfig,
         fallback_problem: Option<String>,
         gateway: tokio::net::TcpListener,
         a2a_listener: Option<tokio::net::TcpListener>,
     ) -> Result<Self, FatalError> {
+        let HubInputs {
+            root,
+            build,
+            on_ready,
+            log_filter,
+        } = inputs;
         let hub_dir = hub_cfg.config_dir.clone();
         let (restart_tx, restart_rx) = mpsc::channel::<()>(1);
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
@@ -437,16 +536,16 @@ impl HubRuntime {
         let pairing = crate::pairing::DevicePairing::open(&hub_dir);
         pairing.track_identity(tunnel_status_rx.clone());
 
-        let scan = scan_agents(root, &hub_cfg);
+        let scan = scan_agents(&root, &hub_cfg);
         let (workbench_serving, workbench_shutdown_tx, workbench_api, workbench_router) =
-            start_workbench_listener(root, build, &hub_cfg, &scan.teams_ports, &pairing).await;
+            start_workbench_listener(&root, build, &hub_cfg, &scan.teams_ports, &pairing).await;
         let services = HubServices::open(
-            root,
+            &root,
             &hub_cfg,
             tunnel_status_rx,
             HubControl {
                 build,
-                update_status: crate::update::shared_update_status(build.version),
+                update_status: crate::hub::update::shared_update_status(build.version),
                 restart_tx,
                 shutdown_tx,
             },
@@ -499,22 +598,15 @@ impl HubRuntime {
                 teams_ports: host.subscribe_teams_ports(),
             },
         );
-        let watcher = crate::gateway::watcher::spawn_hub_config_watcher(
-            hub_dir.join("config.toml"),
-            reload_tx,
-        );
-        #[cfg(unix)]
-        let sigterm = TermSignal::new().map_err(|e| {
-            FatalError::Gateway(format!("failed to register termination handler: {e}"))
-        })?;
-        #[cfg(not(unix))]
-        let sigterm = TermSignal::new();
+        let watcher =
+            config_watcher::spawn_hub_config_watcher(hub_dir.join("config.toml"), reload_tx);
+        let sigterm = register_term_signal()?;
 
         host.start_autostart().await;
 
         // Reaching this point means the servers are bound and every
         // autostart agent has either started or been recorded as failed.
-        crate::daemon::write_ready_file(&hub_dir);
+        on_ready(&hub_dir);
         if fallback_problem.is_none() {
             last_known_good::hub::save(&hub_dir);
         }
@@ -539,12 +631,13 @@ impl HubRuntime {
             restart_rx,
             shutdown_rx,
             sigterm,
+            log_filter,
         })
     }
 
     /// Run until told to stop, then stop every agent and the servers.
     /// `check_updates` turns the periodic version check on.
-    async fn run(mut self, check_updates: bool) -> GatewayExit {
+    async fn run(mut self, check_updates: bool) -> HubExit {
         if check_updates {
             spawn_update_check(&self.services.control.update_status);
         }
@@ -556,15 +649,15 @@ impl HubRuntime {
             tokio::select! {
                 () = self.sigterm.recv() => {
                     tracing::info!("received SIGTERM, shutting down");
-                    break GatewayExit::Shutdown;
+                    break HubExit::Shutdown;
                 }
                 _ = self.shutdown_rx.recv() => {
                     tracing::info!("shutdown requested through the HTTP API");
-                    break GatewayExit::Shutdown;
+                    break HubExit::Shutdown;
                 }
                 _ = self.restart_rx.recv() => {
                     tracing::info!("restart requested, shutting down for re-exec");
-                    break GatewayExit::Restart;
+                    break HubExit::Restart;
                 }
                 signal = self.reload_rx.recv() => {
                     if let Some(first) = signal {
@@ -819,7 +912,7 @@ impl HubRuntime {
             .tracing_service
             .update_config(new_hub.tracing.clone())
             .await;
-        if let Some(handle) = crate::logging::global_filter_handle()
+        if let Some(handle) = self.log_filter
             && let Err(e) = handle.set_filter(new_hub.tracing.log_level)
         {
             tracing::warn!(error = %e, "failed to update the log filter on a tracing config reload");
@@ -1002,7 +1095,7 @@ async fn start_workbench_listener(
 fn workbench_sdk(build: BuildInfo) -> SdkContext {
     SdkContext {
         version: build.version,
-        features: crate::features::FEATURES,
+        features: crate::hub::features::FEATURES,
     }
 }
 
@@ -1030,20 +1123,19 @@ fn publish_startup_notices(host: &AgentHost, hub: &HubConfig, fallback_problem: 
 }
 
 /// Spawn a fire-and-forget update check task.
-fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
+fn spawn_update_check(status: &crate::hub::update::SharedUpdateStatus) {
     let status = Arc::clone(status);
     crate::util::spawn_monitored("update-check", async move {
-        crate::update::check_for_update(&status).await;
+        crate::hub::update::check_for_update(&status).await;
     });
 }
 
-/// Run the hub on the residuum root `root` until it is told to stop.
+/// Run the hub on the residuum root in `inputs` until it is told to stop.
 ///
 /// Loads the hub config (falling back to its last-known-good copy; a missing
 /// timezone is allowed when no agent exists, so onboarding can ask for one),
-/// starts
-/// the servers and the shared services, and starts every agent whose
-/// `autostart` is on. Returns [`GatewayExit::Restart`] when the binary was
+/// starts the servers and the shared services, and starts every agent whose
+/// `autostart` is on. Returns [`HubExit::Restart`] when the binary was
 /// updated and the process should relaunch.
 ///
 /// # Errors
@@ -1052,20 +1144,13 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 /// last-known-good copy, or a hub-level service (the HTTP server, the team
 /// wiki index, the checkpoint repositories) cannot start. An agent that
 /// can't start does not fail the hub; it is `failed` and the rest run.
-pub async fn run_hub(root: &Path, build: BuildInfo) -> Result<GatewayExit, FatalError> {
-    let hub_dir = crate::config::paths::hub_dir(root);
+pub async fn run_hub(inputs: HubInputs) -> Result<HubExit, FatalError> {
+    let hub_dir = crate::config::paths::hub_dir(&inputs.root);
     let (hub_cfg, fallback_problem) = load_hub_with_fallback(&hub_dir)?;
     let gateway = bind_gateway(&hub_cfg.gateway).await?;
     let a2a_listener = bind_a2a(&hub_cfg).await;
-    let runtime = HubRuntime::start(
-        root,
-        build,
-        hub_cfg,
-        fallback_problem,
-        gateway,
-        a2a_listener,
-    )
-    .await?;
+    let runtime =
+        HubRuntime::start(inputs, hub_cfg, fallback_problem, gateway, a2a_listener).await?;
     Ok(Box::pin(runtime.run(true)).await)
 }
 
@@ -1084,7 +1169,7 @@ mod tests {
         };
         let sdk = workbench_sdk(build);
         assert_eq!(sdk.version, "1.2.3");
-        assert_eq!(sdk.features, crate::features::FEATURES);
+        assert_eq!(sdk.features, crate::hub::features::FEATURES);
     }
 
     /// What the hub said about one config reload.
@@ -1106,7 +1191,7 @@ mod tests {
         events: tokio::sync::broadcast::Receiver<HubEvent>,
         host: Arc<AgentHost>,
         push: Arc<crate::hub::push::PushService>,
-        exit: JoinHandle<GatewayExit>,
+        exit: JoinHandle<HubExit>,
         http: reqwest::Client,
         model: MockServer,
     }
@@ -1166,9 +1251,17 @@ mod tests {
             // process can take either port before the hub starts.
             let gateway = gateway_reservation.into_tokio_listener();
             let a2a = a2a_reservation.into_tokio_listener();
+            let inputs = HubInputs {
+                root: root.path().to_path_buf(),
+                build: crate::BUILD_INFO,
+                on_ready: Box::new(|dir| {
+                    std::fs::write(crate::config::HubPaths::new(dir).ready_file(), "ready")
+                        .unwrap();
+                }),
+                log_filter: None,
+            };
             let runtime = HubRuntime::start(
-                root.path(),
-                crate::BUILD_INFO,
+                inputs,
                 hub_config,
                 fallback_problem.map(str::to_string),
                 gateway,
@@ -1308,7 +1401,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(matches!(exit, GatewayExit::Shutdown));
+            assert!(matches!(exit, HubExit::Shutdown));
         }
     }
 

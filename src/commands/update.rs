@@ -25,7 +25,7 @@ pub(super) struct UpdateArgs {
 /// the install script cannot be executed.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalError> {
-    use residuum::update;
+    use residuum::hub::update;
 
     let current = residuum::BUILD_INFO.version;
     println!("residuum: checking for updates...");

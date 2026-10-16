@@ -26,7 +26,6 @@ pub mod bus;
 pub mod checkpoints;
 pub mod client_context;
 pub mod daemon;
-pub(crate) mod features;
 pub mod gateway;
 pub mod hub;
 pub mod inbox;
@@ -40,5 +39,4 @@ pub mod subconscious;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod tools;
-pub mod update;
 pub mod workspace;

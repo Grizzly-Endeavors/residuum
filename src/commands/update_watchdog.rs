@@ -136,9 +136,9 @@ fn roll_back(
     );
 
     residuum::daemon::remove_ready_file(config_dir);
-    residuum::update::write_rollback_notice(
+    residuum::hub::update::write_rollback_notice(
         config_dir,
-        &residuum::update::RollbackNotice {
+        &residuum::hub::update::RollbackNotice {
             attempted_version: args.target_version.clone(),
             reason: reason.to_string(),
             at: chrono::Utc::now(),
@@ -230,7 +230,7 @@ mod tests {
             "the preserved backup should be consumed by the restore"
         );
 
-        let notice = residuum::update::read_rollback_notice(dir.path()).unwrap();
+        let notice = residuum::hub::update::read_rollback_notice(dir.path()).unwrap();
         assert_eq!(notice.attempted_version, "v2026.09.24");
         assert_eq!(notice.reason, "did not become healthy within 60s");
     }

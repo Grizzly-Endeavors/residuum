@@ -1,4 +1,5 @@
-//! Polling-based file watcher for workspace config hot-reload.
+//! Polling-based file watchers for config hot-reload: the hub's `hub/config.toml`
+//! and the agent's workspace and config files.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -47,7 +48,8 @@ impl WatchedFile {
 /// Polls `mcp_path`, `channels_path`, `agent_card_path`, and `a2a_agents_path`
 /// every 2 seconds. When any file's mtime changes, debounces 500ms then sends
 /// `ReloadSignal::Workspace`.
-pub(super) fn spawn_workspace_watcher(
+#[must_use]
+pub fn spawn_workspace_watcher(
     mcp_path: PathBuf,
     channels_path: PathBuf,
     agent_card_path: PathBuf,
@@ -109,7 +111,8 @@ pub(super) fn spawn_workspace_watcher(
 /// Settings form and Raw tab already send explicitly after their own
 /// writes, so a direct edit (the agent's `write_file`/`edit_file`, or a
 /// manual edit outside Residuum entirely) picks up the change the same way.
-pub(super) fn spawn_root_config_watcher(
+#[must_use]
+pub fn spawn_root_config_watcher(
     config_toml_path: PathBuf,
     providers_toml_path: PathBuf,
     reload_tx: crate::bus::control::ReloadSender,
