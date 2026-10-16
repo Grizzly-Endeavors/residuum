@@ -17,7 +17,7 @@ mod tests {
     };
     use residuum::gateway::file_server::FileRegistry;
     use residuum::gateway::protocol::ServerMessage;
-    use residuum::interfaces::websocket::subscriber::WsSubscribers;
+    use residuum::gateway::websocket::subscriber::WsSubscribers;
     use residuum::tools::send_message::SendMessageTool;
 
     fn make_registry() -> EndpointRegistry {

@@ -17,7 +17,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::interrupt::Interrupt;
-use crate::bus::session::{SessionInfo, SessionState, slugify};
+use crate::bus::session::{MAIN_ADDRESS, SessionInfo, SessionState, slugify};
 use crate::bus::{ConversationTarget, EventTrigger, SessionAddress, SkillName};
 use crate::config::ModelSelector;
 
@@ -597,6 +597,46 @@ async fn persist_resume_points(
     crate::util::fs::atomic_write(path, &json).await
 }
 
+/// Why [`stop_named_session`] refused to stop a session. The `Display` text
+/// is the message shown to the user.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StopSessionError {
+    /// The name was `main`, which is the main agent, not a session.
+    #[error("The main agent can't be stopped as a session.")]
+    Main,
+    /// No live session at this address can still be stopped (it may already
+    /// be finishing).
+    #[error("{address} isn't running, so there's nothing to stop.")]
+    NotLive {
+        /// The address that was asked for.
+        address: SessionAddress,
+    },
+}
+
+/// Stop the live session at `address`: the stop that the web UI's Stop
+/// button, its session endpoint and a chat interface's `/stop <name>` share.
+/// A running turn is interrupted and an idle session is ended.
+///
+/// # Errors
+/// Returns [`StopSessionError::Main`] when `address` is `main`, and
+/// [`StopSessionError::NotLive`] when it doesn't name a live session that can
+/// still be stopped.
+pub fn stop_named_session(
+    registry: &SessionRegistry,
+    address: &str,
+) -> Result<(), StopSessionError> {
+    if address == MAIN_ADDRESS {
+        return Err(StopSessionError::Main);
+    }
+    let address = SessionAddress::from(address);
+    if registry.stop(&address) {
+        tracing::info!(address = %address, "session stop requested");
+        Ok(())
+    } else {
+        Err(StopSessionError::NotLive { address })
+    }
+}
+
 /// Deterministic, URL/filename-safe address for an external conversation
 /// session, derived from its interface endpoint and its stable conversation
 /// id.
@@ -636,7 +676,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::session::{MAIN_ADDRESS, SessionCategory, generate_address, generate_run_id};
+    use crate::bus::session::{SessionCategory, generate_address, generate_run_id};
 
     fn sample_info(address: &str) -> SessionInfo {
         SessionInfo {

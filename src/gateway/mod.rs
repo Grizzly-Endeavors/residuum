@@ -17,6 +17,7 @@ pub mod turn_journal;
 pub(crate) mod types;
 pub(crate) mod watcher;
 pub(crate) mod web;
+pub mod websocket;
 mod ws;
 
 pub use last_known_good::exists as has_last_known_good;

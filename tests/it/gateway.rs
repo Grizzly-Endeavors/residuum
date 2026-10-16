@@ -221,7 +221,7 @@ async fn start_test_gateway(
     let ep = EndpointName::from("ws");
 
     let file_registry = residuum::gateway::file_server::FileRegistry::new("scout");
-    let mut subs = residuum::interfaces::websocket::subscriber::WsSubscribers::new(
+    let mut subs = residuum::gateway::websocket::subscriber::WsSubscribers::new(
         &bus,
         &bus,
         ep.clone(),

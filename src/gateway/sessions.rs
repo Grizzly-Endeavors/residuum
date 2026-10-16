@@ -4,7 +4,7 @@
 //! and workbench artifacts (over HTTP) share.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
-use crate::background::registry::SessionRegistry;
+use crate::background::registry::{SessionRegistry, StopSessionError, stop_named_session};
 use crate::background::store::RunRecord;
 use crate::bus::session::{
     ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo,
@@ -324,21 +324,13 @@ pub(crate) fn stop_session(
     registry: &SessionRegistry,
     address: &str,
 ) -> Result<(), SessionCommandError> {
-    if address == MAIN_ADDRESS {
-        return Err(SessionCommandError::new(
-            SessionCommandErrorCode::InvalidRequest,
-            "The main agent can't be stopped as a session.",
-        ));
-    }
-    if registry.stop(&SessionAddress::from(address)) {
-        tracing::info!(address, "session stop requested");
-        Ok(())
-    } else {
-        Err(SessionCommandError::new(
-            SessionCommandErrorCode::NotLive,
-            format!("{address} isn't running, so there's nothing to stop."),
-        ))
-    }
+    stop_named_session(registry, address).map_err(|e| {
+        let code = match e {
+            StopSessionError::Main => SessionCommandErrorCode::InvalidRequest,
+            StopSessionError::NotLive { .. } => SessionCommandErrorCode::NotLive,
+        };
+        SessionCommandError::new(code, e.to_string())
+    })
 }
 
 #[cfg(test)]

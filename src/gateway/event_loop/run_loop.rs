@@ -16,13 +16,12 @@ use crate::config::{Config, HubConfig};
 use crate::gateway::types::{AgentRuntime, CoreReceivers, GatewayCore, GatewayState};
 use crate::hub::activity::ActivityTracker;
 use crate::hub::services::HubServices;
+use crate::interfaces::AdapterSenders;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::util::FatalError;
 
 use super::commands::handle_server_command;
-use super::http::{
-    A2aServingDeps, AdapterSenders, build_agent_a2a, build_gateway_app, spawn_adapters,
-};
+use super::http::{A2aServingDeps, build_agent_a2a, build_gateway_app, spawn_adapters};
 use super::pulse::{handle_pulse_result_event, handle_pulse_tick};
 use super::turns::handle_inbound_message;
 

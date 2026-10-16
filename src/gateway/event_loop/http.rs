@@ -2,30 +2,13 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
 use crate::background::registry::SessionRegistry;
-use crate::bus::control::{ServerCommand, StopRequest};
 use crate::config::Config;
 use crate::gateway::types::GatewayState;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
-
-/// Bundled senders for spawning a chat adapter (Discord or Telegram).
-#[derive(Clone)]
-pub struct AdapterSenders {
-    pub publisher: crate::bus::Publisher,
-    pub bus_handle: crate::bus::BusHandle,
-    pub reload: crate::bus::control::ReloadSender,
-    pub command: mpsc::Sender<ServerCommand>,
-    pub stop: mpsc::Sender<StopRequest>,
-    /// Looked up when a `/stop` command targets a conversation session
-    /// rather than main — see [`crate::interfaces::dispatch_stop_request`].
-    pub session_registry: Arc<SessionRegistry>,
-    /// Where the adapter registers the conversations it can reach.
-    pub(crate) conversations: crate::bus::conversations::ConversationDirectory,
-}
+use crate::interfaces::AdapterSenders;
 
 /// State bundle for the smaller, cross-cutting API routers, grouped so
 /// [`build_gateway_app`] doesn't grow another positional parameter for each

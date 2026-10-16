@@ -935,8 +935,8 @@ async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
 
 /// Senders a reloaded chat adapter needs. Built once per adapter because the
 /// closure that starts it has to own them.
-fn chat_adapter_senders(rt: &AgentRuntime) -> crate::gateway::event_loop::AdapterSenders {
-    crate::gateway::event_loop::AdapterSenders {
+fn chat_adapter_senders(rt: &AgentRuntime) -> crate::interfaces::AdapterSenders {
+    crate::interfaces::AdapterSenders {
         publisher: rt.publisher.clone(),
         bus_handle: rt.bus_handle.clone(),
         reload: rt.reload_tx.clone(),
