@@ -1,10 +1,10 @@
 //! Web Push: notifications to the user's browsers and installed apps.
 //!
-//! [`PushService`] owns the pieces. The VAPID key pair ([`keys`]) identifies
-//! the hub to push services, the devices file ([`devices`]) holds each
-//! registered browser's subscription and preferences, [`encrypt`] seals a
-//! payload the way RFC 8291 requires, and [`deliver`] sends it and sorts the
-//! answer. [`triggers`] decides what is worth a push and calls
+//! [`PushService`] owns the pieces. The VAPID key pair (`keys`) identifies
+//! the hub to push services, the devices file (`devices`) holds each
+//! registered browser's subscription and preferences, `encrypt` seals a
+//! payload the way RFC 8291 requires, and `deliver` sends it and sorts the
+//! answer. `triggers` decides what is worth a push and calls
 //! [`PushService::notify`], which returns at once; [`presence`] records which
 //! devices have a window in front of the user, so triggers skip them. The
 //! HTTP routes that manage devices are in `hub::http::push`. See

@@ -4,7 +4,7 @@
 //! lets this instance's account issue certificates, order the certificate, and
 //! keep it renewed.
 //!
-//! The manager implements [`SessionHandler`], so the tunnel client calls it
+//! The manager implements `SessionHandler`, so the tunnel client calls it
 //! for every connect, stream and disconnect. It owns every trust decision:
 //! nothing the relay sends is believed beyond what it can prove (see
 //! `super::identity`).

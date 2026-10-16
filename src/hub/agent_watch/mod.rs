@@ -1,6 +1,6 @@
 //! What the hub learns about its running agents as it happens.
 //!
-//! Each running agent has a **watcher** (see [`watcher`]): a task the host
+//! Each running agent has a **watcher** (see `watcher`): a task the host
 //! starts with the agent and stops when the agent stops. It reads the agent's
 //! own bus, and publishes what it finds on the hub's [`AgentChangeFeed`] as
 //! [`AgentChange`]s. The activity tracker's turn hook publishes there too, as

@@ -47,7 +47,7 @@ pub struct TrackedTask {
     pub agent: String,
     pub task_id: String,
     pub context_id: String,
-    /// A plain word from [`task_state_str`] — `"working"`, `"input_required"`,
+    /// A plain word from `task_state_str` — `"working"`, `"input_required"`,
     /// `"completed"`, etc.
     pub state: String,
     #[serde(default)]

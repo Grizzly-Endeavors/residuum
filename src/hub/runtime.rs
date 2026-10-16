@@ -3,7 +3,7 @@
 //!
 //! [`run_hub`] starts the HTTP server, the relay tunnel, the A2A listener,
 //! the workbench server, tracing, and the updater, builds the services every
-//! agent shares (see [`HubServices`]), and hands the agents to the
+//! agent shares (see `HubServices`), and hands the agents to the
 //! [`AgentHost`]. It runs until the process is told to stop, then stops every
 //! agent gracefully.
 

@@ -6,7 +6,7 @@
 //! names at every folder level and are not indexed.
 //!
 //! Pages change whenever an agent or the user edits them, so instead of a
-//! startup-only sync the team index calls [`WikiIndexer::sync`] before every
+//! startup-only sync the team index calls `WikiIndexer::sync` before every
 //! search: a walk of modification times finds changed, new, and deleted pages,
 //! and only those are reindexed. Embeddings are reused across restarts when a
 //! page's text is unchanged.

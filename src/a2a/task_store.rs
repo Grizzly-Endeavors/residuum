@@ -141,7 +141,7 @@ impl FileTaskStore {
     }
 
     /// Every task belonging to `caller` (its `residuum.caller` metadata),
-    /// for [`super::handler::ResiduumA2aHandler::list_tasks`] scoping.
+    /// for `super::handler::ResiduumA2aHandler::list_tasks` scoping.
     pub async fn tasks_for_caller(&self, caller: &str) -> Vec<Task> {
         self.tasks
             .read()

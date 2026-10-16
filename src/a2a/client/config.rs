@@ -94,7 +94,7 @@ pub fn validate_a2a_agents_json(content: &str) -> Result<(), String> {
 
 /// Diagnostics for `content` as `config/a2a.json`.
 ///
-/// Reuses [`entry_problems`], the same per-entry check
+/// Reuses `entry_problems`, the same per-entry check
 /// [`load_a2a_agents_map`] applies, so a diagnostic can never disagree with
 /// what loading skips. A JSON syntax error carries `serde_json`'s own
 /// line/column. Doesn't check `${agent-key:...}`/`${ENV}` header references

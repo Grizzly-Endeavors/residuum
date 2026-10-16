@@ -2,7 +2,7 @@
 //!
 //! Sends the full observation log to an LLM which reorganizes and merges
 //! observations while preserving chronology. Compression ([`Reflector::compress`])
-//! only reads; [`replace_with_compressed`] writes the result back, carrying over
+//! only reads; `replace_with_compressed` writes the result back, carrying over
 //! anything appended to the log while the model was working.
 
 mod parse;
@@ -111,7 +111,7 @@ impl Reflector {
     }
 
     /// Compress `log` into a reorganized, shorter log. Reads the reflector
-    /// guidance from disk but writes nothing; [`replace_with_compressed`]
+    /// guidance from disk but writes nothing; `replace_with_compressed`
     /// stores the result.
     ///
     /// # Errors

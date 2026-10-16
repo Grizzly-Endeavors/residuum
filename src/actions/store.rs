@@ -172,7 +172,7 @@ impl ActionStore {
         }
     }
 
-    /// Add an action to the store (does not save; call [`save`] separately).
+    /// Add an action to the store (does not save; call [`ActionStore::save`] separately).
     pub fn add(&mut self, action: ScheduledAction) {
         debug!(id = %action.id, name = %action.name, run_at = %action.run_at, "scheduled action added");
         self.actions.push(action);

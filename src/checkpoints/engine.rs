@@ -466,7 +466,7 @@ impl CheckpointEngine {
     /// own, so it's safe to call from a blocking context too. Serializes
     /// against every other process committing to this same repository (the
     /// gateway, or a concurrent `residuum` CLI invocation); see
-    /// [`super::backend::GitRepo::commit_snapshot`].
+    /// `super::backend::GitRepo::commit_snapshot`.
     ///
     /// # Errors
     /// Returns [`CheckpointError`] on failure. Callers on the hot path

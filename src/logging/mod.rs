@@ -4,7 +4,7 @@
 //! - `init_default_tracing`: stderr-only (most CLI subcommands)
 //! - `init_daemon_tracing`: file + optional stderr (daemon/foreground serve)
 //!
-//! [`format`] renders the structured log lines that `residuum logs` reads back.
+//! [`mod@format`] renders the structured log lines that `residuum logs` reads back.
 
 pub mod format;
 

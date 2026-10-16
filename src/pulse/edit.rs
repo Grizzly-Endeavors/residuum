@@ -1,6 +1,6 @@
 //! In-place text edits to HEARTBEAT.yml.
 //!
-//! Unlike [`super::types::load_heartbeat`], which parses the file into
+//! Unlike `super::types::load_heartbeat`, which parses the file into
 //! structured data, these edits work on the raw text and touch only the one
 //! value being changed — every other byte (comments, blank lines,
 //! formatting, other pulses) survives untouched. This is what lets the
