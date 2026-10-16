@@ -27,13 +27,12 @@ use super::{
 /// Shared handles some tools take at registration, beyond their own
 /// arguments. Each is optional, so a registry built without one still works:
 /// the tools that would use it do without.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct RegistryInjections {
     /// Effective `PATH` handle injected into the `exec` tool.
     pub tools_path: Option<SharedToolsPath>,
     /// Checkpoint engine injected into `exec` (for `store_output_as`).
-    /// `None` means minting a key through `exec` isn't checkpointed (matches
-    /// a registry without agent keys' "not available" story).
+    /// `None` means minting a key through `exec` isn't checkpointed first.
     pub checkpoints: Option<Arc<crate::checkpoints::CheckpointEngine>>,
     /// Bus publisher injected into `exec`, `agent_key_delete` and
     /// `user_inbox_add`, so they can surface a notice when they overwrite or
@@ -76,7 +75,7 @@ pub fn reload_timezone_tools(
 /// Reload the `ollama_web_search` tool in place from the current
 /// standalone web search backend config (e.g. after a config reload).
 ///
-/// Mirrors `gateway::startup::tools::init_tool_registry`'s startup-time
+/// Mirrors `tools::main_tools::init_tool_registry`'s startup-time
 /// gating: removes any existing `ollama_web_search` tool, then re-adds
 /// it with the current API key/base URL if `backend` names the
 /// `"ollama"` backend. A no-op call (backend unchanged) still removes
@@ -368,7 +367,7 @@ pub(crate) fn register_spawn_tool(tools: &mut ToolRegistry, deps: background::Sp
 
 /// Register `a2a_task_update` when `conversation_target` names the
 /// `a2a` endpoint — session-only (see `SESSION_ONLY_TOOLS` in
-/// `gateway::startup::tools`).
+/// `tools::main_tools`).
 pub(crate) fn register_a2a_task_update_tool(
     tools: &mut ToolRegistry,
     conversation_target: Option<&ConversationTarget>,
@@ -386,7 +385,7 @@ pub(crate) fn register_a2a_task_update_tool(
 }
 
 /// Register `ollama_web_search`, gated the same way as main's (see
-/// `gateway::startup::tools::init_tool_registry`): only when
+/// `tools::main_tools::init_tool_registry`): only when
 /// `backend` names the `"ollama"` standalone web search backend.
 pub(crate) fn register_ollama_web_search_tool_if_configured(
     tools: &mut ToolRegistry,
@@ -542,7 +541,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_inbox_add_announces_through_the_registrys_publisher_and_after_a_reload() {
+    async fn user_inbox_add_announces_through_the_injected_publisher_and_after_a_reload() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         let inbox = layout.user_inbox_dir();

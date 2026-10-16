@@ -62,7 +62,7 @@ pub struct AdapterSenders {
     pub command: tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
     pub stop: tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
     /// Looked up when a `/stop` command targets a conversation session
-    /// rather than main — see [`dispatch_stop_request`].
+    /// rather than main — see `dispatch_stop_request`.
     pub session_registry: std::sync::Arc<SessionRegistry>,
     /// Where the adapter registers the conversations it can reach.
     pub(crate) conversations: crate::bus::conversations::ConversationDirectory,

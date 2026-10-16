@@ -20,14 +20,14 @@ The file lives at `src/tools/TOOLS.md`.
 
 - Declare the module in `src/tools/mod.rs` (`mod foo;` or `pub mod foo;`).
 - Add a `register_*` function for it in `src/tools/registration.rs`, then wire that call into whichever registry-building surface(s) should carry it. There are **two separate registration surfaces**:
-  - the main agent's registry, built by `init_tool_registry` in `src/gateway/startup/tools.rs`
+  - the main agent's registry, built by `init_tool_registry` in `src/tools/main_tools.rs`
   - the sub-agent (session) registry, built by `SessionTools::build` (the `SessionToolFactory` impl) in `src/tools/registry.rs`
 
-  **The rule: every tool registered for main is also registered for sessions, with the same config gating, except `switch_endpoint`** — the one documented exception, because it redirects main's background-turn output and is meaningless for a session. If a tool genuinely must stay main-only, add it to the allowlist next to `switch_endpoint` in both `SessionTools::build`'s doc comment and the `MAIN_ONLY_TOOLS` constant in `src/gateway/startup/tools.rs`'s tests, with a comment explaining why — don't just leave it off silently.
+  **The rule: every tool registered for main is also registered for sessions, with the same config gating, except `switch_endpoint`** — the one documented exception, because it redirects main's background-turn output and is meaningless for a session. If a tool genuinely must stay main-only, add it to the allowlist next to `switch_endpoint` in both `SessionTools::build`'s doc comment and the `MAIN_ONLY_TOOLS` constant in `src/tools/main_tools.rs`'s tests, with a comment explaining why — don't just leave it off silently.
 
   The reverse also happens: a tool that only makes sense for a session, never for main (`a2a_task_update`, registered only for sessions started from the `a2a` endpoint), goes in `SESSION_ONLY_TOOLS` next to `MAIN_ONLY_TOOLS` in the same test file, with the same kind of comment explaining why main doesn't get it.
 
-  `gateway::startup::tools::tests::session_registry_matches_main_minus_documented_allowlist`
+  `tools::main_tools::tests::session_registry_matches_main_minus_documented_allowlist`
   enforces both directions: it builds both registries from equivalent config
   (every optional tool gate turned on) and asserts the session registry's
   tool names equal main's, minus `MAIN_ONLY_TOOLS` and plus

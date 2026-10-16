@@ -15,6 +15,7 @@ pub(crate) mod file_tracker;
 pub mod inbox;
 pub(crate) mod list_conversations;
 pub(crate) mod list_endpoints;
+pub(crate) mod main_tools;
 pub mod memory_get;
 pub mod memory_search;
 pub mod message_agent;
@@ -29,6 +30,8 @@ pub(crate) mod submit_feedback;
 pub(crate) mod switch_endpoint;
 #[cfg(test)]
 pub(crate) mod team_namespace_tests;
+#[cfg(test)]
+pub(crate) mod testing;
 pub(crate) mod web_fetch;
 pub mod workspace_checkpoints;
 mod write;

@@ -3,7 +3,7 @@
 //! transcript instead of only published as a user-facing notice.
 //!
 //! Wired only into main's `write_file`/`edit_file` tools (see
-//! `gateway::startup::tools::init_tool_registry`) — a session's tool
+//! `tools::main_tools::init_tool_registry`) — a session's tool
 //! registry never gets a [`ConfigWriteWatch`], since there is no live,
 //! durable `Agent` to deliver a later note back into once a session's run
 //! completes.
