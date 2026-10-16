@@ -16,8 +16,8 @@ use super::error::{json_error, lifecycle_error_response};
 use crate::background::team::{
     Actor, AgentState, AgentSummary, CreateAgentRequest, LifecycleError,
 };
-use crate::gateway::web::cloud::CloudStatusResponse;
 use crate::hub::types::{AgentListResponse, DeletedAgentListResponse};
+use crate::hub::web::cloud::CloudStatusResponse;
 use crate::hub::{AgentDirectory, AgentPatch, RestoreAgentRequest};
 
 /// What the lifecycle and status routes read.

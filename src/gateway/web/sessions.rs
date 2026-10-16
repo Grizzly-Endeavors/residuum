@@ -25,7 +25,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use super::chat::HistoryMessage;
 use crate::background::messaging::AgentMessenger;
 use crate::background::owner_session::{OwnerSessionStart, load_main_conversation};
 use crate::background::registry::SessionRegistry;
@@ -38,6 +37,7 @@ use crate::gateway::sessions::{
     summary_from_record,
 };
 use crate::gateway::web::artifact_identity::artifact_identity;
+use crate::hub::web::chat::HistoryMessage;
 use crate::inference::Message;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;

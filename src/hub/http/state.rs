@@ -15,6 +15,7 @@ use crate::hub::overview::TeamOverview;
 use crate::hub::push::PushService;
 use crate::hub::team_events::TeamEventLog;
 use crate::hub::update::SharedUpdateStatus;
+use crate::hub::web::WebAssetSource;
 use crate::inference::system_one::SystemOneService;
 use crate::tracing_service::{ClientContext, Subagent, TracingService};
 use crate::tunnel::TunnelStatus;
@@ -107,4 +108,6 @@ pub struct HubHttpState {
     pub pairing: crate::pairing::DevicePairing,
     /// Remote access over the secure tunnel: its status and actions.
     pub remote_access: crate::remote_access::slot::RemoteAccessSlot,
+    /// The embedded web app, which the static routes serve.
+    pub assets: WebAssetSource,
 }

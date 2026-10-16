@@ -562,7 +562,7 @@ const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
         "makes an object directory unwritable (0o500) and restores it (0o700)",
     ),
     (
-        "src/gateway/web/agent_keys.rs",
+        "src/hub/web/agent_keys.rs",
         2,
         "makes an object directory unwritable (0o500) and restores it (0o700) in a drop guard",
     ),

@@ -121,7 +121,7 @@ mod tests {
     use super::*;
 
     fn test_state(dir: &std::path::Path) -> HubApiState {
-        HubApiState::for_test(dir)
+        HubApiState::for_test(dir, crate::hub::test_support::fixture_assets)
     }
 
     #[tokio::test]
@@ -221,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn delete_returns_the_checkpoint_taken_before_the_delete() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_hub_state(dir.path());
+        let state = crate::hub::test_support::watching_hub_state(dir.path());
         let _created = api_agent_keys_set(
             State(state.clone()),
             Json(SetAgentKeyRequest {
@@ -271,7 +271,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_hub_state(dir.path());
+        let state = crate::hub::test_support::watching_hub_state(dir.path());
         let _created = api_agent_keys_set(
             State(state.clone()),
             Json(SetAgentKeyRequest {

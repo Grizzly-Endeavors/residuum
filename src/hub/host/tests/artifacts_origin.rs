@@ -25,6 +25,7 @@ async fn artifacts_port(hub: &Fixture) -> String {
         &hub.overview,
         reload_tx,
         None,
+        crate::hub::test_support::fixture_assets,
     )
     .unwrap();
     let api = HubApi::new();

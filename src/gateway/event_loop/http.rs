@@ -93,12 +93,12 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
 /// `hub::AgentDirectory::agent_file_router`, here on the agent's own open
 /// state. The file links, workspace and token, are among them, served from
 /// the agent's live file registry. It carries no hub-level
-/// route, no repair route (see `hub::http::agent_repair_router`), no static
+/// route, no repair route (see `hub::web::agent_repair_api_router`), no static
 /// assets and no request guards; the hub router serves it under
 /// `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
     state: GatewayState,
-    config_api_state: web::ConfigApiState,
+    config_api_state: crate::hub::web::ConfigApiState,
     extra: ExtraApiStates,
 ) -> axum::Router {
     use axum::routing::get;
@@ -123,10 +123,9 @@ pub fn build_gateway_app(
             config: config_api_state.clone(),
             tunnel_status_rx: state_tunnel_status_rx,
         }))
-        .merge(web::agent_files_api_router(web::AgentFilesState::running(
-            &config_api_state,
-            file_registry,
-        )))
+        .merge(crate::hub::web::agent_files_api_router(
+            crate::hub::web::AgentFilesState::running(&config_api_state, file_registry),
+        ))
         .merge(web::agent_status_api_router(web::AgentStatusState {
             build,
             config: config_api_state,

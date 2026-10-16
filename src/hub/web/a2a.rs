@@ -198,7 +198,7 @@ mod tests {
     use crate::config::WorkspaceLayout;
 
     fn hub_state(dir: &std::path::Path) -> HubApiState {
-        HubApiState::for_test(dir)
+        HubApiState::for_test(dir, crate::hub::test_support::fixture_assets)
     }
 
     fn files_state(dir: &std::path::Path) -> AgentFilesState {
@@ -247,7 +247,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_returns_the_checkpoint_taken_before_the_revoke() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_hub_state(dir.path());
+        let state = crate::hub::test_support::watching_hub_state(dir.path());
         let _created = api_a2a_keys_create(
             State(state.clone()),
             Json(CreateA2aKeyRequest {
@@ -400,7 +400,7 @@ mod tests {
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = Arc::clone(&attempts);
         let mut state = files_state(dir);
-        state.checkpoints = crate::gateway::web::CheckpointAccess::lazy(move || {
+        state.checkpoints = crate::hub::web::CheckpointAccess::lazy(move || {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(crate::checkpoints::CheckpointError::Git(
                 "the repository is corrupt".to_string(),

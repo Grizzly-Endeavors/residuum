@@ -15,12 +15,15 @@
 //! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
 //!   accepts it. HTML and images are not.
 //! - HTML documents carry the app shell's Content-Security-Policy
-//!   ([`APP_SHELL_CSP`]), which keeps the app from loading images, media,
+//!   (`APP_SHELL_CSP`), which keeps the app from loading images, media,
 //!   plug-ins or frames from anywhere but the hub, and from posting a form
 //!   anywhere else.
 
+use std::borrow::Cow;
+
 use axum::Router;
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::header;
 use axum::http::{
     Extensions, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version,
@@ -31,8 +34,20 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tower_http::compression::{CompressionLayer, CompressionLevel};
 use tracing::warn;
 
-use super::WebAssets;
 use crate::browser_landing::is_top_level_navigation;
+
+/// A file of the embedded web app, as the static routes serve it.
+pub struct WebAsset {
+    /// The file's bytes.
+    pub data: Cow<'static, [u8]>,
+    /// The SHA-256 of `data`. A file that is neither hashed nor HTML is
+    /// revalidated against it.
+    pub sha256: [u8; 32],
+}
+
+/// Looks up a file of the embedded web app by its path under `web/dist/`,
+/// returning `None` when the build has no such file.
+pub type WebAssetSource = fn(&str) -> Option<WebAsset>;
 
 /// Directory of build output whose file names carry a content hash.
 const HASHED_ASSET_DIR: &str = "assets/";
@@ -65,12 +80,15 @@ const COMPRESSION_QUALITY: i32 = 5;
 
 /// The embedded web app as a router, for use as the hub's fallback: every
 /// path the API and webhook routes don't claim lands here.
-pub(crate) fn static_assets() -> Router {
-    Router::new().fallback(static_handler).layer(
-        CompressionLayer::new()
-            .quality(CompressionLevel::Precise(COMPRESSION_QUALITY))
-            .compress_when(should_compress),
-    )
+pub(crate) fn static_assets(assets: WebAssetSource) -> Router {
+    Router::new()
+        .fallback(static_handler)
+        .layer(
+            CompressionLayer::new()
+                .quality(CompressionLevel::Precise(COMPRESSION_QUALITY))
+                .compress_when(should_compress),
+        )
+        .with_state(assets)
 }
 
 /// Serves the file at the requested URI path, falling back to `index.html`
@@ -81,11 +99,16 @@ pub(crate) fn static_assets() -> Router {
 /// shows; a script, image or other subresource gets a plain 404. Unknown API
 /// and WebSocket paths get the API's JSON error, so a client calling a missing
 /// endpoint sees the failure instead of HTML.
-async fn static_handler(method: Method, uri: Uri, request_headers: HeaderMap) -> Response {
+async fn static_handler(
+    State(assets): State<WebAssetSource>,
+    method: Method,
+    uri: Uri,
+    request_headers: HeaderMap,
+) -> Response {
     let path = uri.path().trim_start_matches('/');
 
     // Try the exact path first
-    if let Some(resp) = serve_embedded(path, &method, &request_headers) {
+    if let Some(resp) = serve_embedded(assets, path, &method, &request_headers) {
         return resp;
     }
 
@@ -94,13 +117,13 @@ async fn static_handler(method: Method, uri: Uri, request_headers: HeaderMap) ->
     }
 
     if !path.contains('.')
-        && let Some(resp) = serve_embedded("index.html", &method, &request_headers)
+        && let Some(resp) = serve_embedded(assets, "index.html", &method, &request_headers)
     {
         return resp;
     }
 
     if is_top_level_navigation(&method, &request_headers)
-        && let Some(mut resp) = serve_embedded("index.html", &method, &request_headers)
+        && let Some(mut resp) = serve_embedded(assets, "index.html", &method, &request_headers)
     {
         *resp.status_mut() = StatusCode::NOT_FOUND;
         return resp;
@@ -134,8 +157,13 @@ fn api_not_found() -> Response {
 /// Carries the cache headers for the file's class. A file that is neither
 /// hashed nor HTML has an `ETag`, and a matching `If-None-Match` gets a
 /// bodyless 304.
-fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> Option<Response> {
-    let asset = WebAssets::get(path)?;
+fn serve_embedded(
+    assets: WebAssetSource,
+    path: &str,
+    method: &Method,
+    request_headers: &HeaderMap,
+) -> Option<Response> {
+    let asset = assets(path)?;
     let mime = mime_guess::from_path(path).first_or_octet_stream();
 
     let mut headers = HeaderMap::new();
@@ -159,10 +187,7 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
     // An HTML document gets no `ETag`, so a browser's revalidation of it is
     // always a full fetch, never a 304.
     if !hashed && !is_html(mime.essence_str()) {
-        let etag = format!(
-            "\"{}\"",
-            URL_SAFE_NO_PAD.encode(asset.metadata.sha256_hash())
-        );
+        let etag = format!("\"{}\"", URL_SAFE_NO_PAD.encode(asset.sha256));
         set_header(&mut headers, header::ETAG, &etag);
 
         let conditional = matches!(*method, Method::GET | Method::HEAD);
@@ -255,13 +280,15 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    use crate::hub::test_support::{FIXTURE_HASHED_CSS, FIXTURE_HASHED_JS, fixture_assets};
+
     /// A GET of `path` through the router, with the given request headers.
     async fn get(path: &str, request_headers: &[(&str, &str)]) -> Response {
         let mut request = Request::builder().method(Method::GET).uri(path);
         for (name, value) in request_headers {
             request = request.header(*name, *value);
         }
-        static_assets()
+        static_assets(fixture_assets)
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
@@ -280,30 +307,29 @@ mod tests {
             .map(|value| value.to_str().unwrap())
     }
 
-    /// The path of an embedded hashed build output ending in `suffix`.
+    /// The path of the fixture's hashed build output ending in `suffix`.
     fn hashed_asset(suffix: &str) -> String {
-        WebAssets::iter()
-            .map(std::borrow::Cow::into_owned)
+        [FIXTURE_HASHED_JS, FIXTURE_HASHED_CSS]
+            .into_iter()
             .find(|path| path.starts_with(HASHED_ASSET_DIR) && path.ends_with(suffix))
             .unwrap()
+            .to_string()
     }
 
     fn embedded_bytes(path: &str) -> Vec<u8> {
-        WebAssets::get(path).unwrap().data.to_vec()
-    }
-
-    #[test]
-    fn web_assets_contains_index_html() {
-        assert!(
-            WebAssets::get("index.html").is_some(),
-            "index.html should be embedded"
-        );
+        fixture_assets(path).unwrap().data.to_vec()
     }
 
     #[test]
     fn serve_embedded_returns_none_for_missing() {
         assert!(
-            serve_embedded("does-not-exist.txt", &Method::GET, &HeaderMap::new()).is_none(),
+            serve_embedded(
+                fixture_assets,
+                "does-not-exist.txt",
+                &Method::GET,
+                &HeaderMap::new()
+            )
+            .is_none(),
             "missing file should return None"
         );
     }
@@ -647,12 +673,12 @@ mod tests {
                 .body(Body::empty())
                 .unwrap()
         };
-        let post = static_assets()
+        let post = static_assets(fixture_assets)
             .oneshot(with_method(Method::POST))
             .await
             .unwrap();
         assert_eq!(post.status(), StatusCode::OK);
-        let head = static_assets()
+        let head = static_assets(fixture_assets)
             .oneshot(with_method(Method::HEAD))
             .await
             .unwrap();
@@ -820,7 +846,9 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, static_assets()).await.ok();
+            axum::serve(listener, static_assets(fixture_assets))
+                .await
+                .ok();
         });
         let client = reqwest::Client::new();
         let path = hashed_asset(".js");

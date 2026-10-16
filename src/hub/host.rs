@@ -1768,7 +1768,7 @@ impl AgentHost {
             .running
             .as_ref()
             .map(|running| running.control.reload_tx.clone());
-        let state = crate::gateway::web::ConfigApiState {
+        let state = crate::hub::web::ConfigApiState {
             hub_dir: self.services.hub_dir.clone(),
             config_dir: slot.dir.join("config"),
             agent_name: slot.name.clone(),
@@ -1777,9 +1777,9 @@ impl AgentHost {
             reload_tx,
             checkpoints,
             team: Some(self.services.team.view_for_user(&slot.dir)),
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
         };
-        Ok(crate::gateway::web::agent_repair_api_router(state))
+        Ok(crate::hub::web::agent_repair_api_router(state))
     }
 
     /// The agent's chat history, usage, user inbox, A2A settings, and file
@@ -1795,16 +1795,16 @@ impl AgentHost {
             .as_ref()
             .map(|running| running.control.reload_tx.clone());
         let layout = WorkspaceLayout::new(&slot.dir);
-        crate::gateway::web::agent_files_api_router(crate::gateway::web::AgentFilesState {
+        crate::hub::web::agent_files_api_router(crate::hub::web::AgentFilesState {
             agent_name: slot.name.clone(),
             workspace_dir: slot.dir.clone(),
             memory_dir: Some(layout.memory_dir()),
-            file_registry: crate::gateway::file_server::FileRegistry::for_agent(
+            file_registry: crate::hub::file_server::FileRegistry::for_agent(
                 slot.name.clone(),
                 &layout,
             ),
             reload_tx,
-            checkpoints: crate::gateway::web::CheckpointAccess::lazy(
+            checkpoints: crate::hub::web::CheckpointAccess::lazy(
                 self.checkpoint_opener(&slot.name, &slot.dir),
             ),
         })
