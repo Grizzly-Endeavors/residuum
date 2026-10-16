@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 
-use crate::gateway::web::ConfigApiState;
+use crate::hub::web::ConfigApiState;
 use crate::interfaces::teams::setup_job::{SetupJobError, get_or_create_manager};
 use crate::interfaces::teams::setup_types::{CleanupRequest, TeamsSetupRedirect, TeamsSetupStart};
 
@@ -299,7 +299,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::gateway::web::{ConfigApiState, WorkspaceScope};
+    use crate::hub::web::{ConfigApiState, WorkspaceScope};
     use crate::interfaces::teams::atk_runner::AtkRunnerOverrides;
     use crate::interfaces::teams::setup_job::{TeamsSetupJobManager, register_test_manager};
     use residuum_core::testing::script::write_executable as make_script;

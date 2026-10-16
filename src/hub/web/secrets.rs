@@ -162,10 +162,10 @@ mod tests {
     use axum::extract::State;
 
     use super::{SetSecretRequest, api_secrets_set};
-    use crate::gateway::web::HubApiState;
+    use crate::hub::web::HubApiState;
 
     fn test_state(dir: &std::path::Path) -> HubApiState {
-        HubApiState::for_test(dir)
+        HubApiState::for_test(dir, crate::hub::test_support::fixture_assets)
     }
 
     #[tokio::test]

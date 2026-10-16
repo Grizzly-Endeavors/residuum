@@ -129,7 +129,16 @@ impl Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
-        let app = build_app(&host, &services, &team_events, &overview, reload_tx, None).unwrap();
+        let app = build_app(
+            &host,
+            &services,
+            &team_events,
+            &overview,
+            reload_tx,
+            None,
+            crate::hub::test_support::fixture_assets,
+        )
+        .unwrap();
         crate::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -600,7 +609,7 @@ async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     std::fs::create_dir_all(&outside).unwrap();
     let report = outside.join("report.txt");
     std::fs::write(&report, "the report").unwrap();
-    let id = crate::gateway::file_server::FileRegistry::for_agent(
+    let id = crate::hub::file_server::FileRegistry::for_agent(
         "scout",
         &crate::config::WorkspaceLayout::new(hub.root.path().join("scout")),
     )

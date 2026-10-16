@@ -215,7 +215,7 @@ pub(super) async fn api_inbox_attachment(
     };
 
     let mime_type = crate::bus::attachment::detect_mime_type(&resolved);
-    crate::gateway::file_server::respond_with_file(bytes, &mime_type, &file_name)
+    crate::hub::file_server::respond_with_file(bytes, &mime_type, &file_name)
 }
 
 /// The answer for an attachment that is gone: a browser that opened the link

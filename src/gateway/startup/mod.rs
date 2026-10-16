@@ -99,7 +99,7 @@ pub(super) async fn init_workspace(
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
     // USER.md is personalized once, at onboarding time
-    // (`gateway::web::config::api_complete_setup`). Every later call here is
+    // (`hub::web::config::api_complete_setup`). Every later call here is
     // idempotent (write-if-missing), apart from a `SOUL.md` that is still the
     // bundled template: that one is named from `display_name`.
     let shown = shown_name(&cfg.config_dir, &cfg.agent_name).await;

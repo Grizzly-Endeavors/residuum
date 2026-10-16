@@ -35,6 +35,7 @@ use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
 use super::team_events::{TeamEventLog, TeamEventRecorder, record_hub_started};
 use super::types::{HubEvent, HubNoticeKind, NoticeLevel};
+use super::web::WebAssetSource;
 
 /// How often the hub checks for a newer version.
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(6);
@@ -47,6 +48,8 @@ pub struct HubInputs {
     pub build: BuildInfo,
     /// Starts each agent's runtime.
     pub launcher: Arc<dyn AgentLauncher>,
+    /// The embedded web app, which the static routes and the MCP catalog serve.
+    pub assets: WebAssetSource,
     /// Called once the servers are bound and the autostart agents have started
     /// or failed; the process uses it to write its readiness marker.
     pub on_ready: Box<dyn FnOnce(&Path) + Send>,
@@ -528,6 +531,7 @@ impl HubRuntime {
             root,
             build,
             launcher,
+            assets,
             on_ready,
             log_filter,
         } = inputs;
@@ -576,6 +580,7 @@ impl HubRuntime {
             &team.overview,
             reload_tx.clone(),
             setup_done,
+            assets,
         )?;
         workbench_api.bind(app.clone());
         let remote_wiring = RemoteWiring::new(&app, workbench_router, &services, &host);
@@ -992,6 +997,7 @@ pub(super) fn build_app(
     overview: &Arc<TeamOverview>,
     reload_tx: crate::bus::control::ReloadSender,
     setup_done: Option<Arc<watch::Sender<bool>>>,
+    assets: WebAssetSource,
 ) -> Result<axum::Router, FatalError> {
     let checkpoints = crate::checkpoints::CheckpointEngine::hub_scoped(
         Arc::clone(&services.checkpoints),
@@ -1004,6 +1010,7 @@ pub(super) fn build_app(
         hub_dir: services.hub_dir.clone(),
         reload_tx,
         setup_done,
+        assets,
         secret_lock: Arc::clone(&services.secret_lock),
         checkpoints: Arc::new(checkpoints),
         tunnel_status_rx: services.tunnel_status_rx.clone(),
@@ -1254,6 +1261,7 @@ mod tests {
                 root: root.path().to_path_buf(),
                 build: crate::BUILD_INFO,
                 launcher: Arc::new(crate::gateway::GatewayLauncher::new()),
+                assets: crate::wiring::web_asset,
                 on_ready: Box::new(|dir| {
                     std::fs::write(crate::config::HubPaths::new(dir).ready_file(), "ready")
                         .unwrap();

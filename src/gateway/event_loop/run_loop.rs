@@ -242,7 +242,7 @@ struct SpawnedHandles {
 /// Bundle of `*ApiState` values `build_gateway_app` needs, split out of
 /// `spawn_agent_tasks` to keep it under the line-count lint.
 struct ApiStates {
-    config: web::ConfigApiState,
+    config: crate::hub::web::ConfigApiState,
     memory: web::memory::MemoryApiState,
     model: web::model::ModelApiState,
 }
@@ -254,14 +254,14 @@ fn build_api_states(
     model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
 ) -> ApiStates {
     ApiStates {
-        config: web::ConfigApiState {
+        config: crate::hub::web::ConfigApiState {
             hub_dir: core.hub_dir.clone(),
             config_dir: cfg.config_dir.clone(),
             agent_name: cfg.agent_name.clone(),
             workspace_dir: parts.layout.root().to_path_buf(),
             memory_dir: Some(parts.layout.memory_dir()),
             reload_tx: Some(core.reload_tx.clone()),
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: Arc::clone(&parts.checkpoints),
             team: Some(parts.team.view_for_user(parts.layout.root())),
         },
@@ -276,7 +276,7 @@ fn build_api_states(
 
 /// What `spawn_agent_tasks` built for the agent's routes before their state.
 struct RouteParts<'a> {
-    file_registry: &'a crate::gateway::file_server::FileRegistry,
+    file_registry: &'a crate::hub::file_server::FileRegistry,
     webhooks: &'a crate::interfaces::webhook::WebhookTable,
     workspace_watch_health: &'a tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
     turn_journal: crate::gateway::turn_journal::TurnJournal,
@@ -389,7 +389,7 @@ async fn spawn_agent_tasks(
     };
 
     let file_registry =
-        crate::gateway::file_server::FileRegistry::for_agent(cfg.agent_name.clone(), &parts.layout);
+        crate::hub::file_server::FileRegistry::for_agent(cfg.agent_name.clone(), &parts.layout);
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
     let ChangeFeeds {

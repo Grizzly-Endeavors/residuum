@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::hub::features;
 
-use super::ConfigApiState;
+use crate::hub::web::ConfigApiState;
 
 /// Status response: which mode the server is running in, its version, and the
 /// feature ids it supports. Workbench artifacts read the same information
@@ -106,7 +106,7 @@ mod tests {
             workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             memory_dir: None,
             reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }

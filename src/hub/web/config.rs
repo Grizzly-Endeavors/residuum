@@ -848,10 +848,10 @@ pub(super) async fn api_system_timezone() -> Json<TimezoneResponse> {
 }
 
 /// `GET /api/hub/mcp-catalog` — serve the embedded MCP catalog JSON.
-pub(super) async fn api_mcp_catalog() -> Response {
+pub(super) async fn api_mcp_catalog(State(state): State<HubApiState>) -> Response {
     use axum::http::StatusCode;
 
-    match super::WebAssets::get("mcp-catalog.json") {
+    match (state.assets)("mcp-catalog.json") {
         Some(content) => Response::builder()
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(content.data.to_vec()))
@@ -889,7 +889,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -1008,7 +1008,7 @@ mod tests {
     #[tokio::test]
     async fn config_patch_returns_the_checkpoint_taken_before_the_write() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = crate::hub::test_support::watching_state(dir.path());
         std::fs::create_dir_all(&state.hub_dir).unwrap();
         std::fs::write(state.hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         let before = "max_tokens = 4096\n";
@@ -1044,7 +1044,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_patch_returns_the_checkpoint_taken_before_the_write() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = crate::hub::test_support::watching_state(dir.path());
         let mcp_path = crate::config::WorkspaceLayout::new(state.workspace_dir.clone()).mcp_json();
         std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
         let before = r#"{"mcpServers":{"fs":{"command":"npx","cwd":"/srv"}}}"#;
@@ -1082,7 +1082,8 @@ mod tests {
     /// and no agent exists yet.
     fn setup_state(root: &std::path::Path) -> (HubApiState, tokio::sync::watch::Receiver<bool>) {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let mut state = HubApiState::for_test(&root.join("hub"));
+        let mut state =
+            HubApiState::for_test(&root.join("hub"), crate::hub::test_support::fixture_assets);
         state.setup_done = Some(std::sync::Arc::new(tx));
         (state, rx)
     }

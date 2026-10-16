@@ -53,7 +53,7 @@ fn fixture() -> Fixture {
         workspace_dir: agent_dir.clone(),
         memory_dir: None,
         reload_tx: None,
-        scope: crate::gateway::web::WorkspaceScope::Agent,
+        scope: crate::hub::web::WorkspaceScope::Agent,
         checkpoints,
     };
     Fixture {

@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tower::ServiceExt;
 
-use super::{HubHttpState, agent_repair_router, hub_router};
+use super::{HubHttpState, hub_router};
 use crate::background::team::{
     A2aVisibility, Actor, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome,
     LifecycleError, TeamDirectory,
@@ -33,13 +33,13 @@ use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
 use crate::config::WorkspaceLayout;
 use crate::config::paths::TeamPaths;
-use crate::gateway::web::{
-    AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
-    agent_files_api_router as agent_files_router,
-};
 use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::team_events::TeamEventLog;
+use crate::hub::web::{
+    AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
+    agent_files_api_router as agent_files_router, agent_repair_api_router,
+};
 use crate::hub::{
     AgentActivity, AgentDirectory, AgentFiles, AgentPatch, DeletedAgent, HubEvent,
     RestoreAgentRequest,
@@ -178,8 +178,8 @@ impl FakeDirectory {
     }
 
     /// A file registry over the agent's saved links, as the hub builds it.
-    fn file_registry(&self, name: &str) -> crate::gateway::file_server::FileRegistry {
-        crate::gateway::file_server::FileRegistry::for_agent(
+    fn file_registry(&self, name: &str) -> crate::hub::file_server::FileRegistry {
+        crate::hub::file_server::FileRegistry::for_agent(
             name,
             &WorkspaceLayout::new(self.root.join(name)),
         )
@@ -336,7 +336,7 @@ impl AgentDirectory for FakeDirectory {
 
     fn agent_repair_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let agent = self.find(name)?;
-        Ok(agent_repair_router(
+        Ok(agent_repair_api_router(
             self.config_state(name, agent.state == AgentState::Running),
         ))
     }
@@ -515,6 +515,7 @@ impl Harness {
         let push = crate::hub::push::PushService::new(&hub_dir, None);
         let pairing = crate::pairing::DevicePairing::open(&hub_dir);
         let hub = HubHttpState {
+            assets: crate::hub::test_support::fixture_assets,
             hub_dir: hub_dir.clone(),
             reload_tx,
             setup_done: None,

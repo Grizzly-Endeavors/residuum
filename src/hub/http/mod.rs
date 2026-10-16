@@ -53,17 +53,15 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::post;
 
-pub use crate::gateway::web::{
-    ConfigApiState, WorkspaceScope, agent_repair_api_router as agent_repair_router,
-};
 pub use state::HubHttpState;
 
-use crate::gateway::web;
 use crate::hub::AgentDirectory;
+use crate::hub::web;
 
 /// Build the hub's whole HTTP app over `directory`, with the process-wide
 /// handles in `hub`. Serve it on the gateway address.
 pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Router {
+    let assets = hub.assets;
     let lifecycle_state = lifecycle::LifecycleState {
         directory: Arc::clone(&directory),
         hub_dir: hub.hub_dir.clone(),
@@ -105,7 +103,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         .merge(process::team_routes(&hub))
         .merge(dispatch::routes(directory))
         .route("/api/sessions", post(sessions_need_an_agent))
-        .fallback_service(web::static_assets())
+        .fallback_service(web::static_assets(assets))
         .layer(axum::middleware::from_fn(
             artifacts_origin::refuse_blocked_artifact_calls,
         ))

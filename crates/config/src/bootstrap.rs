@@ -90,7 +90,7 @@ pub(super) fn bootstrap_hub_at(hub_dir: &Path) -> Result<(), FatalError> {
 /// `.example.toml` templates. It never writes the live `config.toml` or
 /// `providers.toml`: an agent is discovered by its `config/config.toml`, so
 /// that file appears only once the real configuration is complete (see
-/// `gateway::web::config::api_complete_setup` and the root crate's `setup_wizard`).
+/// `hub::web::config::api_complete_setup` and the root crate's `setup_wizard`).
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the directory or files cannot be written.
