@@ -43,7 +43,7 @@ A local request — whether it's the web UI open on the same machine, `residuum 
 
 ## Starting a sign-in
 
-`/cloud/callback` saves the token it is handed and switches the tunnel on, and it is a plain `GET`, so any web page could send the browser there with a token of its own and sign the install in to someone else's account. A `state` ties each callback to a sign-in this app started (`gateway::web::cloud_sign_in`):
+`/cloud/callback` saves the token it is handed and switches the tunnel on, and it is a plain `GET`, so any web page could send the browser there with a token of its own and sign the install in to someone else's account. A `state` ties each callback to a sign-in this app started (`hub::web::cloud_sign_in`):
 
 - Connect calls `POST /api/hub/cloud/connect` with `{ relay_url, port }`: the relay URL in the form (empty for Residuum Cloud's) and the saved gateway port (empty for 7700). It is a `POST`, so the cross-site guard refuses it from another site, and the artifacts-origin block list refuses it from a workbench page (see [API forwarding](workbench.md#api-forwarding)). The hub generates a `state` (256 random bits as 43 characters of URL-safe base64, inside the relay's `^[A-Za-z0-9_-]{16,128}$`), remembers it, and answers `{ url }`: `<relay origin>/connect?port=<port>&state=<state>`, the origin taken from the relay URL with `ws` read as `http` and `wss` as `https`. A relay URL that isn't a `ws://` or `wss://` address, or a port that isn't a port number, is answered `400` with an `{ error }` the section shows.
 - The relay carries `state` through its sign-in page and redirects to `http://localhost:<port>/cloud/callback?token=<token>&state=<state>`.
