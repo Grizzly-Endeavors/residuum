@@ -680,7 +680,7 @@ fn build_spawn_context(
         hub_dir: rt.hub_dir.clone(),
         tz: rt.tz,
         depth_cap: new_cfg.background.subagent_depth_cap,
-        auto_mode: Some(rt.auto_mode.clone()),
+        auto_mode: Some(Arc::clone(&rt.auto_mode)),
     });
 
     Arc::new(SpawnContext {
