@@ -186,8 +186,8 @@ impl McpClient {
 }
 
 /// A cheap-to-clone handle for calling tools on one MCP server, independent
-/// of the [`McpClient`] (and whatever registry lock guards it) that
-/// produced it — see [`McpClient::handle`].
+/// of the `McpClient` (and whatever registry lock guards it) that
+/// produced it — see `McpClient::handle`.
 #[derive(Debug, Clone)]
 pub struct McpClientHandle {
     peer: rmcp::service::Peer<RoleClient>,
