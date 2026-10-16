@@ -46,33 +46,10 @@ pub struct AgentStartInputs {
     pub activity: Arc<ActivityTracker>,
 }
 
-/// How the hub reaches a started agent.
+/// How the hub hands a message to an agent's main conversation. Its fields
+/// stay private: only the hub's delivery path uses them.
 #[derive(Clone)]
-pub struct AgentControl {
-    /// The agent's HTTP routes, rooted at `/`.
-    pub router: axum::Router,
-    /// The agent's current A2A router; `None` while A2A is disabled for it.
-    /// Changes when a reload rebuilds the agent's A2A state.
-    pub a2a_router: tokio::sync::watch::Receiver<Option<axum::Router>>,
-    /// Delivers config reload signals to the agent's event loop.
-    pub reload_tx: ReloadSender,
-    /// Asks the agent's event loop to stop.
-    pub stop_tx: tokio::sync::mpsc::Sender<()>,
-    /// Counts config reloads the agent has finished, so the hub can wait for
-    /// a reload it triggered and notice changes made behind its back.
-    pub reload_done: tokio::sync::watch::Receiver<u64>,
-    /// What the hub cleans up when the event loop dies without shutting the
-    /// agent down.
-    pub cleanup: AgentCleanup,
-    /// The agent's live sessions, for the hub's bug reports and the hub's
-    /// per-agent watcher.
-    pub session_registry: Arc<crate::background::registry::SessionRegistry>,
-    /// Subscribes to the agent's own event bus: how the hub's per-agent
-    /// watcher hears about sessions, outbound tasks, user inbox additions and
-    /// file changes.
-    pub bus: crate::bus::BusHandle,
-    /// Whether the change feed over the agent's directory is running.
-    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+pub struct MainDelivery {
     /// The agent's bus publisher, for handing the agent a message.
     publisher: crate::bus::Publisher,
     /// The agent's messenger, which delivers a creating agent's first
@@ -80,37 +57,14 @@ pub struct AgentControl {
     messenger: Arc<crate::background::messaging::AgentMessenger>,
 }
 
-impl AgentControl {
-    /// The hub's handle on an agent a launcher has just started, from every
-    /// part of it.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one argument per field: the launcher builds the handle across the crate boundary, and the publisher and messenger stay private to the hub"
-    )]
+impl MainDelivery {
+    /// Delivery to the agent through its bus `publisher` and its `messenger`.
     #[must_use]
     pub fn new(
-        router: axum::Router,
-        a2a_router: tokio::sync::watch::Receiver<Option<axum::Router>>,
-        reload_tx: ReloadSender,
-        stop_tx: tokio::sync::mpsc::Sender<()>,
-        reload_done: tokio::sync::watch::Receiver<u64>,
-        cleanup: AgentCleanup,
-        session_registry: Arc<crate::background::registry::SessionRegistry>,
-        bus: crate::bus::BusHandle,
-        workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
         publisher: crate::bus::Publisher,
         messenger: Arc<crate::background::messaging::AgentMessenger>,
     ) -> Self {
         Self {
-            router,
-            a2a_router,
-            reload_tx,
-            stop_tx,
-            reload_done,
-            cleanup,
-            session_registry,
-            bus,
-            workspace_watch_health,
             publisher,
             messenger,
         }
@@ -170,6 +124,37 @@ impl AgentControl {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+}
+
+/// The hub's handle on an agent a launcher has just started.
+#[derive(Clone)]
+pub struct AgentControl {
+    /// The agent's HTTP routes, rooted at `/`.
+    pub router: axum::Router,
+    /// The agent's current A2A router; `None` while A2A is disabled for it.
+    /// Changes when a reload rebuilds the agent's A2A state.
+    pub a2a_router: tokio::sync::watch::Receiver<Option<axum::Router>>,
+    /// Delivers config reload signals to the agent's event loop.
+    pub reload_tx: ReloadSender,
+    /// Asks the agent's event loop to stop.
+    pub stop_tx: tokio::sync::mpsc::Sender<()>,
+    /// Counts config reloads the agent has finished, so the hub can wait for
+    /// a reload it triggered and notice changes made behind its back.
+    pub reload_done: tokio::sync::watch::Receiver<u64>,
+    /// What the hub cleans up when the event loop dies without shutting the
+    /// agent down.
+    pub cleanup: AgentCleanup,
+    /// The agent's live sessions, for the hub's bug reports and the hub's
+    /// per-agent watcher.
+    pub session_registry: Arc<crate::background::registry::SessionRegistry>,
+    /// Subscribes to the agent's own event bus: how the hub's per-agent
+    /// watcher hears about sessions, outbound tasks, user inbox additions and
+    /// file changes.
+    pub bus: crate::bus::BusHandle,
+    /// Whether the change feed over the agent's directory is running.
+    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    /// Hands the agent a message for its main conversation.
+    pub main_delivery: MainDelivery,
 }
 
 /// The parts of an agent that outlive a crashed event loop and must be

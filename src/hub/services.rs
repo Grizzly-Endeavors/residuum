@@ -47,7 +47,7 @@ impl HubControl {
     /// The controls of the running `build`, with a fresh update status for
     /// its version.
     pub(crate) fn new(
-        build: crate::BuildInfo,
+        build: crate::build_info::BuildInfo,
         restart_tx: mpsc::Sender<()>,
         shutdown_tx: mpsc::Sender<()>,
     ) -> Self {
@@ -288,12 +288,7 @@ impl HubServices {
             root,
             hub,
             tunnel_status_rx,
-            HubControl {
-                build: crate::BUILD_INFO,
-                update_status: crate::hub::update::shared_update_status(crate::BUILD_INFO.version),
-                restart_tx,
-                shutdown_tx,
-            },
+            HubControl::new(crate::BUILD_INFO, restart_tx, shutdown_tx),
             crate::workbench::WorkbenchServing::Unavailable {
                 reason: "not started in tests".to_string(),
             },
