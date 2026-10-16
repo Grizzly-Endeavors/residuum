@@ -778,7 +778,10 @@ pub(crate) async fn spawn_notify_subscribers(
 /// and HTTP handlers. The tracing service itself is the hub's, shared by
 /// every agent.
 fn init_tracing_client_context(cfg: &Config) -> Arc<crate::tracing_service::ClientContext> {
-    Arc::new(crate::client_context::gather_for_bug_report(cfg))
+    Arc::new(crate::client_context::gather_for_bug_report(
+        crate::BUILD_INFO,
+        cfg,
+    ))
 }
 
 /// Inputs to [`build_tools_and_agent`], gathered because building the tool

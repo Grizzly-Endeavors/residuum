@@ -681,7 +681,10 @@ fn build_spawn_context(
         // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
         // builds for the HTTP tracing API, so a session forked after this
         // reload reports the currently active model/provider.
-        tracing_client_context: Arc::new(crate::client_context::gather_for_bug_report(new_cfg)),
+        tracing_client_context: Arc::new(crate::client_context::gather_for_bug_report(
+            crate::BUILD_INFO,
+            new_cfg,
+        )),
         web_search_backend: new_cfg.web_search.standalone_backend.clone(),
         tools_path: Arc::clone(&rt.tools_path),
         path_policy: Arc::clone(&rt.path_policy),

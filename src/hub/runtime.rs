@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
+use crate::BuildInfo;
 use crate::config::{Config, HubConfig};
 use crate::gateway::last_known_good;
 use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSignal};
@@ -420,6 +421,7 @@ impl HubRuntime {
     /// and the host, bring up the servers, and start the `autostart` agents.
     async fn start(
         root: &Path,
+        build: BuildInfo,
         hub_cfg: HubConfig,
         fallback_problem: Option<String>,
         gateway: tokio::net::TcpListener,
@@ -436,13 +438,14 @@ impl HubRuntime {
 
         let scan = scan_agents(root, &hub_cfg);
         let (workbench_serving, workbench_shutdown_tx, workbench_api, workbench_router) =
-            start_workbench_listener(root, &hub_cfg, &scan.teams_ports, &pairing).await;
+            start_workbench_listener(root, build, &hub_cfg, &scan.teams_ports, &pairing).await;
         let services = HubServices::open(
             root,
             &hub_cfg,
             tunnel_status_rx,
             HubControl {
-                update_status: crate::update::SharedUpdateStatus::default(),
+                build,
+                update_status: crate::update::shared_update_status(build.version),
                 restart_tx,
                 shutdown_tx,
             },
@@ -619,7 +622,10 @@ impl HubRuntime {
         };
         self.services
             .tracing_service
-            .on_error(&described, crate::client_context::gather_for_hub())
+            .on_error(
+                &described,
+                crate::client_context::gather_for_hub(self.services.control.build),
+            )
             .await;
         self.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
         if let Some(cloud) = &self.hub_cfg.cloud {
@@ -908,11 +914,14 @@ pub(super) fn build_app(
         secret_lock: Arc::clone(&services.secret_lock),
         checkpoints: Arc::new(checkpoints),
         tunnel_status_rx: services.tunnel_status_rx.clone(),
+        build: services.control.build,
         update_status: Arc::clone(&services.control.update_status),
         restart_tx: services.control.restart_tx.clone(),
         shutdown_tx: services.control.shutdown_tx.clone(),
         tracing_service: Arc::clone(&services.tracing_service),
-        client_context: Arc::new(crate::client_context::gather_for_hub()),
+        client_context: Arc::new(crate::client_context::gather_for_hub(
+            services.control.build,
+        )),
         active_subagents: Arc::new(move || subagents_host.active_subagents()),
         workbench_serving: services.workbench_serving.clone(),
         team: services.team.clone(),
@@ -955,6 +964,7 @@ async fn poll_tunnel(tunnel: &mut Option<TunnelTask>) -> Result<(), tokio::task:
 /// binds that router once it exists.
 async fn start_workbench_listener(
     root: &Path,
+    build: BuildInfo,
     hub: &HubConfig,
     teams_ports: &[u16],
     pairing: &crate::pairing::DevicePairing,
@@ -980,7 +990,7 @@ async fn start_workbench_listener(
         workbench_dir,
         api.clone(),
         pairing.clone(),
-        workbench_sdk(),
+        workbench_sdk(build),
     )
     .await;
     (serving, shutdown_tx, api, router)
@@ -988,9 +998,9 @@ async fn start_workbench_listener(
 
 /// The SDK the artifacts listener injects into every served page: this
 /// build's version and the features it supports.
-fn workbench_sdk() -> SdkContext {
+fn workbench_sdk(build: BuildInfo) -> SdkContext {
     SdkContext {
-        version: crate::update::CURRENT_VERSION,
+        version: build.version,
         features: crate::features::FEATURES,
     }
 }
@@ -1041,12 +1051,20 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 /// last-known-good copy, or a hub-level service (the HTTP server, the team
 /// wiki index, the checkpoint repositories) cannot start. An agent that
 /// can't start does not fail the hub; it is `failed` and the rest run.
-pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
+pub async fn run_hub(root: &Path, build: BuildInfo) -> Result<GatewayExit, FatalError> {
     let hub_dir = crate::config::paths::hub_dir(root);
     let (hub_cfg, fallback_problem) = load_hub_with_fallback(&hub_dir)?;
     let gateway = bind_gateway(&hub_cfg.gateway).await?;
     let a2a_listener = bind_a2a(&hub_cfg).await;
-    let runtime = HubRuntime::start(root, hub_cfg, fallback_problem, gateway, a2a_listener).await?;
+    let runtime = HubRuntime::start(
+        root,
+        build,
+        hub_cfg,
+        fallback_problem,
+        gateway,
+        a2a_listener,
+    )
+    .await?;
     Ok(Box::pin(runtime.run(true)).await)
 }
 
@@ -1058,9 +1076,13 @@ mod tests {
     use wiremock::MockServer;
 
     #[test]
-    fn the_workbench_sdk_reports_this_build() {
-        let sdk = workbench_sdk();
-        assert_eq!(sdk.version, crate::update::CURRENT_VERSION);
+    fn the_workbench_sdk_reports_the_given_build() {
+        let build = BuildInfo {
+            version: "1.2.3",
+            commit: None,
+        };
+        let sdk = workbench_sdk(build);
+        assert_eq!(sdk.version, "1.2.3");
         assert_eq!(sdk.features, crate::features::FEATURES);
     }
 
@@ -1145,6 +1167,7 @@ mod tests {
             let a2a = a2a_reservation.into_tokio_listener();
             let runtime = HubRuntime::start(
                 root.path(),
+                crate::BUILD_INFO,
                 hub_config,
                 fallback_problem.map(str::to_string),
                 gateway,

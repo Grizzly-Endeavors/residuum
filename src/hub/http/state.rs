@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 
+use crate::BuildInfo;
 use crate::bus::BusHandle;
 use crate::checkpoints::CheckpointEngine;
 use crate::gateway::types::ReloadSender;
@@ -53,6 +54,8 @@ pub struct HubHttpState {
     pub checkpoints: Arc<CheckpointEngine>,
     /// The relay tunnel's status.
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
+    /// The running build, which the status routes report.
+    pub build: BuildInfo,
     /// The update checker's shared status.
     pub update_status: SharedUpdateStatus,
     /// Asks the process to restart itself (after an update, or on request).

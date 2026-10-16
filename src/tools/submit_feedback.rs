@@ -68,7 +68,7 @@ impl Tool for SubmitFeedbackTool {
         let feedback = Feedback {
             message,
             category,
-            client: client_context::gather_for_feedback(),
+            client: client_context::gather_for_feedback(crate::BUILD_INFO),
         };
 
         match self.service.send_feedback(feedback).await {

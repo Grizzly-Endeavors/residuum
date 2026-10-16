@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::BuildInfo;
 use crate::config::Config;
 use crate::config::{ThinkingConfig, ThinkingLevel};
 
@@ -15,15 +16,15 @@ use crate::tracing_service::{ClientContext, FeedbackClient};
 
 /// Gather the static part of the client context for a bug report.
 ///
-/// Reads version/commit from build-time env vars, OS/arch from
-/// `std::env::consts`, and the active model from the resolved config.
+/// Takes version/commit from `build`, OS/arch from `std::env::consts`, and the
+/// active model from the resolved config.
 ///
 /// `active_subagents` starts empty here: it's a live read of the session
 /// registry, overlaid onto this snapshot by the bug-report tool and HTTP
 /// handler at submission time, not something this startup-time snapshot can
 /// know.
 #[must_use]
-pub fn gather_for_bug_report(config: &Config) -> ClientContext {
+pub fn gather_for_bug_report(build: BuildInfo, config: &Config) -> ClientContext {
     let (model_provider, model_name) = config.main.first().map_or((None, None), |spec| {
         (
             Some(spec.model.kind.to_string()),
@@ -32,8 +33,8 @@ pub fn gather_for_bug_report(config: &Config) -> ClientContext {
     });
 
     ClientContext {
-        version: env!("RESIDUUM_VERSION").to_string(),
-        commit: option_env!("RESIDUUM_GIT_COMMIT").map(str::to_string),
+        version: build.version.to_string(),
+        commit: build.commit.map(str::to_string),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         model_provider,
@@ -48,23 +49,23 @@ pub fn gather_for_bug_report(config: &Config) -> ClientContext {
 /// `config` when one loaded. Without one (the failure was in loading it) the
 /// model and flags are left out.
 #[must_use]
-pub fn gather_for_agent(agent: &str, config: Option<&Config>) -> ClientContext {
+pub fn gather_for_agent(build: BuildInfo, agent: &str, config: Option<&Config>) -> ClientContext {
     config.map_or_else(
         || ClientContext {
             agent: Some(agent.to_string()),
-            ..gather_for_hub()
+            ..gather_for_hub(build)
         },
-        gather_for_bug_report,
+        |cfg| gather_for_bug_report(build, cfg),
     )
 }
 
 /// The client context for a failure that belongs to the hub rather than to
 /// any agent: version and platform only.
 #[must_use]
-pub fn gather_for_hub() -> ClientContext {
+pub fn gather_for_hub(build: BuildInfo) -> ClientContext {
     ClientContext {
-        version: env!("RESIDUUM_VERSION").to_string(),
-        commit: option_env!("RESIDUUM_GIT_COMMIT").map(str::to_string),
+        version: build.version.to_string(),
+        commit: build.commit.map(str::to_string),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         model_provider: None,
@@ -150,9 +151,9 @@ fn config_flags(config: &Config) -> BTreeMap<String, String> {
 /// The feedback wire contract accepts `client.version` only; this
 /// helper exists so callers don't accidentally over-attach metadata.
 #[must_use]
-pub fn gather_for_feedback() -> FeedbackClient {
+pub fn gather_for_feedback(build: BuildInfo) -> FeedbackClient {
     FeedbackClient {
-        version: env!("RESIDUUM_VERSION").to_string(),
+        version: build.version.to_string(),
     }
 }
 

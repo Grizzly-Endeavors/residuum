@@ -7,7 +7,6 @@ use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::features;
-use crate::update;
 
 use super::{ConfigApiState, HubApiState};
 
@@ -33,6 +32,7 @@ pub(super) struct StatusResponse {
 /// health of the change feed over its directory.
 #[derive(Clone)]
 pub(crate) struct AgentStatusState {
+    pub(crate) build: crate::BuildInfo,
     pub(crate) config: ConfigApiState,
     pub(crate) live_updates: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
 }
@@ -142,6 +142,7 @@ pub(super) struct CompleteSetupRequest {
 /// `GET /api/agents/{name}/status` — returns `{ mode, version, features, checkpoints }`.
 pub(super) async fn api_status(
     State(AgentStatusState {
+        build,
         config: state,
         live_updates,
     }): State<AgentStatusState>,
@@ -150,7 +151,7 @@ pub(super) async fn api_status(
     Json(StatusResponse {
         live_updates,
         mode: "running",
-        version: update::CURRENT_VERSION,
+        version: build.version,
         features: features::FEATURES,
         checkpoints: CheckpointsStatus {
             pending: state.checkpoints.pending_checkpoints(),
@@ -964,6 +965,10 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(live_updates);
         (
             AgentStatusState {
+                build: crate::BuildInfo {
+                    version: "1.2.3",
+                    commit: None,
+                },
                 config: state(),
                 live_updates: rx,
             },
@@ -976,7 +981,7 @@ mod tests {
         let (state, _tx) = status_state(crate::workspace::watch::WatchHealth::Native);
         let Json(running) = api_status(State(state)).await;
         assert_eq!(running.mode, "running");
-        assert_eq!(running.version, update::CURRENT_VERSION);
+        assert_eq!(running.version, "1.2.3");
         assert_eq!(running.features, features::FEATURES);
     }
 

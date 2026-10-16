@@ -8,11 +8,14 @@ use axum::http::StatusCode;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use crate::BuildInfo;
 use crate::update::SharedUpdateStatus;
 
 /// Shared state for the update and lifecycle API routes.
 #[derive(Clone)]
 pub(crate) struct UpdateApiState {
+    /// The running build, which an install replaces.
+    pub build: BuildInfo,
     pub update_status: SharedUpdateStatus,
     pub restart_tx: mpsc::Sender<()>,
     pub gateway_shutdown_tx: mpsc::Sender<()>,
@@ -120,7 +123,7 @@ pub(crate) async fn api_update_apply(
             )
         })?;
 
-    crate::update::download_and_install(&version)
+    crate::update::download_and_install(state.build.version, &version)
         .await
         .map_err(|e| match crate::update::rejection_message(&e) {
             // 422 so the Update page shows this text. A 500 is replaced
@@ -189,8 +192,10 @@ mod tests {
     fn test_state(hub_dir: PathBuf) -> UpdateApiState {
         let (restart_tx, _restart_rx) = mpsc::channel(1);
         let (gateway_shutdown_tx, _shutdown_rx) = mpsc::channel(1);
+        let build = crate::BUILD_INFO;
         UpdateApiState {
-            update_status: crate::update::SharedUpdateStatus::default(),
+            build,
+            update_status: crate::update::shared_update_status(build.version),
             restart_tx,
             gateway_shutdown_tx,
             hub_dir,

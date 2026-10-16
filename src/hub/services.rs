@@ -32,6 +32,9 @@ use crate::workspace::watch::WatchHealth;
 /// and the requests to restart or shut down the whole process.
 #[derive(Clone)]
 pub(crate) struct HubControl {
+    /// The running build. Every report of the running version reads it from
+    /// here.
+    pub build: crate::BuildInfo,
     /// Latest result of the periodic version check.
     pub update_status: SharedUpdateStatus,
     /// Asks the hub to stop every agent and relaunch the binary.
@@ -269,7 +272,8 @@ impl HubServices {
             hub,
             tunnel_status_rx,
             HubControl {
-                update_status: SharedUpdateStatus::default(),
+                build: crate::BUILD_INFO,
+                update_status: crate::update::shared_update_status(crate::BUILD_INFO.version),
                 restart_tx,
                 shutdown_tx,
             },

@@ -559,6 +559,7 @@ async fn spawn_agent_tasks(
             },
             tunnel_status_rx: services.tunnel_status_rx.clone(),
             model_catalog: Arc::clone(&parts.spawn_context.model_catalog),
+            build: services.control.build,
         },
     );
     let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts, services);
@@ -1243,7 +1244,7 @@ async fn log_adapter_task_exit(
     rt.tracing_service
         .on_error(
             &described,
-            crate::client_context::gather_for_bug_report(&rt.cfg),
+            crate::client_context::gather_for_bug_report(crate::BUILD_INFO, &rt.cfg),
         )
         .await;
 }

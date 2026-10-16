@@ -5,8 +5,11 @@
 //! The `test-support` feature adds `testing`, the waits, gates and clock
 //! helpers every crate's tests use.
 
+pub mod build_info;
 pub mod diagnostics;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod time;
 pub mod util;
+
+pub use build_info::BuildInfo;

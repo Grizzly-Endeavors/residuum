@@ -37,6 +37,8 @@ pub struct ExtraApiStates {
     pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     /// The live model catalog, for the sessions API to check a start's model.
     pub model_catalog: crate::config::SharedModelCatalog,
+    /// The running build, for the agent status route.
+    pub build: crate::BuildInfo,
 }
 
 /// The agent-scoped routers [`build_gateway_app`] merges in, built once by
@@ -118,6 +120,7 @@ pub fn build_gateway_app(
     use axum::routing::get;
 
     let state_tunnel_status_rx = extra.tunnel_status_rx.clone();
+    let build = extra.build;
     let live_updates = state.workspace_watch_health.clone();
     let file_registry = state.file_registry.clone();
     let routers = build_feature_routers(&state, extra);
@@ -141,6 +144,7 @@ pub fn build_gateway_app(
             file_registry,
         )))
         .merge(web::agent_status_api_router(web::AgentStatusState {
+            build,
             config: config_api_state,
             live_updates,
         }))

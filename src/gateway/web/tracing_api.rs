@@ -226,7 +226,7 @@ pub(crate) async fn api_tracing_feedback(
     let feedback = Feedback {
         message: body.message,
         category: body.category,
-        client: client_context::gather_for_feedback(),
+        client: client_context::gather_for_feedback(crate::BUILD_INFO),
     };
     state
         .service

@@ -56,6 +56,10 @@ mod session_relay;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
+const TEST_BUILD: crate::BuildInfo = crate::BuildInfo {
+    version: "9.8.7",
+    commit: None,
+};
 
 /// How long the harness overview gathers an agent's changes into a frame.
 const OVERVIEW_WINDOW: Duration = Duration::from_millis(200);
@@ -510,7 +514,8 @@ impl Harness {
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
             tunnel_status_rx: tunnel_rx,
-            update_status: crate::update::SharedUpdateStatus::default(),
+            build: TEST_BUILD,
+            update_status: crate::update::shared_update_status(TEST_BUILD.version),
             restart_tx,
             shutdown_tx,
             tracing_service: Arc::new(crate::tracing_service::TracingService::new(
@@ -1055,7 +1060,7 @@ async fn status_reports_version_uptime_tunnel_and_counts() {
         .unwrap()
         .push(summary("broken", AgentState::Failed));
     let hub_status = h.get_expect("/api/hub/status", StatusCode::OK).await;
-    assert_eq!(hub_status["version"], crate::update::CURRENT_VERSION);
+    assert_eq!(hub_status["version"], TEST_BUILD.version);
     assert!(hub_status["uptime_secs"].is_u64());
     assert_eq!(hub_status["tunnel"]["status"], "disconnected");
     assert_eq!(hub_status["tunnel"]["enabled"], false);

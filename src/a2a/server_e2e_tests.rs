@@ -291,7 +291,10 @@ fn build_support_deps(
         cfg.tracing.clone(),
         span_buffer,
     ));
-    let tracing_client_context = Arc::new(crate::client_context::gather_for_bug_report(&cfg));
+    let tracing_client_context = Arc::new(crate::client_context::gather_for_bug_report(
+        crate::BUILD_INFO,
+        &cfg,
+    ));
     (hybrid_searcher, tracing_service, tracing_client_context)
 }
 

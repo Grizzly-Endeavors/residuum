@@ -791,7 +791,7 @@ async fn publish_turn_outcome(
             tracing_service
                 .on_error(
                     &described.details,
-                    crate::client_context::gather_for_bug_report(cfg),
+                    crate::client_context::gather_for_bug_report(crate::BUILD_INFO, cfg),
                 )
                 .await;
             let event = ErrorEvent {
