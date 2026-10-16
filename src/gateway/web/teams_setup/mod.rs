@@ -361,7 +361,6 @@ mod tests {
                 r#"$cmd = $args[0]
 $sub = $args[1]
 if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
-if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: user@example.com."; exit 0 }
 if ($cmd -eq "auth" -and $sub -eq "logout") { exit 0 }
 if ($cmd -eq "install") { exit 0 }
 if ($cmd -eq "provision") {

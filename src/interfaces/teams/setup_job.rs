@@ -1304,7 +1304,6 @@ exit 0
     const FAKE_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
 $sub = $args[1]
 if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
-if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: test@contoso.com."; exit 0 }
 if ($cmd -eq "auth" -and $sub -eq "logout") { Write-Output "Logged out."; exit 0 }
 if ($cmd -eq "install") { Write-Output "App installed successfully"; exit 0 }
 if ($cmd -eq "provision") {
@@ -1359,7 +1358,6 @@ exit 0
     const SLOW_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
 $sub = $args[1]
 if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
-if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: test@contoso.com."; exit 0 }
 if ($cmd -eq "provision") {
     $folder = ""
     for ($i = 0; $i -lt $args.Length; $i++) {
@@ -1427,10 +1425,6 @@ exit 0
     const LOGIN_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
 $sub = $args[1]
 if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
-if ($cmd -eq "auth" -and $sub -eq "list") {
-    [Console]::Error.WriteLine("No account signed in.")
-    exit 1
-}
 if ($cmd -eq "auth" -and $sub -eq "login") {
     $s = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
     $s.Start()
@@ -1493,7 +1487,6 @@ exit 0
     const FAIL_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
 $sub = $args[1]
 if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
-if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: test@contoso.com."; exit 0 }
 if ($cmd -eq "provision") {
     $folder = ""
     for ($i = 0; $i -lt $args.Length; $i++) {
