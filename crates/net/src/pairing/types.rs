@@ -14,7 +14,7 @@ pub struct PairingStateResponse {
     pub remote: bool,
     /// Whether the browser already holds a valid device credential. Always
     /// true for a request that didn't arrive remotely.
-    pub(crate) paired: bool,
+    pub paired: bool,
 }
 
 /// Body of `POST /api/hub/pairing/requests`.
