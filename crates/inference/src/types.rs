@@ -93,8 +93,9 @@ impl ThinkingBlock {
     }
 
     /// This block, recorded as produced at `origin`.
+    #[cfg(test)]
     #[must_use]
-    pub fn from_origin(mut self, origin: &ThinkingOrigin) -> Self {
+    pub(crate) fn from_origin(mut self, origin: &ThinkingOrigin) -> Self {
         self.origin = Some(origin.clone());
         self
     }
@@ -429,17 +430,6 @@ impl Role {
             Self::Tool => "tool",
         }
     }
-
-    /// Bold-markdown label for display in transcripts.
-    #[must_use]
-    pub fn as_display_str(self) -> &'static str {
-        match self {
-            Self::System => "**System**",
-            Self::User => "**User**",
-            Self::Assistant => "**Assistant**",
-            Self::Tool => "**Tool**",
-        }
-    }
 }
 
 /// A tool call requested by the model.
@@ -555,8 +545,9 @@ impl InferenceResponse {
     }
 
     /// Whether this response represents a complete turn (text, no tool calls).
+    #[cfg(test)]
     #[must_use]
-    pub fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.tool_calls.is_empty() && !self.content.is_empty()
     }
 

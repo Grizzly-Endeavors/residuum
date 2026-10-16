@@ -1,7 +1,7 @@
 //! Rules checked by reading the workspace's own source: the root crate's and
 //! every workspace member's `src` and `tests`.
 //!
-//! Both rules need to know which lines are test code, and a file is not split
+//! The rules need to know which lines are test code, and a file is not split
 //! cleanly at its first `#[cfg(test)]`: plenty of files put the attribute on a
 //! `use` or an accessor near the top and carry on with production code. The
 //! classifier here goes by module declarations and by the shape rustfmt gives
@@ -13,6 +13,13 @@
 //!   line covers the item after it (past any further attributes and comments).
 //!   That item ends at its own line when the line ends in `;`, or at the first
 //!   later line at the item's indentation that closes it (`}`, `)` or `]`).
+//!
+//! The same classification under `#[cfg(test)]` alone gives the code only the
+//! crate's own test build compiles, without the test-support helpers other
+//! crates' tests use. `unused_pub` needs that split: a member crate's `pub`
+//! item that only its own tests use is dead to every other crate.
+
+mod unused_pub;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -32,15 +39,39 @@ fn is_test_gate(line: &str) -> bool {
     )
 }
 
+/// Whether `line` is `#[cfg(test)]`, which compiles the item after it into
+/// its own crate's test build alone.
+fn is_own_test_gate(line: &str) -> bool {
+    line.trim() == "#[cfg(test)]"
+}
+
 /// A source file, its lines, and which of them are test code.
 struct SourceFile {
     /// Relative to the repository root, with `/` separators.
     path: String,
     lines: Vec<String>,
     test: Vec<bool>,
+    /// The lines only the crate's own test build compiles: `test` without the
+    /// test-support code, which other crates' test builds compile too.
+    own_test: Vec<bool>,
 }
 
 impl SourceFile {
+    /// Classifies `lines`. `test_file` and `own_test_file` say whether module
+    /// declarations make the whole file test code: under either gate, and
+    /// under `#[cfg(test)]` alone.
+    fn new(path: String, lines: Vec<String>, test_file: bool, own_test_file: bool) -> Self {
+        let in_literal = starts_inside_literal(&lines);
+        let test = gated_lines(&lines, &in_literal, test_file, is_test_gate);
+        let own_test = gated_lines(&lines, &in_literal, own_test_file, is_own_test_gate);
+        Self {
+            path,
+            lines,
+            test,
+            own_test,
+        }
+    }
+
     /// The file's lines with their 1-based numbers, test code or not, with
     /// comments removed.
     fn code_lines(&self, want_test: bool) -> impl Iterator<Item = (usize, &str)> {
@@ -359,6 +390,79 @@ fn item_end(lines: &[String], in_literal: &[bool], start: usize) -> usize {
     lines.len().saturating_sub(1)
 }
 
+/// For each line, whether `gate` covers it: every line when `whole_file` is
+/// set, else the lines of each item a `gate` line precedes.
+fn gated_lines(
+    lines: &[String],
+    in_literal: &[bool],
+    whole_file: bool,
+    gate: fn(&str) -> bool,
+) -> Vec<bool> {
+    let mut flags = vec![whole_file; lines.len()];
+    if whole_file {
+        return flags;
+    }
+    let mut idx = 0;
+    while idx < lines.len() {
+        if lines.get(idx).is_some_and(|line| gate(line)) {
+            let end = item_end(lines, in_literal, item_start(lines, idx));
+            for flag in flags.iter_mut().take(end + 1).skip(idx) {
+                *flag = true;
+            }
+            idx = end + 1;
+        } else {
+            idx += 1;
+        }
+    }
+    flags
+}
+
+/// The files that are test code throughout under `gate`: each file under one
+/// of `test_dirs`, each file a `mod x;` after a `gate` line declares, and
+/// everything a test file declares, until nothing new turns up.
+fn test_files(
+    contents: &BTreeMap<PathBuf, Vec<String>>,
+    test_dirs: &[PathBuf],
+    gate: fn(&str) -> bool,
+) -> BTreeSet<PathBuf> {
+    let mod_decl = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;").unwrap();
+    let mut found: BTreeSet<PathBuf> = contents
+        .keys()
+        .filter(|path| test_dirs.iter().any(|dir| path.starts_with(dir)))
+        .cloned()
+        .collect();
+    let mut pending: Vec<PathBuf> = Vec::new();
+    for (path, lines) in contents {
+        for (idx, line) in lines.iter().enumerate() {
+            if !gate(line) {
+                continue;
+            }
+            let start = item_start(lines, idx);
+            if let Some(name) = lines.get(start).and_then(|item| mod_decl.captures(item))
+                && let Some(file) = module_file(path, &name[1])
+                && found.insert(file.clone())
+            {
+                pending.push(file);
+            }
+        }
+    }
+    pending.extend(found.iter().cloned());
+    while let Some(path) = pending.pop() {
+        let Some(lines) = contents.get(&path) else {
+            continue;
+        };
+        for line in lines {
+            if let Some(name) = mod_decl.captures(line)
+                && let Some(file) = module_file(&path, &name[1])
+                && found.insert(file.clone())
+            {
+                pending.push(file);
+            }
+        }
+    }
+    found
+}
+
 /// Every Rust file in the scanned roots, classified.
 fn crate_sources() -> Vec<SourceFile> {
     let root = crate_root();
@@ -379,69 +483,14 @@ fn crate_sources() -> Vec<SourceFile> {
             (path.clone(), text.lines().map(str::to_string).collect())
         })
         .collect();
-
-    let mod_decl = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;").unwrap();
-    let mut test_files: BTreeSet<PathBuf> = paths
-        .iter()
-        .filter(|path| test_dirs.iter().any(|dir| path.starts_with(dir)))
-        .cloned()
-        .collect();
-    // Declarations under `#[cfg(test)]`, then everything a test file
-    // declares, until nothing new turns up.
-    let mut pending: Vec<PathBuf> = Vec::new();
-    for (path, lines) in &contents {
-        for (idx, line) in lines.iter().enumerate() {
-            if !is_test_gate(line) {
-                continue;
-            }
-            let start = item_start(lines, idx);
-            if let Some(name) = lines.get(start).and_then(|item| mod_decl.captures(item))
-                && let Some(file) = module_file(path, &name[1])
-                && test_files.insert(file.clone())
-            {
-                pending.push(file);
-            }
-        }
-    }
-    pending.extend(test_files.iter().cloned());
-    while let Some(path) = pending.pop() {
-        let Some(lines) = contents.get(&path) else {
-            continue;
-        };
-        for line in lines {
-            if let Some(name) = mod_decl.captures(line)
-                && let Some(file) = module_file(&path, &name[1])
-                && test_files.insert(file.clone())
-            {
-                pending.push(file);
-            }
-        }
-    }
-
+    let test_code = test_files(&contents, &test_dirs, is_test_gate);
+    let own_test_code = test_files(&contents, &test_dirs, is_own_test_gate);
     contents
         .into_iter()
         .map(|(path, lines)| {
-            let mut test = vec![test_files.contains(&path); lines.len()];
-            if !test_files.contains(&path) {
-                let in_literal = starts_inside_literal(&lines);
-                let mut idx = 0;
-                while idx < lines.len() {
-                    if lines.get(idx).is_some_and(|line| is_test_gate(line)) {
-                        let end = item_end(&lines, &in_literal, item_start(&lines, idx));
-                        for flag in test.iter_mut().take(end + 1).skip(idx) {
-                            *flag = true;
-                        }
-                        idx = end + 1;
-                    } else {
-                        idx += 1;
-                    }
-                }
-            }
-            SourceFile {
-                path: relative(&root, &path),
-                lines,
-                test,
-            }
+            let test_file = test_code.contains(&path);
+            let own_test_file = own_test_code.contains(&path);
+            SourceFile::new(relative(&root, &path), lines, test_file, own_test_file)
         })
         .collect()
 }
@@ -663,6 +712,75 @@ mod tests {
         assert!(
             !is_test_gate("#[cfg(not(test))]"),
             "a negated test gate is production code"
+        );
+    }
+
+    /// Whether the one line of `path` containing `needle` is test code, and
+    /// whether it is code only its own crate's tests compile.
+    fn test_and_own_test(sources: &[SourceFile], path: &str, needle: &str) -> (bool, bool) {
+        let file = source(sources, path);
+        let matches: Vec<(bool, bool)> = file
+            .lines
+            .iter()
+            .zip(file.test.iter().zip(&file.own_test))
+            .filter(|(line, _)| line.contains(needle))
+            .map(|(_, (test, own_test))| (*test, *own_test))
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "the anchor {needle:?} must match exactly one line of {path}"
+        );
+        matches.first().copied().unwrap()
+    }
+
+    #[test]
+    fn the_classifier_tells_own_test_code_from_test_support_code() {
+        let sources = crate_sources();
+        let cases = [
+            // A whole file behind the test-support gate.
+            (
+                "crates/core/src/testing/wait.rs",
+                "pub fn drain<R: Recv>(rx: &mut R) -> Vec<R::Item> {",
+                (true, false),
+            ),
+            // Its `#[cfg(test)] mod tests`.
+            (
+                "crates/core/src/testing/wait.rs",
+                "async fn guarded_returns_what_the_future_does() {",
+                (true, true),
+            ),
+            // An item behind the test-support gate in production code.
+            (
+                "crates/config/src/layout.rs",
+                "pub fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {",
+                (true, false),
+            ),
+            (
+                "crates/config/src/layout.rs",
+                "pub fn new(root: impl Into<PathBuf>) -> Self {",
+                (false, false),
+            ),
+            (
+                "tests/it/smoke.rs",
+                "fn binary_starts_without_panic() {",
+                (true, true),
+            ),
+        ];
+        for (path, needle, expected) in cases {
+            assert_eq!(
+                test_and_own_test(&sources, path, needle),
+                expected,
+                "{path}: {needle:?} is (test code, own-test code)"
+            );
+        }
+        assert!(
+            is_own_test_gate("    #[cfg(test)]"),
+            "#[cfg(test)] marks own-test code"
+        );
+        assert!(
+            !is_own_test_gate(r#"#[cfg(any(test, feature = "test-support"))]"#),
+            "the test-support gate compiles into other crates' tests too"
         );
     }
 

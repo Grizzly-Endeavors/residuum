@@ -105,30 +105,6 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Check that an agent's `config.toml` and `providers.toml` are
-    /// well-formed: valid TOML whose known keys have the right types. An
-    /// unknown key is skipped, as loading skips it.
-    ///
-    /// Missing files pass. Semantic checks (required values, model specs)
-    /// are left to [`load_agent_at`](Self::load_agent_at), so this separates a
-    /// malformed file from one that is merely not configured yet.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` naming the file and the parse error.
-    pub fn check_files_parse_at(agent_config_dir: &Path) -> Result<(), FatalError> {
-        read_optional_toml::<deserialize::AgentConfigFile>(
-            &agent_config_dir.join("config.toml"),
-            "config.toml",
-        )
-        .map_err(FatalError::Config)?;
-        read_optional_toml::<deserialize::ProvidersFile>(
-            &agent_config_dir.join("providers.toml"),
-            "providers.toml",
-        )
-        .map_err(FatalError::Config)?;
-        Ok(())
-    }
-
     /// Whether the pulse system is on in the `config.toml` of the agent at
     /// `agent_dir`, read without resolving the rest of the configuration.
     ///
@@ -733,34 +709,6 @@ main = "my-provider/claude-sonnet-4-6"
         let err = Config::load_agent_at(&agent_dir, &test_hub()).unwrap_err();
 
         assert!(matches!(err, FatalError::Config(_)), "{err:?}");
-    }
-
-    #[test]
-    fn check_files_parse_at_accepts_unknown_keys_in_known_sections() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent_dir = write_agent(
-            dir.path(),
-            "sam",
-            "[telegram]\ntoken = \"tg-token\"\nfuture_knob = true\n",
-            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\nfuture_knob = true\n",
-        );
-
-        let result = Config::check_files_parse_at(&agent_dir.join("config"));
-
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    #[test]
-    fn check_files_parse_at_still_rejects_a_type_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent_dir = write_agent(
-            dir.path(),
-            "sam",
-            "[telegram]\ntoken = 5\n",
-            VALID_PROVIDERS,
-        );
-
-        assert!(Config::check_files_parse_at(&agent_dir.join("config")).is_err());
     }
 
     #[test]
