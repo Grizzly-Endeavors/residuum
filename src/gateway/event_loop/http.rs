@@ -22,7 +22,7 @@ pub struct ExtraApiStates {
     /// The live model catalog, for the sessions API to check a start's model.
     pub model_catalog: crate::config::SharedModelCatalog,
     /// The running build, for the agent status route.
-    pub build: crate::BuildInfo,
+    pub build: crate::build_info::BuildInfo,
 }
 
 /// The agent-scoped routers [`build_gateway_app`] merges in, built once by

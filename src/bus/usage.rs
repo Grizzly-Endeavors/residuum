@@ -62,3 +62,79 @@ impl SessionUsageTotals {
         self.tool_calls += u64::from(n);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(input: u32, output: u32) -> Usage {
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }
+    }
+
+    #[test]
+    fn session_usage_totals_accumulate_input_and_output() {
+        let mut totals = SessionUsageTotals::default();
+        totals.accumulate(Some(usage(100, 20)));
+        totals.accumulate(Some(usage(150, 30)));
+        assert_eq!(totals.input_tokens, 250);
+        assert_eq!(totals.output_tokens, 50);
+    }
+
+    #[test]
+    fn session_usage_totals_context_tokens_is_the_latest_calls_full_context() {
+        let mut totals = SessionUsageTotals::default();
+        totals.accumulate(Some(Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_creation_tokens: Some(10),
+            cache_read_tokens: Some(5),
+        }));
+        assert_eq!(totals.context_tokens, Some(115));
+        totals.accumulate(Some(usage(40, 10)));
+        assert_eq!(
+            totals.context_tokens,
+            Some(40),
+            "context size reflects only the most recent call, not a running sum"
+        );
+    }
+
+    #[test]
+    fn session_usage_totals_none_leaves_everything_unchanged() {
+        let mut totals = SessionUsageTotals::default();
+        totals.accumulate(Some(usage(100, 20)));
+        totals.accumulate(None);
+        assert_eq!(totals.input_tokens, 100);
+        assert_eq!(totals.output_tokens, 20);
+        assert_eq!(totals.context_tokens, Some(100));
+    }
+
+    #[test]
+    fn session_usage_totals_record_tool_calls_accumulates() {
+        let mut totals = SessionUsageTotals::default();
+        totals.record_tool_calls(4);
+        totals.record_tool_calls(6);
+        assert_eq!(totals.tool_calls, 10);
+    }
+
+    #[test]
+    fn session_usage_totals_deserializes_a_payload_persisted_before_tool_calls_existed() {
+        let old_payload = serde_json::json!({
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "context_tokens": 100,
+        });
+        let totals: SessionUsageTotals = serde_json::from_value(old_payload).unwrap();
+        assert_eq!(totals.input_tokens, 100);
+        assert_eq!(totals.output_tokens, 20);
+        assert_eq!(totals.context_tokens, Some(100));
+        assert_eq!(
+            totals.tool_calls, 0,
+            "a payload persisted before tool_calls existed should default to zero, not fail to parse"
+        );
+    }
+}

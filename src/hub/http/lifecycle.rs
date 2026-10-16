@@ -27,7 +27,7 @@ pub(super) struct LifecycleState {
     pub hub_dir: std::path::PathBuf,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     pub started_at: std::time::Instant,
-    pub build: crate::BuildInfo,
+    pub build: crate::build_info::BuildInfo,
 }
 
 /// The agent list, create, per-agent lifecycle, stop-all, and status routes.

@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::BuildInfo;
+use crate::build_info::BuildInfo;
 use crate::config::Config;
 use crate::config::{ThinkingConfig, ThinkingLevel};
 

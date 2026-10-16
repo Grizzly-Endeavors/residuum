@@ -1449,10 +1449,9 @@ mod tests {
 
     #[tokio::test]
     async fn stopped_interrupt_ends_turn_after_tool_completes() {
-        // The tool call in response 0 must run to completion before the
-        // Interrupt::Stopped queued alongside it is observed — proving a
-        // stop mid-tool-execution doesn't sever the tool, only stops the
-        // loop at its next checkpoint.
+        // An Interrupt::Stopped that arrives while the turn is working lets
+        // the queued tool call run to completion, and stops the loop at its
+        // next checkpoint.
         let tool_runs = Arc::new(AtomicUsize::new(0));
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(CountingTool::new(Arc::clone(&tool_runs))));

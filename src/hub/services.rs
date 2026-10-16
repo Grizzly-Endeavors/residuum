@@ -34,7 +34,7 @@ use crate::workspace::watch::WatchHealth;
 pub(crate) struct HubControl {
     /// The running build. Every report of the running version reads it from
     /// here.
-    pub build: crate::BuildInfo,
+    pub build: crate::build_info::BuildInfo,
     /// Latest result of the periodic version check.
     pub update_status: SharedUpdateStatus,
     /// Asks the hub to stop every agent and relaunch the binary.

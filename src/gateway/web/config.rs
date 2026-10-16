@@ -32,7 +32,7 @@ pub(super) struct StatusResponse {
 /// health of the change feed over its directory.
 #[derive(Clone)]
 pub(crate) struct AgentStatusState {
-    pub(crate) build: crate::BuildInfo,
+    pub(crate) build: crate::build_info::BuildInfo,
     pub(crate) config: ConfigApiState,
     pub(crate) live_updates: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
 }
@@ -982,7 +982,7 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(live_updates);
         (
             AgentStatusState {
-                build: crate::BuildInfo {
+                build: crate::build_info::BuildInfo {
                     version: "1.2.3",
                     commit: None,
                 },

@@ -50,6 +50,7 @@ impl StaticHubDirectory {
     }
 
     /// Add a running agent serving `router` (its A2A routes, rooted at `/`).
+    /// Clears [`Self::begin_stopping`]'s flag for that name, as [`Self::add_agent`] does.
     #[must_use]
     pub(crate) fn with_agent(
         self,
@@ -57,6 +58,8 @@ impl StaticHubDirectory {
         visibility: A2aVisibility,
         router: Router,
     ) -> Self {
+        let name = name.into();
+        self.stopping_set().remove(&name);
         Self {
             inner: self.inner.with_agent(name, visibility, router),
             ..self

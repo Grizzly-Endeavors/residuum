@@ -9,7 +9,7 @@
 
 use std::io::{IsTerminal, Read, Write};
 
-use residuum::BuildInfo;
+use residuum::build_info::BuildInfo;
 use residuum::util::FatalError;
 use serde::Deserialize;
 

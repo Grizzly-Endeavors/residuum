@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
-use crate::BuildInfo;
+use crate::build_info::BuildInfo;
 use crate::bus::control::{ReloadReceiver, ReloadSignal};
 use crate::config::{Config, HubConfig, LogLevel};
 use crate::inference::EmbeddingProvider;
