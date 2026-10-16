@@ -26,9 +26,6 @@ use tokio::sync::RwLock;
 
 use anyhow::{Context, bail};
 
-/// Build-time version injected by the release workflow.
-pub const CURRENT_VERSION: &str = env!("RESIDUUM_VERSION");
-
 /// Release asset that lists a SHA-256 hash for every other asset.
 ///
 /// Written by `.github/workflows/release.yml` and downloaded next to the
@@ -50,10 +47,12 @@ pub struct UpdateStatus {
     pub checking: bool,
 }
 
-impl Default for UpdateStatus {
-    fn default() -> Self {
+impl UpdateStatus {
+    /// Status for a process running `current`, before any check has run.
+    #[must_use]
+    pub fn for_version(current: &str) -> Self {
         Self {
-            current: CURRENT_VERSION.to_string(),
+            current: current.to_string(),
             latest: None,
             update_available: false,
             last_checked: None,
@@ -64,6 +63,12 @@ impl Default for UpdateStatus {
 
 /// Thread-safe shared update status.
 pub type SharedUpdateStatus = Arc<RwLock<UpdateStatus>>;
+
+/// Fresh shared update status for a process running `current`.
+#[must_use]
+pub fn shared_update_status(current: &str) -> SharedUpdateStatus {
+    Arc::new(RwLock::new(UpdateStatus::for_version(current)))
+}
 
 /// Fetch the latest release, update shared state, log on failure.
 #[tracing::instrument(skip_all)]
@@ -260,8 +265,8 @@ pub fn rejection_message(err: &anyhow::Error) -> Option<&'static str> {
 /// Returns an error if the download, checksum check, platform detection,
 /// or binary replacement fails. A checksum mismatch is a
 /// [`rejection_message`] and does not replace the running binary.
-#[tracing::instrument(skip_all, fields(version = %version))]
-pub async fn download_and_install(version: &str) -> anyhow::Result<InstalledUpdate> {
+#[tracing::instrument(skip_all, fields(current = %current, version = %version))]
+pub async fn download_and_install(current: &str, version: &str) -> anyhow::Result<InstalledUpdate> {
     let asset = release_asset_name(std::env::consts::OS, std::env::consts::ARCH)?;
     let exe_path = running_exe_path().context("failed to determine current executable path")?;
     check_install_dir_writable(&exe_path)?;
@@ -275,7 +280,7 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<InstalledUpda
         verified = matches!(installed.verification, ReleaseVerification::Verified),
         "update binary installed, previous version preserved for rollback"
     );
-    record_pending_rollback(&installed.previous_binary, version);
+    record_pending_rollback(&installed.previous_binary, current, version);
     record_verification(version, installed.verification);
     Ok(installed)
 }
@@ -670,7 +675,7 @@ fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
 /// clear any stale rollback notice from an earlier attempt. Best-effort: if
 /// the config directory can't be found, the update still installed
 /// correctly, it just won't be able to roll back on a failed restart.
-fn record_pending_rollback(prev_path: &Path, target_version: &str) {
+fn record_pending_rollback(prev_path: &Path, previous_version: &str, target_version: &str) {
     let Ok(config_dir) = crate::config::default_hub_dir() else {
         tracing::warn!(
             "could not determine hub directory; the next restart won't be able to roll back this update on failure"
@@ -681,7 +686,7 @@ fn record_pending_rollback(prev_path: &Path, target_version: &str) {
         &config_dir,
         &PendingRollback {
             previous_binary: prev_path.to_path_buf(),
-            previous_version: CURRENT_VERSION.to_string(),
+            previous_version: previous_version.to_string(),
             target_version: target_version.to_string(),
         },
     );
@@ -941,9 +946,9 @@ mod tests {
     }
 
     #[test]
-    fn default_status_uses_current_version() {
-        let status = UpdateStatus::default();
-        assert_eq!(status.current, CURRENT_VERSION);
+    fn status_for_version_reports_the_given_version() {
+        let status = UpdateStatus::for_version("1.2.3");
+        assert_eq!(status.current, "1.2.3");
         assert!(!status.update_available);
         assert!(status.latest.is_none());
         assert!(status.last_checked.is_none());
@@ -954,7 +959,7 @@ mod tests {
     fn apply_fetch_result_clears_checking_on_error() {
         let mut s = UpdateStatus {
             checking: true,
-            ..Default::default()
+            ..UpdateStatus::for_version("1.2.3")
         };
         apply_fetch_result(&mut s, Err(anyhow::anyhow!("network error")));
         assert!(!s.checking, "checking flag should be cleared on error");
@@ -964,7 +969,7 @@ mod tests {
     fn apply_fetch_result_clears_checking_on_success() {
         let mut s = UpdateStatus {
             checking: true,
-            ..Default::default()
+            ..UpdateStatus::for_version("1.2.3")
         };
         apply_fetch_result(&mut s, Ok("v2026.03.02".to_string()));
         assert!(!s.checking, "checking flag should be cleared on success");

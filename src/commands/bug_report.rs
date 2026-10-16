@@ -9,6 +9,7 @@
 
 use std::io::{IsTerminal, Read, Write};
 
+use residuum::BuildInfo;
 use residuum::util::FatalError;
 use serde::Deserialize;
 
@@ -74,7 +75,7 @@ pub(super) async fn run_bug_report_command(
     ) {
         (Some(h), Some(e), Some(d), Some(s)) => build_body(h, e, d, s.as_wire()),
         _ if !std::io::stdin().is_terminal() => parse_markdown(&read_stdin()?)?,
-        _ => parse_markdown(&open_editor()?)?,
+        _ => parse_markdown(&open_editor(residuum::BUILD_INFO)?)?,
     };
 
     let url = format!("http://{gateway_addr}/api/hub/tracing/bug-report");
@@ -129,7 +130,7 @@ fn read_stdin() -> Result<String, FatalError> {
     Ok(buf)
 }
 
-fn open_editor() -> Result<String, FatalError> {
+fn open_editor(build: BuildInfo) -> Result<String, FatalError> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .map_err(|_unset| {
@@ -139,7 +140,7 @@ fn open_editor() -> Result<String, FatalError> {
         )
         })?;
 
-    let template = editor_template();
+    let template = editor_template(build);
     let tmp = tempfile::Builder::new()
         .prefix("residuum-bug-report-")
         .suffix(".md")
@@ -169,9 +170,9 @@ fn open_editor() -> Result<String, FatalError> {
         .map_err(|e| FatalError::Gateway(format!("failed to read edited file: {e}")))
 }
 
-fn editor_template() -> String {
-    let version = env!("RESIDUUM_VERSION");
-    let commit = option_env!("RESIDUUM_GIT_COMMIT").unwrap_or("(unknown)");
+fn editor_template(build: BuildInfo) -> String {
+    let version = build.version;
+    let commit = build.commit.unwrap_or("(unknown)");
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     format!(
