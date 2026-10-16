@@ -113,6 +113,13 @@ impl TermSignal {
     }
 }
 
+#[cfg(not(unix))]
+impl Default for TermSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A running HTTP server task and the switch that stops it.
 struct HttpServer {
     handle: JoinHandle<()>,
