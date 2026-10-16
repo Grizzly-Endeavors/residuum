@@ -60,7 +60,7 @@ mod session_relay;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
-const TEST_BUILD: crate::BuildInfo = crate::BuildInfo {
+const TEST_BUILD: crate::build_info::BuildInfo = crate::build_info::BuildInfo {
     version: "9.8.7",
     commit: None,
 };

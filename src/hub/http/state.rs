@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 
-use crate::BuildInfo;
+use crate::build_info::BuildInfo;
 use crate::bus::BusHandle;
 use crate::bus::control::ReloadSender;
 use crate::checkpoints::CheckpointEngine;

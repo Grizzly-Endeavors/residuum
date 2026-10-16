@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use crate::BuildInfo;
+use crate::build_info::BuildInfo;
 use crate::update::SharedUpdateStatus;
 
 /// Shared state for the update and lifecycle API routes.
