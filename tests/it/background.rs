@@ -7,6 +7,8 @@
 //! `src/background/runtime.rs` and `src/background/store.rs` — since driving
 //! them from here would mean re-exposing crate-internal construction just
 //! for the test.
+//!
+//! covers: residuum-background, residuum-notify, residuum-proactivity
 
 #![expect(
     clippy::tests_outside_test_module,

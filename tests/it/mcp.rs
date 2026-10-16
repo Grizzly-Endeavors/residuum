@@ -9,6 +9,8 @@
 //!
 //! The tests use `npx @anthropic/mcp-echo-server` or a simple script-based
 //! approach. If npx is unavailable, the tests skip gracefully.
+//!
+//! covers: residuum-mcp
 
 #![expect(
     clippy::tests_outside_test_module,

@@ -7,15 +7,21 @@
 #   --affected (default)  the packages the paths touch, plus every package that
 #                         depends on one of them, directly or not, through normal,
 #                         dev or build dependencies
-#   --members             the member packages among those (never residuum)
+#   --touched             the member packages the paths are in, without dependents
+#   --covering            the integration modules to run for the paths, one per line:
+#                         `it:<m>` for tests/it/<m>, `integration:<m>` for
+#                         src/integration/<m>, and `it:ALL` or `integration:ALL`
+#                         for a path every module reads
 #   --graph               the workspace dependency graph, one "package: deps" line each
 #
 # stdout is the cargo package arguments (`-p residuum-x -p residuum`, or
 # `--workspace` when a path touches every package). stderr says which package was
-# chosen and why. A manifest that cannot be read falls back to every package (for
-# --members, every member) with a warning, so a failure checks more, never less.
-# --graph has no fallback: it exits non-zero, because its output is compared with
-# the manifests.
+# chosen and why. --affected falls back to every package with a warning when a
+# manifest cannot be read, so a failure checks more, never less. --touched and
+# --covering have no fallback of their own: when the manifests or
+# scripts/pending-crates.txt cannot be read they exit non-zero, and the caller
+# runs every member or every module instead. --graph has no fallback either: it
+# exits non-zero, because its output is compared with the manifests.
 #
 # Bash 3.2 compatible, because the pre-commit hook runs it on developers' machines
 # (no mapfile, no associative arrays). The graph is read with awk, not cargo, so
@@ -26,9 +32,9 @@ export LC_ALL=C
 mode="--affected"
 case "${1:-}" in
 "") ;;
---affected | --members | --graph) mode="$1" ;;
+--affected | --touched | --covering | --graph) mode="$1" ;;
 *)
-    echo "usage: affected-packages.sh [--affected | --members | --graph] < changed-paths" >&2
+    echo "usage: affected-packages.sh [--affected | --touched | --covering | --graph] < changed-paths" >&2
     exit 2
     ;;
 esac
@@ -41,15 +47,6 @@ member_dirs() {
         manifest="${manifest#crates/}"
         printf '%s\n' "${manifest%/Cargo.toml}"
     done
-}
-
-# The cargo package arguments for every member, `-p residuum-a -p residuum-b`.
-member_args() {
-    local dir out=""
-    for dir in $(member_dirs); do
-        out="${out:+$out }-p residuum-$dir"
-    done
-    printf '%s\n' "$out"
 }
 
 # One line per workspace package and one per edge to another workspace package,
@@ -127,15 +124,26 @@ fi
 
 graph_ok=1
 graph="$(read_graph)" || graph_ok=0
+if [ "$graph_ok" -eq 0 ] && { [ "$mode" = "--touched" ] || [ "$mode" = "--covering" ]; }; then
+    echo "affected-packages: the workspace manifests cannot be read, so $mode cannot choose" >&2
+    exit 1
+fi
 if [ "$graph_ok" -eq 0 ]; then
     echo "warning: falling back to every package, because a workspace manifest cannot be read" >&2
-    if [ "$mode" = "--members" ]; then
-        member_args
-    else
-        echo "--workspace"
-    fi
+    echo "--workspace"
     exit 0
 fi
+
+# Sets CLASSIFIED to the package whose tests read a file by path: residuum-hub when
+# the hub is a member crate and holds the source file $1 that reads it, else the
+# root package.
+reader_package() {
+    if [ -f "crates/hub/Cargo.toml" ] && [ -f "crates/hub/$1" ]; then
+        CLASSIFIED="residuum-hub"
+    else
+        CLASSIFIED="residuum"
+    fi
+}
 
 # Sets CLASSIFIED to the package a changed path touches, to ALL when it touches
 # every package, or to nothing when no package builds from it.
@@ -155,7 +163,13 @@ classify_path() {
     tests/fixtures/* | assets/* | .cargo/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | .github/workflows/ci.yml | .github/workflows/rust-checks.yml | scripts/affected-packages* | scripts/check-crate-isolation.sh)
         CLASSIFIED="ALL"
         ;;
-    src/* | tests/* | build.rs | web/src/lib/generated/* | web/app-shell-csp.txt | scripts/check-generated-types.sh | scripts/export-generated-types.sh | .github/workflows/release.yml)
+    web/app-shell-csp.txt)
+        reader_package src/web/assets.rs
+        ;;
+    .github/workflows/release.yml)
+        reader_package src/update.rs
+        ;;
+    src/* | tests/* | build.rs | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh)
         CLASSIFIED="residuum"
         ;;
     web/src/styles/tokens.css)
@@ -164,6 +178,171 @@ classify_path() {
     esac
     return 0
 }
+
+# Prints the packages the changed paths in are, one per line, for --touched.
+# Only a member's path counts; a root path or a path no package builds from
+# prints nothing.
+touched_packages() {
+    local path
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        classify_path "$path"
+        case "$CLASSIFIED" in
+        "" | ALL | residuum) ;;
+        *) printf '%s\n' "$CLASSIFIED" ;;
+        esac
+    done | sort -u
+}
+
+# Prints one "<label> <package>" line for each name on the covers line of each
+# integration module: tests/it/<m>.rs or tests/it/<m>/mod.rs, and the same under
+# src/integration. The container files (tests/it/main.rs, src/integration/mod.rs)
+# and tests/it/support are not modules.
+covers_table() {
+    local file name
+    shopt -s nullglob
+    for file in tests/it/*.rs; do
+        name="${file##*/}"
+        name="${name%.rs}"
+        if [ "$name" != main ]; then covers_of "it:$name" "$file"; fi
+    done
+    for file in tests/it/*/mod.rs; do
+        name="${file#tests/it/}"
+        name="${name%%/*}"
+        if [ "$name" != support ]; then covers_of "it:$name" "$file"; fi
+    done
+    for file in src/integration/*.rs; do
+        name="${file##*/}"
+        name="${name%.rs}"
+        if [ "$name" != mod ]; then covers_of "integration:$name" "$file"; fi
+    done
+    for file in src/integration/*/mod.rs; do
+        name="${file#src/integration/}"
+        name="${name%%/*}"
+        covers_of "integration:$name" "$file"
+    done
+    shopt -u nullglob
+}
+
+# Prints "<label> <package>" for each name on the canonical covers line of $2,
+# `//! covers: <package>, <package>, …`, read from the leading doc comment. The
+# scan in src/testing/source_scan.rs (it_covers) rejects any other spelling.
+covers_of() {
+    if [ ! -r "$2" ]; then
+        echo "affected-packages: cannot read $2, so its covers line is unknown" >&2
+        exit 1
+    fi
+    awk -v label="$1" '
+        /^[ \t]*$/ { next }
+        /^\/\/!/ {
+            if ($0 !~ /^\/\/! covers: /) next
+            line = substr($0, length("//! covers: ") + 1)
+            count = split(line, names, ", ")
+            for (i = 1; i <= count; i++) print label, names[i]
+            next
+        }
+        { exit }
+    ' "$2"
+}
+
+# Prints the module label a path under tests/it or src/integration selects
+# directly, and nothing for any other path. A path that every module reads
+# selects all of its directory's modules.
+direct_module() {
+    local path="$1"
+    case "$path" in
+    tests/it/main.rs | tests/it/support/* | tests/fixtures/* | assets/*)
+        echo "it:ALL"
+        ;;
+    src/integration/mod.rs)
+        echo "integration:ALL"
+        ;;
+    tests/it/*)
+        module_label it "${path#tests/it/}"
+        ;;
+    src/integration/*)
+        module_label integration "${path#src/integration/}"
+        ;;
+    esac
+    return 0
+}
+
+# Prints "<kind>:<module>" for $2, a path relative to the module directory: the
+# first directory name, or the file name without .rs. A file that is not a .rs
+# module, such as a README in the directory, selects every module of the kind.
+module_label() {
+    local kind="$1" rest="$2" name
+    case "$rest" in
+    */*) name="${rest%%/*}" ;;
+    *.rs) name="${rest%.rs}" ;;
+    *)
+        echo "$kind:ALL"
+        return 0
+        ;;
+    esac
+    echo "$kind:$name"
+}
+
+# Sets PACKAGE to the package a root path belongs to: the package of the longest
+# entry of scripts/pending-crates.txt (in PENDING) that names it, or residuum.
+pending_package() {
+    local path="$1" entry package best=""
+    PACKAGE="residuum"
+    while read -r entry package; do
+        [ -n "$entry" ] || continue
+        case "$entry" in
+        */)
+            case "$path" in
+            "$entry"*) ;;
+            *) continue ;;
+            esac
+            ;;
+        *)
+            [ "$path" = "$entry" ] || continue
+            ;;
+        esac
+        if [ "${#entry}" -gt "${#best}" ]; then
+            best="$entry"
+            PACKAGE="$package"
+        fi
+    done <<<"$PENDING"
+}
+
+# Prints the integration modules to run for the changed paths, one per line,
+# for --covering. A module is one whose covers line names the package a path
+# belongs to; a path under a module directory selects that module alone.
+covering_modules() {
+    local table path direct
+    if ! PENDING="$(cat scripts/pending-crates.txt)"; then
+        echo "affected-packages: cannot read scripts/pending-crates.txt, so root paths cannot be mapped to packages" >&2
+        exit 1
+    fi
+    table="$(covers_table)"
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        direct="$(direct_module "$path")"
+        if [ -n "$direct" ]; then
+            printf '%s\n' "$direct"
+            continue
+        fi
+        classify_path "$path"
+        case "$CLASSIFIED" in
+        "" | ALL) continue ;;
+        residuum) pending_package "$path" ;;
+        *) PACKAGE="$CLASSIFIED" ;;
+        esac
+        awk -v package="$PACKAGE" '$2 == package { print $1 }' <<<"$table"
+    done | sort -u
+}
+
+if [ "$mode" = "--touched" ]; then
+    touched_packages
+    exit 0
+fi
+if [ "$mode" = "--covering" ]; then
+    covering_modules
+    exit 0
+fi
 
 # The selected packages, space-separated and padded, so membership is a substring test.
 names=" "
@@ -217,11 +396,6 @@ else
     done
 fi
 
-if [ "$mode" = "--members" ] && [ -n "$all_path" ]; then
-    member_args
-    exit 0
-fi
-
 if [ -n "$all_path" ]; then
     echo "--workspace"
     exit 0
@@ -231,7 +405,6 @@ out=""
 while IFS= read -r line; do
     [ -n "$line" ] || continue
     pkg="${line%%:*}"
-    if [ "$mode" = "--members" ] && [ "$pkg" = "residuum" ]; then continue; fi
     if has "$pkg"; then
         out="${out:+$out }-p $pkg"
     fi

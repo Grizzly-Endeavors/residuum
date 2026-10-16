@@ -3,6 +3,8 @@
 //! Tests the full backend flow: `send_message` tool with `file_path` →
 //! `ResponseEvent` with `FileAttachment` → WebSocket subscriber maps to
 //! `ServerMessage::FileAttachment` with a valid URL.
+//!
+//! covers: residuum-tools, residuum-hub, residuum-gateway, residuum-protocol
 
 #[expect(
     clippy::wildcard_enum_match_arm,

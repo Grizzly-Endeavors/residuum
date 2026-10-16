@@ -609,6 +609,344 @@ fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>>
     found
 }
 
+/// Where the integration tests live, and the file that declares them. Each
+/// top-level module of `dir` (a file, or a directory with a `mod.rs`) carries
+/// one `//! covers:` line naming the packages it tests, except the `exempt`
+/// modules. A directory marked `optional` may be absent; any other must exist.
+struct ModuleDir {
+    dir: &'static str,
+    container: &'static str,
+    exempt: &'static [&'static str],
+    optional: bool,
+}
+
+const MODULE_DIRS: [ModuleDir; 2] = [
+    ModuleDir {
+        dir: "tests/it",
+        container: "main.rs",
+        exempt: &["support"],
+        optional: false,
+    },
+    ModuleDir {
+        dir: "src/integration",
+        container: "mod.rs",
+        exempt: &[],
+        optional: true,
+    },
+];
+
+const PENDING_CRATES: &str = "scripts/pending-crates.txt";
+
+/// The `name` of each member package under `root`, read from its manifest.
+fn member_packages(root: &Path) -> Result<BTreeSet<String>, String> {
+    let manifest_path = root.join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
+    let manifest: toml::Table = toml::from_str(&text)
+        .map_err(|err| format!("failed to parse {}: {err}", manifest_path.display()))?;
+    let members = workspace_members(&manifest)?;
+    let mut packages = BTreeSet::new();
+    for dir in member_dirs(root, &members)? {
+        let member_path = root.join(&dir).join("Cargo.toml");
+        let member_text = std::fs::read_to_string(&member_path)
+            .map_err(|err| format!("failed to read {}: {err}", member_path.display()))?;
+        let member: toml::Table = toml::from_str(&member_text)
+            .map_err(|err| format!("failed to parse {}: {err}", member_path.display()))?;
+        let name = member
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("{} has no [package] name", member_path.display()))?;
+        packages.insert(name.to_string());
+    }
+    Ok(packages)
+}
+
+/// The `<path> <package>` lines of `scripts/pending-crates.txt`. Each path must
+/// exist: a directory when it ends in `/`, a file otherwise.
+fn pending_crates(root: &Path, problems: &mut Vec<String>) -> Vec<(String, String)> {
+    let path = root.join(PENDING_CRATES);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            problems.push(format!("failed to read {PENDING_CRATES}: {err}"));
+            return Vec::new();
+        }
+    };
+    let mut entries = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let number = idx + 1;
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let &[rel, package] = fields.as_slice() else {
+            problems.push(format!(
+                "{PENDING_CRATES}:{number} must be `<path> <package>`"
+            ));
+            continue;
+        };
+        let target = root.join(rel.trim_end_matches('/'));
+        let exists = if rel.ends_with('/') {
+            target.is_dir()
+        } else {
+            target.is_file()
+        };
+        if !exists {
+            problems.push(format!(
+                "{PENDING_CRATES}:{number} names {rel}, which is not an existing {}",
+                if rel.ends_with('/') {
+                    "directory"
+                } else {
+                    "file"
+                }
+            ));
+        }
+        entries.push((rel.to_string(), package.to_string()));
+    }
+    entries
+}
+
+/// The leading `//!` doc lines of a file that concern its covers line: the names
+/// of each canonical `//! covers: <package>, …` line, and the text of each doc
+/// line that tries to be one and is not in that form.
+struct CoversScan {
+    lines: Vec<Vec<String>>,
+    malformed: Vec<String>,
+}
+
+/// The names of a covers line's list, when the list is `<package>, <package>, …`
+/// with single spaces and no other separator.
+fn canonical_names(list: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = list.split(", ").map(str::to_string).collect();
+    names
+        .iter()
+        .all(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+        .then_some(names)
+}
+
+/// The covers lines of the leading doc comment of `file`.
+fn covers_lines(file: &Path) -> Result<CoversScan, String> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|err| format!("failed to read {}: {err}", file.display()))?;
+    let mut scan = CoversScan {
+        lines: Vec::new(),
+        malformed: Vec::new(),
+    };
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some(doc) = line.trim_start().strip_prefix("//!") else {
+            break;
+        };
+        if let Some(list) = line.strip_prefix("//! covers: ") {
+            match canonical_names(list) {
+                Some(names) => scan.lines.push(names),
+                None => scan.malformed.push(line.to_string()),
+            }
+        } else if doc
+            .trim()
+            .strip_prefix("covers")
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+        {
+            scan.malformed.push(line.to_string());
+        }
+    }
+    Ok(scan)
+}
+
+/// Every `.rs` file under the module directory `dir`, at any depth, sorted.
+fn files_below_module(dir: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(err) => {
+                problems.push(format!("failed to list {}: {err}", current.display()));
+                continue;
+            }
+        };
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(err) => {
+                    problems.push(format!("failed to list {}: {err}", current.display()));
+                    continue;
+                }
+            };
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Every top-level module of `dir`, as its name and the file that holds it,
+/// sorted by name. The `container` file is not a module.
+fn top_level_modules(
+    dir: &Path,
+    container: &str,
+    problems: &mut Vec<String>,
+) -> Vec<(String, PathBuf)> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            problems.push(format!("failed to list {}: {err}", dir.display()));
+            return Vec::new();
+        }
+    };
+    let mut modules = Vec::new();
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(err) => {
+                problems.push(format!("failed to list {}: {err}", dir.display()));
+                continue;
+            }
+        };
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if file_name == container {
+            continue;
+        }
+        if path.is_dir() {
+            let module_file = path.join("mod.rs");
+            if module_file.is_file() {
+                modules.push((file_name.to_string(), module_file));
+            } else {
+                problems.push(format!("{} has no mod.rs", path.display()));
+            }
+        } else if let Some(stem) = file_name.strip_suffix(".rs") {
+            modules.push((stem.to_string(), path.clone()));
+        }
+    }
+    modules.sort();
+    modules
+}
+
+/// Problems with the covers lines, the `mod` lines that declare the modules
+/// under `MODULE_DIRS`, and `scripts/pending-crates.txt`. An empty result is a
+/// pass. A missing directory fails unless it is optional.
+fn covers_problems(root: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut valid_packages = BTreeSet::from(["residuum".to_string()]);
+    match member_packages(root) {
+        Ok(packages) => valid_packages.extend(packages),
+        Err(err) => problems.push(err),
+    }
+    for (_, package) in pending_crates(root, &mut problems) {
+        valid_packages.insert(package);
+    }
+    let mod_decl = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;").unwrap();
+    for module_dir in &MODULE_DIRS {
+        let dir = root.join(module_dir.dir);
+        if !dir.is_dir() {
+            if !module_dir.optional {
+                problems.push(format!("{} does not exist", module_dir.dir));
+            }
+            continue;
+        }
+        let container_path = dir.join(module_dir.container);
+        let Ok(container_text) = std::fs::read_to_string(&container_path) else {
+            problems.push(format!(
+                "{} has no {}, which declares its modules",
+                module_dir.dir, module_dir.container
+            ));
+            continue;
+        };
+        let declared: BTreeSet<String> = container_text
+            .lines()
+            .filter_map(|line| mod_decl.captures(line).map(|caps| caps[1].to_string()))
+            .collect();
+        let modules = top_level_modules(&dir, module_dir.container, &mut problems);
+        let module_names: BTreeSet<String> = modules.iter().map(|(name, _)| name.clone()).collect();
+        for name in &module_names {
+            if !declared.contains(name) {
+                problems.push(format!(
+                    "{}/{} has no `mod {name};` line",
+                    module_dir.dir, module_dir.container
+                ));
+            }
+        }
+        for name in declared.difference(&module_names) {
+            problems.push(format!(
+                "{}/{} declares `mod {name};` with no file",
+                module_dir.dir, module_dir.container
+            ));
+        }
+        for (name, file) in &modules {
+            let rel = format!("{}/{name}", module_dir.dir);
+            let module_dir_path = dir.join(name);
+            if module_dir_path.is_dir() {
+                // Only the module's mod.rs carries its covers line; every other
+                // file below the directory belongs to the module.
+                for inner in files_below_module(&module_dir_path, &mut problems) {
+                    if inner == *file {
+                        continue;
+                    }
+                    let inner_rel = inner.strip_prefix(root).unwrap_or(&inner).display();
+                    match covers_lines(&inner) {
+                        Ok(scan) if scan.lines.is_empty() && scan.malformed.is_empty() => {}
+                        Ok(_) => problems.push(format!(
+                            "{inner_rel} has a `//! covers:` line; only the mod.rs of its module carries one"
+                        )),
+                        Err(err) => problems.push(err),
+                    }
+                }
+            }
+            if module_dir.exempt.contains(&name.as_str()) {
+                continue;
+            }
+            match covers_lines(file) {
+                Ok(scan) => check_covers_lines(&rel, &scan, &valid_packages, &mut problems),
+                Err(err) => problems.push(err),
+            }
+        }
+    }
+    problems
+}
+
+/// One module's covers lines: exactly one, canonical, naming packages that are
+/// valid, with no name repeated.
+fn check_covers_lines(
+    rel: &str,
+    scan: &CoversScan,
+    valid_packages: &BTreeSet<String>,
+    problems: &mut Vec<String>,
+) {
+    for line in &scan.malformed {
+        problems.push(format!(
+            "{rel} has the malformed covers line `{line}`; write it as `//! covers: <package>, …`"
+        ));
+    }
+    let [names] = scan.lines.as_slice() else {
+        problems.push(format!(
+            "{rel} has {} `//! covers:` lines; it needs exactly one",
+            scan.lines.len()
+        ));
+        return;
+    };
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if !valid_packages.contains(name) {
+            problems.push(format!(
+                "{rel} names {name}, which is neither residuum, a member package, nor a package in {PENDING_CRATES}"
+            ));
+        } else if !seen.insert(name) {
+            problems.push(format!("{rel} names {name} more than once"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1081,6 +1419,20 @@ mod tests {
         assert!(
             missing.is_empty(),
             "these paths name no file (a rename left them behind?): {missing:?}"
+        );
+    }
+
+    /// Each `tests/it` and `src/integration` module carries one canonical covers
+    /// line naming real packages, no file inside a module directory carries one,
+    /// the `mod` lines match the files, and every path in
+    /// `scripts/pending-crates.txt` exists.
+    #[test]
+    fn it_covers() {
+        let problems = covers_problems(&crate_root());
+        assert!(
+            problems.is_empty(),
+            "covers and pending-crates problems:\n{}",
+            problems.join("\n")
         );
     }
 }
