@@ -13,13 +13,6 @@ src/tools/ residuum-tools
 src/interfaces/ residuum-interfaces
 src/hub/ residuum-hub
 src/gateway/ residuum-gateway
-src/interfaces/types.rs residuum-bus
-src/interfaces/conversations.rs residuum-bus
-src/agent/interrupt.rs residuum-bus
-src/background/events.rs residuum-bus
-src/gateway/helpers.rs residuum-bus
-src/interfaces/attachment.rs residuum-workspace
-src/interfaces/websocket/ residuum-gateway
 src/interfaces/teams/atk.rs residuum-hub
 src/interfaces/teams/atk_runner.rs residuum-hub
 src/interfaces/teams/setup_job.rs residuum-hub
@@ -33,7 +26,3 @@ src/features.rs residuum-hub
 src/gateway/protocol.rs residuum-protocol
 src/gateway/sessions.rs residuum-protocol
 src/gateway/startup/tools.rs residuum-tools
-src/workspace/channel_builder.rs residuum-notify
-src/diagnostics_dispatch.rs residuum-a2a
-src/hub/team.rs residuum-background
-src/a2a/client/e2e_tests.rs residuum-tools
