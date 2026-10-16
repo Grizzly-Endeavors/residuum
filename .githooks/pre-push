@@ -359,11 +359,10 @@ add_filter() {
 }
 
 # Sets PICKED to the words scripts/affected-packages.sh prints for the mode $2
-# (--affected, --members, --touched or --covering) on the newline-separated
-# paths $3, one word per line or several per line. When the script
-# is missing or fails, PICKED is the fallback words given after the paths and
-# the function returns 1: a selection may check more, never less. The script's
-# stderr says what it chose.
+# (--affected, --touched or --covering) on the newline-separated paths $3, one
+# word per line or several per line. When the script is missing or fails, PICKED
+# is the fallback words given after the paths and the function returns 1: a
+# selection may check more, never less. The script's stderr says what it chose.
 pick_packages() {
     local dir="$1" mode="$2" paths="$3" out
     shift 3
@@ -537,27 +536,32 @@ plan_rust_tests() {
         esac
     done <<<"$CHANGED_PATHS"
 
-    # The integration modules the paths select by their covers lines. A push that
-    # already runs every integration test, or a failed selection, runs them all.
+    # The integration modules the paths select by their covers lines. A failed
+    # selection selects them all. The integration:: unit filters are added even
+    # when every integration test runs below, since the unit run may be narrower.
+    pick_packages "$dir" --covering "$CHANGED_PATHS" it:ALL integration:ALL
+    for module in ${PICKED[@]+"${PICKED[@]}"}; do
+        case "$module" in
+        it:ALL) it_all=1 ;;
+        it:*) it_modules+=("${module#it:}") ;;
+        integration:ALL) add_filter integration:: ;;
+        integration:*) add_filter "integration::${module#integration:}::" ;;
+        esac
+    done
+    # The it binary is one of the test targets --test '*' runs, so it is selected
+    # here only when that run does not happen.
     if [ "$integration_all" = 0 ]; then
-        pick_packages "$dir" --covering "$CHANGED_PATHS" it:ALL integration:ALL
-        for module in ${PICKED[@]+"${PICKED[@]}"}; do
-            case "$module" in
-            it:ALL) it_all=1 ;;
-            it:*) it_modules+=("${module#it:}") ;;
-            integration:ALL) add_filter integration:: ;;
-            integration:*) add_filter "integration::${module#integration:}::" ;;
-            esac
-        done
         if [ "$it_all" = 1 ]; then
             IT_ARGS=(-p residuum --test it)
-            echo "Integration modules: every one of the it binary."
+            echo "Integration modules: every one of the it binary (a path every module reads)."
         elif [ "${#it_modules[@]}" -gt 0 ]; then
             IT_ARGS=(-p residuum --test it --)
             for module in "${it_modules[@]}"; do
                 IT_ARGS+=("$module::")
             done
             echo "Integration modules: ${it_modules[*]} (covers lines name a changed package, or the path is in the module)."
+        else
+            echo "Integration modules: none (no covers line names a changed package)."
         fi
     fi
 
@@ -598,16 +602,20 @@ plan_rust_tests() {
     fi
     echo "Clippy: ${CLIPPY_ARGS[*]} ($clippy_reason)."
 
-    if pick_packages "$dir" --touched "$CHANGED_PATHS" --workspace --exclude residuum; then
-        member_reason="the member crates the changed paths are in"
+    if [ "$CHANGED_KNOWN" = 0 ]; then
+        echo "Member tests: in the workspace unit run (no list of changed paths)."
     else
-        member_reason="the selection failed"
-    fi
-    if [ "${#PICKED[@]}" -gt 0 ]; then
-        MEMBER_ARGS=("${PICKED[@]}" --lib --tests)
-        echo "Member tests: ${PICKED[*]} ($member_reason)."
-    else
-        echo "Member tests: none (no changed path is in a member crate)."
+        if pick_packages "$dir" --touched "$CHANGED_PATHS" --workspace --exclude residuum; then
+            member_reason="the member crates the changed paths are in"
+        else
+            member_reason="the selection failed"
+        fi
+        if [ "${#PICKED[@]}" -gt 0 ]; then
+            MEMBER_ARGS=("${PICKED[@]}" --lib --tests)
+            echo "Member tests: ${PICKED[*]} ($member_reason)."
+        else
+            echo "Member tests: none (no changed path is in a member crate)."
+        fi
     fi
 
     if [ "$integration_all" = 1 ]; then
@@ -620,7 +628,7 @@ plan_rust_tests() {
         done
         echo "Integration tests: ${test_names[*]}."
     else
-        echo "Integration tests: none (no tests/ path changed)."
+        echo "Integration tests: none (no other test target changed)."
     fi
 }
 

@@ -7,7 +7,6 @@
 #   --affected (default)  the packages the paths touch, plus every package that
 #                         depends on one of them, directly or not, through normal,
 #                         dev or build dependencies
-#   --members             the member packages among those (never residuum)
 #   --touched             the member packages the paths are in, without dependents
 #   --covering            the integration modules to run for the paths, one per line:
 #                         `it:<m>` for tests/it/<m>, `integration:<m>` for
@@ -17,9 +16,9 @@
 #
 # stdout is the cargo package arguments (`-p residuum-x -p residuum`, or
 # `--workspace` when a path touches every package). stderr says which package was
-# chosen and why. A manifest that cannot be read falls back to every package (for
-# --members, every member) with a warning, so a failure checks more, never less.
-# --touched and --covering have no fallback of their own: when the manifests or
+# chosen and why. --affected falls back to every package with a warning when a
+# manifest cannot be read, so a failure checks more, never less. --touched and
+# --covering have no fallback of their own: when the manifests or
 # scripts/pending-crates.txt cannot be read they exit non-zero, and the caller
 # runs every member or every module instead. --graph has no fallback either: it
 # exits non-zero, because its output is compared with the manifests.
@@ -33,9 +32,9 @@ export LC_ALL=C
 mode="--affected"
 case "${1:-}" in
 "") ;;
---affected | --members | --touched | --covering | --graph) mode="$1" ;;
+--affected | --touched | --covering | --graph) mode="$1" ;;
 *)
-    echo "usage: affected-packages.sh [--affected | --members | --touched | --covering | --graph] < changed-paths" >&2
+    echo "usage: affected-packages.sh [--affected | --touched | --covering | --graph] < changed-paths" >&2
     exit 2
     ;;
 esac
@@ -48,15 +47,6 @@ member_dirs() {
         manifest="${manifest#crates/}"
         printf '%s\n' "${manifest%/Cargo.toml}"
     done
-}
-
-# The cargo package arguments for every member, `-p residuum-a -p residuum-b`.
-member_args() {
-    local dir out=""
-    for dir in $(member_dirs); do
-        out="${out:+$out }-p residuum-$dir"
-    done
-    printf '%s\n' "$out"
 }
 
 # One line per workspace package and one per edge to another workspace package,
@@ -140,11 +130,7 @@ if [ "$graph_ok" -eq 0 ] && { [ "$mode" = "--touched" ] || [ "$mode" = "--coveri
 fi
 if [ "$graph_ok" -eq 0 ]; then
     echo "warning: falling back to every package, because a workspace manifest cannot be read" >&2
-    if [ "$mode" = "--members" ]; then
-        member_args
-    else
-        echo "--workspace"
-    fi
+    echo "--workspace"
     exit 0
 fi
 
@@ -238,23 +224,24 @@ covers_table() {
     shopt -u nullglob
 }
 
-# Prints "<label> <package>" for each name on the leading `//! covers:` line of $2.
+# Prints "<label> <package>" for each name on the canonical covers line of $2,
+# `//! covers: <package>, <package>, …`, read from the leading doc comment. The
+# scan in src/testing/source_scan.rs (it_covers) rejects any other spelling.
 covers_of() {
+    if [ ! -r "$2" ]; then
+        echo "affected-packages: cannot read $2, so its covers line is unknown" >&2
+        exit 1
+    fi
     awk -v label="$1" '
         /^[ \t]*$/ { next }
-        {
-            line = $0
-            sub(/^[ \t]+/, "", line)
-            if (line !~ /^\/\/!/) exit
-            sub(/^\/\/![ \t]*/, "", line)
-            if (line !~ /^covers:/) next
-            sub(/^covers:[ \t]*/, "", line)
-            count = split(line, names, ",")
-            for (i = 1; i <= count; i++) {
-                gsub(/^[ \t]+|[ \t]+$/, "", names[i])
-                if (names[i] != "") print label, names[i]
-            }
+        /^\/\/!/ {
+            if ($0 !~ /^\/\/! covers: /) next
+            line = substr($0, length("//! covers: ") + 1)
+            count = split(line, names, ", ")
+            for (i = 1; i <= count; i++) print label, names[i]
+            next
         }
+        { exit }
     ' "$2"
 }
 
@@ -409,11 +396,6 @@ else
     done
 fi
 
-if [ "$mode" = "--members" ] && [ -n "$all_path" ]; then
-    member_args
-    exit 0
-fi
-
 if [ -n "$all_path" ]; then
     echo "--workspace"
     exit 0
@@ -423,7 +405,6 @@ out=""
 while IFS= read -r line; do
     [ -n "$line" ] || continue
     pkg="${line%%:*}"
-    if [ "$mode" = "--members" ] && [ "$pkg" = "residuum" ]; then continue; fi
     if has "$pkg"; then
         out="${out:+$out }-p $pkg"
     fi
