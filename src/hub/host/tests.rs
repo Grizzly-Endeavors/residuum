@@ -1320,15 +1320,25 @@ where
 /// Hub-level code logs about the process as a whole, not on an agent's
 /// behalf; everything else that logs during an agent's life must say whose.
 fn is_hub_level(event: &CapturedEvent) -> bool {
-    [
+    // These hub modules run on an agent's behalf, so their lines must carry its `agent` field.
+    const AGENT_CHECKED_HUB_MODULES: &[&str] = &[
+        "residuum::hub::config_watcher",
+        "residuum::hub::last_known_good",
+        "residuum::hub::features",
+    ];
+    let hub_prefixes = [
         "residuum::hub",
         "residuum::background::team",
         "residuum_net::tunnel",
-        "residuum::update",
         "residuum::daemon",
-    ]
-    .iter()
-    .any(|prefix| event.target.starts_with(prefix))
+    ];
+    let is_hub_module = hub_prefixes
+        .iter()
+        .any(|prefix| event.target.starts_with(prefix))
+        && !AGENT_CHECKED_HUB_MODULES
+            .iter()
+            .any(|module| event.target.starts_with(module));
+    is_hub_module
         || event.task.as_deref() == Some("a2a-sibling-discovery")
         || event.spans.iter().any(|span| span == "team_feed")
 }
