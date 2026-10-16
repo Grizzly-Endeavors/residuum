@@ -945,6 +945,172 @@ mod tests {
         );
     }
 
+    /// A tab loading `path`, as a browser sends a top-level navigation.
+    fn tab_navigation(path: &str) -> Request<Body> {
+        Request::get(path)
+            .header(header::ACCEPT, "text/html,application/xhtml+xml")
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", "document")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// A frame inside another page loading `path`.
+    fn frame_navigation(path: &str) -> Request<Body> {
+        Request::get(path)
+            .header(header::ACCEPT, "text/html")
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", "iframe")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// A request that is not a navigation, as a script or an API client sends it.
+    fn plain_request_for(path: &str) -> Request<Body> {
+        Request::get(path).body(Body::empty()).unwrap()
+    }
+
+    const UNAVAILABLE_TEXT: &str = "Workbench artifacts aren't available on this Residuum instance right now. Check Residuum's logs for why its artifacts listener couldn't start.\n";
+
+    #[tokio::test]
+    async fn unavailable_answers_every_path_and_method_with_503_text() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["/", "/anything/at/all", "/api/status", "/graph/index.html"] {
+            for method in [
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::DELETE,
+            ] {
+                let request = Request::builder()
+                    .method(method.clone())
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap();
+                let resp = unavailable_router(test_pairing(dir.path()))
+                    .oneshot(request)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "{method} {path}"
+                );
+                assert_eq!(
+                    resp.headers().get(header::CONTENT_TYPE).unwrap(),
+                    "text/plain; charset=utf-8",
+                    "{method} {path}"
+                );
+                assert!(
+                    resp.headers().get(header::LOCATION).is_none(),
+                    "{method} {path} has no app to redirect to"
+                );
+                assert_eq!(body_text(resp).await, UNAVAILABLE_TEXT, "{method} {path}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_tab_without_a_known_app_origin_gets_the_page_without_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let resp = unavailable_router(test_pairing(dir.path()))
+            .oneshot(tab_navigation("/graph/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert_eq!(
+            resp.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+        assert!(
+            resp.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .is_some_and(|policy| policy
+                    .to_str()
+                    .is_ok_and(|policy| policy.starts_with("default-src 'none'"))),
+            "the page is locked down"
+        );
+        let body = body_text(resp).await;
+        assert!(body.contains("<h1>Workbench unavailable</h1>"), "{body}");
+        assert!(
+            !body.contains("<a "),
+            "no app address is known, so no link: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_tab_with_a_known_app_origin_is_sent_to_the_workbench_in_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let pairing = test_pairing(dir.path());
+        pairing
+            .update_identity(crate::pairing::Identity {
+                slug: Some("laptop".to_string()),
+                ui_origin: Some("https://bear.agent-residuum.com".to_string()),
+                workbench_origin: Some("https://bear.workbench.agent-residuum.com".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let resp = unavailable_router(pairing.clone())
+            .oneshot(tab_navigation("/graph/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers().get(header::LOCATION).unwrap(),
+            "https://bear.agent-residuum.com/team/workbench"
+        );
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+
+        let plain = unavailable_router(pairing)
+            .oneshot(plain_request_for("/graph/"))
+            .await
+            .unwrap();
+        assert_eq!(plain.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(plain.headers().get(header::LOCATION).is_none());
+        assert_eq!(body_text(plain).await, UNAVAILABLE_TEXT);
+    }
+
+    #[tokio::test]
+    async fn unavailable_frame_with_a_known_app_origin_gets_the_page_linking_to_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let pairing = test_pairing(dir.path());
+        pairing
+            .update_identity(crate::pairing::Identity {
+                slug: Some("laptop".to_string()),
+                ui_origin: Some("https://bear.agent-residuum.com".to_string()),
+                workbench_origin: None,
+            })
+            .await
+            .unwrap();
+
+        let resp = unavailable_router(pairing)
+            .oneshot(frame_navigation("/graph/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        let body = body_text(resp).await;
+        assert!(
+            body.contains(r#"href="https://bear.agent-residuum.com/team/workbench""#),
+            "{body}"
+        );
+        assert!(body.contains("Open the Workbench"), "{body}");
+    }
+
     #[tokio::test]
     async fn bind_listener_skips_reserved_and_busy_ports() {
         let busy = tokio::net::TcpListener::bind(("127.0.0.1", 0))

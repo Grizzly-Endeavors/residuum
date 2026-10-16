@@ -149,9 +149,18 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.shear_install.outcome == 'success' }}
         run: cargo shear --version && cargo shear --locked --deny-warnings
 
+      # The metrics go to the job summary and, between CI METRICS markers, to the
+      # job log, which `gh run view <id> --log` and the jobs logs API can read.
       - name: Build summary
         if: always()
         run: |
+          {
+            echo '### Compiler cache (sccache)'
+            echo ''
+            echo '```'
+            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
+            echo '```'
+          } > "$RUNNER_TEMP/ci-metrics.md"
           {
             echo '## Rust Lint Results'
             echo ''
@@ -164,12 +173,11 @@ jobs:
             echo "| Shear install | ${{ steps.shear_install.outcome }} |"
             echo "| Shear | ${{ steps.shear.outcome }} |"
             echo ''
-            echo '### Compiler cache (sccache)'
-            echo ''
-            echo '```'
-            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
-            echo '```'
+            cat "$RUNNER_TEMP/ci-metrics.md"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo '===== BEGIN CI METRICS (Rust Lint) ====='
+          cat "$RUNNER_TEMP/ci-metrics.md"
+          echo '===== END CI METRICS (Rust Lint) ====='
 
   # The release builds Windows from Linux with the gnu target, and code behind
   # cfg(windows) (and test imports only some platforms use) is not compiled by
@@ -288,9 +296,20 @@ jobs:
         if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
         run: scripts/check-generated-types.sh
 
+      # The metrics go to the job summary and, between CI METRICS markers, to the
+      # job log, which `gh run view <id> --log` and the jobs logs API can read.
       - name: Build summary
         if: always()
         run: |
+          {
+            echo '### Compiler cache (sccache)'
+            echo ''
+            echo '```'
+            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
+            echo '```'
+            echo ''
+            scripts/ci-cpu-report.sh report
+          } > "$RUNNER_TEMP/ci-metrics.md"
           {
             echo '## Rust Test Results'
             echo ''
@@ -302,14 +321,11 @@ jobs:
             echo "| Pebble tests | ${{ steps.pebble.outcome }} |"
             echo "| Generated types | ${{ steps.types.outcome }} |"
             echo ''
-            echo '### Compiler cache (sccache)'
-            echo ''
-            echo '```'
-            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
-            echo '```'
-            echo ''
-            scripts/ci-cpu-report.sh report
+            cat "$RUNNER_TEMP/ci-metrics.md"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo '===== BEGIN CI METRICS (Rust Tests) ====='
+          cat "$RUNNER_TEMP/ci-metrics.md"
+          echo '===== END CI METRICS (Rust Tests) ====='
 
   # Cargo unifies features across every package in one build, so a member can
   # compile in a whole-workspace run only because another package turns on a

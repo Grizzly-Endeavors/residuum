@@ -44,10 +44,10 @@ check_module_files() {
     eval "$fn"
     for name in src/gateway.rs src/memory/mod.rs src/lib.rs tests/it/gateway.rs \
         tests/it/memory.rs tests/it/support/mod.rs tests/ts_export.rs \
-        src/util/fs.rs crates/core/src/util/fs.rs; do
+        src/util/fs.rs crates/core/src/util/fs.rs tests/it/smoke.rs tests/smoke.rs; do
         repo_files["$name"]=1
     done
-    (( ${#repo_files[@]} == 9 )) || { echo "ci-failures module_files: fixture has ${#repo_files[@]} files, expected 9" >&2; status=1; }
+    (( ${#repo_files[@]} == 11 )) || { echo "ci-failures module_files: fixture has ${#repo_files[@]} files, expected 11" >&2; status=1; }
     while IFS='|' read -r name expected; do
         actual="$(module_files "$name")"
         if [[ "$actual" != "$expected" ]]; then
@@ -59,6 +59,7 @@ gateway::server::tests::x|src/gateway.rs tests/it/gateway.rs
 gateway::x|src/gateway.rs tests/it/gateway.rs
 memory::x|src/memory/mod.rs tests/it/memory.rs
 ts_export::roundtrip|tests/ts_export.rs
+smoke::x|tests/it/smoke.rs tests/smoke.rs
 util::fs::tests::x|src/util/fs.rs crates/core/src/util/fs.rs
 residuum_core::util::fs::tests::x|crates/core/src/util/fs.rs
 skills::x|

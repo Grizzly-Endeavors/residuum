@@ -54,7 +54,10 @@ test *args: _web-dist
     scripts/test-filters.sh note test "$@"
     log="$(mktemp)"
     trap 'rm -f "$log"' EXIT
-    cargo test --quiet --no-fail-fast "$@" 2>&1 | tee "$log"
+    # The output goes through tee, so cargo sees a pipe: CARGO_TERM_COLOR keeps its colour on a terminal.
+    colour=never
+    if [ -t 1 ]; then colour=always; fi
+    CARGO_TERM_COLOR="$colour" cargo test --quiet --no-fail-fast "$@" 2>&1 | tee "$log"
     status="${PIPESTATUS[0]}"
     if [ "$status" -eq 0 ]; then scripts/test-filters.sh check test "$log" -- "$@"; fi
     exit "$status"
