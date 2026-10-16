@@ -3,11 +3,12 @@
 # Pre-push gate: the slow checks, once per push, on each pushed commit as pushed.
 #
 # Rust changes in the pushed range run clippy, the tests of the code those
-# changes touch plus the source scans, and the generated-types check. Web
-# changes run ESLint and the style lint, svelte-check, and the web tests that
-# import a changed file. CI runs the whole suites; this hook runs what the push
-# can have changed. Every check runs even after one fails, so a push reports all
-# of its problems at once, and a summary at the end lists what failed.
+# changes touch plus the source scans, the generated-types check, and the
+# unused-dependency check (cargo shear). Web changes run ESLint and the style
+# lint, svelte-check, and the web tests that import a changed file. CI runs the
+# whole suites; this hook runs what the push can have changed. Every check runs
+# even after one fails, so a push reports all of its problems at once, and a
+# summary at the end lists what failed.
 #
 # The hook does not merge main into the commit. The merge queue tests every
 # pull request merged with main before it lands, so a conflict with main shows
@@ -591,8 +592,32 @@ web_dist_needs_build() {
     [ "$dir" != "$REPO_ROOT" ] || [ "$TOUCHES_WEB" = 1 ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]
 }
 
+# The unused-dependency check. cargo-shear reads the manifests and sources and
+# builds nothing, so it needs neither web/dist nor a target directory, and
+# runs even when the web build fails. CI pins its version in rust-checks.yml,
+# which this reads from the tree being checked. cargo-shear is a separate
+# install, so a machine without it does not refuse the push: SHEAR_NOTE makes
+# the summary say the check did not run and how to install it, and CI runs it.
+# A different installed version still runs, with a note, because its findings
+# can differ from CI's.
+SHEAR_NOTE=""
+shear_check() {
+    local dir="$1" pinned installed
+    pinned="$(sed -n 's/^ *CARGO_SHEAR_VERSION: \(.*\)$/\1/p' "$dir/.github/workflows/rust-checks.yml" 2>/dev/null)"
+    if ! command -v cargo-shear >/dev/null 2>&1; then
+        SHEAR_NOTE="cargo-shear is not installed, so the unused-dependency check did not run here (CI runs it). Install v${pinned}: cargo install --locked cargo-shear --version ${pinned}"
+        return
+    fi
+    installed="$(cargo shear --version 2>/dev/null | sed -n 's/^Version: //p')"
+    if [ "$installed" != "$pinned" ]; then
+        SHEAR_NOTE="cargo-shear ${installed:-of unknown version} is installed and CI pins ${pinned}, so this check's findings can differ from CI's. Install v${pinned}: cargo install --locked cargo-shear --version ${pinned}"
+    fi
+    run_check "cargo shear" cargo_in "$dir" shear --locked --deny-warnings
+}
+
 run_rust_checks() {
     local dir="$1" sha="$2"
+    shear_check "$dir"
     (
         cd "$dir" || exit 1
         # build.rs refuses to compile without web/dist, and the gateway's tests
@@ -769,6 +794,9 @@ done
 for name in ${FAILED[@]+"${FAILED[@]}"}; do
     echo -e "${RED}  FAILED: $name${NC}" >&2
 done
+if [ -n "$SHEAR_NOTE" ]; then
+    echo -e "${YELLOW}  NOTE: $SHEAR_NOTE${NC}" >&2
+fi
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
     echo -e "${RED}${BOLD}Pre-push checks failed (${#FAILED[@]}).${NC} Each check's output is above. Fix every failure, commit, and push again." >&2

@@ -248,7 +248,7 @@ web-check: _web-deps
 # Everything CI's rust job runs. Runs every check and lists the failures.
 [group('check')]
 rust-check: _web-dist
-    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy test types-check deny
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy test types-check deny shear
 
 # Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist, so a broken web build stops rust-check before its checks run. Runs every check and lists the failures.
 [group('check')]
@@ -276,6 +276,18 @@ actionlint:
     [ "$installed" = "$pinned" ] || { echo "actionlint ${installed} is installed; CI pins ${pinned}" >&2; exit 1; }
     command -v shellcheck >/dev/null || { echo "shellcheck is not installed, so actionlint would skip its shell checks: install it (apt install shellcheck, or v${shellcheck_pinned} from https://github.com/koalaman/shellcheck/releases)" >&2; exit 1; }
     actionlint
+
+# Unused dependencies, unused workspace dependencies and unlinked source files, with cargo-shear at the version CI pins in .github/workflows/rust-checks.yml
+[group('check')]
+shear:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pinned="$(sed -n 's/^ *CARGO_SHEAR_VERSION: \(.*\)$/\1/p' .github/workflows/rust-checks.yml)"
+    install="install v${pinned} with: cargo install --locked cargo-shear --version ${pinned} (or unpack the cargo-shear-<target>.tar.gz of that release from https://github.com/Boshen/cargo-shear/releases into a directory on PATH)"
+    command -v cargo-shear >/dev/null || { echo "cargo-shear is not installed: ${install}" >&2; exit 1; }
+    installed="$(cargo shear --version | sed -n 's/^Version: //p')"
+    [ "$installed" = "$pinned" ] || { echo "cargo-shear ${installed} is installed; CI pins ${pinned}: ${install}" >&2; exit 1; }
+    cargo shear --locked --deny-warnings
 
 # Every failing test in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
 [group('check')]
