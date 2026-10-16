@@ -3807,6 +3807,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_teammate_s_reply_to_a_group_chat_session_is_not_posted_into_the_group_chat() {
+        let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
+        let mut session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> =
+            bus_handle
+                .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+                .await
+                .unwrap();
+        let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("external-discord-teammate-reply");
+        runtime.spawn(
+            sample_conversation_request(address.as_ref()),
+            Some(make_sequenced_resources(vec![
+                "I asked beta, one moment",
+                "thanks beta, the answer is 42",
+            ])),
+        );
+        let first = bus_wait::next_event(
+            "the group member's turn to be answered in the group chat",
+            &mut session_output,
+        )
+        .await;
+        assert_eq!(first.content, "I asked beta, one moment");
+        next_idle(
+            &mut session_events,
+            &address,
+            "the session to go idle after the group member's turn",
+        )
+        .await;
+
+        // Exactly what the team router hands this agent's messenger for
+        // `message_agent to="agent:alpha/external-discord-teammate-reply"`.
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent {
+                    from: SessionAddress::from("agent:beta"),
+                    from_category: crate::background::registry::TEAMMATE_SENDER_CATEGORY
+                        .to_string(),
+                    content: "the answer is 42".to_string(),
+                    hop_count: 1,
+                }),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered,
+        );
+        next_idle(
+            &mut session_events,
+            &address,
+            "the session to go idle after the teammate's turn",
+        )
+        .await;
+        bus_wait::bus_barrier(&bus_handle).await;
+        let leaked: Vec<String> = session_output
+            .drain()
+            .into_iter()
+            .map(|event| event.content)
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "a turn a teammate's message started must not post into the group chat: {leaked:?}"
+        );
+        assert!(runtime.registry.stop(&address));
+    }
+
+    #[tokio::test]
     async fn a_fork_posting_into_the_owner_s_chat_names_itself() {
         let (runtime, mut session_output) = conversation_output_runtime().await;
         let mut request = sample_request("spawned-multitask-0001");
