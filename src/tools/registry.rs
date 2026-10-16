@@ -154,7 +154,7 @@ fn register_session_workspace_tools(
     let (shared, scope) = (session.shared, session.scope);
     // Core I/O tools. `None`: a session never gets a `ConfigWriteWatch`
     // — see its doc comment.
-    let diagnostics_paths = crate::diagnostics_dispatch::DiagnosticsPaths {
+    let diagnostics_paths = crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
         config_dir: shared.config_dir.clone(),
         workspace_dir: shared.layout.root().to_path_buf(),
         hub_dir: shared.hub_dir.clone(),

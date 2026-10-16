@@ -139,7 +139,7 @@ pub fn register_defaults(
     injections: &RegistryInjections,
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
-    diagnostics_paths: crate::diagnostics_dispatch::DiagnosticsPaths,
+    diagnostics_paths: crate::a2a::diagnostics_dispatch::DiagnosticsPaths,
     config_watch: Option<super::config_reload_tracker::ConfigWriteWatch>,
 ) {
     // Every file/shell tool resolves a relative path (or spawns a child
@@ -589,7 +589,7 @@ mod tests {
             &RegistryInjections::default(),
             FileTracker::new_shared(),
             policy,
-            crate::diagnostics_dispatch::DiagnosticsPaths {
+            crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
                 hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),
@@ -670,7 +670,7 @@ mod tests {
             &RegistryInjections::default(),
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
-            crate::diagnostics_dispatch::DiagnosticsPaths {
+            crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
                 hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),

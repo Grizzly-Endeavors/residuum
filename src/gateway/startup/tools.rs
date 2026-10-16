@@ -138,7 +138,7 @@ fn register_main_workspace_tools(
     deps: &ToolRegistryDeps<'_>,
 ) {
     let file_tracker = crate::tools::FileTracker::new_shared();
-    let diagnostics_paths = crate::diagnostics_dispatch::DiagnosticsPaths {
+    let diagnostics_paths = crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
         config_dir: cfg.config_dir.clone(),
         workspace_dir: cfg.workspace_dir.clone(),
         hub_dir: deps.hub_dir.to_path_buf(),

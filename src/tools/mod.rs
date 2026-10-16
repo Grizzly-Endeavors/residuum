@@ -1,5 +1,7 @@
 //! Tool system for agent-invoked operations.
 
+#[cfg(test)]
+mod a2a_client_e2e_tests;
 pub(crate) mod a2a_task_update;
 pub mod actions;
 mod agent_keys;

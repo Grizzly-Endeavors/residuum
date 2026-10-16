@@ -16,8 +16,8 @@ use super::read::format_numbered_line;
 use super::write::{
     append_diagnostics, check_reserved_target, commit_team_write, lock_team_target, resolve,
 };
+use crate::a2a::diagnostics_dispatch::DiagnosticsPaths;
 use crate::agent::Tool;
-use crate::diagnostics_dispatch::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
 use crate::inference::{ToolError, ToolResult};
 

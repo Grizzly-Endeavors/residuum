@@ -26,7 +26,6 @@ pub mod bus;
 pub mod checkpoints;
 pub mod client_context;
 pub mod daemon;
-pub mod diagnostics_dispatch;
 pub(crate) mod features;
 pub mod gateway;
 pub mod hub;

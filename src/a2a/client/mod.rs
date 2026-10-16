@@ -12,8 +12,6 @@
 //!   other instances in the hub, discovered through the relay directory.
 
 pub mod config;
-#[cfg(test)]
-mod e2e_tests;
 pub mod hub;
 pub mod siblings;
 pub mod tracker;

@@ -1,10 +1,7 @@
 //! End-to-end tests driving the A2A client tools (`message_agent`,
-//! `stop_agent`) against a real `a2a-server-lf` server. Lives as a
-//! `#[cfg(test)]` unit-test module
-//! rather than `tests/it/` because it needs `AgentMessenger::new`, which is
-//! `pub(crate)`; delivery is asserted through a registered session's
-//! interrupt channel, the same fixture pattern `background::messaging`'s own
-//! tests use.
+//! `stop_agent`) against a real `a2a-server-lf` server. Delivery is asserted
+//! through a registered session's interrupt channel, the same fixture pattern
+//! `background::messaging`'s own tests use.
 
 use std::collections::HashMap;
 use std::sync::Arc;

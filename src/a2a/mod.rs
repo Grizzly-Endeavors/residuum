@@ -12,6 +12,7 @@ pub mod agent_router;
 pub mod auth;
 pub mod card;
 pub mod client;
+pub mod diagnostics_dispatch;
 pub mod executor;
 pub mod handler;
 pub mod keys;

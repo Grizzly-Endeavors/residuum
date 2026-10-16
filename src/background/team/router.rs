@@ -478,10 +478,6 @@ mod tests {
     fn a_remote_agent_and_a_teammate_never_parse_as_each_other() {
         assert!(parse_team_address("a2a:agent:writer").is_none());
         assert!(parse_team_address("agent-writer").is_none());
-        assert!(!crate::a2a::client::config::is_valid_agent_name(
-            "agent:writer"
-        ));
-        assert!(!crate::a2a::client::config::is_valid_agent_name("writer/x"));
     }
 
     #[test]

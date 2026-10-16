@@ -230,6 +230,12 @@ mod tests {
     }
 
     #[test]
+    fn teammate_address_forms_are_not_agent_names() {
+        assert!(!is_valid_agent_name("agent:writer"));
+        assert!(!is_valid_agent_name("writer/x"));
+    }
+
+    #[test]
     fn missing_file_is_empty_map() {
         let dir = tempfile::tempdir().unwrap();
         let map =

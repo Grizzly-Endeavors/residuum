@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::{FileTracker, PathPolicy};
+use crate::a2a::diagnostics_dispatch::DiagnosticsPaths;
 use crate::agent::ToolRegistry;
-use crate::diagnostics_dispatch::DiagnosticsPaths;
 use crate::inference::ToolResult;
 use crate::workspace::team_files::{TeamWriteCoordinator, TeamWriter};
 
