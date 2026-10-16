@@ -1,7 +1,6 @@
 //! Integration tests for daemon utilities (PID file management and process detection).
 //!
 //! covers: residuum
-//!
 
 #![expect(
     clippy::tests_outside_test_module,
