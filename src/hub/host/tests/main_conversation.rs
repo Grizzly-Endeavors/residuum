@@ -113,8 +113,7 @@ async fn message_from_teammate(hub: &Fixture, agent: &str, text: &str) {
     let target = parse_team_address(&format!("agent:{agent}"))
         .unwrap()
         .unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, text.to_string(), 0)
         .await
         .unwrap();

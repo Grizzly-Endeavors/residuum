@@ -119,12 +119,12 @@ impl AgentControl {
         };
         self.messenger
             .send(
-                crate::background::registry::MAIN_ADDRESS,
+                crate::bus::session::MAIN_ADDRESS,
                 crate::bus::SessionAddress::from(format!(
                     "{}{creator}",
-                    crate::background::registry::TEAMMATE_SENDER_PREFIX
+                    crate::bus::session::TEAMMATE_SENDER_PREFIX
                 )),
-                crate::background::registry::TEAMMATE_SENDER_CATEGORY.to_string(),
+                crate::bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
                 content,
                 hop_count,
             )

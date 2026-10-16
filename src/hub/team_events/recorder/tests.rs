@@ -4,8 +4,8 @@
 use chrono::Duration;
 
 use super::*;
-use crate::background::registry::SessionState;
 use crate::bus::SessionAddress;
+use crate::bus::session::SessionState;
 use crate::hub::agent_watch::{MainTurnEnded, WatchedPath};
 use crate::hub::team_events::{PageQuery, TeamEvent};
 use crate::hub::types::{A2aVisibility, AgentLastError};

@@ -28,10 +28,9 @@ use serde::{Deserialize, Serialize};
 use super::chat::HistoryMessage;
 use crate::background::messaging::AgentMessenger;
 use crate::background::owner_session::{OwnerSessionStart, load_main_conversation};
-use crate::background::registry::{
-    MAIN_DEPTH, SessionCategory, SessionRegistry, artifact_sender_address, generate_address,
-};
+use crate::background::registry::SessionRegistry;
 use crate::background::store::{RunCursor, RunFilter, SessionStore, is_valid_run_id};
+use crate::bus::session::{MAIN_DEPTH, SessionCategory, artifact_sender_address, generate_address};
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
 use crate::config::ModelSelector;
 use crate::gateway::protocol::{
@@ -672,7 +671,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::background::registry::{MAIN_ADDRESS, SessionInfo, SessionState};
+    use crate::bus::session::{MAIN_ADDRESS, SessionInfo, SessionState};
     use crate::bus::{EventTrigger, SessionAddress};
     use crate::gateway::protocol::SessionListResponse;
 
@@ -1425,10 +1424,7 @@ mod tests {
         let Some(Interrupt::AgentMessage(owner_msg)) = rx.try_recv().ok() else {
             panic!("the session should have received the owner's message");
         };
-        assert_eq!(
-            owner_msg.from.as_ref(),
-            crate::background::registry::OWNER_ADDRESS
-        );
+        assert_eq!(owner_msg.from.as_ref(), crate::bus::session::OWNER_ADDRESS);
         assert!(
             owner_msg
                 .format_for_agent()

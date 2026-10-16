@@ -13,13 +13,12 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use crate::agent::interrupt::Interrupt;
-use crate::background::registry::{
-    DeliverOutcome, MAIN_ADDRESS, SessionCategory, SessionRegistry, SessionState,
-};
+use crate::background::registry::{DeliverOutcome, SessionRegistry};
 use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
 use crate::bus::MessageEvent;
+use crate::bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
 use crate::bus::{
     AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
     SessionAddress, SpawnRequestEvent, Subscriber, topics,
@@ -443,8 +442,8 @@ async fn fork_and_spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::SessionInfo;
     use crate::bus::ConversationTarget;
+    use crate::bus::session::SessionInfo;
     use crate::config::ModelSelector;
     use crate::inference::MessageSender;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};

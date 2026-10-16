@@ -11,6 +11,7 @@ mod endpoint;
 mod events;
 mod handle;
 mod registry;
+pub mod session;
 pub mod topics;
 mod types;
 

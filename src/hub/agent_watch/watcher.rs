@@ -456,18 +456,14 @@ mod tests {
         )
     }
 
-    fn session_info(
-        address: &str,
-        run_id: &str,
-        label: &str,
-    ) -> crate::background::registry::SessionInfo {
-        crate::background::registry::SessionInfo {
+    fn session_info(address: &str, run_id: &str, label: &str) -> crate::bus::session::SessionInfo {
+        crate::bus::session::SessionInfo {
             address: SessionAddress::from(address),
             run_id: run_id.to_string(),
-            category: crate::background::registry::SessionCategory::Spawned,
+            category: crate::bus::session::SessionCategory::Spawned,
             trigger: crate::bus::EventTrigger::Agent,
             source_label: label.to_string(),
-            state: crate::background::registry::SessionState::Forking,
+            state: crate::bus::session::SessionState::Forking,
             spawner: None,
             depth: 1,
             purpose: "look into it".to_string(),
@@ -574,14 +570,14 @@ mod tests {
             session_event(
                 "spawned-research-1",
                 "run-1",
-                SessionEventKind::StateChanged(crate::background::registry::SessionState::Running),
+                SessionEventKind::StateChanged(crate::bus::session::SessionState::Running),
             ),
         )
         .await;
         assert!(matches!(
             rig.next().await,
             AgentChangeKind::SessionStateChanged { run_id, state, .. }
-                if run_id == "run-1" && state == crate::background::registry::SessionState::Running
+                if run_id == "run-1" && state == crate::bus::session::SessionState::Running
         ));
 
         rig.publish(
@@ -897,7 +893,7 @@ mod tests {
             session_event(
                 "spawned-x",
                 "run-1",
-                SessionEventKind::StateChanged(crate::background::registry::SessionState::Idle),
+                SessionEventKind::StateChanged(crate::bus::session::SessionState::Idle),
             ),
         )
         .await;

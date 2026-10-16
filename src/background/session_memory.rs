@@ -113,7 +113,7 @@ fn wrap(messages: &[Message], tz: Tz) -> Vec<RecentMessage> {
 /// way). Anything staged mid-run is merged regardless of how the run ended.
 ///
 /// Takes the run's address/run id/category as a [`SourceTag`] rather than a
-/// [`super::registry::SessionInfo`] so it can be reused both by a live run's
+/// [`crate::bus::session::SessionInfo`] so it can be reused both by a live run's
 /// completion and by startup recovery, which only has a persisted
 /// [`super::store::RunRecord`] to work from.
 #[tracing::instrument(skip_all, fields(session.address = tag.session_address.as_deref().unwrap_or("unknown"), run.id = tag.run_id.as_deref().unwrap_or("unknown")))]

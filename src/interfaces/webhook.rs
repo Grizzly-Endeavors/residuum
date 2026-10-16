@@ -203,7 +203,7 @@ async fn route_webhook_content(
         }
         WebhookRouting::Agent(skill) => {
             let trigger = crate::bus::EventTrigger::Webhook(name.to_string());
-            let address = crate::background::registry::generate_address(&trigger, name);
+            let address = crate::bus::session::generate_address(&trigger, name);
             let spawn_event = crate::bus::SpawnRequestEvent {
                 address,
                 skill: Some(crate::bus::SkillName::from(skill.as_str())),
@@ -213,7 +213,7 @@ async fn route_webhook_content(
                 source: trigger,
                 model: crate::config::ModelSelector::MEDIUM,
                 spawner: None,
-                depth: crate::background::registry::MAIN_DEPTH + 1,
+                depth: crate::bus::session::MAIN_DEPTH + 1,
                 hop_count: 0,
                 sender: None,
                 conversation: None,

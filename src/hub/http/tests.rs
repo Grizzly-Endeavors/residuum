@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tower::ServiceExt;
 
 use super::{HubHttpState, agent_repair_router, hub_router};
-use crate::background::registry::SessionInfo;
+use crate::bus::session::SessionInfo;
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
 use crate::config::WorkspaceLayout;

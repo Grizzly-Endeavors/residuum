@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::types::{PulseDef, PulseTask};
 use crate::agent_keys::SharedAgentKeys;
-use crate::background::registry::{generate_address, generate_run_id};
+use crate::bus::session::{generate_address, generate_run_id};
 use crate::bus::{
     AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     ResultDisposition, ends_with_sentinel,

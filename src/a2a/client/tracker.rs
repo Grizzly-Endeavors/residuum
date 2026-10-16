@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome};
-use crate::background::registry::MAIN_ADDRESS;
+use crate::bus::session::MAIN_ADDRESS;
 use crate::bus::{
     NoticeEvent, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress, topics,
 };

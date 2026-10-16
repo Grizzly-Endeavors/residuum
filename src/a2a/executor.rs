@@ -14,8 +14,9 @@ use a2a_server::{AgentExecutor, ExecutorContext};
 use futures_util::stream::BoxStream;
 
 use crate::background::messaging::{AgentMessenger, ConversationSpawn};
-use crate::background::registry::{SessionRegistry, SessionState, conversation_session_address};
+use crate::background::registry::{SessionRegistry, conversation_session_address};
 use crate::bus::MessageEvent;
+use crate::bus::session::SessionState;
 use crate::bus::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, SessionEvent,
     SessionEventKind, topics,

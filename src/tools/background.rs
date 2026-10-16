@@ -9,7 +9,8 @@ use serde_json::Value;
 
 use crate::a2a::{A2aClientHub, AgentSource, AgentStatus, RemoteTaskTracker};
 use crate::agent::HopCounter;
-use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
+use crate::background::registry::SessionRegistry;
+use crate::bus::session::{MAIN_ADDRESS, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::{ModelSelector, SharedModelCatalog};
 use crate::hub::team::TeamLink;
@@ -873,13 +874,13 @@ mod tests {
     async fn list_agents_shows_a_live_sessions_tool_call_count() {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(SessionRegistry::new());
-        let info = crate::background::registry::SessionInfo {
+        let info = crate::bus::session::SessionInfo {
             address: SessionAddress::from("spawned-researcher-0001"),
             run_id: "run-1".to_string(),
-            category: crate::background::registry::SessionCategory::Spawned,
+            category: crate::bus::session::SessionCategory::Spawned,
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
-            state: crate::background::registry::SessionState::Running,
+            state: crate::bus::session::SessionState::Running,
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
             purpose: "research the thing".to_string(),

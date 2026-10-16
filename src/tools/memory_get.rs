@@ -264,8 +264,8 @@ impl MemoryGetTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::{SessionCategory, SessionState};
     use crate::background::store::SessionStore;
+    use crate::bus::session::{SessionCategory, SessionState};
     use crate::bus::{EventTrigger, SessionAddress};
     use crate::memory::episode_store::write_episode_transcript;
     use crate::memory::types::Episode;
@@ -279,8 +279,8 @@ mod tests {
         }
     }
 
-    fn sample_session_info(run_id: &str) -> crate::background::registry::SessionInfo {
-        crate::background::registry::SessionInfo {
+    fn sample_session_info(run_id: &str) -> crate::bus::session::SessionInfo {
+        crate::bus::session::SessionInfo {
             address: SessionAddress::from("spawned-researcher-0001"),
             run_id: run_id.to_string(),
             category: SessionCategory::Spawned,

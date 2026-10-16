@@ -14,7 +14,7 @@ use super::types::{
     Actor, AgentActivity, AgentPatch, AgentSummary, CreateAgentRequest, DeleteOutcome,
     DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
-use crate::background::registry::SessionInfo;
+use crate::bus::session::SessionInfo;
 
 /// Where one agent's files are, and the timezone the hub reads the naive local
 /// times stored in them in.

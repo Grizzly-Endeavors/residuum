@@ -38,11 +38,10 @@ use crate::config::ModelSelector;
 use crate::hub::team::TeamLink;
 use crate::inference::{ImageData, Message};
 
-use super::events::publish_session_event;
-use super::registry::{
-    DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry, TEAMMATE_SENDER_CATEGORY,
-};
 use super::store::SessionStore;
+use crate::background::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
+use crate::bus::session::publish_session_event;
+use crate::bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY};
 
 /// What happened when a message was sent to an address.
 #[derive(Debug, Clone)]
@@ -709,7 +708,7 @@ async fn publish_conversation_spawn(
         source: crate::bus::EventTrigger::Conversation,
         model: spawn.model,
         spawner: None,
-        depth: crate::background::registry::MAIN_DEPTH + 1,
+        depth: crate::bus::session::MAIN_DEPTH + 1,
         hop_count: 0,
         sender: inbound.origin.sender,
         conversation: Some(crate::bus::ConversationTarget {
@@ -1214,12 +1213,12 @@ mod tests {
 
     fn sample_live_info(
         address: &str,
-        state: crate::background::registry::SessionState,
-    ) -> crate::background::registry::SessionInfo {
-        crate::background::registry::SessionInfo {
+        state: crate::bus::session::SessionState,
+    ) -> crate::bus::session::SessionInfo {
+        crate::bus::session::SessionInfo {
             address: SessionAddress::from(address),
             run_id: "run-1".to_string(),
-            category: crate::background::registry::SessionCategory::Spawned,
+            category: crate::bus::session::SessionCategory::Spawned,
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
             state,
@@ -1269,7 +1268,7 @@ mod tests {
             bus_handle.subscribe(topics::Sessions).await.unwrap();
         let sender = sample_live_info(
             "spawned-researcher-3f9c",
-            crate::background::registry::SessionState::Running,
+            crate::bus::session::SessionState::Running,
         );
         let run_id = sender.run_id.clone();
         let _rx = registry.register(sender, CancellationToken::new()).unwrap();
@@ -1332,7 +1331,7 @@ mod tests {
         let (messenger, registry, _bus_handle) = messenger();
         let info = sample_live_info(
             "spawned-researcher-0001",
-            crate::background::registry::SessionState::Idle,
+            crate::bus::session::SessionState::Idle,
         );
         let mut rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1377,7 +1376,7 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
         let info = sample_live_info(
             "spawned-researcher-000f",
-            crate::background::registry::SessionState::Idle,
+            crate::bus::session::SessionState::Idle,
         );
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1440,7 +1439,7 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
         let info = sample_live_info(
             "spawned-researcher-000c",
-            crate::background::registry::SessionState::Completing,
+            crate::bus::session::SessionState::Completing,
         );
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1512,7 +1511,7 @@ mod tests {
 
         let winner = sample_live_info(
             "spawned-researcher-race1",
-            crate::background::registry::SessionState::Idle,
+            crate::bus::session::SessionState::Idle,
         );
         let mut winner_rx = registry.register(winner, CancellationToken::new()).unwrap();
 
@@ -1791,7 +1790,7 @@ mod tests {
         let (messenger, registry, _bus_handle) = messenger();
         let info = sample_live_info(
             "external-discord-0001",
-            crate::background::registry::SessionState::Idle,
+            crate::bus::session::SessionState::Idle,
         );
         let mut rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1889,7 +1888,7 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
         let info = sample_live_info(
             "external-discord-0003",
-            crate::background::registry::SessionState::Completing,
+            crate::bus::session::SessionState::Completing,
         );
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -2070,11 +2069,11 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let sender_info = sample_live_info(
             "spawned-sender-0001",
-            crate::background::registry::SessionState::Running,
+            crate::bus::session::SessionState::Running,
         );
         let receiver_info = sample_live_info(
             "spawned-receiver-0001",
-            crate::background::registry::SessionState::Idle,
+            crate::bus::session::SessionState::Idle,
         );
         let _sender_rx = registry
             .register(sender_info.clone(), CancellationToken::new())
@@ -2134,11 +2133,11 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let sender_info = sample_live_info(
             "spawned-sender-0002",
-            crate::background::registry::SessionState::Running,
+            crate::bus::session::SessionState::Running,
         );
         let receiver_info = sample_live_info(
             "spawned-receiver-0002",
-            crate::background::registry::SessionState::Idle,
+            crate::bus::session::SessionState::Idle,
         );
         let _sender_rx = registry
             .register(sender_info.clone(), CancellationToken::new())

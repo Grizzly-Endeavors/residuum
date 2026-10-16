@@ -134,10 +134,10 @@ mod tests {
     fn router() -> (
         ConversationRouter,
         crate::bus::BusHandle,
-        Arc<super::super::registry::SessionRegistry>,
+        Arc<crate::background::registry::SessionRegistry>,
     ) {
         let bus_handle = crate::bus::spawn_broker();
-        let registry = Arc::new(super::super::registry::SessionRegistry::new());
+        let registry = Arc::new(crate::background::registry::SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(super::super::store::SessionStore::new(
             dir.path().to_path_buf(),
@@ -226,13 +226,13 @@ mod tests {
         // the way a live session's own tool loop drains it continuously.
         let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-1");
-        let info = crate::background::registry::SessionInfo {
+        let info = crate::bus::session::SessionInfo {
             address: address.clone(),
             run_id: "run-1".to_string(),
-            category: crate::background::registry::SessionCategory::External,
+            category: crate::bus::session::SessionCategory::External,
             trigger: crate::bus::EventTrigger::Conversation,
             source_label: "discord:#builds".to_string(),
-            state: crate::background::registry::SessionState::Idle,
+            state: crate::bus::session::SessionState::Idle,
             spawner: None,
             depth: 1,
             purpose: "chat".to_string(),
@@ -311,13 +311,13 @@ mod tests {
         // blocking on however long that teardown takes.
         let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-2");
-        let info = crate::background::registry::SessionInfo {
+        let info = crate::bus::session::SessionInfo {
             address: address.clone(),
             run_id: "run-1".to_string(),
-            category: crate::background::registry::SessionCategory::External,
+            category: crate::bus::session::SessionCategory::External,
             trigger: crate::bus::EventTrigger::Conversation,
             source_label: "discord:#builds".to_string(),
-            state: crate::background::registry::SessionState::Completing,
+            state: crate::bus::session::SessionState::Completing,
             spawner: None,
             depth: 1,
             purpose: "chat".to_string(),

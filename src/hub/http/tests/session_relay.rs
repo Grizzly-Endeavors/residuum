@@ -7,7 +7,7 @@
 //! relays them: onto the harness's feed.
 
 use super::*;
-use crate::background::registry::{SessionCategory, SessionInfo, SessionState};
+use crate::bus::session::{SessionCategory, SessionInfo, SessionState};
 use crate::bus::{
     AgentResultStatus, EventTrigger, SessionAddress, SessionEvent, SessionEventKind, ToolCallEvent,
     ToolResultEvent,

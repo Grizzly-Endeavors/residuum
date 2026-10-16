@@ -2776,8 +2776,7 @@ async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
     start_all(&hub, &["alpha", "beta"]).await;
     let link = TeamLink::new("alpha", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:beta").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
 
     hub.host.stop("beta").await.unwrap();
     let stopped = link

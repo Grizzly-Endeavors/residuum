@@ -18,8 +18,8 @@ use std::fmt::Write as _;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
-use crate::background::registry::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
 use crate::bus::SessionAddress;
+use crate::bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
 use crate::config::canonicalize_display_name;
 
 use super::directory::{AgentDirectory, DirectoryHandle};

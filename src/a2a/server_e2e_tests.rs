@@ -629,7 +629,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         own_address: event.address.clone(),
         own_depth: event.depth,
         depth_cap: 2,
-        session_category: crate::background::registry::SessionCategory::from_trigger(&event.source)
+        session_category: crate::bus::session::SessionCategory::from_trigger(&event.source)
             .as_str()
             .to_string(),
         trigger: event.source.clone(),
@@ -1208,13 +1208,13 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
 /// own, returning its address.
 fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> SessionAddress {
     let child_address = SessionAddress::from("spawned-fake-child-0001");
-    let child_info = crate::background::registry::SessionInfo {
+    let child_info = crate::bus::session::SessionInfo {
         address: child_address.clone(),
         run_id: "run-fake-child".to_string(),
-        category: crate::background::registry::SessionCategory::Spawned,
+        category: crate::bus::session::SessionCategory::Spawned,
         trigger: crate::bus::EventTrigger::Agent,
         source_label: "agent:fake-child".to_string(),
-        state: crate::background::registry::SessionState::Running,
+        state: crate::bus::session::SessionState::Running,
         spawner: Some(spawner.clone()),
         depth: 2,
         purpose: "pretending to work".to_string(),

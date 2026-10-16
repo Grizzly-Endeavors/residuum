@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::AbortHandle;
 use tracing::Instrument;
 
-use crate::background::registry::SessionInfo;
+use crate::bus::session::SessionInfo;
 use crate::config::paths::TeamPaths;
 use crate::config::{Config, HubConfig, WorkspaceLayout};
 use crate::gateway::ReloadSignal;

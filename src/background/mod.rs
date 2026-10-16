@@ -3,7 +3,6 @@
 //! behavior and `README.md` for how the pieces fit together.
 
 pub mod conversation_router;
-pub(crate) mod events;
 pub(crate) mod listener;
 pub mod messaging;
 pub(crate) mod owner_session;

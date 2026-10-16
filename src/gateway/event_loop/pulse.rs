@@ -2,7 +2,8 @@
 
 use tokio_util::sync::CancellationToken;
 
-use crate::background::registry::{SessionCategory, SessionRegistry};
+use crate::background::registry::SessionRegistry;
+use crate::bus::session::SessionCategory;
 use crate::bus::{
     AgentResultEvent, AgentResultStatus, BusError, EventTrigger, NotificationEvent, Publisher,
     PulseOverlap, ResultDisposition, SpawnRequestEvent, topics,

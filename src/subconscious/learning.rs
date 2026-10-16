@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::background::registry::{MAIN_ADDRESS, MAIN_DEPTH, generate_address};
+use crate::bus::session::{MAIN_ADDRESS, MAIN_DEPTH, generate_address};
 use crate::bus::{EventTrigger, SessionAddress, SkillName, SpawnRequestEvent};
 
 use super::LearnSignal;

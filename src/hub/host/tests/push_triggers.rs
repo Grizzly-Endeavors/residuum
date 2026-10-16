@@ -485,8 +485,7 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     let mut changes = hub.host.agent_changes().subscribe();
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();

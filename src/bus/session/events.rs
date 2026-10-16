@@ -14,7 +14,7 @@ use crate::bus::{Publisher, SessionAddress, SessionEvent, SessionEventKind, topi
 /// high-frequency turn-stream events (tool activity, intermediate text) log
 /// at `debug`, matching how the main agent treats its own turn events, so a
 /// shutting-down broker doesn't produce a warning per tool call.
-pub(crate) async fn publish_session_event(
+pub async fn publish_session_event(
     publisher: &Publisher,
     address: &SessionAddress,
     run_id: &str,

@@ -228,8 +228,7 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
     // A teammate's message starts a background turn that still replies.
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();

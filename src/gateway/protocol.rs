@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::agent::usage::SessionUsageTotals;
-use crate::background::registry::{SessionCategory, SessionState};
+use crate::bus::session::{SessionCategory, SessionState};
 use crate::bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
 use crate::inference::{AgentSender, ImageData, MessageSender};
 use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};

@@ -212,13 +212,8 @@ impl EventContext<'_> {
                     ToolActivity::Call(tool_call) => SessionEventKind::ToolCall(tool_call),
                     ToolActivity::Result(result) => SessionEventKind::ToolResult(result),
                 };
-                crate::background::events::publish_session_event(
-                    self.publisher,
-                    address,
-                    run_id,
-                    kind,
-                )
-                .await;
+                crate::bus::session::publish_session_event(self.publisher, address, run_id, kind)
+                    .await;
             }
         }
     }
@@ -261,7 +256,7 @@ impl EventContext<'_> {
                 }
             }
             EventTarget::Session { address, run_id } => {
-                crate::background::events::publish_session_event(
+                crate::bus::session::publish_session_event(
                     self.publisher,
                     address,
                     run_id,
@@ -385,7 +380,7 @@ impl EventContext<'_> {
                     .await;
             }
             EventTarget::Session { address, run_id } => {
-                crate::background::events::publish_session_event(
+                crate::bus::session::publish_session_event(
                     self.publisher,
                     address,
                     run_id,

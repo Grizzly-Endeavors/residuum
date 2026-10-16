@@ -441,9 +441,8 @@ async fn dispatch_main_stop_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::{
-        SessionCategory, SessionInfo, SessionRegistry, SessionState,
-    };
+    use crate::background::registry::SessionRegistry;
+    use crate::bus::session::{SessionCategory, SessionInfo, SessionState};
     use crate::bus::{EventTrigger, MessageEvent, SessionAddress, Subscriber};
     use crate::config::ModelSelector;
     use crate::gateway::types::StopRequest;

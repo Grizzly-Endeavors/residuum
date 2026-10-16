@@ -17,7 +17,7 @@ use crate::memory::search::HybridSearcher;
 use crate::workspace::identity::IdentityFiles;
 
 use super::messaging::AgentMessenger;
-use super::registry::SessionCategory;
+use crate::bus::session::SessionCategory;
 
 /// Configuration for a single session run's turn.
 #[derive(Debug, Clone)]

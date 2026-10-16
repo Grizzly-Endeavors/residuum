@@ -26,7 +26,7 @@ use crate::agent::turn::TranscriptSink;
 use crate::bus::{AgentResultStatus, PulseOverlap};
 use crate::inference::Message;
 
-use super::registry::SessionInfo;
+use crate::bus::session::SessionInfo;
 
 /// On-disk record for a single run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,7 +142,7 @@ impl RunRecord {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunFilter<'a> {
     /// Only runs in this category (a
-    /// [`SessionCategory`](super::registry::SessionCategory) label).
+    /// [`SessionCategory`](crate::bus::session::SessionCategory) label).
     pub category: Option<&'a str>,
     /// Only runs at this session address.
     pub address: Option<&'a str>,
@@ -927,8 +927,8 @@ impl TranscriptSink for RunTranscriptSink<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::{SessionCategory, SessionState};
     use crate::background::session_memory::SessionMemoryEnv;
+    use crate::bus::session::{SessionCategory, SessionState};
     use crate::bus::{EventTrigger, SessionAddress};
 
     /// Build a `SessionMemoryEnv` whose observer/reflector never fire, so

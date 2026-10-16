@@ -10,7 +10,7 @@ use chrono::{NaiveDate, NaiveDateTime, TimeZone as _};
 use tokio::time::Instant;
 
 use super::*;
-use crate::background::registry::{SessionCategory, SessionState};
+use crate::bus::session::{SessionCategory, SessionState};
 use crate::bus::{AgentResultStatus, EventTrigger, SessionAddress};
 use crate::hub::agent_watch::{AgentChange, AgentChangeKind, MainTurnEnded, WatchedPath};
 use crate::hub::overview::{AgentOverview, LastMessageRole, TimePrecision};

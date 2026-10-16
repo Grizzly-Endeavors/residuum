@@ -99,9 +99,9 @@ impl MessageOrigin {
     /// anything else, this agent's own sessions included.
     #[must_use]
     pub fn teammate_sender(&self) -> Option<&AgentSender> {
-        self.agent_sender.as_deref().filter(|sender| {
-            sender.category == crate::background::registry::TEAMMATE_SENDER_CATEGORY
-        })
+        self.agent_sender
+            .as_deref()
+            .filter(|sender| sender.category == crate::bus::session::TEAMMATE_SENDER_CATEGORY)
     }
 }
 

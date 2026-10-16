@@ -4,11 +4,12 @@
 //! and workbench artifacts (over HTTP) share.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
-use crate::background::registry::{
-    ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo,
-    SessionRegistry, SessionState, artifact_sender_address,
-};
+use crate::background::registry::SessionRegistry;
 use crate::background::store::RunRecord;
+use crate::bus::session::{
+    ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo,
+    SessionState, artifact_sender_address,
+};
 use crate::bus::{AgentResultStatus, SessionAddress, SessionEvent, SessionEventKind};
 use crate::gateway::protocol::{
     ServerMessage, SessionCommandErrorCode, SessionDeliveryOutcome, SessionRunStatus,

@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::a2a::TrackedTask;
-use crate::background::registry::{SessionInfo, SessionState};
+use crate::bus::session::{SessionInfo, SessionState};
 use crate::bus::{AgentResultStatus, SessionAddress, SessionEvent};
 use crate::memory::types::Visibility;
 

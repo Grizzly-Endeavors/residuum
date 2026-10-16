@@ -20,10 +20,9 @@ use crate::agent::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::background::HopLimits;
 use crate::background::messaging::AgentMessenger;
-use crate::background::registry::{
-    MAIN_ADDRESS, SessionCategory, SessionInfo, SessionRegistry, SessionState,
-};
+use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
+use crate::bus::session::{MAIN_ADDRESS, SessionCategory, SessionInfo, SessionState};
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::ModelSelector;
 use crate::tools::Tool;

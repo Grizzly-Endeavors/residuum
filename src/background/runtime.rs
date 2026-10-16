@@ -28,16 +28,14 @@ use crate::bus::{
 use crate::config::BackgroundConfig;
 use crate::tracing_service::{ClientContext, TracingService};
 
-use super::events::publish_session_event;
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
-use super::registry::{
-    DeliverOutcome, ResumePoint, SessionCategory, SessionInfo, SessionRegistry, SessionState,
-    generate_run_id,
-};
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
 use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
+use crate::background::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
+use crate::bus::session::publish_session_event;
+use crate::bus::session::{SessionCategory, SessionInfo, SessionState, generate_run_id};
 
 /// Idle timeouts per category, resolved once from config at construction.
 ///
@@ -1537,9 +1535,9 @@ mod tests {
     use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
 
-    use super::super::registry::{MAIN_ADDRESS, MAIN_DEPTH};
     use super::super::subagent::test_memory_extras;
     use crate::bus::MessageEvent;
+    use crate::bus::session::{MAIN_ADDRESS, MAIN_DEPTH};
 
     /// A throwaway checkpoint engine for tests that need a `SessionRuntime`
     /// but don't exercise checkpointing behavior themselves.
@@ -1911,7 +1909,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
         };
-        let register_error = super::super::registry::RegisterError {
+        let register_error = crate::background::registry::RegisterError {
             address: address.clone(),
         };
 
@@ -2001,7 +1999,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
         };
-        let register_error = super::super::registry::RegisterError {
+        let register_error = crate::background::registry::RegisterError {
             address: address.clone(),
         };
         deliver_losing_spawn_input(
@@ -2061,7 +2059,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
         };
-        let register_error = super::super::registry::RegisterError {
+        let register_error = crate::background::registry::RegisterError {
             address: address.clone(),
         };
         deliver_losing_spawn_input(
