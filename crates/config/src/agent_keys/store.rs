@@ -307,7 +307,7 @@ pub fn validate_name(name: &str) -> Result<(), AgentKeyError> {
 }
 
 /// Check a key value: no NUL byte. There is no minimum length — see
-/// [`short_value_warning`] for the (non-blocking) redaction-risk warning on
+/// `short_value_warning` for the (non-blocking) redaction-risk warning on
 /// a short one.
 ///
 /// # Errors

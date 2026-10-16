@@ -309,7 +309,7 @@ fn note_unusable_display_name(file: Option<&AgentConfigFile>, notices: &mut Vec<
 }
 
 /// One notice (also logged at `warn`) per agent-scoped environment variable
-/// from [`REMOVED_AGENT_ENV_OVERRIDES`] that is set in the process
+/// from `REMOVED_AGENT_ENV_OVERRIDES` that is set in the process
 /// environment. Called once at startup, not on config load, so a config
 /// reload does not repeat it.
 #[must_use]

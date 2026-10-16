@@ -153,7 +153,7 @@ impl TeamsInterface {
     ///
     /// A corrupt saved Teams state file is moved aside and started fresh
     /// rather than treated as an error (see
-    /// [`ChatStateStore::load`](crate::interfaces::chat_state::ChatStateStore::load)).
+    /// `ChatStateStore::load`).
     ///
     /// # Errors
     /// Returns an error if the saved Teams state cannot be read (a

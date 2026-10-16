@@ -13,7 +13,7 @@
 //! `null` at a field removes just that field. Any top-level key besides
 //! `mcpServers`, and any per-server field the diff doesn't mention, are left
 //! exactly as they were, including their original position in the file —
-//! [`OrderedValue`] parses and re-serializes the existing document without
+//! `OrderedValue` parses and re-serializes the existing document without
 //! going through `serde_json::Value`, whose `Map` sorts keys alphabetically
 //! unless the crate's `preserve_order` feature is on. That feature is
 //! unified across the whole binary by Cargo, so enabling it here would

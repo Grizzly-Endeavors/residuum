@@ -27,7 +27,7 @@ const INTERNAL_DB_PATHS: &[&str] = &["memory/vectors.db", "team/vectors.db"];
 /// Blocks:
 /// - Any segment named exactly `.index` (the search index directory), at any
 ///   depth, including the directory itself.
-/// - One of [`INTERNAL_DB_PATHS`], or one of its `-wal`/`-shm`/`-journal`
+/// - One of `INTERNAL_DB_PATHS`, or one of its `-wal`/`-shm`/`-journal`
 ///   sidecar files.
 /// - An atomic-write temp file (see [`crate::util::fs::is_atomic_write_temp`]).
 /// - A `config/*.last-known-good.toml` copy. Last-known-good copies live in
@@ -85,7 +85,7 @@ fn is_internal_data_path(relative: &str) -> bool {
 
 /// Whether the directory at `dir` — reached from the workspace root by
 /// `relative` — holds Residuum's internal data (the search index or one of
-/// [`INTERNAL_DB_PATHS`]) at any depth. Symlinks are not followed.
+/// `INTERNAL_DB_PATHS`) at any depth. Symlinks are not followed.
 ///
 /// `relative` lets each entry's full workspace-relative path be checked
 /// exactly, so a same-named file *outside* an internal path (e.g. a user's

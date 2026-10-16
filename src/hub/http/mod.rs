@@ -4,25 +4,25 @@
 //! [`HubHttpState`] and returns the whole app, laid out as
 //! `docs/systems-usage/hub-http.md` places it:
 //!
-//! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
-//!   WebSocket ([`ws`], with its artifact events in [`artifact_events`] and
-//!   its session relay in [`session_relay`]), every agent's user inbox
-//!   ([`inbox`]), the team event
-//!   log ([`events`]), the team overview ([`overview`]), Web Push devices
-//!   ([`push`]), device pairing ([`pairing`]), and the routes that
+//! - `/api/hub/...`: agent lifecycle and status (`lifecycle`), the hub
+//!   WebSocket (`ws`, with its artifact events in `artifact_events` and
+//!   its session relay in `session_relay`), every agent's user inbox
+//!   (`inbox`), the team event
+//!   log (`events`), the team overview (`overview`), Web Push devices
+//!   (`push`), device pairing (`pairing`), and the routes that
 //!   exist once per process: hub config, secrets, keys, cloud, update,
 //!   shutdown, tracing, and the hub and team checkpoint repositories
-//!   ([`process`]).
+//!   (`process`).
 //! - `/api/team/...`: the team's file API and workbench.
 //! - `/api/agents/{name}/...` and `/webhook/{agent}/{name}`: resolved against
 //!   the directory on every request and handed to the agent's own routers
-//!   ([`dispatch`]).
+//!   (`dispatch`).
 //! - `/cloud/callback`, and the embedded web app for every other path.
 //!
 //! The device gate refuses remote requests from browsers that aren't paired
 //! (see [`crate::pairing`]). The cross-site guard covers the whole app. The remote-control guard covers
 //! hub shutdown and cloud disconnect. Requests the artifacts listener forwards
-//! here are refused on the routes in [`artifacts_origin`].
+//! here are refused on the routes in `artifacts_origin`.
 
 mod artifact_events;
 mod artifacts_origin;

@@ -1,6 +1,6 @@
 name: Rust Checks
 
-# The Rust format, clippy (host and Windows), test, generated-types,
+# The Rust format, clippy (host and Windows), rustdoc, test, generated-types,
 # dependency (audit and unused) and crate isolation checks. ci.yml calls it on
 # merge queue batches that change Rust code, and on pull requests that change
 # Rust code for the Windows clippy alone (`windows_clippy_only`); release.yml
@@ -188,6 +188,28 @@ jobs:
           echo '===== BEGIN CI METRICS (Rust Lint) ====='
           cat "$RUNNER_TEMP/ci-metrics.md"
           echo '===== END CI METRICS (Rust Lint) ====='
+
+  # Rustdoc with warnings denied, so a broken intra-doc link fails the run. It
+  # documents every package with its docs, the same command as `just doc`.
+  rust-doc:
+    name: Rustdoc
+    if: ${{ !inputs.windows_clippy_only }}
+    runs-on: lab-runners-fast
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      # build.rs refuses to compile without web/dist, which gets embedded in the binary
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Build the documentation
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+        run: cargo doc --workspace --no-deps --all-features
 
   # The release builds Windows from Linux with the gnu target, and code behind
   # cfg(windows) (and test imports only some platforms use) is not compiled by

@@ -4,7 +4,7 @@
 //! root with the same shell and `PATH` as the agent's own `exec` tool. Its
 //! stdout either joins the task's prompt before the session starts, or, for
 //! a `script_only` pulse, becomes the pulse's result with no session at all
-//! (see [`script_only_result`]). A script that exits non-zero, runs past its
+//! (see `script_only_result`). A script that exits non-zero, runs past its
 //! timeout, or can't be run is reported, never dropped: the run comes
 //! back as [`ScriptRun::Failed`] carrying the cause and the tail of stderr.
 

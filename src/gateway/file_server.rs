@@ -15,7 +15,7 @@
 //! hub serves it from that file while the agent is stopped.
 //!
 //! Every response carrying a file an agent wrote goes through
-//! [`mark_agent_file`], which keeps the browser from running it with the
+//! `mark_agent_file`, which keeps the browser from running it with the
 //! hub's origin.
 
 use std::collections::HashMap;

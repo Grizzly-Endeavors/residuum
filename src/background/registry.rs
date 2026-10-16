@@ -465,7 +465,7 @@ impl SessionRegistry {
     /// `remove`), so there is no address this could wait on forever absent a
     /// bug elsewhere.
     ///
-    /// Driven by [`Self::cleared`] rather than polling: the `Notify` future
+    /// Driven by `Self::cleared` rather than polling: the `Notify` future
     /// is obtained *before* the address is checked, per `tokio::sync::Notify`'s
     /// documented check-then-wait pattern, so a removal that races between
     /// the check and the `.await` is never missed. A notification meant for a

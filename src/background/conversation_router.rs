@@ -20,7 +20,7 @@ use super::registry::conversation_session_address;
 
 /// Routes admitted inbound conversation messages to their per-conversation
 /// session, deriving each conversation's deterministic address and source
-/// label and handing delivery to [`AgentMessenger::deliver_conversation`].
+/// label and handing delivery to `AgentMessenger::deliver_conversation`.
 pub struct ConversationRouter {
     messenger: Arc<AgentMessenger>,
     /// Model a conversation session runs on. Fixed at the `medium` tier, matching

@@ -1,5 +1,5 @@
 //! Sibling discovery: whenever the secure tunnel offers a directory address,
-//! and every [`REFRESH_INTERVAL`] after that, fetch the user's A2A directory
+//! and every `REFRESH_INTERVAL` after that, fetch the user's A2A directory
 //! and register agents of the user's *other* instances as `Sibling`-sourced
 //! agents in every hosted agent's [`A2aClientHub`], per
 //! `docs/systems-usage/a2a.md`. A sibling is named `<instance>/<agent>`.

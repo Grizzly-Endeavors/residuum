@@ -11,7 +11,7 @@
 //!   announced, and saves them to `hub/remote-access.json`.
 //! - [`device_gate`] is the middleware in front of the main and workbench
 //!   routers.
-//! - [`remote`] decides which requests are remote, and holds the cross-site
+//! - `remote` decides which requests are remote, and holds the cross-site
 //!   rule they must pass.
 //! - The pairing API's handlers live with the hub's other routes, in
 //!   `hub::http::pairing`.

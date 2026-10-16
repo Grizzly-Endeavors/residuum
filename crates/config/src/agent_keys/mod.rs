@@ -1,7 +1,7 @@
 //! Agent keys: credentials the agent can use in spawned commands without the
 //! values entering its context.
 //!
-//! Values live in a dedicated encrypted store ([`store`]), are injected as
+//! Values live in a dedicated encrypted store (`store`), are injected as
 //! environment variables into `exec` children and MCP servers, and are
 //! scrubbed from every tool result and trace export by a [`Redactor`]. See
 //! `docs/systems-usage/agent-keys.md`.
