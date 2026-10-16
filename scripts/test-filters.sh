@@ -133,8 +133,7 @@ cmd_check() {
         log=$1
         shift
         if [ -f "$log" ]; then
-            # The log may hold colour codes (`just test` keeps cargo's colour), so they go before matching.
-            n="$(awk 'BEGIN { esc = sprintf("%c", 27) } { gsub(esc "\\[[0-9;]*m", "") } /^running [0-9]+ tests?$/ { sum += $2 } END { print sum + 0 }' "$log")"
+            n="$(awk '/^running [0-9]+ tests?$/ { sum += $2 } END { print sum + 0 }' "$log")"
             total=$((total + n))
         fi
     done

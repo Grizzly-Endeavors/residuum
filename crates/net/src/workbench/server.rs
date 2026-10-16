@@ -945,31 +945,6 @@ mod tests {
         );
     }
 
-    /// A tab loading `path`, as a browser sends a top-level navigation.
-    fn tab_navigation(path: &str) -> Request<Body> {
-        Request::get(path)
-            .header(header::ACCEPT, "text/html,application/xhtml+xml")
-            .header("sec-fetch-mode", "navigate")
-            .header("sec-fetch-dest", "document")
-            .body(Body::empty())
-            .unwrap()
-    }
-
-    /// A frame inside another page loading `path`.
-    fn frame_navigation(path: &str) -> Request<Body> {
-        Request::get(path)
-            .header(header::ACCEPT, "text/html")
-            .header("sec-fetch-mode", "navigate")
-            .header("sec-fetch-dest", "iframe")
-            .body(Body::empty())
-            .unwrap()
-    }
-
-    /// A request that is not a navigation, as a script or an API client sends it.
-    fn plain_request_for(path: &str) -> Request<Body> {
-        Request::get(path).body(Body::empty()).unwrap()
-    }
-
     const UNAVAILABLE_TEXT: &str = "Workbench artifacts aren't available on this Residuum instance right now. Check Residuum's logs for why its artifacts listener couldn't start.\n";
 
     #[tokio::test]
@@ -1013,7 +988,7 @@ mod tests {
     async fn unavailable_tab_without_a_known_app_origin_gets_the_page_without_a_link() {
         let dir = tempfile::tempdir().unwrap();
         let resp = unavailable_router(test_pairing(dir.path()))
-            .oneshot(tab_navigation("/graph/"))
+            .oneshot(browser_request("/graph/", "document"))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1059,7 +1034,7 @@ mod tests {
             .unwrap();
 
         let resp = unavailable_router(pairing.clone())
-            .oneshot(tab_navigation("/graph/"))
+            .oneshot(browser_request("/graph/", "document"))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
@@ -1073,7 +1048,7 @@ mod tests {
         );
 
         let plain = unavailable_router(pairing)
-            .oneshot(plain_request_for("/graph/"))
+            .oneshot(browser_request("/graph/", "empty"))
             .await
             .unwrap();
         assert_eq!(plain.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1095,7 +1070,7 @@ mod tests {
             .unwrap();
 
         let resp = unavailable_router(pairing)
-            .oneshot(frame_navigation("/graph/"))
+            .oneshot(browser_request("/graph/", "iframe"))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);

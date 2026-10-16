@@ -40,27 +40,25 @@ fn git_stdout(args: &[&str]) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// Reruns the build script when the checked-out commit changes, so the baked-in
-/// version and commit hash track it. HEAD is watched because a checkout rewrites it,
-/// the ref HEAD points at because a commit advances it, and `packed-refs` because
-/// the ref may live there instead of as a loose file. Paths come from git itself
-/// since a worktree's `.git` is a file, not a directory. Only existing paths are
-/// emitted: cargo treats a missing watched path as always changed.
+/// Reruns the build script when this worktree's checked-out commit changes, so the
+/// baked-in version and commit hash track it. Two per-worktree files are watched:
+/// `HEAD`, which a checkout or switch rewrites, and the `HEAD` reflog (`logs/HEAD`),
+/// which is appended to on every move of `HEAD` in this worktree: a commit on the
+/// checked-out branch, a reset, a rebase, a commit on a detached `HEAD`. The branch
+/// ref and `packed-refs` are not watched: `packed-refs` is shared by every worktree
+/// and rewritten when a branch is deleted or refs are packed, which would rebuild
+/// the crate everywhere without a commit changing, and the branch ref is a loose
+/// file only until refs are packed. A `HEAD` move that keeps the same commit
+/// (`reset --hard HEAD`, `stash`) reruns the script once in that worktree. Without
+/// a reflog (`core.logAllRefUpdates=false`) only `HEAD` is watched, which still
+/// catches checkouts and detached commits. Paths come from git itself since a
+/// worktree's `.git` is a file, not a directory. Only existing paths are emitted:
+/// cargo treats a missing watched path as always changed.
 fn watch_git_state() {
-    let mut paths = Vec::new();
-    if let Some(head) = git_stdout(&["rev-parse", "--git-path", "HEAD"]) {
-        paths.push(head);
-    }
-    if let Some(head_ref) = git_stdout(&["symbolic-ref", "-q", "HEAD"])
-        && let Some(ref_path) = git_stdout(&["rev-parse", "--git-path", &head_ref])
-    {
-        paths.push(ref_path);
-    }
-    if let Some(common_dir) = git_stdout(&["rev-parse", "--git-common-dir"]) {
-        paths.push(format!("{common_dir}/packed-refs"));
-    }
-    for path in paths {
-        if std::path::Path::new(&path).exists() {
+    for git_path in ["HEAD", "logs/HEAD"] {
+        if let Some(path) = git_stdout(&["rev-parse", "--git-path", git_path])
+            && std::path::Path::new(&path).exists()
+        {
             println!("cargo:rerun-if-changed={path}");
         }
     }
