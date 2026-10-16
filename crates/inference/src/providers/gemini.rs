@@ -1751,7 +1751,7 @@ mod tests {
 
     /// A signature the test client itself received.
     fn own_signature_block(signature: &str, part: &str) -> ThinkingBlock {
-        signature_block(signature, part).from_origin(&test_origin())
+        signature_block(signature, part).with_origin(&test_origin())
     }
 
     fn assistant(content: &str, calls: Vec<ToolCall>, thinking: Vec<ThinkingBlock>) -> Message {
@@ -1988,12 +1988,12 @@ mod tests {
                     signature: Some("ANTHROPIC-SIG".to_string()),
                     ..ThinkingBlock::default()
                 }
-                .from_origin(&anthropic),
+                .with_origin(&anthropic),
                 ThinkingBlock {
                     redacted: Some("ENC".to_string()),
                     ..ThinkingBlock::default()
                 }
-                .from_origin(&anthropic),
+                .with_origin(&anthropic),
             ],
         )];
         let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
@@ -2013,7 +2013,7 @@ mod tests {
                 "Hi",
                 vec![call("call_0", "bash")],
                 vec![
-                    signature_block("OTHER-MODEL-TEXT", TEXT_PART).from_origin(&other_model),
+                    signature_block("OTHER-MODEL-TEXT", TEXT_PART).with_origin(&other_model),
                     signature_block("LEGACY-CALL", "call_0"),
                     own_signature_block("OWN-TEXT", TEXT_PART),
                 ],
@@ -2048,7 +2048,7 @@ mod tests {
                         signature: Some("ANTHROPIC-SIG".to_string()),
                         ..ThinkingBlock::default()
                     }
-                    .from_origin(&anthropic),
+                    .with_origin(&anthropic),
                 ],
             ),
             Message::tool("out-1", "toolu_1"),
@@ -2121,7 +2121,7 @@ mod tests {
             assistant(
                 "",
                 vec![call("call_0", "bash"), call("call_1", "read")],
-                vec![signature_block("SIG-FC1", "call_0").from_origin(&own)],
+                vec![signature_block("SIG-FC1", "call_0").with_origin(&own)],
             ),
             Message::tool("out", "call_0"),
             Message::tool("out", "call_1"),
@@ -2160,7 +2160,7 @@ mod tests {
         assert_eq!(
             response.thinking,
             vec![
-                ThinkingBlock::text("Weighing it").from_origin(&test_origin()),
+                ThinkingBlock::text("Weighing it").with_origin(&test_origin()),
                 own_signature_block("SIG-FC1", "call_0"),
             ],
             "every block names Gemini and the model that answered"
@@ -2316,7 +2316,7 @@ mod tests {
         assert_eq!(
             streamed.thinking,
             vec![
-                ThinkingBlock::text("Weighing it.").from_origin(&test_origin()),
+                ThinkingBlock::text("Weighing it.").with_origin(&test_origin()),
                 own_signature_block("SIG-FC1", "call_0"),
                 own_signature_block("SIG-LATE", TEXT_PART),
             ],

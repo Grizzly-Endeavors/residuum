@@ -95,7 +95,7 @@ impl ThinkingBlock {
     /// This block, recorded as produced at `origin`.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn from_origin(mut self, origin: &ThinkingOrigin) -> Self {
+    pub(crate) fn with_origin(mut self, origin: &ThinkingOrigin) -> Self {
         self.origin = Some(origin.clone());
         self
     }
@@ -983,7 +983,7 @@ mod tests {
             signature: Some("sig".to_string()),
             ..ThinkingBlock::default()
         }
-        .from_origin(&ThinkingOrigin::new(
+        .with_origin(&ThinkingOrigin::new(
             ProviderApi::OpenAiCompatible,
             "gpt-test",
         ));
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     fn block_from(provider: ProviderApi, model: &str, text: &str) -> ThinkingBlock {
-        ThinkingBlock::text(text).from_origin(&ThinkingOrigin::new(provider, model))
+        ThinkingBlock::text(text).with_origin(&ThinkingOrigin::new(provider, model))
     }
 
     fn texts<'a>(blocks: &[&'a ThinkingBlock]) -> Vec<&'a str> {

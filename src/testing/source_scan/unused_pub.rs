@@ -157,7 +157,7 @@ fn mentions<'a>(
     sources: &'a [SourceFile],
     names: &BTreeSet<&'a str>,
 ) -> BTreeMap<&'a str, Vec<Mention<'a>>> {
-    let identifier = Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap();
+    let identifier = Regex::new("[A-Za-z_][A-Za-z0-9_]*").unwrap();
     let use_start = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?use\s").unwrap();
     let mut found: BTreeMap<&str, Vec<Mention<'_>>> = BTreeMap::new();
     for file in sources {
