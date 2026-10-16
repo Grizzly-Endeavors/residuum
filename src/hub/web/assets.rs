@@ -1,8 +1,6 @@
-//! The embedded web app: static file serving with cache headers and compression.
-//!
-//! `web/dist/` is embedded into the binary via `rust-embed`. In debug builds,
-//! files are served from disk (hot-reload); in release builds, they are
-//! compiled into the binary.
+//! Static serving of the web app: cache headers, compression and the SPA
+//! fallback. The files come from the [`WebAssetSource`] the process hands the
+//! hub; the root embeds `web/dist/` and serves it through that source.
 //!
 //! - Files under `assets/` are named by content hash, so a browser keeps them
 //!   for a year without asking again.
@@ -15,7 +13,7 @@
 //! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
 //!   accepts it. HTML and images are not.
 //! - HTML documents carry the app shell's Content-Security-Policy
-//!   (`APP_SHELL_CSP`), which keeps the app from loading images, media,
+//!   ([`APP_SHELL_CSP`]), which keeps the app from loading images, media,
 //!   plug-ins or frames from anywhere but the hub, and from posting a form
 //!   anywhere else.
 

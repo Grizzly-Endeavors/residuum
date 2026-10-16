@@ -1261,7 +1261,7 @@ mod tests {
                 root: root.path().to_path_buf(),
                 build: crate::testing::HARNESS_BUILD,
                 launcher: Arc::new(crate::gateway::GatewayLauncher::new()),
-                assets: crate::wiring::web_asset,
+                assets: crate::hub::test_support::fixture_assets,
                 on_ready: Box::new(|dir| {
                     std::fs::write(crate::config::HubPaths::new(dir).ready_file(), "ready")
                         .unwrap();

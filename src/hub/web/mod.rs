@@ -2,12 +2,12 @@
 //! scope, the hub-level state, the routes that repair an agent whether or not
 //! it is running, the team's workspace file API, and the process-level config,
 //! secret, cloud, update, tracing and checkpoint routes. The embedded web app
-//! is served by [`assets`].
+//! is served by `assets`.
 
 mod a2a;
-pub(crate) mod agent_files;
+mod agent_files;
 mod agent_keys;
-pub mod assets;
+mod assets;
 pub(crate) mod chat;
 pub mod checkpoints;
 pub mod cloud;
@@ -535,7 +535,6 @@ pub(crate) fn hub_api_router(state: HubApiState) -> axum::Router {
 )]
 mod tests {
     use super::*;
-    use super::{AgentFilesState, chat};
 
     #[tokio::test]
     async fn chat_history_returns_empty_when_no_memory_dir() {
