@@ -19,7 +19,7 @@ use crate::memory::search::HybridSearcher;
 
 use super::background;
 use super::registration::{self, RegistryInjections};
-use super::{FileTracker, SharedFileTracker, SharedPathPolicy};
+use super::{FileTracker, SharedPathPolicy};
 
 /// The session tool factory: the shared handles every session's tools hold,
 /// from which [`SessionToolFactory::build`] makes one session run's
@@ -92,17 +92,6 @@ pub struct SessionTools {
     pub auto_mode: Option<SharedAutoMode>,
 }
 
-/// One session run's build: the factory's shared handles, the run's scope,
-/// and the per-run values derived from them.
-struct SessionBuild<'a> {
-    shared: &'a SessionTools,
-    scope: &'a SessionToolScope,
-    /// Fresh per session run: tracks reads within this run only.
-    tracker: SharedFileTracker,
-    /// `message_agent`'s label for the session's category.
-    session_category: String,
-}
-
 impl SessionToolFactory for SessionTools {
     /// Build a tool registry for a session.
     ///
@@ -126,17 +115,10 @@ impl SessionToolFactory for SessionTools {
             checkpoints: Some(Arc::clone(&self.checkpoints)),
             publisher: Some(self.publisher.clone()),
         };
-        let session = SessionBuild {
-            shared: self,
-            scope: &scope,
-            tracker: FileTracker::new_shared(),
-            session_category: scope.category.as_str().to_string(),
-        };
-
-        register_session_workspace_tools(&mut registry, &injections, &session);
-        register_session_agent_tools(&mut registry, &session);
-        register_session_messaging_tools(&mut registry, &session);
-        register_session_service_tools(&mut registry, &session);
+        register_session_workspace_tools(&mut registry, &injections, self, &scope);
+        register_session_agent_tools(&mut registry, self, &scope);
+        register_session_messaging_tools(&mut registry, self, &scope);
+        register_session_service_tools(&mut registry, self);
         if let Some(auto_mode) = &self.auto_mode {
             registry.set_auto_mode(Arc::clone(auto_mode));
         }
@@ -149,9 +131,9 @@ impl SessionToolFactory for SessionTools {
 fn register_session_workspace_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
-    session: &SessionBuild<'_>,
+    shared: &SessionTools,
+    scope: &SessionToolScope,
 ) {
-    let (shared, scope) = (session.shared, session.scope);
     // Core I/O tools. `None`: a session never gets a `ConfigWriteWatch`
     // — see its doc comment.
     let diagnostics_paths = crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
@@ -159,10 +141,11 @@ fn register_session_workspace_tools(
         workspace_dir: shared.layout.root().to_path_buf(),
         hub_dir: shared.hub_dir.clone(),
     };
+    // Fresh per session run: tracks reads within this run only.
     registration::register_defaults(
         tools,
         injections,
-        Arc::clone(&session.tracker),
+        FileTracker::new_shared(),
         Arc::clone(&shared.path_policy),
         diagnostics_paths,
         None,
@@ -200,8 +183,11 @@ fn register_session_workspace_tools(
 /// A session's tools for managing other sessions and teammates:
 /// `stop_agent`, `list_agents`, `subagent_spawn`, `a2a_task_update`, and
 /// the teammate lifecycle tools.
-fn register_session_agent_tools(tools: &mut ToolRegistry, session: &SessionBuild<'_>) {
-    let (shared, scope) = (session.shared, session.scope);
+fn register_session_agent_tools(
+    tools: &mut ToolRegistry,
+    shared: &SessionTools,
+    scope: &SessionToolScope,
+) {
     registration::register_background_tools(
         tools,
         Arc::clone(&shared.session_registry),
@@ -238,8 +224,11 @@ fn register_session_agent_tools(tools: &mut ToolRegistry, session: &SessionBuild
 }
 
 /// A session's messaging tools.
-fn register_session_messaging_tools(tools: &mut ToolRegistry, session: &SessionBuild<'_>) {
-    let (shared, scope) = (session.shared, session.scope);
+fn register_session_messaging_tools(
+    tools: &mut ToolRegistry,
+    shared: &SessionTools,
+    scope: &SessionToolScope,
+) {
     registration::register_send_message_tool(
         tools,
         shared.endpoint_registry.clone(),
@@ -250,7 +239,7 @@ fn register_session_messaging_tools(tools: &mut ToolRegistry, session: &SessionB
     registration::register_message_agent_tool(
         tools,
         scope.own_address.clone(),
-        session.session_category.clone(),
+        scope.category.as_str().to_string(),
         Arc::clone(&shared.messenger),
         scope.hop_counter.clone(),
         Arc::clone(&shared.a2a_hub),
@@ -259,8 +248,7 @@ fn register_session_messaging_tools(tools: &mut ToolRegistry, session: &SessionB
 }
 
 /// A session's feedback, web, and action-scheduling tools.
-fn register_session_service_tools(tools: &mut ToolRegistry, session: &SessionBuild<'_>) {
-    let shared = session.shared;
+fn register_session_service_tools(tools: &mut ToolRegistry, shared: &SessionTools) {
     registration::register_feedback_tools(
         tools,
         Arc::clone(&shared.tracing_service),
