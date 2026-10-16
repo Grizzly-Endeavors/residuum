@@ -97,7 +97,7 @@ scripts/affected-packages.sh|--workspace|$all_members
 scripts/affected-packages-test.sh|--workspace|$all_members
 scripts/check-crate-isolation.sh|--workspace|$all_members
 crates/zzz/README.md|--workspace|$all_members
-docs/design/workspace-split.md||
+docs/archive/workspace-split.md||
 .githooks/pre-push||
 CASES
 
