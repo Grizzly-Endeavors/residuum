@@ -4,8 +4,12 @@
 # with CPU burners alongside. A test that passes here waits on events, not on
 # how fast the machine is. `just stress` runs this locally.
 #
-# Arguments are passed to every test binary, so a libtest filter narrows the
-# run: `just stress hub::` or `scripts/stress-tests.sh hub::host::tests`.
+# Leading `-p <package>` (or `--package`) options choose the packages whose test
+# binaries are built and run, so a member crate's tests can be stressed:
+# `just stress -p residuum-core wait::`. Without them every package in
+# default-members is built. Every argument after them is passed to each test
+# binary, so a libtest filter narrows the run: `just stress hub::` or
+# `scripts/stress-tests.sh hub::host::tests`.
 #
 # Environment:
 #   STRESS_COPIES  copies of the suite run at once (default 2)
@@ -37,11 +41,38 @@ fi
 # cannot leave them for the caller's summary to count.
 rm -rf "$out"
 
+# Leading package options, then the libtest arguments. A `--` after a package
+# option ends the options; without one, `--` is a libtest argument like any other.
+cargo_args=()
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        -p | --package)
+            if [ "$#" -lt 2 ]; then
+                echo "error: $1 needs a package name" >&2
+                exit 2
+            fi
+            cargo_args+=(-p "$2")
+            shift 2
+            ;;
+        --package=*)
+            cargo_args+=(-p "${1#--package=}")
+            shift
+            ;;
+        --)
+            if [ "${#cargo_args[@]}" -gt 0 ]; then
+                shift
+            fi
+            break
+            ;;
+        *) break ;;
+    esac
+done
+
 # ts_export writes web/src/lib/generated, so concurrent copies would race on
 # the working tree. It has no timing to stress. Each line is a binary's path and
 # its package's directory, tab-separated.
 mapfile -t binary_entries < <(
-    cargo test --no-run --message-format=json \
+    cargo test --no-run --message-format=json "${cargo_args[@]}" \
         | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null and .target.name != "ts_export") | [.executable, (.manifest_path | rtrimstr("/Cargo.toml"))] | @tsv' \
         | sort -u
 )

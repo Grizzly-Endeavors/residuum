@@ -11,7 +11,7 @@ mod otel;
 mod sanitize;
 mod submit;
 
-pub use sanitize::{redact_agent_key_values, sanitize_spans};
+pub(crate) use sanitize::{redact_agent_key_values, sanitize_spans};
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};

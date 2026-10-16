@@ -171,7 +171,7 @@ pub struct RemoteAccessStatus {
     pub pins: Vec<PinInfo>,
     /// Whether a recovery code is waiting to be saved. The code itself is
     /// in `recovery_code`, for requests made on the machine Residuum runs on.
-    pub recovery_code_pending: bool,
+    pub(crate) recovery_code_pending: bool,
     pub recovery_code: Option<String>,
     /// The reset by email waiting to take effect, when the pin service reports one.
     pub pending_reset: Option<PendingResetInfo>,
@@ -188,13 +188,13 @@ pub struct RemoteAccessStatus {
     /// Absent when that URL isn't a ws or wss address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub relay_origin: Option<String>,
+    pub(crate) relay_origin: Option<String>,
     /// When Residuum last finished checking this instance's remote access,
     /// failed checks included (RFC 3339, UTC, to the millisecond). Absent
     /// until the first check ends. A retry has run once this moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub checked_at: Option<String>,
+    pub(crate) checked_at: Option<String>,
 }
 
 impl RemoteAccessStatus {

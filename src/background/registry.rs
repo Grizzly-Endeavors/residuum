@@ -347,7 +347,7 @@ pub struct SessionRegistry {
     /// after a newer one and drop the newer resume point on restart.
     persist_lock: tokio::sync::Mutex<()>,
     /// Notified whenever any session is removed, so [`Self::wait_until_clear`]
-    /// can wake without polling. A single registry-wide `Notify` rather than
+    /// and [`Self::wait_until_empty`] can wake without polling. A single registry-wide `Notify` rather than
     /// one per address: removals are infrequent, and a waiter re-checks its
     /// own address after waking, so a notification meant for a different
     /// address just costs a cheap recheck.
@@ -490,6 +490,22 @@ impl SessionRegistry {
                 );
                 warned = true;
             }
+        }
+    }
+
+    /// Wait until no session is registered at all, in any state.
+    ///
+    /// Unbounded, like [`Self::wait_until_clear`]: the caller bounds it
+    /// (graceful shutdown wraps it in its own deadline). Driven by
+    /// [`Self::cleared`] with the same check-then-wait ordering, so the
+    /// removal of the last session wakes it at once rather than on a poll.
+    pub async fn wait_until_empty(&self) {
+        loop {
+            let notified = self.cleared.notified();
+            if self.lock().is_empty() {
+                return;
+            }
+            notified.await;
         }
     }
 
@@ -1525,6 +1541,49 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_until_empty_returns_only_once_the_last_entry_is_removed() {
+        let registry = std::sync::Arc::new(SessionRegistry::new());
+        let first = sample_info("spawned-researcher-0007e");
+        let second = sample_info("spawned-researcher-0007f");
+        let _first_rx = registry
+            .register(first.clone(), CancellationToken::new())
+            .unwrap();
+        let _second_rx = registry
+            .register(second.clone(), CancellationToken::new())
+            .unwrap();
+
+        let waiter_registry = std::sync::Arc::clone(&registry);
+        let waiter = crate::util::spawn_in_span(async move {
+            waiter_registry.wait_until_empty().await;
+        });
+
+        registry.remove(&first.address, &first.run_id);
+        residuum_core::testing::clock::elapse(Duration::from_millis(20)).await;
+        assert!(
+            !waiter.is_finished(),
+            "should still be waiting while one entry is live"
+        );
+
+        registry.remove(&second.address, &second.run_id);
+        residuum_core::testing::wait::guarded(
+            "wait_until_empty to return once the last entry is removed",
+            waiter,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_until_empty_returns_at_once_for_an_empty_registry() {
+        let registry = SessionRegistry::new();
+        residuum_core::testing::wait::guarded(
+            "wait_until_empty on an empty registry to return",
+            registry.wait_until_empty(),
+        )
+        .await;
     }
 
     #[test]

@@ -72,11 +72,11 @@ impl TrackedServer {
 
 /// Result of a reconciliation diff (before connections are made).
 #[derive(Debug, Default)]
-pub struct McpReconcileResult {
+pub(crate) struct McpReconcileResult {
     /// Servers that need to be started (in `desired` but not running).
-    pub to_start: Vec<McpServerEntry>,
+    pub(crate) to_start: Vec<McpServerEntry>,
     /// Names of servers that need to be stopped (running but not in `desired`).
-    pub to_stop: Vec<String>,
+    pub(crate) to_stop: Vec<String>,
 }
 
 /// Report from `reconcile_and_connect` — how many servers started, stopped, or failed.
@@ -311,7 +311,7 @@ impl McpRegistry {
     ///
     /// Returns lists of servers to start and stop. The caller is responsible
     /// for acting on the result.
-    pub fn reconcile(&mut self, desired: &[McpServerEntry]) -> McpReconcileResult {
+    pub(crate) fn reconcile(&mut self, desired: &[McpServerEntry]) -> McpReconcileResult {
         let mut result = McpReconcileResult::default();
 
         // Servers in desired but not currently tracked (or failed) → to_start

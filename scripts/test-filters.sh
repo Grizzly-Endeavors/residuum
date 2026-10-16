@@ -10,8 +10,9 @@
 #   scripts/test-filters.sh check <test|stress> <log>... -- [args...]
 #
 # `test` takes cargo's arguments, so only those libtest receives are filters;
-# `stress` passes every argument to libtest. `check` sums the `running N tests`
-# lines of each log.
+# `stress` takes leading `-p <package>` options for cargo (scripts/stress-tests.sh)
+# and passes the rest to libtest. `check` sums the `running N tests` lines of
+# each log.
 #
 # This runs under bash 3.2, so it avoids arrays and `set -u`.
 set -eo pipefail
@@ -31,7 +32,32 @@ filters_of() {
     shift
     case $kind in
         stress)
+            local leading=1 seen_package=0 skip=0 arg
             for arg in "$@"; do
+                if [ "$skip" -eq 1 ]; then
+                    skip=0
+                    continue
+                fi
+                if [ "$leading" -eq 1 ]; then
+                    case $arg in
+                        -p | --package)
+                            seen_package=1
+                            skip=1
+                            continue
+                            ;;
+                        --package=*)
+                            seen_package=1
+                            continue
+                            ;;
+                        --)
+                            if [ "$seen_package" -eq 1 ]; then
+                                leading=0
+                                continue
+                            fi
+                            ;;
+                    esac
+                    leading=0
+                fi
                 if [ -n "$arg" ]; then printf '%s\n' "$arg"; fi
             done
             ;;
@@ -91,7 +117,7 @@ crates_named_by() {
 }
 
 note_for() {
-    local filter="$1" seg rest sp kind name
+    local filter="$1" mode="$2" seg rest sp kind name
     case $filter in
         *::*)
             seg=${filter%%::*}
@@ -105,6 +131,17 @@ note_for() {
     sp=""
     if [ -n "$rest" ]; then sp=" "; fi
     crates_named_by "$seg" | sort -u | while read -r kind name; do
+        if [ "$mode" = stress ]; then
+            case $kind in
+                dir)
+                    echo "note: $seg is crate directory crates/$name (residuum-$name), whose test paths start below the crate; run just stress -p residuum-$name$sp$rest" >&2
+                    ;;
+                module)
+                    echo "note: $seg is a module of residuum-$name, so its tests are that crate's; run just stress -p residuum-$name $filter" >&2
+                    ;;
+            esac
+            continue
+        fi
         case $kind in
             dir)
                 echo "note: $seg is crate directory crates/$name (residuum-$name), whose test paths start below the crate; run just test-crate $name$sp$rest or just test -p residuum-$name$sp$rest" >&2
@@ -118,10 +155,19 @@ note_for() {
 }
 
 cmd_note() {
-    local kind="$1"
+    local kind="$1" arg
     shift
+    # A stress run with a package option names its crate already; a filter that
+    # names a crate or module there is then a path inside that crate.
+    if [ "$kind" = stress ]; then
+        for arg in "$@"; do
+            case $arg in
+                -p | --package | --package=*) return 0 ;;
+            esac
+        done
+    fi
     filters_of "$kind" "$@" | while IFS= read -r filter; do
-        note_for "$filter"
+        note_for "$filter" "$kind"
     done
     return 0
 }

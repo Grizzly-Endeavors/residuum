@@ -45,7 +45,7 @@ const CROSS_SITE_MESSAGE: &str = "This request came from another website and was
 
 /// The machine-readable reason a `401` carries, which the web app turns into
 /// a move to the pairing page.
-pub const DEVICE_REQUIRED_CODE: &str = "device_required";
+pub(crate) const DEVICE_REQUIRED_CODE: &str = "device_required";
 
 /// What the gate needs: the pairing state and which host it is guarding.
 #[derive(Clone)]

@@ -131,6 +131,8 @@ repro_for() {
     local title="$1" spec
     if [ "$suite" = Rust ] && [[ "$title" == *" test binary" ]]; then
         printf "\`just stress\`, which runs every test binary"
+    elif [ "$suite" = Rust ] && [[ "$title" =~ ^residuum_([a-z0-9_]+)::(.*)$ ]]; then
+        printf "\`just stress -p residuum-%s %s\`" "${BASH_REMATCH[1]//_/-}" "${BASH_REMATCH[2]}"
     elif [ "$suite" = Rust ]; then
         printf "\`just stress %s\`" "$title"
     else

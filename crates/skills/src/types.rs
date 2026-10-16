@@ -21,7 +21,7 @@ pub struct SkillIndexEntry {
     /// Brief description.
     pub description: String,
     /// Absolute path to the skill's directory.
-    pub skill_dir: PathBuf,
+    pub(crate) skill_dir: PathBuf,
     /// Where this skill was found.
     pub source: SkillSource,
 }
@@ -40,5 +40,5 @@ pub struct ActiveSkill {
     /// shadowed by an agent skill of the same name). This field lets
     /// `rescan` detect that the backing source changed even though the name
     /// still matches.
-    pub skill_dir: PathBuf,
+    pub(crate) skill_dir: PathBuf,
 }

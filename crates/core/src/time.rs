@@ -59,7 +59,7 @@ pub fn local_to_rfc3339(tz: chrono_tz::Tz, local: NaiveDateTime) -> String {
 
 /// English ordinal suffix for a day-of-month number.
 #[must_use]
-pub fn ordinal_suffix(day: u32) -> &'static str {
+pub(crate) fn ordinal_suffix(day: u32) -> &'static str {
     match day {
         11..=13 => "th",
         _ if day % 10 == 1 => "st",
@@ -150,7 +150,8 @@ pub mod minute_format {
 }
 
 /// Serde module for `Option<NaiveDateTime>` using minute-precision.
-pub mod minute_format_opt {
+#[cfg(test)]
+mod minute_format_opt {
     use chrono::NaiveDateTime;
     use serde::{self, Deserialize, Deserializer, Serializer};
 
