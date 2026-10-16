@@ -574,10 +574,10 @@ mod tests {
 
         let rest = "[dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n\n[target.'cfg(unix)'.dependencies]\nresiduum-core = { workspace = true, features = [\"test-support\"] }\n";
         let leaks = member_toml("residuum-a", rest);
-        let broken = Workspace::from_toml(HAND_ROOT, &[("a", leaks.as_str())], &[]);
+        let broken_dependencies = Workspace::from_toml(HAND_ROOT, &[("a", leaks.as_str())], &[]);
         assert_flagged(
             "rule 4",
-            &test_support_in_normal_build_problems(&broken),
+            &test_support_in_normal_build_problems(&broken_dependencies),
             &[
                 "`[dependencies]` enables `test-support` on `residuum-core`",
                 "`[target.cfg(unix).dependencies]` enables `test-support` on `residuum-core`",
@@ -589,14 +589,14 @@ mod tests {
             "residuum-a",
             "[dependencies]\nresiduum-core = { workspace = true, optional = true }\n\n[features]\ndefault = [\"residuum-core/test-support\"]\n",
         );
-        let broken = Workspace::from_toml(
+        let broken_default = Workspace::from_toml(
             HAND_ROOT,
             &[("core", core.as_str()), ("a", default_on.as_str())],
             &[],
         );
         assert_flagged(
             "rule 4",
-            &test_support_in_normal_build_problems(&broken),
+            &test_support_in_normal_build_problems(&broken_default),
             &[
                 "crates/a/Cargo.toml: `[features]` entry `default` enables `residuum-core/test-support`",
             ],
@@ -606,14 +606,14 @@ mod tests {
             "residuum-a",
             "[dependencies]\nresiduum-core = { workspace = true, optional = true }\n\n[features]\nfoo = [\"dep:residuum-core\", \"residuum-core?/test-support\"]\n",
         );
-        let broken = Workspace::from_toml(
+        let broken_named = Workspace::from_toml(
             HAND_ROOT,
             &[("core", core.as_str()), ("a", named_on.as_str())],
             &[],
         );
         assert_flagged(
             "rule 4",
-            &test_support_in_normal_build_problems(&broken),
+            &test_support_in_normal_build_problems(&broken_named),
             &[
                 "crates/a/Cargo.toml: `[features]` entry `foo` enables `residuum-core?/test-support`",
             ],
