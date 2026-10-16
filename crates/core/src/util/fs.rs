@@ -227,13 +227,6 @@ pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
 /// Never returns an error: when `icacls` can't run or fails, a warning is
 /// logged and the file keeps its permissions.
 #[cfg(windows)]
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "signature matches the unix variant, which can fail"
-    )
-)]
 pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
     let grant_arg = format!("{username}:(F)");
