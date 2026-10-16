@@ -20,12 +20,6 @@ use residuum::background::team::{
 use residuum::checkpoints::{
     CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
-use residuum::gateway::teams_setup::types::{
-    AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine, LogStream,
-    SetupError, SetupResult, SignInPrompt, SuggestedEndpointSource, TeamsSetupForm, TeamsSetupJob,
-    TeamsSetupPhase, TeamsSetupPrereqs, TeamsSetupRedirect, TeamsSetupStart, TeamsSetupState,
-    ToolStatus,
-};
 use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
 use residuum::hub::overview::{AgentOverview, OverviewResponse};
 use residuum::hub::push::{
@@ -42,6 +36,12 @@ use residuum::hub::types::{
 };
 use residuum::inbox::InboxAttachment;
 use residuum::inference::ImageData;
+use residuum::interfaces::teams::setup_types::{
+    AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine, LogStream,
+    SetupError, SetupResult, SignInPrompt, SuggestedEndpointSource, TeamsSetupForm, TeamsSetupJob,
+    TeamsSetupPhase, TeamsSetupPrereqs, TeamsSetupRedirect, TeamsSetupStart, TeamsSetupState,
+    ToolStatus,
+};
 use residuum::pairing::types::{
     CreatePairingRequestBody, DeviceInfo, DeviceListResponse, HandoffBody, PairLinkResponse,
     PairedResponse, PairingPollResponse, PairingRequestCreated, PairingRequestStatus,
