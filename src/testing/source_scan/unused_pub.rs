@@ -33,7 +33,9 @@
 //!
 //! Two cases are reported although the item is used: an item other crates
 //! reach only under a re-export's new name (`pub use inner::Item as Other;`),
-//! and one named only by an identifier a macro builds from pieces.
+//! and one named only by an identifier a macro builds from pieces. For the
+//! first, re-export or import the item under its own name, or rename the item
+//! to the name its users call.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -165,12 +167,15 @@ fn mentions<'a>(
             continue;
         }
         let crate_dir = member_crate(&file.path);
+        let in_literal = starts_inside_literal(&file.lines);
         let mut in_use = false;
         for (idx, (line, own_test)) in file.lines.iter().zip(&file.own_test).enumerate() {
             let Some(code) = without_comment(line) else {
                 continue;
             };
-            in_use = in_use || use_start.is_match(code);
+            // A string literal's continuation line can start with `use `.
+            let starts_in_literal = in_literal.get(idx).copied().unwrap_or(false);
+            in_use = in_use || (!starts_in_literal && use_start.is_match(code));
             let import = in_use;
             if code.contains(';') {
                 in_use = false;
@@ -249,7 +254,7 @@ mod tests {
             .collect();
         assert!(
             unused.is_empty(),
-            "these `pub` items of member crates have no user outside their own crate's tests, and rustc does not warn about an unused `pub` item of a library. Delete an item nothing uses, with the tests that exist only for it. A test helper only its own crate's tests use moves into `#[cfg(test)]` code as `pub(crate)` or private; production code only its own tests call goes, with those tests. The rule and its blind spots are described in src/testing/source_scan/unused_pub.rs.\n{}",
+            "these `pub` items of member crates have no user outside their own crate's tests, and rustc does not warn about an unused `pub` item of a library. Delete an item nothing uses, with the tests that exist only for it. A test helper only its own crate's tests use moves into `#[cfg(test)]` code as `pub(crate)` or private; production code only its own tests call goes, with those tests. If the item is used, but only under a name a `use … as …` gives it, re-export or import it under its own name, or rename the item to the name its users call. The rule and its blind spots are described in src/testing/source_scan/unused_pub.rs.\n{}",
             unused.join("\n")
         );
     }
@@ -305,6 +310,16 @@ pub fn unused_support_zq() {}
 pub const SAMPLE_ZQ: &str = "
 pub fn inside_a_literal_zq() {}
 ";
+
+pub fn used_after_a_use_string_zq() -> u8 { 0 }
+
+fn message_zq() -> String {
+    format!(
+        "a wrapped message \
+         use this wording {}",
+        used_after_a_use_string_zq(),
+    )
+}
 
 macro_rules! make_zq {
     () => {

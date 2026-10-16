@@ -636,6 +636,8 @@ SHEAR_NOTE=""
 shear_check() {
     local dir="$1" pinned installed
     pinned="$(sed -n 's/^ *CARGO_SHEAR_VERSION: \(.*\)$/\1/p' "$dir/.github/workflows/rust-checks.yml" 2>/dev/null)"
+    # A tree with no pin predates the check, so CI does not run it on that tree.
+    [ -n "$pinned" ] || return 0
     if ! command -v cargo-shear >/dev/null 2>&1; then
         SHEAR_NOTE="cargo-shear is not installed, so the unused-dependency check did not run here (CI runs it). Install v${pinned}: cargo install --locked cargo-shear --version ${pinned}"
         return
