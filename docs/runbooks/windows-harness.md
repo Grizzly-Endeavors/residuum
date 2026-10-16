@@ -18,14 +18,14 @@ For quick cross-platform signal without a VM, CI runs clippy for the Windows gnu
 2. Verify it against the SHA256 in Microsoft's hash list, linked from the same page ("Windows 11 Enterprise hash values"): `sha256sum ~/vms/win11-enterprise-eval.iso`.
 3. Create the VM: `scripts/windows-vm/create-vm.sh`.
 
-`create-vm.sh` does the whole setup unattended and prints progress. It generates an account password and an SSH key in the VM directory (`~/vms/residuum-win11`, or `RESIDUUM_WINVM_DIR`). It builds an answer ISO, boots the installer, and waits 15–40 minutes for Windows to install and log in automatically. Then it installs the toolchain (`vm.sh provision`), restarts without the install media, and takes a `provisioned` snapshot. To watch the install, connect a VNC viewer to `127.0.0.1:5959`.
+`create-vm.sh` does the whole setup unattended and prints progress. It generates an account password and an SSH key in the VM directory (`~/vms/residuum-win11`, or `RESIDUUM_WINVM_DIR`). It builds an answer ISO, boots the installer, and waits 15–40 minutes for Windows to install and log in automatically, printing each first-logon step as a `guest:` line when the guest reports it. Then it installs the toolchain (`vm.sh provision`), restarts without the install media, and takes a `provisioned` snapshot. To watch the install, connect a VNC viewer to `127.0.0.1:5959`.
 
 The guest is set up as follows:
 
 - A local administrator `dev` that logs on automatically at every boot, so a desktop session exists for toasts and screenshots.
-- OpenSSH server with PowerShell as the default shell, accepting only the generated key.
+- OpenSSH server (the upstream Win32-OpenSSH MSI) with PowerShell as the default shell, accepting only the generated key.
 - Automatic Windows Update and update reboots turned off; sleep, lock screen, and password expiry disabled.
-- Git, Node.js LTS, WinLibs MinGW-w64 GCC (msvcrt), and Rust stable with the `x86_64-pc-windows-gnu` host toolchain, matching the release target. The gnu toolchain bundles a linker but no C compiler, and the build compiles C through the `cc` crate (bundled SQLite, zstd, ring), so GCC is required.
+- Git, Node.js LTS, WinLibs MinGW-w64 GCC (msvcrt), and Rust at the version `rust-toolchain.toml` pins, with the `x86_64-pc-windows-gnu` host toolchain, matching the release target. The gnu toolchain bundles a linker but no C compiler, and the build compiles C through the `cc` crate (bundled SQLite, zstd, ring), so GCC is required. The WinLibs archive also puts CMake, NASM, yasm, Ninja and other build tools in `C:\winlibs\mingw64\bin`, which is on `PATH`; residuum's build needs none of them.
 - Defender exclusions for the harness directory, cargo, rustup, and the compiler.
 
 ## Daily use
@@ -89,10 +89,10 @@ The Enterprise evaluation runs for 90 days. After that, Windows shows a watermar
 ## Troubleshooting
 
 - **`/dev/kvm is missing`.** Virtualization is off in the firmware; see Prerequisites. Then `sudo modprobe kvm_amd` (or `kvm_intel`).
-- **`create-vm.sh` waits for SSH forever.** Watch over VNC (`127.0.0.1:5959`). If setup shows the language screen, the answer ISO wasn't found. If it stopped at "Press any key to boot from CD", the key presses were missed; stop the VM, delete the VM directory, and run `create-vm.sh` again. If the desktop is up but SSH isn't, read `C:\first-logon.log` in the guest over VNC.
+- **`create-vm.sh` waits for SSH forever.** The wait prints each first-logon step as the guest reports it on COM1 (`guest:` lines, kept in `guest-serial.log` in the VM directory) and, every five minutes, the last message, so the last line shows where a stalled first logon stopped (`first-logon: FAILED: ...` when it stopped on an error). Watch over VNC (`127.0.0.1:5959`). If setup shows the language screen, the answer ISO wasn't found. If it stopped at "Press any key to boot from CD", the key presses were missed; stop the VM, delete the VM directory, and run `create-vm.sh` again. If the desktop is up but SSH isn't, read `C:\first-logon.log` in the guest over VNC.
 - **`SSH not reachable`** after a restart. Windows may still be booting; `vm.sh status` shows whether QEMU is running. Something else may be using port 2222; set `RESIDUUM_WINVM_SSH_PORT` to a different port before starting.
 - **`no desktop session`** from `run-interactive.sh`. Autologon is off, or the user signed out over VNC. Restart with `vm.sh restart`.
 - **`can't find crate` or `required to be available in rlib format` on Windows only.** The guest ran out of virtual memory mid-build; `vm.sh ssh "Get-WinEvent -FilterHashtable @{LogName='System'; Id=2004} -MaxEvents 1"` shows the low-memory event. Give the VM more memory with `RESIDUUM_WINVM_MEMORY_MIB` and `vm.sh restart`.
-- **Toolchain problems.** Rerun `vm.sh provision`, which only installs what's missing, or `vm.sh provision -Upgrade` to move everything to the current releases.
+- **Toolchain problems.** Rerun `vm.sh provision`, which only installs what's missing, or `vm.sh provision -Upgrade` to move Git, Node.js and GCC to the current releases (Rust stays on the version `rust-toolchain.toml` pins).
 - **`RESIDUUM_WINVM_DIR is too long`.** swtpm and the QEMU monitor use UNIX sockets in the VM directory, and socket paths are limited to 108 bytes. Use a shorter directory.
 - **Two VMs at once.** Give each its own `RESIDUUM_WINVM_NAME` (or `RESIDUUM_WINVM_DIR`), `RESIDUUM_WINVM_SSH_PORT`, and `RESIDUUM_WINVM_VNC_DISPLAY`.
