@@ -54,10 +54,27 @@ test *args: _web-dist
     scripts/test-filters.sh note test "$@"
     log="$(mktemp)"
     trap 'rm -f "$log"' EXIT
-    # The output goes through tee, so cargo sees a pipe: CARGO_TERM_COLOR keeps its colour on a terminal.
-    colour=never
-    if [ -t 1 ]; then colour=always; fi
-    CARGO_TERM_COLOR="$colour" cargo test --quiet --no-fail-fast "$@" 2>&1 | tee "$log"
+    # The output goes through tee, so neither cargo nor the test harness sees a terminal. On a terminal, CARGO_TERM_COLOR keeps cargo's own lines coloured and --color=always keeps the harness's (FAILED, test result, panics); a CARGO_TERM_COLOR or a harness --color the caller sets wins. The log check gets the caller's arguments, without the harness flag.
+    cargo_args=("$@")
+    if [ -t 1 ]; then
+        export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
+        if [ "$CARGO_TERM_COLOR" = always ]; then
+            after_dd=no
+            harness_colour=no
+            for arg in "$@"; do
+                if [ "$after_dd" = yes ]; then
+                    case $arg in --color | --color=*) harness_colour=yes ;; esac
+                elif [ "$arg" = "--" ]; then
+                    after_dd=yes
+                fi
+            done
+            if [ "$harness_colour" = no ]; then
+                if [ "$after_dd" = no ]; then cargo_args+=(--); fi
+                cargo_args+=(--color=always)
+            fi
+        fi
+    fi
+    cargo test --quiet --no-fail-fast "${cargo_args[@]}" 2>&1 | tee "$log"
     status="${PIPESTATUS[0]}"
     if [ "$status" -eq 0 ]; then scripts/test-filters.sh check test "$log" -- "$@"; fi
     exit "$status"
