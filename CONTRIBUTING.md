@@ -89,7 +89,7 @@ The git hooks split the checks between commit and push: a commit runs the quick 
 On every commit (pre-commit), on what is staged:
 - `cargo fmt` — formatting (auto-applied and staged)
 - Prettier on the staged web files (auto-applied and staged)
-- `cargo deny check` — dependency audit, when a manifest (`*.toml`, `Cargo.lock`) is staged
+- `cargo deny check` — dependency audit, when a manifest (`*.toml`, `Cargo.lock`) is staged; the commit is refused when `cargo-deny` is not installed (`cargo install --locked cargo-deny`)
 - `scripts/ci-failures-test.sh` and `scripts/stress-issues-test.sh` — the `just ci-failures` log parser and merge queue batch selection against their fixtures, and a dry run of the nightly stress issue filer over them, when a `scripts/ci-failures*` or `scripts/stress-issues*` file is staged
 - `scripts/affected-packages-test.sh` — the package selection behind the pre-push hook and the CI `changes` job, against a scratch workspace, when a `scripts/affected-packages*` file is staged
 - No `dbg!()` or `#[allow(...)]` in the staged diff, and no growth of the wall-clock backlog
