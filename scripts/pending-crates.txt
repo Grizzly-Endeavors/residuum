@@ -14,6 +14,15 @@ src/interfaces/ residuum-interfaces
 src/hub/ residuum-hub
 src/gateway/ residuum-gateway
 src/gateway/web/ residuum-hub
+src/gateway/web/mod.rs residuum-gateway
+src/gateway/web/status.rs residuum-gateway
+src/gateway/web/a2a.rs residuum-gateway
+src/gateway/web/inbox.rs residuum-gateway
+src/gateway/web/sessions.rs residuum-gateway
+src/gateway/web/scheduled.rs residuum-gateway
+src/gateway/web/memory.rs residuum-gateway
+src/gateway/web/model.rs residuum-gateway
+src/gateway/web/artifact_identity.rs residuum-gateway
 src/gateway/file_server.rs residuum-hub
 src/gateway/startup/tools.rs residuum-tools
 src/protocol/ residuum-protocol
