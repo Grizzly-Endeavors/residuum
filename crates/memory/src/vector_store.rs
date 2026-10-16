@@ -480,7 +480,7 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the write fails.
-    pub fn set_embedding_model(&self, model: &str) -> anyhow::Result<()> {
+    pub(crate) fn set_embedding_model(&self, model: &str) -> anyhow::Result<()> {
         let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO store_meta(key, value) VALUES ('embedding_model', ?1)

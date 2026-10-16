@@ -70,7 +70,7 @@ impl DocSource {
     /// Returns `None` for any value the index should never contain — a signal
     /// of index corruption rather than a normal input.
     #[must_use]
-    pub fn from_index_value(value: &str) -> Option<Self> {
+    pub(crate) fn from_index_value(value: &str) -> Option<Self> {
         match value {
             "observation" => Some(Self::Observation),
             "chunk" => Some(Self::Chunk),
