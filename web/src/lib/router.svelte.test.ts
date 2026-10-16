@@ -1140,6 +1140,50 @@ describe("following overlay entries only", () => {
   });
 });
 
+describe("a traversal the browser never reports", () => {
+  it("is settled by stop, which clears its timer and frees the router for the next navigation", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openPlace(files("scout"));
+    // The browser is stubbed to ignore `go`, so only the traversal's own timer can settle it.
+    const go = vi.spyOn(window.history, "go").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      page.router.openOverlay(() => undefined).close();
+      // A traversal starts on the queue's next step, a microtask after the close.
+      await Promise.resolve();
+      expect(go).toHaveBeenCalledWith(-1);
+      expect(vi.getTimerCount()).toBe(1);
+
+      page.router.stop();
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(page.router.openPlace(chat("atlas"))).resolves.toBe(true);
+      expect(page.router.place).toEqual(chat("atlas"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("queued by a close that is followed by stop with no microtask between is dropped", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openPlace(files("scout"));
+    const go = vi.spyOn(window.history, "go").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      // Unmounting an open modal closes it and stops the router in the same tick.
+      page.router.openOverlay(() => undefined).close();
+      page.router.stop();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(go).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(page.router.openPlace(chat("atlas"))).resolves.toBe(true);
+      expect(page.router.place).toEqual(chat("atlas"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("following the browser", () => {
   it("shows the place Back lands on, and publishes its agent", async () => {
     const page = await boot("/agent/scout");

@@ -1,5 +1,5 @@
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary } from "../../lib/hub-types";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
@@ -36,12 +36,8 @@ let calls: Call[] = [];
 let patchFails = false;
 let checkpointId: string | null = "ckpt-9";
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
-});
-
-afterAll(() => {
-  router.stop();
 });
 
 beforeEach(() => {
