@@ -30,6 +30,9 @@ PASSWORD_FILE="$VM_DIR/password"
 KNOWN_HOSTS="$VM_DIR/known_hosts"
 QEMU_PID="$VM_DIR/qemu.pid"
 MONITOR_SOCK="$VM_DIR/monitor.sock"
+# What the guest writes to COM1 (first-logon.ps1 reports its steps there). It is
+# truncated each time QEMU starts.
+SERIAL_LOG="$VM_DIR/guest-serial.log"
 
 die() {
     echo "error: $*" >&2
@@ -117,6 +120,7 @@ start_vm() {
         -device e1000e,netdev=net0 \
         -device qemu-xhci -device usb-tablet \
         -monitor unix:"$MONITOR_SOCK",server,nowait \
+        -serial file:"$SERIAL_LOG" \
         -pidfile "$QEMU_PID" \
         -daemonize \
         "${display_args[@]}" \
@@ -166,14 +170,40 @@ ssh_ready() {
     guest_ps 'exit 0' >/dev/null 2>&1
 }
 
+# Print the first-logon.ps1 lines the guest has written to COM1 since the last
+# call. The firmware writes its boot messages to COM1 too, so only the lines
+# prefixed "first-logon: " are shown.
+serial_lines_shown=0
+show_guest_progress() {
+    [ -s "$SERIAL_LOG" ] || return 0
+    local total
+    total="$(wc -l < "$SERIAL_LOG")"
+    # QEMU truncates the log when it restarts.
+    [ "$total" -ge "$serial_lines_shown" ] || serial_lines_shown=0
+    if [ "$total" -gt "$serial_lines_shown" ]; then
+        tail -n +"$((serial_lines_shown + 1))" "$SERIAL_LOG" | tr -d '\r' \
+            | grep -a '^first-logon: ' | sed 's/^first-logon: /    guest: /' >&2 || true
+        serial_lines_shown="$total"
+    fi
+}
+
+# Wait for SSH, printing what first-logon.ps1 reports on COM1 as it arrives and,
+# every five minutes, the last thing it said, so a stalled guest shows on the host.
+# Nothing is printed when SSH already answers.
 wait_for_ssh() {
-    local timeout_secs="$1" waited=0
+    local timeout_secs="$1" waited=0 last
     until ssh_ready; do
+        show_guest_progress
         vm_running || die "$VM_NAME stopped while waiting for SSH"
         [ "$waited" -ge "$timeout_secs" ] && die "SSH not reachable after ${timeout_secs}s"
         sleep 15
         waited=$((waited + 15))
+        if [ $((waited % 300)) -eq 0 ]; then
+            last="$({ grep -a '^first-logon: ' "$SERIAL_LOG" 2>/dev/null || true; } | tail -n 1 | tr -d '\r')"
+            info "still waiting for SSH after $((waited / 60)) min; last guest message: ${last:-none}"
+        fi
     done
+    [ "$waited" -eq 0 ] || show_guest_progress
 }
 
 require_ssh() {
