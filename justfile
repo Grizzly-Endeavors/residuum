@@ -140,10 +140,10 @@ types-check: _web-dist
 clippy: _web-dist
     cargo clippy --all-targets --all-features -- -D warnings
 
-# Build the rustdoc of every package with rustdoc warnings denied, so broken intra-doc links fail, exactly as CI runs it
+# Build the rustdoc of every package, private items included, with rustdoc warnings denied, so broken intra-doc links fail, exactly as CI runs it
 [group('rust')]
 doc: _web-dist
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Format Rust code
 [group('rust')]

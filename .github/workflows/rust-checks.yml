@@ -89,7 +89,8 @@ jobs:
 
       # The checks below run whether or not an earlier one failed, so one run
       # lists every failure. Format and the dependency audit need only the
-      # toolchain; clippy also needs the web build, which the Rust build embeds.
+      # toolchain; clippy and rustdoc also need the web build, which the Rust
+      # build embeds.
       - name: Check formatting
         id: fmt
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
@@ -115,6 +116,16 @@ jobs:
         run: |
           read -ra packages <<<"$PACKAGES"
           cargo clippy --all-targets --all-features "${packages[@]}" -- -D warnings
+
+      # Rustdoc with warnings denied, documenting private items too, so a broken
+      # intra-doc link fails the run wherever it is written. The same command as
+      # `just doc`, and it reuses the dependency metadata clippy has built.
+      - name: Rustdoc
+        id: rustdoc
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+        run: cargo doc --workspace --no-deps --all-features --document-private-items
 
       - name: Dependency audit
         id: deny
@@ -179,6 +190,7 @@ jobs:
             echo "| Web assets | ${{ steps.web_assets.outcome }} |"
             echo "| Format | ${{ steps.fmt.outcome }} |"
             echo "| Clippy | ${{ steps.clippy.outcome }} |"
+            echo "| Rustdoc | ${{ steps.rustdoc.outcome }} |"
             echo "| Deny | ${{ steps.deny.outcome }} |"
             echo "| Shear install | ${{ steps.shear_install.outcome }} |"
             echo "| Shear | ${{ steps.shear.outcome }} |"
@@ -188,28 +200,6 @@ jobs:
           echo '===== BEGIN CI METRICS (Rust Lint) ====='
           cat "$RUNNER_TEMP/ci-metrics.md"
           echo '===== END CI METRICS (Rust Lint) ====='
-
-  # Rustdoc with warnings denied, so a broken intra-doc link fails the run. It
-  # documents every package with its docs, the same command as `just doc`.
-  rust-doc:
-    name: Rustdoc
-    if: ${{ !inputs.windows_clippy_only }}
-    runs-on: lab-runners-fast
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
-
-      # build.rs refuses to compile without web/dist, which gets embedded in the binary
-      - name: Build web assets
-        run: cd web && npm ci && npm run build
-
-      - name: Build the documentation
-        env:
-          RUSTDOCFLAGS: '-D warnings'
-        run: cargo doc --workspace --no-deps --all-features
 
   # The release builds Windows from Linux with the gnu target, and code behind
   # cfg(windows) (and test imports only some platforms use) is not compiled by
