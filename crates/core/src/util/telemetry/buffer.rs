@@ -27,9 +27,9 @@ pub struct SpanBufferConfig {
     /// Maximum number of completed spans to retain.
     pub capacity: usize,
     /// Maximum age of spans before eviction (`None` = no age limit).
-    pub max_age: Option<Duration>,
+    pub(crate) max_age: Option<Duration>,
     /// Whether to capture log events attached to spans.
-    pub capture_events: bool,
+    pub(crate) capture_events: bool,
 }
 
 impl Default for SpanBufferConfig {

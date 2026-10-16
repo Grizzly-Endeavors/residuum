@@ -1,10 +1,10 @@
 //! Shared utilities: fatal errors, filesystem helpers, monitored spawning, env-var
 //! expansion, frontmatter parsing, and XML escaping.
 
-pub mod backoff_tracker;
+pub(crate) mod backoff_tracker;
 mod env_expand;
 mod error;
-pub mod frontmatter;
+pub(crate) mod frontmatter;
 pub mod fs;
 pub mod secret_compare;
 mod spawn;

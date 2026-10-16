@@ -18,7 +18,7 @@ static SPAN_BUFFER: OnceLock<SpanBufferHandle> = OnceLock::new();
 /// Returns `None` if the span buffer layer was not initialized (e.g. in CLI
 /// or test modes that don't call `init_daemon_tracing`).
 #[must_use]
-pub fn global_span_buffer() -> Option<&'static SpanBufferHandle> {
+pub(crate) fn global_span_buffer() -> Option<&'static SpanBufferHandle> {
     SPAN_BUFFER.get()
 }
 
