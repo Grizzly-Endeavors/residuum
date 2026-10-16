@@ -7,7 +7,8 @@
 //! removes agent directories; [`push`] sends Web Push notifications;
 //! [`team_events`] is the log of what happened across the team;
 //! [`overview`] is what Home shows about each agent;
-//! [`http`] is the hub's HTTP app; [`update`], [`features`],
+//! [`http`] is the hub's HTTP app; [`launch`] is how the host starts an
+//! agent through the [`launch::AgentLauncher`] it is given; [`update`], [`features`],
 //! [`last_known_good`] and [`config_watcher`] are the process-level pieces
 //! the hub runs with. See `docs/systems-usage/hub.md` and
 //! `docs/systems-usage/hub-http.md`.
@@ -22,6 +23,7 @@ pub mod host;
 pub mod http;
 pub mod inbox;
 pub mod last_known_good;
+pub mod launch;
 pub mod overview;
 pub mod provision;
 pub mod push;

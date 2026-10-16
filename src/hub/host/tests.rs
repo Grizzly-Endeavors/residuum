@@ -90,7 +90,11 @@ impl Fixture {
         }
         let hub = HubConfig::load_at(&hub_dir).unwrap();
         let services = HubServices::for_tests(root.path(), &hub).await;
-        let host = AgentHost::new(services.clone(), hub);
+        let host = AgentHost::new(
+            services.clone(),
+            hub,
+            Arc::new(crate::gateway::GatewayLauncher::new()),
+        );
         let team_events = TeamEventLog::new("boot-under-test");
         let recorder = TeamEventRecorder::spawn(
             Arc::clone(&team_events),

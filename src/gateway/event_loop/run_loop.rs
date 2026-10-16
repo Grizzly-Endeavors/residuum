@@ -1,20 +1,25 @@
 //! One agent's start-up and main event loop.
 //!
 //! [`start_agent`] initializes an agent's subsystems on the hub's shared
-//! services and returns its [`AgentRuntime`] plus the [`AgentControl`] the
-//! hub keeps: the agent's HTTP and A2A routers, its reload channel, and its
-//! stop signal. [`run_agent_loop`] is the `tokio::select` loop that processes
-//! all of the agent's events until the hub stops it.
+//! services and returns a [`StartedAgent`]: the [`AgentControl`] the hub
+//! keeps (the agent's HTTP and A2A routers, its reload channel, and its stop
+//! signal) and the agent's event loop, [`run_agent_loop`], the
+//! `tokio::select` loop that processes all of the agent's events until the
+//! hub stops it.
 
 use std::sync::Arc;
 
 use tokio::time::Duration;
 use tracing::Instrument;
 
-use crate::bus::control::{ReloadSender, ReloadSignal};
+use crate::bus::control::ReloadSignal;
 use crate::config::{Config, HubConfig};
 use crate::gateway::types::{AgentRuntime, CoreReceivers, GatewayCore, GatewayState};
 use crate::hub::activity::ActivityTracker;
+use crate::hub::launch::{
+    AgentCleanup, AgentControl, AgentExit, AgentStartInputs, SESSION_SHUTDOWN_TIMEOUT,
+    StartedAgent, agent_span,
+};
 use crate::hub::services::HubServices;
 use crate::interfaces::AdapterSenders;
 use crate::pulse::scheduler::PulseScheduler;
@@ -27,145 +32,6 @@ use super::turns::handle_inbound_message;
 
 use crate::gateway::{actions, idle, reload, web};
 use crate::hub::{config_watcher, last_known_good};
-
-/// What the hub gives [`start_agent`].
-pub(crate) struct AgentStartInputs {
-    /// The agent's name.
-    pub name: String,
-    /// The agent's directory (its workspace root).
-    pub agent_dir: std::path::PathBuf,
-    /// Services shared by every agent.
-    pub services: HubServices,
-    /// The hub config the agent resolves its own config against.
-    pub hub_cfg: HubConfig,
-    /// Where the agent reports main-conversation activity.
-    pub activity: Arc<ActivityTracker>,
-}
-
-/// How the hub reaches a started agent.
-#[derive(Clone)]
-pub(crate) struct AgentControl {
-    /// The agent's HTTP routes, rooted at `/`.
-    pub router: axum::Router,
-    /// The agent's current A2A router; `None` while A2A is disabled for it.
-    /// Changes when a reload rebuilds the agent's A2A state.
-    pub a2a_router: tokio::sync::watch::Receiver<Option<axum::Router>>,
-    /// Delivers config reload signals to the agent's event loop.
-    pub reload_tx: ReloadSender,
-    /// Asks the agent's event loop to stop.
-    pub stop_tx: tokio::sync::mpsc::Sender<()>,
-    /// Counts config reloads the agent has finished, so the hub can wait for
-    /// a reload it triggered and notice changes made behind its back.
-    pub reload_done: tokio::sync::watch::Receiver<u64>,
-    /// What the hub cleans up when the event loop dies without shutting the
-    /// agent down.
-    pub cleanup: AgentCleanup,
-    /// The agent's live sessions, for the hub's bug reports and the hub's
-    /// per-agent watcher.
-    pub session_registry: Arc<crate::background::registry::SessionRegistry>,
-    /// Subscribes to the agent's own event bus: how the hub's per-agent
-    /// watcher hears about sessions, outbound tasks, user inbox additions and
-    /// file changes.
-    pub bus: crate::bus::BusHandle,
-    /// Whether the change feed over the agent's directory is running.
-    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
-    /// The agent's bus publisher, for handing the agent a message.
-    publisher: crate::bus::Publisher,
-    /// The agent's messenger, which delivers a creating agent's first
-    /// message through the same hop-bounded path as any teammate message.
-    messenger: Arc<crate::background::messaging::AgentMessenger>,
-}
-
-impl AgentControl {
-    /// Deliver `content` to the agent's main conversation as a message from
-    /// `from`: the owner's own message for the user, or a teammate message
-    /// from the creating agent carrying `hop_count`, so a chain of agents
-    /// creating agents meets the same hop limit as any other message chain.
-    /// An idle main starts a turn on it.
-    ///
-    /// # Errors
-    /// Returns a plain-language reason when the message could not be
-    /// delivered: the agent's bus is closed, or the hop limit was reached.
-    pub(crate) async fn deliver_to_main(
-        &self,
-        from: &crate::background::team::Actor,
-        content: String,
-        tz: chrono_tz::Tz,
-        hop_count: u32,
-    ) -> Result<(), String> {
-        let creator = match from {
-            crate::background::team::Actor::User => {
-                let event = crate::bus::MessageEvent {
-                    id: format!("hub-{}", uuid::Uuid::new_v4()),
-                    content,
-                    origin: crate::bus::origin::MessageOrigin {
-                        endpoint: "ws".to_string(),
-                        sender: None,
-                        conversation: None,
-                        agent_sender: None,
-                    },
-                    timestamp: crate::time::now_local(tz),
-                    images: Vec::new(),
-                    context: None,
-                };
-                return self
-                    .publisher
-                    .publish(crate::bus::topics::UserMessage, event)
-                    .await
-                    .map_err(|e| format!("the agent's message channel is closed: {e}"));
-            }
-            crate::background::team::Actor::Agent(creator) => creator,
-        };
-        self.messenger
-            .send(
-                crate::bus::session::MAIN_ADDRESS,
-                crate::bus::SessionAddress::from(format!(
-                    "{}{creator}",
-                    crate::bus::session::TEAMMATE_SENDER_PREFIX
-                )),
-                crate::bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
-                content,
-                hop_count,
-            )
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-}
-
-/// The parts of an agent that outlive a crashed event loop and must be
-/// stopped explicitly: its live sessions and the MCP servers it spawned.
-#[derive(Clone)]
-pub(crate) struct AgentCleanup {
-    sessions: Arc<crate::background::SessionRuntime>,
-    mcp_registry: crate::mcp::SharedMcpRegistry,
-}
-
-impl AgentCleanup {
-    /// Stop the agent's live sessions, recording them as interrupted the way
-    /// a normal stop does, and disconnect its MCP servers.
-    pub(crate) async fn run(&self) {
-        self.sessions.shutdown(SESSION_SHUTDOWN_TIMEOUT).await;
-        self.mcp_registry.write().await.disconnect_all().await;
-    }
-}
-
-/// A started agent, ready to run.
-pub(crate) struct StartedAgent {
-    /// The state [`run_agent_loop`] consumes.
-    pub runtime: AgentRuntime,
-    /// The hub's handle on the agent.
-    pub control: AgentControl,
-}
-
-/// How an agent's event loop ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentExit {
-    /// The hub asked the agent to stop and it shut down cleanly.
-    Stopped,
-    /// The loop's own inbound message channel closed underneath it.
-    BusClosed,
-}
 
 /// Initialize the agent at `inputs.agent_dir` on the hub's shared services,
 /// spawn its adapters, watchers, and A2A serving state, and return it ready
@@ -226,22 +92,22 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         last_known_good::save(&cfg.config_dir);
     }
 
-    let control = AgentControl {
-        router: agent_span_layer(&name, spawned.router.clone()),
-        a2a_router: a2a_router_rx,
-        reload_tx: core.reload_tx.clone(),
-        stop_tx: agent_stop_tx,
-        reload_done: reload_done_rx,
-        cleanup: AgentCleanup {
-            sessions: Arc::clone(&parts.session_runtime),
-            mcp_registry: Arc::clone(&parts.mcp_registry),
-        },
-        session_registry: Arc::clone(&parts.session_registry),
-        bus: core.bus_handle.clone(),
-        workspace_watch_health: spawned.workspace_watch_health.clone(),
-        publisher: core.publisher.clone(),
-        messenger: Arc::clone(&parts.agent_messenger),
-    };
+    let control = AgentControl::new(
+        agent_span_layer(&name, spawned.router.clone()),
+        a2a_router_rx,
+        core.reload_tx.clone(),
+        agent_stop_tx,
+        reload_done_rx,
+        AgentCleanup::new(
+            Arc::clone(&parts.session_runtime),
+            Arc::clone(&parts.mcp_registry),
+        ),
+        Arc::clone(&parts.session_registry),
+        core.bus_handle.clone(),
+        spawned.workspace_watch_health.clone(),
+        core.publisher.clone(),
+        Arc::clone(&parts.agent_messenger),
+    );
     let sibling_fanout = Arc::clone(&services.sibling_fanout);
     let team_router = Arc::clone(&services.team_router);
     let team_messenger = Arc::clone(&parts.agent_messenger);
@@ -270,7 +136,13 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         .await;
     // From here teammates can message this agent, until it stops.
     team_router.register(&runtime.name, team_messenger);
-    Ok(StartedAgent { runtime, control })
+    Ok(StartedAgent {
+        control,
+        // `run_agent_loop`'s state (the accumulated select! branches' locals)
+        // has grown past clippy's large-future threshold; boxing moves it to
+        // the heap, so the task the host runs it in stays small.
+        event_loop: Box::pin(run_agent_loop(runtime)),
+    })
 }
 
 /// Wrap `router` so every request it handles runs inside the agent's root
@@ -1044,11 +916,6 @@ async fn check_and_run_due_actions(rt: &mut AgentRuntime) {
     actions::spawn_due_actions(&rt.action_store, &rt.publisher, &models).await;
 }
 
-/// Maximum time to wait for live sessions to stop and finish recording their
-/// runs during graceful shutdown, before giving up and leaving the rest to
-/// startup recovery.
-const SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Maximum time to wait for the automatic checkpoints still being written
 /// during graceful shutdown. A stop, restart, delete or restore that follows
 /// would otherwise race them over the agent's repositories; one cut short
@@ -1381,31 +1248,6 @@ async fn dispatch_reload(
         ReloadSignal::Workspace => handle_workspace_reload(rt).await,
     }
     rt.reload_done_tx.send_modify(|finished| *finished += 1);
-}
-
-/// The span every log line and task of the agent `name` runs inside, so each
-/// carries an `agent` field. `residuum logs --agent <name>` filters on it.
-pub(crate) fn agent_span(name: &str) -> tracing::Span {
-    tracing::info_span!("agent", agent = %name)
-}
-
-/// Run the agent's event loop as its own task, inside the agent's span.
-///
-/// The task's `JoinHandle` resolves with the loop's exit, or with a
-/// `JoinError` if the loop panicked; a panic here never unwinds into the hub
-/// or another agent.
-pub(crate) fn spawn_agent_loop(runtime: AgentRuntime) -> tokio::task::JoinHandle<AgentExit> {
-    let span = agent_span(&runtime.name);
-    crate::util::spawn_in_span(
-        async move {
-            // `run_agent_loop`'s state (the accumulated select! branches'
-            // locals) has grown past clippy's large-future threshold; boxing
-            // moves it to the heap so this call site's own stack frame stays
-            // small.
-            Box::pin(run_agent_loop(runtime)).await
-        }
-        .instrument(span),
-    )
 }
 
 /// The message waiting in `deferred_inbound` to run next: one the person asked

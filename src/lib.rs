@@ -39,4 +39,5 @@ pub mod subconscious;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod tools;
+pub mod wiring;
 pub mod workspace;

@@ -232,7 +232,7 @@ async fn forward(
     *req.uri_mut() = uri;
     match router
         .oneshot(req)
-        .instrument(crate::gateway::event_loop::agent_span(agent))
+        .instrument(crate::hub::launch::agent_span(agent))
         .await
     {
         Ok(response) => response,

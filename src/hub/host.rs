@@ -31,15 +31,15 @@ use crate::bus::control::ReloadSignal;
 use crate::bus::session::SessionInfo;
 use crate::config::paths::TeamPaths;
 use crate::config::{Config, HubConfig, WorkspaceLayout};
-use crate::gateway::event_loop::{
-    AgentCleanup, AgentControl, AgentExit, AgentStartInputs, agent_span, spawn_agent_loop,
-    start_agent,
-};
 use crate::util::FatalError;
 
 use super::activity::ActivityTracker;
 use super::agent_watch::{AgentChange, AgentChangeFeed, AgentChangeKind, AgentWatcher};
 use super::directory::{AgentDirectory, AgentFiles};
+use super::launch::{
+    AgentCleanup, AgentControl, AgentExit, AgentLauncher, AgentStartInputs, StartedAgent,
+    agent_span,
+};
 use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
@@ -311,6 +311,8 @@ impl AgentSlot {
 pub struct AgentHost {
     me: Weak<Self>,
     services: HubServices,
+    /// Starts each agent's runtime.
+    launcher: Arc<dyn AgentLauncher>,
     hub_cfg: RwLock<HubConfig>,
     slots: RwLock<BTreeMap<String, Arc<AgentSlot>>>,
     events: broadcast::Sender<HubEvent>,
@@ -337,8 +339,13 @@ pub struct AgentHost {
 impl AgentHost {
     /// A host over `services`, knowing no agents yet; call
     /// [`Self::discover`] to scan for them. `hub_cfg` is the hub config
-    /// every agent resolves its own config against.
-    pub(crate) fn new(services: HubServices, hub_cfg: HubConfig) -> Arc<Self> {
+    /// every agent resolves its own config against, and `launcher` starts
+    /// each agent.
+    pub(crate) fn new(
+        services: HubServices,
+        hub_cfg: HubConfig,
+        launcher: Arc<dyn AgentLauncher>,
+    ) -> Arc<Self> {
         let (events, _first_subscriber) = broadcast::channel(HUB_EVENT_CAPACITY);
         let (teams_ports_tx, _) = watch::channel(BTreeMap::new());
         Arc::new_cyclic(|me| {
@@ -350,6 +357,7 @@ impl AgentHost {
             Self {
                 me: Weak::clone(me),
                 services,
+                launcher,
                 hub_cfg: RwLock::new(hub_cfg),
                 slots: RwLock::new(BTreeMap::new()),
                 events,
@@ -723,14 +731,15 @@ impl AgentHost {
         };
         // Its own task, so a panic while starting is this agent's failure
         // instead of unwinding into the caller.
+        let launcher = Arc::clone(&self.launcher);
         let started = crate::util::spawn_in_span(
-            async move { Box::pin(start_agent(inputs)).await }.instrument(agent_span(&slot.name)),
+            async move { launcher.start(inputs).await }.instrument(agent_span(&slot.name)),
         )
         .await;
         match started {
             Ok(Ok(started)) => {
                 let watcher = self.attach_watcher(slot, &started.control).await;
-                self.attach(slot, started.runtime, started.control, watcher);
+                self.attach(slot, started, watcher);
                 Ok(())
             }
             Ok(Err(err)) => {
@@ -899,14 +908,15 @@ impl AgentHost {
 
     /// Record a successfully started agent: run its event loop as its own
     /// task under a supervisor, which stops `watcher` when the agent ends.
-    fn attach(
-        &self,
-        slot: &Arc<AgentSlot>,
-        runtime: crate::gateway::types::AgentRuntime,
-        control: AgentControl,
-        watcher: Option<AgentWatcher>,
-    ) {
-        let join = spawn_agent_loop(runtime);
+    fn attach(&self, slot: &Arc<AgentSlot>, started: StartedAgent, watcher: Option<AgentWatcher>) {
+        let StartedAgent {
+            control,
+            event_loop,
+        } = started;
+        // Inside the agent's span. The task's `JoinHandle` resolves with the
+        // loop's exit, or with a `JoinError` if the loop panicked; a panic
+        // there never unwinds into the hub or another agent.
+        let join = crate::util::spawn_in_span(event_loop.instrument(agent_span(&slot.name)));
         let abort = join.abort_handle();
         let (done_tx, done_rx) = watch::channel(false);
         let stop_requested = Arc::new(AtomicBool::new(false));

@@ -21,7 +21,7 @@ use crate::bus::{
     BusError, BusHandle, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress,
     SessionEvent, SessionEventKind, Subscriber, UserInboxAddedEvent, WorkspaceEvent, topics,
 };
-use crate::gateway::event_loop::{AgentControl, agent_span};
+use crate::hub::launch::{AgentControl, agent_span};
 use crate::workspace::watch::WatchHealth;
 
 /// How often an agent is recomputed while its file watcher is down.

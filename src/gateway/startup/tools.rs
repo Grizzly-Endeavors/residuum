@@ -118,7 +118,11 @@ mod tests {
         let hub_cfg = crate::config::HubConfig::load_at(&hub_dir).expect("hub config loads");
         let services =
             crate::hub::services::HubServices::for_tests(hub_root.path(), &hub_cfg).await;
-        let host = crate::hub::AgentHost::new(services.clone(), hub_cfg);
+        let host = crate::hub::AgentHost::new(
+            services.clone(),
+            hub_cfg,
+            Arc::new(crate::gateway::GatewayLauncher::new()),
+        );
         host.discover().expect("discovery");
 
         let dir = tempfile::tempdir().expect("tempdir");
