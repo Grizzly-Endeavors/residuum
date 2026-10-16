@@ -2,6 +2,8 @@
 //!
 //! The binary will exit with an error (no config), which is expected.
 //! We only check stderr for panic indicators.
+//!
+//! covers: residuum
 
 #![expect(
     clippy::tests_outside_test_module,

@@ -3,6 +3,8 @@
 //! These run on every platform because they exercise TOML parsing, not the
 //! macOS APIs. Behavior of the macOS types themselves is covered by the unit
 //! tests beside the code in `src/notify/macos/`.
+//!
+//! covers: residuum-notify
 
 #![expect(
     clippy::indexing_slicing,

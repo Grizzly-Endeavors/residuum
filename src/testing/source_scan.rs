@@ -609,6 +609,259 @@ fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>>
     found
 }
 
+/// Where the integration tests live, and the file that declares them. Each
+/// top-level module of `dir` (a file, or a directory with a `mod.rs`) carries
+/// one `//! covers:` line naming the packages it tests, except the `exempt`
+/// modules.
+struct ModuleDir {
+    dir: &'static str,
+    container: &'static str,
+    exempt: &'static [&'static str],
+}
+
+const MODULE_DIRS: [ModuleDir; 2] = [
+    ModuleDir {
+        dir: "tests/it",
+        container: "main.rs",
+        exempt: &["support"],
+    },
+    ModuleDir {
+        dir: "src/integration",
+        container: "mod.rs",
+        exempt: &[],
+    },
+];
+
+const PENDING_CRATES: &str = "scripts/pending-crates.txt";
+
+/// The `name` of each member package under `root`, read from its manifest.
+fn member_packages(root: &Path) -> Result<BTreeSet<String>, String> {
+    let manifest_path = root.join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
+    let manifest: toml::Table = toml::from_str(&text)
+        .map_err(|err| format!("failed to parse {}: {err}", manifest_path.display()))?;
+    let members = workspace_members(&manifest)?;
+    let mut packages = BTreeSet::new();
+    for dir in member_dirs(root, &members)? {
+        let member_path = root.join(&dir).join("Cargo.toml");
+        let member_text = std::fs::read_to_string(&member_path)
+            .map_err(|err| format!("failed to read {}: {err}", member_path.display()))?;
+        let member: toml::Table = toml::from_str(&member_text)
+            .map_err(|err| format!("failed to parse {}: {err}", member_path.display()))?;
+        let name = member
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("{} has no [package] name", member_path.display()))?;
+        packages.insert(name.to_string());
+    }
+    Ok(packages)
+}
+
+/// The `<path> <package>` lines of `scripts/pending-crates.txt`. Each path must
+/// exist: a directory when it ends in `/`, a file otherwise.
+fn pending_crates(root: &Path, problems: &mut Vec<String>) -> Vec<(String, String)> {
+    let path = root.join(PENDING_CRATES);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            problems.push(format!("failed to read {PENDING_CRATES}: {err}"));
+            return Vec::new();
+        }
+    };
+    let mut entries = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let number = idx + 1;
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let &[rel, package] = fields.as_slice() else {
+            problems.push(format!(
+                "{PENDING_CRATES}:{number} must be `<path> <package>`"
+            ));
+            continue;
+        };
+        let target = root.join(rel.trim_end_matches('/'));
+        let exists = if rel.ends_with('/') {
+            target.is_dir()
+        } else {
+            target.is_file()
+        };
+        if !exists {
+            problems.push(format!(
+                "{PENDING_CRATES}:{number} names {rel}, which is not an existing {}",
+                if rel.ends_with('/') {
+                    "directory"
+                } else {
+                    "file"
+                }
+            ));
+        }
+        entries.push((rel.to_string(), package.to_string()));
+    }
+    entries
+}
+
+/// The `//! covers:` line of each leading doc-comment line of `file`, as the
+/// names it lists.
+fn covers_lines(file: &Path) -> Result<Vec<Vec<String>>, String> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|err| format!("failed to read {}: {err}", file.display()))?;
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some(doc) = trimmed.strip_prefix("//!") else {
+            break;
+        };
+        if let Some(names) = doc.trim_start().strip_prefix("covers:") {
+            lines.push(
+                names
+                    .split(',')
+                    .map(|name| name.trim().to_string())
+                    .collect(),
+            );
+        }
+    }
+    Ok(lines)
+}
+
+/// Every top-level module of `dir`, as its name and the file that holds it,
+/// sorted by name. The `container` file is not a module.
+fn top_level_modules(
+    dir: &Path,
+    container: &str,
+    problems: &mut Vec<String>,
+) -> Vec<(String, PathBuf)> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            problems.push(format!("failed to list {}: {err}", dir.display()));
+            return Vec::new();
+        }
+    };
+    let mut modules = Vec::new();
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(err) => {
+                problems.push(format!("failed to list {}: {err}", dir.display()));
+                continue;
+            }
+        };
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if file_name == container {
+            continue;
+        }
+        if path.is_dir() {
+            let module_file = path.join("mod.rs");
+            if module_file.is_file() {
+                modules.push((file_name.to_string(), module_file));
+            } else {
+                problems.push(format!("{} has no mod.rs", path.display()));
+            }
+        } else if let Some(stem) = file_name.strip_suffix(".rs") {
+            modules.push((stem.to_string(), path.clone()));
+        }
+    }
+    modules.sort();
+    modules
+}
+
+/// Problems with the covers lines, the `mod` lines that declare the modules
+/// under `MODULE_DIRS`, and `scripts/pending-crates.txt`. An empty result is a
+/// pass. A directory that does not exist is skipped, so the scan accepts a tree
+/// without `src/integration`.
+fn covers_problems(root: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut valid_packages = BTreeSet::from(["residuum".to_string()]);
+    match member_packages(root) {
+        Ok(packages) => valid_packages.extend(packages),
+        Err(err) => problems.push(err),
+    }
+    for (_, package) in pending_crates(root, &mut problems) {
+        valid_packages.insert(package);
+    }
+    let mod_decl = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;").unwrap();
+    for module_dir in &MODULE_DIRS {
+        let dir = root.join(module_dir.dir);
+        if !dir.is_dir() {
+            continue;
+        }
+        let container_path = dir.join(module_dir.container);
+        let Ok(container_text) = std::fs::read_to_string(&container_path) else {
+            problems.push(format!(
+                "{} has no {}, which declares its modules",
+                module_dir.dir, module_dir.container
+            ));
+            continue;
+        };
+        let declared: BTreeSet<String> = container_text
+            .lines()
+            .filter_map(|line| mod_decl.captures(line).map(|caps| caps[1].to_string()))
+            .collect();
+        let modules = top_level_modules(&dir, module_dir.container, &mut problems);
+        let module_names: BTreeSet<String> = modules.iter().map(|(name, _)| name.clone()).collect();
+        for name in &module_names {
+            if !declared.contains(name) {
+                problems.push(format!(
+                    "{}/{} has no `mod {name};` line",
+                    module_dir.dir, module_dir.container
+                ));
+            }
+        }
+        for name in declared.difference(&module_names) {
+            problems.push(format!(
+                "{}/{} declares `mod {name};` with no file",
+                module_dir.dir, module_dir.container
+            ));
+        }
+        for (name, file) in &modules {
+            if module_dir.exempt.contains(&name.as_str()) {
+                continue;
+            }
+            let rel = format!("{}/{name}", module_dir.dir);
+            match covers_lines(file) {
+                Ok(lines) => check_covers_lines(&rel, &lines, &valid_packages, &mut problems),
+                Err(err) => problems.push(err),
+            }
+        }
+    }
+    problems
+}
+
+/// One module's covers lines: exactly one, naming packages that are valid, with
+/// no name repeated.
+fn check_covers_lines(
+    rel: &str,
+    lines: &[Vec<String>],
+    valid_packages: &BTreeSet<String>,
+    problems: &mut Vec<String>,
+) {
+    let [names] = lines else {
+        problems.push(format!(
+            "{rel} has {} `//! covers:` lines; it needs exactly one",
+            lines.len()
+        ));
+        return;
+    };
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if name.is_empty() {
+            problems.push(format!("{rel} has an empty name in its `//! covers:` line"));
+        } else if !valid_packages.contains(name) {
+            problems.push(format!(
+                "{rel} names {name}, which is neither residuum, a member package, nor a package in {PENDING_CRATES}"
+            ));
+        } else if !seen.insert(name) {
+            problems.push(format!("{rel} names {name} more than once"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1049,6 +1302,19 @@ mod tests {
         assert!(
             missing.is_empty(),
             "these paths name no file (a rename left them behind?): {missing:?}"
+        );
+    }
+
+    /// Each `tests/it` and `src/integration` module carries one covers line
+    /// naming real packages, the `mod` lines match the files, and every path in
+    /// `scripts/pending-crates.txt` exists.
+    #[test]
+    fn it_covers() {
+        let problems = covers_problems(&crate_root());
+        assert!(
+            problems.is_empty(),
+            "covers and pending-crates problems:\n{}",
+            problems.join("\n")
         );
     }
 }

@@ -2,6 +2,8 @@
 //!
 //! Tests the full lifecycle: scan → verify index → activate → verify active →
 //! deactivate → verify removed. Also tests malformed SKILL.md handling.
+//!
+//! covers: residuum-skills, residuum-tools
 
 #![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #![expect(
