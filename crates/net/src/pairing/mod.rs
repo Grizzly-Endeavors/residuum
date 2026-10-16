@@ -33,9 +33,7 @@ pub mod types;
 pub use cookies::cookie_header;
 pub use error::PairingError;
 pub(crate) use gate::HANDOFF_PAGE_PATH;
-pub use gate::{
-    AuthenticatedDevice, DEVICE_REQUIRED_CODE, GateState, PAIRING_PAGE_PATH, device_gate,
-};
+pub use gate::{AuthenticatedDevice, GateState, PAIRING_PAGE_PATH, device_gate};
 pub use remote::{RemoteContext, RemoteTransport, remote_context};
 pub use service::{CreatedRequest, DevicePairing, MintedPairToken};
 pub use state::{AuthHit, Issued, PollOutcome};
