@@ -3807,7 +3807,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_teammate_s_reply_to_a_group_chat_session_is_not_posted_into_the_group_chat() {
+    async fn a_teammate_s_reply_stays_out_of_the_group_chat_while_the_session_s_relay_posts() {
         let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
         let mut session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> =
             bus_handle
@@ -3819,8 +3819,8 @@ mod tests {
         runtime.spawn(
             sample_conversation_request(address.as_ref()),
             Some(make_sequenced_resources(vec![
-                "I asked beta, one moment",
-                "thanks beta, the answer is 42",
+                "I'll ask Ivan",
+                "Ivan says the build is green",
             ])),
         );
         let first = bus_wait::next_event(
@@ -3828,7 +3828,7 @@ mod tests {
             &mut session_output,
         )
         .await;
-        assert_eq!(first.content, "I asked beta, one moment");
+        assert_eq!(first.content, "I'll ask Ivan");
         next_idle(
             &mut session_events,
             &address,
@@ -3837,15 +3837,15 @@ mod tests {
         .await;
 
         // Exactly what the team router hands this agent's messenger for
-        // `message_agent to="agent:alpha/external-discord-teammate-reply"`.
+        // `message_agent to="agent:mist/external-discord-teammate-reply"`.
         assert_eq!(
             runtime.registry.deliver(
                 &address,
                 Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from("agent:beta"),
+                    from: SessionAddress::from("agent:ivan"),
                     from_category: crate::background::registry::TEAMMATE_SENDER_CATEGORY
                         .to_string(),
-                    content: "the answer is 42".to_string(),
+                    content: "Here's your answer.".to_string(),
                     hop_count: 1,
                 }),
             ),
@@ -3858,14 +3858,15 @@ mod tests {
         )
         .await;
         bus_wait::bus_barrier(&bus_handle).await;
-        let leaked: Vec<String> = session_output
+        let posted: Vec<String> = session_output
             .drain()
             .into_iter()
             .map(|event| event.content)
             .collect();
-        assert!(
-            leaked.is_empty(),
-            "a turn a teammate's message started must not post into the group chat: {leaked:?}"
+        assert_eq!(
+            posted,
+            vec!["Ivan says the build is green".to_string()],
+            "the session's own relay posts, and the teammate's message itself never does"
         );
         assert!(runtime.registry.stop(&address));
     }
