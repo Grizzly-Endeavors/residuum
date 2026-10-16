@@ -149,28 +149,6 @@ pub mod minute_format {
     }
 }
 
-/// Serde module for `Option<NaiveDateTime>` using minute-precision.
-#[cfg(test)]
-mod minute_format_opt {
-    use chrono::NaiveDateTime;
-    use serde::{self, Deserialize, Deserializer};
-
-    /// # Errors
-    /// Returns a deserializer error if the string is present but not in `YYYY-MM-DDTHH:MM` format.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDateTime>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let opt: Option<String> = Option::deserialize(deserializer)?;
-        match opt {
-            Some(s) => super::parse_minute(&s)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
-            None => Ok(None),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,18 +269,6 @@ mod tests {
         }
         assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"not-a-date"}"#).is_err());
         assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"2026-03-22"}"#).is_err());
-    }
-
-    #[test]
-    fn minute_format_opt_none() {
-        use serde::Deserialize;
-        #[derive(Deserialize)]
-        struct Wrapper {
-            #[serde(with = "minute_format_opt")]
-            ts: Option<NaiveDateTime>,
-        }
-        let w: Wrapper = serde_json::from_str(r#"{"ts":null}"#).unwrap();
-        assert!(w.ts.is_none());
     }
 
     fn rfc3339(zone: &str, local: NaiveDateTime) -> String {
