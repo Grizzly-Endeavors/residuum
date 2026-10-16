@@ -1,6 +1,6 @@
 pub use residuum_config as config;
 pub use residuum_config::agent_keys;
-pub use residuum_core::{BuildInfo, diagnostics, time, util};
+pub use residuum_core::{BuildInfo, diagnostics, process, time, util};
 pub use residuum_inference as inference;
 pub use residuum_mcp as mcp;
 pub use residuum_memory as memory;
@@ -34,7 +34,6 @@ pub mod inbox;
 pub mod interfaces;
 pub mod logging;
 pub mod notify;
-pub mod process;
 pub mod pulse;
 pub mod setup_wizard;
 pub mod subconscious;

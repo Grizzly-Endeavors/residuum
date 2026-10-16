@@ -203,7 +203,7 @@ pub fn create_argv_command(program: &Path, args: &[&str]) -> tokio::process::Com
 /// Build the platform shell invocation for `command`: `sh -c` on Unix,
 /// `cmd /S /C` on Windows.
 #[must_use]
-pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
+pub fn shell_command(command: &str) -> tokio::process::Command {
     #[cfg(unix)]
     {
         let mut c = tokio::process::Command::new("sh");
@@ -229,7 +229,7 @@ pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
 
 /// How a spawned command's run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RunOutcome {
+pub enum RunOutcome {
     /// The command exited on its own, and everything holding its output
     /// pipes let go of them, before the timeout or a stop.
     Finished,
@@ -246,7 +246,7 @@ pub(crate) enum RunOutcome {
 /// How much of a pipe [`run_with_timeout_and_cancel`] keeps. Whatever
 /// isn't kept is still read, so the command never blocks on a full pipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Capture {
+pub enum Capture {
     /// Everything.
     All,
     /// The first `n` bytes. Ask for one byte more than will be shown to
@@ -280,13 +280,13 @@ enum Wait {
 /// stopped at the timeout like any other. On a timeout or a stop,
 /// [`kill_process_tree`] kills the whole process tree rather than only the
 /// immediate shell, and whatever stdout/stderr the command had produced is
-/// still returned (see [`KILLED_PIPE_DRAIN_GRACE`] for a process the kill
+/// still returned (after a short grace period, for a process the kill
 /// can't reach).
 ///
 /// # Errors
 /// Returns an error when the command can't be spawned, its exit status
 /// can't be read, or a pipe read fails.
-pub(crate) async fn run_with_timeout_and_cancel(
+pub async fn run_with_timeout_and_cancel(
     mut cmd: tokio::process::Command,
     timeout: Duration,
     cancel: &CancellationToken,
@@ -568,7 +568,7 @@ mod tests {
     /// run has seen the shell exit and is now waiting on the pipes alone.
     #[cfg(target_os = "linux")]
     async fn shell_reaped(pid_file: &std::path::Path) {
-        let pid: u32 = residuum_core::testing::wait::until("the shell's pid", || async {
+        let pid: u32 = crate::testing::wait::until("the shell's pid", || async {
             tokio::fs::read_to_string(pid_file)
                 .await
                 .ok()?
@@ -577,7 +577,7 @@ mod tests {
                 .ok()
         })
         .await;
-        residuum_core::testing::wait::until_true("the shell to be reaped", || {
+        crate::testing::wait::until_true("the shell to be reaped", || {
             !std::path::Path::new(&format!("/proc/{pid}")).exists()
         })
         .await;
@@ -590,7 +590,7 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        residuum_core::testing::wait::until_true("the background process to be killed", || {
+        crate::testing::wait::until_true("the background process to be killed", || {
             !is_process_running(pid)
         })
         .await;
@@ -621,7 +621,7 @@ mod tests {
             cancel.cancel();
         };
         let (result, ()) = tokio::join!(
-            residuum_core::testing::wait::guarded("the stopped run to return", run),
+            crate::testing::wait::guarded("the stopped run to return", run),
             stop
         );
         let (outcome, output) = result.unwrap();
@@ -650,11 +650,10 @@ mod tests {
             result = &mut run => panic!("the run ended before its shell was reaped: {result:?}"),
         }
         tokio::time::pause();
-        let (outcome, output) =
-            residuum_core::testing::clock::within(Duration::from_secs(3600), &mut run)
-                .await
-                .expect("the run ends at its timeout")
-                .unwrap();
+        let (outcome, output) = crate::testing::clock::within(Duration::from_secs(3600), &mut run)
+            .await
+            .expect("the run ends at its timeout")
+            .unwrap();
         assert_eq!(outcome, RunOutcome::TimedOut);
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
         background_pid_dies(&dir.path().join("bg.pid")).await;
