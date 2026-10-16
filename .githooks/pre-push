@@ -359,7 +359,8 @@ add_filter() {
 }
 
 # Sets PICKED to the words scripts/affected-packages.sh prints for the mode $2
-# (--affected or --members) on the newline-separated paths $3. When the script
+# (--affected, --members, --touched or --covering) on the newline-separated
+# paths $3, one word per line or several per line. When the script
 # is missing or fails, PICKED is the fallback words given after the paths and
 # the function returns 1: a selection may check more, never less. The script's
 # stderr says what it chose.
@@ -368,7 +369,7 @@ pick_packages() {
     shift 3
     if out="$(cd "$dir" && ./scripts/affected-packages.sh "$mode" <<<"$paths")"; then
         PICKED=()
-        read -r -a PICKED <<<"$out"
+        read -r -a PICKED <<<"${out//$'\n'/ }"
         return 0
     fi
     echo -e "${YELLOW}WARNING: scripts/affected-packages.sh $mode failed; checking $*.${NC}" >&2
@@ -382,14 +383,16 @@ pick_packages() {
 # accumulate, a choice of every test wins over a filtered one, and the member
 # list is the union.
 #   src/lib.rs, src/main.rs        every root unit test, lib and bin
+#   src/integration/**             the modules their covers lines select (below)
 #   src/<mod>/**, src/<mod>.rs     the root unit tests of that module (`<mod>::`),
 #                                  and the bin's too when main.rs declares it
 #   other src/** paths             every root unit test (no module declares them)
 #   Cargo.toml, Cargo.lock, rust-toolchain.toml, clippy.toml, rustfmt.toml,
 #   deny.toml, .cargo/**           the testing::manifest_scan filter
 #   crates/<dir>/Cargo.toml        the same filter, and the member's tests
-#   crates/<dir>/** of a member    that member's tests, and those of every member
-#                                  that depends on it
+#   crates/<dir>/** of a member    that member's tests, and the integration modules
+#                                  whose covers lines name it (its dependents'
+#                                  tests are not run; clippy checks them)
 #   crates/** outside a member     the testing::manifest_scan filter
 #   build.rs, the generated web types, the generated-types and isolation
 #   scripts, affected-packages*, the CI workflows
@@ -397,8 +400,10 @@ pick_packages() {
 #                                  check still cover them)
 #   assets/**, tests/fixtures/**   every unit test of every package, and every
 #                                  integration test, since both read them
-#   tests/it/**                    the `it` binary, which holds every integration
-#                                  test except ts_export
+#   tests/it/**                    the integration modules their covers lines
+#                                  select (`--covering`), one filter each in the
+#                                  `it` binary; the whole binary for main.rs,
+#                                  support/ and the like
 #   tests/<name>.rs                that integration test
 #   other tests/*/*                every integration test
 #   web/src/styles/tokens.css      the member tests of residuum-net, which
@@ -410,21 +415,26 @@ pick_packages() {
 #                                  (crates/hub/src/update.rs), or every root unit
 #                                  test while the hub is not a member crate
 # Clippy checks the packages scripts/affected-packages.sh --affected picks for
-# all the changed paths, and every package when there is no list of them.
+# all the changed paths, and every package when there is no list of them. The
+# member tests are the packages --touched picks: the member a path is in, without
+# its dependents. The integration modules are the ones --covering picks for all
+# the changed paths, and the whole `it` binary when the script fails.
 # The source scans (testing::source_scan) run whenever the Rust checks run at
 # all. A push with no list of changed paths selects every test.
-# Sets UNIT_ARGS, CLIPPY_ARGS, MEMBER_ARGS and INTEGRATION_ARGS (cargo
-# arguments; MEMBER_ARGS and INTEGRATION_ARGS are empty when none is called
-# for) and prints the choice.
+# Sets UNIT_ARGS, CLIPPY_ARGS, MEMBER_ARGS, IT_ARGS and INTEGRATION_ARGS (cargo
+# arguments; MEMBER_ARGS, IT_ARGS and INTEGRATION_ARGS are empty when none is
+# called for) and prints the choice.
 plan_rust_tests() {
     local dir="$1" path mod name known unit_reason="" integration_reason=""
-    local unit_all=0 unit_workspace=0 unit_bins=0 integration_all=0
-    local tests=" " test_names member_paths="" member_reason="" clippy_reason=""
+    local unit_all=0 unit_workspace=0 unit_bins=0 integration_all=0 it_all=0
+    local tests=" " test_names member_reason="" clippy_reason="" module
+    local -a it_modules=()
     test_names=()
     UNIT_FILTERS="testing::source_scan"
     UNIT_ARGS=()
     CLIPPY_ARGS=()
     MEMBER_ARGS=()
+    IT_ARGS=()
     INTEGRATION_ARGS=()
     if [ "$CHANGED_KNOWN" = 0 ]; then
         unit_workspace=1
@@ -437,6 +447,9 @@ plan_rust_tests() {
         src/lib.rs | src/main.rs)
             unit_all=1
             unit_reason="$path changed"
+            ;;
+        src/integration/*)
+            # The integration modules are chosen by their covers lines, below.
             ;;
         src/*)
             mod="${path#src/}"
@@ -461,11 +474,9 @@ plan_rust_tests() {
             add_filter testing::manifest_scan
             ;;
         crates/*)
+            # A member's tests come from --touched, below.
             name="${path#crates/}"
             name="${name%%/*}"
-            if is_member "$dir" "$name"; then
-                member_paths="$member_paths$path"$'\n'
-            fi
             if [ "$path" = "crates/$name/Cargo.toml" ] || ! is_member "$dir" "$name"; then
                 add_filter testing::manifest_scan
             fi
@@ -480,14 +491,7 @@ plan_rust_tests() {
             integration_reason="$path is read by integration tests"
             ;;
         tests/it/*)
-            name=it
-            case "$tests" in
-            *" $name "*) ;;
-            *)
-                tests="$tests$name "
-                test_names+=("$name")
-                ;;
-            esac
+            # The modules are chosen by their covers lines, below.
             ;;
         tests/*/*)
             integration_all=1
@@ -508,20 +512,16 @@ plan_rust_tests() {
             fi
             ;;
         web/src/styles/tokens.css)
-            member_paths="$member_paths$path"$'\n'
+            # The member tests come from --touched, below.
             ;;
         web/app-shell-csp.txt)
-            if hub_reads "$dir" src/web/assets.rs; then
-                member_paths="$member_paths$path"$'\n'
-            else
+            if ! hub_reads "$dir" src/web/assets.rs; then
                 unit_all=1
                 unit_reason="$path is read by unit tests"
             fi
             ;;
         .github/workflows/release.yml)
-            if hub_reads "$dir" src/update.rs; then
-                member_paths="$member_paths$path"$'\n'
-            else
+            if ! hub_reads "$dir" src/update.rs; then
                 unit_all=1
                 unit_reason="$path is read by unit tests"
             fi
@@ -536,6 +536,30 @@ plan_rust_tests() {
             ;;
         esac
     done <<<"$CHANGED_PATHS"
+
+    # The integration modules the paths select by their covers lines. A push that
+    # already runs every integration test, or a failed selection, runs them all.
+    if [ "$integration_all" = 0 ]; then
+        pick_packages "$dir" --covering "$CHANGED_PATHS" it:ALL integration:ALL
+        for module in ${PICKED[@]+"${PICKED[@]}"}; do
+            case "$module" in
+            it:ALL) it_all=1 ;;
+            it:*) it_modules+=("${module#it:}") ;;
+            integration:ALL) add_filter integration:: ;;
+            integration:*) add_filter "integration::${module#integration:}::" ;;
+            esac
+        done
+        if [ "$it_all" = 1 ]; then
+            IT_ARGS=(-p residuum --test it)
+            echo "Integration modules: every one of the it binary."
+        elif [ "${#it_modules[@]}" -gt 0 ]; then
+            IT_ARGS=(-p residuum --test it --)
+            for module in "${it_modules[@]}"; do
+                IT_ARGS+=("$module::")
+            done
+            echo "Integration modules: ${it_modules[*]} (covers lines name a changed package, or the path is in the module)."
+        fi
+    fi
 
     if [ "$unit_workspace" = 1 ]; then
         UNIT_ARGS=(--workspace --lib --bins)
@@ -574,18 +598,16 @@ plan_rust_tests() {
     fi
     echo "Clippy: ${CLIPPY_ARGS[*]} ($clippy_reason)."
 
-    if [ -n "$member_paths" ]; then
-        if pick_packages "$dir" --members "$member_paths" --workspace --exclude residuum; then
-            member_reason="the member crates the changed paths touch and their dependents"
-        else
-            member_reason="the selection failed"
-        fi
-        if [ "${#PICKED[@]}" -gt 0 ]; then
-            MEMBER_ARGS=("${PICKED[@]}" --lib --tests)
-            echo "Member tests: ${PICKED[*]} ($member_reason)."
-        else
-            echo "Member tests: none (no changed path is in a member crate)."
-        fi
+    if pick_packages "$dir" --touched "$CHANGED_PATHS" --workspace --exclude residuum; then
+        member_reason="the member crates the changed paths are in"
+    else
+        member_reason="the selection failed"
+    fi
+    if [ "${#PICKED[@]}" -gt 0 ]; then
+        MEMBER_ARGS=("${PICKED[@]}" --lib --tests)
+        echo "Member tests: ${PICKED[*]} ($member_reason)."
+    else
+        echo "Member tests: none (no changed path is in a member crate)."
     fi
 
     if [ "$integration_all" = 1 ]; then
@@ -715,6 +737,9 @@ run_rust_checks() {
     run_check "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
     if [ "${#MEMBER_ARGS[@]}" -gt 0 ]; then
         run_check "member tests (changed crates)" run_cargo_test "$dir" "${MEMBER_ARGS[@]}"
+    fi
+    if [ "${#IT_ARGS[@]}" -gt 0 ]; then
+        run_check "integration modules (changed)" run_cargo_test "$dir" "${IT_ARGS[@]}"
     fi
     if [ "${#INTEGRATION_ARGS[@]}" -gt 0 ]; then
         run_check "integration tests (changed)" run_cargo_test "$dir" "${INTEGRATION_ARGS[@]}"
