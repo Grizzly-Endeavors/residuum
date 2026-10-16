@@ -19,7 +19,8 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{AgentDirectory, AgentFiles, LifecycleError};
+use super::{AgentDirectory, AgentFiles};
+use crate::background::team::LifecycleError;
 use crate::config::WorkspaceLayout;
 use crate::inbox::{InboxAttachment, InboxItem};
 
@@ -607,9 +608,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_directory_that_cannot_place_an_agents_files_fails_the_call() {
-        let directory = crate::a2a::StaticAgentDirectory::new().with_agent(
+        let directory = crate::hub::static_directory::StaticHubDirectory::new().with_agent(
             "scout",
-            crate::hub::A2aVisibility::Private,
+            crate::background::team::A2aVisibility::Private,
             axum::Router::new(),
         );
 

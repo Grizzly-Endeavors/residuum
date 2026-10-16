@@ -18,9 +18,10 @@ use tower::ServiceExt;
 use tracing::Instrument;
 
 use super::error::{json_error, lifecycle_error_response};
+use crate::background::team::LifecycleError;
 use crate::browser_landing::{self, AppNotice, Fallback, Landing};
 use crate::config::paths::validate_agent_name;
-use crate::hub::{AgentDirectory, LifecycleError};
+use crate::hub::AgentDirectory;
 
 /// The routes that hand requests to an agent: everything under
 /// `/api/agents/` and `/webhook/`.

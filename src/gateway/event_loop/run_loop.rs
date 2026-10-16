@@ -89,13 +89,13 @@ impl AgentControl {
     /// delivered: the agent's bus is closed, or the hop limit was reached.
     pub(crate) async fn deliver_to_main(
         &self,
-        from: &crate::hub::Actor,
+        from: &crate::background::team::Actor,
         content: String,
         tz: chrono_tz::Tz,
         hop_count: u32,
     ) -> Result<(), String> {
         let creator = match from {
-            crate::hub::Actor::User => {
+            crate::background::team::Actor::User => {
                 let event = crate::bus::MessageEvent {
                     id: format!("hub-{}", uuid::Uuid::new_v4()),
                     content,
@@ -115,7 +115,7 @@ impl AgentControl {
                     .await
                     .map_err(|e| format!("the agent's message channel is closed: {e}"));
             }
-            crate::hub::Actor::Agent(creator) => creator,
+            crate::background::team::Actor::Agent(creator) => creator,
         };
         self.messenger
             .send(

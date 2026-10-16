@@ -22,7 +22,7 @@ use crate::bus::SessionAddress;
 use crate::bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
 use crate::config::canonicalize_display_name;
 
-use super::directory::{AgentDirectory, DirectoryHandle};
+use super::directory::{DirectoryHandle, TeamDirectory};
 use super::types::{AgentState, AgentSummary, LifecycleError};
 
 /// Where a teammate message is going: an agent, and one of its sessions
@@ -211,7 +211,7 @@ impl TeamRouter {
             .cloned()
     }
 
-    fn directory(&self) -> Option<Arc<dyn AgentDirectory>> {
+    fn directory(&self) -> Option<Arc<dyn TeamDirectory>> {
         self.directory.get()
     }
 

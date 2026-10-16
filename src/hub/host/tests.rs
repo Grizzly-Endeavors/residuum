@@ -1322,6 +1322,7 @@ where
 fn is_hub_level(event: &CapturedEvent) -> bool {
     [
         "residuum::hub",
+        "residuum::background::team",
         "residuum_net::tunnel",
         "residuum::update",
         "residuum::daemon",
@@ -2770,7 +2771,7 @@ mod team_events;
 
 #[tokio::test]
 async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
-    use crate::hub::team::{TeamLink, TeamSendError, parse_team_address};
+    use crate::background::team::{TeamLink, TeamSendError, parse_team_address};
 
     let hub = Fixture::new(&["alpha", "beta"], "").await;
     start_all(&hub, &["alpha", "beta"]).await;

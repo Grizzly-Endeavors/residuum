@@ -10,10 +10,10 @@ use serde_json::Value;
 use crate::a2a::{A2aClientHub, AgentSource, AgentStatus, RemoteTaskTracker};
 use crate::agent::HopCounter;
 use crate::background::registry::SessionRegistry;
+use crate::background::team::TeamLink;
 use crate::bus::session::{MAIN_ADDRESS, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::{ModelSelector, SharedModelCatalog};
-use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 

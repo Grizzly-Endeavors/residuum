@@ -292,6 +292,7 @@ mod tests {
     use crate::background::messaging::AgentMessenger;
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
+    use crate::background::team::TeamDirectory as _;
     use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
     use crate::config::RetryConfig;
     use crate::config::{
@@ -299,7 +300,6 @@ mod tests {
         MemoryConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig, SubconsciousSettings,
         ToolsConfig, TracingConfig, WebSearchConfig,
     };
-    use crate::hub::AgentDirectory as _;
     use crate::memory::search::{HybridSearcher, MemoryIndex};
     use crate::skills::{SkillIndex, SkillState};
     use crate::tools::{FileTracker, PathPolicy};
@@ -487,7 +487,7 @@ mod tests {
             config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
             hub_dir: dir.join("hub"),
             lifecycle: crate::tools::LifecycleAccess::new(
-                crate::hub::DirectoryHandle::unbound(),
+                crate::background::team::DirectoryHandle::unbound(),
                 "test",
             ),
         }

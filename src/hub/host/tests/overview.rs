@@ -3,8 +3,8 @@
 //! agent is answered from its files.
 
 use super::*;
+use crate::background::team::{TeamLink, parse_team_address};
 use crate::hub::overview::{AgentOverview, LastMessageRole};
-use crate::hub::team::{TeamLink, parse_team_address};
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;
 

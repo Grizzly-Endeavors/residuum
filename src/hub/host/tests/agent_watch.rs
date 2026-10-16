@@ -3,12 +3,12 @@
 //! reaching it when the agent stops.
 
 use super::*;
+use crate::background::team::{TeamLink, parse_team_address};
 use crate::bus::SessionEventKind;
 use crate::bus::session::SessionState;
 use crate::hub::agent_watch::{
     AgentChange, AgentChangeKind, AgentChangeReceiver, MainTurnEnded, WatchedPath,
 };
-use crate::hub::team::{TeamLink, parse_team_address};
 use crate::memory::types::Visibility;
 
 /// Collect changes until one satisfies `found`, returning everything seen up

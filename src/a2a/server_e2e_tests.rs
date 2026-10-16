@@ -376,7 +376,7 @@ fn start_a2a_listener(
 
     let directory = StaticAgentDirectory::new().with_agent(
         AGENT_NAME,
-        crate::hub::A2aVisibility::Public,
+        crate::background::team::A2aVisibility::Public,
         agent_handler_router(handler, Arc::clone(card_state)),
     );
 
@@ -643,7 +643,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
         checkpoints: Arc::clone(&deps.checkpoints),
         lifecycle: crate::tools::LifecycleAccess::new(
-            crate::hub::DirectoryHandle::unbound(),
+            crate::background::team::DirectoryHandle::unbound(),
             "test",
         ),
         model_catalog: crate::config::ModelCatalog::default().into_shared(),

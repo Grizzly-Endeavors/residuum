@@ -13,6 +13,10 @@
 
 use ts_rs::TS;
 
+use residuum::background::team::{
+    A2aVisibility, Actor, AgentErrorKind, AgentLastError, AgentState, AgentSummary,
+    CreateAgentRequest, DeleteOutcome,
+};
 use residuum::checkpoints::{
     CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
@@ -36,10 +40,8 @@ use residuum::hub::team_events::{
     TeamEvent, TeamEventKind, TeamEventLevel, TeamEventPage, TeamEventPlace, TeamEventTarget,
 };
 use residuum::hub::types::{
-    A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentListResponse,
-    AgentPatch, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent,
-    DeletedAgentListResponse, HubClientMessage, HubEvent, HubSocketFrame, NoticeLevel,
-    RestoreAgentRequest,
+    AgentActivity, AgentListResponse, AgentPatch, DeletedAgent, DeletedAgentListResponse,
+    HubClientMessage, HubEvent, HubSocketFrame, NoticeLevel, RestoreAgentRequest,
 };
 use residuum::inbox::InboxAttachment;
 use residuum::inference::ImageData;

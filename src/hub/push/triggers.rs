@@ -23,11 +23,12 @@ use tokio::task::JoinHandle;
 use super::service::PushService;
 use super::types::{PushEvent, PushMessage, PushPayload};
 use crate::a2a::TrackedTask;
+use crate::background::team::{AgentErrorKind, AgentState, AgentSummary};
 use crate::hub::agent_watch::{AgentChange, AgentChangeKind, AgentChangeReceiver};
 use crate::hub::directory::AgentDirectory;
 use crate::hub::inbox;
 use crate::hub::overview::plain_preview;
-use crate::hub::types::{AgentErrorKind, AgentState, AgentSummary, HubEvent};
+use crate::hub::types::HubEvent;
 use crate::memory::types::Visibility;
 
 /// The title of an inbox item push whose item couldn't be read, or has none.

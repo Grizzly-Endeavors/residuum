@@ -4,8 +4,8 @@
 use chrono::{Duration, TimeZone as _};
 
 use super::*;
+use crate::background::team::{A2aVisibility, Actor, AgentLastError};
 use crate::hub::agent_watch::{MainTurnEnded, WatchedPath};
-use crate::hub::types::{A2aVisibility, Actor, AgentLastError};
 
 fn summary(name: &str, state: AgentState) -> AgentSummary {
     AgentSummary {

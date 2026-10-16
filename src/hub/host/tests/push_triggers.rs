@@ -447,7 +447,7 @@ async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
 
 #[tokio::test]
 async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_background_turn() {
-    use crate::hub::team::{TeamLink, parse_team_address};
+    use crate::background::team::{TeamLink, parse_team_address};
 
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
