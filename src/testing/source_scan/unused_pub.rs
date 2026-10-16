@@ -33,7 +33,9 @@
 //!
 //! Two cases are reported although the item is used: an item other crates
 //! reach only under a re-export's new name (`pub use inner::Item as Other;`),
-//! and one named only by an identifier a macro builds from pieces.
+//! and one named only by an identifier a macro builds from pieces. For the
+//! first, re-export or import the item under its own name, or rename the item
+//! to the name its users call.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -252,7 +254,7 @@ mod tests {
             .collect();
         assert!(
             unused.is_empty(),
-            "these `pub` items of member crates have no user outside their own crate's tests, and rustc does not warn about an unused `pub` item of a library. Delete an item nothing uses, with the tests that exist only for it. A test helper only its own crate's tests use moves into `#[cfg(test)]` code as `pub(crate)` or private; production code only its own tests call goes, with those tests. The rule and its blind spots are described in src/testing/source_scan/unused_pub.rs.\n{}",
+            "these `pub` items of member crates have no user outside their own crate's tests, and rustc does not warn about an unused `pub` item of a library. Delete an item nothing uses, with the tests that exist only for it. A test helper only its own crate's tests use moves into `#[cfg(test)]` code as `pub(crate)` or private; production code only its own tests call goes, with those tests. If the item is used, but only under a name a `use … as …` gives it, re-export or import it under its own name, or rename the item to the name its users call. The rule and its blind spots are described in src/testing/source_scan/unused_pub.rs.\n{}",
             unused.join("\n")
         );
     }
