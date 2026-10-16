@@ -6,7 +6,7 @@
 //! claim, `respond_to_others`, standing) is decided upstream by each
 //! interface handler before the message ever reaches the bus. This router
 //! only decides who handles an already-admitted message:
-//! [`crate::interfaces::types::MessageOrigin::belongs_to_main`] is the actual
+//! [`crate::bus::origin::MessageOrigin::belongs_to_main`] is the actual
 //! routing predicate; this module is the delivery side once that predicate
 //! says a message is not main's.
 
@@ -102,7 +102,7 @@ impl ConversationRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
+    use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
     use crate::testing::bus_wait;
     use residuum_core::testing::wait;
 

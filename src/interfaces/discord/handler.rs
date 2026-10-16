@@ -17,15 +17,15 @@ use serenity::prelude::*;
 
 use crate::background::registry::SessionRegistry;
 use crate::bus::Publisher;
+use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
 use crate::gateway::types::{ServerCommand, StopRequest};
-use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::attachment::{
+use crate::inbox::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
+use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
 use crate::interfaces::context_buffer::{BufferedMessage, render_context};
-use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 
 use super::DiscordState;
 use super::channels::{guild_channel_label, strip_bot_mention};

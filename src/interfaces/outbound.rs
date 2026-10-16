@@ -22,11 +22,11 @@ use std::ops::ControlFlow;
 
 use async_trait::async_trait;
 
+use crate::bus::attachment::FileAttachment;
 use crate::bus::{
     BusError, ConversationTypingEvent, ErrorEvent, IntermediateEvent, MessageEvent, ResponseEvent,
     SessionResponseEvent, TurnLifecycleEvent, topics,
 };
-use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::notify_main_of_undeliverable_session_output;
 
 use super::BaseSubscribers;

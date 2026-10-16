@@ -955,7 +955,7 @@ pub(super) async fn api_workspace_raw_read(
     })?;
 
     let version = version_token(&metadata);
-    let mime_type = crate::interfaces::attachment::detect_mime_type(&path);
+    let mime_type = crate::bus::attachment::detect_mime_type(&path);
 
     let mut response = bytes.into_response();
     let response_headers = response.headers_mut();

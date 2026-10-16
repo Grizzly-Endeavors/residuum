@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
+use crate::bus::attachment::FileAttachment;
+use crate::bus::origin::MessageOrigin;
 use crate::bus::types::{SessionAddress, SkillName};
 use crate::config::ModelSelector;
 use crate::inference::{ImageData, Message, MessageSender};
-use crate::interfaces::attachment::FileAttachment;
-use crate::interfaces::types::MessageOrigin;
 use crate::memory::types::Visibility;
 
 // ---------------------------------------------------------------------------
@@ -1444,7 +1444,7 @@ mod tests {
         MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "teams".to_string(),
                 sender: Some(crate::inference::MessageSender {
                     name: "Jane".to_string(),
@@ -1452,9 +1452,9 @@ mod tests {
                     interface: "teams".to_string(),
                     location: Some("#builds".to_string()),
                 }),
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "19:abc@thread.tacv2".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    kind: crate::bus::origin::ConversationKind::Channel,
                     is_owner: true,
                 }),
                 agent_sender: None,

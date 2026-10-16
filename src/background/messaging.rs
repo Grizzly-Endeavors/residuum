@@ -1721,7 +1721,7 @@ mod tests {
         MessageEvent {
             id: "conv-1".to_string(),
             content: content.to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: Some(crate::inference::MessageSender {
                     name: "Jane".to_string(),
@@ -1729,9 +1729,9 @@ mod tests {
                     interface: "discord".to_string(),
                     location: Some("#builds".to_string()),
                 }),
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    kind: crate::bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,

@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::bus::origin::chat_interface_endpoint;
 use crate::bus::{
     EndpointName, MainConversationEvent, MessageEvent, NoticeEvent, NotifyName, Publisher,
     SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent, ToolCallEvent,
@@ -16,7 +17,6 @@ use crate::inference::{
     ToolDefinition, joined_thinking_text,
 };
 use crate::inference::{ToolError, ToolResult};
-use crate::interfaces::types::chat_interface_endpoint;
 use crate::mcp::SharedMcpRegistry;
 use crate::tools::{CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
@@ -1868,7 +1868,7 @@ mod tests {
     #[tokio::test]
     async fn drain_injects_user_message_history_through_the_sink() {
         use crate::bus::MessageEvent;
-        use crate::interfaces::types::MessageOrigin;
+        use crate::bus::origin::MessageOrigin;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();

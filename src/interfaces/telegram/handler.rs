@@ -15,6 +15,7 @@ use teloxide_core::types::{
 };
 
 use crate::background::registry::SessionRegistry;
+use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
 use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ServerCommand, StopRequest};
@@ -22,7 +23,6 @@ use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
 use crate::interfaces::context_buffer::{BufferedMessage, render_context};
-use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
@@ -712,7 +712,7 @@ async fn handle_attachment(
     from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
 ) {
-    use crate::interfaces::attachment::{
+    use crate::inbox::attachment::{
         AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
     };
     use teloxide_core::net::Download;

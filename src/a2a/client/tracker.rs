@@ -20,7 +20,7 @@ use crate::bus::session::MAIN_ADDRESS;
 use crate::bus::{
     NoticeEvent, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress, topics,
 };
-use crate::interfaces::attachment::{self, AttachmentInfo};
+use crate::inbox::attachment::{self, AttachmentInfo};
 
 use super::hub::{A2aClientHub, HubError, task_state_str};
 

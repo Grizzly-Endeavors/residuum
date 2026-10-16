@@ -9,22 +9,22 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
-use super::types::ConversationKind;
+use super::origin::ConversationKind;
 
 /// A conversation the agent can post into.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct KnownConversation {
+pub struct KnownConversation {
     /// Interface-specific ID, as `send_message` takes it.
-    pub(crate) id: String,
+    pub id: String,
     /// Direct message, group chat, or channel.
-    pub(crate) kind: ConversationKind,
+    pub kind: ConversationKind,
     /// Human-readable place, e.g. `"#builds (Eng Team)"`.
-    pub(crate) label: String,
+    pub label: String,
 }
 
 /// Something that can say which conversations an interface can reach.
 #[async_trait]
-pub(crate) trait ConversationSource: Send + Sync {
+pub trait ConversationSource: Send + Sync {
     /// Every conversation the interface can currently post into.
     ///
     /// # Errors
@@ -47,7 +47,7 @@ type SourceMap = HashMap<String, Arc<dyn ConversationSource>>;
 
 /// Shared, cheaply cloneable map from endpoint name to its conversation source.
 #[derive(Clone, Default)]
-pub(crate) struct ConversationDirectory {
+pub struct ConversationDirectory {
     sources: Arc<RwLock<SourceMap>>,
 }
 
@@ -64,7 +64,7 @@ impl std::fmt::Debug for ConversationDirectory {
 /// Keeps an interface registered until dropped, so an adapter that stops or
 /// restarts never leaves a stale source behind.
 #[must_use = "the source is unregistered when this guard is dropped"]
-pub(crate) struct Registration {
+pub struct Registration {
     directory: ConversationDirectory,
     endpoint: String,
     source: Arc<dyn ConversationSource>,
@@ -98,11 +98,7 @@ impl ConversationDirectory {
     }
 
     /// Register `source` for `endpoint` until the returned guard is dropped.
-    pub(crate) fn register(
-        &self,
-        endpoint: &str,
-        source: Arc<dyn ConversationSource>,
-    ) -> Registration {
+    pub fn register(&self, endpoint: &str, source: Arc<dyn ConversationSource>) -> Registration {
         self.write()
             .insert(endpoint.to_string(), Arc::clone(&source));
         Registration {
@@ -114,19 +110,19 @@ impl ConversationDirectory {
 
     /// Endpoints with a registered source.
     #[must_use]
-    pub(crate) fn endpoints(&self) -> Vec<String> {
+    pub fn endpoints(&self) -> Vec<String> {
         self.read().keys().cloned().collect()
     }
 
     /// The source for `endpoint`, if its interface is running.
     #[must_use]
-    pub(crate) fn source(&self, endpoint: &str) -> Option<Arc<dyn ConversationSource>> {
+    pub fn source(&self, endpoint: &str) -> Option<Arc<dyn ConversationSource>> {
         self.read().get(endpoint).cloned()
     }
 
     /// The owner's DM conversation ID on `endpoint`, if that endpoint has a
     /// running chat interface with a claimed owner.
-    pub(crate) async fn owner_dm(&self, endpoint: &str) -> Option<String> {
+    pub async fn owner_dm(&self, endpoint: &str) -> Option<String> {
         self.source(endpoint)?.owner_dm_conversation_id().await
     }
 
@@ -136,7 +132,7 @@ impl ConversationDirectory {
     /// # Errors
     /// Returns a message if the endpoint has no running chat interface, its
     /// conversations cannot be listed, or none has this ID.
-    pub(crate) async fn find(&self, endpoint: &str, id: &str) -> Result<KnownConversation, String> {
+    pub async fn find(&self, endpoint: &str, id: &str) -> Result<KnownConversation, String> {
         let Some(source) = self.source(endpoint) else {
             return Err(format!(
                 "'{endpoint}' has no conversations to choose from; only running chat \

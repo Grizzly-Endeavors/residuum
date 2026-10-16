@@ -29,12 +29,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::background::registry::SessionRegistry;
+use crate::bus::conversations::{ConversationSource, KnownConversation};
 use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::interfaces::context_buffer::ContextBuffer;
-use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
 use crate::remote_access::TEAMS_MESSAGES_PATH;
 
@@ -42,8 +42,6 @@ use self::auth::TokenValidator;
 use self::connector::ConnectorClient;
 use self::store::{ConversationRef, TeamsStore};
 
-/// Endpoint and interface name for Teams on the bus.
-pub(crate) const ENDPOINT: &str = "teams";
 /// Activities waiting for the inbound worker before the endpoint sheds load.
 const INBOUND_QUEUE: usize = 64;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -172,7 +170,7 @@ impl TeamsInterface {
         }
         let subs = crate::interfaces::BaseSubscribers::new(
             &self.senders.bus_handle,
-            EndpointName::from(ENDPOINT),
+            EndpointName::from(crate::config::TEAMS_ENDPOINT),
         )
         .await
         .context("failed to subscribe to teams bus topics")?;
@@ -228,10 +226,10 @@ impl TeamsInterface {
         });
         let outbound =
             crate::util::spawn_in_span(subscriber::run_teams_subscriber(Arc::clone(&rt), subs));
-        let _registration = self
-            .senders
-            .conversations
-            .register(ENDPOINT, Arc::clone(&rt) as Arc<dyn ConversationSource>);
+        let _registration = self.senders.conversations.register(
+            crate::config::TEAMS_ENDPOINT,
+            Arc::clone(&rt) as Arc<dyn ConversationSource>,
+        );
 
         let mut shutdown_rx = self.shutdown_rx;
         let served = axum::serve(listener, app)

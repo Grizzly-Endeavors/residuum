@@ -3,8 +3,8 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::Publisher;
+use crate::bus::origin::MessageOrigin;
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
-use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
@@ -1225,7 +1225,7 @@ mod tests {
         crate::bus::MessageEvent {
             id: id.to_string(),
             content: content.to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "test".to_string(),
                 sender: None,
                 conversation: None,

@@ -6,10 +6,13 @@
 //! TypeId)` composite key, delivering only to subscribers that match both
 //! the topic and event type.
 
+pub mod attachment;
 mod broker;
+pub mod conversations;
 mod endpoint;
 mod events;
 mod handle;
+pub mod origin;
 mod registry;
 pub mod session;
 pub mod topics;
