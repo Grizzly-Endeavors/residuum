@@ -176,9 +176,18 @@ fn build_schema() -> (Schema, SearchSchema) {
 
 impl MemoryIndex {
     fn from_index(index: Index, s: &SearchSchema) -> anyhow::Result<Self> {
+        // Every write commits through `commit_and_reload`, which reloads the
+        // reader itself, so the reader reloads only there. Tantivy's
+        // `OnCommitWithDelay` adds a watcher thread that also reloads, once
+        // as soon as it starts and again after each change to `meta.json`.
+        // The two reloads are not ordered: a watcher reload that read the
+        // previous `meta.json` can store its searcher after ours, and a
+        // search right after a write then misses that write until the
+        // watcher polls again. On Windows CI this made the team wiki's first
+        // search after a sync see fewer pages than it had just indexed.
         let reader: IndexReader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .context("failed to create index reader")?;
         Ok(Self {
@@ -2543,5 +2552,26 @@ mod tests {
             0,
             "second purge is a no-op"
         );
+    }
+
+    /// The reader shows a write as soon as the write returns, on a freshly
+    /// opened index and after each later commit. Many fresh indexes, because
+    /// a stray reload of an older `meta.json` lands only now and then.
+    #[test]
+    fn a_search_right_after_each_write_sees_it() {
+        for round in 0..20 {
+            let (_dir, index) = create_test_index();
+            for n in 1..=5 {
+                index
+                    .index_observations(
+                        &format!("ep-{n}"),
+                        "2026-02-19",
+                        &[sample_observation("cluster notes")],
+                    )
+                    .unwrap();
+                let hits = index.search("cluster", 10, &no_filters()).unwrap();
+                assert_eq!(hits.len(), n, "round {round}: search after write {n}");
+            }
+        }
     }
 }

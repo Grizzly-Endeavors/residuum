@@ -440,10 +440,7 @@ mod tests {
         let (outcomes, ()) = tokio::join!(searches, editing);
 
         for outcome in &outcomes {
-            assert!(
-                outcome.results.len() == 6,
-                "every search sees all six pages"
-            );
+            assert_eq!(outcome.results.len(), 6, "every search sees all six pages");
         }
         let settled = search_wiki(&second, "edited").await;
         assert_eq!(
