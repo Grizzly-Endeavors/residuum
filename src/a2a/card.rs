@@ -539,4 +539,24 @@ mod tests {
         let producer: &dyn a2a_server::AgentCardProducer = &*state;
         assert_eq!(producer.card().name, "Producer");
     }
+
+    #[tokio::test]
+    async fn bootstrap_default_agent_card_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::config::WorkspaceLayout::new(dir.path().join("workspace"));
+
+        crate::workspace::bootstrap::ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let card = AgentCardFile::load(&layout.agent_card_json()).unwrap();
+        assert_ne!(card.name.trim(), "");
+        assert_ne!(card.description.trim(), "");
+        assert!(card.skills.is_empty(), "default card ships no skills");
+    }
 }

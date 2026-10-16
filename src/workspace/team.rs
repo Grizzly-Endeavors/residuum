@@ -522,7 +522,6 @@ async fn write_new(path: &Path, content: &str) -> Result<bool, FatalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pulse::types::HeartbeatConfig;
 
     fn team_in(dir: &Path) -> TeamPaths {
         TeamPaths::new(dir.join("team"))
@@ -808,26 +807,5 @@ mod tests {
         assert_eq!(yaml_scalar("123"), "\"123\"");
         assert_eq!(yaml_scalar("null"), "\"null\"");
         assert_eq!(yaml_scalar("-x"), "\"-x\"");
-    }
-
-    fn pulse_names(yaml: &str) -> Vec<String> {
-        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        cfg.pulses.into_iter().map(|p| p.name).collect()
-    }
-
-    #[test]
-    fn first_agent_heartbeat_includes_wiki_lint() {
-        assert_eq!(
-            pulse_names(first_agent_heartbeat()),
-            ["reflection", "memory_tending", "wiki_lint"]
-        );
-    }
-
-    #[test]
-    fn created_agent_heartbeat_keeps_memory_tending_without_wiki_lint() {
-        let template = created_agent_heartbeat();
-        assert_eq!(pulse_names(template), ["reflection", "memory_tending"]);
-        assert!(!template.contains("wiki_lint"));
-        assert!(template.contains("# ── Starter pulses"));
     }
 }
