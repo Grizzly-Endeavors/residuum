@@ -1441,7 +1441,8 @@ mod tests {
 
     #[test]
     fn an_a2a_bind_failure_is_worded_by_its_io_cause() {
-        let port = residuum_core::testing::ports::free_port();
+        let reservation = residuum_core::testing::ports::reserve_port();
+        let port = reservation.port();
         let in_use = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::AddrInUse))
             .context(format!(
                 "failed to bind the A2A listener on 127.0.0.1:{port}"

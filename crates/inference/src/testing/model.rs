@@ -265,15 +265,17 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_upstream_is_a_bad_gateway_naming_it() {
-        // wiremock keeps a dropped server listening for reuse, so take a port
-        // nothing listens on instead.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let gone = format!("http://{}", listener.local_addr().unwrap());
-        drop(listener);
+        // A bound socket that never listens refuses connections, and it keeps
+        // its port out of every other test's reach until this test ends. A
+        // released port could be handed to another test's proxy in between.
+        let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+        reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let gone = format!("http://{}", reserved.local_addr().unwrap());
         let model = GatedModel::in_front_of(&gone).await;
         let (status, body) = post(&model.uri(), "{}").await;
         assert_eq!(status, 502);
         assert!(body.contains(&gone), "{body}");
+        drop(reserved);
     }
 
     #[tokio::test]
