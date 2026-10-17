@@ -20,12 +20,12 @@ use futures_util::stream::BoxStream;
 use reqwest::StatusCode;
 use tokio::sync::Notify;
 
-use crate::a2a::card::{CardRuntime, CardState};
-use crate::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
-use crate::a2a::listener::{A2aListener, StubHandler, agent_handler_router};
-use crate::a2a::static_directory::StaticAgentDirectory;
-use crate::background::team::{A2aVisibility, AgentState};
-use crate::config::A2aConfig;
+use crate::card::{CardRuntime, CardState};
+use crate::keys_runtime::{A2aKeys, SharedA2aKeys};
+use crate::listener::{A2aListener, StubHandler, agent_handler_router};
+use crate::static_directory::StaticAgentDirectory;
+use residuum_background::team::{A2aVisibility, AgentState};
+use residuum_config::A2aConfig;
 use residuum_core::testing::wait;
 
 /// A handler that identifies its agent in every reply and gates its second
@@ -151,7 +151,7 @@ struct Fixture {
     port: u16,
     keys: SharedA2aKeys,
     /// The keys of joined siblings the listener also accepts.
-    siblings: Arc<crate::remote_access::siblings::SiblingKeys>,
+    siblings: Arc<residuum_net::remote_access::siblings::SiblingKeys>,
     directory: Arc<StaticAgentDirectory>,
     /// Released to let every agent's gated stream finish.
     gate: Arc<Notify>,
@@ -195,7 +195,7 @@ fn agent_router(
             enabled: true,
             port,
             public_url: None,
-            visibility: crate::config::A2aVisibility::Public,
+            visibility: residuum_config::A2aVisibility::Public,
         },
         "127.0.0.1",
         name,
@@ -229,7 +229,7 @@ fn fixture() -> Fixture {
             ),
     );
     let keys = A2aKeys::new_shared(dir.path());
-    let siblings = Arc::new(crate::remote_access::siblings::SiblingKeys::open(
+    let siblings = Arc::new(residuum_net::remote_access::siblings::SiblingKeys::open(
         &dir.path().join("remote-access"),
     ));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -241,12 +241,12 @@ fn fixture() -> Fixture {
         shutdown_rx,
     )
     .with_sibling_keys(
-        Arc::clone(&siblings) as Arc<dyn crate::remote_access::siblings::SiblingKeyVerifier>
+        Arc::clone(&siblings) as Arc<dyn residuum_net::remote_access::siblings::SiblingKeyVerifier>
     )
     // The listener serves on the reserved socket itself, so no other process
     // can take the port, and connections queue on it until it accepts them.
     .with_bound_listener(reservation.into_tokio_listener());
-    crate::util::spawn_in_span(listener.start());
+    residuum_core::util::spawn_in_span(listener.start());
     Fixture {
         port,
         keys,
@@ -417,7 +417,7 @@ async fn a_private_agent_is_404_on_every_route_without_a_key_and_served_with_one
 
 #[tokio::test]
 async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_not() {
-    use crate::remote_access::siblings::{NewSibling, issue_key};
+    use residuum_net::remote_access::siblings::{NewSibling, issue_key};
     let fx = fixture();
     let inbound = issue_key();
     fx.siblings

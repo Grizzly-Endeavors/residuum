@@ -204,7 +204,7 @@ impl A2aKeyStore {
     /// The caller name for `token`, if it matches a stored key's hash.
     ///
     /// Compares the presented token's digest against every stored digest
-    /// with a timing-safe comparison ([`crate::util::secrets_match`]) rather
+    /// with a timing-safe comparison ([`residuum_core::util::secrets_match`]) rather
     /// than short-circuiting on the first byte mismatch — the digests are
     /// fixed-length, so this leaks nothing about the token's content.
     #[must_use]
@@ -212,7 +212,7 @@ impl A2aKeyStore {
         let candidate = hash_token(token);
         self.keys
             .iter()
-            .find(|(_, entry)| crate::util::secrets_match(&candidate, &entry.hash))
+            .find(|(_, entry)| residuum_core::util::secrets_match(&candidate, &entry.hash))
             .map(|(name, _)| name.clone())
     }
 }
@@ -242,7 +242,7 @@ fn generate_token() -> String {
 }
 
 /// Check a caller key name: `[a-z][a-z0-9_]*`, at most 64 characters — the
-/// same shape as an agent key name (`crate::agent_keys::validate_name`),
+/// same shape as an agent key name (`residuum_config::agent_keys::validate_name`),
 /// though nothing here maps onto an environment variable.
 ///
 /// # Errors

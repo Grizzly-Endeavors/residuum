@@ -6,13 +6,13 @@ use std::sync::Arc;
 
 use axum::Router;
 
-use crate::background::messaging::AgentMessenger;
-use crate::background::registry::SessionRegistry;
-use crate::bus::BusHandle;
-use crate::config::A2aConfig;
-use crate::config::WorkspaceLayout;
-use crate::skills::SharedSkillState;
-use crate::tunnel::TunnelStatus;
+use residuum_background::messaging::AgentMessenger;
+use residuum_background::registry::SessionRegistry;
+use residuum_bus::BusHandle;
+use residuum_config::A2aConfig;
+use residuum_config::WorkspaceLayout;
+use residuum_net::tunnel::TunnelStatus;
+use residuum_skills::SharedSkillState;
 
 use super::card::{CardRuntime, CardState, SharedCardState};
 use super::executor::SessionExecutor;
@@ -50,7 +50,7 @@ pub struct AgentA2aState {
     /// The relay tunnel's status. The card advertises the agent's relay
     /// address while the tunnel is connected, and follows the tunnel as it
     /// connects and disconnects.
-    pub(crate) tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
 }
 
 /// Aborts the task it holds when dropped, so a task tied to an [`AgentA2a`]
@@ -78,7 +78,7 @@ pub struct AgentA2a {
     pub public_url: String,
     /// The relay tunnel's status, for rebuilding the card on a workspace
     /// reload with the current relay address.
-    pub(crate) tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     /// Keeps the card's relay address current as the tunnel connects and
     /// disconnects; ends when this value is dropped.
     _card_url_watch: AbortOnDrop,
@@ -109,7 +109,7 @@ fn watch_card_url(
         mut tunnel_status_rx,
     } = watch;
     let mut applied = relay_a2a_base(&tunnel_status_rx.borrow_and_update());
-    AbortOnDrop(crate::util::spawn_in_span(async move {
+    AbortOnDrop(residuum_core::util::spawn_in_span(async move {
         while tunnel_status_rx.changed().await.is_ok() {
             let base = relay_a2a_base(&tunnel_status_rx.borrow_and_update());
             if base == applied {
@@ -202,7 +202,7 @@ pub async fn agent_a2a_router(state: AgentA2aState) -> anyhow::Result<AgentA2a> 
     let resume_store = Arc::clone(&task_store);
     let mut sessions_ready = state.sessions_ready;
     let agent = state.name;
-    crate::util::spawn_in_span(async move {
+    residuum_core::util::spawn_in_span(async move {
         if sessions_ready.wait_for(|ready| *ready).await.is_err() {
             tracing::error!(
                 agent = %agent,

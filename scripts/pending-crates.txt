@@ -1,4 +1,3 @@
-src/a2a/ residuum-a2a
 src/tools/ residuum-tools
 src/interfaces/ residuum-interfaces
 src/hub/ residuum-hub

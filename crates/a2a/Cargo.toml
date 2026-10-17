@@ -1,0 +1,66 @@
+[package]
+name = "residuum-a2a"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+residuum-core = { workspace = true }
+residuum-config = { workspace = true }
+residuum-bus = { workspace = true }
+residuum-agent = { workspace = true }
+residuum-background = { workspace = true }
+residuum-workspace = { workspace = true }
+residuum-inference = { workspace = true }
+residuum-skills = { workspace = true }
+residuum-proactivity = { workspace = true }
+residuum-net = { workspace = true }
+a2a = { workspace = true }
+a2a-server = { workspace = true }
+a2a-client = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+futures-util = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+ring = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
+residuum-config = { workspace = true, features = ["test-support"] }
+residuum-bus = { workspace = true, features = ["test-support"] }
+residuum-agent = { workspace = true, features = ["test-support"] }
+residuum-background = { workspace = true, features = ["test-support"] }
+residuum-workspace = { workspace = true, features = ["test-support"] }
+residuum-inference = { workspace = true, features = ["test-support"] }
+residuum-net = { workspace = true, features = ["test-support"] }
+residuum-proactivity = { workspace = true, features = ["test-support"] }
+ctor = { workspace = true }
+rustls = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[package.metadata.cargo-shear]
+# crates/core/src/testing/crypto.rs, which lib.rs includes by #[path], uses ctor and
+# rustls. cargo-shear reads a source file only for the package whose src/ directory
+# holds it, so it never sees the use here.
+ignored = ["ctor", "rustls"]

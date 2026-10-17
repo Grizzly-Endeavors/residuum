@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::sync::{Mutex, watch};
 
-use crate::remote_access::SecureDiscovery;
+use residuum_net::remote_access::SecureDiscovery;
 
 use super::hub::A2aClientHub;
 
@@ -154,11 +154,11 @@ impl SiblingFanout {
 /// happens at process shutdown); `fanout` and `secure_rx` survive a config
 /// reload, so one long-lived task spawned at gateway startup stays correct
 /// across reloads without needing to be respawned.
-pub(crate) fn spawn_sibling_discovery(
+pub fn spawn_sibling_discovery(
     fanout: Arc<SiblingFanout>,
     secure_rx: watch::Receiver<Option<Arc<SecureDiscovery>>>,
 ) {
-    crate::util::spawn_monitored("a2a-sibling-discovery", async move {
+    residuum_core::util::spawn_monitored("a2a-sibling-discovery", async move {
         run(fanout, secure_rx, DiscoveryTimings::default()).await;
     });
 }
@@ -304,7 +304,7 @@ mod tests {
     use axum::{Json, Router};
 
     use super::*;
-    use crate::a2a::client::hub::{AgentSnapshot, AgentSource, AgentStatus};
+    use crate::client::hub::{AgentSnapshot, AgentSource, AgentStatus};
     use residuum_core::testing::wait;
 
     /// A fanout with `hub` registered as agent `solo`.
@@ -418,7 +418,7 @@ mod tests {
             .with_state(Arc::clone(&relay));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             axum::serve(listener, app).await.ok();
         });
         (format!("http://{addr}"), relay)
@@ -461,7 +461,7 @@ mod tests {
         tokio::task::JoinHandle<()>,
     ) {
         let (tx, rx) = watch::channel(None);
-        let task = crate::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
+        let task = residuum_core::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
         (tx, task)
     }
 
@@ -639,7 +639,7 @@ mod tests {
         let address = format!("http://{}", refusing.local_addr().unwrap());
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = Arc::clone(&attempts);
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             while let Ok((connection, _)) = refusing.accept().await {
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 drop(connection);

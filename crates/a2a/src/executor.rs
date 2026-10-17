@@ -13,19 +13,21 @@ use a2a::{
 use a2a_server::{AgentExecutor, ExecutorContext};
 use futures_util::stream::BoxStream;
 
-use crate::background::messaging::{AgentMessenger, ConversationSpawn};
-use crate::background::registry::{SessionRegistry, conversation_session_address};
-use crate::bus::MessageEvent;
-use crate::bus::origin::{A2A_ENDPOINT, ConversationContext, ConversationKind, MessageOrigin};
-use crate::bus::session::SessionState;
-use crate::bus::{
+use residuum_background::messaging::{AgentMessenger, ConversationSpawn};
+use residuum_background::registry::{SessionRegistry, conversation_session_address};
+use residuum_bus::MessageEvent;
+use residuum_bus::origin::{A2A_ENDPOINT, ConversationContext, ConversationKind, MessageOrigin};
+use residuum_bus::session::SessionState;
+use residuum_bus::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, SessionEvent,
     SessionEventKind, topics,
 };
-use crate::config::ModelSelector;
-use crate::inbox::attachment::{self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image};
-use crate::inference::{ImageData, MessageSender};
-use crate::skills::SharedSkillState;
+use residuum_config::ModelSelector;
+use residuum_inference::{ImageData, MessageSender};
+use residuum_skills::SharedSkillState;
+use residuum_workspace::inbox::attachment::{
+    self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image,
+};
 
 use super::auth::CALLER_HEADER;
 use super::card::SharedCardState;
@@ -86,7 +88,7 @@ impl SessionExecutor {
     /// to. Shared with [`super::handler::ResiduumA2aHandler`] so the task
     /// metadata it records matches exactly what the executor delivers into.
     #[must_use]
-    pub fn address_for(caller: &str, context_id: &str) -> crate::bus::SessionAddress {
+    pub fn address_for(caller: &str, context_id: &str) -> residuum_bus::SessionAddress {
         conversation_session_address(A2A_ENDPOINT, &format!("{caller}/{context_id}"))
     }
 
@@ -97,7 +99,7 @@ impl SessionExecutor {
     async fn resolve_skill(
         &self,
         message: &A2aMessage,
-    ) -> (Option<crate::bus::SkillName>, Option<String>) {
+    ) -> (Option<residuum_bus::SkillName>, Option<String>) {
         let Some(requested) = message
             .metadata
             .as_ref()
@@ -119,7 +121,7 @@ impl SessionExecutor {
 
         let skill_state = self.skill_state.lock().await;
         if skill_state.index().find_by_name(requested).is_some() {
-            (Some(crate::bus::SkillName::from(requested)), None)
+            (Some(residuum_bus::SkillName::from(requested)), None)
         } else {
             (None, Some(format!("[Requested skill: {requested}]")))
         }
@@ -133,7 +135,7 @@ impl AgentExecutor for SessionExecutor {
     ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let executor = self.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(32);
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             run_execution(executor, ctx, tx).await;
         });
         Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {
@@ -205,8 +207,8 @@ fn artifact_update(task_id: &str, context_id: &str, artifact: Artifact) -> Strea
 /// Live subscriptions the executor follows for one execution, all opened
 /// before delivery so nothing the session does in response is missed.
 struct ExecutionSubscriptions {
-    sessions: crate::bus::Subscriber<SessionEvent>,
-    signals: crate::bus::Subscriber<A2aTaskSignalEvent>,
+    sessions: residuum_bus::Subscriber<SessionEvent>,
+    signals: residuum_bus::Subscriber<A2aTaskSignalEvent>,
 }
 
 async fn subscribe_before_delivery(
@@ -289,7 +291,7 @@ fn caller_display(caller: &str) -> (String, Option<&'static str>) {
 /// rules in `docs/systems-usage/a2a.md`.
 async fn deliver_inbound(
     executor: &SessionExecutor,
-    address: &crate::bus::SessionAddress,
+    address: &residuum_bus::SessionAddress,
     caller: &str,
     context_id: &str,
     message: &A2aMessage,
@@ -320,7 +322,7 @@ async fn deliver_inbound(
             }),
             agent_sender: None,
         },
-        timestamp: crate::time::now_local(executor.tz),
+        timestamp: residuum_core::time::now_local(executor.tz),
         images,
         context: None,
     };
@@ -342,7 +344,7 @@ async fn deliver_inbound(
 /// so the per-event helpers below take one argument for it instead of four.
 struct StreamCtx<'a> {
     executor: &'a SessionExecutor,
-    address: &'a crate::bus::SessionAddress,
+    address: &'a residuum_bus::SessionAddress,
     task_id: &'a str,
     context_id: &'a str,
     tx: &'a ExecutorSender,
@@ -355,7 +357,7 @@ struct StreamCtx<'a> {
 /// the channel to the caller) closed.
 async fn stream_until_terminal(
     executor: &SessionExecutor,
-    address: &crate::bus::SessionAddress,
+    address: &residuum_bus::SessionAddress,
     task_id: &str,
     context_id: &str,
     subs: &mut ExecutionSubscriptions,

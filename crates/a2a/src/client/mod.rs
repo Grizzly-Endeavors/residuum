@@ -7,7 +7,7 @@
 //!   caches their cards, and builds protocol clients on demand.
 //! - [`tracker`]'s [`RemoteTaskTracker`] persists and watches tasks this
 //!   instance started on other agents, delivering the outcome back through
-//!   [`crate::background::messaging::AgentMessenger`].
+//!   [`residuum_background::messaging::AgentMessenger`].
 //! - [`siblings`] watches the tunnel connection and registers this user's
 //!   other instances in the hub, discovered through the relay directory.
 
@@ -23,4 +23,4 @@ pub use hub::{A2aClientHub, AgentSnapshot, AgentSource, AgentStatus, HubError, N
 pub use tracker::RemoteTaskTracker;
 
 pub use siblings::SiblingFanout;
-pub(crate) use siblings::spawn_sibling_discovery;
+pub use siblings::spawn_sibling_discovery;

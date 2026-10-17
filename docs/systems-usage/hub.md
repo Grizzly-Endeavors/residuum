@@ -191,6 +191,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_protocol`: `protocol` and its `frames`, so `RUST_LOG=residuum_protocol::frames=trace` for the bus-to-frame conversions.
 - `residuum_notify`: `notify`, so `RUST_LOG=residuum_notify=trace` for the notification router and its channels.
 - `residuum_background`: `background`, so `RUST_LOG=residuum_background=trace` for agent sessions, or `RUST_LOG=residuum_background::team=trace` for the team router (its lines show as `background::team::router`).
+- `residuum_a2a`: `a2a` and `diagnostics_dispatch`, so `RUST_LOG=residuum_a2a=trace` for the A2A listener and the outbound client, or `RUST_LOG=residuum_a2a::client=trace` for the outbound client alone.
 - `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.
 

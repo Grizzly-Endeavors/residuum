@@ -11,7 +11,7 @@ use a2a_client::A2AClientFactory;
 use a2a_client::auth::AuthInterceptor;
 use tokio::sync::RwLock;
 
-use crate::agent_keys::SharedAgentKeys;
+use residuum_config::agent_keys::SharedAgentKeys;
 
 use super::config::{A2aAgentEntry, load_a2a_agents_map};
 
@@ -163,7 +163,7 @@ impl A2aClientHub {
     /// always wins a name collision, logged once at debug. A new or changed
     /// entry is queued for an immediate card fetch. A parse/read failure
     /// keeps the current agents and logs a warning, matching
-    /// `crate::workspace::config::load_mcp_servers_map`'s reload behavior.
+    /// `residuum_workspace::config::load_mcp_servers_map`'s reload behavior.
     pub async fn reload_from_file(&self, path: &std::path::Path, agent_keys: &SharedAgentKeys) {
         let snapshot = match agent_keys.snapshot().await {
             Ok(s) => s,
@@ -326,7 +326,7 @@ impl A2aClientHub {
     /// that owns the hub lets go of it.
     pub fn spawn_background_refresh(self: &Arc<Self>) {
         let hub = Arc::downgrade(self);
-        crate::util::spawn_monitored("a2a-hub-refresh", async move {
+        residuum_core::util::spawn_monitored("a2a-hub-refresh", async move {
             let mut interval = tokio::time::interval(REFRESH_TICK);
             loop {
                 interval.tick().await;
@@ -460,7 +460,7 @@ fn headers_client(
 /// impl (`TASK_STATE_*`), so a user reading `list_agents` or `outbound.json`
 /// sees a plain word rather than a protocol constant.
 #[must_use]
-pub(crate) fn task_state_str(state: &a2a::TaskState) -> &'static str {
+pub fn task_state_str(state: &a2a::TaskState) -> &'static str {
     match state {
         a2a::TaskState::Unspecified => "unspecified",
         a2a::TaskState::Submitted => "submitted",
@@ -477,7 +477,7 @@ pub(crate) fn task_state_str(state: &a2a::TaskState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_keys::AgentKeys;
+    use residuum_config::agent_keys::AgentKeys;
 
     fn agent_keys() -> (tempfile::TempDir, SharedAgentKeys) {
         let dir = tempfile::tempdir().unwrap();
@@ -494,13 +494,13 @@ mod tests {
                 "capabilities":{{"streaming":true}},"defaultInputModes":["text/plain"],
                 "defaultOutputModes":["text/plain"],"skills":[]}}"#
         );
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
                 let body = body.clone();
-                crate::util::spawn_in_span(async move {
+                residuum_core::util::spawn_in_span(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut buf = [0_u8; 4096];
                     let _read_result = socket.read(&mut buf).await;

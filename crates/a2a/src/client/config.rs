@@ -1,6 +1,6 @@
 //! `config/a2a.json`: the remote agents this instance's A2A client can
 //! reach, keyed by name. Loader modeled on
-//! `crate::workspace::config::load_mcp_servers_map`: a bad entry is skipped
+//! `residuum_workspace::config::load_mcp_servers_map`: a bad entry is skipped
 //! with a warning rather than failing the whole file. See
 //! `docs/systems-usage/a2a.md`.
 
@@ -10,13 +10,13 @@ use std::path::Path;
 use anyhow::Context as _;
 use serde::Deserialize;
 
-use crate::agent_keys::AgentKeyStore;
+use residuum_config::agent_keys::AgentKeyStore;
 
 /// Longest accepted agent name.
 const MAX_NAME_LEN: usize = 64;
 
 /// Check an agent name: `[a-z][a-z0-9_]*`, at most 64 characters — the same
-/// shape as an agent-key name (`crate::agent_keys::validate_name`), reused
+/// shape as an agent-key name (`residuum_config::agent_keys::validate_name`), reused
 /// here because `a2a:<name>` addresses live alongside other agent
 /// identifiers the model sees.
 #[must_use]
@@ -101,8 +101,8 @@ pub fn validate_a2a_agents_json(content: &str) -> Result<(), String> {
 /// — those need the agent-key store, which isn't available from content
 /// alone, matching [`validate_a2a_agents_json`]'s scope.
 #[must_use]
-pub fn diagnose_a2a_json(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
-    use crate::diagnostics::{Diagnostic, Location};
+pub fn diagnose_a2a_json(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
+    use residuum_core::diagnostics::{Diagnostic, Location};
 
     let file: A2aAgentsFile = match serde_json::from_str(content) {
         Ok(f) => f,
@@ -133,8 +133,8 @@ pub fn diagnose_a2a_json(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
 }
 
 /// Load `config/a2a.json` as a name → entry map, expanding
-/// `${agent-key:<name>}` (via `crate::agent_keys::expand_references`) and
-/// `${ENV}` (via `crate::util::expand_env_vars`, the same helper MCP
+/// `${agent-key:<name>}` (via `residuum_config::agent_keys::expand_references`) and
+/// `${ENV}` (via `residuum_core::util::expand_env_vars`, the same helper MCP
 /// server headers use) references in header values.
 ///
 /// An entry with an invalid name, an empty url, or a header referencing an
@@ -178,19 +178,20 @@ pub fn load_a2a_agents_map(
             }
             let mut headers = HashMap::with_capacity(raw.headers.len());
             for (key, value) in raw.headers {
-                let expanded = match crate::agent_keys::expand_references(&value, agent_keys) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            agent = %name,
-                            header = %key,
-                            error = %e,
-                            "a2a agent header references an agent key, skipping agent"
-                        );
-                        return None;
-                    }
-                };
-                headers.insert(key, crate::util::expand_env_vars(&expanded));
+                let expanded =
+                    match residuum_config::agent_keys::expand_references(&value, agent_keys) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                agent = %name,
+                                header = %key,
+                                error = %e,
+                                "a2a agent header references an agent key, skipping agent"
+                            );
+                            return None;
+                        }
+                    };
+                headers.insert(key, residuum_core::util::expand_env_vars(&expanded));
             }
             Some((
                 name.clone(),
@@ -210,7 +211,7 @@ pub fn load_a2a_agents_map(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_keys::KeyCreator;
+    use residuum_config::agent_keys::KeyCreator;
 
     fn keys_with(name: &str, value: &str) -> AgentKeyStore {
         let mut store = AgentKeyStore::default();
@@ -384,7 +385,7 @@ mod tests {
 
     #[test]
     fn diagnose_reports_syntax_error_with_line_column() {
-        use crate::diagnostics::Location;
+        use residuum_core::diagnostics::Location;
 
         let diagnostics = diagnose_a2a_json("not json");
         assert_eq!(diagnostics.len(), 1);

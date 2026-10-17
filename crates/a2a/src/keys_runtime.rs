@@ -1,6 +1,6 @@
 //! Shared runtime handle over the A2A caller-key store.
 //!
-//! Modeled on [`crate::agent_keys::AgentKeys`]: an in-process cache guarded
+//! Modeled on [`residuum_config::agent_keys::AgentKeys`]: an in-process cache guarded
 //! by an async mutex for writes, reloaded when the file's mtime/length
 //! changes, and an OS file lock around the read-modify-write cycle so the
 //! CLI, the web API, and the listener's auth layer never lose a concurrent
@@ -151,7 +151,7 @@ impl A2aKeys {
     {
         let _guard = self.write_lock.lock().await;
         let config_dir = self.config_dir.clone();
-        let (store, result) = crate::util::spawn_blocking_in_span(move || {
+        let (store, result) = residuum_core::util::spawn_blocking_in_span(move || {
             let _file_lock = lock_store_file(&config_dir)?;
             let mut store = A2aKeyStore::load(&config_dir)?;
             let result = change(&mut store)?;
@@ -172,7 +172,7 @@ impl A2aKeys {
 
     async fn load_blocking(&self) -> Result<A2aKeyStore, A2aKeyError> {
         let config_dir = self.config_dir.clone();
-        crate::util::spawn_blocking_in_span(move || A2aKeyStore::load(&config_dir))
+        residuum_core::util::spawn_blocking_in_span(move || A2aKeyStore::load(&config_dir))
             .await
             .map_err(|e| A2aKeyError::Storage(format!("A2A key load task failed: {e}")))?
     }

@@ -10,7 +10,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::A2aVisibility;
+use residuum_config::A2aVisibility;
 
 /// One skill declared in the workspace agent card file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +132,7 @@ pub struct CardRuntime {
     pub interfaces_base_url: String,
     /// Who may reach this agent without a caller key. Not reflected in the
     /// card's content — a private agent's card is simply never served to an
-    /// unauthenticated caller (see [`crate::a2a::auth`]) — but carried here
+    /// unauthenticated caller (see [`crate::auth`]) — but carried here
     /// so callers building the runtime don't need a second config lookup.
     pub visibility: A2aVisibility,
 }
@@ -146,7 +146,7 @@ impl CardRuntime {
     /// `/agents/<name>`.
     #[must_use]
     pub fn from_config(
-        a2a: &crate::config::A2aConfig,
+        a2a: &residuum_config::A2aConfig,
         gateway_bind: &str,
         agent_name: &str,
         relay_base: Option<&str>,
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn card_runtime_from_config_prefers_public_url() {
-        let a2a = crate::config::A2aConfig {
+        let a2a = residuum_config::A2aConfig {
             enabled: true,
             port: 7702,
             public_url: Some("https://example.com/a2a/laptop".to_string()),
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn card_runtime_from_config_falls_back_to_local_bind() {
-        let a2a = crate::config::A2aConfig {
+        let a2a = residuum_config::A2aConfig {
             enabled: true,
             port: 7702,
             public_url: None,
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn card_runtime_from_config_uses_the_relay_address_when_connected() {
-        let a2a = crate::config::A2aConfig {
+        let a2a = residuum_config::A2aConfig {
             enabled: true,
             port: 7702,
             public_url: None,
@@ -543,11 +543,11 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_default_agent_card_is_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::config::WorkspaceLayout::new(dir.path().join("workspace"));
+        let layout = residuum_config::WorkspaceLayout::new(dir.path().join("workspace"));
 
-        crate::workspace::bootstrap::ensure_workspace(
+        residuum_workspace::bootstrap::ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &residuum_workspace::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )

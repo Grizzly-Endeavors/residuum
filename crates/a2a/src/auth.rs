@@ -15,10 +15,10 @@ use axum::extract::Request;
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use crate::config::A2aVisibility;
+use residuum_config::A2aVisibility;
 
 use super::keys_runtime::SharedA2aKeys;
-use crate::remote_access::siblings::SiblingKeyVerifier;
+use residuum_net::remote_access::siblings::SiblingKeyVerifier;
 
 /// Header the auth layer injects with the resolved caller identity
 /// (`key:<name>` or `sibling:<slug>`). Stripped from every incoming request
@@ -155,7 +155,7 @@ pub async fn authorize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a2a::keys_runtime::A2aKeys;
+    use crate::keys_runtime::A2aKeys;
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
@@ -207,7 +207,7 @@ mod tests {
         (
             AuthState {
                 keys: Arc::new(keys),
-                sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
+                sibling_keys: Arc::new(residuum_net::remote_access::siblings::NoSiblings),
             },
             token,
         )
@@ -334,14 +334,14 @@ mod tests {
 
     /// A hub whose only credential is a joined sibling's key.
     async fn state_with_sibling_key(dir: &std::path::Path) -> (AuthState, String) {
-        let siblings = crate::remote_access::siblings::SiblingKeys::open(dir);
-        let inbound = crate::remote_access::siblings::issue_key();
+        let siblings = residuum_net::remote_access::siblings::SiblingKeys::open(dir);
+        let inbound = residuum_net::remote_access::siblings::issue_key();
         siblings
-            .upsert(crate::remote_access::siblings::NewSibling {
+            .upsert(residuum_net::remote_access::siblings::NewSibling {
                 slug: "desktop".to_string(),
                 display_name: "Desk".to_string(),
                 account_uri: "https://acme.test/acct/desktop".to_string(),
-                outbound_key: crate::remote_access::siblings::issue_key(),
+                outbound_key: residuum_net::remote_access::siblings::issue_key(),
                 inbound_key: inbound.clone(),
             })
             .await
@@ -404,7 +404,7 @@ mod tests {
             wrong.len() - 1..,
             if key.ends_with('a') { "b" } else { "a" },
         );
-        for token in [crate::remote_access::siblings::issue_key(), wrong] {
+        for token in [residuum_net::remote_access::siblings::issue_key(), wrong] {
             let req = Request::builder()
                 .method("POST")
                 .uri("/")
@@ -422,16 +422,16 @@ mod tests {
     #[tokio::test]
     async fn a_removed_sibling_key_stops_working_and_auth_check_follows_it() {
         let dir = tempfile::tempdir().unwrap();
-        let siblings = Arc::new(crate::remote_access::siblings::SiblingKeys::open(
+        let siblings = Arc::new(residuum_net::remote_access::siblings::SiblingKeys::open(
             dir.path(),
         ));
-        let inbound = crate::remote_access::siblings::issue_key();
+        let inbound = residuum_net::remote_access::siblings::issue_key();
         siblings
-            .upsert(crate::remote_access::siblings::NewSibling {
+            .upsert(residuum_net::remote_access::siblings::NewSibling {
                 slug: "desktop".to_string(),
                 display_name: "Desk".to_string(),
                 account_uri: "https://acme.test/acct/desktop".to_string(),
-                outbound_key: crate::remote_access::siblings::issue_key(),
+                outbound_key: residuum_net::remote_access::siblings::issue_key(),
                 inbound_key: inbound.clone(),
             })
             .await

@@ -11,7 +11,7 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 use axum::Router;
 
-use crate::background::team::{
+use residuum_background::team::{
     A2aVisibility, Actor, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome,
     LifecycleError, TeamDirectory,
 };
@@ -48,18 +48,21 @@ impl StaticAgentDirectory {
     }
 
     /// Move an agent to `state`, as a stop or failure would.
-    pub(crate) fn set_state(&self, name: &str, state: AgentState) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_state(&self, name: &str, state: AgentState) {
         self.change(name, |entry| entry.state = state);
     }
 
     /// Change an agent's A2A visibility.
-    pub(crate) fn set_visibility(&self, name: &str, visibility: A2aVisibility) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_visibility(&self, name: &str, visibility: A2aVisibility) {
         self.change(name, |entry| entry.visibility = visibility);
     }
 
     /// Add a running agent after construction, replacing one of the same
     /// name.
-    pub(crate) fn add_agent(&self, name: &str, visibility: A2aVisibility, router: Router) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn add_agent(&self, name: &str, visibility: A2aVisibility, router: Router) {
         self.agents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -74,13 +77,15 @@ impl StaticAgentDirectory {
     }
 
     /// Remove an agent.
-    pub(crate) fn remove_agent(&self, name: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn remove_agent(&self, name: &str) {
         self.agents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(name);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn change(&self, name: &str, apply: impl FnOnce(&mut Entry)) {
         if let Some(entry) = self
             .agents

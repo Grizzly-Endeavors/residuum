@@ -5001,6 +5001,7 @@ dependencies = [
  "rand 0.8.6",
  "regex",
  "reqwest 0.13.3",
+ "residuum-a2a",
  "residuum-agent",
  "residuum-background",
  "residuum-bus",
@@ -5043,6 +5044,46 @@ dependencies = [
  "uuid",
  "windows-sys 0.59.0",
  "wiremock",
+]
+
+[[package]]
+name = "residuum-a2a"
+version = "0.1.0"
+dependencies = [
+ "a2a-client-lf",
+ "a2a-lf",
+ "a2a-server-lf",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "futures-util",
+ "rand 0.8.6",
+ "reqwest 0.13.3",
+ "residuum-agent",
+ "residuum-background",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-net",
+ "residuum-proactivity",
+ "residuum-skills",
+ "residuum-workspace",
+ "ring",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

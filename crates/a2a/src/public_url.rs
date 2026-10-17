@@ -3,15 +3,15 @@
 //! the tunnel is connected (`{instance origin}/a2a/<name>`); otherwise the local listener address plus `/agents/<name>`.
 //! See `docs/systems-usage/a2a.md`.
 
-use crate::config::A2aConfig;
-use crate::remote_access::A2A_AGENTS_PATH_PREFIX;
-use crate::tunnel::TunnelStatus;
+use residuum_config::A2aConfig;
+use residuum_net::remote_access::A2A_AGENTS_PATH_PREFIX;
+use residuum_net::tunnel::TunnelStatus;
 
 /// The address other agents can use to reach `agent_name`, when one is
 /// configured: `[a2a] public_url` plus `/agents/<name>`. `None` when
 /// `public_url` is unset.
 #[must_use]
-pub(crate) fn known_a2a_public_url(a2a: &A2aConfig, agent_name: &str) -> Option<String> {
+pub fn known_a2a_public_url(a2a: &A2aConfig, agent_name: &str) -> Option<String> {
     a2a.public_url.as_ref().map(|url| {
         format!(
             "{}{A2A_AGENTS_PATH_PREFIX}/{agent_name}",
@@ -24,7 +24,7 @@ pub(crate) fn known_a2a_public_url(a2a: &A2aConfig, agent_name: &str) -> Option<
 /// once it is connected: the instance's own host, `{instance origin}/a2a`. An
 /// agent's own address appends `/<name>`.
 #[must_use]
-pub(crate) fn relay_a2a_base(status: &TunnelStatus) -> Option<String> {
+pub fn relay_a2a_base(status: &TunnelStatus) -> Option<String> {
     let TunnelStatus::Connected {
         instance_origin: Some(instance_origin),
         ..
@@ -38,7 +38,7 @@ pub(crate) fn relay_a2a_base(status: &TunnelStatus) -> Option<String> {
 /// `agent_name`'s address on the relay: `relay_base` (see
 /// [`relay_a2a_base`]) plus `/<name>`.
 #[must_use]
-pub(crate) fn relay_agent_url(relay_base: &str, agent_name: &str) -> String {
+pub fn relay_agent_url(relay_base: &str, agent_name: &str) -> String {
     format!("{}/{agent_name}", relay_base.trim_end_matches('/'))
 }
 
@@ -65,7 +65,7 @@ pub(crate) fn resolve_a2a_public_url(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::A2aVisibility;
+    use residuum_config::A2aVisibility;
 
     fn cfg(public_url: Option<&str>) -> A2aConfig {
         A2aConfig {

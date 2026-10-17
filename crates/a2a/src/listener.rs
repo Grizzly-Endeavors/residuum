@@ -1,6 +1,6 @@
 //! The hub's dedicated A2A protocol listener: one port, every agent under
 //! `/agents/{name}/`, authenticated per request. Each agent's routes come
-//! from [`crate::background::team::TeamDirectory::agent_a2a_router`]. See
+//! from [`residuum_background::team::TeamDirectory::agent_a2a_router`]. See
 //! `docs/systems-usage/a2a.md`.
 
 use std::sync::Arc;
@@ -22,14 +22,14 @@ use axum::response::{IntoResponse, Response};
 use futures_util::stream::BoxStream;
 use tower::ServiceExt as _;
 
-use crate::background::team::{self, LifecycleError, TeamDirectory};
-use crate::config::A2aVisibility;
+use residuum_background::team::{self, LifecycleError, TeamDirectory};
+use residuum_config::A2aVisibility;
 
 use super::auth::{Admission, AuthState, authorize};
 use super::card::SharedCardState;
 use super::keys_runtime::SharedA2aKeys;
-use crate::remote_access::A2A_AGENTS_PATH_PREFIX;
-use crate::remote_access::siblings::{NoSiblings, SiblingKeyVerifier};
+use residuum_net::remote_access::A2A_AGENTS_PATH_PREFIX;
+use residuum_net::remote_access::siblings::{NoSiblings, SiblingKeyVerifier};
 
 /// A [`a2a_server::RequestHandler`] that refuses every operation with
 /// `A2AError::unsupported_operation`. Production wiring uses

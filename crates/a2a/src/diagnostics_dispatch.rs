@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::diagnostics::Diagnostic;
+use residuum_core::diagnostics::Diagnostic;
 
 /// The directories `diagnose` needs to resolve which file a path refers to
 /// and, for `config.toml`/`providers.toml`, to validate against the sibling
@@ -76,7 +76,7 @@ fn recognize(path: &Path, paths: &DiagnosticsPaths) -> Option<FileKind> {
         return Some(FileKind::ProvidersToml);
     }
 
-    let layout = crate::config::WorkspaceLayout::new(&paths.workspace_dir);
+    let layout = residuum_config::WorkspaceLayout::new(&paths.workspace_dir);
     if paths_match(path, &layout.channels_toml()) {
         return Some(FileKind::ChannelsToml);
     }
@@ -117,24 +117,26 @@ pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<
     let kind = recognize(path, paths)?;
 
     Some(match kind {
-        FileKind::HubConfigToml => crate::config::HubConfig::diagnose_toml(content, &paths.hub_dir),
+        FileKind::HubConfigToml => {
+            residuum_config::HubConfig::diagnose_toml(content, &paths.hub_dir)
+        }
         FileKind::ConfigToml | FileKind::ProvidersToml => {
             let agent_name = paths
                 .workspace_dir
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
-            match crate::config::HubConfig::load_at(&paths.hub_dir) {
+            match residuum_config::HubConfig::load_at(&paths.hub_dir) {
                 Ok(hub) => {
                     if matches!(kind, FileKind::ConfigToml) {
-                        crate::config::Config::diagnose_agent_toml(
+                        residuum_config::Config::diagnose_agent_toml(
                             content,
                             &paths.workspace_dir,
                             agent_name,
                             &hub,
                         )
                     } else {
-                        crate::config::Config::diagnose_agent_providers_toml(
+                        residuum_config::Config::diagnose_agent_providers_toml(
                             content,
                             &paths.workspace_dir,
                             agent_name,
@@ -147,11 +149,11 @@ pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<
                 ))],
             }
         }
-        FileKind::ChannelsToml => crate::workspace::config::diagnose_channels_toml(content),
-        FileKind::McpJson => crate::workspace::config::diagnose_mcp_json(content),
-        FileKind::A2aJson => crate::a2a::client::config::diagnose_a2a_json(content),
-        FileKind::Heartbeat => crate::pulse::types::diagnose_heartbeat(content),
-        FileKind::SkillMd => crate::skills::diagnose_skill_md(content),
+        FileKind::ChannelsToml => residuum_workspace::config::diagnose_channels_toml(content),
+        FileKind::McpJson => residuum_workspace::config::diagnose_mcp_json(content),
+        FileKind::A2aJson => crate::client::config::diagnose_a2a_json(content),
+        FileKind::Heartbeat => residuum_proactivity::pulse::types::diagnose_heartbeat(content),
+        FileKind::SkillMd => residuum_skills::diagnose_skill_md(content),
     })
 }
 
@@ -174,7 +176,7 @@ fn paths_match(path: &Path, target: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::Severity;
+    use residuum_core::diagnostics::Severity;
 
     #[test]
     fn diagnose_returns_none_for_unrelated_file() {

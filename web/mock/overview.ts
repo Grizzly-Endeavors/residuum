@@ -33,7 +33,7 @@ export const PREVIEW_CHARS = 200;
 /** The most runs an overview lists as upcoming: `MOST_UPCOMING` in `src/hub/overview/upcoming.rs`. */
 export const MOST_UPCOMING = 3;
 
-/** How long an agent must stay unreachable before its task is a problem, in milliseconds: `UNREACHABLE_NOTICE_AFTER` in `src/a2a/client/tracker.rs`. */
+/** How long an agent must stay unreachable before its task is a problem, in milliseconds: `UNREACHABLE_NOTICE_AFTER` in `crates/a2a/src/client/tracker.rs`. */
 export const OUTBOUND_NOTICE_MS = 600_000;
 
 /** Added to the wait for a task to pass the notice threshold, so the clock has passed it when the wait ends. */

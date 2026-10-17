@@ -15,13 +15,13 @@ use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::background::messaging::{AgentMessenger, DeliveryOutcome};
-use crate::bus::remote_task::{TrackedTask, UNREACHABLE_NOTICE_AFTER};
-use crate::bus::session::MAIN_ADDRESS;
-use crate::bus::{
+use residuum_background::messaging::{AgentMessenger, DeliveryOutcome};
+use residuum_bus::remote_task::{TrackedTask, UNREACHABLE_NOTICE_AFTER};
+use residuum_bus::session::MAIN_ADDRESS;
+use residuum_bus::{
     NoticeEvent, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress, topics,
 };
-use crate::inbox::attachment::{self, AttachmentInfo};
+use residuum_workspace::inbox::attachment::{self, AttachmentInfo};
 
 use super::hub::{A2aClientHub, HubError, task_state_str};
 
@@ -159,7 +159,7 @@ impl RemoteTaskTracker {
     async fn persist(&self, snapshot: &OutboundStore) {
         match serde_json::to_vec_pretty(snapshot) {
             Ok(bytes) => {
-                if let Err(e) = crate::util::fs::atomic_write(&self.path, bytes).await {
+                if let Err(e) = residuum_core::util::fs::atomic_write(&self.path, bytes).await {
                     tracing::error!(error = %e, path = %self.path.display(), "failed to persist a2a outbound tasks");
                 }
             }
@@ -187,7 +187,7 @@ impl RemoteTaskTracker {
 
     fn spawn_watch(self: &Arc<Self>, task_id: String) {
         let tracker = Arc::clone(self);
-        crate::util::spawn_monitored("a2a-task-watch", async move {
+        residuum_core::util::spawn_monitored("a2a-task-watch", async move {
             let shutdown = tracker.shutdown.clone();
             tokio::select! {
                 () = shutdown.cancelled() => {}
@@ -966,15 +966,15 @@ impl RemoteTaskTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a2a::client::hub::AgentSource;
-    use crate::agent::hop::HopLimits;
-    use crate::background::registry::SessionRegistry;
-    use crate::background::store::SessionStore;
+    use crate::client::hub::AgentSource;
+    use residuum_agent::hop::HopLimits;
+    use residuum_background::registry::SessionRegistry;
+    use residuum_background::store::SessionStore;
     use residuum_bus::testing::bus_barrier;
     use residuum_core::testing::wait;
 
-    fn messenger() -> (Arc<AgentMessenger>, crate::bus::BusHandle) {
-        let bus_handle = crate::bus::spawn_broker();
+    fn messenger() -> (Arc<AgentMessenger>, residuum_bus::BusHandle) {
+        let bus_handle = residuum_bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()).with_tempdir_guard(dir));
@@ -1568,8 +1568,8 @@ mod tests {
     /// The task events queued on `events` right now. A bus barrier first
     /// routes everything published before this call.
     async fn task_events_now(
-        bus: &crate::bus::BusHandle,
-        events: &mut crate::bus::Subscriber<OutboundA2aTaskEvent>,
+        bus: &residuum_bus::BusHandle,
+        events: &mut residuum_bus::Subscriber<OutboundA2aTaskEvent>,
     ) -> Vec<TrackedTask> {
         bus_barrier(bus).await;
         events.drain().into_iter().map(|event| event.task).collect()
@@ -1577,8 +1577,8 @@ mod tests {
 
     /// The one task event queued on `events` right now.
     async fn the_task_event(
-        bus: &crate::bus::BusHandle,
-        events: &mut crate::bus::Subscriber<OutboundA2aTaskEvent>,
+        bus: &residuum_bus::BusHandle,
+        events: &mut residuum_bus::Subscriber<OutboundA2aTaskEvent>,
         what: &str,
     ) -> TrackedTask {
         let mut seen = task_events_now(bus, events).await;
@@ -1664,7 +1664,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (messenger, bus) = messenger();
         let mut to_main = bus
-            .subscribe::<_, crate::bus::MessageEvent>(topics::UserMessage)
+            .subscribe::<_, residuum_bus::MessageEvent>(topics::UserMessage)
             .await
             .unwrap();
         let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;

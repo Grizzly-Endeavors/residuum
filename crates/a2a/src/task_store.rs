@@ -12,7 +12,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use crate::util::fs::atomic_write;
+use residuum_core::util::fs::atomic_write;
 
 /// Task metadata key recording the caller (`key:<name>` | `sibling:<slug>`)
 /// a task belongs to, checked by [`super::handler::ResiduumA2aHandler`] on
@@ -290,7 +290,7 @@ impl a2a_server::TaskStore for FileTaskStore {
 /// newtype rather than `impl TaskStore for SharedTaskStore` directly: `Arc`
 /// isn't `#[fundamental]`, so the orphan rules refuse a foreign trait on a
 /// foreign `Arc<Local>` even though the pointee is local.
-pub(crate) struct DelegatingTaskStore(pub(crate) SharedTaskStore);
+pub struct DelegatingTaskStore(pub SharedTaskStore);
 
 #[async_trait]
 impl a2a_server::TaskStore for DelegatingTaskStore {
