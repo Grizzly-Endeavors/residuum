@@ -221,14 +221,7 @@ fn build_request(
             }
             messages.push(Message {
                 role,
-                content: m.content.clone(),
-                tool_calls: None,
-                tool_call_id: None,
-                images: m.images.clone(),
-                sender: None,
-                agent_sender: None,
-                thinking: Vec::new(),
-                id: None,
+                ..Message::user_with_images(m.content.clone(), m.images.clone())
             });
         }
     } else {

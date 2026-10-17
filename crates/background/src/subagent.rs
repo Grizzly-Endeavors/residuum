@@ -55,9 +55,16 @@ pub(crate) enum TurnKickoff {
         images: Vec<ImageData>,
         /// The agent messages a resume delivers: the turn opens with each
         /// as its own entry, after `context` and ahead of `prompt` (which
-        /// then holds only the resume's other input), and reports each as
-        /// read. Empty for every other trigger.
+        /// then holds only the resume's chat messages, combined, or is
+        /// empty), and reports each as read. Empty for every other trigger.
         delivered: Vec<AgentMessageEvent>,
+        /// Whether this is a resume whose `prompt` is the chat messages it
+        /// delivers, combined (see
+        /// [`super::types::SubAgentConfig::delivered_chat_messages`]). Such a
+        /// resume opens with `context` as its own entry, as one with
+        /// `delivered` messages does, even when it delivers no agent
+        /// messages. `false` for every other trigger.
+        resumed_by_chat: bool,
     },
     /// A later turn, started because another agent's message reached this
     /// session while it was idle.
@@ -101,12 +108,16 @@ impl TurnKickoff {
                 sender,
                 images,
                 delivered,
+                resumed_by_chat,
                 ..
-            } if !delivered.is_empty() => {
+            } if !delivered.is_empty() || resumed_by_chat => {
                 // A resume by messages: the pointer to the previous run, then
-                // each message as its own entry with its own id and sender,
-                // then whatever conversation input came with them.
-                let mut msgs: Vec<Message> = context.into_iter().map(Message::user).collect();
+                // each agent message as its own entry with its own id and
+                // sender, then the chat messages that came with them.
+                let mut msgs: Vec<Message> = context
+                    .into_iter()
+                    .map(|ctx| Message::user(ctx).as_context())
+                    .collect();
                 msgs.extend(delivered.iter().map(AgentMessageEvent::to_history_message));
                 if !prompt.is_empty() || !images.is_empty() {
                     let user = if images.is_empty() {
@@ -150,7 +161,7 @@ impl TurnKickoff {
             } => {
                 let mut msgs = Vec::new();
                 if let Some(ctx) = context {
-                    msgs.push(Message::system(ctx));
+                    msgs.push(Message::system(ctx).as_context());
                 }
                 let user = if images.is_empty() {
                     Message::user(prompt)
@@ -521,6 +532,7 @@ mod tests {
             sender: None,
             images: Vec::new(),
             delivered: Vec::new(),
+            resumed_by_chat: false,
         }
     }
 
@@ -722,6 +734,7 @@ mod tests {
              identity, wiki, and skills belong in the system message, assembled once \
              by execute_turn, not duplicated here"
         );
+        assert!(!first.context, "a task's own framing is not context");
     }
 
     #[tokio::test]
@@ -782,6 +795,7 @@ mod tests {
                 sender: Some(sample_sender()),
                 images: Vec::new(),
                 delivered: Vec::new(),
+                resumed_by_chat: false,
             },
             &mut recent_messages,
             &resources,
@@ -819,6 +833,7 @@ mod tests {
                 sender: Some(sample_sender()),
                 images: Vec::new(),
                 delivered: Vec::new(),
+                resumed_by_chat: false,
             },
             &mut recent_messages,
             &resources,
@@ -839,8 +854,10 @@ mod tests {
         };
         assert_eq!(context.role, residuum_inference::Role::System);
         assert_eq!(context.content, "[14:00] Sam: build is red");
+        assert!(context.context, "the context entry is marked as context");
         assert_eq!(user.role, residuum_inference::Role::User);
         assert_eq!(user.content, "thoughts?");
+        assert!(!user.context, "the message itself is not context");
     }
 
     #[tokio::test]
@@ -864,6 +881,7 @@ mod tests {
                 sender: None,
                 images: vec![image.clone()],
                 delivered: Vec::new(),
+                resumed_by_chat: false,
             },
             &mut recent_messages,
             &resources,
@@ -913,6 +931,7 @@ mod tests {
                 sender: None,
                 images: Vec::new(),
                 delivered: vec![owner.clone(), teammate.clone()],
+                resumed_by_chat: true,
             },
             &mut recent_messages,
             &resources,
@@ -932,7 +951,13 @@ mod tests {
             panic!("expected context, two messages and the rest, got {messages:?}");
         };
         assert_eq!(context.content, "[Resumed session] previous run");
+        assert_eq!(context.role, residuum_inference::Role::User);
+        assert!(context.context, "the resume pointer is marked as context");
         assert_eq!(context.id, None);
+        assert!(
+            !first.context && !second.context && !rest.context,
+            "the messages a resume delivers are not context"
+        );
         assert_eq!(first.id.as_deref(), Some("m-owner"));
         assert_eq!(first.content, owner.format_for_agent());
         assert_eq!(first.agent_sender, None, "the owner is not an agent");
@@ -943,6 +968,49 @@ mod tests {
         );
         assert_eq!(rest.content, "[From: Jane via discord (#builds)] any news?");
         assert_eq!(rest.id, None);
+    }
+
+    #[tokio::test]
+    async fn a_resume_by_chat_messages_alone_opens_with_its_pointer_as_its_own_entry() {
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+
+        execute_subagent(
+            &test_identity("run-resume-chat"),
+            TurnKickoff::Initial {
+                prompt: "[From: Jane via discord (#builds)] any news?".to_string(),
+                context: Some("[Resumed session] previous run".to_string()),
+                hop_count: 0,
+                sender: None,
+                images: Vec::new(),
+                delivered: Vec::new(),
+                resumed_by_chat: true,
+            },
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                usage_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let messages = recent_messages.messages();
+        let [context, chat, reply] = messages else {
+            panic!("expected context, the chat messages and the reply, got {messages:?}");
+        };
+        assert_eq!(context.role, residuum_inference::Role::User);
+        assert_eq!(context.content, "[Resumed session] previous run");
+        assert!(context.context, "the resume pointer is marked as context");
+        assert_eq!(chat.role, residuum_inference::Role::User);
+        assert_eq!(chat.content, "[From: Jane via discord (#builds)] any news?");
+        assert!(!chat.context, "the chat messages are not context");
+        assert_eq!(reply.role, residuum_inference::Role::Assistant);
     }
 
     #[tokio::test]

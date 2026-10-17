@@ -599,6 +599,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                     images: event.images,
                     carried_history: event.carried_history,
                     delivered_messages: event.delivered_messages,
+                    delivered_chat_messages: event.delivered_chat_messages,
                 },
                 conversation_target: event.conversation,
                 overlap: event.overlap,

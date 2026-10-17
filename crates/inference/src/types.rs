@@ -56,6 +56,14 @@ pub struct Message {
     /// entry to that message. `None` for every other entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Whether this entry is context the agent reads with a turn's opening
+    /// messages rather than a message anyone sent: a resumed session's
+    /// pointer to its previous run, a conversation session's note on how its
+    /// chat hears it, the earlier conversation an interface supplies. The
+    /// agent reads it like any other entry; a reader that shows the
+    /// conversation to a person leaves it out, since nobody said it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context: bool,
 }
 
 /// One piece of a model's reasoning, as its provider returned it.
@@ -288,6 +296,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            context: false,
         }
     }
 
@@ -304,6 +313,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            context: false,
         }
     }
 
@@ -320,6 +330,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            context: false,
         }
     }
 
@@ -336,6 +347,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            context: false,
         }
     }
 
@@ -352,6 +364,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            context: false,
         }
     }
 
@@ -372,6 +385,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            context: false,
         }
     }
 
@@ -393,6 +407,14 @@ impl Message {
     #[must_use]
     pub fn with_id(mut self, id: Option<String>) -> Self {
         self.id = id;
+        self
+    }
+
+    /// Mark this entry as context the agent reads rather than a message
+    /// anyone sent (see [`Self::context`]).
+    #[must_use]
+    pub fn as_context(mut self) -> Self {
+        self.context = true;
         self
     }
 
@@ -786,6 +808,24 @@ mod tests {
         assert_eq!(without_id.id, None);
         let plain = serde_json::to_value(Message::user("hi")).unwrap();
         assert!(plain.get("id").is_none(), "absent id is not serialized");
+    }
+
+    #[test]
+    fn context_mark_round_trips_and_is_optional_on_disk() {
+        let msg = Message::user("[Resumed session] previous run").as_context();
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json.get("context"), Some(&serde_json::Value::Bool(true)));
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert!(back.context);
+
+        // A transcript entry without the mark loads as an ordinary message.
+        let unmarked: Message = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        assert!(!unmarked.context);
+        let plain = serde_json::to_value(Message::user("hi")).unwrap();
+        assert!(
+            plain.get("context").is_none(),
+            "an unmarked entry is not serialized with the mark"
+        );
     }
 
     #[test]

@@ -198,7 +198,8 @@ impl MessageEvent {
     }
 
     /// The messages this adds to conversation history: its background
-    /// context (if any) as a system message, then the user message itself.
+    /// context (if any) as a system message marked as context, then the user
+    /// message itself.
     #[must_use]
     pub fn into_history_messages(self) -> Vec<Message> {
         let user = if self.images.is_empty() {
@@ -207,7 +208,7 @@ impl MessageEvent {
             Message::user_with_images(self.content, self.images)
         };
         self.context
-            .map(Message::system)
+            .map(|context| Message::system(context).as_context())
             .into_iter()
             .chain(std::iter::once(
                 user.with_sender(self.origin.sender)
@@ -659,10 +660,18 @@ pub struct SpawnRequestEvent {
     /// The agent messages a resume delivers as the new run's opening input.
     /// The run opens with each as its own history entry, carrying its id and
     /// sender, after `context` and ahead of `prompt`, which holds only the
-    /// resume's other input (empty when there is none). Its first turn
+    /// resume's chat messages combined (empty when there are none). Its first turn
     /// publishes a [`SessionEventKind::MessageRead`] for each. Empty for
     /// every other request.
     pub delivered_messages: Vec<AgentMessageEvent>,
+    /// The conversation's chat messages a resume delivers as the new run's
+    /// opening input, in the order they arrived. A resume by messages makes
+    /// its `prompt` from these alone, combined, which is how the new run
+    /// reads them. A resume that loses
+    /// the race for its address delivers each into the run that won it as
+    /// the chat message it is, the way a conversation's message reaches a
+    /// running conversation session. Empty for every other request.
+    pub delivered_chat_messages: Vec<MessageEvent>,
 }
 
 /// Marks a pulse fire that started while an earlier fire of the same pulse
@@ -1631,7 +1640,12 @@ mod tests {
         };
         assert_eq!(context.role, Role::System);
         assert_eq!(context.content, "[14:05] Sam: build is red");
+        assert!(
+            context.context,
+            "the background context is marked as context"
+        );
         assert_eq!(user.role, Role::User);
+        assert!(!user.context, "the message itself is not context");
         assert_eq!(user.content, "can you check the build?");
         assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
     }

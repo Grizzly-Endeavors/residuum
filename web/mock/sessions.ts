@@ -279,6 +279,13 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
   return session;
 }
 
+/** The note telling a resumed session where its previous run went, as the backend writes it. */
+function resumePointer(prev: SessionSummary): string {
+  return prev.episode_id === null
+    ? `[Resumed session] Your previous run (${prev.run_id}) produced no episode — retrieve its transcript with memory_get using that run id if useful.`
+    : `[Resumed session] Your previous run (${prev.run_id}) was merged as episode ${prev.episode_id} — retrieve it with memory_get if useful.`;
+}
+
 /** Bring a finished session back as a new run, whose first turn reads `messages`. */
 function resumeRun(
   state: MockState,
@@ -300,6 +307,13 @@ function resumeRun(
   sessions.live.unshift(session);
   state.broadcast({ type: "session_started", session });
   state.env.after(400, () => {
+    // The pointer to the previous run opens the transcript as context the
+    // session reads, which the panel never draws.
+    recordMessage(state, session, {
+      role: "user",
+      content: resumePointer(prev),
+      context: true,
+    });
     runSessionTurn(state, session, "Picking this back up.", options.messages);
   });
   return session;

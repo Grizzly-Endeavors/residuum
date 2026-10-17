@@ -160,6 +160,7 @@ async fn publish_action_spawn(
         carried_history: Vec::new(),
         fire_id: None,
         delivered_messages: Vec::new(),
+        delivered_chat_messages: Vec::new(),
     };
 
     match publisher.publish(topics::Background, spawn_event).await {

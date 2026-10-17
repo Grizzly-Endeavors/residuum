@@ -455,6 +455,7 @@ pub(crate) async fn api_session_start(
         carried_history: Vec::new(),
         fire_id: None,
         delivered_messages: Vec::new(),
+        delivered_chat_messages: Vec::new(),
     };
     if let Err(e) = state.publisher.publish(topics::Background, event).await {
         tracing::warn!(artifact = %artifact, address = %address, error = %e, "failed to publish an artifact's session start");
@@ -1010,6 +1011,42 @@ mod tests {
             wire.get(1).and_then(|m| m.get("id")),
             Some(&serde_json::json!("m-owner-7")),
             "{wire}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transcript_carries_the_context_mark_the_panel_leaves_entries_out_by() {
+        let (state, _dir) = state();
+        let run = info("spawned-c-0001", "run-c", EventTrigger::Agent, 0);
+        state.store.begin_run(&run).await;
+        state
+            .store
+            .complete_run(
+                &run,
+                "completed",
+                &residuum_bus::AgentResultStatus::Completed,
+                vec![
+                    Message::user("[Resumed session] previous run").as_context(),
+                    Message::user("any news?"),
+                ],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let Json(body) = api_session_transcript(State(state.clone()), Path("run-c".to_string()))
+            .await
+            .unwrap();
+
+        let wire = serde_json::to_value(&body.messages).unwrap();
+        assert_eq!(
+            wire.get(0).and_then(|m| m.get("context")),
+            Some(&serde_json::json!(true)),
+            "the resume pointer is marked as context: {wire}"
+        );
+        assert!(
+            wire.get(1).and_then(|m| m.get("context")).is_none(),
+            "an ordinary message carries no mark: {wire}"
         );
     }
 

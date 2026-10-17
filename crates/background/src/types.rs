@@ -57,6 +57,10 @@ pub struct SubAgentConfig {
     /// The agent messages a resume delivers as this run's opening input. See
     /// [`residuum_bus::SpawnRequestEvent::delivered_messages`].
     pub delivered_messages: Vec<residuum_bus::AgentMessageEvent>,
+    /// The conversation's chat messages a resume delivers as this run's
+    /// opening input, which `prompt` holds combined. See
+    /// [`residuum_bus::SpawnRequestEvent::delivered_chat_messages`].
+    pub delivered_chat_messages: Vec<MessageEvent>,
 }
 
 impl SubAgentConfig {

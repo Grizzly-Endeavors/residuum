@@ -423,6 +423,7 @@ impl Tool for SubagentSpawnTool {
             carried_history: Vec::new(),
             fire_id: None,
             delivered_messages: Vec::new(),
+            delivered_chat_messages: Vec::new(),
         };
 
         self.deps.publisher

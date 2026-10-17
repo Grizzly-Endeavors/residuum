@@ -174,6 +174,12 @@ impl AgentMessenger {
         &self.publisher
     }
 
+    /// The session store this messenger records delivery notes in, shared
+    /// with the spawn listener's deferred deliveries.
+    pub(crate) fn store(&self) -> &Arc<SessionStore> {
+        &self.store
+    }
+
     /// Recover the hop count of an agent message delivered to main, given
     /// the `MessageEvent.id` it arrived under. Removes the entry on read.
     /// Returns `0` for any id this messenger never published under — a
@@ -458,26 +464,19 @@ impl AgentMessenger {
         point: &ResumePoint,
         msg: AgentMessageEvent,
     ) -> Result<(), SendError> {
-        let hop_count = msg.hop_count;
-        publish_resume(
-            &self.publisher,
-            address,
-            point,
-            String::new(),
-            hop_count,
-            Vec::new(),
-            vec![msg],
-        )
-        .await
+        publish_resume(&self.publisher, address, point, ResumeOpening::agent(msg)).await
     }
 
     /// Resume a session as a new run with several buffered messages (agent
     /// messages, conversation messages, or a mix — anything that can land in
     /// a session's interrupt channel) as its opening input. Each agent
     /// message opens the run as its own entry, with its own id and sender;
-    /// the conversation messages are combined into one prompt after them.
-    /// The resumed run's hop count is the highest hop count among the
-    /// messages — together they're the inputs driving its first turn.
+    /// the conversation messages are combined into one prompt after them,
+    /// and carried as they are too, so a resume that loses the race for the
+    /// address delivers each as the chat message it is (see
+    /// `crate::listener::deliver_losing_resume`). The resumed run's hop
+    /// count is the highest hop count among the messages — together they're
+    /// the inputs driving its first turn.
     ///
     /// Used when a run's own interrupt channel still holds messages at the
     /// moment its teardown drains it (see
@@ -506,23 +505,22 @@ impl AgentMessenger {
             .max()
             .unwrap_or(0);
         let images = pending.iter().flat_map(PendingInput::images).collect();
-        let delivered = pending
-            .iter()
-            .filter_map(|input| match input {
-                PendingInput::Agent(msg) => Some(msg.clone()),
-                PendingInput::External(_) => None,
-            })
-            .collect();
-        publish_resume(
-            &self.publisher,
-            address,
-            point,
-            combined,
+        let mut agent_messages = Vec::new();
+        let mut chat_messages = Vec::new();
+        for input in pending {
+            match input {
+                PendingInput::Agent(msg) => agent_messages.push(msg.clone()),
+                PendingInput::External(msg) => chat_messages.push(msg.clone()),
+            }
+        }
+        let opening = ResumeOpening {
+            prompt: combined,
             hop_count,
             images,
-            delivered,
-        )
-        .await
+            agent_messages,
+            chat_messages,
+        };
+        publish_resume(&self.publisher, address, point, opening).await
     }
 
     /// Deliver an inbound conversation message to its session by its
@@ -725,6 +723,7 @@ async fn publish_conversation_spawn(
         carried_history: Vec::new(),
         fire_id: None,
         delivered_messages: Vec::new(),
+        delivered_chat_messages: Vec::new(),
     };
     publisher
         .publish(topics::Background, event)
@@ -767,6 +766,7 @@ async fn publish_conversation_resume(
         carried_history: Vec::new(),
         fire_id: None,
         delivered_messages: Vec::new(),
+        delivered_chat_messages: Vec::new(),
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
         tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
@@ -846,6 +846,108 @@ pub(crate) async fn retry_race_guard_user_message(
                 return;
             }
         }
+    }
+}
+
+/// Deliver a resume's conversation messages, in order, into the run at
+/// `address` that won the race for it, each as the
+/// [`Interrupt::UserMessage`] a conversation's message is when it reaches a
+/// running conversation session, so the session reads each with its own
+/// sender rather than as an agent message.
+///
+/// A chat user's message is never dropped for losing a race: from the first
+/// one that can't be delivered at once (the winning run's channel is
+/// saturated, or that run is tearing down or gone), it and every one after
+/// it go to a detached task that delivers them one at a time, in order, the
+/// way [`AgentMessenger::deliver_conversation`]'s deferred branch delivers a
+/// conversation message (see [`deferred_conversation_resume`]); `spawn`
+/// starts the session if it somehow has no resume point by then.
+pub(crate) fn deliver_chat_messages_in_order(
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
+    address: &SessionAddress,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    let mut chat_messages = chat_messages.into_iter();
+    while let Some(msg) = chat_messages.next() {
+        let outcome = registry.deliver(address, Interrupt::UserMessage(msg.clone()));
+        if matches!(outcome, DeliverOutcome::Delivered) {
+            continue;
+        }
+        let undelivered: Vec<MessageEvent> = std::iter::once(msg).chain(chat_messages).collect();
+        tracing::warn!(
+            address = %address,
+            ?outcome,
+            count = undelivered.len(),
+            "a losing resume's chat message(s) could not be delivered immediately; delivering \
+             them on a detached task rather than dropping them"
+        );
+        let registry = Arc::clone(registry);
+        let publisher = publisher.clone();
+        let address = address.clone();
+        residuum_core::util::spawn_in_span(async move {
+            deferred_conversation_resumes(registry, publisher, address, undelivered, spawn).await;
+        });
+        return;
+    }
+}
+
+/// Deliver the rest of a losing resume's messages, from the first agent
+/// message its winning run could not take because that run is tearing down
+/// or has left the registry, on one detached task, in the order a resumed
+/// run reads them: each agent message the way [`AgentMessenger::send`]
+/// delivers one to a completing session (see [`deferred_resume`]), then each
+/// chat message the way [`AgentMessenger::deliver_conversation`] delivers
+/// one (see [`deferred_conversation_resume`]). The first message to find no
+/// live run resumes the session; each later one is delivered into that run,
+/// or loses the race at the spawn listener and is delivered there.
+pub(crate) fn defer_losing_resume(
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
+    store: &Arc<SessionStore>,
+    address: &SessionAddress,
+    agent_messages: Vec<AgentMessageEvent>,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    let registry = Arc::clone(registry);
+    let publisher = publisher.clone();
+    let store = Arc::clone(store);
+    let address = address.clone();
+    residuum_core::util::spawn_in_span(async move {
+        for msg in agent_messages {
+            deferred_resume(
+                Arc::clone(&registry),
+                publisher.clone(),
+                Arc::clone(&store),
+                address.clone(),
+                msg,
+            )
+            .await;
+        }
+        deferred_conversation_resumes(registry, publisher, address, chat_messages, spawn).await;
+    });
+}
+
+/// Run [`deferred_conversation_resume`] for each of `chat_messages` in turn,
+/// so they reach the session in the order they arrived.
+async fn deferred_conversation_resumes(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    for chat_message in chat_messages {
+        deferred_conversation_resume(
+            Arc::clone(&registry),
+            publisher.clone(),
+            address.clone(),
+            chat_message,
+            spawn.clone(),
+        )
+        .await;
     }
 }
 
@@ -982,19 +1084,20 @@ struct NoteSinks<'a> {
     publisher: &'a Publisher,
 }
 
-/// Wait for `address` to leave the registry, then re-run the same
-/// live-vs-resume decision [`AgentMessenger::send`] makes for a fresh call —
-/// the deferred half of `send`'s `Completing` branch, run on its own
-/// detached task so the original sender never blocks on it.
+/// Re-run the same live-vs-resume decision [`AgentMessenger::send`] makes
+/// for a fresh call, waiting for `address` to leave the registry whenever
+/// its run is tearing down — the deferred half of `send`'s `Completing`
+/// branch, run on its own detached task so the original sender never
+/// blocks on it.
 ///
-/// By the time the wait ends, another deferred message queued at the same
-/// address may already have resumed it (a live run now exists to deliver
-/// into), so re-checking liveness here — rather than blindly publishing
-/// another resume — is what keeps two messages queued to one completing
-/// session from producing two runs, with the second silently dropped once
-/// the spawn listener's own liveness guard refuses it. A `Completing` result
-/// here (another resume raced in and is *already* tearing down again) waits
-/// once more rather than giving up.
+/// Another deferred message queued at the same address may already have
+/// resumed it (a live run now exists to deliver into), so checking liveness
+/// on each pass, rather than blindly publishing another resume, is what
+/// keeps two messages queued to one completing session from producing two
+/// runs, with the second silently dropped once the spawn listener's own
+/// liveness guard refuses it. A `Completing` result (the run is still
+/// tearing down, or another resume raced in and is *already* tearing down
+/// again) waits for the address to clear rather than giving up.
 async fn deferred_resume(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
@@ -1003,26 +1106,22 @@ async fn deferred_resume(
     msg: AgentMessageEvent,
 ) {
     loop {
-        registry.wait_until_clear(&address).await;
-        let done =
-            resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
+        let done = deliver_or_resume_deferred(&registry, &publisher, &store, &address, &msg).await;
         if done {
             return;
         }
-        // Falling through loops back to `wait_until_clear` again — another
-        // resume raced in and is already tearing down once more.
+        registry.wait_until_clear(&address).await;
     }
 }
 
-/// The decision `deferred_resume` makes once `address` has been observed
-/// clear: if a run is now live there (another deferred message queued at the
-/// same address already resumed it before this one got a chance to check),
-/// deliver `msg` into it directly instead of blindly publishing a second
-/// resume; otherwise resume it. Returns `false` only for
-/// [`DeliverOutcome::Completing`] (another resume raced in and is *already*
-/// tearing down again), telling the caller to wait and retry — every other
-/// outcome, success or failure, is final.
-async fn resume_or_deliver_after_clear(
+/// The decision `deferred_resume` makes on each pass: if a run is live at
+/// `address` (another deferred message queued at the same address already
+/// resumed it before this one got a chance to check), deliver `msg` into it
+/// directly instead of blindly publishing a second resume; if none is,
+/// resume it. Returns `false` only for [`DeliverOutcome::Completing`] (the
+/// run there is tearing down), telling the caller to wait for the address
+/// to clear and retry — every other outcome, success or failure, is final.
+async fn deliver_or_resume_deferred(
     registry: &SessionRegistry,
     publisher: &Publisher,
     store: &SessionStore,
@@ -1076,15 +1175,11 @@ async fn resume_or_deliver_after_clear(
                 .await;
                 return true;
             };
-            let hop_count = msg.hop_count;
             if let Err(e) = publish_resume(
                 publisher,
                 address,
                 &point,
-                String::new(),
-                hop_count,
-                Vec::new(),
-                vec![msg.clone()],
+                ResumeOpening::agent(msg.clone()),
             )
             .await
             {
@@ -1108,23 +1203,54 @@ async fn resume_or_deliver_after_clear(
     }
 }
 
+/// What a resume by messages hands the new run as its opening input.
+struct ResumeOpening {
+    /// The conversation messages combined, as the new run reads them after
+    /// its agent messages: made from `chat_messages` alone, and empty when
+    /// there are none.
+    prompt: String,
+    /// The new run's first turn's hop count.
+    hop_count: u32,
+    /// The conversation messages' images.
+    images: Vec<ImageData>,
+    /// The agent messages the new run opens with, each as its own entry,
+    /// and reports as read.
+    agent_messages: Vec<AgentMessageEvent>,
+    /// The conversation messages `prompt` combines, as they arrived.
+    chat_messages: Vec<MessageEvent>,
+}
+
+impl ResumeOpening {
+    /// A resume by one agent message, the run's whole opening input.
+    fn agent(msg: AgentMessageEvent) -> Self {
+        Self {
+            prompt: String::new(),
+            hop_count: msg.hop_count,
+            images: Vec::new(),
+            agent_messages: vec![msg],
+            chat_messages: Vec::new(),
+        }
+    }
+}
+
 /// Build and publish the `SpawnRequestEvent` that resumes `address` from
-/// `point`, with `delivered` (the agent messages the new run opens with, each
-/// as its own entry, and reports as read) and `prompt` (its other opening
-/// input, empty when there is none) as the new run's opening input, and
-/// `hop_count` as its first turn's hop count. Free function (not a method)
-/// so it can be shared between [`AgentMessenger`]'s own resume paths and
-/// [`deferred_resume`], which runs on a detached task with no
+/// `point` with `opening` as the new run's opening input. Free function (not
+/// a method) so it can be shared between [`AgentMessenger`]'s own resume
+/// paths and [`deferred_resume`], which runs on a detached task with no
 /// `&AgentMessenger` to call through.
 async fn publish_resume(
     publisher: &Publisher,
     address: &SessionAddress,
     point: &ResumePoint,
-    prompt: String,
-    hop_count: u32,
-    images: Vec<ImageData>,
-    delivered: Vec<AgentMessageEvent>,
+    opening: ResumeOpening,
 ) -> Result<(), SendError> {
+    let ResumeOpening {
+        prompt,
+        hop_count,
+        images,
+        agent_messages,
+        chat_messages,
+    } = opening;
     let event = residuum_bus::SpawnRequestEvent {
         address: address.clone(),
         skill: point.agent_skill.clone(),
@@ -1144,19 +1270,20 @@ async fn publish_resume(
         // so a resume triggered by `message_agent` doesn't strand it.
         sender: None,
         conversation: point.conversation_target.clone(),
-        // This resume was triggered by a plain agent message
-        // (`message_agent`/`resume_with_pending`), never an inbound
-        // conversation message — even when `point.trigger` is
-        // `Conversation` (a previously conversation-triggered session,
-        // resumed by an agent addressing it directly). A race-guard delivery
-        // for this request must fall back to `Interrupt::AgentMessage`, not
-        // fabricate a `UserMessage` with no real sender.
+        // `inbound` is the one conversation message a conversation resume
+        // starts from (`publish_conversation_resume`). A resume by messages
+        // has none, even when `point.trigger` is `Conversation` (a
+        // conversation session resumed by an agent addressing it directly,
+        // or by the messages its teardown drained): the conversation
+        // messages among those travel in `delivered_chat_messages`, each
+        // with its own sender.
         inbound: None,
         images,
         overlap: None,
         carried_history: Vec::new(),
         fire_id: None,
-        delivered_messages: delivered,
+        delivered_messages: agent_messages,
+        delivered_chat_messages: chat_messages,
     };
 
     publisher
@@ -1562,7 +1689,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_or_deliver_after_clear_delivers_into_a_run_that_already_won_the_race() {
+    async fn deliver_or_resume_deferred_delivers_into_a_run_that_already_won_the_race() {
         // The exact "loop-defeat" scenario item 3 exists to prevent: two
         // messages queued to one completing session must never produce two
         // runs. `wait_until_clear` only tells the caller the address *was*
@@ -1590,7 +1717,7 @@ mod tests {
             "second message",
             0,
         );
-        let done = resume_or_deliver_after_clear(
+        let done = deliver_or_resume_deferred(
             &registry,
             &publisher,
             &store,
@@ -1618,7 +1745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_or_deliver_after_clear_resumes_when_the_address_is_genuinely_free() {
+    async fn deliver_or_resume_deferred_resumes_when_the_address_is_genuinely_free() {
         let bus_handle = residuum_bus::spawn_broker();
         let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
@@ -1640,8 +1767,7 @@ mod tests {
             "still there?",
             0,
         );
-        let done =
-            resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
+        let done = deliver_or_resume_deferred(&registry, &publisher, &store, &address, &msg).await;
         assert!(done, "resuming is a final outcome");
 
         let event = next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
@@ -1885,6 +2011,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["checking in"],
             "only the agent message is handed over to be reported read"
+        );
+        assert_eq!(
+            event
+                .delivered_chat_messages
+                .iter()
+                .map(|m| (
+                    m.content.as_str(),
+                    m.origin.sender.as_ref().map(|s| s.name.as_str())
+                ))
+                .collect::<Vec<_>>(),
+            vec![("any updates?", Some("Jane"))],
+            "the conversation message is carried as it is, so a resume that loses the race can \
+             deliver it with its own sender"
         );
         assert_eq!(
             event.hop_count, 2,

@@ -84,6 +84,7 @@ pub fn build_pulse_execution(
         carried_history: Vec::new(),
         fire_id: None,
         delivered_messages: Vec::new(),
+        delivered_chat_messages: Vec::new(),
     }
 }
 
