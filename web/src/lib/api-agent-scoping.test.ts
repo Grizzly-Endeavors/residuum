@@ -527,7 +527,7 @@ describe("stores address the agent they hold", () => {
   it("lists sessions and outbound tasks for the agent it was made for", async () => {
     for (const agent of AGENTS) {
       const seen = recordRequests();
-      const store = new SessionsStore({ agent, pushToMain: () => {} });
+      const store = new SessionsStore({ agent });
       await store.refresh();
       expect(seen.length).toBeGreaterThan(0);
       for (const request of seen) {
@@ -539,7 +539,7 @@ describe("stores address the agent they hold", () => {
   it("stops a session from the list on the agent the list was made for", async () => {
     for (const agent of AGENTS) {
       const seen = recordRequests();
-      const store = new SessionsStore({ agent, pushToMain: () => {} });
+      const store = new SessionsStore({ agent });
       await store.stop("spawned-x");
       expect(seen).toEqual([`POST /api/agents/${agent}/sessions/spawned-x/stop`]);
     }

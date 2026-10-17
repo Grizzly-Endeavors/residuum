@@ -2467,6 +2467,15 @@ mod tests {
             "the relay must say clearly that the turn failed, got: {}",
             relayed.content
         );
+        assert_eq!(
+            relayed
+                .origin
+                .agent_sender
+                .as_deref()
+                .and_then(|sender| sender.run_id.as_deref()),
+            Some(event.run_id.as_str()),
+            "the relay names the run that sent it"
+        );
     }
 
     /// An `artifact` session's output reaches the artifact through its own
@@ -2973,6 +2982,15 @@ mod tests {
             relayed.content.contains("panicked"),
             "the relay should surface that this was a panic, got: {}",
             relayed.content
+        );
+        assert_eq!(
+            relayed
+                .origin
+                .agent_sender
+                .as_deref()
+                .and_then(|sender| sender.run_id.as_deref()),
+            Some(event.run_id.as_str()),
+            "a panicked run's relay names the run that sent it"
         );
     }
 
@@ -4074,7 +4092,6 @@ mod tests {
             SessionEventKind::TurnUsage { .. } => "turn_usage".to_string(),
             SessionEventKind::Response { content, .. } => format!("response:{content}"),
             SessionEventKind::Error { .. } => "error".to_string(),
-            SessionEventKind::MessageToMain { .. } => "message_to_main".to_string(),
         }
     }
 
@@ -4154,8 +4171,7 @@ mod tests {
                 | SessionEventKind::ToolResult(_)
                 | SessionEventKind::Intermediate { .. }
                 | SessionEventKind::TurnUsage { .. }
-                | SessionEventKind::Error { .. }
-                | SessionEventKind::MessageToMain { .. } => None,
+                | SessionEventKind::Error { .. } => None,
             })
             .collect();
         let expected_turn_id = format!("{run_id}-t1");

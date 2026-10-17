@@ -588,12 +588,11 @@ pub enum ServerMessage {
         content: String,
     },
     /// A person's message entered the main conversation, from any channel
-    /// including the web, or a teammate's (another agent on the hub, named by
-    /// `agent_sender`): the message that started a turn, or one injected into
-    /// a turn already running. Not sent for a background origin, nor for a
-    /// message from one of this agent's own sessions, which
-    /// `session_message_to_main` carries. A client that sent the message
-    /// recognizes the echo by `id`.
+    /// including the web, or an agent's (a teammate on the hub or one of this
+    /// agent's own sessions, named by `agent_sender`): the message that
+    /// started a turn, or one injected into a turn already running. Not sent
+    /// for other background input. A client that sent the message recognizes
+    /// the echo by `id`.
     UserMessage {
         /// The message's id: the id its sender gave it.
         id: String,
@@ -608,8 +607,9 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         sender: Option<MessageSender>,
-        /// The teammate that sent it, for a teammate's message. Its `content`
-        /// then starts with the header that tells the agent who wrote it.
+        /// The agent that sent it, for a teammate's or a session's message,
+        /// with the session's run id for a session. Its `content` then starts
+        /// with the header that tells the agent who wrote it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_sender: Option<AgentSender>,
@@ -882,17 +882,6 @@ pub enum ServerMessage {
         #[ts(optional)]
         details: Option<String>,
     },
-    /// A session's message reached the main agent (a turn-result relay or a
-    /// `message_agent` call to `main`). The main chat shows it as a compact
-    /// item linking to the session.
-    SessionMessageToMain {
-        /// Sending session's address.
-        address: String,
-        /// Sending run's id.
-        run_id: String,
-        /// The message body as main received it.
-        content: String,
-    },
     /// Reply to `SessionSendMessage`: the message was handed to the session.
     SessionMessageDelivered {
         /// The `id` from the `SessionSendMessage`.
@@ -1086,6 +1075,7 @@ mod tests {
             agent_sender: Some(AgentSender {
                 address: "agent:scout".to_string(),
                 category: "teammate".to_string(),
+                run_id: None,
             }),
             endpoint: "background".to_string(),
         };
@@ -1097,6 +1087,38 @@ mod tests {
                 "turn_id": "bg-1",
                 "content": "[Message from teammate agent:scout, not the user.]\nhi",
                 "agent_sender": { "address": "agent:scout", "category": "teammate" },
+                "endpoint": "background",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_session_user_message_with_its_run() {
+        let msg = ServerMessage::UserMessage {
+            id: "bg-2".to_string(),
+            turn_id: "bg-2".to_string(),
+            content: "[Agent Message from spawned-research (spawned)]\nfound it".to_string(),
+            images: Vec::new(),
+            sender: None,
+            agent_sender: Some(AgentSender {
+                address: "spawned-research".to_string(),
+                category: "spawned".to_string(),
+                run_id: Some("run-1".to_string()),
+            }),
+            endpoint: "background".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "user_message",
+                "id": "bg-2",
+                "turn_id": "bg-2",
+                "content": "[Agent Message from spawned-research (spawned)]\nfound it",
+                "agent_sender": {
+                    "address": "spawned-research",
+                    "category": "spawned",
+                    "run_id": "run-1",
+                },
                 "endpoint": "background",
             })
         );

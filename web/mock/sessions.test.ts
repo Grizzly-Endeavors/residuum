@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  AgentSender,
   ServerMessage,
   SessionListResponse,
   SessionSummary,
@@ -351,6 +352,8 @@ describe("session commands and lifecycle", () => {
   let state: MockState;
   let frames: ServerMessage[];
   let replies: ServerMessage[];
+  /** What the sessions sent the main conversation, in order. */
+  let toMain: Array<{ content: string; sender: AgentSender }>;
   const reply = (frame: ServerMessage): void => {
     replies.push(frame);
   };
@@ -364,6 +367,10 @@ describe("session commands and lifecycle", () => {
     state = createState("atlas");
     frames = captureFrames(state);
     replies = [];
+    toMain = [];
+    state.messageMain = (content, sender) => {
+      toMain.push({ content, sender });
+    };
   });
 
   afterEach(() => {
@@ -407,10 +414,21 @@ describe("session commands and lifecycle", () => {
     expect(reply2?.content).toBe('Understood: "status?". Adjusting course.');
   });
 
-  it("relays a spawned session's reply to main", () => {
+  it("relays a spawned session's reply to main, naming the run that sent it", () => {
     sendSessionMessage(state, reply, "c3", RESEARCH, "keep going");
     vi.advanceTimersByTime(2400);
-    expect(frames.at(-1)).toMatchObject({ type: "session_message_to_main", address: RESEARCH });
+    expect(toMain).toEqual([
+      {
+        content: `[Agent Message from ${RESEARCH} (spawned)]\nUnderstood: "keep going". Adjusting course.`,
+        sender: { address: RESEARCH, category: "spawned", run_id: "run-live-research" },
+      },
+    ]);
+  });
+
+  it("sends main nothing for a session main didn't spawn", () => {
+    sendSessionMessage(state, reply, "c3b", DISCORD, "status?");
+    vi.advanceTimersByTime(2400);
+    expect(toMain).toEqual([]);
   });
 
   it("rejects an address it has never seen", () => {
@@ -495,11 +513,13 @@ describe("session commands and lifecycle", () => {
     expect(frames[0]).toMatchObject({ type: "session_started" });
 
     vi.advanceTimersByTime(400 + 2400);
-    expect(frames.at(-1)).toEqual({
-      type: "session_message_to_main",
-      address: "spawned-subagent-a001",
-      run_id: "run-new-1",
-      content: "Finished: Look into otters. Two items need a look; details are in the transcript.",
-    });
+    expect(toMain).toEqual([
+      {
+        content:
+          "[Agent Message from spawned-subagent-a001 (spawned)]\n" +
+          "Finished: Look into otters. Two items need a look; details are in the transcript.",
+        sender: { address: "spawned-subagent-a001", category: "spawned", run_id: "run-new-1" },
+      },
+    ]);
   });
 });

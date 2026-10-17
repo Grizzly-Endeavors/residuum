@@ -183,7 +183,7 @@ export function convertHistory(
             from: agentMessage.from,
             category: agentMessage.category,
             content: agentMessage.body,
-            runId: null,
+            runId: msg.agent_sender?.run_id ?? null,
             ...ofTurn,
             ...sent,
           });

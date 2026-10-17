@@ -16,7 +16,6 @@ const SESSION_EVENT_TYPES = [
   "session_turn_usage",
   "session_response",
   "session_error",
-  "session_message_to_main",
 ] as const;
 
 /** A frame the agent socket sends for an event of one of its sessions. */

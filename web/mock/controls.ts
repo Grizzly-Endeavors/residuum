@@ -3,6 +3,7 @@ import type { TimeProgress, TurnHold } from "./env";
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import { offeredModelsOnly } from "./provider-models";
 import type { Route, RouteContext } from "./routes";
+import { messageMainFrom } from "./sessions";
 import { changeAgentFile, changeTeamFile } from "./workspace-changes";
 
 /**
@@ -95,6 +96,31 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   hub.overview.changed(agent);
   if (agent.connectedClients() === 0) hub.addUnread(agent);
   json(res, 200, { ok: true });
+}
+
+/**
+ * One of an agent's live sessions (`?address=`, the research session by
+ * default) sends its main conversation `{ content? }`, as `message_agent` or
+ * a relayed result does: it joins the turn in flight, announced as a
+ * `user_message` naming the session and its run that the turn journal keeps,
+ * or starts a turn. Answers `{ run_id }`, the sending run.
+ */
+async function sessionMessage({ req, res, state, query }: RouteContext): Promise<void> {
+  const address = query.get("address") ?? "spawned-research-3f9a";
+  const session = state.sessions.live.find((s) => s.address === address);
+  if (session === undefined) {
+    json(res, 404, { error: `mock: no live session at ${address}` });
+    return;
+  }
+  const raw = await readBody(req);
+  const { content = "Interim note: the cascade option needs a retry cap." } =
+    raw.trim() === "" ? {} : parseJsonObject(raw);
+  if (typeof content !== "string") {
+    json(res, 422, { error: "mock: `content` must be a string" });
+    return;
+  }
+  messageMainFrom(state, session, content);
+  json(res, 200, { run_id: session.run_id });
 }
 
 /**
@@ -395,6 +421,7 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/fail-next-session-start", handler: failNextSessionStart },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
+  { method: "POST", pattern: "/api/mock/session-message", handler: sessionMessage },
   { method: "POST", pattern: "/api/mock/telegram-message", handler: telegramMessage },
   { method: "POST", pattern: "/api/mock/fix-agent", handler: fixAgent },
   { method: "POST", pattern: "/api/mock/reset", handler: reset },

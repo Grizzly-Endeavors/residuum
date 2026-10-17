@@ -535,22 +535,23 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn a_teammates_message_reaches_the_socket_with_its_sender_live_and_in_a_snapshot() {
+    /// Publish `agent`'s message opening a turn, and check the socket gets it
+    /// with its sender both live and in the snapshot a page opening now
+    /// asks for.
+    async fn assert_agent_message_reaches_the_socket(
+        agent: residuum_inference::AgentSender,
+        content: &str,
+    ) {
         let (handle, mut subs) = subscribed().await;
-        let teammate = residuum_inference::AgentSender {
-            address: "agent:atlas".into(),
-            category: "teammate".into(),
-        };
         publish_main(
             &handle,
             MainConversationEvent::UserMessage {
                 id: "bg-1".into(),
                 turn_id: "bg-1".into(),
-                content: "[Message from teammate agent:atlas, not the user.]\nstatus?".into(),
+                content: content.into(),
                 images: Vec::new(),
                 sender: None,
-                agent_sender: Some(teammate.clone()),
+                agent_sender: Some(agent.clone()),
                 endpoint: "background".into(),
             },
         )
@@ -569,7 +570,7 @@ mod tests {
             matches!(
                 &live,
                 ServerMessage::UserMessage { id, agent_sender: Some(sender), .. }
-                    if id == "bg-1" && *sender == teammate
+                    if id == "bg-1" && *sender == agent
             ),
             "the message goes out live with its sender, got {live:?}"
         );
@@ -591,10 +592,36 @@ mod tests {
             matches!(
                 opening,
                 Some(ServerMessage::UserMessage { id, agent_sender: Some(sender), .. })
-                    if id == "bg-1" && *sender == teammate
+                    if id == "bg-1" && *sender == agent
             ),
-            "the snapshot opens with the teammate's message and its sender, got {opening:?}"
+            "the snapshot opens with the agent's message and its sender, got {opening:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_teammates_message_reaches_the_socket_with_its_sender_live_and_in_a_snapshot() {
+        assert_agent_message_reaches_the_socket(
+            residuum_inference::AgentSender {
+                address: "agent:atlas".into(),
+                category: "teammate".into(),
+                run_id: None,
+            },
+            "[Message from teammate agent:atlas, not the user.]\nstatus?",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_sessions_message_reaches_the_socket_with_its_run_live_and_in_a_snapshot() {
+        assert_agent_message_reaches_the_socket(
+            residuum_inference::AgentSender {
+                address: "spawned-research-1a2b".into(),
+                category: "spawned".into(),
+                run_id: Some("run-1".into()),
+            },
+            "[Agent Message from spawned-research-1a2b (spawned)]\nfound it",
+        )
+        .await;
     }
 
     async fn publish_main(handle: &residuum_bus::BusHandle, event: MainConversationEvent) {

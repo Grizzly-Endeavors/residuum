@@ -225,6 +225,7 @@ mod tests {
             .with_agent_sender(Some(residuum_inference::AgentSender {
                 address: "spawned-a".to_string(),
                 category: "spawned".to_string(),
+                run_id: Some("run-a".to_string()),
             }));
         append_recent_messages(
             &path,
@@ -242,8 +243,9 @@ mod tests {
             .unwrap();
         assert_eq!(sender.address, "spawned-a");
         assert_eq!(sender.category, "spawned");
+        assert_eq!(sender.run_id.as_deref(), Some("run-a"));
 
-        // History written before the field existed still loads.
+        // History written without the field still loads.
         let legacy = r#"[{"role":"user","content":"hi","timestamp":"2026-09-20T12:00","visibility":"user"}]"#;
         tokio::fs::write(&path, legacy).await.unwrap();
         let legacy_loaded = load_recent_messages(&path).await.unwrap();
@@ -253,6 +255,17 @@ mod tests {
                 .and_then(|m| m.message.agent_sender.clone()),
             None
         );
+
+        // A sender written without a run id loads with none.
+        let no_run = r#"[{"role":"user","content":"done","timestamp":"2026-09-20T12:00","visibility":"background","agent_sender":{"address":"spawned-a","category":"spawned"}}]"#;
+        tokio::fs::write(&path, no_run).await.unwrap();
+        let no_run_loaded = load_recent_messages(&path).await.unwrap();
+        let no_run_sender = no_run_loaded
+            .first()
+            .and_then(|m| m.message.agent_sender.clone())
+            .unwrap();
+        assert_eq!(no_run_sender.address, "spawned-a");
+        assert_eq!(no_run_sender.run_id, None);
     }
 
     #[tokio::test]

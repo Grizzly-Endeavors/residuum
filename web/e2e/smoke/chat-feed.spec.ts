@@ -406,6 +406,41 @@ test("Open session is offered for a session's message, not a teammate's", async 
   await expect(page).toHaveURL(/panel=session:atlas:/);
 });
 
+test("a session's message the running turn read shows on a page opened partway, and opens its run", async ({
+  page,
+  mock,
+}) => {
+  const note = "Interim note: the cascade option needs a retry cap.";
+  // The turn waits at its last step, so the page opens again while it runs.
+  await mock.post("/api/mock/turn-hold", { data: { held: true } });
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await send(page, "Check the fallback doc");
+  await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+
+  const answer = await mock.post("/api/mock/session-message", {
+    params: { agent: "atlas" },
+    data: { content: note },
+  });
+  expect(answer).toEqual({ run_id: "run-live-research" });
+  const card = feed
+    .getByRole("article", { name: "Background session: spawned-research-3f9a" })
+    .filter({ hasText: note });
+  await expect(card).toHaveCount(1);
+
+  // History holds the turn only once it ends, so the reopened page has the card from the turn so far.
+  await page.reload();
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+  await expect(card).toHaveCount(1);
+  await expect(card).not.toContainText("Agent Message from");
+
+  await card.getByRole("button", { name: "Open session" }).click();
+  await expect(page).toHaveURL(/panel=session:atlas:run-live-research$/);
+  await mock.post("/api/mock/turn-hold", { data: { held: false } });
+});
+
 test("a teammate's message shows as it arrives, without a reload", async ({ page, mock }) => {
   await page.goto("/agent/atlas");
   const feed = conversation(page);
