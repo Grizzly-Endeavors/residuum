@@ -523,6 +523,44 @@ describe("a message waiting for the session to read it", () => {
     expect(sentItem(run, "Also check the logs.")).toMatchObject({ turnId: "t1", messageId: id });
   });
 
+  it("doesn't follow a later run once its stopped run's unread message is dismissed", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    completed(relay);
+    run.dismissWaiting(id);
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    expect(run.runId).toBe("run-1");
+  });
+
+  it("doesn't follow a later run once the reloaded transcript shows the stopped run read its message", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    let release = (): void => {};
+    holdTranscripts = new Promise((resolve) => {
+      release = resolve;
+    });
+    transcripts["run-1"]?.messages.push({
+      role: "user",
+      content: "Also check the logs.",
+      timestamp: "2026-09-23T12:00:00Z",
+      visibility: "user",
+      id,
+    });
+    relay.emit({ type: "subscribed", kind: "session", agent: "atlas", address: ADDRESS });
+    await waitFor(() => {
+      expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
+    });
+    completed(relay);
+    release();
+    await waitFor(() => {
+      expect(run.waiting).toEqual([]);
+    });
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    expect(run.runId).toBe("run-1");
+  });
+
   it("stays on a run that ends with nothing of its waiting", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
     completed(relay);

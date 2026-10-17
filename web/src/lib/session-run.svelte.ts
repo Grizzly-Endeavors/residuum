@@ -212,6 +212,7 @@ export class SessionRun {
     const raced = this.buffered;
     this.buffered = [];
     for (const frame of raced) this.applyFrame(frame, true);
+    this.settleFollow();
     if (this.address === null) {
       this.address = transcript.session.address;
       this.subscribe();
@@ -259,6 +260,7 @@ export class SessionRun {
    */
   dismissWaiting(id: string): void {
     this.dropWaiting(id);
+    this.settleFollow();
   }
 
   /** Stop the run. Its frames show it finishing. */
@@ -447,6 +449,15 @@ export class SessionRun {
     let at = this.turnStart ?? this.items.length;
     while (this.items[at]?.turnId === turnId) at++;
     this.items.splice(at, 0, item);
+  }
+
+  /**
+   * A follow waits for the run that reads this page's waiting messages. Once
+   * none waits, the run has ended and no send is in flight, no run of this
+   * page's is coming, and a later run at the address is not one to follow.
+   */
+  private settleFollow(): void {
+    if (this.waiting.length === 0 && !this.live && !this.sending) this.followNextRun = false;
   }
 
   private dropWaiting(id: string): void {
