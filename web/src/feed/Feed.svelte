@@ -238,13 +238,16 @@
 
   // Before the items change the content, a scroll position the scroller
   // hasn't taken in yet is judged against the content it was made over: its
-  // event comes a frame later, after whatever has landed by then.
+  // event comes a frame later, after whatever has landed by then. The turn in
+  // flight changing counts as well: its block (the working head, Stop) comes
+  // and goes with it while the items stay as they are.
   $effect.pre(() => {
     // What the change effect below reacts to, so that each of these is
     // followed by its `contentChanged` in the same task.
     void items.length;
     void items.at(-1)?.id;
     void live;
+    void liveTurnId;
     untrack(() => {
       scroller.takeInPendingScroll();
     });
@@ -253,6 +256,7 @@
   let lastTailId: number | undefined;
   let lastLength = 0;
   let lastLive = false;
+  let lastLiveTurnId: string | null = null;
   let lastGeneration = 0;
 
   // A reader who follows stays at the bottom as the feed grows, at the tail or by
@@ -272,10 +276,15 @@
       tailItem !== undefined &&
       lastTailId !== undefined &&
       generation === lastGeneration;
-    const changed = tailChanged || items.length !== lastLength || live !== lastLive;
+    const changed =
+      tailChanged ||
+      items.length !== lastLength ||
+      live !== lastLive ||
+      liveTurnId !== lastLiveTurnId;
     lastTailId = tailItem?.id;
     lastLength = items.length;
     lastLive = live;
+    lastLiveTurnId = liveTurnId;
     lastGeneration = generation;
     if (changed) {
       void tick().then(() => {
