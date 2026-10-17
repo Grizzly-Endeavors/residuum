@@ -4,7 +4,7 @@
 //! or produces a turn event funnels through [`publish_session_event`], so the
 //! web UI sees the same stream regardless of which code path produced it.
 
-use crate::bus::{Publisher, SessionAddress, SessionEvent, SessionEventKind, topics};
+use crate::{Publisher, SessionAddress, SessionEvent, SessionEventKind, topics};
 
 /// Publish one event for `address`'s run `run_id`.
 ///
@@ -46,8 +46,8 @@ mod tests {
 
     #[tokio::test]
     async fn publishes_tagged_event_on_sessions_topic() {
-        let handle = crate::bus::spawn_broker();
-        let mut sub: crate::bus::Subscriber<SessionEvent> =
+        let handle = crate::spawn_broker();
+        let mut sub: crate::Subscriber<SessionEvent> =
             handle.subscribe(topics::Sessions).await.unwrap();
 
         publish_session_event(

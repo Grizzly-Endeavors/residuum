@@ -1,4 +1,3 @@
-src/bus/ residuum-bus
 src/workspace/ residuum-workspace
 src/inbox/ residuum-workspace
 src/checkpoints/ residuum-checkpoints

@@ -20,8 +20,8 @@ pub mod origin;
 mod registry;
 pub mod remote_task;
 pub mod session;
-#[cfg(test)]
-pub(crate) mod testing;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod topics;
 mod types;
 pub mod usage;

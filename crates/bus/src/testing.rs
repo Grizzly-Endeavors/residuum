@@ -1,28 +1,41 @@
-//! Waiting on what the bus and the hub publish, under the same hang guard as
-//! core's `testing::wait`.
+//! Test helpers for the bus: waiting on what it publishes, and a dead-end
+//! interrupt receiver for code that drains interrupts. Behind `test-support`,
+//! and compiled for this crate's own tests.
 
 use std::fmt::Display;
 
-use crate::bus::{BusHandle, Subscriber, WorkbenchEvent, topics};
-use crate::hub::agent_watch::{AgentChange, AgentChangeReceiver};
-use residuum_core::testing::wait::{Recv, guarded};
+use tokio::sync::mpsc;
 
-impl Recv for AgentChangeReceiver {
-    type Item = AgentChange;
+use crate::interrupt::Interrupt;
+use crate::{BusHandle, Subscriber, WorkbenchEvent, topics};
+use residuum_core::testing::wait::guarded;
 
-    async fn recv_next(&mut self) -> Option<Self::Item> {
-        self.recv().await
-    }
-
-    fn try_next(&mut self) -> Option<Self::Item> {
-        self.try_recv()
-    }
+/// Create a dead-end receiver that will never receive any messages.
+///
+/// For tests that run a turn or a session without an interrupt source of its
+/// own. Unbounded, matching the main agent's own channel shape: nothing is
+/// ever sent through it, so a session test using it in place of its own
+/// bounded channel still works, since `InterruptSource` is implemented for
+/// both channel shapes.
+#[must_use]
+pub fn dead_interrupt_rx() -> mpsc::UnboundedReceiver<Interrupt> {
+    let (_tx, rx) = mpsc::unbounded_channel::<Interrupt>();
+    rx
 }
 
-/// The next event a bus subscriber receives, waiting for one. A bus subscriber
-/// has no non-blocking receive, so it is waited on here rather than through
-/// [`Recv`].
-pub(crate) async fn next_event<E>(what: impl Display, sub: &mut Subscriber<E>) -> E
+/// The next event a bus subscriber receives, waiting for one under the hang
+/// guard. A bus subscriber has no non-blocking receive, so it is waited on
+/// here rather than through core's `Recv`.
+///
+/// # Panics
+/// Panics, naming `what`, when the broker shuts down or the subscriber falls
+/// behind before the event arrives, or when no event arrives within the hang
+/// guard.
+#[expect(
+    clippy::panic,
+    reason = "test-support helper: a bus that never delivers fails the test that waits on it"
+)]
+pub async fn next_event<E>(what: impl Display, sub: &mut Subscriber<E>) -> E
 where
     E: Clone + Send + Sync + 'static,
 {
@@ -38,7 +51,15 @@ where
 /// out before the next, so a barrier event that comes back proves the earlier
 /// publishes were fanned out too. Then `drain` on a subscriber shows exactly
 /// what it was sent.
-pub(crate) async fn bus_barrier(bus: &BusHandle) {
+///
+/// # Panics
+/// Panics when the broker is not running, or when the barrier does not come
+/// back within the hang guard.
+#[expect(
+    clippy::expect_used,
+    reason = "test-support helper: a broker that is not running fails the test that waits on it"
+)]
+pub async fn bus_barrier(bus: &BusHandle) {
     let mut barrier: Subscriber<WorkbenchEvent> = bus
         .subscribe(topics::Workbench)
         .await
@@ -63,7 +84,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_event_reads_the_next_bus_event() {
-        let bus = crate::bus::spawn_broker();
+        let bus = crate::spawn_broker();
         let mut sub: Subscriber<WorkbenchEvent> = bus.subscribe(topics::Workbench).await.unwrap();
         bus.publisher()
             .publish(
@@ -84,7 +105,7 @@ mod tests {
 
     #[tokio::test]
     async fn bus_barrier_follows_every_earlier_publish() {
-        let bus = crate::bus::spawn_broker();
+        let bus = crate::spawn_broker();
         let mut sub: Subscriber<WorkbenchEvent> = bus.subscribe(topics::Workbench).await.unwrap();
         bus.publisher()
             .publish(

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::inference::Usage;
+use residuum_inference::Usage;
 
 /// Cumulative token totals for a whole session (the main chat, or one
 /// background session run), persisted so a reload shows correct totals

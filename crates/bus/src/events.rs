@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::bus::attachment::FileAttachment;
-use crate::bus::origin::MessageOrigin;
-use crate::bus::types::{SessionAddress, SkillName};
-use crate::config::ModelSelector;
-use crate::inference::{ImageData, Message, MessageSender};
-use crate::memory::types::Visibility;
+use crate::attachment::FileAttachment;
+use crate::origin::MessageOrigin;
+use crate::types::{SessionAddress, SkillName};
+use residuum_config::ModelSelector;
+use residuum_inference::{ImageData, Message, MessageSender};
+use residuum_memory::types::Visibility;
 
 // ---------------------------------------------------------------------------
 // EventTrigger
@@ -154,7 +154,7 @@ pub struct MessageEvent {
     pub content: String,
     /// Where this message originated.
     pub origin: MessageOrigin,
-    /// Local timestamp (see `crate::time::now_local`).
+    /// Local timestamp (see `residuum_core::time::now_local`).
     pub timestamp: NaiveDateTime,
     /// Inline images attached to the message.
     pub images: Vec<ImageData>,
@@ -320,7 +320,7 @@ pub struct ToolResultEvent {
     /// Whether the tool reported an error.
     pub is_error: bool,
     /// Auto Mode's verdict on the call, when Auto Mode checked it.
-    pub auto_mode: Option<crate::bus::auto_mode::AutoModeVerdict>,
+    pub auto_mode: Option<crate::auto_mode::AutoModeVerdict>,
 }
 
 /// Intermediate model text emitted during a turn.
@@ -398,7 +398,7 @@ impl AgentResultEvent {
 #[derive(Debug, Clone)]
 pub struct AgentMessageEvent {
     /// Address of the sender: `"main"` or a session address for an agent,
-    /// [`crate::bus::session::OWNER_ADDRESS`] for the owner,
+    /// [`crate::session::OWNER_ADDRESS`] for the owner,
     /// `artifact:<name>` for a workbench artifact, or `agent:<name>` /
     /// `agent:<name>/<session>` for a teammate.
     pub from: SessionAddress,
@@ -419,7 +419,7 @@ impl AgentMessageEvent {
     /// naming the sender's address and category so the recipient can reply.
     ///
     /// A message the owner typed into a session panel in the web UI (sender
-    /// [`crate::bus::session::OWNER_ADDRESS`]) is labelled as coming
+    /// [`crate::session::OWNER_ADDRESS`]) is labelled as coming
     /// from the owner instead: the owner is not an agent and has no address
     /// to message back, but sees this session's responses directly. A message
     /// a workbench artifact sent (sender `artifact:<name>`) is labelled as
@@ -432,7 +432,7 @@ impl AgentMessageEvent {
     /// it needs a matching change in `web/src/lib/relay.ts`.
     #[must_use]
     pub fn format_for_agent(&self) -> String {
-        if self.from.as_ref() == crate::bus::session::OWNER_ADDRESS {
+        if self.from.as_ref() == crate::session::OWNER_ADDRESS {
             return format!(
                 "[Message from the owner via the web UI — your response in this turn is shown \
                  to them directly]\n{}",
@@ -464,12 +464,12 @@ impl AgentMessageEvent {
     /// the owner, an artifact or a remote agent sent it.
     #[must_use]
     pub fn teammate_sender(&self) -> Option<&str> {
-        if self.from_category != crate::bus::session::TEAMMATE_SENDER_CATEGORY {
+        if self.from_category != crate::session::TEAMMATE_SENDER_CATEGORY {
             return None;
         }
         let address = self.from.as_ref();
         address
-            .starts_with(crate::bus::session::TEAMMATE_SENDER_PREFIX)
+            .starts_with(crate::session::TEAMMATE_SENDER_PREFIX)
             .then_some(address)
     }
 
@@ -477,22 +477,22 @@ impl AgentMessageEvent {
     /// when an agent or the owner sent it.
     #[must_use]
     pub fn artifact_sender(&self) -> Option<&str> {
-        if self.from_category != crate::bus::session::ARTIFACT_SENDER_CATEGORY {
+        if self.from_category != crate::session::ARTIFACT_SENDER_CATEGORY {
             return None;
         }
         self.from
             .as_ref()
-            .strip_prefix(crate::bus::session::ARTIFACT_SENDER_PREFIX)
+            .strip_prefix(crate::session::ARTIFACT_SENDER_PREFIX)
     }
 
     /// The structured sender for this message's history entry: the sending
     /// agent, or `None` for a message the owner typed into a web UI session
     /// panel or a workbench artifact sent (neither is an agent).
     #[must_use]
-    pub fn agent_sender(&self) -> Option<crate::inference::AgentSender> {
-        let from_an_agent = self.from.as_ref() != crate::bus::session::OWNER_ADDRESS
-            && self.artifact_sender().is_none();
-        from_an_agent.then(|| crate::inference::AgentSender {
+    pub fn agent_sender(&self) -> Option<residuum_inference::AgentSender> {
+        let from_an_agent =
+            self.from.as_ref() != crate::session::OWNER_ADDRESS && self.artifact_sender().is_none();
+        from_an_agent.then(|| residuum_inference::AgentSender {
             address: self.from.to_string(),
             category: self.from_category.clone(),
         })
@@ -501,8 +501,8 @@ impl AgentMessageEvent {
     /// This message as the recipient's history records it: the formatted
     /// text, tagged with its structured sender.
     #[must_use]
-    pub fn to_history_message(&self) -> crate::inference::Message {
-        crate::inference::Message::user(self.format_for_agent())
+    pub fn to_history_message(&self) -> residuum_inference::Message {
+        residuum_inference::Message::user(self.format_for_agent())
             .with_agent_sender(self.agent_sender())
     }
 }
@@ -602,7 +602,7 @@ pub struct SpawnRequestEvent {
     /// `/multitask`): the new run sends these to the model ahead of its task
     /// on every turn, but keeps them out of its own transcript and memory.
     /// Empty for every other request, including a resume of such a fork.
-    pub carried_history: Vec<crate::inference::Message>,
+    pub carried_history: Vec<residuum_inference::Message>,
 }
 
 /// Marks a pulse run that started while its previous run was still going
@@ -740,7 +740,7 @@ pub struct PostTurnActivityEvent {
 /// — for the web UI's list of tasks sent to other agents (Activity's Running now).
 #[derive(Debug, Clone)]
 pub struct OutboundA2aTaskEvent {
-    pub task: crate::bus::remote_task::TrackedTask,
+    pub task: crate::remote_task::TrackedTask,
 }
 
 /// An item was added to the user inbox by the `user_inbox_add` tool.
@@ -798,11 +798,11 @@ pub struct SessionEvent {
 pub enum SessionEventKind {
     /// A new run was registered (state `forking`). Carries the run's full
     /// registry entry so a listener can render it without a lookup.
-    Started(Box<crate::bus::session::SessionInfo>),
+    Started(Box<crate::session::SessionInfo>),
     /// The run moved to a new lifecycle state (`running`, `idle`, or
     /// `completing`). Reaching `completed` is reported by [`Self::Completed`]
     /// instead.
-    StateChanged(crate::bus::session::SessionState),
+    StateChanged(crate::session::SessionState),
     /// The run finished, was recorded in the session store, and left the
     /// registry.
     Completed {
@@ -841,7 +841,7 @@ pub enum SessionEventKind {
         /// Tool calls executed so far this turn.
         tool_calls: u32,
         /// Updated cumulative session totals, when the caller tracks them.
-        session_totals: Option<crate::bus::usage::SessionUsageTotals>,
+        session_totals: Option<crate::usage::SessionUsageTotals>,
     },
     /// A turn's final text response.
     Response {
@@ -907,7 +907,7 @@ pub struct TurnUsageEvent {
     /// Tool calls executed so far this turn.
     pub tool_calls: u32,
     /// Updated cumulative session totals, when the caller tracks them.
-    pub session_totals: Option<crate::bus::usage::SessionUsageTotals>,
+    pub session_totals: Option<crate::usage::SessionUsageTotals>,
 }
 
 /// Where a main-conversation turn came from.
@@ -986,7 +986,7 @@ pub enum MainConversationEvent {
         sender: Option<MessageSender>,
         /// The teammate (another agent on the hub) that sent it, for a
         /// teammate's message.
-        agent_sender: Option<crate::inference::AgentSender>,
+        agent_sender: Option<residuum_inference::AgentSender>,
         /// Endpoint it arrived on.
         endpoint: String,
     },
@@ -1146,9 +1146,9 @@ pub enum WorkbenchEvent {
 pub enum WorkspaceEvent {
     /// The changes of one batch, sorted by path. Shared so every subscriber
     /// gets the batch without copying it.
-    Changed(std::sync::Arc<[crate::bus::workspace_change::WorkspaceChange]>),
+    Changed(std::sync::Arc<[crate::workspace_change::WorkspaceChange]>),
     /// Changes may have been missed; watchers must reload what they show.
-    Resync(crate::bus::workspace_change::WorkspaceResyncReason),
+    Resync(crate::workspace_change::WorkspaceResyncReason),
     /// The watcher stopped: live updates are off.
     Unavailable,
 }
@@ -1158,7 +1158,7 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::types::SkillName;
+    use crate::types::SkillName;
 
     fn make_agent_result(summary: &str, transcript: Option<&str>) -> AgentResultEvent {
         AgentResultEvent {
@@ -1297,7 +1297,7 @@ mod tests {
     #[test]
     fn agent_message_event_from_owner_is_labelled_as_the_owner() {
         let msg = AgentMessageEvent {
-            from: SessionAddress::from(crate::bus::session::OWNER_ADDRESS),
+            from: SessionAddress::from(crate::session::OWNER_ADDRESS),
             from_category: "owner".to_string(),
             content: "how's it going?".to_string(),
             hop_count: 0,
@@ -1322,7 +1322,7 @@ mod tests {
         assert_eq!(entry.content, msg.format_for_agent());
         assert_eq!(
             entry.agent_sender,
-            Some(crate::inference::AgentSender {
+            Some(residuum_inference::AgentSender {
                 address: "spawned-researcher-3f9a".to_string(),
                 category: "spawned".to_string(),
             })
@@ -1332,7 +1332,7 @@ mod tests {
     #[test]
     fn owner_message_history_entry_has_no_agent_sender() {
         let msg = AgentMessageEvent {
-            from: SessionAddress::from(crate::bus::session::OWNER_ADDRESS),
+            from: SessionAddress::from(crate::session::OWNER_ADDRESS),
             from_category: "owner".to_string(),
             content: "how's it going?".to_string(),
             hop_count: 0,
@@ -1343,8 +1343,8 @@ mod tests {
     #[test]
     fn artifact_message_is_labelled_as_the_artifact_not_the_owner_or_an_agent() {
         let msg = AgentMessageEvent {
-            from: crate::bus::session::artifact_sender_address("wiki-graph"),
-            from_category: crate::bus::session::ARTIFACT_SENDER_CATEGORY.to_string(),
+            from: crate::session::artifact_sender_address("wiki-graph"),
+            from_category: crate::session::ARTIFACT_SENDER_CATEGORY.to_string(),
             content: "refresh the index".to_string(),
             hop_count: 0,
         };
@@ -1363,7 +1363,7 @@ mod tests {
     fn teammate_message_is_labelled_as_a_teammate_with_its_reply_address() {
         let msg = AgentMessageEvent {
             from: SessionAddress::from("agent:writer/spawned-draft-3f9a"),
-            from_category: crate::bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
+            from_category: crate::session::TEAMMATE_SENDER_CATEGORY.to_string(),
             content: "chapter two is ready".to_string(),
             hop_count: 2,
         };
@@ -1386,7 +1386,7 @@ mod tests {
         assert!(text.ends_with("\nchapter two is ready"));
         assert_eq!(
             msg.to_history_message().agent_sender,
-            Some(crate::inference::AgentSender {
+            Some(residuum_inference::AgentSender {
                 address: "agent:writer/spawned-draft-3f9a".to_string(),
                 category: "teammate".to_string(),
             }),
@@ -1444,17 +1444,17 @@ mod tests {
         MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
-            origin: crate::bus::origin::MessageOrigin {
+            origin: crate::origin::MessageOrigin {
                 endpoint: "teams".to_string(),
-                sender: Some(crate::inference::MessageSender {
+                sender: Some(residuum_inference::MessageSender {
                     name: "Jane".to_string(),
                     id: "aad-jane".to_string(),
                     interface: "teams".to_string(),
                     location: Some("#builds".to_string()),
                 }),
-                conversation: Some(crate::bus::origin::ConversationContext {
+                conversation: Some(crate::origin::ConversationContext {
                     id: "19:abc@thread.tacv2".to_string(),
-                    kind: crate::bus::origin::ConversationKind::Channel,
+                    kind: crate::origin::ConversationKind::Channel,
                     is_owner: true,
                 }),
                 agent_sender: None,
@@ -1467,7 +1467,7 @@ mod tests {
 
     #[test]
     fn context_precedes_the_attributed_user_message() {
-        use crate::inference::Role;
+        use residuum_inference::Role;
 
         let messages = inbound(Some("[14:05] Sam: build is red")).into_history_messages();
         let [context, user] = messages.as_slice() else {
@@ -1483,7 +1483,7 @@ mod tests {
     #[test]
     fn agent_sender_on_the_origin_reaches_the_history_message() {
         let mut message = inbound(None);
-        message.origin.agent_sender = Some(Box::new(crate::inference::AgentSender {
+        message.origin.agent_sender = Some(Box::new(residuum_inference::AgentSender {
             address: "spawned-a".to_string(),
             category: "spawned".to_string(),
         }));
@@ -1499,7 +1499,7 @@ mod tests {
 
     #[test]
     fn without_context_only_the_user_message() {
-        use crate::inference::Role;
+        use residuum_inference::Role;
 
         let messages = inbound(None).into_history_messages();
         let [user] = messages.as_slice() else {

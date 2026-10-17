@@ -3,11 +3,9 @@
 //!
 //! The waits, gates, the paused clock, log capture, test ports and fake-tool
 //! scripts every crate shares live in `residuum_core::testing` (its
-//! `test-support` feature). A test waits on the event it checks, never on
-//! elapsed time, under that module's one hang guard. What waits on the root's
-//! own types is here:
-//!
-//! - [`bus_wait`]: waits on what the bus and the hub publish.
+//! `test-support` feature), and the bus's waits on what it publishes live in
+//! `residuum_bus::testing`. A test waits on the event it checks, never on
+//! elapsed time, under one hang guard.
 //!
 //! `source_scan` holds the tests that keep it that way: test code may not
 //! call `sleep`, `timeout` or wiremock's `set_delay` outside core's `wait`
@@ -24,7 +22,6 @@
 //! A model server and provider that answer through a gate are inference's
 //! `testing::model`, reached as `crate::inference::testing::model`.
 
-pub(crate) mod bus_wait;
 #[path = "../../crates/core/src/testing/crypto.rs"]
 mod crypto;
 mod manifest_scan;

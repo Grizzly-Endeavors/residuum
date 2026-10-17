@@ -1,3 +1,4 @@
+pub use residuum_bus as bus;
 pub use residuum_config as config;
 pub use residuum_config::agent_keys;
 pub use residuum_core::{build_info, diagnostics, process, time, util};
@@ -22,7 +23,6 @@ pub mod a2a;
 pub mod actions;
 pub mod agent;
 pub mod background;
-pub mod bus;
 pub mod checkpoints;
 pub mod daemon;
 pub mod gateway;
