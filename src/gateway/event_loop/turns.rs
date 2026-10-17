@@ -1159,8 +1159,8 @@ pub async fn handle_inbound_message(
 mod tests {
     use super::*;
     use crate::bus::Subscriber;
-    use crate::testing::bus_wait;
     use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
+    use residuum_bus::testing::{bus_barrier, next_event};
     use residuum_core::testing::wait;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
@@ -1797,7 +1797,7 @@ mod tests {
         bus: &crate::bus::BusHandle,
         sub: &mut Subscriber<E>,
     ) {
-        bus_wait::bus_barrier(bus).await;
+        bus_barrier(bus).await;
         assert!(
             sub.drain().is_empty(),
             "expected no event, but one was published"
@@ -2024,7 +2024,7 @@ mod tests {
         .await;
 
         // The bus barrier proves every event the turn published has reached `main`.
-        bus_wait::bus_barrier(&handle).await;
+        bus_barrier(&handle).await;
         match main.drain().into_iter().next() {
             Some(MainConversationEvent::TurnEnded { turn_id }) => Some(turn_id),
             _ => None,
@@ -2616,7 +2616,7 @@ mod tests {
         // ever reaching main's turn.
         let address =
             crate::background::registry::conversation_session_address("discord", "chan-1");
-        let spawn_event = bus_wait::next_event(
+        let spawn_event = next_event(
             "the group-chat message to start its own conversation session",
             &mut spawns,
         )
@@ -3190,7 +3190,7 @@ mod tests {
         gate.notify_one();
         gate.notify_one();
         let (leftovers, ended) = wait::guarded("the turn to end", turn).await.unwrap();
-        bus_wait::bus_barrier(ended.bus()).await;
+        bus_barrier(ended.bus()).await;
         events.extend(main.drain());
         let named = events
             .iter()
@@ -3303,7 +3303,7 @@ mod tests {
             0,
             "not injected as context on top of being delivered as a turn"
         );
-        bus_wait::bus_barrier(rig.bus()).await;
+        bus_barrier(rig.bus()).await;
         assert!(
             rig.subscriber.drain().is_empty(),
             "requeueing is local, not a second broadcast on the bus"

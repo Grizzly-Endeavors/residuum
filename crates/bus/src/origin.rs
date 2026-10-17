@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bus::EndpointName;
-use crate::config::WEB_UI_ENDPOINT;
-use crate::inference::{AgentSender, MessageSender};
+use crate::EndpointName;
+use residuum_config::WEB_UI_ENDPOINT;
+use residuum_inference::{AgentSender, MessageSender};
 
 /// The endpoint name of a message no interface delivered: a result relayed
 /// to the main agent, another agent's message, a delivery-failure notice.
@@ -101,7 +101,7 @@ impl MessageOrigin {
     pub fn teammate_sender(&self) -> Option<&AgentSender> {
         self.agent_sender
             .as_deref()
-            .filter(|sender| sender.category == crate::bus::session::TEAMMATE_SENDER_CATEGORY)
+            .filter(|sender| sender.category == crate::session::TEAMMATE_SENDER_CATEGORY)
     }
 }
 

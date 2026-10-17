@@ -35,7 +35,9 @@ pub struct AutoModeVerdict {
 }
 
 impl AutoModeVerdict {
-    pub(crate) fn unchecked(reason: String) -> Self {
+    /// The verdict for a check that could not run, carrying why.
+    #[must_use]
+    pub fn unchecked(reason: String) -> Self {
         Self {
             decision: AutoModeDecision::Unchecked,
             rule: None,

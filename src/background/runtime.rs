@@ -1529,9 +1529,9 @@ mod tests {
     };
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillIndex, SkillState};
-    use crate::testing::bus_wait;
     use crate::workspace::identity::IdentityFiles;
     use async_trait::async_trait;
+    use residuum_bus::testing::{bus_barrier, next_event};
     use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
 
@@ -1683,7 +1683,7 @@ mod tests {
 
         publish_conversation_typing(&publisher, None, true).await;
 
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             sub.drain().is_empty(),
             "a session with no conversation target must publish nothing"
@@ -2070,8 +2070,7 @@ mod tests {
             &register_error,
         );
 
-        let republished =
-            bus_wait::next_event("a fresh spawn request to be republished", &mut spawns).await;
+        let republished = next_event("a fresh spawn request to be republished", &mut spawns).await;
         assert_eq!(republished.address, address);
         assert_eq!(
             republished.inbound.map(|m| m.content),
@@ -2168,7 +2167,7 @@ mod tests {
             }
         }
 
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             sub.drain().is_empty(),
             "a losing registration attempt must never itself produce a published result"
@@ -2200,7 +2199,7 @@ mod tests {
         );
         gate.release(1);
 
-        let event = bus_wait::next_event("the run's result to be published", &mut sub).await;
+        let event = next_event("the run's result to be published", &mut sub).await;
         assert_eq!(event.summary, "all done");
         assert!(matches!(event.status, AgentResultStatus::Completed));
 
@@ -2264,7 +2263,7 @@ mod tests {
         ];
 
         runtime.spawn(request, Some(resources));
-        let event = bus_wait::next_event("the fork's result to be published", &mut sub).await;
+        let event = next_event("the fork's result to be published", &mut sub).await;
         assert_eq!(event.summary, "forked answer");
 
         let seen = calls.lock().unwrap().first().cloned().unwrap();
@@ -2301,7 +2300,7 @@ mod tests {
         let (runtime, mut sub) = test_runtime(3).await;
         runtime.spawn(sample_request("spawned-researcher-0003"), None);
 
-        let event = bus_wait::next_event("the run's result to be published", &mut sub).await;
+        let event = next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
     }
 
@@ -2339,7 +2338,7 @@ mod tests {
         let (runtime, mut sub) = test_runtime_with_tracing_service(3, tracing_service).await;
         runtime.spawn(sample_request("spawned-researcher-report1"), None);
 
-        let event = bus_wait::next_event("the run's result to be published", &mut sub).await;
+        let event = next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
     }
 
@@ -2379,7 +2378,7 @@ mod tests {
             Some(make_resources("all good")),
         );
 
-        let event = bus_wait::next_event("the run's result to be published", &mut sub).await;
+        let event = next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Completed));
     }
 
@@ -2441,11 +2440,10 @@ mod tests {
             bus_handle.subscribe(topics::UserMessage).await.unwrap();
         runtime.spawn(sample_request("spawned-researcher-fail1"), None);
 
-        let event = bus_wait::next_event("the run's result to be published", &mut sub).await;
+        let event = next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed =
-            bus_wait::next_event("a failed turn's relay to its spawner", &mut main_sub).await;
+        let relayed = next_event("a failed turn's relay to its spawner", &mut main_sub).await;
         assert!(
             relayed.content.contains("status: failed"),
             "the relay must say clearly that the turn failed, got: {}",
@@ -2488,12 +2486,11 @@ mod tests {
         assert_eq!(info.category, SessionCategory::Artifact);
         assert_eq!(info.spawner, None);
 
-        let event =
-            bus_wait::next_event("the artifact run's result to be published", &mut sub).await;
+        let event = next_event("the artifact run's result to be published", &mut sub).await;
         assert!(matches!(event.source, EventTrigger::Artifact(ref name) if name == "wiki"));
         assert!(matches!(event.status, AgentResultStatus::Completed));
 
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         let mut streamed = None;
         for e in session_sub.drain() {
             if let SessionEventKind::Response { content, .. } = e.kind {
@@ -2525,11 +2522,10 @@ mod tests {
         runtime.spawn(sample_request(address.as_ref()), None);
         assert!(runtime.registry.stop(&address));
 
-        let event = bus_wait::next_event("the run's result to be published", &mut sub).await;
+        let event = next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
 
-        let relayed =
-            bus_wait::next_event("a cancelled turn's relay to its spawner", &mut main_sub).await;
+        let relayed = next_event("a cancelled turn's relay to its spawner", &mut main_sub).await;
         assert!(
             relayed.content.contains("status: cancelled"),
             "the relay must say clearly that the turn was cancelled, got: {}",
@@ -2677,7 +2673,7 @@ mod tests {
 
         assert!(runtime.registry.stop(&address));
 
-        let event = bus_wait::next_event("the stopped running turn's result", &mut sub).await;
+        let event = next_event("the stopped running turn's result", &mut sub).await;
         assert!(
             matches!(event.status, AgentResultStatus::Cancelled),
             "a session stopped mid-turn must report cancelled, not completed"
@@ -2835,11 +2831,11 @@ mod tests {
 
         assert!(runtime.registry.stop(&address));
 
-        let result_event = bus_wait::next_event("the stopped run's result", &mut result_sub).await;
+        let result_event = next_event("the stopped run's result", &mut result_sub).await;
         assert!(matches!(result_event.status, AgentResultStatus::Cancelled));
 
         let spawn_event =
-            bus_wait::next_event("the pending message's resume as a new run", &mut spawn_sub).await;
+            next_event("the pending message's resume as a new run", &mut spawn_sub).await;
         assert_eq!(spawn_event.address, address);
         assert!(spawn_event.prompt.contains("don't forget this"));
     }
@@ -2889,7 +2885,7 @@ mod tests {
             }),
         );
 
-        let event = bus_wait::next_event("the panicked session's result", &mut sub).await;
+        let event = next_event("the panicked session's result", &mut sub).await;
         assert!(
             matches!(event.status, AgentResultStatus::Failed { .. }),
             "a panicked turn should be reported as failed, got {:?}",
@@ -2946,11 +2942,10 @@ mod tests {
             }),
         );
 
-        let event = bus_wait::next_event("the panicked session's result", &mut sub).await;
+        let event = next_event("the panicked session's result", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed =
-            bus_wait::next_event("a panicked turn's relay to its spawner", &mut main_sub).await;
+        let relayed = next_event("a panicked turn's relay to its spawner", &mut main_sub).await;
         assert!(
             relayed.content.contains("status: failed"),
             "the relay must say clearly that the turn failed, got: {}",
@@ -3069,7 +3064,7 @@ mod tests {
         )
         .await;
 
-        let event = bus_wait::next_event("panic recovery's result", &mut sub).await;
+        let event = next_event("panic recovery's result", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
         assert!(
             registry.get(&info.address).is_none(),
@@ -3142,7 +3137,7 @@ mod tests {
             runtime.registry.get(&address).is_none(),
             "shutdown should wait for the stopped session to finish completing"
         );
-        let event = bus_wait::next_event("the session's result after shutdown", &mut sub).await;
+        let event = next_event("the session's result after shutdown", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
     }
 
@@ -3525,7 +3520,7 @@ mod tests {
         what: &str,
     ) {
         loop {
-            let event = bus_wait::next_event(what, events).await;
+            let event = next_event(what, events).await;
             if &event.address == address
                 && matches!(
                     event.kind,
@@ -3641,7 +3636,7 @@ mod tests {
             "the session should still be live after its second turn"
         );
 
-        let event = bus_wait::next_event("the run to complete", &mut sub).await;
+        let event = next_event("the run to complete", &mut sub).await;
         assert_eq!(
             event.summary, "second done",
             "the run should complete with its second turn's own summary"
@@ -3678,7 +3673,7 @@ mod tests {
             runtime.registry.get(&address).is_none()
         })
         .await;
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             sub.drain().is_empty(),
             "a single message-driven wake should not produce a second run"
@@ -3727,7 +3722,7 @@ mod tests {
             "the session should still be live after its second turn"
         );
 
-        let event = bus_wait::next_event("the run to complete", &mut sub).await;
+        let event = next_event("the run to complete", &mut sub).await;
         assert_eq!(
             event.summary, "second done",
             "the run should complete with its second turn's own summary"
@@ -3790,7 +3785,7 @@ mod tests {
             Some(make_resources("the build is green")),
         );
 
-        let event = bus_wait::next_event(
+        let event = next_event(
             "the session's turn output to be published",
             &mut session_output,
         )
@@ -3816,8 +3811,7 @@ mod tests {
 
         runtime.spawn(request, Some(make_resources("paint is $40 a gallon")));
 
-        let event =
-            bus_wait::next_event("the fork's reply to be posted", &mut session_output).await;
+        let event = next_event("the fork's reply to be posted", &mut session_output).await;
         assert_eq!(event.conversation_id, "owner-dm");
         assert_eq!(
             event.content, "spawned-multitask-0001:\npaint is $40 a gallon",
@@ -3875,8 +3869,8 @@ mod tests {
 
         // The result is published after the run's last turn, so once it has
         // arrived any session output would already be queued.
-        bus_wait::next_event("the spawned session's result", &mut results).await;
-        bus_wait::bus_barrier(&bus_handle).await;
+        next_event("the spawned session's result", &mut results).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             session_output.drain().is_empty(),
             "a spawned session with no conversation target must never publish session output"
@@ -3978,7 +3972,7 @@ mod tests {
             "the session should still be live after its second turn"
         );
 
-        let event = bus_wait::next_event("the run to complete", &mut sub).await;
+        let event = next_event("the run to complete", &mut sub).await;
         assert_eq!(event.summary, "second turn done");
 
         // Each turn crossed the (tiny) force threshold on its own and staged
@@ -4040,7 +4034,7 @@ mod tests {
     ) -> Vec<crate::bus::SessionEvent> {
         let mut events = Vec::new();
         loop {
-            let event = bus_wait::next_event("the run to complete", sub).await;
+            let event = next_event("the run to complete", sub).await;
             let done = matches!(event.kind, SessionEventKind::Completed { .. });
             events.push(event);
             if done {
@@ -4196,7 +4190,7 @@ mod tests {
         .await;
         assert!(runtime.registry.stop(&address));
 
-        let result = bus_wait::next_event("the stopped session's result", &mut results).await;
+        let result = next_event("the stopped session's result", &mut results).await;
         assert!(
             matches!(result.status, AgentResultStatus::Cancelled),
             "an explicit stop while idle is a cancellation, got {:?}",

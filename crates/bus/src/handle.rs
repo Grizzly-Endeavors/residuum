@@ -12,7 +12,7 @@ use tracing::error;
 use super::events::NoticeEvent;
 use super::topics::{self, Carries, Topic};
 use super::types::{BusError, NotifyName, SYSTEM_CHANNEL, TopicId};
-use crate::inference::NoticeSink;
+use residuum_inference::NoticeSink;
 
 // ---------------------------------------------------------------------------
 // Type-erased event wrapper
@@ -327,8 +327,8 @@ impl<E: 'static> Drop for Subscriber<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::origin::MessageOrigin;
-    use crate::bus::{EndpointName, IntermediateEvent, MessageEvent, spawn_broker, topics};
+    use crate::origin::MessageOrigin;
+    use crate::{EndpointName, IntermediateEvent, MessageEvent, spawn_broker, topics};
 
     fn test_message(id: &str, content: &str) -> MessageEvent {
         MessageEvent {
@@ -360,7 +360,7 @@ mod tests {
 
     #[tokio::test]
     async fn noop_publisher_returns_broker_shutdown() {
-        use crate::bus::types::BusError;
+        use crate::types::BusError;
 
         let publisher = Publisher::noop();
         let result = publisher
@@ -445,7 +445,7 @@ mod tests {
         sink.notice("the main model is unavailable".to_string())
             .await;
 
-        let event = crate::testing::bus_wait::next_event("a notice", &mut notices).await;
+        let event = crate::testing::next_event("a notice", &mut notices).await;
         assert_eq!(event.message, "the main model is unavailable");
     }
 }

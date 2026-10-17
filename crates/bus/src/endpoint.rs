@@ -21,8 +21,9 @@ impl EndpointCapabilities {
     }
 
     /// Combine two capability sets.
+    #[cfg(test)]
     #[must_use]
-    pub const fn union(self, other: Self) -> Self {
+    pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 

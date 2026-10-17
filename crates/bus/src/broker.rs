@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use super::handle::{BrokerCommand, EventSender, Publisher, SendOutcome, Subscriber};
 use super::topics::{Carries, DeliveryMode, Topic};
 use super::types::{BusError, TopicId};
-use crate::util::spawn_monitored;
+use residuum_core::util::spawn_monitored;
 
 /// Command channel capacity for the broker.
 const BROKER_COMMAND_CAPACITY: usize = 256;
@@ -285,13 +285,13 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::events::{
+    use crate::events::{
         MessageEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent, WorkbenchEvent,
     };
-    use crate::bus::handle::ErasedEvent;
-    use crate::bus::origin::MessageOrigin;
-    use crate::bus::topics;
-    use crate::bus::types::{EndpointName, NotifyName, SYSTEM_CHANNEL};
+    use crate::handle::ErasedEvent;
+    use crate::origin::MessageOrigin;
+    use crate::topics;
+    use crate::types::{EndpointName, NotifyName, SYSTEM_CHANNEL};
     use residuum_core::testing::clock;
 
     fn test_timestamp() -> chrono::NaiveDateTime {

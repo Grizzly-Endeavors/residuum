@@ -2,8 +2,8 @@
 
 use tokio::sync::mpsc;
 
-use crate::bus::AgentMessageEvent;
-use crate::bus::MessageEvent;
+use crate::AgentMessageEvent;
+use crate::MessageEvent;
 
 /// An interrupt that can be injected into an in-progress agent turn.
 #[derive(Clone)]

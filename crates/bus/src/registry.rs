@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::bus::conversations::ConversationDirectory;
-use crate::config::{Config, ExternalChannelConfig, ExternalChannelKind, WEB_UI_ENDPOINT};
+use crate::conversations::ConversationDirectory;
+use residuum_config::{Config, ExternalChannelConfig, ExternalChannelKind, WEB_UI_ENDPOINT};
 
 use super::endpoint::EndpointCapabilities;
 use super::types::EndpointId;
@@ -72,7 +72,7 @@ impl EndpointRegistry {
 
     /// Conversations each running chat interface can reach.
     #[must_use]
-    pub(crate) fn conversations(&self) -> &ConversationDirectory {
+    pub fn conversations(&self) -> &ConversationDirectory {
         &self.conversations
     }
 
@@ -116,8 +116,8 @@ impl EndpointRegistry {
 
         if config.teams.is_some() {
             entries.push(EndpointEntry {
-                id: EndpointId::from(crate::config::TEAMS_ENDPOINT),
-                topic: TopicId::Endpoint(EndpointName::from(crate::config::TEAMS_ENDPOINT)),
+                id: EndpointId::from(residuum_config::TEAMS_ENDPOINT),
+                topic: TopicId::Endpoint(EndpointName::from(residuum_config::TEAMS_ENDPOINT)),
                 capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Microsoft Teams".to_string(),
             });
@@ -194,8 +194,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::config::RetryConfig;
-    use crate::config::{
+    use residuum_config::RetryConfig;
+    use residuum_config::{
         BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, ToolsConfig,
         WebSearchConfig,
     };
@@ -216,15 +216,15 @@ mod tests {
             max_tokens: 4096,
             memory: MemoryConfig::default(),
             pulse_enabled: false,
-            subconscious_settings: crate::config::SubconsciousSettings::default(),
-            learning: crate::config::LearningConfig::default(),
+            subconscious_settings: residuum_config::SubconsciousSettings::default(),
+            learning: residuum_config::LearningConfig::default(),
             gateway: GatewayConfig::default(),
             timezone: chrono_tz::UTC,
             cloud: None,
             discord: None,
             telegram: None,
             teams: None,
-            a2a: crate::config::A2aConfig::default(),
+            a2a: residuum_config::A2aConfig::default(),
             webhooks: HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             tools: ToolsConfig { dirs: vec![] },
@@ -236,9 +236,9 @@ mod tests {
             temperature: None,
             thinking: None,
             web_search: WebSearchConfig::default(),
-            tracing: crate::config::TracingConfig::default(),
+            tracing: residuum_config::TracingConfig::default(),
             role_overrides: HashMap::new(),
-            model_catalog: crate::config::ModelCatalog::default(),
+            model_catalog: residuum_config::ModelCatalog::default(),
             config_dir: PathBuf::from("/tmp"),
             load_notices: vec![],
         }
@@ -305,10 +305,10 @@ mod tests {
         let mut config = minimal_config();
         config.webhooks.insert(
             "github".to_string(),
-            crate::config::WebhookEntry {
+            residuum_config::WebhookEntry {
                 secret: None,
-                routing: crate::config::WebhookRouting::Inbox,
-                format: crate::config::WebhookFormat::Parsed,
+                routing: residuum_config::WebhookRouting::Inbox,
+                format: residuum_config::WebhookFormat::Parsed,
                 content_fields: None,
             },
         );
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn from_config_includes_discord_when_configured() {
         let mut config = minimal_config();
-        config.discord = Some(crate::config::DiscordConfig {
+        config.discord = Some(residuum_config::DiscordConfig {
             token: "test-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
@@ -361,7 +361,7 @@ mod tests {
         let held_by_a_tool = registry.clone();
         assert!(held_by_a_tool.get(&EndpointId::from("discord")).is_none());
 
-        config.discord = Some(crate::config::DiscordConfig {
+        config.discord = Some(residuum_config::DiscordConfig {
             token: "added-on-reload".to_string(),
             respond_to_others: false,
             context_messages: 20,
@@ -387,7 +387,7 @@ mod tests {
         let mut config = minimal_config();
         assert!(reg_has_teams(&config).is_none());
 
-        config.teams = Some(crate::config::TeamsConfig {
+        config.teams = Some(residuum_config::TeamsConfig {
             app_id: "app".to_string(),
             app_password: "secret".to_string(),
             tenant_id: "tenant".to_string(),

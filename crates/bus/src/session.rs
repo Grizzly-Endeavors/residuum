@@ -14,8 +14,8 @@ use ts_rs::TS;
 
 pub use events::publish_session_event;
 
-use crate::bus::{ConversationTarget, EventTrigger, PulseOverlap, SessionAddress, SkillName};
-use crate::config::ModelSelector;
+use crate::{ConversationTarget, EventTrigger, PulseOverlap, SessionAddress, SkillName};
+use residuum_config::ModelSelector;
 
 /// The well-known address of the main agent. Never present in the registry
 /// (main is not a session), but used as the `spawner` value for sessions
@@ -223,7 +223,7 @@ pub struct SessionInfo {
     /// see `SessionRegistry::accumulate_usage` in the background registry.
     /// Mirrored into the run's store record at completion so a finished
     /// run's totals survive too.
-    pub usage: crate::bus::usage::SessionUsageTotals,
+    pub usage: crate::usage::SessionUsageTotals,
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,

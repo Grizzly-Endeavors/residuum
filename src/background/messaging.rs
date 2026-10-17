@@ -1174,7 +1174,7 @@ fn pointer_note(point: &ResumePoint) -> String {
 mod tests {
     use super::*;
     use crate::bus::{EventTrigger, SkillName, Subscriber};
-    use crate::testing::bus_wait;
+    use residuum_bus::testing::{bus_barrier, next_event};
     use residuum_core::testing::wait;
     use tokio_util::sync::CancellationToken;
 
@@ -1421,7 +1421,7 @@ mod tests {
             "error message should be actionable: {err}"
         );
 
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             spawn_sub.drain().is_empty(),
             "a busy channel must never trigger a duplicate resume spawn"
@@ -1482,7 +1482,7 @@ mod tests {
 
         registry.remove(&address, &run_id);
 
-        let event = bus_wait::next_event(
+        let event = next_event(
             "the deferred resume to publish once the entry clears",
             &mut spawn_sub,
         )
@@ -1541,7 +1541,7 @@ mod tests {
             }
         }
 
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             spawn_sub.drain().is_empty(),
             "no resume should ever be published once the address is already live"
@@ -1575,8 +1575,7 @@ mod tests {
             resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
         assert!(done, "resuming is a final outcome");
 
-        let event =
-            bus_wait::next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
+        let event = next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("still there?"));
     }
@@ -1924,7 +1923,7 @@ mod tests {
 
         registry.remove(&address, &run_id);
 
-        let event = bus_wait::next_event(
+        let event = next_event(
             "the deferred resume to publish once the entry clears",
             &mut sub,
         )
@@ -2057,7 +2056,7 @@ mod tests {
             "error should name the config setting that controls the limit, got: {err}"
         );
 
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             sub.drain().is_empty(),
             "a refused message must never actually reach the target"
