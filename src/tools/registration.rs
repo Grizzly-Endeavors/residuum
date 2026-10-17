@@ -485,8 +485,8 @@ pub fn register_action_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::bus_wait;
     use crate::tools::{FileTracker, PathPolicy};
+    use residuum_bus::testing::bus_barrier;
 
     #[test]
     fn reload_timezone_tools_replaces_without_duplicating() {
@@ -540,7 +540,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "{}", result.output);
-        bus_wait::bus_barrier(bus).await;
+        bus_barrier(bus).await;
         !added.drain().is_empty()
     }
 

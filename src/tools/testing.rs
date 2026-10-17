@@ -8,8 +8,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
+use crate::agent::hop::HopLimits;
 use crate::agent::{HopCounter, ToolRegistry};
-use crate::background::HopLimits;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::session_tools::{SessionToolFactory as _, SessionToolScope};

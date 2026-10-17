@@ -1,0 +1,21 @@
+//! Notification channels: deliver events to external services and the inbox.
+//!
+//! Each notification channel subscribes to its bus topic and delivers events
+//! independently. Channels are configured in `channels.toml`.
+
+pub mod batch_aggregator;
+pub mod channel_builder;
+pub mod channels;
+pub mod external;
+#[cfg(target_os = "macos")]
+pub mod macos;
+pub mod router;
+pub mod subscriber;
+#[cfg(target_os = "windows")]
+pub mod windows;
+
+pub use channel_builder::build_external_channels;
+
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;

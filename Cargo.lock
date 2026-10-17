@@ -4982,7 +4982,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "block2",
  "chrono",
  "chrono-tz",
  "clap",
@@ -4991,30 +4990,33 @@ dependencies = [
  "dotenvy",
  "fd-lock",
  "futures-util",
- "gix",
  "globset",
  "hex",
  "iana-time-zone",
  "jsonschema",
  "mime_guess",
  "nix 0.29.0",
- "notify",
- "objc2",
- "objc2-foundation",
- "objc2-user-notifications",
  "owo-colors",
  "pulldown-cmark",
  "rand 0.8.6",
  "regex",
  "reqwest 0.13.3",
+ "residuum-agent",
+ "residuum-background",
+ "residuum-bus",
+ "residuum-checkpoints",
  "residuum-config",
  "residuum-core",
  "residuum-inference",
  "residuum-mcp",
  "residuum-memory",
  "residuum-net",
+ "residuum-notify",
+ "residuum-proactivity",
+ "residuum-protocol",
  "residuum-skills",
  "residuum-tracing-service",
+ "residuum-workspace",
  "ring",
  "rpassword",
  "rust-embed",
@@ -5023,8 +5025,6 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "serenity",
- "similar",
- "tauri-winrt-notification",
  "teloxide-core",
  "tempfile",
  "thiserror 2.0.18",
@@ -5043,6 +5043,112 @@ dependencies = [
  "uuid",
  "windows-sys 0.59.0",
  "wiremock",
+]
+
+[[package]]
+name = "residuum-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-mcp",
+ "residuum-memory",
+ "residuum-skills",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "residuum-background"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "futures-util",
+ "residuum-agent",
+ "residuum-bus",
+ "residuum-checkpoints",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-mcp",
+ "residuum-memory",
+ "residuum-notify",
+ "residuum-skills",
+ "residuum-tracing-service",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ts-rs",
+ "wiremock",
+]
+
+[[package]]
+name = "residuum-bus"
+version = "0.1.0"
+dependencies = [
+ "a2a-lf",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "mime_guess",
+ "rand 0.8.6",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-memory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "residuum-checkpoints"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gix",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-workspace",
+ "serde",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ts-rs",
 ]
 
 [[package]]
@@ -5207,6 +5313,71 @@ dependencies = [
 ]
 
 [[package]]
+name = "residuum-notify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "block2",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "objc2",
+ "objc2-foundation",
+ "objc2-user-notifications",
+ "reqwest 0.13.3",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tauri-winrt-notification",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "residuum-proactivity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "rand 0.8.6",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-workspace",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "residuum-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-inference",
+ "residuum-memory",
+ "residuum-workspace",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ts-rs",
+]
+
+[[package]]
 name = "residuum-skills"
 version = "0.1.0"
 dependencies = [
@@ -5242,6 +5413,36 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "residuum-workspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "futures-util",
+ "notify",
+ "reqwest 0.13.3",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-mcp",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "ts-rs",
+ "wiremock",
 ]
 
 [[package]]

@@ -107,7 +107,7 @@ mod tests {
             memory_dir: None,
             reload_tx: None,
             scope: crate::hub::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
         }
     }
 

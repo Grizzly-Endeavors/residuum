@@ -184,7 +184,7 @@ impl Tool for AgentKeyDeleteTool {
 mod tests {
     use super::*;
     use crate::agent_keys::AgentKeys;
-    use crate::testing::bus_wait;
+    use residuum_bus::testing::bus_barrier;
 
     #[tokio::test]
     async fn list_shows_metadata_never_values() {
@@ -243,7 +243,7 @@ mod tests {
             .unwrap();
         let tool = AgentKeyDeleteTool::new(
             std::sync::Arc::clone(&keys),
-            crate::checkpoints::test_engine(),
+            crate::checkpoints::testing::test_engine(),
         );
 
         let deleted_user_key = tool
@@ -283,7 +283,7 @@ mod tests {
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
-        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::test_engine())
+        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::testing::test_engine())
             .with_publisher(bus_handle.publisher());
 
         let result = tool
@@ -318,7 +318,7 @@ mod tests {
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
-        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::test_engine())
+        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::testing::test_engine())
             .with_publisher(bus_handle.publisher());
 
         let result = tool
@@ -327,7 +327,7 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "delete should succeed: {}", result.output);
 
-        bus_wait::bus_barrier(&bus_handle).await;
+        bus_barrier(&bus_handle).await;
         assert!(
             notices.drain().is_empty(),
             "deleting the agent's own key should not notify"

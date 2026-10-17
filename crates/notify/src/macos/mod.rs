@@ -1,0 +1,147 @@
+//! Native macOS notification channel via `UNUserNotificationCenter`.
+
+pub mod bridge;
+pub mod categories;
+pub mod permissions;
+pub mod throttle;
+
+use async_trait::async_trait;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use residuum_bus::NotificationEvent;
+
+use super::channels::NotificationChannel;
+
+#[derive(Debug, Clone)]
+pub struct MacosChannelConfig {
+    pub default_priority: categories::MacosInterruptionLevel,
+    pub throttle_window_secs: u64,
+    pub sound: bool,
+    pub app_name: String,
+    /// If unset, the "Open" action button is omitted from notifications.
+    pub web_url: Option<String>,
+}
+
+impl MacosChannelConfig {
+    /// # Errors
+    /// Returns an error if `throttle_window_secs` is zero.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.throttle_window_secs == 0 {
+            anyhow::bail!("throttle_window_secs must be positive, got 0");
+        }
+        Ok(())
+    }
+}
+
+impl Default for MacosChannelConfig {
+    fn default() -> Self {
+        Self {
+            default_priority: categories::MacosInterruptionLevel::Active,
+            throttle_window_secs: 30,
+            sound: true,
+            app_name: "Residuum".to_string(),
+            web_url: None,
+        }
+    }
+}
+
+/// `deliver()` enqueues to the batch aggregator and returns immediately —
+/// actual macOS delivery happens asynchronously after the throttle window.
+pub struct MacosNativeChannel {
+    channel_name: String,
+    batch_tx: mpsc::Sender<NotificationEvent>,
+}
+
+impl MacosNativeChannel {
+    /// # Errors
+    /// Returns an error if the macOS bridge cannot be initialized.
+    pub async fn new(
+        name: impl Into<String>,
+        config: &MacosChannelConfig,
+    ) -> anyhow::Result<(Self, JoinHandle<()>)> {
+        config.validate()?;
+
+        let channel_name = name.into();
+        let (tx, rx) = mpsc::channel(64);
+
+        let macos_bridge = bridge::MacosBridge::new(config.clone())?;
+
+        permissions::check_and_request().await;
+
+        let aggregator_handle = throttle::spawn(rx, macos_bridge, config.throttle_window_secs);
+
+        Ok((
+            Self {
+                channel_name,
+                batch_tx: tx,
+            },
+            aggregator_handle,
+        ))
+    }
+}
+
+#[async_trait]
+impl NotificationChannel for MacosNativeChannel {
+    fn name(&self) -> &str {
+        &self.channel_name
+    }
+
+    fn channel_kind(&self) -> &'static str {
+        "macos"
+    }
+
+    async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
+        self.batch_tx
+            .send(notification.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("macOS notification aggregator is not running: {e}"))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_default_values() {
+        let cfg = MacosChannelConfig::default();
+        assert_eq!(cfg.throttle_window_secs, 30);
+        assert!(cfg.sound);
+        assert_eq!(cfg.app_name, "Residuum");
+        assert!(cfg.web_url.is_none());
+        assert_eq!(
+            cfg.default_priority,
+            categories::MacosInterruptionLevel::Active
+        );
+    }
+
+    #[test]
+    fn config_validate_valid() {
+        let cfg = MacosChannelConfig::default();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn config_validate_zero_throttle() {
+        let cfg = MacosChannelConfig {
+            throttle_window_secs: 0,
+            ..MacosChannelConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "throttle 0 should fail validation");
+    }
+
+    #[test]
+    fn config_validate_accepts_any_positive_value() {
+        // There is no upper cap: 301 and other large values above the old
+        // 300 ceiling are valid.
+        for secs in [1, 300, 301, 10_000] {
+            let cfg = MacosChannelConfig {
+                throttle_window_secs: secs,
+                ..MacosChannelConfig::default()
+            };
+            assert!(cfg.validate().is_ok(), "throttle {secs} should be valid");
+        }
+    }
+}

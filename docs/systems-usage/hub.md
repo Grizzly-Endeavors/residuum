@@ -178,12 +178,20 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 
 - `residuum_core`: `util`, `time` and `diagnostics`, so `RUST_LOG=residuum_core::util::fs=trace`.
 - `residuum_config`: `config` and `agent_keys`, so `RUST_LOG=residuum_config=trace` for config loading and `RUST_LOG=residuum_config::agent_keys=trace` for the agent-key store.
+- `residuum_bus`: `bus`, so `RUST_LOG=residuum_bus=trace` for the broker and its routing.
+- `residuum_checkpoints`: `checkpoints`, so `RUST_LOG=residuum_checkpoints=trace` for the checkpoint engine and its repositories.
 - `residuum_inference`: `inference`, so `RUST_LOG=residuum_inference=trace`, or `RUST_LOG=residuum_inference::providers::anthropic=trace` for one provider.
 - `residuum_memory`: `memory`, so `RUST_LOG=residuum_memory=trace`, or `RUST_LOG=residuum_memory::search=trace` for the search index.
 - `residuum_net`: `tunnel`, `remote_access`, `pairing`, `workbench`, `browser_landing`, `cross_site` and `remote_control_guard`, so `RUST_LOG=residuum_net::tunnel=trace` for the relay tunnel and `RUST_LOG=residuum_net::remote_access=trace` for the secure tunnel's certificates and pins.
 - `residuum_skills`: `skills`, so `RUST_LOG=residuum_skills=trace`.
 - `residuum_mcp`: `mcp`, so `RUST_LOG=residuum_mcp=trace`.
 - `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
+- `residuum_workspace`: `workspace` and `inbox`, so `RUST_LOG=residuum_workspace=trace`, or `RUST_LOG=residuum_workspace::watch=trace` for the change feed.
+- `residuum_agent`: `agent` and `subconscious`, so `RUST_LOG=residuum_agent=trace` for the turn loop, or `RUST_LOG=residuum_agent::subconscious=trace` for the subconscious watch.
+- `residuum_protocol`: `protocol` and its `frames`, so `RUST_LOG=residuum_protocol::frames=trace` for the bus-to-frame conversions.
+- `residuum_notify`: `notify`, so `RUST_LOG=residuum_notify=trace` for the notification router and its channels.
+- `residuum_background`: `background`, so `RUST_LOG=residuum_background=trace` for agent sessions, or `RUST_LOG=residuum_background::team=trace` for the team router (its lines show as `background::team::router`).
+- `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.
 
 The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.

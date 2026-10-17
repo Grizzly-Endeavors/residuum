@@ -1,0 +1,307 @@
+//! macOS `UNUserNotificationCenter` FFI bridge.
+
+#![expect(
+    unsafe_code,
+    reason = "objc2 FFI for macOS UserNotifications framework"
+)]
+
+use super::MacosChannelConfig;
+use super::categories::{
+    MacosInterruptionLevel, MacosNotificationAction, NOTIFICATION_CATEGORY_ID,
+};
+use crate::batch_aggregator::{self, NotificationBridge};
+use async_trait::async_trait;
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2_foundation::{NSBundle, NSError, NSSet, NSString};
+use objc2_user_notifications::{
+    UNMutableNotificationContent, UNNotificationCategory, UNNotificationCategoryOptions,
+    UNNotificationInterruptionLevel, UNNotificationRequest, UNNotificationSound,
+    UNUserNotificationCenter,
+};
+use residuum_bus::NotificationEvent;
+
+/// Text content for a macOS notification.
+pub struct NotificationText {
+    pub title: String,
+    pub subtitle: String,
+    pub body: String,
+}
+
+/// `UNUserNotificationCenter` throws an unrecoverable `ObjC` exception if the
+/// process has no app bundle. Check `NSBundle.mainBundle.bundleIdentifier`
+/// first so we can return an error instead of crashing.
+fn require_app_bundle() -> anyhow::Result<()> {
+    let bundle = NSBundle::mainBundle();
+    if bundle.bundleIdentifier().is_none() {
+        anyhow::bail!(
+            "macOS notifications require an app bundle with a CFBundleIdentifier. \
+             Run residuum from a .app bundle or set the bundle identifier via Info.plist"
+        );
+    }
+    Ok(())
+}
+
+/// Isolates all objc2 FFI so the rest of the notification system
+/// stays platform-agnostic and testable without a macOS runtime.
+pub struct MacosBridge {
+    config: MacosChannelConfig,
+}
+
+impl MacosBridge {
+    /// # Errors
+    /// Returns an error if category registration fails.
+    pub fn new(config: MacosChannelConfig) -> anyhow::Result<Self> {
+        require_app_bundle()?;
+        let bridge = Self { config };
+        Self::register_categories();
+        Ok(bridge)
+    }
+
+    /// Must run before any notification is posted — macOS silently drops
+    /// action buttons for notifications whose category isn't registered.
+    fn register_categories() {
+        let result = std::panic::catch_unwind(|| {
+            let center = UNUserNotificationCenter::currentNotificationCenter();
+            let mut category_set: Vec<Retained<UNNotificationCategory>> = Vec::new();
+
+            {
+                let actions = MacosNotificationAction::default_actions();
+                let mut ns_actions: Vec<Retained<objc2_user_notifications::UNNotificationAction>> =
+                    Vec::new();
+
+                for action in actions {
+                    let action_id = NSString::from_str(action.action_id());
+                    let title = NSString::from_str(action.button_title());
+                    let ns_action =
+                        objc2_user_notifications::UNNotificationAction::actionWithIdentifier_title_options(
+                            &action_id,
+                            &title,
+                            objc2_user_notifications::UNNotificationActionOptions::empty(),
+                        );
+                    ns_actions.push(ns_action);
+                }
+
+                let cat_id = NSString::from_str(NOTIFICATION_CATEGORY_ID);
+                let actions_array = objc2_foundation::NSArray::from_retained_slice(&ns_actions);
+                let empty_intents: Retained<objc2_foundation::NSArray<NSString>> =
+                    objc2_foundation::NSArray::from_retained_slice(&[]);
+
+                let category =
+                    UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+                        &cat_id,
+                        &actions_array,
+                        &empty_intents,
+                        UNNotificationCategoryOptions::empty(),
+                    );
+                category_set.push(category);
+            }
+
+            let ns_set = NSSet::from_retained_slice(&category_set);
+            center.setNotificationCategories(&ns_set);
+
+            tracing::info!(
+                categories = category_set.len(),
+                "macOS notification categories registered"
+            );
+        });
+
+        if let Err(panic_val) = result {
+            let msg = panic_val
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic_val.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown");
+            tracing::warn!(
+                panic = msg,
+                "failed to register macOS notification categories"
+            );
+        }
+    }
+
+    /// # Errors
+    /// Returns an error if the `spawn_blocking` task panics.
+    #[tracing::instrument(skip_all, fields(identifier, category = category_id))]
+    pub async fn post_notification(
+        &self,
+        identifier: &str,
+        text: NotificationText,
+        category_id: &str,
+        interruption_level: MacosInterruptionLevel,
+        sound: bool,
+        thread_id: &str,
+    ) -> anyhow::Result<()> {
+        let id = identifier.to_string();
+        let cat_id = category_id.to_string();
+        let thread = thread_id.to_string();
+
+        residuum_core::util::spawn_blocking_in_span(move || {
+            post_notification_sync(&id, &text, &cat_id, interruption_level, sound, &thread);
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("notification post task failed: {e}"))?;
+
+        tracing::debug!(
+            identifier,
+            category = category_id,
+            "macOS notification submitted"
+        );
+
+        Ok(())
+    }
+
+    /// Uses a stable identifier so each new summary replaces the previous
+    /// one in Notification Center instead of stacking.
+    ///
+    /// # Errors
+    /// Returns an error if the `spawn_blocking` task panics.
+    pub async fn post_summary(
+        &self,
+        title: &str,
+        body: &str,
+        interruption_level: MacosInterruptionLevel,
+    ) -> anyhow::Result<()> {
+        let text = NotificationText {
+            title: title.to_string(),
+            subtitle: String::new(),
+            body: body.to_string(),
+        };
+        self.post_notification(
+            "residuum-batch-summary",
+            text,
+            "background-results",
+            interruption_level,
+            self.config.sound,
+            "background-results",
+        )
+        .await
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &MacosChannelConfig {
+        &self.config
+    }
+}
+
+/// Urgent results break through Focus modes; everything else uses the
+/// configured default. This is the only thing that varies the interruption
+/// level, so a channel with no urgent traffic behaves exactly as configured.
+fn interruption_level_for(urgent: bool, config: &MacosChannelConfig) -> MacosInterruptionLevel {
+    if urgent {
+        MacosInterruptionLevel::TimeSensitive
+    } else {
+        config.default_priority
+    }
+}
+
+#[async_trait]
+impl NotificationBridge for MacosBridge {
+    async fn deliver_individual(&self, notif: &NotificationEvent) {
+        let id = format!("residuum-{}", uuid::Uuid::new_v4());
+        let text = NotificationText {
+            title: self.config.app_name.clone(),
+            subtitle: notif.title.replace('_', " "),
+            body: batch_aggregator::truncate_body(&notif.content, 200),
+        };
+
+        if let Err(e) = self
+            .post_notification(
+                &id,
+                text,
+                NOTIFICATION_CATEGORY_ID,
+                interruption_level_for(notif.urgent, &self.config),
+                self.config.sound,
+                NOTIFICATION_CATEGORY_ID,
+            )
+            .await
+        {
+            tracing::warn!(
+                task = %notif.title,
+                error = %e,
+                "failed to post individual notification"
+            );
+        }
+    }
+
+    async fn deliver_summary(&self, title: &str, body: &str, urgent: bool) {
+        if let Err(e) = self
+            .post_summary(title, body, interruption_level_for(urgent, &self.config))
+            .await
+        {
+            tracing::warn!(error = %e, "failed to post summary notification");
+        }
+    }
+
+    fn app_name(&self) -> &str {
+        &self.config.app_name
+    }
+
+    fn platform_label(&self) -> &'static str {
+        "macOS"
+    }
+}
+
+/// Wraps objc2 calls in `catch_unwind` because the `ObjC` runtime can panic
+/// on missing selectors or nil center — we log rather than crash the process.
+fn post_notification_sync(
+    identifier: &str,
+    text: &NotificationText,
+    category_id: &str,
+    level: MacosInterruptionLevel,
+    sound: bool,
+    thread_id: &str,
+) {
+    let result = std::panic::catch_unwind(|| {
+        let content = UNMutableNotificationContent::new();
+
+        let ns_title = NSString::from_str(&text.title);
+        let ns_subtitle = NSString::from_str(&text.subtitle);
+        let ns_body = NSString::from_str(&text.body);
+        let ns_cat = NSString::from_str(category_id);
+        let ns_thread = NSString::from_str(thread_id);
+
+        content.setTitle(&ns_title);
+        content.setSubtitle(&ns_subtitle);
+        content.setBody(&ns_body);
+        content.setCategoryIdentifier(&ns_cat);
+        content.setThreadIdentifier(&ns_thread);
+
+        let interruption_level = match level {
+            MacosInterruptionLevel::Passive => UNNotificationInterruptionLevel::Passive,
+            MacosInterruptionLevel::Active => UNNotificationInterruptionLevel::Active,
+            MacosInterruptionLevel::TimeSensitive => UNNotificationInterruptionLevel::TimeSensitive,
+        };
+        content.setInterruptionLevel(interruption_level);
+
+        if sound {
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
+        }
+
+        let ns_id = NSString::from_str(identifier);
+        let request =
+            UNNotificationRequest::requestWithIdentifier_content_trigger(&ns_id, &content, None);
+
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+
+        let id_for_block = identifier.to_string();
+        let block = RcBlock::new(move |error: *mut NSError| {
+            if !error.is_null() {
+                let description = std::panic::catch_unwind(|| unsafe {
+                    (*error).localizedDescription().to_string()
+                })
+                .unwrap_or_else(|_| "unknown".to_string());
+                tracing::warn!(identifier = %id_for_block, error = %description, "macOS notification delivery error");
+            }
+        });
+
+        center.addNotificationRequest_withCompletionHandler(&request, Some(&block));
+    });
+
+    if result.is_err() {
+        tracing::warn!(
+            identifier,
+            category_id,
+            "panic in macOS notification posting"
+        );
+    }
+}

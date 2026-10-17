@@ -967,10 +967,10 @@ impl RemoteTaskTracker {
 mod tests {
     use super::*;
     use crate::a2a::client::hub::AgentSource;
-    use crate::background::HopLimits;
+    use crate::agent::hop::HopLimits;
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
-    use crate::testing::bus_wait;
+    use residuum_bus::testing::bus_barrier;
     use residuum_core::testing::wait;
 
     fn messenger() -> (Arc<AgentMessenger>, crate::bus::BusHandle) {
@@ -1282,7 +1282,7 @@ mod tests {
         // First failure starts the streak; under the 10-minute threshold,
         // so no user notice yet.
         tracker.note_unreachable("t1", "connection refused").await;
-        bus_wait::bus_barrier(&bus).await;
+        bus_barrier(&bus).await;
         assert!(
             notices.drain().is_empty(),
             "must not notify before the streak is 10 minutes old"
@@ -1305,7 +1305,7 @@ mod tests {
 
         // A third failure in the same streak must not renotify.
         tracker.note_unreachable("t1", "connection refused").await;
-        bus_wait::bus_barrier(&bus).await;
+        bus_barrier(&bus).await;
         assert!(
             notices.drain().is_empty(),
             "must not renotify within the same unreachable streak"
@@ -1360,7 +1360,7 @@ mod tests {
         // reported exactly once per streak, like the unreachable notice
         // itself.
         tracker.update_state("t1", "working", None, false).await;
-        bus_wait::bus_barrier(&bus).await;
+        bus_barrier(&bus).await;
         assert!(
             notices.drain().is_empty(),
             "must not renotify recovery on a later successful contact"
@@ -1396,7 +1396,7 @@ mod tests {
 
         tracker.update_state("t1", "working", None, false).await;
 
-        bus_wait::bus_barrier(&bus).await;
+        bus_barrier(&bus).await;
         assert!(
             notices.drain().is_empty(),
             "a task that was never unreachable has no recovery to report"
@@ -1551,7 +1551,7 @@ mod tests {
 
         // A poll that changes nothing Activity shows publishes nothing.
         tracker.update_state("t1", "working", None, false).await;
-        bus_wait::bus_barrier(&bus).await;
+        bus_barrier(&bus).await;
         assert!(
             events.drain().is_empty(),
             "an unchanged poll must not publish"
@@ -1571,7 +1571,7 @@ mod tests {
         bus: &crate::bus::BusHandle,
         events: &mut crate::bus::Subscriber<OutboundA2aTaskEvent>,
     ) -> Vec<TrackedTask> {
-        bus_wait::bus_barrier(bus).await;
+        bus_barrier(bus).await;
         events.drain().into_iter().map(|event| event.task).collect()
     }
 

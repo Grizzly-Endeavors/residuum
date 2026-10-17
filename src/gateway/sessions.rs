@@ -249,7 +249,7 @@ mod tests {
             Arc::clone(registry),
             bus.publisher(),
             Arc::new(SessionStore::new(dir.path().to_path_buf())),
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         );
         (messenger, bus, dir)
     }

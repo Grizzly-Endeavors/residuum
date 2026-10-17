@@ -209,23 +209,21 @@ async fn start_multitask(
                 so it only works there."
             .to_string();
     }
-    let history =
-        match crate::background::owner_session::load_main_conversation(dispatch.main_conversation)
-            .await
-        {
-            Ok(history) => history,
-            Err(e) => {
-                tracing::error!(
-                    error = format!("{e:#}"),
-                    interface,
-                    "couldn't read main's conversation for /multitask"
-                );
-                return "Couldn't read our conversation to fork it, so nothing was started. \
+    let history = match crate::background::load_main_conversation(dispatch.main_conversation).await
+    {
+        Ok(history) => history,
+        Err(e) => {
+            tracing::error!(
+                error = format!("{e:#}"),
+                interface,
+                "couldn't read main's conversation for /multitask"
+            );
+            return "Couldn't read our conversation to fork it, so nothing was started. \
                     The logs have the details."
-                    .to_string();
-            }
-        };
-    let event = crate::background::owner_session::OwnerSessionStart {
+                .to_string();
+        }
+    };
+    let event = crate::background::OwnerSessionStart {
         prompt: task,
         model: crate::config::ModelSelector::MEDIUM,
         fork_of: Some(history),
@@ -714,7 +712,7 @@ mod tests {
         let reply = fx.multitask(&owner_dm("dm-1"), "price out the paint").await;
 
         let spawn =
-            crate::testing::bus_wait::next_event("the fork's spawn request", &mut spawns).await;
+            residuum_bus::testing::next_event("the fork's spawn request", &mut spawns).await;
         assert!(reply.contains(spawn.address.as_ref()), "{reply}");
         assert_eq!(spawn.prompt, "price out the paint");
         assert_eq!(spawn.spawner, None, "its replies never go to main");

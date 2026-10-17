@@ -442,7 +442,7 @@ mod tests {
     use crate::memory::recent_messages::append_recent_messages;
     use crate::memory::reflector::{Reflector, ReflectorConfig};
     use crate::memory::search::MemoryIndex;
-    use crate::testing::bus_wait;
+    use residuum_bus::testing::{bus_barrier, next_event};
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::UTC;
 
@@ -531,8 +531,7 @@ mod tests {
             !execute_observation(&mem, &tokio_util::sync::CancellationToken::new()).await,
             "a failed cycle must not report a reload"
         );
-        let first_notice =
-            bus_wait::next_event("the first observer failure notice", &mut notices).await;
+        let first_notice = next_event("the first observer failure notice", &mut notices).await;
         assert!(
             first_notice.message.contains("observer"),
             "got: {}",
@@ -556,7 +555,7 @@ mod tests {
             !execute_observation(&mem, &tokio_util::sync::CancellationToken::new()).await,
             "backed off, so nothing should have run"
         );
-        bus_wait::bus_barrier(&handle).await;
+        bus_barrier(&handle).await;
         assert!(
             notices.drain().is_empty(),
             "must not renotify while backing off from the same failure streak"
@@ -675,7 +674,7 @@ mod tests {
         };
         execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
-        let notice = bus_wait::next_event("the published notice", &mut notices).await;
+        let notice = next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "There are no recent messages to summarize.");
     }
 
@@ -708,7 +707,7 @@ mod tests {
         };
         execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
-        let error = bus_wait::next_event("the published error", &mut errors).await;
+        let error = next_event("the published error", &mut errors).await;
         assert_eq!(
             error.message,
             "Couldn't summarize older messages. Try again."
@@ -763,7 +762,7 @@ mod tests {
         };
         execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
-        let notice = bus_wait::next_event("the published notice", &mut notices).await;
+        let notice = next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "Summarized 2 older messages.");
     }
 
@@ -804,7 +803,7 @@ mod tests {
             !execute_forced_reflection(&mem, &tokio_util::sync::CancellationToken::new()).await
         );
 
-        let error = bus_wait::next_event("the published error", &mut errors).await;
+        let error = next_event("the published error", &mut errors).await;
         assert_eq!(
             error.message,
             "Couldn't condense the memory log. Try again."
@@ -851,7 +850,7 @@ mod tests {
 
         assert!(execute_forced_reflection(&mem, &tokio_util::sync::CancellationToken::new()).await);
 
-        let notice = bus_wait::next_event("the published notice", &mut notices).await;
+        let notice = next_event("the published notice", &mut notices).await;
         assert_eq!(
             notice.message,
             "Condensed the memory log into 1 observations."
