@@ -20,7 +20,7 @@
  */
 import { expect, test as base, webkit, type Page, type Response } from "@playwright/test";
 import { FIXED_START_MS, type TimeProgress } from "../../mock/env";
-import { hubReach, pageClock, waitForApp } from "./app";
+import { hubReach, pageClock, recordFailedRequests, waitForApp } from "./app";
 import { serversOf, type MockServerKind } from "./servers";
 
 export { expect };
@@ -356,6 +356,7 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
     // Every page, the test's own and any it opens, such as a second tab.
     context.on("page", (page) => {
       waitForAppAfterLoads(page, baseURL);
+      recordFailedRequests(page, leavesLoopback);
       if (throttle !== null) throttles.push(throttlePageCpu(page, throttle));
     });
     await context.route(leavesLoopback, (route) => route.abort("blockedbyclient"));
