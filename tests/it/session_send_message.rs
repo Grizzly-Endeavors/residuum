@@ -3,14 +3,18 @@
 //! session.
 //!
 //! covers: residuum-background, residuum-tools
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
 
 use std::sync::Arc;
 
-use crate::background::testing::{
+use residuum::background::testing::{
     make_sequenced_resources, next_idle, sample_conversation_request, test_runtime_held_idle,
 };
-use crate::bus::testing::{bus_barrier, next_event};
-use crate::bus::{SessionAddress, topics};
+use residuum::bus::testing::{bus_barrier, next_event};
+use residuum::bus::{SessionAddress, topics};
 
 #[tokio::test]
 async fn a_conversation_session_s_send_message_to_its_chat_posts() {
@@ -38,19 +42,19 @@ async fn a_conversation_session_s_send_message_to_its_chat_posts() {
     }]);
     let _source = endpoints.conversations().register(
         "discord",
-        Arc::new(crate::background::testing::BuildsChannel),
+        Arc::new(residuum::background::testing::BuildsChannel),
     );
     let mut resources = make_sequenced_resources(vec!["unused"]);
-    resources.provider = Box::new(crate::background::testing::SendsToChatProvider {
+    resources.provider = Box::new(residuum::background::testing::SendsToChatProvider {
         calls: std::sync::atomic::AtomicUsize::new(0),
     });
-    resources
-        .tools
-        .register(Box::new(crate::tools::send_message::SendMessageTool::new(
+    resources.tools.register(Box::new(
+        residuum::tools::send_message::SendMessageTool::new(
             endpoints,
             bus_handle.publisher(),
             true,
-        )));
+        ),
+    ));
     let address = SessionAddress::from("external-discord-sends");
 
     runtime.spawn(

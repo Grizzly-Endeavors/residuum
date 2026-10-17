@@ -1,6 +1,15 @@
 //! What a running agent's socket says about a settings reload: every outcome
 //! of a reload of its own config, of the hub's, and of its workspace files
 //! carries a `reload` kind and a `reload_of` the web words its toast from.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
 
 use super::*;
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs scripts/affected-packages.sh over a scratch tree with three fake members and
 # checks, for each class of changed path, the packages --affected and --touched
-# print, the integration modules --covering prints, the failure of the modes that
+# print, the integration test modules --covering prints, the failure of the modes that
 # have no fallback of their own, and the graph --graph prints.
 #
 # The tree: crates/a with no workspace dependency, crates/b depending on a,
@@ -51,19 +51,18 @@ residuum-a = { workspace = true }
 EOF
 touch crates/net/src/browser_landing.rs
 
-# The integration modules, as tests/it and src/integration hold them, with the
-# covers line each carries. one covers residuum-a, two residuum-b and the root,
-# three/ (a directory module) residuum-a, and four (under src/integration)
-# residuum-b. The container files and support are not modules.
-mkdir -p tests/it/three tests/it/support tests/fixtures src/integration
+# The integration modules, as tests/it holds them, with the covers line each
+# carries. one covers residuum-a, two residuum-b and the root, three/ (a directory
+# module) residuum-a, and four residuum-b. The container files and support are
+# not modules.
+mkdir -p tests/it/three tests/it/support tests/fixtures
 printf 'mod one;\n' >tests/it/main.rs
 printf '//! covers: residuum-a\n' >tests/it/one.rs
 printf '//! covers: residuum-b, residuum\n' >tests/it/two.rs
 printf '//! covers: residuum-a\n' >tests/it/three/mod.rs
 touch tests/it/three/x.rs
 touch tests/it/support/mod.rs tests/fixtures/x
-touch src/integration/mod.rs
-printf '//! covers: residuum-b\n' >src/integration/four.rs
+printf '//! covers: residuum-b\n' >tests/it/four.rs
 
 status=0
 
@@ -161,8 +160,8 @@ while IFS='|' read -r path touched covering; do
 done <<'CASES'
 crates/a/src/lib.rs|residuum-a|it:one it:three
 crates/a/Cargo.toml|residuum-a|it:one it:three
-crates/b/src/lib.rs|residuum-b|integration:four it:two
-crates/b/Cargo.toml|residuum-b|integration:four it:two
+crates/b/src/lib.rs|residuum-b|it:four it:two
+crates/b/Cargo.toml|residuum-b|it:four it:two
 crates/net/src/lib.rs|residuum-net|
 crates/net/src/browser_landing.rs|residuum-net|
 crates/net||
@@ -171,15 +170,14 @@ web/app-shell-csp.txt||it:two
 .github/workflows/release.yml||it:two
 src/lib.rs||it:two
 src/main.rs||it:two
-src/later/x.rs||it:two
+src/daemon.rs||it:two
 tests/it/one.rs||it:one
 tests/it/three/x.rs||it:three
 tests/it/main.rs||it:ALL
 tests/it/support/mod.rs||it:ALL
 tests/fixtures/x||it:ALL
 assets/icon.png||it:ALL
-src/integration/four.rs||integration:four
-src/integration/mod.rs||integration:ALL
+tests/it/four.rs||it:four
 Cargo.toml||
 Cargo.lock||
 rust-toolchain.toml||

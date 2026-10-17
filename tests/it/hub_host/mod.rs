@@ -3,6 +3,20 @@
 //! launcher and served through the hub's HTTP wiring.
 //!
 //! covers: residuum-hub, residuum-gateway
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
+#![expect(
+    clippy::missing_assert_message,
+    reason = "test assertions name the failing condition in the assert itself"
+)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -20,23 +34,23 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use tokio::sync::broadcast;
 
-use crate::background::team::{
+use residuum::background::team::{
     A2aVisibility, Actor, AgentErrorKind, AgentState, CreateAgentRequest, LifecycleError,
     TeamDirectory,
 };
-use crate::bus::testing::bus_barrier;
-use crate::config::{HubConfig, WorkspaceLayout};
-use crate::hub::directory::AgentDirectory;
-use crate::hub::host::AgentHost;
-use crate::hub::overview::{OverviewTracker, TeamOverview};
-use crate::hub::push::{PushTriggers, TriggerInputs};
-use crate::hub::runtime::build_app;
-use crate::hub::services::HubServices;
-use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
-use crate::hub::testing::{mount_reply, write_agent};
-use crate::hub::types::{AgentActivity, AgentPatch, HubEvent, RestoreAgentRequest};
-use crate::inference::testing::model::GatedModel;
-use crate::workspace::watch::WatchHealth;
+use residuum::bus::testing::bus_barrier;
+use residuum::config::{HubConfig, WorkspaceLayout};
+use residuum::hub::directory::AgentDirectory;
+use residuum::hub::host::AgentHost;
+use residuum::hub::overview::{OverviewTracker, TeamOverview};
+use residuum::hub::push::{PushTriggers, TriggerInputs};
+use residuum::hub::runtime::build_app;
+use residuum::hub::services::HubServices;
+use residuum::hub::team_events::{TeamEventLog, TeamEventRecorder};
+use residuum::hub::testing::{mount_reply, write_agent};
+use residuum::hub::types::{AgentActivity, AgentPatch, HubEvent, RestoreAgentRequest};
+use residuum::inference::testing::model::GatedModel;
+use residuum::workspace::watch::WatchHealth;
 use residuum_core::testing::gate::Gate;
 use residuum_core::testing::ports::reserve_port;
 use residuum_core::testing::wait;
@@ -63,7 +77,7 @@ pub(crate) struct Fixture {
     /// Web Push notifications for what the agents do, over `services.push`.
     _push_triggers: PushTriggers,
     /// What the triggers decided about each thing they read, from the start.
-    push_decisions: tokio::sync::broadcast::Sender<crate::hub::push::TriggerDecision>,
+    push_decisions: tokio::sync::broadcast::Sender<residuum::hub::push::TriggerDecision>,
     /// The notices about push delivery that the triggers passed on.
     push_notices: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -108,7 +122,7 @@ impl Fixture {
         let host = AgentHost::new(
             services.clone(),
             hub,
-            Arc::new(crate::gateway::GatewayLauncher::new()),
+            Arc::new(residuum::gateway::GatewayLauncher::new()),
         );
         let team_events = TeamEventLog::new("boot-under-test");
         let recorder = TeamEventRecorder::spawn(
@@ -151,10 +165,10 @@ impl Fixture {
             &overview,
             reload_tx,
             None,
-            crate::hub::testing::fixture_assets,
+            residuum::hub::testing::fixture_assets,
         )
         .unwrap();
-        crate::util::spawn_in_span(async move {
+        residuum::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
@@ -328,7 +342,10 @@ impl Fixture {
             *health != WatchHealth::Starting
         })
         .await;
-        crate::workspace::watch::assert_native_watch(*health.borrow(), "the agent's file watcher");
+        residuum::workspace::watch::assert_native_watch(
+            *health.borrow(),
+            "the agent's file watcher",
+        );
     }
 
     /// Wait until a chat turn has a workspace checkpoint in the agent's
@@ -368,8 +385,8 @@ impl Fixture {
     /// written: the agent is stopped, which waits for them, or
     /// [`Self::wait_for_checkpoints_to_settle`] has returned.
     fn make_checkpoints_unopenable(&self, name: &str) {
-        let repo = crate::checkpoints::agent_repos_dir(
-            &crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
+        let repo = residuum::checkpoints::agent_repos_dir(
+            &residuum::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
             name,
         )
         .join("workspace.git");
@@ -624,9 +641,9 @@ async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     std::fs::create_dir_all(&outside).unwrap();
     let report = outside.join("report.txt");
     std::fs::write(&report, "the report").unwrap();
-    let id = crate::hub::file_server::FileRegistry::for_agent(
+    let id = residuum::hub::file_server::FileRegistry::for_agent(
         "scout",
-        &crate::config::WorkspaceLayout::new(hub.root.path().join("scout")),
+        &residuum::config::WorkspaceLayout::new(hub.root.path().join("scout")),
     )
     .register(report, "text/plain".to_string(), "report.txt".to_string())
     .await;
@@ -840,10 +857,10 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
         .await;
     hub.services
         .tracing_service
-        .update_config(crate::config::TracingConfig {
+        .update_config(residuum::config::TracingConfig {
             auto_error_reporting: true,
             feedback_endpoint: reports.uri(),
-            ..crate::config::TracingConfig::default()
+            ..residuum::config::TracingConfig::default()
         })
         .await;
     hub.host.start_autostart().await;
@@ -1383,7 +1400,7 @@ fn every_log_line_an_agent_produces_carries_its_agent_field() {
         .args([
             "--ignored",
             "--exact",
-            "integration::hub_host::agent_log_lines_scenario",
+            "hub_host::agent_log_lines_scenario",
             "--nocapture",
         ])
         .output()
@@ -1910,7 +1927,7 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
         .services
         .team_feed
         .bus
-        .subscribe(crate::bus::topics::Workspace)
+        .subscribe(residuum::bus::topics::Workspace)
         .await
         .unwrap();
     let mut unseen: std::collections::BTreeSet<&str> = ["wiki", "workbench"]
@@ -1923,7 +1940,7 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
     wait::guarded("the team feed to see its new directories", async {
         while !unseen.is_empty() {
             match feed.recv().await {
-                Ok(Some(crate::bus::WorkspaceEvent::Changed(changes))) => {
+                Ok(Some(residuum::bus::WorkspaceEvent::Changed(changes))) => {
                     for change in changes.iter() {
                         let in_team = change.path.strip_prefix("team/").unwrap_or_default();
                         let top = in_team.split('/').next().unwrap_or_default();
@@ -2025,7 +2042,7 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
     let model_url = hub.mock("bob").uri();
     for round in 0..12 {
         if round > 0 {
-            crate::hub::testing::write_agent(hub.root.path(), "bob", &model_url);
+            residuum::hub::testing::write_agent(hub.root.path(), "bob", &model_url);
             hub.host.adopt("bob");
         }
         // Odd rounds start with a broken model config, so the racing starts
@@ -2125,7 +2142,7 @@ async fn a_corrupt_or_truncated_config_keeps_the_last_loaded_visibility() {
 #[tokio::test]
 async fn an_agent_whose_config_never_loaded_is_private() {
     let hub = Fixture::new(&["atlas"], "").await;
-    crate::hub::testing::write_agent(hub.root.path(), "ghost", "http://127.0.0.1:1");
+    residuum::hub::testing::write_agent(hub.root.path(), "ghost", "http://127.0.0.1:1");
     std::fs::write(config_path(&hub, "ghost"), "[a2a\nvisibility = ").unwrap();
     hub.host.adopt("ghost");
 
@@ -2808,13 +2825,14 @@ mod team_events;
 
 #[tokio::test]
 async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
-    use crate::background::team::{TeamLink, TeamSendError, parse_team_address};
+    use residuum::background::team::{TeamLink, TeamSendError, parse_team_address};
 
     let hub = Fixture::new(&["alpha", "beta"], "").await;
     start_all(&hub, &["alpha", "beta"]).await;
     let link = TeamLink::new("alpha", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:beta").unwrap().unwrap();
-    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
+    let main =
+        residuum::bus::SessionAddress::from(residuum::bus::session::MAIN_ADDRESS.to_string());
 
     hub.host.stop("beta").await.unwrap();
     let stopped = link
@@ -2839,9 +2857,9 @@ async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
 /// Waits until the relay-facing list satisfies `check`, so a test doesn't
 /// depend on how the settle window lines up with the lifecycle call.
 async fn relay_list_where(
-    rx: &mut tokio::sync::watch::Receiver<Vec<crate::tunnel::AgentInfo>>,
-    check: impl Fn(&[crate::tunnel::AgentInfo]) -> bool,
-) -> Vec<crate::tunnel::AgentInfo> {
+    rx: &mut tokio::sync::watch::Receiver<Vec<residuum_net::tunnel::AgentInfo>>,
+    check: impl Fn(&[residuum_net::tunnel::AgentInfo]) -> bool,
+) -> Vec<residuum_net::tunnel::AgentInfo> {
     wait::watch_until(
         "the relay's agent list to reach the expected state",
         rx,
@@ -2854,9 +2872,9 @@ async fn relay_list_where(
 async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
     let relay_agents =
-        crate::hub::RelayAgents::spawn(Arc::clone(&hub.host) as Arc<dyn AgentDirectory>, true);
+        residuum::hub::RelayAgents::spawn(Arc::clone(&hub.host) as Arc<dyn AgentDirectory>, true);
     let mut rx = relay_agents.subscribe();
-    let enabled = |list: &[crate::tunnel::AgentInfo], name: &str| {
+    let enabled = |list: &[residuum_net::tunnel::AgentInfo], name: &str| {
         list.iter().find(|a| a.name == name).map(|a| a.a2a_enabled)
     };
 
@@ -2906,7 +2924,7 @@ async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
 async fn the_relay_agent_list_stops_announcing_agents_when_the_hub_shuts_down() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
     let relay_agents =
-        crate::hub::RelayAgents::spawn(Arc::clone(&hub.host) as Arc<dyn AgentDirectory>, true);
+        residuum::hub::RelayAgents::spawn(Arc::clone(&hub.host) as Arc<dyn AgentDirectory>, true);
     let mut rx = relay_agents.subscribe();
     hub.host.start_autostart().await;
     relay_list_where(&mut rx, |list| {

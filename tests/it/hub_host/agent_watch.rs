@@ -1,15 +1,21 @@
 //! The per-agent watcher and the turn hook against real agents: what a
 //! running agent does reaches the hub's feed of agent changes, and stops
 //! reaching it when the agent stops.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
 
 use super::*;
-use crate::background::team::{TeamLink, parse_team_address};
-use crate::bus::SessionEventKind;
-use crate::bus::session::SessionState;
-use crate::hub::agent_watch::{
+use residuum::background::team::{TeamLink, parse_team_address};
+use residuum::bus::SessionEventKind;
+use residuum::bus::session::SessionState;
+use residuum::hub::agent_watch::{
     AgentChange, AgentChangeKind, AgentChangeReceiver, MainTurnEnded, WatchedPath,
 };
-use crate::memory::types::Visibility;
+use residuum::memory::types::Visibility;
 
 /// Collect changes until one satisfies `found`, returning everything seen up
 /// to and including it.
@@ -57,7 +63,7 @@ fn agent_dir(hub: &Fixture, name: &str) -> std::path::PathBuf {
 }
 
 /// The bus of the running agent `name`.
-pub(super) fn agent_bus(hub: &Fixture, name: &str) -> crate::bus::BusHandle {
+pub(super) fn agent_bus(hub: &Fixture, name: &str) -> residuum::bus::BusHandle {
     hub.host
         .slot(name)
         .unwrap()
@@ -91,7 +97,8 @@ async fn a_started_agent_is_resynced_and_each_main_turn_is_reported_once() {
     // and, with no one connected, no client.
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
+    let main =
+        residuum::bus::SessionAddress::from(residuum::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();
@@ -219,7 +226,7 @@ async fn outbound_task_changes_on_the_agents_bus_reach_the_feed() {
     hub.host.start("scout").await.unwrap();
 
     let now = chrono::Utc::now();
-    let task = crate::bus::remote_task::TrackedTask {
+    let task = residuum::bus::remote_task::TrackedTask {
         sender_address: "main".to_string(),
         agent: "laptop".to_string(),
         task_id: "t1".to_string(),
@@ -237,10 +244,10 @@ async fn outbound_task_changes_on_the_agents_bus_reach_the_feed() {
     agent_bus(&hub, "scout")
         .publisher()
         .publish(
-            crate::bus::topics::Notification(crate::bus::NotifyName::from(
-                crate::bus::SYSTEM_CHANNEL,
+            residuum::bus::topics::Notification(residuum::bus::NotifyName::from(
+                residuum::bus::SYSTEM_CHANNEL,
             )),
-            crate::bus::OutboundA2aTaskEvent { task },
+            residuum::bus::OutboundA2aTaskEvent { task },
         )
         .await
         .unwrap();
@@ -315,8 +322,8 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
     // still published on its bus.
     bus.publisher()
         .publish(
-            crate::bus::topics::UserInbox,
-            crate::bus::UserInboxAddedEvent {
+            residuum::bus::topics::UserInbox,
+            residuum::bus::UserInboxAddedEvent {
                 item_id: "after-stop".to_string(),
             },
         )

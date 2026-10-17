@@ -5,16 +5,24 @@
 //!
 //! Each device is a fake push service that accepts everything, with the
 //! browser keys that can read what reaches it.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
 
 use super::agent_watch::agent_bus;
 use super::*;
-use crate::bus::{NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, UserInboxAddedEvent, topics};
-use crate::hub::agent_watch::AgentChangeKind;
-use crate::hub::push::{
+use residuum::bus::{
+    NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, UserInboxAddedEvent, topics,
+};
+use residuum::hub::agent_watch::AgentChangeKind;
+use residuum::hub::push::{
     Browser, PushPreferencesPatch, PutPushDeviceRequest, Trigger, TriggerDecision, TriggerInput,
     WebPushSubscription,
 };
-use crate::memory::types::Visibility;
+use residuum::memory::types::Visibility;
 
 /// One decision a test waits for, by what it is about.
 type Decided = Box<dyn Fn(&TriggerDecision) -> bool>;
@@ -174,9 +182,9 @@ async fn file_item(hub: &Fixture, agent: &str, id: &str) {
 }
 
 /// A task sent to `laptop` whose unreachable streak is eleven minutes old.
-fn outbound_task(unreachable_notified: bool) -> crate::bus::remote_task::TrackedTask {
+fn outbound_task(unreachable_notified: bool) -> residuum::bus::remote_task::TrackedTask {
     let now = Utc::now();
-    crate::bus::remote_task::TrackedTask {
+    residuum::bus::remote_task::TrackedTask {
         sender_address: "main".to_string(),
         agent: "laptop".to_string(),
         task_id: "t1".to_string(),
@@ -193,7 +201,11 @@ fn outbound_task(unreachable_notified: bool) -> crate::bus::remote_task::Tracked
     }
 }
 
-async fn announce_outbound(hub: &Fixture, agent: &str, task: crate::bus::remote_task::TrackedTask) {
+async fn announce_outbound(
+    hub: &Fixture,
+    agent: &str,
+    task: residuum::bus::remote_task::TrackedTask,
+) {
     agent_bus(hub, agent)
         .publisher()
         .publish(
@@ -447,7 +459,7 @@ async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
 
 #[tokio::test]
 async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_background_turn() {
-    use crate::background::team::{TeamLink, parse_team_address};
+    use residuum::background::team::{TeamLink, parse_team_address};
 
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
@@ -485,7 +497,8 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     let mut changes = hub.host.agent_changes().subscribe();
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
+    let main =
+        residuum::bus::SessionAddress::from(residuum::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();
@@ -493,8 +506,8 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
         let change = wait::guarded("the background turn to end", changes.recv())
             .await
             .unwrap();
-        if matches!(change.kind, crate::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn)
-            if turn.visibility == crate::memory::types::Visibility::Background)
+        if matches!(change.kind, residuum::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn)
+            if turn.visibility == residuum::memory::types::Visibility::Background)
         {
             break;
         }

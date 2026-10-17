@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [features]
+# Turns on the panic_for_test server command the hub_host integration tests send (event_loop/commands.rs).
 test-support = []
 
 [dependencies]
@@ -45,7 +46,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 toml = { workspace = true }
-tower = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 

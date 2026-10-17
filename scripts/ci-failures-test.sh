@@ -50,8 +50,8 @@ check_module_files() {
     local -A repo_files=()
     fn="$(awk '/^module_files\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
     eval "$fn"
-    for name in src/gateway.rs src/memory/mod.rs src/lib.rs tests/it/gateway.rs \
-        tests/it/memory.rs tests/it/support/mod.rs tests/ts_export.rs \
+    for name in src/daemon.rs src/logging/mod.rs src/lib.rs tests/it/daemon.rs \
+        tests/it/logging.rs tests/it/support/mod.rs tests/ts_export.rs \
         src/util/fs.rs crates/core/src/util/fs.rs tests/it/smoke.rs tests/smoke.rs \
         tests/it/nested/mod.rs tests/it/nested/inner.rs; do
         repo_files["$name"]=1
@@ -64,9 +64,9 @@ check_module_files() {
             status=1
         fi
     done <<'CASES'
-gateway::server::tests::x|src/gateway.rs tests/it/gateway.rs
-gateway::x|src/gateway.rs tests/it/gateway.rs
-memory::x|src/memory/mod.rs tests/it/memory.rs
+daemon::server::tests::x|src/daemon.rs tests/it/daemon.rs
+daemon::x|src/daemon.rs tests/it/daemon.rs
+logging::x|src/logging/mod.rs tests/it/logging.rs
 ts_export::roundtrip|tests/ts_export.rs
 smoke::x|tests/it/smoke.rs tests/smoke.rs
 nested::inner::tests::x|tests/it/nested/mod.rs tests/it/nested/inner.rs
@@ -110,16 +110,15 @@ check_package_of() {
     done <<'CASES'
 crates/memory/src/x.rs|residuum-memory
 crates/gateway/src/x.rs|residuum-gateway
-src/bus/a.rs|residuum
+src/commands/a.rs|residuum
 src/unknown.rs|residuum
-tests/it/x.rs|residuum
 tests/it/y.rs|residuum
 build.rs|residuum
 docs/x.md|
 web/src/app.ts|
 .github/workflows/web-checks.yml|
 .github/workflows/release.yml|residuum
-src/update.rs.orig|residuum
+src/daemon.rs.orig|residuum
 CASES
 }
 check_package_of
@@ -170,7 +169,7 @@ check_it_module_file() {
     local -A repo_files=()
     fn="$(awk '/^it_module_file\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
     eval "$fn"
-    for name in src/integration/four.rs src/integration/five/mod.rs tests/it/six.rs; do
+    for name in tests/it/four.rs tests/it/five/mod.rs tests/it/six.rs; do
         repo_files["$name"]=1
     done
     while IFS='|' read -r name expected; do
@@ -180,10 +179,10 @@ check_it_module_file() {
             status=1
         fi
     done <<'CASES'
-integration::four::t|src/integration/four.rs
-integration::five::tests::x|src/integration/five/mod.rs
-integration::nine::x|
-integration::four|
+four::t|tests/it/four.rs
+five::tests::x|tests/it/five/mod.rs
+nine::x|
+four|
 six::x|tests/it/six.rs
 residuum_core::x|
 CASES

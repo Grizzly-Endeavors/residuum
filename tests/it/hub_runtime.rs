@@ -4,18 +4,28 @@
 //! agents' `/api/status` and A2A cards.
 //!
 //! covers: residuum-hub, residuum-gateway
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
+#![expect(
+    clippy::missing_assert_message,
+    reason = "test assertions name the failing condition in the assert itself"
+)]
 
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use wiremock::MockServer;
 
-use crate::config::HubConfig;
-use crate::hub::directory::AgentDirectory as _;
-use crate::hub::host::AgentHost;
-use crate::hub::runtime::{HubExit, HubInputs, HubRuntime};
-use crate::hub::testing::{mount_reply, write_agent};
-use crate::hub::types::{HubEvent, NoticeLevel};
+use residuum::config::HubConfig;
+use residuum::hub::directory::AgentDirectory as _;
+use residuum::hub::host::AgentHost;
+use residuum::hub::runtime::{HubExit, HubInputs, HubRuntime};
+use residuum::hub::testing::{mount_reply, write_agent};
+use residuum::hub::types::{HubEvent, NoticeLevel};
 use residuum_core::testing::ports::reserve_port;
 
 /// What the hub said about one config reload.
@@ -36,7 +46,7 @@ struct RunningHub {
     a2a_port: u16,
     events: tokio::sync::broadcast::Receiver<HubEvent>,
     host: Arc<AgentHost>,
-    push: Arc<crate::hub::push::PushService>,
+    push: Arc<residuum::hub::push::PushService>,
     exit: JoinHandle<HubExit>,
     http: reqwest::Client,
     model: MockServer,
@@ -100,10 +110,10 @@ impl RunningHub {
         let inputs = HubInputs {
             root: root.path().to_path_buf(),
             build: residuum_core::testing::HARNESS_BUILD,
-            launcher: Arc::new(crate::gateway::GatewayLauncher::new()),
-            assets: crate::hub::testing::fixture_assets,
+            launcher: Arc::new(residuum::gateway::GatewayLauncher::new()),
+            assets: residuum::hub::testing::fixture_assets,
             on_ready: Box::new(|dir| {
-                std::fs::write(crate::config::HubPaths::new(dir).ready_file(), "ready").unwrap();
+                std::fs::write(residuum::config::HubPaths::new(dir).ready_file(), "ready").unwrap();
             }),
             log_filter: None,
         };
@@ -126,7 +136,7 @@ impl RunningHub {
             events,
             host,
             push,
-            exit: crate::util::spawn_in_span(runtime.run(false)),
+            exit: residuum::util::spawn_in_span(runtime.run(false)),
             http: reqwest::Client::new(),
             model,
         }
@@ -501,7 +511,7 @@ async fn a_hub_config_reload_that_changes_a_setting_says_what_changed() {
 #[tokio::test]
 async fn a_hub_config_reload_applies_a_changed_push_contact() {
     let mut hub = RunningHub::start().await;
-    assert_eq!(hub.push.subject(), crate::hub::push::DEFAULT_CONTACT);
+    assert_eq!(hub.push.subject(), residuum::hub::push::DEFAULT_CONTACT);
 
     let config = std::fs::read_to_string(hub.hub_config_path()).unwrap();
     std::fs::write(
@@ -522,7 +532,7 @@ async fn a_hub_config_reload_applies_a_changed_push_contact() {
         cleared.message.as_deref(),
         Some("hub configuration reloaded: push")
     );
-    assert_eq!(hub.push.subject(), crate::hub::push::DEFAULT_CONTACT);
+    assert_eq!(hub.push.subject(), residuum::hub::push::DEFAULT_CONTACT);
     hub.shut_down().await;
 }
 

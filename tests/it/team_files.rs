@@ -4,6 +4,15 @@
 //! other's changes, and whoever loses is told who changed it.
 //!
 //! covers: residuum-hub, residuum-tools, residuum-checkpoints, residuum-workspace
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
 
 use std::sync::Arc;
 
@@ -13,20 +22,20 @@ use axum::response::Response;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
-use crate::agent::ToolRegistry;
-use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
-use crate::config::paths::TeamPaths;
-use crate::hub::web::{
+use residuum::agent::ToolRegistry;
+use residuum::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
+use residuum::config::paths::TeamPaths;
+use residuum::hub::web::{
     ConfigApiState, WorkbenchApiState, WorkspaceScope, agent_repair_api_router,
     workbench_api_router,
 };
-use crate::inference::ToolResult;
-use crate::tools::testing::tools_for;
-use crate::tunnel::TunnelStatus;
-use crate::workbench::WorkbenchServing;
-use crate::workspace::team_files::TeamWriter;
-use crate::workspace::testing::TeamHub;
-use crate::workspace::version::version_token;
+use residuum::inference::ToolResult;
+use residuum::tools::testing::tools_for;
+use residuum::workspace::team_files::TeamWriter;
+use residuum::workspace::testing::TeamHub;
+use residuum::workspace::version::version_token;
+use residuum_net::tunnel::TunnelStatus;
+use residuum_net::workbench::WorkbenchServing;
 
 /// The agent `scout`'s repair routes over a hub with a team directory, as the
 /// web reaches them, and the checkpoint engine behind them.
@@ -373,7 +382,7 @@ async fn a_workbench_delete_takes_the_path_locks_and_records_the_user() {
         dir: workbench.clone(),
         serving: WorkbenchServing::Running { port: 7702 },
         tunnel_status_rx: rx,
-        checkpoints: crate::checkpoints::testing::test_engine(),
+        checkpoints: residuum::checkpoints::testing::test_engine(),
         team: Some(hub.coordinator.view_for_user(hub.agent_dir("scout"))),
     });
 

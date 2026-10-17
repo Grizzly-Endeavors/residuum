@@ -8,8 +8,8 @@
 # binaries are built and run, so a member crate's tests can be stressed:
 # `just stress -p residuum-core wait::`. Without them every package in
 # default-members is built. Every argument after them is passed to each test
-# binary, so a libtest filter narrows the run: `just stress gateway::` or
-# `scripts/stress-tests.sh integration::hub_host`.
+# binary, so a libtest filter narrows the run: `just stress logging::` or
+# `scripts/stress-tests.sh hub_host::`.
 #
 # Environment:
 #   STRESS_COPIES  copies of the suite run at once (default 2)

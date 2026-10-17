@@ -1,12 +1,22 @@
 //! The artifacts listener in front of a real hub: API calls and sockets
 //! through its port, and what a socket opened there does not count as.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
 
 use axum::http::HeaderValue;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::*;
-use crate::hub::agent_watch::{AgentChangeKind, AgentChangeReceiver, MainTurnEnded};
-use crate::workbench::HubApi;
+use residuum::hub::agent_watch::{AgentChangeKind, AgentChangeReceiver, MainTurnEnded};
+use residuum_net::workbench::HubApi;
 
 type PageSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -25,24 +35,24 @@ async fn artifacts_port(hub: &Fixture) -> String {
         &hub.overview,
         reload_tx,
         None,
-        crate::hub::testing::fixture_assets,
+        residuum::hub::testing::fixture_assets,
     )
     .unwrap();
     let api = HubApi::new();
     api.bind(app);
-    let router = crate::workbench::router(
+    let router = residuum_net::workbench::router(
         hub.root.path().join("team/workbench"),
         api,
         hub.services.pairing.clone(),
         GATEWAY_PORT,
-        crate::workbench::SdkContext {
+        residuum_net::workbench::SdkContext {
             version: "2026.09.23",
             features: &[],
         },
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    crate::util::spawn_in_span(async move {
+    residuum::util::spawn_in_span(async move {
         axum::serve(listener, router).await.unwrap();
     });
     addr

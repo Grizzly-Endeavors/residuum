@@ -612,28 +612,18 @@ fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>>
 /// Where the integration tests live, and the file that declares them. Each
 /// top-level module of `dir` (a file, or a directory with a `mod.rs`) carries
 /// one `//! covers:` line naming the packages it tests, except the `exempt`
-/// modules. A directory marked `optional` may be absent; any other must exist.
+/// modules.
 struct ModuleDir {
     dir: &'static str,
     container: &'static str,
     exempt: &'static [&'static str],
-    optional: bool,
 }
 
-const MODULE_DIRS: [ModuleDir; 2] = [
-    ModuleDir {
-        dir: "tests/it",
-        container: "main.rs",
-        exempt: &["support"],
-        optional: false,
-    },
-    ModuleDir {
-        dir: "src/integration",
-        container: "mod.rs",
-        exempt: &[],
-        optional: true,
-    },
-];
+const MODULE_DIRS: [ModuleDir; 1] = [ModuleDir {
+    dir: "tests/it",
+    container: "main.rs",
+    exempt: &["support"],
+}];
 
 /// The `name` of each member package under `root`, read from its manifest.
 fn member_packages(root: &Path) -> Result<BTreeSet<String>, String> {
@@ -790,8 +780,7 @@ fn top_level_modules(
 }
 
 /// Problems with the covers lines and the `mod` lines that declare the modules
-/// under `MODULE_DIRS`. An empty result is a pass. A missing directory fails
-/// unless it is optional.
+/// under `MODULE_DIRS`. An empty result is a pass.
 fn covers_problems(root: &Path) -> Vec<String> {
     let mut problems = Vec::new();
     let mut valid_packages = BTreeSet::from(["residuum".to_string()]);
@@ -803,9 +792,7 @@ fn covers_problems(root: &Path) -> Vec<String> {
     for module_dir in &MODULE_DIRS {
         let dir = root.join(module_dir.dir);
         if !dir.is_dir() {
-            if !module_dir.optional {
-                problems.push(format!("{} does not exist", module_dir.dir));
-            }
+            problems.push(format!("{} does not exist", module_dir.dir));
             continue;
         }
         let container_path = dir.join(module_dir.container);
@@ -975,8 +962,8 @@ mod tests {
             );
         }
         for path in [
-            "src/integration/hub_host/mod.rs",
-            "src/integration/hub_host/agent_watch.rs",
+            "tests/it/hub_host/mod.rs",
+            "tests/it/hub_host/agent_watch.rs",
             "crates/hub/src/testing.rs",
             "tests/it/smoke.rs",
         ] {
@@ -1375,9 +1362,9 @@ mod tests {
         );
     }
 
-    /// Each `tests/it` and `src/integration` module carries one canonical covers
-    /// line naming real packages, no file inside a module directory carries one,
-    /// and the `mod` lines match the files.
+    /// Each `tests/it` module carries one canonical covers line naming real
+    /// packages, no file inside a module directory carries one, and the `mod`
+    /// lines match the files.
     #[test]
     fn it_covers() {
         let problems = covers_problems(&crate_root());

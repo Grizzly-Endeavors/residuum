@@ -4,23 +4,28 @@
 //! agents shows up in logs and in the messages agents hand each other.
 //!
 //! covers: residuum-hub, residuum-gateway, residuum-tools
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 
 use serde_json::json;
 
 use super::hub_host::{Fixture, create_request, drain_events, model_was_told, user_inbox_files};
-use crate::agent::Tool as _;
-use crate::background::team::{A2aVisibility, Actor, AgentState, LifecycleError, TeamDirectory};
-use crate::hub::directory::AgentDirectory;
-use crate::hub::types::{AgentPatch, HubEvent};
-use crate::inference::ToolError;
-use crate::tools::agent_lifecycle::{AgentCreateTool, AgentDeleteTool};
+use residuum::agent::Tool as _;
+use residuum::background::team::{A2aVisibility, Actor, AgentState, LifecycleError, TeamDirectory};
+use residuum::hub::directory::AgentDirectory;
+use residuum::hub::types::{AgentPatch, HubEvent};
+use residuum::inference::ToolError;
+use residuum::tools::agent_lifecycle::{AgentCreateTool, AgentDeleteTool};
 use residuum_core::testing::log::EventLog;
 use residuum_core::testing::wait;
 
 fn lifecycle_tools(hub: &Fixture, as_agent: &str) -> (AgentCreateTool, AgentDeleteTool) {
-    let access = crate::tools::LifecycleAccess::new(hub.services.directory.clone(), as_agent);
+    let access = residuum::tools::LifecycleAccess::new(hub.services.directory.clone(), as_agent);
     (
-        AgentCreateTool::new(access.clone(), crate::agent::HopCounter::new(0)),
+        AgentCreateTool::new(access.clone(), residuum::agent::HopCounter::new(0)),
         AgentDeleteTool::new(access),
     )
 }
@@ -273,8 +278,8 @@ async fn a_user_created_agent_gets_its_role_as_the_owners_own_message() {
 async fn an_agent_created_by_an_agent_gets_its_role_as_a_teammate_message() {
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
-    let access = crate::tools::LifecycleAccess::new(hub.services.directory.clone(), "scout");
-    let create = AgentCreateTool::new(access, crate::agent::HopCounter::new(2));
+    let access = residuum::tools::LifecycleAccess::new(hub.services.directory.clone(), "scout");
+    let create = AgentCreateTool::new(access, residuum::agent::HopCounter::new(2));
 
     let result = create
         .execute(json!({ "name": "nova", "description": "keeps the wiki tidy" }))
@@ -297,8 +302,8 @@ async fn an_agent_created_by_an_agent_gets_its_role_as_a_teammate_message() {
 async fn a_create_chain_stops_at_the_hop_limit() {
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
-    let access = crate::tools::LifecycleAccess::new(hub.services.directory.clone(), "scout");
-    let create = AgentCreateTool::new(access, crate::agent::HopCounter::new(10_000));
+    let access = residuum::tools::LifecycleAccess::new(hub.services.directory.clone(), "scout");
+    let create = AgentCreateTool::new(access, residuum::agent::HopCounter::new(10_000));
     let mut events = hub.host.subscribe();
 
     let result = create

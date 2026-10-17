@@ -7,7 +7,7 @@
 //! record being marked completed leaves the record `running`, and recovery
 //! would otherwise re-run the pipeline from the same transcript. This log is
 //! the durable, O(1)-lookup source of truth [`crate::merge_writer::MemoryMergeWriter`]
-//! consults to refuse a duplicate merge, and the root's background `SessionStore`
+//! consults to refuse a duplicate merge, and background's `SessionStore`
 //! consults to backfill a recovered run's record instead of re-merging.
 
 use std::collections::HashMap;

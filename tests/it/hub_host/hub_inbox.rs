@@ -1,5 +1,10 @@
 //! The cross-agent inbox against a real host: real agents, one running and
 //! one stopped, read and changed through the hub's HTTP wiring.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 
 use super::*;
 
@@ -86,7 +91,7 @@ async fn the_hub_inbox_reads_item_times_in_the_hubs_current_timezone() {
 
 #[tokio::test]
 async fn an_active_items_text_is_read_for_a_push_and_a_moved_item_has_none() {
-    use crate::hub::inbox::{HubInboxError, active_text, archive};
+    use residuum::hub::inbox::{HubInboxError, active_text, archive};
 
     let hub = Fixture::new(&["quiet"], "").await;
     hub.add_inbox_item("quiet", "20260930_heron");

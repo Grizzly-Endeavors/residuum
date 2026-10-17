@@ -23,7 +23,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
    .githooks/install.sh
    ```
 
-If you have [`just`](https://github.com/casey/just) installed, `just setup` installs the web dependencies (step 3) and the git hooks (step 5) in one go, and `just` on its own lists everything else: `just check` runs everything CI runs except the web end-to-end suite and lists every failing check in one run, `just test gateway::` runs one root module's tests, `just test-crate memory` runs one member crate's tests (see [Workspace layout](#workspace-layout)), and `just web-mock` starts the web UI against a mock API with no backend. Every recipe wraps a command documented here, so `just` is optional.
+If you have [`just`](https://github.com/casey/just) installed, `just setup` installs the web dependencies (step 3) and the git hooks (step 5) in one go, and `just` on its own lists everything else: `just check` runs everything CI runs except the web end-to-end suite and lists every failing check in one run, `just test logging::` runs one root module's tests, `just test-crate memory` runs one member crate's tests (see [Workspace layout](#workspace-layout)), and `just web-mock` starts the web UI against a mock API with no backend. Every recipe wraps a command documented here, so `just` is optional.
 
 ## Branch & PR Workflow
 
@@ -106,7 +106,7 @@ On every push (pre-push), against the pushed commits as they are, without mergin
   - `cargo shear` reports unused dependencies, unused `[workspace.dependencies]` entries and unlinked source files, always across the whole workspace. It reads the manifests and sources and builds nothing, so it runs before the web build and whatever the other checks do. CI pins the `cargo-shear` version in `.github/workflows/rust-checks.yml`. A machine without `cargo-shear` runs the other checks, and the summary at the end says the check did not run and names the install command (`cargo install --locked cargo-shear --version <pinned>`); a different installed version runs, with a note in the summary. `just shear` runs the check and asks for the pinned version when none or another is installed.
 - When they change `web/` (Markdown under `web/` does not count, since no build or test reads it): ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest) that import a changed file. A change to `web/package.json`, the lockfile, the Vite, Vitest, Svelte or TypeScript configuration, the component test setup file, the hang guard (`web/src/test/guard.ts`) or the service worker plugin (`web/build/service-worker.ts`) runs the whole web suite.
 
-The hook runs the tests of the code you changed, not the whole suite, and CI runs the whole suite. When a change reaches code that other modules depend on (a shared helper, a trait other modules implement), run those modules' tests with `just test <filter>` (`just test-crate <crate> <filter>` for a member crate's), or the whole suite with `cargo test --quiet`, before you push. A change to a member crate runs the tests of that crate and of the member crates above it, not those of the root modules that use it; clippy still compiles the root against it.
+The hook runs the tests of the code you changed, not the whole suite, and CI runs the whole suite. When a change reaches code that other modules depend on (a shared helper, a trait other modules implement), run those modules' tests with `just test <filter>` (`just test-crate <crate> <filter>` for a member crate's), or the whole suite with `cargo test --quiet`, before you push. A change to a member crate runs that crate's tests and the `it` modules whose covers line names it, not the tests of the crates above it; clippy still compiles every crate above it against the change.
 
 Every push check runs even after one fails, and the hook ends with a summary of what failed. Do not bypass the hooks: `--no-verify` is not allowed on `git commit` or `git push`. If a hook fails, fix the issue and try again.
 
@@ -135,11 +135,11 @@ When a CI run fails, `just ci-failures` lists every failure of the latest runs f
 
 ### Testing
 
-Tests are required for new functionality. Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests are modules of the one test binary in `tests/it/`: add a file there and a `mod` line to `tests/it/main.rs`, and `cargo test --test it gateway::` runs one module. A module's leading doc comment carries exactly one `//! covers: <package>, …` line naming the packages it tests (`residuum` for the root); the pre-push hook runs the modules that cover a changed package. They share a process, so a test doesn't change environment variables, the current directory or the global tracing subscriber. Every file directly in `tests/` is a test binary of its own that links the root library and every member crate; `tests/ts_export.rs`, which writes the web app's generated types and which the type scripts run by name, is the only one. Member crates have no `tests/` directory: their tests are unit tests, and an integration test that needs one goes in `tests/it/`. Tests that need root modules from more than one layer of the crate graph (the hub's host and runtime with the gateway's launcher, the hub's team file routes with the agents' file tools, the A2A server with the tools' session tools) are modules of `src/integration/`, a `#[cfg(test)]` root module: each carries the same covers line and runs as root unit tests (`cargo test --quiet -p residuum --lib integration::hub_host::`).
+Tests are required for new functionality. Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests are modules of the one test binary in `tests/it/`: add a file there and a `mod` line to `tests/it/main.rs`, and `cargo test --test it gateway::` runs one module. A module's leading doc comment carries exactly one `//! covers: <package>, …` line naming the packages it tests (`residuum` for the root); the pre-push hook runs the modules that cover a changed package. They share a process, so a test doesn't change environment variables, the current directory or the global tracing subscriber. Every file directly in `tests/` is a test binary of its own that links the root library and every member crate; `tests/ts_export.rs`, which writes the web app's generated types and which the type scripts run by name, is the only one. Member crates have no `tests/` directory: their tests are unit tests, and an integration test that needs one goes in `tests/it/`. Tests that need crates from more than one layer of the crate graph are `it` modules too: `hub_host` and `hub_runtime` run the hub's host and runtime with the gateway's launcher, `team_files` the hub's team file routes with the agents' file tools, and `a2a_server` the A2A server with the tools' session tools.
 
 A test filter is a substring match on a test's path, and a member crate's test paths start below the crate: `residuum-memory`'s search tests are `search::tests::…`, not `memory::search::tests::…`. So `just test memory::` runs the root tests whose path contains `memory::` and none of `residuum-memory`'s. `just test-crate memory search::` (`cargo test --quiet --no-fail-fast -p residuum-memory search::`) runs them, building only that crate and the crates below it, with no web build. `just test` and `just stress` print a note when a filter's first segment names a member crate or a module inside one, and a warning when the run matched no test. For a member crate, `just test` also lists each `tests/it` module whose covers line names that crate, with the `cargo test --quiet --test it <m>::` command that runs it.
 
-A test waits on the event it checks, never on elapsed time: a duration that holds on an idle machine fails when several builds share it. A flaky test is fixed by making it wait on an event the code exposes, adding that signal to the code when there is none, never by widening a timeout, adding a sleep, or rerunning past it. The suites under load run nightly on `main`, in `.github/workflows/nightly-stress.yml`, not on pull requests or in the merge queue. The Rust suite runs once unloaded, then as two concurrent copies with CPU burners alongside, three rounds over (`scripts/stress-tests.sh`); every end-to-end spec runs three times with the browser's CPU throttled, split over four runners (`scripts/web-stress.sh` with `WEB_STRESS_ALL=1`). `scripts/stress-issues.sh` files each test that failed as an `investigate` issue titled `Nightly stress: <test>` (a root test by its path, `gateway::web::sessions::tests::…`; a member crate's with its crate first, `residuum_memory::search::tests::…`), with the run link, the commit and the failure's messages, and adds a comment to the open issue instead when one has that title, so a test that keeps failing collects its runs in one place. A run with more than ten new failing tests files one issue for the run instead, listing them all, so a broken `main` or runner does not flood the tracker. A Rust failure says whether it failed under load only, so a test waiting on time (fix the wait; a rerun that happens to pass hides it), or also in the unloaded run, an ordinary failure to fix as any failing test. A job that fails without naming a test (a broken build, a runner that went away) is filed as one issue for its suite, and a job cancelled by its timeout is filed as one saying the run did not finish. Reproduce a failure with `just stress <filter>` (`just stress -p residuum-<crate> <filter>` for a member crate's test), which runs the tests as two concurrent copies with CPU burners alongside (`STRESS_COPIES`, `STRESS_ROUNDS` and `STRESS_BURN` tune it), or `WEB_STRESS_ALL=1 just web-stress <spec>` for a spec. A test you add or fix must pass `just stress <filter>` before you push (a member crate's test: `just stress -p residuum-<crate> <filter>`); the nightly run is the backstop, not the first check. `gh workflow run nightly-stress.yml` runs the nightly suites on `main` by hand. `just stress-issues-test` checks the issue filer against the log parser's fixtures, without GitHub.
+A test waits on the event it checks, never on elapsed time: a duration that holds on an idle machine fails when several builds share it. A flaky test is fixed by making it wait on an event the code exposes, adding that signal to the code when there is none, never by widening a timeout, adding a sleep, or rerunning past it. The suites under load run nightly on `main`, in `.github/workflows/nightly-stress.yml`, not on pull requests or in the merge queue. The Rust suite runs once unloaded, then as two concurrent copies with CPU burners alongside, three rounds over (`scripts/stress-tests.sh`); every end-to-end spec runs three times with the browser's CPU throttled, split over four runners (`scripts/web-stress.sh` with `WEB_STRESS_ALL=1`). `scripts/stress-issues.sh` files each test that failed as an `investigate` issue titled `Nightly stress: <test>` (a root test by its path, `logging::format::tests::…`; a member crate's with its crate first, `residuum_memory::search::tests::…`), with the run link, the commit and the failure's messages, and adds a comment to the open issue instead when one has that title, so a test that keeps failing collects its runs in one place. A run with more than ten new failing tests files one issue for the run instead, listing them all, so a broken `main` or runner does not flood the tracker. A Rust failure says whether it failed under load only, so a test waiting on time (fix the wait; a rerun that happens to pass hides it), or also in the unloaded run, an ordinary failure to fix as any failing test. A job that fails without naming a test (a broken build, a runner that went away) is filed as one issue for its suite, and a job cancelled by its timeout is filed as one saying the run did not finish. Reproduce a failure with `just stress <filter>` (`just stress -p residuum-<crate> <filter>` for a member crate's test), which runs the tests as two concurrent copies with CPU burners alongside (`STRESS_COPIES`, `STRESS_ROUNDS` and `STRESS_BURN` tune it), or `WEB_STRESS_ALL=1 just web-stress <spec>` for a spec. A test you add or fix must pass `just stress <filter>` before you push (a member crate's test: `just stress -p residuum-<crate> <filter>`); the nightly run is the backstop, not the first check. `gh workflow run nightly-stress.yml` runs the nightly suites on `main` by hand. `just stress-issues-test` checks the issue filer against the log parser's fixtures, without GitHub.
 
 #### Waiting in tests
 
@@ -179,7 +179,7 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | crate | directory | holds | depends on |
 |---|---|---|---|
 | `residuum-core` | `crates/core` | `util` (atomic file writes and other filesystem primitives, spawn helpers, frontmatter parsing, backoff, `${VAR}` expansion, secret comparison), `time`, the diagnostic types (`Diagnostic`, `Location`, `Severity`), `build_info` (`BuildInfo`, the build's version and commit), `process` (process-tree management and the shell runner), and `testing` behind `test-support` | — |
-| `residuum-config` | `crates/config` | `config` (loading, resolution, patching, the secret store, paths), `agent_keys`, `WorkspaceLayout`, and the plain data types config resolves (`ThinkingConfig`, `RetryConfig`, `SkillDir`, `SharedToolsPath`) | core |
+| `residuum-config` | `crates/config` | `config` (loading, resolution, patching, the secret store, paths), `agent_keys`, `WorkspaceLayout`, `channels` (the parsed `channels.toml` entries), and the plain data types config resolves (`ThinkingConfig`, `RetryConfig`, `SkillDir`, `SharedToolsPath`) | core |
 | `residuum-skills` | `crates/skills` | `skills`: the skill index, the `SKILL.md` parser and diagnostics, skill state | core, config |
 | `residuum-inference` | `crates/inference` | `inference`: the providers, the provider chain and failover, embeddings, the System One client, the tool-call result types (`ToolError`, `ToolResult`), and `testing::model` behind `test-support` | core, config |
 | `residuum-tracing-service` | `crates/tracing-service` | `tracing_service`: trace export to OTEL endpoints, sanitizing, bug-report submission, and `client_context` (the metadata attached to a submission) | core, config |
@@ -199,35 +199,51 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-notify` | `crates/notify` | `notify`: the notification channels (ntfy, webhook, the inbox, and the native macOS and Windows channels), the router and the subscriber, and `channel_builder`, whose `build_external_channels` is re-exported at the crate root | core, config, bus, workspace |
 | `residuum-hub` | `crates/hub` | `hub`: the agent host, the agent directory, provisioning, the hub's HTTP app and WebSocket (`http`), the web routes it serves and the embedded app's file type (`web`), `file_server`, `launch` (the `AgentLauncher` trait and the types the launcher hands back), push, the overview and the team event log, `update`, `features`, `config_watcher` and `last_known_good`, and `testing` behind `test-support` | core, config, bus, inference, tracing-service, memory, mcp, net, workspace, checkpoints, proactivity, agent, background, a2a, protocol, interfaces |
 | `residuum-gateway` | `crates/gateway` | `gateway`: a running agent's event loop, startup, reload and routes, the agent's `web` routes (sessions, scheduled, memory, model, the A2A status routes, the inbox), the WebSocket subscriber (`websocket`), `turn_journal`, and `GatewayLauncher`, which implements the hub's `AgentLauncher` | core, config, bus, inference, memory, net, mcp, a2a, tools, skills, tracing-service, agent, background, interfaces, workspace, protocol, notify, proactivity, checkpoints, hub |
-| `residuum` | `.` | everything else: `daemon`, `wiring`, `logging`, `setup_wizard`, the `commands` of the binary, and the facade over the member crates | every member |
+| `residuum` | `.` | the `residuum` binary and its `commands`, `daemon`, `wiring` (the embedded `web/dist`, and `run_hub`, which runs the hub with the gateway's launcher), `logging`, `setup_wizard`, `BUILD_INFO` and `build.rs`, the facade over the member crates, and `testing` (the source and manifest scans and the wall-clock backlog, `#[cfg(test)]`) | every member |
 
 ```
-                 residuum-gateway
-                         │
-             residuum-hub               residuum-tools
-         ┌─────────┴────────┐                 │
-residuum-interfaces    residuum-a2a ◄─────────┘
-         │                  │
-residuum-background ────────┘
-        │
-residuum-agent    residuum-checkpoints    residuum-protocol    residuum-notify
-        │                  │                      │                   │
-        └────────┬─────────┴──────────────────────┴───────────────────┘
-             residuum-workspace
-        │
-residuum-bus    residuum-proactivity
-        │
-residuum-memory     residuum-mcp
-       │                  │
-       └────────┬─────────┘
-       residuum-inference    residuum-skills    residuum-tracing-service    residuum-net
-                │                   │                      │                      │
-                └────────── residuum-config ───────────────┴──────────────────────┘
-                                    │
-                              residuum-core
+                      residuum-gateway
+              ┌──────────────┴──────────────┐
+         residuum-hub                 residuum-tools
+      ┌───────┴────────┐                    │
+residuum-interfaces  residuum-a2a ◄─────────┘
+      │                │
+      └───────┬────────┘
+     residuum-background
+              │
+       residuum-agent    residuum-checkpoints    residuum-protocol    residuum-notify
+              │                   │                      │                   │
+              └───────────────────┴──────────┬───────────┴───────────────────┘
+                                     residuum-workspace    residuum-proactivity
+                                             │                      │
+                                             └──────────┬───────────┘
+                                                   residuum-bus
+                                                        │
+                                                 residuum-memory     residuum-mcp
+                                                        │                  │
+                                                        └────────┬─────────┘
+       residuum-skills    residuum-tracing-service      residuum-inference      residuum-net
+              │                       │                          │                    │
+              └───────────────────────┴───────────┬──────────────┴────────────────────┘
+                                           residuum-config
+                                                  │
+                                            residuum-core
 ```
 
-The diagram draws the chain of dependencies that sets the layers; each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw (`residuum-background` also depends on most of the crates below it, `residuum-agent` also depends on `residuum-bus`, `residuum-memory`, `residuum-mcp` and `residuum-skills`, `residuum-interfaces` also depends on `residuum-net`, `residuum-bus` and `residuum-inference`, `residuum-workspace` on `residuum-mcp` and `residuum-inference`, `residuum-protocol` on `residuum-bus` and `residuum-inference`, `residuum-proactivity` on `residuum-bus` alone, `residuum-a2a` also on `residuum-agent`, `residuum-bus`, `residuum-workspace`, `residuum-skills`, `residuum-proactivity`, `residuum-net` and `residuum-inference`, `residuum-hub` also on `residuum-protocol`, `residuum-proactivity`, `residuum-checkpoints`, `residuum-agent`, `residuum-workspace`, `residuum-bus`, `residuum-memory`, `residuum-mcp`, `residuum-inference`, `residuum-tracing-service` and `residuum-net`, `residuum-tools` also on `residuum-background`, `residuum-agent`, `residuum-checkpoints`, `residuum-proactivity`, `residuum-workspace`, `residuum-bus`, `residuum-memory`, `residuum-skills`, `residuum-tracing-service` and `residuum-inference`, and `residuum-bus` on `residuum-inference`).
+The diagram draws the chain of dependencies that sets the layers. Each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw. Every crate above `residuum-config` except `residuum-protocol` depends on `residuum-config` and `residuum-core` directly (`residuum-protocol` dev-depends on `residuum-config`). Besides those two, the edges the diagram leaves out are:
+
+- `residuum-gateway` on every other member.
+- `residuum-hub` on `residuum-background`, `residuum-agent`, `residuum-protocol`, `residuum-proactivity`, `residuum-checkpoints`, `residuum-workspace`, `residuum-bus`, `residuum-memory`, `residuum-mcp`, `residuum-inference`, `residuum-tracing-service` and `residuum-net`.
+- `residuum-tools` on `residuum-background`, `residuum-agent`, `residuum-checkpoints`, `residuum-proactivity`, `residuum-workspace`, `residuum-bus`, `residuum-memory`, `residuum-skills`, `residuum-tracing-service` and `residuum-inference`.
+- `residuum-interfaces` on `residuum-checkpoints`, `residuum-workspace`, `residuum-bus`, `residuum-inference` and `residuum-net` (dev: `residuum-memory`).
+- `residuum-a2a` on `residuum-agent`, `residuum-proactivity`, `residuum-workspace`, `residuum-bus`, `residuum-skills`, `residuum-inference` and `residuum-net`.
+- `residuum-background` on `residuum-checkpoints`, `residuum-workspace`, `residuum-bus`, `residuum-memory`, `residuum-mcp`, `residuum-skills`, `residuum-inference` and `residuum-tracing-service` (dev: `residuum-notify`).
+- `residuum-agent` on `residuum-bus`, `residuum-memory`, `residuum-mcp`, `residuum-skills` and `residuum-inference`.
+- `residuum-checkpoints` and `residuum-notify` on `residuum-bus`.
+- `residuum-protocol` on `residuum-bus` and `residuum-inference` (dev: `residuum-memory`).
+- `residuum-workspace` on `residuum-mcp` and `residuum-inference`.
+- `residuum-proactivity` dev-depends on `residuum-workspace`.
+- `residuum-bus` on `residuum-inference`.
 
 Only the root has a build script and embeds `web/dist`, so every member crate builds and tests without a web build. The root alone reads the build variables (`RESIDUUM_VERSION` and `RESIDUUM_GIT_COMMIT`, set by `build.rs`), and only into `residuum::BUILD_INFO`; everything else takes a `BuildInfo` (or its `version`) as a parameter, and `testing::source_scan` enforces this. `include_str!` and `CARGO_MANIFEST_DIR` paths in a member reach the repository's `assets/` and `web/` from the crate's directory (`../../../assets/…` from `crates/config/src/`). A file a member embeds from outside its own directory and outside `assets/` is not covered by that: `crates/net/src/browser_landing.rs` embeds `web/src/styles/tokens.css`, and such a path must appear in `RUST_PATHS_RE` in both `.github/workflows/ci.yml` and `.githooks/pre-push`, be classified to its crate in `classify_path` in `scripts/affected-packages.sh`, and have an arm in the pre-push hook's `plan_rust_tests` (for `tokens.css`, `residuum-net`). A file a test reads by path follows the same rule: `web/app-shell-csp.txt` and `.github/workflows/release.yml` belong to `residuum-hub` when it is a member crate with the file that reads each (`crates/hub/src/web/assets.rs`, `crates/hub/src/update.rs`), and to the root otherwise. Without the `RUST_PATHS_RE` entry, CI runs no Rust checks for a change to that file alone, so a breakage can reach `main`.
 
@@ -250,12 +266,12 @@ A new member therefore needs its `crates/<dir>/Cargo.toml` written to these rule
 
 ### The root facade
 
-`src/lib.rs` gives each module that lives in a member crate its module name in the root, with one alias each: `pub use residuum_memory as memory;`, `pub use residuum_core::{build_info, diagnostics, process, time, util};`, `pub use residuum_config::agent_keys;`, `pub use residuum_net::{pairing, remote_access};`, `pub(crate) use residuum_net::{tunnel, workbench};`, and so on. `crate::memory::…` in the root and `residuum::memory::…` in `commands/` and `tests/` resolve to the member crate.
+`src/lib.rs` gives each member crate, or each module of a member that the root names on its own, a module name in the root, with one alias each: `pub use residuum_memory as memory;`, `pub use residuum_core::{build_info, diagnostics, process, time, util};`, `pub use residuum_config::agent_keys;`, `pub use residuum_net::{pairing, remote_access};`, `pub use residuum_agent::subconscious;`, and so on. `crate::memory::…` in the root and `residuum::memory::…` in `commands/` and `tests/` resolve to the member crate.
 
 - Each name at the root is either a local module or exactly one alias in `src/lib.rs`. An alias names a whole crate, or one whole module of a crate, under its module name; nothing forwards a single item. No local module glob-imports another crate's items into its own, since a local item silently shadows a glob import.
 - Root code names a member's items through the aliases: `crate::memory::…`, and `crate::agent_keys::…` rather than `crate::config::agent_keys::…`. The exception is core's `testing`, which has no alias because the root has a `testing` module of its own, so root tests name it `residuum_core::testing::…`.
 - Member crates name each other by crate (`residuum_config::Config`), never through a `use` that makes `crate::config` resolve to another crate.
-- An alias is `pub` when the binary (`commands/`) or `tests/` names the module through `residuum::…`, and `pub(crate)` otherwise: `tunnel` and `workbench` are `pub(crate)`. An integration test that needs one of their types names the crate directly (`tests/ts_export.rs` imports `residuum_net::workbench::ArtifactSummary`).
+- An alias is `pub` when the binary (`commands/`) or `tests/` names the module through `residuum::…`, and `pub(crate)` otherwise; every alias in `src/lib.rs` is `pub`. A module that only tests use has no alias, and the tests name its crate directly: `residuum-net`'s `tunnel` and `workbench` are reached as `residuum_net::tunnel` and `residuum_net::workbench` (`tests/ts_export.rs` imports `residuum_net::workbench::ArtifactSummary`).
 
 ### Public API
 

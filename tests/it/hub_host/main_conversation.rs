@@ -1,12 +1,26 @@
 //! The main conversation as a web client sees it, against a real hub: every
 //! main-agent turn reaches an open WebSocket in order, whichever endpoint
 //! started it, and a person's message is announced wherever it enters.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
+#![expect(
+    clippy::missing_assert_message,
+    reason = "test assertions name the failing condition in the assert itself"
+)]
 
 use super::agent_watch::agent_bus;
 use super::*;
-use crate::bus::origin::MessageOrigin;
-use crate::bus::{MessageEvent, topics};
-use crate::inference::MessageSender;
+use residuum::bus::origin::MessageOrigin;
+use residuum::bus::{MessageEvent, topics};
+use residuum::inference::MessageSender;
 
 type AgentSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -107,13 +121,14 @@ async fn deliver(hub: &Fixture, agent: &str, message: MessageEvent) {
 
 /// A teammate's message to `agent`, which starts a background turn.
 async fn message_from_teammate(hub: &Fixture, agent: &str, text: &str) {
-    use crate::background::team::{TeamLink, parse_team_address};
+    use residuum::background::team::{TeamLink, parse_team_address};
 
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address(&format!("agent:{agent}"))
         .unwrap()
         .unwrap();
-    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
+    let main =
+        residuum::bus::SessionAddress::from(residuum::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, text.to_string(), 0)
         .await
         .unwrap();
