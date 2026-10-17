@@ -502,12 +502,19 @@ describe("session commands and lifecycle", () => {
     ]);
   });
 
-  it("drops what a stopped turn hadn't read", () => {
+  it("resumes a stopped run with what its turn hadn't read, as the backend does", () => {
     sendSessionMessage(state, reply, "c13", DISCORD, "status?");
     sendSessionMessage(state, reply, "c14", DISCORD, "and this?");
     stopSession(state, reply, "c15", DISCORD);
     vi.advanceTimersByTime(5000);
-    expect(types(frames).filter((type) => type === "session_user_message")).toHaveLength(1);
+    const resumed = frames.find((frame) => frame.type === "session_started");
+    expect(resumed).toMatchObject({ session: { address: DISCORD } });
+    const resumedRun = resumed?.type === "session_started" ? resumed.session.run_id : null;
+    expect(resumedRun).not.toBe("run-live-discord");
+    expect(frames.filter(isRead).map((frame) => [frame.run_id, frame.content])).toEqual([
+      ["run-live-discord", "status?"],
+      [resumedRun, "and this?"],
+    ]);
   });
 
   it("drops the reply of a turn whose session was stopped mid-turn", () => {

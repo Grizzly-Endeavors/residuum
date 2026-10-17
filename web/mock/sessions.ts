@@ -71,7 +71,10 @@ function completeSession(
   errorDetails: string | null = null,
 ): void {
   const { sessions } = state;
-  // A stop ends the turn in flight, with what it hadn't read.
+  // A run's end ends the turn in flight. What it hadn't read resumes the
+  // session as a new run once this one has gone, as the backend's
+  // `finish_run` does.
+  const unread = sessions.turns.get(session.run_id)?.unread.splice(0) ?? [];
   sessions.turns.delete(session.run_id);
   setSessionState(state, session, "completing");
   state.env.after(800, () => {
@@ -89,6 +92,8 @@ function completeSession(
       error_details: errorDetails,
       episode_id: session.episode_id,
     });
+    if (unread.length > 0)
+      resumeRun(state, session, { runIdPrefix: "run-resumed", messages: unread });
   });
 }
 
@@ -264,11 +269,11 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
   return session;
 }
 
-/** Bring a finished session back as a new run, whose first turn reads `message`. */
+/** Bring a finished session back as a new run, whose first turn reads `messages`. */
 function resumeRun(
   state: MockState,
   prev: SessionSummary,
-  options: { runIdPrefix: string; message: UnreadSessionMessage },
+  options: { runIdPrefix: string; messages: readonly UnreadSessionMessage[] },
 ): SessionSummary {
   const { sessions } = state;
   sessions.runCounter++;
@@ -285,7 +290,7 @@ function resumeRun(
   sessions.live.unshift(session);
   state.broadcast({ type: "session_started", session });
   state.env.after(400, () => {
-    runSessionTurn(state, session, options.message.reply, [options.message]);
+    runSessionTurn(state, session, "Picking this back up.", options.messages);
   });
   return session;
 }
@@ -331,12 +336,14 @@ export function sendSessionMessage(
   state.env.after(300, () => {
     resumeRun(state, prev, {
       runIdPrefix: "run-resumed",
-      message: ownerMessage(
-        state,
-        undefined,
-        content,
-        "Picking this back up. Here's where it stands now.",
-      ),
+      messages: [
+        ownerMessage(
+          state,
+          undefined,
+          content,
+          "Picking this back up. Here's where it stands now.",
+        ),
+      ],
     });
   });
 }
@@ -590,7 +597,7 @@ async function messageSessionRoute(ctx: RouteContext): Promise<void> {
     );
     return;
   }
-  resumeRun(state, prev, { runIdPrefix: "run-resumed-http", message });
+  resumeRun(state, prev, { runIdPrefix: "run-resumed-http", messages: [message] });
   json(res, 200, { outcome: "resumed" satisfies SessionDeliveryOutcome, id: message.id });
 }
 

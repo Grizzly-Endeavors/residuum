@@ -373,6 +373,10 @@ export class SessionRun {
           this.closeTurn(this.activeTurnId, asked ? "stopped" : "interrupted");
         }
         this.stopping = false;
+        // The backend resumes a run's unread messages as a new run once it
+        // ends (`finish_run`); the panel follows that run, whose reads
+        // resolve them.
+        if (this.waiting.length > 0) this.followNextRun = true;
         this.pushStatus(
           frame.status === "failed" ? "error" : "info",
           runOutcomeText(frame.status, frame.error),

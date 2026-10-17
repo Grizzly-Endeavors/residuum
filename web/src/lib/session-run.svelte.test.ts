@@ -449,6 +449,50 @@ describe("a message waiting for the session to read it", () => {
     expect(lines(run).slice(-3)).toEqual(["Delivered.", "Here's what I found.", "Now summarize."]);
   });
 
+  /** The run ends, cancelled: what a Stop ends with. */
+  const completed = (relay: FakeRelay, runId = "run-1"): void => {
+    relay.relay("atlas", {
+      type: "session_completed",
+      address: ADDRESS,
+      run_id: runId,
+      status: "cancelled",
+      error: null,
+      error_details: null,
+      episode_id: null,
+    });
+  };
+
+  it("follows the new run that reads a message its stopped run left unread", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    completed(relay);
+    expect(run.waiting.map((message) => message.id)).toEqual([id]);
+
+    // The backend resumes the unread message as a new run.
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    turn(relay, "session_turn_started", "run-2-t1", "run-2");
+    read(relay, { id, content: "Also check the logs.", turnId: "run-2-t1", runId: "run-2" });
+
+    expect(run.runId).toBe("run-2");
+    expect(run.waiting).toEqual([]);
+    // It opens the new run's first turn, after the divider.
+    expect(run.items.slice(-2).map((item) => item.kind)).toEqual(["divider", "user"]);
+    expect(run.items.at(-1)).toMatchObject({
+      content: "Also check the logs.",
+      turnId: "run-2-t1",
+      messageId: id,
+    });
+    expect(run.items.at(-1)).not.toHaveProperty("midTurn");
+  });
+
+  it("stays on a run that ends with nothing of its waiting", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    completed(relay);
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    expect(run.runId).toBe("run-1");
+  });
+
   it("shows what other senders sent the session where it read them", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
     turn(relay, "session_turn_started", "t1");
