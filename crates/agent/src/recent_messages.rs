@@ -137,20 +137,9 @@ impl RecentMessages {
 )]
 mod tests {
     use super::*;
-    use residuum_inference::Role;
 
     fn push_user_msg(recent: &mut RecentMessages, content: &str) {
-        recent.push(Message {
-            role: Role::User,
-            content: content.to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-            images: Vec::new(),
-            sender: None,
-            agent_sender: None,
-            thinking: Vec::new(),
-            id: None,
-        });
+        recent.push(Message::user(content));
     }
 
     #[test]
@@ -192,50 +181,23 @@ mod tests {
     }
 
     fn push_assistant_msg(recent: &mut RecentMessages, content: &str) {
-        recent.push(Message {
-            role: Role::Assistant,
-            content: content.to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-            images: Vec::new(),
-            sender: None,
-            agent_sender: None,
-            thinking: Vec::new(),
-            id: None,
-        });
+        recent.push(Message::assistant(content, None));
     }
 
     fn push_tool_msg(recent: &mut RecentMessages, content: &str) {
-        recent.push(Message {
-            role: Role::Tool,
-            content: content.to_string(),
-            tool_calls: None,
-            tool_call_id: Some("call_1".to_string()),
-            images: Vec::new(),
-            sender: None,
-            agent_sender: None,
-            thinking: Vec::new(),
-            id: None,
-        });
+        recent.push(Message::tool(content, "call_1"));
     }
 
     fn push_assistant_with_tools(recent: &mut RecentMessages) {
-        recent.push(Message {
-            role: Role::Assistant,
-            content: String::new(),
-            tool_calls: Some(vec![residuum_inference::ToolCall {
+        recent.push(Message::assistant(
+            String::new(),
+            Some(vec![residuum_inference::ToolCall {
                 id: "call_1".to_string(),
                 name: "exec".to_string(),
                 arguments: serde_json::json!({"command": "echo test"}),
                 server: None,
             }]),
-            tool_call_id: None,
-            images: Vec::new(),
-            sender: None,
-            agent_sender: None,
-            thinking: Vec::new(),
-            id: None,
-        });
+        ));
     }
 
     #[test]

@@ -4578,7 +4578,7 @@ mod tests {
             .and_then(|t| t.as_array())
             .cloned()
             .unwrap();
-        let opening: Vec<(Option<&str>, Option<&str>)> = transcript
+        let opening: Vec<(Option<&str>, Option<&str>, Option<bool>)> = transcript
             .iter()
             .take(3)
             .map(|entry| {
@@ -4587,18 +4587,27 @@ mod tests {
                     entry
                         .pointer("/agent_sender/address")
                         .and_then(|a| a.as_str()),
+                    entry.get("context").and_then(serde_json::Value::as_bool),
                 )
             })
             .collect();
         assert_eq!(
             opening,
             vec![
-                (None, None),
-                (Some("m-first"), None),
-                (Some("m-second"), Some("agent:ivan"))
+                (None, None, Some(true)),
+                (Some("m-first"), None, None),
+                (Some("m-second"), Some("agent:ivan"), None)
             ],
-            "the run opens with its context, then an entry per message with its own id and \
-             sender: {transcript:?}"
+            "the run opens with its context, marked as context, then an entry per message \
+             with its own id and sender: {transcript:?}"
+        );
+        assert_eq!(
+            transcript
+                .first()
+                .and_then(|entry| entry.get("content"))
+                .and_then(serde_json::Value::as_str),
+            Some("[Resumed session] previous run"),
+            "the session reads the pointer as it always has"
         );
     }
 

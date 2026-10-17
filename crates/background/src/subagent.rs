@@ -106,7 +106,10 @@ impl TurnKickoff {
                 // A resume by messages: the pointer to the previous run, then
                 // each message as its own entry with its own id and sender,
                 // then whatever conversation input came with them.
-                let mut msgs: Vec<Message> = context.into_iter().map(Message::user).collect();
+                let mut msgs: Vec<Message> = context
+                    .into_iter()
+                    .map(|ctx| Message::user(ctx).as_context())
+                    .collect();
                 msgs.extend(delivered.iter().map(AgentMessageEvent::to_history_message));
                 if !prompt.is_empty() || !images.is_empty() {
                     let user = if images.is_empty() {
@@ -150,7 +153,7 @@ impl TurnKickoff {
             } => {
                 let mut msgs = Vec::new();
                 if let Some(ctx) = context {
-                    msgs.push(Message::system(ctx));
+                    msgs.push(Message::system(ctx).as_context());
                 }
                 let user = if images.is_empty() {
                     Message::user(prompt)
@@ -839,8 +842,10 @@ mod tests {
         };
         assert_eq!(context.role, residuum_inference::Role::System);
         assert_eq!(context.content, "[14:00] Sam: build is red");
+        assert!(context.context, "the context entry is marked as context");
         assert_eq!(user.role, residuum_inference::Role::User);
         assert_eq!(user.content, "thoughts?");
+        assert!(!user.context, "the message itself is not context");
     }
 
     #[tokio::test]
@@ -932,7 +937,13 @@ mod tests {
             panic!("expected context, two messages and the rest, got {messages:?}");
         };
         assert_eq!(context.content, "[Resumed session] previous run");
+        assert_eq!(context.role, residuum_inference::Role::User);
+        assert!(context.context, "the resume pointer is marked as context");
         assert_eq!(context.id, None);
+        assert!(
+            !first.context && !second.context && !rest.context,
+            "the messages a resume delivers are not context"
+        );
         assert_eq!(first.id.as_deref(), Some("m-owner"));
         assert_eq!(first.content, owner.format_for_agent());
         assert_eq!(first.agent_sender, None, "the owner is not an agent");

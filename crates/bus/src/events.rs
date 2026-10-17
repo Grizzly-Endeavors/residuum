@@ -198,7 +198,8 @@ impl MessageEvent {
     }
 
     /// The messages this adds to conversation history: its background
-    /// context (if any) as a system message, then the user message itself.
+    /// context (if any) as a system message marked as context, then the user
+    /// message itself.
     #[must_use]
     pub fn into_history_messages(self) -> Vec<Message> {
         let user = if self.images.is_empty() {
@@ -207,7 +208,7 @@ impl MessageEvent {
             Message::user_with_images(self.content, self.images)
         };
         self.context
-            .map(Message::system)
+            .map(|context| Message::system(context).as_context())
             .into_iter()
             .chain(std::iter::once(
                 user.with_sender(self.origin.sender)
@@ -1631,7 +1632,12 @@ mod tests {
         };
         assert_eq!(context.role, Role::System);
         assert_eq!(context.content, "[14:05] Sam: build is red");
+        assert!(
+            context.context,
+            "the background context is marked as context"
+        );
         assert_eq!(user.role, Role::User);
+        assert!(!user.context, "the message itself is not context");
         assert_eq!(user.content, "can you check the build?");
         assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
     }
