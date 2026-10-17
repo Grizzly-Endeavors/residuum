@@ -99,7 +99,7 @@ impl RunningHub {
         let a2a = a2a_reservation.into_tokio_listener();
         let inputs = HubInputs {
             root: root.path().to_path_buf(),
-            build: crate::testing::HARNESS_BUILD,
+            build: residuum_core::testing::HARNESS_BUILD,
             launcher: Arc::new(crate::gateway::GatewayLauncher::new()),
             assets: crate::hub::test_support::fixture_assets,
             on_ready: Box::new(|dir| {
