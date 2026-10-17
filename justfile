@@ -357,7 +357,7 @@ shear:
     [ "$installed" = "$pinned" ] || { echo "cargo-shear ${installed} is installed; CI pins ${pinned}: ${install}" >&2; exit 1; }
     cargo shear --locked --deny-warnings
 
-# Every failing test in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
+# Every failure (tests, lint, types, format, timeouts) in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
 [group('check')]
 [positional-arguments]
 ci-failures *args:
