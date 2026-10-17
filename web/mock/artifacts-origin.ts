@@ -6,7 +6,7 @@ import { isClaimedUpgrade } from "./sockets";
 /**
  * The routes a page on the artifacts origin is refused, whatever the method,
  * as the backend's block list does (`BLOCKED_ROUTES` in
- * `src/hub/http/artifacts_origin.rs`): shutdown, stop-all, update check, apply
+ * `crates/hub/src/http/artifacts_origin.rs`): shutdown, stop-all, update check, apply
  * and restart, and setup completion.
  */
 export const ARTIFACT_BLOCKED_ROUTES: readonly string[] = [

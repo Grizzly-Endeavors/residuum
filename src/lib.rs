@@ -10,10 +10,8 @@ pub use residuum_inference as inference;
 pub use residuum_interfaces as interfaces;
 pub use residuum_mcp as mcp;
 pub use residuum_memory as memory;
-pub(crate) use residuum_net::{
-    browser_landing, cross_site, remote_control_guard, tunnel, workbench,
-};
 pub use residuum_net::{pairing, remote_access};
+pub(crate) use residuum_net::{tunnel, workbench};
 pub use residuum_notify as notify;
 pub use residuum_proactivity::{actions, pulse};
 pub use residuum_protocol as protocol;
@@ -31,9 +29,9 @@ pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
 };
 
 pub use residuum_a2a as a2a;
+pub use residuum_hub as hub;
 pub mod daemon;
 pub mod gateway;
-pub mod hub;
 #[cfg(test)]
 pub(crate) mod integration;
 pub mod logging;

@@ -16,8 +16,10 @@ use tower::ServiceExt as _;
 use crate::agent::ToolRegistry;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
 use crate::config::paths::TeamPaths;
-use crate::hub::web::workbench::{WorkbenchApiState, workbench_api_router};
-use crate::hub::web::{ConfigApiState, WorkspaceScope, agent_repair_api_router};
+use crate::hub::web::{
+    ConfigApiState, WorkbenchApiState, WorkspaceScope, agent_repair_api_router,
+    workbench_api_router,
+};
 use crate::inference::ToolResult;
 use crate::tools::testing::tools_for;
 use crate::tunnel::TunnelStatus;

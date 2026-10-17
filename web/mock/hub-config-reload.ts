@@ -22,7 +22,7 @@ function changedSections(before: TomlTable, after: TomlTable): string[] {
 }
 
 /**
- * The hub's config reload (`reload` in `src/hub/runtime.rs`): it compares the
+ * The hub's config reload (`reload` in `crates/hub/src/runtime.rs`): it compares the
  * file with the config it is running on, tells hub clients how that went in a
  * `hub_config_reloaded` frame, and keeps the running config when the file
  * can't be read.

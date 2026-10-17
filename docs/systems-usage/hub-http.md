@@ -1,6 +1,6 @@
 # Hub HTTP Surface
 
-The hub serves everything the backend offers from one router over its `AgentDirectory` (`src/hub/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app (see [Embedded web app](#embedded-web-app)), which answers every other path. The gateway's listener serves the whole router. The artifacts listener serves its `/api` paths from the same router (see [Request guards](#request-guards)) and nothing else of it.
+The hub serves everything the backend offers from one router over its `AgentDirectory` (`crates/hub/src/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app (see [Embedded web app](#embedded-web-app)), which answers every other path. The gateway's listener serves the whole router. The artifacts listener serves its `/api` paths from the same router (see [Request guards](#request-guards)) and nothing else of it.
 
 ## Route layout
 
@@ -131,7 +131,7 @@ An agent's routes come in two groups:
 
 ### Files an agent wrote
 
-The routes that answer with the bytes of a file an agent wrote (`files/{id}`, `files/workspace?path=...`, `inbox/{id}/attachments/{index}`, `workspace/raw` and `checkpoints/{id}/file`, with the team's `/api/team/workspace/raw` and the hub's `/api/hub/checkpoints/{id}/file`) send it inline with the type its extension names, plus `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox allow-scripts allow-popups allow-downloads` (`mark_agent_file` in `src/hub/file_server.rs`). An agent can be steered by what it read into writing an HTML or SVG file, and a link to it opens it as a page. The sandbox gives that page an opaque origin of its own, so it opens, renders and runs its scripts, opens links in new tabs and starts downloads, but it can't read the hub's cookies or storage or call the hub's API as the user. A PDF gets `nosniff` but no sandbox, because Chromium's PDF viewer won't show a PDF in a sandboxed page; it relies on the browser's PDF viewer to keep the file's own scripts away from the hub's origin. An image, audio or video the app shows inside a page (`<img>`, `<audio>`) is unaffected, since a response's policy applies only when it is opened as a page.
+The routes that answer with the bytes of a file an agent wrote (`files/{id}`, `files/workspace?path=...`, `inbox/{id}/attachments/{index}`, `workspace/raw` and `checkpoints/{id}/file`, with the team's `/api/team/workspace/raw` and the hub's `/api/hub/checkpoints/{id}/file`) send it inline with the type its extension names, plus `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox allow-scripts allow-popups allow-downloads` (`mark_agent_file` in `crates/hub/src/file_server.rs`). An agent can be steered by what it read into writing an HTML or SVG file, and a link to it opens it as a page. The sandbox gives that page an opaque origin of its own, so it opens, renders and runs its scripts, opens links in new tabs and starts downloads, but it can't read the hub's cookies or storage or call the hub's API as the user. A PDF gets `nosniff` but no sandbox, because Chromium's PDF viewer won't show a PDF in a sandboxed page; it relies on the browser's PDF viewer to keep the file's own scripts away from the hub's origin. An image, audio or video the app shows inside a page (`<img>`, `<audio>`) is unaffected, since a response's policy applies only when it is opened as a page.
 
 Resolution answers before the agent's router sees the request:
 
@@ -170,7 +170,7 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 
 ## Embedded web app
 
-The web app is embedded in the binary (`web/dist/`, served by `src/hub/web/assets.rs`) and answers every path the routes above don't claim. A path naming an embedded file serves that file. A path with no dot that doesn't start with `api` or `ws`, a client-side route such as `/agent/atlas/files`, serves `index.html` so the app's router takes over, and the app shows its Not Found page for a route it doesn't have. Every other path answers `404`, in the form its asker reads:
+The web app is embedded in the binary (`web/dist/`, served by `crates/hub/src/web/assets.rs`) and answers every path the routes above don't claim. A path naming an embedded file serves that file. A path with no dot that doesn't start with `api` or `ws`, a client-side route such as `/agent/atlas/files`, serves `index.html` so the app's router takes over, and the app shows its Not Found page for a route it doesn't have. Every other path answers `404`, in the form its asker reads:
 
 - An unknown `/api` or `/ws` path answers the API's `{ "error" }` JSON, so a client calling a missing endpoint sees the failure rather than HTML.
 - A browser opening a missing file in a tab (the same test as [Browser landings](#browser-landings)) gets `index.html` with status `404`, so the app shows its Not Found page there too.

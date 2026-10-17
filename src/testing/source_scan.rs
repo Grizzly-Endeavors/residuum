@@ -552,7 +552,7 @@ const EXEC_GRANT_HELPERS: &[&str] = &[
 /// a program.
 const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
     (
-        "src/hub/update.rs",
+        "crates/hub/src/update.rs",
         2,
         "makes a directory read-only (0o555) and restores it (0o755)",
     ),
@@ -562,7 +562,7 @@ const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
         "makes an object directory unwritable (0o500) and restores it (0o700)",
     ),
     (
-        "src/hub/web/agent_keys.rs",
+        "crates/hub/src/web/agent_keys.rs",
         2,
         "makes an object directory unwritable (0o500) and restores it (0o700) in a drop guard",
     ),
@@ -989,7 +989,7 @@ mod tests {
                 "tokio::time::sleep(std::time::Duration::from_millis(500)).await;",
             ),
             (
-                "src/hub/host.rs",
+                "crates/hub/src/host.rs",
                 "pub fn publish(&self, event: HubEvent) {",
             ),
         ];
@@ -1002,11 +1002,11 @@ mod tests {
         let test = [
             ("crates/agent/src/turn.rs", "use tokio::sync::mpsc;"),
             (
-                "src/hub/host.rs",
-                "pub(crate) fn reloads_finished(&self, name: &str) -> Option<u64> {",
+                "crates/hub/src/host.rs",
+                "pub fn reloads_finished(&self, name: &str) -> Option<u64> {",
             ),
             (
-                "src/hub/host.rs",
+                "crates/hub/src/host.rs",
                 ".map(|running| *running.control.reload_done.borrow())",
             ),
             // Below fake-tool scripts whose raw strings hold a column-0 `}`.
@@ -1024,7 +1024,7 @@ mod tests {
         for path in [
             "src/integration/hub_host/mod.rs",
             "src/integration/hub_host/agent_watch.rs",
-            "src/hub/test_support.rs",
+            "crates/hub/src/testing.rs",
             "tests/it/smoke.rs",
         ] {
             assert!(

@@ -32,7 +32,7 @@ const TURN_USAGE = { input: 37_000, output: 420, tools: 3, context: 17_900, grow
 
 /**
  * One page of the main conversation, matching the backend's
- * `ChatHistorySegment` tagged union (see `hub/web/chat.rs`), or `null`
+ * `ChatHistorySegment` tagged union (see `crates/hub/src/web/chat.rs`), or `null`
  * when `cursor` names no episode. An agent that has no conversation yet has
  * neither the sample messages nor the sample episodes.
  */

@@ -1,6 +1,6 @@
 # Agent Creation, Deletion and Restore
 
-An agent is a directory `~/.residuum/<name>/` holding `config/config.toml`. Creating an agent writes that directory from the blank template and adds the agent's role page to the team wiki; deleting one checkpoints it, removes the directory, and removes the role page; restoring one brings the directory and the role page back from its checkpoint history. The functions in `src/hub/provision.rs` do the filesystem work and touch nothing else: they start and stop no agents and publish no notices, so the caller stops the agent before deleting it.
+An agent is a directory `~/.residuum/<name>/` holding `config/config.toml`. Creating an agent writes that directory from the blank template and adds the agent's role page to the team wiki; deleting one checkpoints it, removes the directory, and removes the role page; restoring one brings the directory and the role page back from its checkpoint history. The functions in `crates/hub/src/provision.rs` do the filesystem work and touch nothing else: they start and stop no agents and publish no notices, so the caller stops the agent before deleting it.
 
 ## Creating an agent
 

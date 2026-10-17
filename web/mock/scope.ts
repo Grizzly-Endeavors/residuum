@@ -2,7 +2,7 @@ import type { MockHub, MockState } from "./state";
 
 /**
  * Routes that still work on a stopped or failed agent, so the user can repair
- * it: the same list as the backend's repair router (`src/hub/http/dispatch.rs`).
+ * it: the same list as the backend's repair router (`crates/hub/src/http/dispatch.rs`).
  * The path is the agent's own, below `/api/agents/{name}`.
  */
 const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints|teams-setup)(\/|$)/;
@@ -35,7 +35,7 @@ const INBOX_ITEM_ACTIONS = new Set(["read", "archive", "restore"]);
 /**
  * Whether `sub`, the agent's own path below `/api/agents/{name}`, is one of
  * the file-only routes the backend serves for a stopped or failed agent
- * (`is_file_data_route` in `src/hub/http/dispatch.rs`): chat history, usage,
+ * (`is_file_data_route` in `crates/hub/src/http/dispatch.rs`): chat history, usage,
  * the user inbox, and the raw A2A client settings. They are matched whole,
  * because most routes that share a first segment with one need the agent: of
  * `a2a/...` only `a2a/agents/raw` is a file route.

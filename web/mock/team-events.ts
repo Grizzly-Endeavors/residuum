@@ -23,7 +23,7 @@ import type { Route, RouteContext } from "./routes";
 import type { MockAgent, MockState } from "./state";
 
 /**
- * The team event log of the hub, `src/hub/team_events/`: what happened across
+ * The team event log of the hub, `crates/hub/src/team_events/`: what happened across
  * the team since the hub started, in memory. The mock records the same
  * entries for the same things the backend does, from the frames its own
  * lifecycle, sessions, turns and inbox additions send, and words them the
@@ -76,7 +76,7 @@ export interface MockTeamEvents {
 }
 
 // ─── Wording ──────────────────────────────────────────────────────────────────
-// Kept in step with `src/hub/team_events/recorder.rs`.
+// Kept in step with `crates/hub/src/team_events/recorder.rs`.
 
 /** `text` on one line, with its runs of whitespace collapsed. */
 function plain(text: string): string {

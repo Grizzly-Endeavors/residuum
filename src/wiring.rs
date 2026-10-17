@@ -63,7 +63,7 @@ pub async fn run_hub(root: &Path) -> Result<HubExit, FatalError> {
 #[cfg(test)]
 mod tests {
     use super::{WebAssets, web_asset};
-    use crate::hub::test_support::{FIXTURE_HASHED_CSS, FIXTURE_HASHED_JS, FIXTURE_PLAIN_FILES};
+    use crate::hub::testing::{FIXTURE_HASHED_CSS, FIXTURE_HASHED_JS, FIXTURE_PLAIN_FILES};
 
     #[test]
     fn web_assets_contains_index_html() {
