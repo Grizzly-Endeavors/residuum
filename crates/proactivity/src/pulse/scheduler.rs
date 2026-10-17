@@ -369,13 +369,6 @@ impl PulseScheduler {
         }
     }
 
-    /// The outcome of the named pulse's most recent fire that ended without
-    /// a session run, if it has had one.
-    #[must_use]
-    pub fn last_fire(&self, pulse_name: &str) -> Option<&PulseFireOutcome> {
-        self.last_fire.get(pulse_name)
-    }
-
     /// Record the outcome of a pulse fire that ended without a session run
     /// and persist it immediately, the way [`Self::record_pulse_output`]
     /// does: it arrives from the bus between scheduler ticks.
@@ -1099,7 +1092,7 @@ pulses:
 
         let sched = PulseScheduler::with_state_path(&state_path);
         assert_eq!(
-            sched.last_fire("watch"),
+            sched.last_fire.get("watch"),
             Some(&fire_outcome(
                 PulseFireStatus::Failed,
                 Some("the script exited with code 4")
@@ -1129,7 +1122,7 @@ pulses:
         .unwrap();
 
         let sched = PulseScheduler::with_state_path(&state_path);
-        assert_eq!(sched.last_fire("test_pulse"), None);
+        assert_eq!(sched.last_fire.get("test_pulse"), None);
         assert_eq!(sched.last_output("test_pulse"), Some("x"));
         assert!(sched.last_run.contains_key("test_pulse"));
     }
@@ -1149,10 +1142,14 @@ pulses:
             .unwrap();
         let _due = sched.due_pulses(now, &hb_path, &residuum_config::ModelCatalog::default());
 
-        assert!(sched.last_fire("test_pulse").is_some());
-        assert_eq!(sched.last_fire("removed"), None);
+        assert!(sched.last_fire.contains_key("test_pulse"));
+        assert_eq!(sched.last_fire.get("removed"), None);
         let reloaded = PulseScheduler::with_state_path(&state_path);
-        assert_eq!(reloaded.last_fire("removed"), None, "the prune is saved");
+        assert_eq!(
+            reloaded.last_fire.get("removed"),
+            None,
+            "the prune is saved"
+        );
     }
 
     #[test]

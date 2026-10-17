@@ -10,9 +10,9 @@
  */
 export type PulseOverlap = { 
 /**
- * Session run id of the earlier fire, once its session has registered.
- * `None` while that fire is still running its scripts or waiting for
- * its session to start.
+ * Session run id of the earlier fire as of when this fire began: a
+ * snapshot, never filled in later. `None` when that fire had not started
+ * its session by then (`previous_fire_id` finds it).
  */
 previous_run_id: string | null, 
 /**

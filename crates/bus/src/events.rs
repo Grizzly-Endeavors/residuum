@@ -596,9 +596,9 @@ pub struct SpawnRequestEvent {
     /// buffered message's images); empty for every other trigger, which have
     /// no images of their own.
     pub images: Vec<ImageData>,
-    /// Set when this is a pulse fire that started while its previous run was
-    /// still live in the registry. `None` for every other trigger, and for a
-    /// pulse fire that found no live previous run. See [`PulseOverlap`].
+    /// Set when this is a pulse fire that started while an earlier fire of
+    /// the same pulse was still in flight (see [`PulseOverlap`]). `None` for
+    /// every other request.
     pub overlap: Option<PulseOverlap>,
     /// The pulse fire asking for this session, whose stop token the spawn
     /// listener claims from the session registry as the parent of the
@@ -622,9 +622,9 @@ pub struct SpawnRequestEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct PulseOverlap {
-    /// Session run id of the earlier fire, once its session has registered.
-    /// `None` while that fire is still running its scripts or waiting for
-    /// its session to start.
+    /// Session run id of the earlier fire as of when this fire began: a
+    /// snapshot, never filled in later. `None` when that fire had not started
+    /// its session by then (`previous_fire_id` finds it).
     pub previous_run_id: Option<String>,
     /// Id of the earlier fire, which its Stop endpoint takes. `None` when
     /// the earlier run is a session no fire tracks.

@@ -104,8 +104,9 @@ pub struct SessionSpawnRequest {
     /// The conversation this session replies to, for a conversation-triggered
     /// session. `None` for every other trigger.
     pub conversation_target: Option<ConversationTarget>,
-    /// Set when this is a pulse fire that started while its previous run was
-    /// still live. `None` for every other trigger. See [`PulseOverlap`].
+    /// Set when this is a pulse fire that started while an earlier fire of
+    /// the same pulse was still in flight. `None` for every other session.
+    /// See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,
     /// The token the pulse fire that asked for this session offered (see
     /// [`crate::fire_stops`]), which becomes the parent of the session's own

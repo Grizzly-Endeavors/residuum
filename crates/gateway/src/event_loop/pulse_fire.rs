@@ -247,7 +247,10 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
     deps.registry
         .fire_stops()
         .offer(fire.id(), fire.stop_token().clone());
-    publish_pulse_spawn(&deps.publisher, spawn).await;
+    if !publish_pulse_spawn(&deps.publisher, spawn).await {
+        end_unrequested_fire(fire).await;
+        return;
+    }
 
     let mut run_id: Option<String> = None;
     let mut stop_requested = false;
@@ -338,12 +341,41 @@ async fn end_unstarted_fire(fire: PulseFire, failed: SessionStartFailedEvent, st
     .await;
 }
 
-/// Publish a due pulse's spawn request, which forks its session.
-async fn publish_pulse_spawn(publisher: &Publisher, spawn_event: SpawnRequestEvent) {
+/// Publish a due pulse's spawn request, which forks its session. Returns
+/// whether it was published.
+async fn publish_pulse_spawn(publisher: &Publisher, spawn_event: SpawnRequestEvent) -> bool {
     let source_label = spawn_event.source_label.clone();
-    if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
-        tracing::warn!(pulse = %source_label, error = %e, "failed to publish pulse spawn request");
+    match publisher.publish(topics::Background, spawn_event).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(pulse = %source_label, error = %e, "failed to publish pulse spawn request");
+            false
+        }
     }
+}
+
+/// End a fire whose spawn request couldn't be published, so no session will
+/// ever start for it: as failed, unless the agent is stopping, which is
+/// usually why the bus refused it.
+async fn end_unrequested_fire(fire: PulseFire) {
+    if fire.agent_stopping() {
+        fire.end().await;
+        return;
+    }
+    let error = format!(
+        "The pulse \"{}\" couldn't ask for its session. It tries again at its next run; if it \
+         keeps failing, the agent's logs have the details.",
+        fire.pulse()
+    );
+    fire.finish(
+        PulseFireOutcome {
+            status: PulseFireStatus::Failed,
+            at: Utc::now(),
+            error: Some(error),
+        },
+        false,
+    )
+    .await;
 }
 
 /// Tell the owner about each failed script in a pulse that still runs its
@@ -877,6 +909,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_spawn_request_that_cannot_be_published_fails_the_fire() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = residuum_bus::spawn_broker();
+        let mut events = fire_events(&bus).await;
+        let deps = FireDeps {
+            publisher: Publisher::noop(),
+            ..fire_deps(&bus, dir.path())
+        };
+        let pulse = plain_pulse();
+        // The fire's own changes still reach the bus; only the spawn request
+        // is refused.
+        let fire = deps.fires.begin(
+            &pulse.name,
+            PulseFirePhase::Session,
+            None,
+            bus.publisher(),
+            Arc::clone(&deps.registry),
+        );
+        let fire_id = fire.id().to_string();
+
+        run_pulse_fire(pulse, None, None, deps.clone(), fire).await;
+
+        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        assert_eq!(outcome.status, PulseFireStatus::Failed);
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some(
+                "The pulse \"watch\" couldn't ask for its session. It tries again at its next \
+                 run; if it keeps failing, the agent's logs have the details."
+            )
+        );
+        assert!(!session_run);
+        assert!(
+            deps.registry.fire_stops().claim(&fire_id).is_none(),
+            "the ended fire withdrew its stop token"
+        );
+    }
+
+    #[tokio::test]
     async fn prompt_mode_failure_is_reported_and_the_session_still_runs() {
         let dir = tempfile::tempdir().unwrap();
         let bus = residuum_bus::spawn_broker();
@@ -1153,6 +1224,7 @@ mod tests {
         let bus = residuum_bus::spawn_broker();
         let mut spawns: Subscriber<SpawnRequestEvent> =
             bus.subscribe(topics::Background).await.unwrap();
+        let mut events = fire_events(&bus).await;
         let deps = fire_deps(&bus, dir.path());
         let first_started = dir.path().join("first");
         let mut first_pulse = scripted_pulse(&blocking_script(&first_started), false);
@@ -1180,6 +1252,12 @@ mod tests {
             "the first is still in its scripts"
         );
 
+        // Both fires end before the test does, so the first one's script
+        // (and the `sleep` it started) has been killed by then.
         deps.fires.stop_all();
+        for _ in 0..2 {
+            next_change_where(&mut events, |change| *change == PulseFireChange::Ended).await;
+        }
+        assert_eq!(deps.fires.current_run("watch", &deps.registry), None);
     }
 }
