@@ -2,11 +2,36 @@ import type { SessionSummary } from "../../src/lib/generated/protocol";
 import type { RecentMessage } from "../../src/lib/types";
 import type { MockClock } from "../env";
 
+/**
+ * A message sent to a session that it hasn't read yet. The turn in flight
+ * reads it after its tool batch; without one, it starts a turn.
+ */
+export interface UnreadSessionMessage {
+  id: string;
+  /** The message as sent. */
+  content: string;
+  /** The header the session reads it under, as the transcript records it. */
+  header: string;
+  /** The sender's address (`owner`, `artifact:<name>`) and category. */
+  from: string;
+  fromCategory: string;
+  /** What the turn that reads it replies. */
+  reply: string;
+}
+
+/** A run's turn in flight, and the messages sent it that it hasn't read. */
+export interface MockSessionTurn {
+  turnId: string;
+  unread: UnreadSessionMessage[];
+}
+
 /** An agent's sessions: the live runs, the finished ones, and each run's transcript. */
 export interface MockSessions {
   live: SessionSummary[];
   completed: SessionSummary[];
   transcripts: Map<string, RecentMessage[]>;
+  /** Each run's turn in flight, by run id. */
+  turns: Map<string, MockSessionTurn>;
   /** How many runs the mock has started or resumed, for naming them. */
   runCounter: number;
 }
@@ -217,5 +242,5 @@ export function createSessions(clock: MockClock): MockSessions {
       },
     ]);
   }
-  return { live, completed, transcripts, runCounter: 0 };
+  return { live, completed, transcripts, turns: new Map(), runCounter: 0 };
 }

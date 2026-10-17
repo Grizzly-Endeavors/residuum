@@ -7,7 +7,7 @@
 // go to the agent's session routes. The panel host owns it, so it outlives
 // the panel's frame drawing its content again at another width.
 
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { fetchSessionTranscript, messageSession, stopSession } from "./api";
 import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
@@ -138,7 +138,7 @@ export class SessionRun {
    */
   private turnFresh = false;
   /** The ids of the messages the transcript holds, so a read is shown once. */
-  private readIds = new Set<string>();
+  private readIds = new SvelteSet<string>();
 
   constructor(
     readonly agent: string,
@@ -197,7 +197,7 @@ export class SessionRun {
     this.pendingTools.clear();
     this.turnStart = null;
     this.items = convertHistoryMessages(transcript.messages, { mode: "session" });
-    this.readIds = new Set(transcript.messages.flatMap((message) => message.id ?? []));
+    this.readIds = new SvelteSet(transcript.messages.flatMap((message) => message.id ?? []));
     // A message the transcript holds was read while this page wasn't looking.
     // One it doesn't hold is still waiting.
     this.waiting = this.waiting.filter((message) => !this.readIds.has(message.id));

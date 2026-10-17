@@ -96,7 +96,7 @@ beforeEach(() => {
         return found ? json(found) : json({ error: "no such run" }, 404);
       }
       if (url.endsWith("/messages")) {
-        sentBodies.push(JSON.parse(String(init?.body)) as { content: string; id: string });
+        sentBodies.push(JSON.parse(init?.body as string) as { content: string; id: string });
         return messageAnswer();
       }
       return json({ address: ADDRESS }, 202);
@@ -159,7 +159,7 @@ async function sendMessage(run: SessionRun, content: string): Promise<string> {
 }
 
 /** The transcript's lines, by what they say. */
-function said(run: SessionRun): string[] {
+function lines(run: SessionRun): string[] {
   return run.items.map((item) => ("content" in item ? item.content : item.kind));
 }
 
@@ -446,7 +446,7 @@ describe("a message waiting for the session to read it", () => {
     const sent = sentItem(run, "Now summarize.");
     expect(sent).toMatchObject({ turnId: "t2", turn: { turnId: "t2", changed: null } });
     expect(sent).not.toHaveProperty("midTurn");
-    expect(said(run).slice(-3)).toEqual(["Delivered.", "Here's what I found.", "Now summarize."]);
+    expect(lines(run).slice(-3)).toEqual(["Delivered.", "Here's what I found.", "Now summarize."]);
   });
 
   it("shows what other senders sent the session where it read them", async () => {
@@ -488,7 +488,7 @@ describe("a message waiting for the session to read it", () => {
     turn(relay, "session_turn_started", "t1");
     read(relay, { id, content: "Once only.", turnId: "t1" });
     read(relay, { id, content: "Once only.", turnId: "t1" });
-    expect(said(run).filter((line) => line === "Once only.")).toHaveLength(1);
+    expect(lines(run).filter((line) => line === "Once only.")).toHaveLength(1);
   });
 
   it("takes a message the reloaded transcript holds as read, and keeps one it doesn't waiting", async () => {
@@ -516,11 +516,11 @@ describe("a message waiting for the session to read it", () => {
     await waitFor(() => {
       expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
     });
-    expect(said(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
+    expect(lines(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
 
     // Its read arriving late adds nothing.
     read(relay, { id: readId, content: "Check the logs.", turnId: "t1" });
-    expect(said(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
+    expect(lines(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
   });
 
   it("places a read that raced the transcript once, from the transcript", async () => {
@@ -547,7 +547,7 @@ describe("a message waiting for the session to read it", () => {
     await waitFor(() => {
       expect(run.waiting).toEqual([]);
     });
-    expect(said(run).filter((line) => line === "Raced.")).toHaveLength(1);
+    expect(lines(run).filter((line) => line === "Raced.")).toHaveLength(1);
   });
 });
 
@@ -597,7 +597,7 @@ describe("the run's commands", () => {
     turn(relay, "session_turn_started", "run-2-t1", "run-2");
     read(relay, { id, content: "Pick this back up", turnId: "run-2-t1", runId: "run-2" });
     expect(run.waiting).toEqual([]);
-    expect(said(run).at(-1)).toBe("Pick this back up");
+    expect(lines(run).at(-1)).toBe("Pick this back up");
   });
 
   it("keeps its notes, and shows a reply once, when the new run races its transcript", async () => {
@@ -642,7 +642,7 @@ describe("the run's commands", () => {
       expect(run.loaded).toBe(true);
     });
     expect(run.runId).toBe("run-2");
-    expect(said(run)).toEqual([
+    expect(lines(run)).toEqual([
       "Again",
       "Picking this back up.",
       "This session had finished, so your message started a new run.",
