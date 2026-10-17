@@ -5091,6 +5091,7 @@ dependencies = [
  "residuum-inference",
  "residuum-mcp",
  "residuum-memory",
+ "residuum-notify",
  "residuum-skills",
  "residuum-tracing-service",
  "residuum-workspace",
