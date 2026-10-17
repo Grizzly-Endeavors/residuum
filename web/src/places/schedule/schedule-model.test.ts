@@ -10,6 +10,8 @@ import {
   pulseIcon,
   pulseNext,
   pulsesHeld,
+  runPhase,
+  runStarted,
 } from "./schedule-model";
 
 const NOW = Date.parse("2026-03-14T12:00:00Z");
@@ -130,6 +132,31 @@ describe("overlapNote", () => {
         NOW,
       ),
     ).toBe("Started while the run from 12m ago was still going");
+  });
+});
+
+describe("runPhase and runStarted", () => {
+  const script: ScheduledCurrentRun = {
+    fire_id: "fire-1",
+    phase: "script",
+    started_at: iso(-3 * MINUTE),
+    address: null,
+    run_id: null,
+    overlap: null,
+  };
+
+  it("says whether a run is in its scripts, starting its session, or in its session", () => {
+    expect(runPhase(script)).toBe("Running scripts");
+    expect(runPhase({ ...script, phase: "session", address: "scheduled-1" })).toBe(
+      "Starting session",
+    );
+    expect(runPhase({ ...script, phase: "session", address: "scheduled-1", run_id: "run-1" })).toBe(
+      "Running session",
+    );
+  });
+
+  it("says when a run started", () => {
+    expect(runStarted(script, NOW)).toBe("Started 3m ago");
   });
 });
 

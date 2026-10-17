@@ -847,6 +847,21 @@ export async function setPulseEnabled(
   );
 }
 
+/**
+ * Stop one fire of a pulse, in its scripts or its session. The stop's outcome
+ * arrives as a `pulse_fire_changed` frame. Throws `ApiError` (`404` once that
+ * fire has finished).
+ */
+export async function stopPulseFire(agent: string, pulse: string, fireId: string): Promise<void> {
+  await apiFetch<unknown>(
+    agentPath(
+      agent,
+      `/scheduled/pulses/${encodeURIComponent(pulse)}/fires/${encodeURIComponent(fireId)}/stop`,
+    ),
+    { method: "POST" },
+  );
+}
+
 /** Every pending scheduled action. Not cached: it changes as actions fire. */
 export async function fetchScheduledActions(agent: string): Promise<ActionInfo[]> {
   return apiFetch<ActionInfo[]>(agentPath(agent, "/scheduled/actions"));

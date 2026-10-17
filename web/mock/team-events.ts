@@ -143,14 +143,13 @@ function scheduledRunName(session: SessionSummary): string {
   return `${kind} "${colon === -1 ? label : label.slice(colon + 1)}"`;
 }
 
-/** The level and summary of a finished pulse or scheduled action. */
+/** The level and summary of a finished pulse or scheduled action, `what` as `scheduledRunName` says it. */
 function scheduledRunFinished(
   agent: string,
-  session: SessionSummary,
+  what: string,
   status: SessionRunStatus,
   error: string | null,
 ): { level: TeamEventLevel; summary: string } {
-  const what = scheduledRunName(session);
   if (status === "completed") return { level: "info", summary: `${agent} finished the ${what}` };
   if (status === "cancelled") return { level: "info", summary: `${agent}'s ${what} was stopped` };
   return { level: "error", summary: withDetail(`${agent}'s ${what} failed`, plain(error ?? "")) };
@@ -303,7 +302,7 @@ export function createTeamEvents(
     if (session === undefined) return;
     const scheduled = session.category === "scheduled";
     const { level, summary } = scheduled
-      ? scheduledRunFinished(agent.name, session, frame.status, frame.error)
+      ? scheduledRunFinished(agent.name, scheduledRunName(session), frame.status, frame.error)
       : sessionFinished(agent.name, session, frame.status, frame.error);
     record({
       at: env.clock.iso(),
@@ -312,6 +311,27 @@ export function createTeamEvents(
       level,
       summary,
       target: sessionTarget(agent.name, frame.run_id),
+    });
+  }
+
+  /**
+   * A pulse fire ended with an outcome. The mock's fires never reach a
+   * session, so each one is told here, as the hub tells a fire that ran no
+   * session, pointing at the agent's Schedule.
+   */
+  function onPulseFireChanged(
+    agent: string,
+    frame: Extract<ServerMessage, { type: "pulse_fire_changed" }>,
+  ): void {
+    const outcome = frame.last_outcome;
+    if (outcome === null) return;
+    const what = `pulse "${frame.pulse}"`;
+    record({
+      at: outcome.at,
+      agent,
+      kind: "scheduled_run_finished",
+      ...scheduledRunFinished(agent, what, outcome.status, outcome.error),
+      target: { kind: "agent_place", agent, place: "schedule" },
     });
   }
 
@@ -356,6 +376,7 @@ export function createTeamEvents(
         sendToPages(frame);
         if (frame.type === "session_started") onSessionStarted(agent.name, frame.session);
         else if (frame.type === "session_completed") onSessionCompleted(agent, frame);
+        else if (frame.type === "pulse_fire_changed") onPulseFireChanged(agent.name, frame);
       };
     },
     agentReplied: (agent) => {

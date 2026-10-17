@@ -9,10 +9,13 @@ import {
   stubWebSocket,
 } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
+import { within } from "@testing-library/svelte";
 import { hub } from "../../lib/hub.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
+import { notifications } from "../../lib/notifications.svelte";
 import { scheduled } from "../../lib/scheduled.svelte";
-import type { ActionInfo, PulseInfo } from "../../lib/types";
+import type { ActionInfo, PulseInfo, ScheduledCurrentRun, ServerMessage } from "../../lib/types";
+import { ws } from "../../lib/ws.svelte";
 import Schedule from "./Schedule.svelte";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -56,6 +59,39 @@ const digest: ActionInfo = {
   problem: null,
   current_run: null,
 };
+
+/** A fire of a pulse in flight, running its task scripts. */
+function scriptRun(fireId: string, startedAt = soon(-1)): ScheduledCurrentRun {
+  return {
+    fire_id: fireId,
+    phase: "script",
+    started_at: startedAt,
+    address: null,
+    run_id: null,
+    overlap: null,
+  };
+}
+
+/** The list row of the pulse titled `title`, found by its switch. */
+function rowOf(title: string): HTMLElement {
+  const row = screen.getByRole("switch", { name: title }).closest("li");
+  if (row === null) throw new Error(`no row for ${title}`);
+  return row;
+}
+
+/** Take over the agent socket's frames, so a test can send the place one. */
+function captureFrames(): { emit: (msg: ServerMessage) => void } {
+  const listeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
+  vi.spyOn(ws, "onFrame").mockImplementation((listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  });
+  return {
+    emit: (msg) => {
+      for (const listener of listeners) listener(msg, "atlas");
+    },
+  };
+}
 
 /** Answer the schedule routes with `pulses` and `actions`; `fail` answers them with a fault. */
 function serveSchedule(
@@ -165,6 +201,126 @@ describe("Schedule", () => {
     expect(screen.getByText("Weekly digest")).toBeTruthy();
     expect(screen.getByText("in 20m")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel Weekly digest" })).toBeTruthy();
+  });
+
+  it("labels what each run in flight is doing, and links to its session once it has one", async () => {
+    scheduled.reset("atlas");
+    const session = {
+      fire_id: "fire-2",
+      phase: "session",
+      started_at: soon(-5),
+      address: "scheduled-2",
+      run_id: "run-2",
+      overlap: null,
+    } as const;
+    serveSchedule(
+      [
+        pulse("disk_watch", { current_run: scriptRun("fire-1", soon(-3)) }),
+        pulse("inbox_check", { current_run: session }),
+        pulse("nightly_review", { current_run: { ...session, fire_id: "fire-3", run_id: null } }),
+      ],
+      [],
+    );
+    render(Schedule, { agent: "atlas" });
+    await screen.findByRole("heading", { name: "Pulses" });
+
+    const disk = rowOf("Disk watch");
+    expect(within(disk).getByText("Running scripts")).toBeTruthy();
+    expect(within(disk).getByText("Started 3m ago")).toBeTruthy();
+    expect(within(disk).queryByRole("link", { name: "Open session" })).toBeNull();
+    expect(within(disk).getByRole("button", { name: "Stop Disk watch" })).toBeTruthy();
+
+    const inbox = rowOf("Inbox check");
+    expect(within(inbox).getByText("Running session")).toBeTruthy();
+    expect(within(inbox).getByRole("link", { name: "Open session" })).toHaveAttribute(
+      "href",
+      "/agent/atlas/schedule?panel=session:atlas:run-2",
+    );
+
+    const nightly = rowOf("Nightly review");
+    expect(within(nightly).getByText("Starting session")).toBeTruthy();
+    expect(within(nightly).queryByRole("link", { name: "Open session" })).toBeNull();
+  });
+
+  it("shows how a pulse's last run without a session went, failures with their error", async () => {
+    scheduled.reset("atlas");
+    serveSchedule(
+      [
+        pulse("disk_watch", {
+          last_outcome: {
+            status: "failed",
+            at: soon(-2),
+            error: "check_disk.sh exited with status 1: /data is 97% full",
+          },
+        }),
+      ],
+      [],
+    );
+    render(Schedule, { agent: "atlas" });
+
+    const line = await screen.findByText(
+      "Last run failed 2m ago: check_disk.sh exited with status 1: /data is 97% full",
+    );
+    expect(line).toHaveAttribute("data-failed");
+    expect(within(rowOf("Disk watch")).queryByRole("button", { name: /^Stop/ })).toBeNull();
+  });
+
+  it("stops a fire, shows it stopping, and shows the stopped run once it ends", async () => {
+    const user = userEvent.setup();
+    scheduled.reset("atlas");
+    const frames = captureFrames();
+    const pulses = [pulse("disk_watch", { current_run: scriptRun("fire-1") })];
+    const requests = serveSchedule(pulses, []);
+    render(Schedule, { agent: "atlas" });
+    const stop = await screen.findByRole("button", { name: "Stop Disk watch" });
+
+    await user.click(stop);
+    expect(requests).toContain("/api/agents/atlas/scheduled/pulses/disk_watch/fires/fire-1/stop");
+    expect(stop).toHaveAttribute("aria-busy", "true");
+
+    // The fire ends as stopped, on the server and in the frame that says so.
+    const stopped = { status: "cancelled", at: soon(0), error: null } as const;
+    pulses[0] = pulse("disk_watch", { last_outcome: stopped });
+    frames.emit({
+      type: "pulse_fire_changed",
+      pulse: "disk_watch",
+      fire_id: "fire-1",
+      current_run: null,
+      last_outcome: stopped,
+    });
+    await settle();
+    expect(screen.queryByRole("button", { name: "Stop Disk watch" })).toBeNull();
+    expect(screen.queryByText("Running scripts")).toBeNull();
+    expect(screen.getByText("Last run was stopped just now")).toBeTruthy();
+  });
+
+  it("says when the fire had already finished, and lets Stop be pressed again", async () => {
+    const user = userEvent.setup();
+    scheduled.reset("atlas");
+    const surface = vi.spyOn(notifications, "surface");
+    const pulses = [pulse("disk_watch", { current_run: scriptRun("fire-1") })];
+    mockFetch((url) => {
+      if (url.endsWith("/stop")) {
+        return jsonResponse(
+          { error: 'This run of the pulse "disk_watch" isn\'t running any more.' },
+          404,
+        );
+      }
+      if (url.endsWith("/scheduled/pulses")) return jsonResponse(pulses);
+      return jsonResponse([]);
+    });
+    render(Schedule, { agent: "atlas" });
+
+    await user.click(await screen.findByRole("button", { name: "Stop Disk watch" }));
+    await settle();
+    expect(surface).toHaveBeenCalledWith(
+      "error",
+      'Couldn\'t stop pulse "disk_watch". It had already finished.',
+    );
+    expect(screen.getByRole("button", { name: "Stop Disk watch" })).not.toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
   });
 
   it("shows a failed load with Try again, never the empty states", async () => {

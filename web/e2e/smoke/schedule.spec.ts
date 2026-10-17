@@ -98,6 +98,57 @@ test("a stopped agent's Schedule offers Start, and loads once it runs", async ({
   await expect(page.getByRole("heading", { name: "drifter is stopped" })).toHaveCount(0);
 });
 
+/** Wait until the page has atlas's socket open, so the frames the mock sends reach it. */
+async function socketOpen(page: Page): Promise<void> {
+  await expect
+    .poll(async () => {
+      const res = await page.request.get("/api/mock/connected-pages?agent=atlas");
+      return ((await res.json()) as { pages: number }).pages;
+    })
+    .toBeGreaterThan(0);
+}
+
+test("a pulse running its scripts shows it, and Stop ends that run", async ({ page, mock }) => {
+  await page.goto("/agent/atlas/schedule");
+  const inbox = row(pulses(page), "Inbox check");
+  await expect(inbox.getByText(/^Last ran /)).toBeVisible();
+  await socketOpen(page);
+
+  await mock.post("/api/mock/pulse-fire", {
+    params: { agent: "atlas" },
+    data: { pulse: "inbox_check" },
+  });
+  await expect(inbox.getByText("Running scripts")).toBeVisible();
+  await expect(inbox.getByText(/^Started /)).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await inbox.getByRole("button", { name: "Stop Inbox check" }).click();
+  await expect(inbox.getByText(/^Last run was stopped /)).toBeVisible();
+  await expect(inbox.getByText("Running scripts")).toHaveCount(0);
+  await expect(inbox.getByRole("button", { name: "Stop Inbox check" })).toHaveCount(0);
+});
+
+test("a pulse's run without a session shows how it went", async ({ page, mock }) => {
+  await page.goto("/agent/atlas/schedule");
+  const inbox = row(pulses(page), "Inbox check");
+  await expect(inbox.getByText(/^Last ran /)).toBeVisible();
+  await socketOpen(page);
+
+  const { fire_id: fireId } = (await mock.post("/api/mock/pulse-fire", {
+    params: { agent: "atlas" },
+    data: { pulse: "inbox_check" },
+  })) as { fire_id: string };
+  await expect(inbox.getByText("Running scripts")).toBeVisible();
+  await mock.post("/api/mock/pulse-fire/finish", {
+    params: { agent: "atlas" },
+    data: { fire_id: fireId, status: "failed", error: "check_inbox.sh exited with status 2" },
+  });
+  await expect(
+    inbox.getByText(/^Last run failed .*: check_inbox\.sh exited with status 2$/),
+  ).toBeVisible();
+  await expect(inbox.getByText("Running scripts")).toHaveCount(0);
+});
+
 test("an edit to HEARTBEAT.yml reloads the Schedule", async ({ page, mock }) => {
   let loads = 0;
   page.on("request", (request) => {
