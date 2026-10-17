@@ -10,15 +10,15 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use crate::bus::{ConversationTarget, EventTrigger, SpawnRequestEvent};
-use crate::config::ModelSelector;
-use crate::inference::Message;
-use crate::memory::recent_messages::load_recent_messages;
+use residuum_bus::{ConversationTarget, EventTrigger, SpawnRequestEvent};
+use residuum_config::ModelSelector;
+use residuum_inference::Message;
+use residuum_memory::recent_messages::load_recent_messages;
 
-use crate::bus::session::{MAIN_DEPTH, generate_address};
+use residuum_bus::session::{MAIN_DEPTH, generate_address};
 
 /// What the owner asked for when starting a session.
-pub(crate) struct OwnerSessionStart {
+pub struct OwnerSessionStart {
     /// The task, the session's first message.
     pub prompt: String,
     /// The model tier or explicit model the session runs on.
@@ -35,7 +35,7 @@ pub(crate) struct OwnerSessionStart {
 impl OwnerSessionStart {
     /// The spawn request that starts this session.
     #[must_use]
-    pub(crate) fn into_spawn_event(self) -> SpawnRequestEvent {
+    pub fn into_spawn_event(self) -> SpawnRequestEvent {
         let (qualifier, source_label, context) = if self.fork_of.is_some() {
             (
                 "multitask",
@@ -86,7 +86,7 @@ pub(crate) fn is_owner_start(event: &SpawnRequestEvent) -> bool {
 ///
 /// # Errors
 /// Returns an error if the file exists but can't be read or parsed.
-pub(crate) async fn load_main_conversation(path: &Path) -> anyhow::Result<Vec<Message>> {
+pub async fn load_main_conversation(path: &Path) -> anyhow::Result<Vec<Message>> {
     Ok(load_recent_messages(path)
         .await
         .with_context(|| format!("failed to read main's conversation at {}", path.display()))?
@@ -98,9 +98,9 @@ pub(crate) async fn load_main_conversation(path: &Path) -> anyhow::Result<Vec<Me
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::session::SessionCategory;
-    use crate::memory::recent_messages::append_recent_messages;
-    use crate::memory::types::Visibility;
+    use residuum_bus::session::SessionCategory;
+    use residuum_memory::recent_messages::append_recent_messages;
+    use residuum_memory::types::Visibility;
 
     fn start(fork_of: Option<Vec<Message>>) -> OwnerSessionStart {
         OwnerSessionStart {

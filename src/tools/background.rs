@@ -798,7 +798,7 @@ mod tests {
             registry,
             bus_handle.publisher(),
             store,
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         let hub = A2aClientHub::new_shared();
         let tracker = RemoteTaskTracker::load(

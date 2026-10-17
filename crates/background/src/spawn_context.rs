@@ -6,26 +6,26 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::Context as _;
 
-use crate::agent::context::loading::{load_observations, load_recent_context_narrative};
-use crate::agent::{HopCounter, TeamRoster};
-use crate::background::registry::SessionRegistry;
-use crate::background::runtime::SessionRuntime;
-use crate::bus::session::SessionCategory;
-use crate::bus::{Publisher, SessionAddress};
-use crate::config::ProviderSpec;
-use crate::config::RetryConfig;
-use crate::config::{
+use crate::registry::SessionRegistry;
+use crate::runtime::SessionRuntime;
+use residuum_agent::context::loading::{load_observations, load_recent_context_narrative};
+use residuum_agent::{HopCounter, TeamRoster};
+use residuum_bus::session::SessionCategory;
+use residuum_bus::{Publisher, SessionAddress};
+use residuum_config::ProviderSpec;
+use residuum_config::RetryConfig;
+use residuum_config::{
     BackgroundConfig, BackgroundModelTier, ModelCatalog, ModelSelector, SharedModelCatalog,
     WorkspaceLayout,
 };
-use crate::inference::{
+use residuum_inference::{
     CompletionOptions, SharedHttpClient, build_provider_chain_with_shared_notices,
 };
-use crate::mcp::SharedMcpRegistry;
-use crate::memory::merge_writer::MemoryMergeWriter;
-use crate::memory::observer::Observer;
-use crate::skills::SharedSkillState;
-use crate::workspace::identity::IdentityFiles;
+use residuum_mcp::SharedMcpRegistry;
+use residuum_memory::merge_writer::MemoryMergeWriter;
+use residuum_memory::observer::Observer;
+use residuum_skills::SharedSkillState;
+use residuum_workspace::identity::IdentityFiles;
 
 use super::messaging::AgentMessenger;
 use super::session_tools::SessionToolFactory;
@@ -35,14 +35,14 @@ use super::types::SubAgentBuildConfig;
 /// Shared failover-transition counters for the background model tiers.
 ///
 /// A background tier's provider chain is rebuilt fresh for every session
-/// spawn (see [`build_spawn_resources`]), unlike the main model's or the
+/// spawn (see `build_spawn_resources`), unlike the main model's or the
 /// subconscious's, which are built once and live until the next config
 /// reload. Sharing one counter per tier here — held on `SpawnContext` for
 /// that tier's whole lifetime, across every spawn that uses it — means a
 /// transition notices exactly once when the tier actually fails over or
 /// recovers, rather than once per spawn made while it's already degraded.
 #[derive(Clone, Default)]
-pub(crate) struct BackgroundTierActiveIndex {
+pub struct BackgroundTierActiveIndex {
     small: Arc<AtomicUsize>,
     medium: Arc<AtomicUsize>,
     large: Arc<AtomicUsize>,
@@ -60,51 +60,51 @@ impl BackgroundTierActiveIndex {
 }
 
 /// Everything needed to fork a new session run from the gateway event loop.
-pub(crate) struct SpawnContext {
-    pub(crate) background_config: BackgroundConfig,
-    pub(crate) main_provider_specs: Vec<ProviderSpec>,
+pub struct SpawnContext {
+    pub background_config: BackgroundConfig,
+    pub main_provider_specs: Vec<ProviderSpec>,
     /// The live catalog an explicit model id resolves against at spawn time,
     /// shared with the tools that validate one, so a provider added to
     /// `providers.toml` works without a restart.
-    pub(crate) model_catalog: SharedModelCatalog,
-    pub(crate) http_client: SharedHttpClient,
-    pub(crate) max_tokens: u32,
-    pub(crate) retry_config: RetryConfig,
-    pub(crate) options: CompletionOptions,
+    pub model_catalog: SharedModelCatalog,
+    pub http_client: SharedHttpClient,
+    pub max_tokens: u32,
+    pub retry_config: RetryConfig,
+    pub options: CompletionOptions,
     /// Maximum tool-call iterations for a session turn before it stops
     /// itself gracefully, mirroring `cfg.agent.max_tool_iterations`. `None`
     /// means unlimited.
-    pub(crate) max_tool_iterations: Option<usize>,
+    pub max_tool_iterations: Option<usize>,
     /// Guards against a model repeating the exact same tool call, mirroring
     /// `cfg.agent.repeat_call_guard`.
-    pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
-    pub(crate) layout: WorkspaceLayout,
-    pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
+    pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
+    pub layout: WorkspaceLayout,
+    pub role_overrides: std::collections::HashMap<String, residuum_config::RoleOverrides>,
     /// Builds every fork's tool registry, scoped to that session; it holds
     /// the shared handles only the session's tools read.
-    pub(crate) session_tools: Arc<dyn SessionToolFactory>,
-    pub(crate) session_runtime: Arc<SessionRuntime>,
-    pub(crate) session_registry: Arc<SessionRegistry>,
-    pub(crate) publisher: Publisher,
+    pub session_tools: Arc<dyn SessionToolFactory>,
+    pub session_runtime: Arc<SessionRuntime>,
+    pub session_registry: Arc<SessionRegistry>,
+    pub publisher: Publisher,
     /// Main agent skill state — cloned per fork into isolated session state.
-    pub(crate) skill_state: SharedSkillState,
+    pub skill_state: SharedSkillState,
     /// Shared MCP registry (ref-counted across sessions).
-    pub(crate) mcp_registry: SharedMcpRegistry,
+    pub mcp_registry: SharedMcpRegistry,
     /// A session's own observer instance, built from the same `[observer]`
     /// config the main agent uses, for per-run threshold checks and
     /// extraction. Independent from the main agent's `Observer` instance so
     /// a session fork never contends with a main config-reload swap.
-    pub(crate) observer: Arc<Observer>,
+    pub observer: Arc<Observer>,
     /// The single serialized writer for global memory, shared with the main
     /// agent so episode numbering and log appends never race between a
     /// session's completion pipeline and the main agent's own observations.
-    pub(crate) merge_writer: Arc<MemoryMergeWriter>,
+    pub merge_writer: Arc<MemoryMergeWriter>,
     /// Shared agent-messaging service, whose team link gives every fork's
     /// identity its team roster.
-    pub(crate) messenger: Arc<AgentMessenger>,
+    pub messenger: Arc<AgentMessenger>,
     /// Shared failover-transition counters for the background model tiers —
     /// see [`BackgroundTierActiveIndex`].
-    pub(crate) bg_tier_active_index: BackgroundTierActiveIndex,
+    pub bg_tier_active_index: BackgroundTierActiveIndex,
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
@@ -122,17 +122,17 @@ pub(crate) struct NewSessionContext {
     /// [`super::types::SubAgentConfig::hop_count`]).
     pub(crate) hop_count: u32,
     /// What triggered this session, carried into its tools' scope.
-    pub(crate) trigger: crate::bus::EventTrigger,
+    pub(crate) trigger: residuum_bus::EventTrigger,
     /// The conversation this session replies to, for a conversation-triggered
     /// session, carried into its tools' scope. `None` for every other
     /// trigger.
-    pub(crate) conversation_target: Option<crate::bus::ConversationTarget>,
+    pub(crate) conversation_target: Option<residuum_bus::ConversationTarget>,
 }
 
 /// Log a warning for each fallback provider dropped from a background
 /// tier's chain — visible in diagnostics without stopping the spawn, since
 /// the tier's primary (or another fallback) still built successfully.
-fn log_dropped_fallbacks(model: &ModelSelector, dropped: &[crate::inference::DroppedFallback]) {
+fn log_dropped_fallbacks(model: &ModelSelector, dropped: &[residuum_inference::DroppedFallback]) {
     for fallback in dropped {
         tracing::warn!(
             model = %model,
@@ -175,7 +175,7 @@ impl SessionModelChain {
 /// # Errors
 /// Returns an error naming the model if an explicit id doesn't resolve.
 fn resolve_model_chain(
-    tiers: &crate::config::BackgroundModelsConfig,
+    tiers: &residuum_config::BackgroundModelsConfig,
     main: &[ProviderSpec],
     tier_index: &BackgroundTierActiveIndex,
     catalog: &ModelCatalog,
@@ -225,7 +225,7 @@ pub(crate) struct SpawnResources {
 /// background work at all.
 async fn load_fork_identity_and_memory(
     layout: &WorkspaceLayout,
-    team: &crate::background::team::TeamLink,
+    team: &crate::team::TeamLink,
 ) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
     let identity = IdentityFiles::load(layout)
         .await
@@ -386,14 +386,14 @@ mod tests {
     }
 
     fn spec(provider: &str, model: &str) -> ProviderSpec {
-        crate::config::ModelCatalog::default()
+        residuum_config::ModelCatalog::default()
             .resolve(&format!("{provider}/{model}"))
             .unwrap()
     }
 
     #[test]
     fn a_tier_runs_its_failover_chain_with_its_overrides() {
-        let tiers = crate::config::BackgroundModelsConfig {
+        let tiers = residuum_config::BackgroundModelsConfig {
             small: Some(vec![
                 spec("anthropic", "claude-haiku-4-5"),
                 spec("openai", "gpt-4o-mini"),
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn an_explicit_model_runs_that_one_model_with_no_overrides() {
         let chain = resolve_model_chain(
-            &crate::config::BackgroundModelsConfig::default(),
+            &residuum_config::BackgroundModelsConfig::default(),
             &[spec("anthropic", "claude-sonnet-4-6")],
             &BackgroundTierActiveIndex::default(),
             &ModelCatalog::default(),
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn an_explicit_model_naming_no_provider_fails_the_spawn_naming_it() {
         let Err(err) = resolve_model_chain(
-            &crate::config::BackgroundModelsConfig::default(),
+            &residuum_config::BackgroundModelsConfig::default(),
             &[spec("anthropic", "claude-sonnet-4-6")],
             &BackgroundTierActiveIndex::default(),
             &ModelCatalog::default(),
@@ -461,12 +461,10 @@ mod tests {
             .await
             .unwrap();
 
-        let (identity, _, _) = load_fork_identity_and_memory(
-            &layout,
-            &crate::background::team::TeamLink::alone("agent"),
-        )
-        .await
-        .unwrap();
+        let (identity, _, _) =
+            load_fork_identity_and_memory(&layout, &crate::team::TeamLink::alone("agent"))
+                .await
+                .unwrap();
         assert_eq!(identity.soul.as_deref(), Some("soul"));
         assert_eq!(identity.agents.as_deref(), Some("team rules"));
         assert_eq!(identity.user.as_deref(), Some("team user"));

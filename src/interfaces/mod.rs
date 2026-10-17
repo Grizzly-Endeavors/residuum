@@ -209,23 +209,21 @@ async fn start_multitask(
                 so it only works there."
             .to_string();
     }
-    let history =
-        match crate::background::owner_session::load_main_conversation(dispatch.main_conversation)
-            .await
-        {
-            Ok(history) => history,
-            Err(e) => {
-                tracing::error!(
-                    error = format!("{e:#}"),
-                    interface,
-                    "couldn't read main's conversation for /multitask"
-                );
-                return "Couldn't read our conversation to fork it, so nothing was started. \
+    let history = match crate::background::load_main_conversation(dispatch.main_conversation).await
+    {
+        Ok(history) => history,
+        Err(e) => {
+            tracing::error!(
+                error = format!("{e:#}"),
+                interface,
+                "couldn't read main's conversation for /multitask"
+            );
+            return "Couldn't read our conversation to fork it, so nothing was started. \
                     The logs have the details."
-                    .to_string();
-            }
-        };
-    let event = crate::background::owner_session::OwnerSessionStart {
+                .to_string();
+        }
+    };
+    let event = crate::background::OwnerSessionStart {
         prompt: task,
         model: crate::config::ModelSelector::MEDIUM,
         fork_of: Some(history),

@@ -190,6 +190,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_agent`: `agent` and `subconscious`, so `RUST_LOG=residuum_agent=trace` for the turn loop, or `RUST_LOG=residuum_agent::subconscious=trace` for the subconscious watch.
 - `residuum_protocol`: `protocol` and its `frames`, so `RUST_LOG=residuum_protocol::frames=trace` for the bus-to-frame conversions.
 - `residuum_notify`: `notify`, so `RUST_LOG=residuum_notify=trace` for the notification router and its channels.
+- `residuum_background`: `background`, so `RUST_LOG=residuum_background=trace` for agent sessions, or `RUST_LOG=residuum_background::team=trace` for the team router (its lines show as `background::team::router`).
 - `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.
 

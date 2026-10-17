@@ -28,20 +28,20 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use crate::agent::hop::HopLimits;
-use crate::background::team::TeamLink;
-use crate::bus::interrupt::Interrupt;
-use crate::bus::{
+use crate::team::TeamLink;
+use residuum_agent::hop::HopLimits;
+use residuum_bus::interrupt::Interrupt;
+use residuum_bus::{
     AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName,
     SpawnRequestEvent, topics,
 };
-use crate::config::ModelSelector;
-use crate::inference::{ImageData, Message};
+use residuum_config::ModelSelector;
+use residuum_inference::{ImageData, Message};
 
 use super::store::SessionStore;
-use crate::background::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
-use crate::bus::session::publish_session_event;
-use crate::bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY};
+use crate::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
+use residuum_bus::session::publish_session_event;
+use residuum_bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY};
 
 /// What happened when a message was sent to an address.
 #[derive(Debug, Clone)]
@@ -133,7 +133,7 @@ impl AgentMessenger {
     /// session store (used to record a best-effort note in a session's
     /// transcript when a hop-limit refusal involves it), enforcing `hop_limits`.
     #[must_use]
-    pub(crate) fn new(
+    pub fn new(
         registry: Arc<SessionRegistry>,
         publisher: Publisher,
         store: Arc<SessionStore>,
@@ -153,7 +153,7 @@ impl AgentMessenger {
     /// Link this messenger to the hub's team router, so `agent:` addresses
     /// reach teammates and the roster is the hub's.
     #[must_use]
-    pub(crate) fn with_team(mut self, team: TeamLink) -> Self {
+    pub fn with_team(mut self, team: TeamLink) -> Self {
         self.team = team;
         self
     }
@@ -193,7 +193,7 @@ impl AgentMessenger {
     /// `message_id`, so the next [`Self::take_main_hop`] for it returns the
     /// hop count it originally carried. A zero hop count records nothing:
     /// `take_main_hop` already answers `0` for an id it has no entry for.
-    pub(crate) fn restore_main_hop(&self, message_id: &str, hop_count: u32) {
+    pub fn restore_main_hop(&self, message_id: &str, hop_count: u32) {
         if hop_count == 0 {
             return;
         }
@@ -205,7 +205,7 @@ impl AgentMessenger {
 
     /// Remember the hop count `message_id` carried when main's running turn
     /// took it in mid-turn. A zero hop count records nothing.
-    pub(crate) fn note_mid_turn_hop(&self, message_id: &str, hop_count: u32) {
+    pub fn note_mid_turn_hop(&self, message_id: &str, hop_count: u32) {
         if hop_count == 0 {
             return;
         }
@@ -218,7 +218,7 @@ impl AgentMessenger {
     /// The hop count `message_id` carried when it was taken in mid-turn, or
     /// `0` if it carried none.
     #[must_use]
-    pub(crate) fn mid_turn_hop(&self, message_id: &str) -> u32 {
+    pub fn mid_turn_hop(&self, message_id: &str) -> u32 {
         self.mid_turn_hops
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -229,7 +229,7 @@ impl AgentMessenger {
 
     /// Forget every hop count noted by [`Self::note_mid_turn_hop`]; called
     /// once a turn's leftovers have been sorted out.
-    pub(crate) fn clear_mid_turn_hops(&self) {
+    pub fn clear_mid_turn_hops(&self) {
         self.mid_turn_hops
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -238,7 +238,7 @@ impl AgentMessenger {
 
     /// Discard the hop count recorded for `message_id`, for a message that
     /// will not be looked up as a turn's kickoff.
-    pub(crate) fn forget_main_hop(&self, message_id: &str) {
+    pub fn forget_main_hop(&self, message_id: &str) {
         self.pending_main_hops
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -310,7 +310,7 @@ impl AgentMessenger {
                 let publisher = self.publisher.clone();
                 let store = Arc::clone(&self.store);
                 let deferred_address = address.clone();
-                crate::util::spawn_in_span(async move {
+                residuum_core::util::spawn_in_span(async move {
                     deferred_resume(registry, publisher, store, deferred_address, message).await;
                 });
                 return Ok(DeliveryOutcome::Queued(address));
@@ -493,7 +493,7 @@ impl AgentMessenger {
     ///
     /// Used when a run's own interrupt channel still holds messages at the
     /// moment its teardown drains it (see
-    /// `crate::background::runtime::finish_run`): by then there is no live
+    /// `crate::runtime::finish_run`): by then there is no live
     /// turn left to deliver them into individually, so they all become the
     /// resumed run's opening input instead.
     ///
@@ -544,7 +544,7 @@ impl AgentMessenger {
     ///
     /// Returns [`SendError::PublishFailed`] if starting or resuming the
     /// session failed at the bus.
-    pub(crate) async fn deliver_conversation(
+    pub async fn deliver_conversation(
         &self,
         address: &SessionAddress,
         inbound: MessageEvent,
@@ -569,7 +569,7 @@ impl AgentMessenger {
                 let registry = Arc::clone(&self.registry);
                 let publisher = self.publisher.clone();
                 let deferred_address = address.clone();
-                crate::util::spawn_in_span(async move {
+                residuum_core::util::spawn_in_span(async move {
                     deferred_conversation_resume(
                         registry,
                         publisher,
@@ -650,19 +650,19 @@ impl PendingInput {
 /// Parameters for starting a brand-new conversation session when no run has
 /// ever executed at its deterministic address.
 #[derive(Debug, Clone)]
-pub(crate) struct ConversationSpawn {
+pub struct ConversationSpawn {
     /// Human-readable source label (e.g. `"discord:#builds"`).
-    pub(crate) source_label: String,
+    pub source_label: String,
     /// The model tier or explicit model to run the session on.
-    pub(crate) model: ModelSelector,
+    pub model: ModelSelector,
     /// Skill to activate for the new session, if any. `None` for every
     /// caller today — no router currently maps a conversation to a skill.
-    pub(crate) skill: Option<SkillName>,
+    pub skill: Option<SkillName>,
 }
 
 /// Outcome of delivering an inbound conversation message to its session.
 #[derive(Debug, Clone)]
-pub(crate) enum ConversationDeliveryOutcome {
+pub enum ConversationDeliveryOutcome {
     /// Delivered into a live (running or idle) session.
     Live(SessionAddress),
     /// No run had ever executed at this address; a fresh one was started.
@@ -699,19 +699,19 @@ async fn publish_conversation_spawn(
     };
     let conversation_id = conversation.id.clone();
     let original_inbound = inbound.clone();
-    let event = crate::bus::SpawnRequestEvent {
+    let event = residuum_bus::SpawnRequestEvent {
         address,
         skill: spawn.skill,
         source_label: spawn.source_label,
         prompt: inbound.content,
         context: inbound.context,
-        source: crate::bus::EventTrigger::Conversation,
+        source: residuum_bus::EventTrigger::Conversation,
         model: spawn.model,
         spawner: None,
-        depth: crate::bus::session::MAIN_DEPTH + 1,
+        depth: residuum_bus::session::MAIN_DEPTH + 1,
         hop_count: 0,
         sender: inbound.origin.sender,
-        conversation: Some(crate::bus::ConversationTarget {
+        conversation: Some(residuum_bus::ConversationTarget {
             endpoint: inbound.origin.endpoint,
             conversation_id,
         }),
@@ -742,7 +742,7 @@ async fn publish_conversation_resume(
         Some(ctx) => format!("{}\n\n{ctx}", pointer_note(point)),
         None => pointer_note(point),
     };
-    let event = crate::bus::SpawnRequestEvent {
+    let event = residuum_bus::SpawnRequestEvent {
         address: address.clone(),
         skill: point.agent_skill.clone(),
         source_label: point.source_label.clone(),
@@ -781,7 +781,7 @@ pub(crate) const USER_MESSAGE_WARN_AFTER_ATTEMPTS: u32 = 20;
 
 /// Retry delivering a chat user's message into `address` — the address a
 /// spawn/resume request lost the race for (see
-/// `crate::background::listener::race_guard_interrupt`) — until it
+/// `crate::listener::race_guard_interrupt`) — until it
 /// succeeds, or republish `spawn_event` as a fresh spawn/resume request if
 /// the run that won the race finishes before delivery does.
 ///
@@ -1112,7 +1112,7 @@ async fn publish_resume(
     hop_count: u32,
     images: Vec<ImageData>,
 ) -> Result<(), SendError> {
-    let event = crate::bus::SpawnRequestEvent {
+    let event = residuum_bus::SpawnRequestEvent {
         address: address.clone(),
         skill: point.agent_skill.clone(),
         source_label: point.source_label.clone(),
@@ -1173,21 +1173,29 @@ fn pointer_note(point: &ResumePoint) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{EventTrigger, SkillName, Subscriber};
     use residuum_bus::testing::{bus_barrier, next_event};
+    use residuum_bus::{EventTrigger, SkillName, Subscriber};
     use residuum_core::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     const NO_LIMIT: HopLimits = HopLimits { soft: 8, hard: 32 };
 
-    fn messenger() -> (AgentMessenger, Arc<SessionRegistry>, crate::bus::BusHandle) {
+    fn messenger() -> (
+        AgentMessenger,
+        Arc<SessionRegistry>,
+        residuum_bus::BusHandle,
+    ) {
         messenger_with_limits(NO_LIMIT)
     }
 
     fn messenger_with_limits(
         limits: HopLimits,
-    ) -> (AgentMessenger, Arc<SessionRegistry>, crate::bus::BusHandle) {
-        let bus_handle = crate::bus::spawn_broker();
+    ) -> (
+        AgentMessenger,
+        Arc<SessionRegistry>,
+        residuum_bus::BusHandle,
+    ) {
+        let bus_handle = residuum_bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
@@ -1196,7 +1204,7 @@ mod tests {
         (messenger, registry, bus_handle)
     }
 
-    fn sample_resume_point(run_id: &str, model: crate::config::ModelSelector) -> ResumePoint {
+    fn sample_resume_point(run_id: &str, model: residuum_config::ModelSelector) -> ResumePoint {
         ResumePoint {
             previous_run_id: run_id.to_string(),
             previous_episode_id: Some("ep-42".to_string()),
@@ -1213,12 +1221,12 @@ mod tests {
 
     fn sample_live_info(
         address: &str,
-        state: crate::bus::session::SessionState,
-    ) -> crate::bus::session::SessionInfo {
-        crate::bus::session::SessionInfo {
+        state: residuum_bus::session::SessionState,
+    ) -> residuum_bus::session::SessionInfo {
+        residuum_bus::session::SessionInfo {
             address: SessionAddress::from(address),
             run_id: "run-1".to_string(),
-            category: crate::bus::session::SessionCategory::Spawned,
+            category: residuum_bus::session::SessionCategory::Spawned,
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
             state,
@@ -1226,11 +1234,11 @@ mod tests {
             depth: 1,
             purpose: "research".to_string(),
             agent_skill: None,
-            model: crate::config::ModelSelector::MEDIUM,
+            model: residuum_config::ModelSelector::MEDIUM,
             resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -1264,11 +1272,11 @@ mod tests {
     #[tokio::test]
     async fn send_to_main_publishes_the_message_on_the_senders_session_stream() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut events: Subscriber<crate::bus::SessionEvent> =
+        let mut events: Subscriber<residuum_bus::SessionEvent> =
             bus_handle.subscribe(topics::Sessions).await.unwrap();
         let sender = sample_live_info(
             "spawned-researcher-3f9c",
-            crate::bus::session::SessionState::Running,
+            residuum_bus::session::SessionState::Running,
         );
         let run_id = sender.run_id.clone();
         let _rx = registry.register(sender, CancellationToken::new()).unwrap();
@@ -1331,7 +1339,7 @@ mod tests {
         let (messenger, registry, _bus_handle) = messenger();
         let info = sample_live_info(
             "spawned-researcher-0001",
-            crate::bus::session::SessionState::Idle,
+            residuum_bus::session::SessionState::Idle,
         );
         let mut rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1372,11 +1380,11 @@ mod tests {
     #[tokio::test]
     async fn send_to_a_full_channel_reports_busy_and_never_resumes() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut spawn_sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         let info = sample_live_info(
             "spawned-researcher-000f",
-            crate::bus::session::SessionState::Idle,
+            residuum_bus::session::SessionState::Idle,
         );
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1386,11 +1394,11 @@ mod tests {
         registry
             .record_resume_point(
                 &info.address,
-                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
             )
             .await;
 
-        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+        for _ in 0..crate::registry::INTERRUPT_CHANNEL_CAPACITY {
             assert!(
                 messenger
                     .send(
@@ -1435,11 +1443,11 @@ mod tests {
         // memory-merge LLM call) — it hands the wait off to a detached task
         // and returns right away.
         let (messenger, registry, bus_handle) = messenger();
-        let mut spawn_sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         let info = sample_live_info(
             "spawned-researcher-000c",
-            crate::bus::session::SessionState::Completing,
+            residuum_bus::session::SessionState::Completing,
         );
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1447,7 +1455,7 @@ mod tests {
         registry
             .record_resume_point(
                 &info.address,
-                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
             )
             .await;
 
@@ -1489,7 +1497,7 @@ mod tests {
         .await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("any updates?"));
-        assert_eq!(event.model, crate::config::ModelSelector::LARGE);
+        assert_eq!(event.model, residuum_config::ModelSelector::LARGE);
     }
 
     #[tokio::test]
@@ -1501,8 +1509,8 @@ mod tests {
         // time this decision actually runs (e.g. another deferred message
         // won the race and got itself resumed first) — this must deliver
         // into that live run rather than blindly publishing a second resume.
-        let bus_handle = crate::bus::spawn_broker();
-        let mut spawn_sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
@@ -1511,7 +1519,7 @@ mod tests {
 
         let winner = sample_live_info(
             "spawned-researcher-race1",
-            crate::bus::session::SessionState::Idle,
+            residuum_bus::session::SessionState::Idle,
         );
         let mut winner_rx = registry.register(winner, CancellationToken::new()).unwrap();
 
@@ -1550,8 +1558,8 @@ mod tests {
 
     #[tokio::test]
     async fn resume_or_deliver_after_clear_resumes_when_the_address_is_genuinely_free() {
-        let bus_handle = crate::bus::spawn_broker();
-        let mut spawn_sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
@@ -1561,7 +1569,7 @@ mod tests {
         registry
             .record_resume_point(
                 &address,
-                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
             )
             .await;
 
@@ -1583,14 +1591,14 @@ mod tests {
     #[tokio::test]
     async fn send_to_completed_session_resumes_via_spawn_request() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("spawned-researcher-0002");
         registry
             .record_resume_point(
                 &address,
-                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
             )
             .await;
 
@@ -1612,7 +1620,7 @@ mod tests {
         assert!(event.prompt.contains("any updates?"));
         assert_eq!(
             event.model,
-            crate::config::ModelSelector::LARGE,
+            residuum_config::ModelSelector::LARGE,
             "a resumed run must carry the previous run's model tier, not default to Medium"
         );
         assert_eq!(
@@ -1636,7 +1644,7 @@ mod tests {
     #[tokio::test]
     async fn send_to_completed_session_without_episode_points_at_run_id() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("spawned-researcher-0003");
@@ -1649,7 +1657,7 @@ mod tests {
                     trigger: EventTrigger::Agent,
                     source_label: "agent:researcher".to_string(),
                     agent_skill: None,
-                    model: crate::config::ModelSelector::SMALL,
+                    model: residuum_config::ModelSelector::SMALL,
                     spawner: None,
                     depth: 1,
                     conversation_target: None,
@@ -1678,11 +1686,11 @@ mod tests {
     #[tokio::test]
     async fn resume_with_pending_combines_all_drained_agent_messages_into_one_prompt() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("spawned-researcher-0004");
-        let point = sample_resume_point("run-old", crate::config::ModelSelector::SMALL);
+        let point = sample_resume_point("run-old", residuum_config::ModelSelector::SMALL);
         registry.record_resume_point(&address, point.clone()).await;
 
         let messages = vec![
@@ -1720,17 +1728,17 @@ mod tests {
         MessageEvent {
             id: "conv-1".to_string(),
             content: content.to_string(),
-            origin: crate::bus::origin::MessageOrigin {
+            origin: residuum_bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
-                sender: Some(crate::inference::MessageSender {
+                sender: Some(residuum_inference::MessageSender {
                     name: "Jane".to_string(),
                     id: "discord-jane".to_string(),
                     interface: "discord".to_string(),
                     location: Some("#builds".to_string()),
                 }),
-                conversation: Some(crate::bus::origin::ConversationContext {
+                conversation: Some(residuum_bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::bus::origin::ConversationKind::Channel,
+                    kind: residuum_bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,
@@ -1744,7 +1752,7 @@ mod tests {
     fn conversation_spawn() -> ConversationSpawn {
         ConversationSpawn {
             source_label: "discord:#builds".to_string(),
-            model: crate::config::ModelSelector::MEDIUM,
+            model: residuum_config::ModelSelector::MEDIUM,
             skill: None,
         }
     }
@@ -1752,11 +1760,11 @@ mod tests {
     #[tokio::test]
     async fn resume_with_pending_combines_agent_and_conversation_messages() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("external-discord-0004");
-        let point = sample_resume_point("run-old", crate::config::ModelSelector::SMALL);
+        let point = sample_resume_point("run-old", residuum_config::ModelSelector::SMALL);
         registry.record_resume_point(&address, point.clone()).await;
 
         let pending = vec![
@@ -1789,7 +1797,7 @@ mod tests {
         let (messenger, registry, _bus_handle) = messenger();
         let info = sample_live_info(
             "external-discord-0001",
-            crate::bus::session::SessionState::Idle,
+            residuum_bus::session::SessionState::Idle,
         );
         let mut rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1812,7 +1820,7 @@ mod tests {
     #[tokio::test]
     async fn deliver_conversation_with_no_prior_run_starts_a_fresh_session() {
         let (messenger, _registry, bus_handle) = messenger();
-        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("external-discord-brand-new");
@@ -1845,12 +1853,12 @@ mod tests {
     #[tokio::test]
     async fn deliver_conversation_to_a_completed_session_resumes_it() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("external-discord-0002");
-        let mut point = sample_resume_point("run-old", crate::config::ModelSelector::LARGE);
-        point.conversation_target = Some(crate::bus::ConversationTarget {
+        let mut point = sample_resume_point("run-old", residuum_config::ModelSelector::LARGE);
+        point.conversation_target = Some(residuum_bus::ConversationTarget {
             endpoint: "discord".to_string(),
             conversation_id: "chan-1".to_string(),
         });
@@ -1871,7 +1879,7 @@ mod tests {
         assert!(event.prompt.contains("still there?"));
         assert_eq!(
             event.model,
-            crate::config::ModelSelector::LARGE,
+            residuum_config::ModelSelector::LARGE,
             "a resumed conversation session must keep its previous model tier"
         );
         let target = event
@@ -1883,11 +1891,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn deliver_conversation_to_a_completing_session_queues_and_resumes_once_clear() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         let info = sample_live_info(
             "external-discord-0003",
-            crate::bus::session::SessionState::Completing,
+            residuum_bus::session::SessionState::Completing,
         );
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
@@ -1895,7 +1903,7 @@ mod tests {
         registry
             .record_resume_point(
                 &info.address,
-                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
             )
             .await;
 
@@ -2068,11 +2076,11 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let sender_info = sample_live_info(
             "spawned-sender-0001",
-            crate::bus::session::SessionState::Running,
+            residuum_bus::session::SessionState::Running,
         );
         let receiver_info = sample_live_info(
             "spawned-receiver-0001",
-            crate::bus::session::SessionState::Idle,
+            residuum_bus::session::SessionState::Idle,
         );
         let _sender_rx = registry
             .register(sender_info.clone(), CancellationToken::new())
@@ -2085,7 +2093,7 @@ mod tests {
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
         let messenger = AgentMessenger::new(
             Arc::clone(&registry),
-            crate::bus::Publisher::noop(),
+            residuum_bus::Publisher::noop(),
             Arc::clone(&store),
             HopLimits { soft: 5, hard: 3 },
         );
@@ -2126,17 +2134,17 @@ mod tests {
 
     #[tokio::test]
     async fn hop_limit_refusal_is_an_error_event_on_both_live_sessions() {
-        let bus_handle = crate::bus::spawn_broker();
-        let mut events: crate::bus::Subscriber<crate::bus::SessionEvent> =
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
             bus_handle.subscribe(topics::Sessions).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let sender_info = sample_live_info(
             "spawned-sender-0002",
-            crate::bus::session::SessionState::Running,
+            residuum_bus::session::SessionState::Running,
         );
         let receiver_info = sample_live_info(
             "spawned-receiver-0002",
-            crate::bus::session::SessionState::Idle,
+            residuum_bus::session::SessionState::Idle,
         );
         let _sender_rx = registry
             .register(sender_info.clone(), CancellationToken::new())

@@ -26,9 +26,9 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::background::messaging::AgentMessenger;
-use crate::background::owner_session::{OwnerSessionStart, load_main_conversation};
 use crate::background::registry::SessionRegistry;
 use crate::background::store::{RunCursor, RunFilter, SessionStore, is_valid_run_id};
+use crate::background::{OwnerSessionStart, load_main_conversation};
 use crate::bus::session::{MAIN_DEPTH, SessionCategory, artifact_sender_address, generate_address};
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
 use crate::config::ModelSelector;
@@ -372,7 +372,7 @@ pub(crate) struct SessionStartResponse {
 /// With the artifact identity header, it is an `artifact` session whose
 /// output stays with that artifact. Without it, it is the owner's own
 /// `spawned` session, read in its session panel: a clean one, or with `fork`
-/// a fork of the main conversation (see `crate::background::owner_session`).
+/// a fork of the main conversation (see background's `owner_session` module).
 /// Answers `202` with the address as soon as the spawn request is published;
 /// the run itself starts asynchronously and announces itself with
 /// `session_started`.
@@ -718,7 +718,7 @@ mod tests {
             Arc::clone(&registry),
             bus.publisher(),
             Arc::clone(&store),
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         let state = SessionsApiState {
             registry,

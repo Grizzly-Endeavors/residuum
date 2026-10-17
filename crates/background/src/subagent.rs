@@ -6,23 +6,23 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::ToolRegistry;
-use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
-use crate::agent::hop::HopCounter;
-use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::{
+use residuum_agent::ToolRegistry;
+use residuum_agent::context::{MemoryContext, PromptContext, SkillsContext};
+use residuum_agent::hop::HopCounter;
+use residuum_agent::recent_messages::RecentMessages;
+use residuum_agent::turn::{
     EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
 };
-use crate::bus::MessageEvent;
+use residuum_bus::MessageEvent;
 #[cfg(test)]
-use crate::bus::interrupt::Interrupt;
-use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
-use crate::inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
-use crate::mcp::SharedMcpRegistry;
-use crate::memory::merge_writer::MemoryMergeWriter;
-use crate::memory::observer::Observer;
-use crate::skills::{SharedSkillState, SkillState};
-use crate::workspace::identity::IdentityFiles;
+use residuum_bus::interrupt::Interrupt;
+use residuum_bus::{AgentMessageEvent, Publisher, SessionAddress};
+use residuum_inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
+use residuum_mcp::SharedMcpRegistry;
+use residuum_memory::merge_writer::MemoryMergeWriter;
+use residuum_memory::observer::Observer;
+use residuum_skills::{SharedSkillState, SkillState};
+use residuum_workspace::identity::IdentityFiles;
 
 use super::session_tools::SessionToolScope;
 use super::types::SubAgentBuildConfig;
@@ -128,42 +128,42 @@ impl TurnKickoff {
 
 /// Everything needed to run a session turn, gathered at fork time.
 pub struct SubAgentResources {
-    pub(crate) provider: Box<dyn InferenceProvider>,
-    pub(crate) tools: ToolRegistry,
+    pub provider: Box<dyn InferenceProvider>,
+    pub tools: ToolRegistry,
     /// Shared MCP registry (ref-counted, not isolated).
-    pub(crate) mcp_registry: SharedMcpRegistry,
+    pub mcp_registry: SharedMcpRegistry,
     /// This session's own isolated skill state.
-    pub(crate) skill_state: SharedSkillState,
-    pub(crate) identity: IdentityFiles,
-    pub(crate) options: CompletionOptions,
+    pub skill_state: SharedSkillState,
+    pub identity: IdentityFiles,
+    pub options: CompletionOptions,
     /// Maximum tool-call iterations for this session's turns before the turn
     /// stops itself gracefully. `None` means unlimited — see
-    /// [`crate::config::AgentAbilitiesConfig::max_tool_iterations`].
-    pub(crate) max_tool_iterations: Option<usize>,
+    /// [`residuum_config::AgentAbilitiesConfig::max_tool_iterations`].
+    pub max_tool_iterations: Option<usize>,
     /// Guards against a model repeating the exact same tool call — see
-    /// [`crate::config::AgentAbilitiesConfig::repeat_call_guard`].
-    pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
+    /// [`residuum_config::AgentAbilitiesConfig::repeat_call_guard`].
+    pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
     /// Formatted skill index for the system prompt (built at fork time).
-    pub(crate) skills_index: Option<String>,
+    pub skills_index: Option<String>,
     /// Snapshot of the global observation log, taken at fork time.
-    pub(crate) observations: Option<String>,
+    pub observations: Option<String>,
     /// Snapshot of the recent-context narrative, taken at fork time.
-    pub(crate) recent_context: Option<String>,
+    pub recent_context: Option<String>,
     /// Workspace layout, for the completion memory pipeline (episode
     /// storage, observer guidance files).
-    pub(crate) layout: crate::config::WorkspaceLayout,
+    pub layout: residuum_config::WorkspaceLayout,
     /// This session's own observer instance, for per-run threshold checks
     /// and extraction.
-    pub(crate) observer: Arc<Observer>,
+    pub observer: Arc<Observer>,
     /// The single serialized writer for global memory.
-    pub(crate) merge_writer: Arc<MemoryMergeWriter>,
+    pub merge_writer: Arc<MemoryMergeWriter>,
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
-    pub(crate) episode_skip_token_floor: usize,
+    pub episode_skip_token_floor: usize,
     /// This session's current-turn hop counter, shared with its
     /// `message_agent`/`subagent_spawn` tools (see
     /// [`super::types::SubAgentBuildConfig::hop_counter`]).
-    pub(crate) hop_counter: HopCounter,
+    pub hop_counter: HopCounter,
 }
 
 /// Build an isolated `SkillState` for a new sub-agent, cloned from
@@ -313,16 +313,16 @@ pub(crate) struct TurnExecution<'a> {
     /// message, then each model response and tool result inside
     /// `execute_turn`) so the run's transcript survives a crash mid-turn in
     /// the session store.
-    pub(crate) transcript_sink: Option<&'a dyn crate::agent::turn::TranscriptSink>,
+    pub(crate) transcript_sink: Option<&'a dyn residuum_agent::turn::TranscriptSink>,
     /// Where this turn's model-call usage accumulates, for the session panel's
     /// spent tokens. `None` for a turn that doesn't track session-level totals.
-    pub(crate) usage_sink: Option<&'a dyn crate::agent::usage::UsageSink>,
+    pub(crate) usage_sink: Option<&'a dyn residuum_agent::usage::UsageSink>,
     /// The run's own long-lived interrupt channel: draining it is what
     /// delivers an agent message to a *running* turn at its next tool-call
     /// boundary. Between turns, the caller drains the same channel itself to
     /// decide whether to wake for another turn (see
-    /// `crate::background::runtime`).
-    pub(crate) interrupt_rx: &'a mut dyn crate::bus::interrupt::InterruptSource,
+    /// `crate::runtime`).
+    pub(crate) interrupt_rx: &'a mut dyn residuum_bus::interrupt::InterruptSource,
 }
 
 /// Execute one turn of a session's run.
@@ -439,43 +439,17 @@ pub(crate) async fn execute_subagent(
     Ok(texts.pop().unwrap_or_default())
 }
 
-/// Test-only layout, observer, and merge writer, backed by a leaked temp
-/// directory. `Observer::disabled`/a threshold-disabled reflector mean
-/// neither ever fires unless a test explicitly configures otherwise. Shared
-/// with `runtime`'s tests, which also build `SubAgentResources`.
-#[cfg(test)]
-pub(crate) fn test_memory_extras() -> (
-    crate::config::WorkspaceLayout,
-    Arc<Observer>,
-    Arc<MemoryMergeWriter>,
-) {
-    let dir = tempfile::tempdir().unwrap();
-    let layout = crate::config::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
-    let search_index = Arc::new(
-        crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
-    );
-    let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
-    let merge_writer = Arc::new(MemoryMergeWriter::new(
-        reflector,
-        layout.clone(),
-        search_index,
-        None,
-        None,
-    ));
-    let observer = Arc::new(Observer::disabled(chrono_tz::UTC));
-    (layout, observer, merge_writer)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::testing::dead_interrupt_rx;
-    use crate::config::SkillDir;
-    use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
-    use crate::mcp::McpRegistry;
-    use crate::skills::{SkillIndex, SkillState};
+    use crate::testing::test_memory_extras;
     use async_trait::async_trait;
+    use residuum_bus::testing::dead_interrupt_rx;
     use residuum_bus::testing::next_event;
+    use residuum_config::SkillDir;
+    use residuum_inference::{InferenceError, InferenceResponse, ToolDefinition};
+    use residuum_mcp::McpRegistry;
+    use residuum_skills::{SkillIndex, SkillState};
 
     /// A turn identity with no broker behind it: these tests exercise the
     /// turn itself, not the events it publishes (see the runtime's tests).
@@ -523,7 +497,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             provider: Box::new(MockSubAgentProvider {
                 response: response.to_string(),
             }),
@@ -539,7 +513,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
-            hop_counter: crate::agent::HopCounter::new(0),
+            hop_counter: residuum_agent::HopCounter::new(0),
         }
     }
 
@@ -640,13 +614,13 @@ mod tests {
             messages.len()
         );
         let first = messages.first().unwrap();
-        assert_eq!(first.role, crate::inference::Role::User);
+        assert_eq!(first.role, residuum_inference::Role::User);
         assert!(
             first.content.contains("do work"),
             "user message should contain the prompt"
         );
         let last = messages.last().unwrap();
-        assert_eq!(last.role, crate::inference::Role::Assistant);
+        assert_eq!(last.role, residuum_inference::Role::Assistant);
         assert_eq!(last.content, "done");
     }
 
@@ -672,7 +646,7 @@ mod tests {
         .await
         .unwrap();
         let first = recent_messages.messages().first().unwrap();
-        assert_eq!(first.role, crate::inference::Role::User);
+        assert_eq!(first.role, residuum_inference::Role::User);
         assert_eq!(
             first.content, "extra context\n\ncheck emails",
             "the user message must carry only source context and the task prompt — \
@@ -690,7 +664,7 @@ mod tests {
         execute_subagent(
             &test_identity("run-msg"),
             TurnKickoff::AgentMessage(AgentMessageEvent {
-                from: crate::bus::SessionAddress::from("main"),
+                from: residuum_bus::SessionAddress::from("main"),
                 from_category: "main".to_string(),
                 content: "how's it going?".to_string(),
                 hop_count: 0,
@@ -792,9 +766,9 @@ mod tests {
         let [context, user, ..] = messages else {
             panic!("expected context then user message, got {messages:?}");
         };
-        assert_eq!(context.role, crate::inference::Role::System);
+        assert_eq!(context.role, residuum_inference::Role::System);
         assert_eq!(context.content, "[14:00] Sam: build is red");
-        assert_eq!(user.role, crate::inference::Role::User);
+        assert_eq!(user.role, residuum_inference::Role::User);
         assert_eq!(user.content, "thoughts?");
     }
 
@@ -847,12 +821,12 @@ mod tests {
         let inbound = MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
-            origin: crate::bus::origin::MessageOrigin {
+            origin: residuum_bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: Some(sample_sender()),
-                conversation: Some(crate::bus::origin::ConversationContext {
+                conversation: Some(residuum_bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::bus::origin::ConversationKind::Channel,
+                    kind: residuum_bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,
@@ -882,7 +856,7 @@ mod tests {
         let [context, user, ..] = messages else {
             panic!("expected context then user message, got {messages:?}");
         };
-        assert_eq!(context.role, crate::inference::Role::System);
+        assert_eq!(context.role, residuum_inference::Role::System);
         assert_eq!(context.content, "[14:00] Sam: build is red");
         assert_eq!(user.content, "can you check the build?");
         assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
@@ -901,7 +875,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         tx.send(Interrupt::AgentMessage(AgentMessageEvent {
-            from: crate::bus::SessionAddress::from("main"),
+            from: residuum_bus::SessionAddress::from("main"),
             from_category: "main".to_string(),
             content: "any updates?".to_string(),
             hop_count: 0,
@@ -950,12 +924,12 @@ mod tests {
         tx.send(Interrupt::UserMessage(MessageEvent {
             id: "m2".to_string(),
             content: "any updates?".to_string(),
-            origin: crate::bus::origin::MessageOrigin {
+            origin: residuum_bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: Some(sample_sender()),
-                conversation: Some(crate::bus::origin::ConversationContext {
+                conversation: Some(residuum_bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::bus::origin::ConversationKind::Channel,
+                    kind: residuum_bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,
@@ -1025,7 +999,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             provider: Box::new(CapturingProvider {
                 response: "done".to_string(),
                 seen: Arc::clone(&seen),
@@ -1047,7 +1021,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
-            hop_counter: crate::agent::HopCounter::new(0),
+            hop_counter: residuum_agent::HopCounter::new(0),
         };
 
         let mut recent_messages = RecentMessages::new();
@@ -1072,7 +1046,7 @@ mod tests {
         let call = calls.first().expect("provider should have been called");
         let system = call
             .iter()
-            .find(|m| m.role == crate::inference::Role::System)
+            .find(|m| m.role == residuum_inference::Role::System)
             .expect("a system message must be present");
 
         for needle in [
@@ -1091,7 +1065,7 @@ mod tests {
 
         let user = call
             .iter()
-            .find(|m| m.role == crate::inference::Role::User)
+            .find(|m| m.role == residuum_inference::Role::User)
             .expect("a user message must be present");
         assert_eq!(user.content, "continue the task");
         assert!(
@@ -1121,7 +1095,7 @@ mod tests {
             if n == 0 {
                 Ok(InferenceResponse::new(
                     "checking the build now".to_string(),
-                    vec![crate::inference::ToolCall {
+                    vec![residuum_inference::ToolCall {
                         id: "call-1".to_string(),
                         name: "nonexistent_tool".to_string(),
                         arguments: serde_json::json!({}),
@@ -1151,7 +1125,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             provider: Box::new(ToolCallThenTextProvider {
                 call_count: std::sync::atomic::AtomicUsize::new(0),
             }),
@@ -1167,23 +1141,23 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
-            hop_counter: crate::agent::HopCounter::new(0),
+            hop_counter: residuum_agent::HopCounter::new(0),
         };
 
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut conv_sub: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
-            .subscribe(crate::bus::topics::Endpoint(
-                crate::bus::EndpointName::from("discord"),
+        let mut conv_sub: residuum_bus::Subscriber<residuum_bus::SessionResponseEvent> = bus_handle
+            .subscribe(residuum_bus::topics::Endpoint(
+                residuum_bus::EndpointName::from("discord"),
             ))
             .await
             .unwrap();
-        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionEvent> = bus_handle
-            .subscribe(crate::bus::topics::Sessions)
+        let mut session_sub: residuum_bus::Subscriber<residuum_bus::SessionEvent> = bus_handle
+            .subscribe(residuum_bus::topics::Sessions)
             .await
             .unwrap();
 
-        let address = crate::bus::SessionAddress::from("external-discord-chan-1");
+        let address = residuum_bus::SessionAddress::from("external-discord-chan-1");
         let identity = SessionTurnIdentity {
             publisher: &publisher,
             address: &address,
@@ -1229,7 +1203,7 @@ mod tests {
         assert!(
             matches!(
                 session_event.kind,
-                crate::bus::SessionEventKind::Intermediate { ref content }
+                residuum_bus::SessionEventKind::Intermediate { ref content }
                     if content == "checking the build now"
             ),
             "a conversation session's intermediate text must reach the web sessions stream too"
@@ -1265,7 +1239,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,
@@ -1279,7 +1253,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
-            hop_counter: crate::agent::HopCounter::new(0),
+            hop_counter: residuum_agent::HopCounter::new(0),
         };
         let stop_token = CancellationToken::new();
         stop_token.cancel();
@@ -1340,7 +1314,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,
@@ -1354,12 +1328,12 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
-            hop_counter: crate::agent::HopCounter::new(0),
+            hop_counter: residuum_agent::HopCounter::new(0),
         };
         let store_dir = tempfile::tempdir().unwrap();
-        let store = crate::background::store::SessionStore::new(store_dir.path().to_path_buf());
+        let store = crate::store::SessionStore::new(store_dir.path().to_path_buf());
         let started_at = chrono::Utc::now();
-        let sink = crate::background::store::RunTranscriptSink {
+        let sink = crate::store::RunTranscriptSink {
             store: &store,
             run_id: "run-stop-note",
             started_at,

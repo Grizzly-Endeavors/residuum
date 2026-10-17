@@ -189,13 +189,16 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-bus` | `crates/bus` | `bus`: the topic broker and the payloads it carries (the session vocabulary, message origins, attachments, usage, workspace changes, interrupts), and `testing` behind `test-support` | core, config, inference, memory |
 | `residuum-workspace` | `crates/workspace` | `workspace`: identity files, bootstrapping, team files, the config, MCP patching, and the change feed (`watch`); `inbox`, the user and agent inboxes and the inbound attachment code; and `testing` behind `test-support` | core, config, bus, inference, mcp |
 | `residuum-agent` | `crates/agent` | `agent`: the turn loop, context assembly, the auto mode gate, usage, the `Tool` trait and the `ToolRegistry` container, the `TeamRoster` trait, and `testing` (the test tools) behind `test-support`; `subconscious`, the mid-turn and end-of-turn watch | core, config, bus, inference, memory, mcp, skills, workspace |
+| `residuum-background` | `crates/background` | `background`: agent sessions (the session registry, runtime and store, the spawn listener and fork construction, per-run memory, owner sessions), agent messaging, the `team` slice (the team router, `TeamDirectory`, the agent lifecycle types), the `session_tools` factory trait, and `testing` behind `test-support` | core, config, bus, inference, memory, mcp, skills, tracing-service, workspace, checkpoints, agent |
 | `residuum-checkpoints` | `crates/checkpoints` | `checkpoints`: the workspace checkpoint history (the engine, the repository backend, notices and types), and `testing` behind `test-support` | core, config, bus, workspace |
 | `residuum-protocol` | `crates/protocol` | `protocol`: the WebSocket client and server frames and the payloads they carry (the ts-exported wire types), and `frames`, the conversions from bus session events and workspace changes to frames | bus, inference, workspace (dev: config, memory) |
 | `residuum-proactivity` | `crates/proactivity` | `pulse` (the heartbeat pulses: scheduling, scripts, the edit and next-run helpers, and `testing` behind `test-support`) and `actions` (scheduled actions and their store) | core, config, bus (dev: workspace) |
 | `residuum-notify` | `crates/notify` | `notify`: the notification channels (ntfy, webhook, the inbox, and the native macOS and Windows channels), the router and the subscriber, and `channel_builder`, whose `build_external_channels` is re-exported at the crate root | core, config, bus, workspace |
-| `residuum` | `.` | everything else: gateway, hub, interfaces, tools, background, a2a, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
+| `residuum` | `.` | everything else: gateway, hub, interfaces, tools, a2a, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
 
 ```
+residuum-background
+        │
 residuum-checkpoints    residuum-notify
         │                     │
         └──────────┬──────────┘
@@ -213,7 +216,7 @@ residuum-memory     residuum-mcp
                               residuum-core
 ```
 
-The diagram draws the chain of dependencies that sets the layers; each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw (`residuum-workspace` also depends on `residuum-mcp` and `residuum-inference`, and `residuum-bus` on `residuum-inference`).
+The diagram draws the chain of dependencies that sets the layers; each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw (`residuum-background` also depends on `residuum-agent` and most of the crates below it, `residuum-workspace` on `residuum-mcp` and `residuum-inference`, and `residuum-bus` on `residuum-inference`).
 
 Only the root has a build script and embeds `web/dist`, so every member crate builds and tests without a web build. The root alone reads the build variables (`RESIDUUM_VERSION` and `RESIDUUM_GIT_COMMIT`, set by `build.rs`), and only into `residuum::BUILD_INFO`; everything else takes a `BuildInfo` (or its `version`) as a parameter, and `testing::source_scan` enforces this. `include_str!` and `CARGO_MANIFEST_DIR` paths in a member reach the repository's `assets/` and `web/` from the crate's directory (`../../../assets/…` from `crates/config/src/`). A file a member embeds from outside its own directory and outside `assets/` is not covered by that: `crates/net/src/browser_landing.rs` embeds `web/src/styles/tokens.css`, and such a path must appear in `RUST_PATHS_RE` in both `.github/workflows/ci.yml` and `.githooks/pre-push`, be classified to its crate in `classify_path` in `scripts/affected-packages.sh`, and have an arm in the pre-push hook's `plan_rust_tests` (for `tokens.css`, `residuum-net`). A file a test reads by path follows the same rule: `web/app-shell-csp.txt` and `.github/workflows/release.yml` belong to `residuum-hub` when it is a member crate with the file that reads each (`crates/hub/src/web/assets.rs`, `crates/hub/src/update.rs`), and to the root otherwise. Without the `RUST_PATHS_RE` entry, CI runs no Rust checks for a change to that file alone, so a breakage can reach `main`.
 
