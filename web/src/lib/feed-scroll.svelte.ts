@@ -528,6 +528,12 @@ export class FeedScroller {
       this.write(top);
       return;
     }
+    // Stop a glide still under way where it is, as the scroller's own move.
+    // Seen in Chromium with End pressed while Home's glide ran: the new glide
+    // carried the old one's speed up 70px before it turned, and the old one's
+    // last move, whose event came after End, read as the reader leaving, so an
+    // older episode loading put the reader back in place and cut End short.
+    this.write(el.scrollTop);
     el.scrollTo({ top, behavior: "smooth" });
   }
 

@@ -39,13 +39,17 @@ interface FakeScroller {
   press: (init: KeyboardEventInit & { defaultPrevented?: boolean }) => ReturnType<typeof vi.fn>;
   /** Send the feed an event, as the browser does for the reader's input. */
   fire: (type: string, init?: Record<string, unknown>) => void;
+  /** From now on a smooth scroll starts and moves nothing: the test moves the glide on with `scrollBy`. */
+  holdGlides: () => void;
   geometry: Geometry;
 }
 
 function fakeScroller(): FakeScroller {
   const geometry: Geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500, padding: 0 };
   const listeners = new Map<string, (event?: Event) => void>();
-  const scrollTo = vi.fn((options: { top: number }) => {
+  let glidesHeld = false;
+  const scrollTo = vi.fn((options: { top: number; behavior?: string }) => {
+    if (glidesHeld && options.behavior === "smooth") return;
     geometry.scrollTop = options.top;
   });
   const el = {
@@ -86,6 +90,9 @@ function fakeScroller(): FakeScroller {
     },
     fire: (type, init = {}) => {
       listeners.get(type)?.({ type, ...init } as unknown as Event);
+    },
+    holdGlides: () => {
+      glidesHeld = true;
     },
   };
 }
@@ -128,7 +135,7 @@ describe("FeedScroller", () => {
     // The reader went to the top, so the feed no longer follows.
     feed.scrollBy(0);
 
-    feed.scrollTo.mockImplementationOnce(() => {});
+    feed.holdGlides();
     feed.press({ key: "End" });
     // The glide is partway down when an older episode is prepended.
     feed.scrollBy(600);
@@ -136,6 +143,25 @@ describe("FeedScroller", () => {
     observer.notify();
 
     expect(feed.geometry.scrollTop).toBe(3000);
+  });
+
+  it("stops Home's glide where it is at End, so that glide's last move isn't the reader leaving", () => {
+    const { feed, observer, scroller } = attached();
+    feed.holdGlides();
+    feed.press({ key: "Home" });
+    feed.scrollBy(300);
+    // Home's glide moves on to 56, and End comes before that move's scroll event.
+    feed.geometry.scrollTop = 56;
+    feed.press({ key: "End" });
+
+    expect(feed.scrollTo).toHaveBeenNthCalledWith(3, { top: 56, behavior: "instant" });
+    expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
+    feed.scrollBy(56);
+    expect(scroller.isFollowing).toBe(true);
+    // An older episode lands at the top on the way: the reader is pinned to the bottom.
+    feed.geometry.scrollHeight = 2300;
+    observer.notify();
+    expect(feed.geometry.scrollTop).toBe(2300);
   });
 
   it("takes Home over: it glides to the top, and the feed stops following", () => {
@@ -668,7 +694,7 @@ describe("FeedScroller", () => {
     it("doesn't count its own scroll events as the reader's", () => {
       const { feed, observer, scroller } = attached();
       feed.scrollBy(100);
-      feed.scrollTo.mockImplementationOnce(() => {});
+      feed.holdGlides();
       scroller.jumpToLatest();
       // The glide passes through on its way down.
       feed.scrollBy(600);
@@ -687,7 +713,7 @@ describe("FeedScroller", () => {
       expect(scroller.scrolledUp).toBe(true);
 
       // They press Jump to latest; the browser's smooth glide hasn't moved yet.
-      feed.scrollTo.mockImplementationOnce(() => {});
+      feed.holdGlides();
       scroller.jumpToLatest();
       // A streamed reply grows the feed before the glide's first frame: the feed pins
       // the reader to the bottom at once, which ends the glide, and the pin's own
@@ -712,7 +738,7 @@ describe("FeedScroller", () => {
     it("counts a move up while it runs as the reader's", () => {
       const { feed, observer, scroller } = attached();
       feed.scrollBy(100);
-      feed.scrollTo.mockImplementationOnce(() => {});
+      feed.holdGlides();
       scroller.jumpToLatest();
       feed.scrollBy(700);
       // The page scrolls back to the top mid-glide, with no input in the feed.
