@@ -13,10 +13,10 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use serde_json::{Value, json};
 
-use crate::bus::auto_mode::{AutoModeDecision, AutoModeVerdict};
-use crate::config::AutoModeConfig;
-use crate::inference::ToolCall;
-use crate::inference::system_one::{Question, SystemOneResponse, SystemOneService};
+use residuum_bus::auto_mode::{AutoModeDecision, AutoModeVerdict};
+use residuum_config::AutoModeConfig;
+use residuum_inference::ToolCall;
+use residuum_inference::system_one::{Question, SystemOneResponse, SystemOneService};
 
 /// Longest tool-call argument text sent to the decision model. Its context
 /// is 32k tokens for the state plus the longest question; a call larger than
@@ -113,11 +113,11 @@ fn log_verdict(tool_name: &str, verdict: &AutoModeVerdict) {
 /// The text of the most recent user message, for judging rules about what
 /// the user asked for.
 #[must_use]
-pub fn latest_user_request(messages: &[crate::inference::Message]) -> Option<&str> {
+pub fn latest_user_request(messages: &[residuum_inference::Message]) -> Option<&str> {
     messages
         .iter()
         .rev()
-        .find(|m| m.role == crate::inference::Role::User && !m.content.trim().is_empty())
+        .find(|m| m.role == residuum_inference::Role::User && !m.content.trim().is_empty())
         .map(|m| m.content.as_str())
 }
 
@@ -185,7 +185,7 @@ fn strongest_match<'a>(
         let p = response
             .answers
             .get(&format!("{prefix}_{i}"))
-            .and_then(crate::inference::system_one::Answer::noul)
+            .and_then(residuum_inference::system_one::Answer::noul)
             .ok_or_else(|| format!("The decision model didn't answer for the rule \"{rule}\"."))?;
         if p >= threshold && best.is_none_or(|(_, b)| p > b) {
             best = Some((rule, p));
@@ -238,7 +238,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::config::{SystemOneConfig, SystemOneProvider};
+    use residuum_config::{SystemOneConfig, SystemOneProvider};
 
     fn config(deny: &[&str], allow: &[&str]) -> AutoModeConfig {
         AutoModeConfig {
@@ -329,10 +329,10 @@ mod tests {
     #[test]
     fn latest_user_request_skips_assistant_and_tool_messages() {
         let messages = vec![
-            crate::inference::Message::user("first ask"),
-            crate::inference::Message::user("deploy the site"),
-            crate::inference::Message::assistant("on it", None),
-            crate::inference::Message::tool("ok", "c1"),
+            residuum_inference::Message::user("first ask"),
+            residuum_inference::Message::user("deploy the site"),
+            residuum_inference::Message::assistant("on it", None),
+            residuum_inference::Message::tool("ok", "c1"),
         ];
         assert_eq!(latest_user_request(&messages), Some("deploy the site"));
     }

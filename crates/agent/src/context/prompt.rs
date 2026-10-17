@@ -1,7 +1,7 @@
 //! System prompt content builders.
 
-use crate::time::{format_display_datetime, format_relative_time};
-use crate::workspace::identity::IdentityFiles;
+use residuum_core::time::{format_display_datetime, format_relative_time};
+use residuum_workspace::identity::IdentityFiles;
 
 use super::types::{MemoryContext, SkillsContext, StatusLine};
 
@@ -406,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn loaded_team_identity_assembles_in_order() {
-        use crate::config::WorkspaceLayout;
+        use residuum_config::WorkspaceLayout;
 
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("scout"));

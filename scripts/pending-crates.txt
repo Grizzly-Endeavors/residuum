@@ -2,8 +2,6 @@ src/checkpoints/ residuum-checkpoints
 src/notify/ residuum-notify
 src/pulse/ residuum-proactivity
 src/actions/ residuum-proactivity
-src/agent/ residuum-agent
-src/subconscious/ residuum-agent
 src/background/ residuum-background
 src/a2a/ residuum-a2a
 src/tools/ residuum-tools

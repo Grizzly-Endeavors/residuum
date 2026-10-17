@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use super::{EvalOutcome, Finding, FindingKind, LearnSignal, LearnSignalType, Severity};
-use crate::inference::InferenceResponse;
+use residuum_inference::InferenceResponse;
 
 /// Typed response from structured output mode.
 #[derive(Deserialize)]
@@ -46,7 +46,7 @@ pub(super) fn parse_subconscious_response(
     include_learnings: bool,
 ) -> anyhow::Result<EvalOutcome> {
     let content = response.content.trim();
-    let json_str = crate::inference::strip_code_fences(content);
+    let json_str = residuum_inference::strip_code_fences(content);
 
     // Fast path: typed deserialization (structured output)
     if let Ok(typed) = serde_json::from_str::<SubconsciousJsonResponse>(json_str) {

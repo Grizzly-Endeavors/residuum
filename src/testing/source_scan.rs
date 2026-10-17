@@ -981,11 +981,11 @@ mod tests {
         let sources = crate_sources();
         let production = [
             (
-                "src/agent/turn.rs",
+                "crates/agent/src/turn.rs",
                 "use tokio_util::sync::CancellationToken;",
             ),
             (
-                "src/agent/turn.rs",
+                "crates/agent/src/turn.rs",
                 "tokio::time::sleep(std::time::Duration::from_millis(500)).await;",
             ),
             (
@@ -1000,7 +1000,7 @@ mod tests {
             );
         }
         let test = [
-            ("src/agent/turn.rs", "use tokio::sync::mpsc;"),
+            ("crates/agent/src/turn.rs", "use tokio::sync::mpsc;"),
             (
                 "src/hub/host.rs",
                 "pub(crate) fn reloads_finished(&self, name: &str) -> Option<u64> {",

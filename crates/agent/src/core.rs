@@ -2,11 +2,11 @@
 
 use tokio_util::sync::CancellationToken;
 
-use crate::bus::Publisher;
-use crate::bus::origin::MessageOrigin;
-use crate::inference::{CompletionOptions, InferenceProvider, Message};
-use crate::mcp::SharedMcpRegistry;
-use crate::workspace::identity::IdentityFiles;
+use residuum_bus::Publisher;
+use residuum_bus::origin::MessageOrigin;
+use residuum_inference::{CompletionOptions, InferenceProvider, Message};
+use residuum_mcp::SharedMcpRegistry;
+use residuum_workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::hop::HopCounter;
@@ -14,8 +14,8 @@ use super::recent_messages::RecentMessages;
 use super::tool::ToolRegistry;
 use super::turn::{EventContext, EventTarget, TurnOutput, TurnResources, execute_turn};
 use super::usage::MainUsageSink;
-use crate::bus::interrupt;
-use crate::bus::usage::SessionUsageTotals;
+use residuum_bus::interrupt;
+use residuum_bus::usage::SessionUsageTotals;
 
 /// Configuration for creating a new `Agent`.
 pub struct AgentConfig {
@@ -25,7 +25,7 @@ pub struct AgentConfig {
     ///
     /// `None` pins the agent to the identity snapshot passed at construction
     /// (used by tests that don't touch the filesystem).
-    pub layout: Option<crate::config::WorkspaceLayout>,
+    pub layout: Option<residuum_config::WorkspaceLayout>,
 }
 
 /// The agent runtime that processes user messages through the model.
@@ -41,22 +41,22 @@ pub struct Agent {
     options: CompletionOptions,
     /// Maximum tool-call iterations before a turn stops itself gracefully.
     /// `None` (the default) means unlimited — set from
-    /// [`crate::config::AgentAbilitiesConfig::max_tool_iterations`] at
+    /// [`residuum_config::AgentAbilitiesConfig::max_tool_iterations`] at
     /// startup and kept current on every config reload (see
     /// [`Agent::set_max_tool_iterations`]).
     max_tool_iterations: Option<usize>,
     /// Guards against a model repeating the exact same tool call. Set from
-    /// [`crate::config::AgentAbilitiesConfig::repeat_call_guard`] at startup
+    /// [`residuum_config::AgentAbilitiesConfig::repeat_call_guard`] at startup
     /// and kept current on every config reload (see
     /// [`Agent::set_repeat_call_guard`]).
-    repeat_call_guard: crate::config::RepeatCallGuardConfig,
+    repeat_call_guard: residuum_config::RepeatCallGuardConfig,
     observations: Option<String>,
     /// Narrative summary from the most recent observation cycle.
     recent_context: Option<String>,
     tz: chrono_tz::Tz,
     /// Workspace layout for per-turn identity reloads. `None` pins identity to
     /// the construction-time snapshot (test constructors).
-    layout: Option<crate::config::WorkspaceLayout>,
+    layout: Option<residuum_config::WorkspaceLayout>,
     /// The team roster read for the `TEAM` block at each turn entry. `None`
     /// leaves the prompt without a roster.
     team: Option<std::sync::Arc<dyn super::TeamRoster>>,
@@ -98,7 +98,7 @@ impl Agent {
         let usage_totals_path = config
             .layout
             .as_ref()
-            .map(crate::config::WorkspaceLayout::usage_totals_json);
+            .map(residuum_config::WorkspaceLayout::usage_totals_json);
         Self {
             provider,
             tools,
@@ -107,7 +107,7 @@ impl Agent {
             recent_messages: RecentMessages::new(),
             options: config.options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             observations: None,
             recent_context: None,
             tz: config.tz,
@@ -217,7 +217,7 @@ impl Agent {
 
     /// Set the repeat-call guard config for future turns (e.g. at startup,
     /// or after a config reload).
-    pub fn set_repeat_call_guard(&mut self, config: crate::config::RepeatCallGuardConfig) {
+    pub fn set_repeat_call_guard(&mut self, config: residuum_config::RepeatCallGuardConfig) {
         self.repeat_call_guard = config;
     }
 
@@ -227,7 +227,7 @@ impl Agent {
     /// Returns an error if the file exists but cannot be read or parsed.
     pub async fn reload_observations(
         &mut self,
-        layout: &crate::config::WorkspaceLayout,
+        layout: &residuum_config::WorkspaceLayout,
     ) -> anyhow::Result<()> {
         self.observations =
             super::context::loading::load_observations(&layout.observations_json()).await?;
@@ -240,7 +240,7 @@ impl Agent {
     /// Returns an error if the file exists but cannot be parsed.
     pub async fn reload_recent_context(
         &mut self,
-        layout: &crate::config::WorkspaceLayout,
+        layout: &residuum_config::WorkspaceLayout,
     ) -> anyhow::Result<()> {
         self.recent_context =
             super::context::loading::load_recent_context_narrative(&layout.recent_context_json())
@@ -293,7 +293,7 @@ impl Agent {
     /// LLM call and were drained after the turn completed. Ensures the message
     /// (with its sender, images, and background context) is visible in the next
     /// turn without being lost.
-    pub fn inject_inbound_message(&mut self, message: crate::bus::MessageEvent) {
+    pub fn inject_inbound_message(&mut self, message: residuum_bus::MessageEvent) {
         self.recent_messages.extend(message.into_history_messages());
     }
 
@@ -339,13 +339,13 @@ impl Agent {
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut dyn interrupt::InterruptSource,
-        images: &[crate::inference::ImageData],
+        images: &[residuum_inference::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
         stop_token: &CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
         self.identity = self.load_identity_snapshot().await;
-        let now = crate::time::now_local(self.tz);
+        let now = residuum_core::time::now_local(self.tz);
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
@@ -425,11 +425,11 @@ impl Agent {
 
         let mcp_defs = self.mcp_registry.read().await.tool_definitions();
 
-        let token_count = |def: &crate::inference::ToolDefinition| {
+        let token_count = |def: &residuum_inference::ToolDefinition| {
             let param_str = def.parameters.to_string();
-            crate::memory::tokens::estimate_tokens(&def.name)
-                + crate::memory::tokens::estimate_tokens(&def.description)
-                + crate::memory::tokens::estimate_tokens(&param_str)
+            residuum_memory::tokens::estimate_tokens(&def.name)
+                + residuum_memory::tokens::estimate_tokens(&def.description)
+                + residuum_memory::tokens::estimate_tokens(&param_str)
         };
         let system_tool_tokens: usize = builtin_defs.iter().map(token_count).sum();
         let mcp_tool_tokens: usize = mcp_defs.iter().map(token_count).sum();
@@ -464,11 +464,10 @@ impl Agent {
 )]
 mod tests {
     use super::*;
-    use crate::agent::testing::{CountingTool, EchoTool};
-    use crate::bus;
-    use crate::inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
-    use crate::mcp::McpRegistry;
+    use crate::testing::{CountingTool, EchoTool};
     use async_trait::async_trait;
+    use residuum_inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
+    use residuum_mcp::McpRegistry;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -485,10 +484,10 @@ mod tests {
     }
 
     /// Create a test publisher and endpoint for bus-based tests.
-    fn test_bus() -> (Publisher, bus::EndpointName) {
-        let handle = bus::spawn_broker();
+    fn test_bus() -> (Publisher, residuum_bus::EndpointName) {
+        let handle = residuum_bus::spawn_broker();
         let publisher = handle.publisher();
-        let ep = bus::EndpointName::from("test");
+        let ep = residuum_bus::EndpointName::from("test");
         (publisher, ep)
     }
 
@@ -547,11 +546,11 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = crate::bus::testing::dead_interrupt_rx();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hi",
@@ -576,7 +575,7 @@ mod tests {
             InferenceResponse {
                 content: "first".to_string(),
                 tool_calls: vec![],
-                usage: Some(crate::inference::Usage {
+                usage: Some(residuum_inference::Usage {
                     input_tokens: 100,
                     output_tokens: 20,
                     cache_creation_tokens: None,
@@ -590,7 +589,7 @@ mod tests {
             InferenceResponse {
                 content: "second".to_string(),
                 tool_calls: vec![],
-                usage: Some(crate::inference::Usage {
+                usage: Some(residuum_inference::Usage {
                     input_tokens: 150,
                     output_tokens: 30,
                     cache_creation_tokens: None,
@@ -613,13 +612,13 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
 
         for msg in ["hi", "again"] {
-            let mut irx = crate::bus::testing::dead_interrupt_rx();
+            let mut irx = residuum_bus::testing::dead_interrupt_rx();
             agent
                 .process_message(
                     msg,
@@ -662,11 +661,11 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let mut restored = SessionUsageTotals::default();
-        restored.accumulate(Some(crate::inference::Usage {
+        restored.accumulate(Some(residuum_inference::Usage {
             input_tokens: 500,
             output_tokens: 90,
             cache_creation_tokens: None,
@@ -704,11 +703,11 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = crate::bus::testing::dead_interrupt_rx();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "run echo test",
@@ -759,11 +758,11 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = crate::bus::testing::dead_interrupt_rx();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "what does echo test print?",
@@ -822,12 +821,12 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
         // max_tool_iterations left unset: unlimited by default.
 
         let (publisher, ep) = test_bus();
-        let mut irx = crate::bus::testing::dead_interrupt_rx();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop past the old cap",
@@ -880,12 +879,12 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
         agent.set_max_tool_iterations(Some(limit));
 
         let (publisher, ep) = test_bus();
-        let mut irx = crate::bus::testing::dead_interrupt_rx();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop forever",
@@ -925,7 +924,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         agent.inject_inbound_message(make_inbound("m1", "leftover interrupt message"));
@@ -938,7 +937,7 @@ mod tests {
         );
         assert_eq!(
             msgs[0].role,
-            crate::inference::Role::User,
+            residuum_inference::Role::User,
             "injected message should have User role"
         );
     }
@@ -955,7 +954,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         agent.inject_system_message("background task completed: report-gen");
@@ -968,7 +967,7 @@ mod tests {
         );
         assert_eq!(
             msgs[0].role,
-            crate::inference::Role::System,
+            residuum_inference::Role::System,
             "injected message should have System role"
         );
     }
@@ -985,7 +984,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         // Inject a background message before the "turn"
@@ -1024,7 +1023,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         // Simulate a conversation with 5 exchanges
@@ -1074,7 +1073,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
         agent.inject_inbound_message(make_inbound("m1", "hello"));
         agent.inject_inbound_message(make_inbound("m2", "world"));
@@ -1157,11 +1156,11 @@ mod tests {
         }
     }
 
-    fn make_inbound(id: &str, content: &str) -> crate::bus::MessageEvent {
-        crate::bus::MessageEvent {
+    fn make_inbound(id: &str, content: &str) -> residuum_bus::MessageEvent {
+        residuum_bus::MessageEvent {
             id: id.to_string(),
             content: content.to_string(),
-            origin: crate::bus::origin::MessageOrigin {
+            origin: residuum_bus::origin::MessageOrigin {
                 endpoint: "test".to_string(),
                 sender: None,
                 conversation: None,
@@ -1215,7 +1214,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1288,7 +1287,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1352,7 +1351,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1404,11 +1403,11 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = crate::bus::testing::dead_interrupt_rx();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
         let stop_token = CancellationToken::new();
         stop_token.cancel();
 
@@ -1487,7 +1486,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1526,7 +1525,7 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|m| m.role == crate::inference::Role::Tool),
+                .any(|m| m.role == residuum_inference::Role::Tool),
             "the in-flight tool call should still have run to completion"
         );
         assert!(
@@ -1553,11 +1552,11 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
-        let mut irx = crate::bus::testing::dead_interrupt_rx();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hello",
@@ -1593,7 +1592,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         // Only 2 exchanges — fewer than the 3-exchange retention window
@@ -1628,7 +1627,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let messages = vec![
@@ -1683,7 +1682,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         assert_eq!(agent.provider.model_name(), "model-a");
@@ -1708,7 +1707,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         // Inject some messages into history
@@ -1737,7 +1736,7 @@ mod tests {
     #[tokio::test]
     async fn turn_picks_up_identity_edits_from_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         tokio::fs::write(layout.soul_md(), "SOUL_MARKER_V1")
             .await
             .unwrap();
@@ -1762,7 +1761,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: Some(layout.clone()),
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1823,7 +1822,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_disappears_after_deletion() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         tokio::fs::write(layout.bootstrap_md(), "BOOTSTRAP_MARKER")
             .await
             .unwrap();
@@ -1848,7 +1847,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: Some(layout.clone()),
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1903,7 +1902,7 @@ mod tests {
     #[tokio::test]
     async fn identity_read_failure_falls_back_to_cache() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         // A directory named SOUL.md makes read_to_string return a non-NotFound
         // error, so IdentityFiles::load fails and the reload falls back.
         tokio::fs::create_dir(layout.soul_md()).await.unwrap();
@@ -1928,7 +1927,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: Some(layout.clone()),
             },
-            crate::agent::HopCounter::new(0),
+            crate::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();

@@ -186,6 +186,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_mcp`: `mcp`, so `RUST_LOG=residuum_mcp=trace`.
 - `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
 - `residuum_workspace`: `workspace` and `inbox`, so `RUST_LOG=residuum_workspace=trace`, or `RUST_LOG=residuum_workspace::watch=trace` for the change feed.
+- `residuum_agent`: `agent` and `subconscious`, so `RUST_LOG=residuum_agent=trace` for the turn loop, or `RUST_LOG=residuum_agent::subconscious=trace` for the subconscious watch.
 - `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.
 
 The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.

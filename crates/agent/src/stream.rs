@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::inference::{StreamDelta, StreamSink};
+use residuum_inference::{StreamDelta, StreamSink};
 
 /// How long streamed output waits in the buffer before it is published.
 pub(crate) const FLUSH_INTERVAL: Duration = Duration::from_millis(50);

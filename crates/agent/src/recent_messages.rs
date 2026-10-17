@@ -1,6 +1,6 @@
 //! In-memory recent message history before observation.
 
-use crate::inference::Message;
+use residuum_inference::Message;
 
 /// In-memory buffer holding recent conversation messages before observation.
 pub struct RecentMessages {
@@ -84,7 +84,7 @@ impl RecentMessages {
             let msg = &self.messages[i];
 
             // Look for an assistant message with text and no tool calls
-            if msg.role != crate::inference::Role::Assistant {
+            if msg.role != residuum_inference::Role::Assistant {
                 continue;
             }
             if msg.content.is_empty() || msg.tool_calls.is_some() {
@@ -98,16 +98,16 @@ impl RecentMessages {
             while j > 0 {
                 j -= 1;
                 let prev = &self.messages[j];
-                if prev.role == crate::inference::Role::User && !prev.content.is_empty() {
+                if prev.role == residuum_inference::Role::User && !prev.content.is_empty() {
                     pairs.push((prev.clone(), msg.clone()));
                     i = j; // continue scanning before this user message
                     break;
                 }
                 // Skip tool results and assistant-with-tool-calls (mid-chain)
-                if prev.role == crate::inference::Role::Tool {
+                if prev.role == residuum_inference::Role::Tool {
                     continue;
                 }
-                if prev.role == crate::inference::Role::Assistant && prev.tool_calls.is_some() {
+                if prev.role == residuum_inference::Role::Assistant && prev.tool_calls.is_some() {
                     continue;
                 }
                 // Any other message type means no matching user message
@@ -137,7 +137,7 @@ impl RecentMessages {
 )]
 mod tests {
     use super::*;
-    use crate::inference::Role;
+    use residuum_inference::Role;
 
     fn push_user_msg(recent: &mut RecentMessages, content: &str) {
         recent.push(Message {
@@ -220,7 +220,7 @@ mod tests {
         recent.push(Message {
             role: Role::Assistant,
             content: String::new(),
-            tool_calls: Some(vec![crate::inference::ToolCall {
+            tool_calls: Some(vec![residuum_inference::ToolCall {
                 id: "call_1".to_string(),
                 name: "exec".to_string(),
                 arguments: serde_json::json!({"command": "echo test"}),

@@ -13,8 +13,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::bus::session::{MAIN_ADDRESS, MAIN_DEPTH, generate_address};
-use crate::bus::{EventTrigger, SessionAddress, SkillName, SpawnRequestEvent};
+use residuum_bus::session::{MAIN_ADDRESS, MAIN_DEPTH, generate_address};
+use residuum_bus::{EventTrigger, SessionAddress, SkillName, SpawnRequestEvent};
 
 use super::LearnSignal;
 
@@ -184,7 +184,7 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         prompt,
         context: None,
         source: trigger,
-        model: crate::config::ModelSelector::LARGE,
+        model: residuum_config::ModelSelector::LARGE,
         // The learner is part of the main agent's own subconscious, not
         // something a session spawned, so it runs at main's own spawn depth.
         spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
@@ -234,7 +234,7 @@ mod tests {
         assert!(spawn.prompt.contains("User prefers bullets."));
         assert!(spawn.prompt.contains("Worked around a 502."));
         assert!(spawn.prompt.contains("recent_messages.json"));
-        assert!(matches!(spawn.model, crate::config::ModelSelector::LARGE));
+        assert!(matches!(spawn.model, residuum_config::ModelSelector::LARGE));
         assert!(spawn.address.as_ref().starts_with("spawned-learner-"));
 
         // A second call inside the window is suppressed.

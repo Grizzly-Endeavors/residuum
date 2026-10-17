@@ -1,7 +1,7 @@
 //! Context assembly: builds the system prompt from identity files.
 
 mod assembly;
-pub(crate) mod loading;
+pub mod loading;
 mod prompt;
 mod types;
 

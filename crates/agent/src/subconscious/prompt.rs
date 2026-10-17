@@ -1,14 +1,14 @@
 //! Prompt construction for the subconscious classifier LLM call.
 
 use super::{EvalPhase, TurnScratch};
-use crate::inference::{Message, Role};
+use residuum_inference::{Message, Role};
 
 /// User-customizable check guidance — default when `SUBCONSCIOUS.md` is absent.
 ///
 /// The workspace bootstrap writes this same content to disk so users can
 /// customise it without recompiling. The format spec is always appended by code.
 pub(super) const DEFAULT_SUBCONSCIOUS_PROMPT: &str =
-    include_str!("../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
+    include_str!("../../../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
 
 /// Output format spec — always appended by code, never stored in editable files.
 ///
@@ -149,11 +149,12 @@ pub(super) fn format_turn_transcript(transcript: &[Message], max_tokens: usize) 
     let mut start = 0;
     let mut total: usize = formatted
         .iter()
-        .map(|s| crate::memory::tokens::estimate_tokens(s))
+        .map(|s| residuum_memory::tokens::estimate_tokens(s))
         .sum();
     while start < formatted.len().saturating_sub(1) && total > max_tokens {
-        total -=
-            crate::memory::tokens::estimate_tokens(formatted.get(start).map_or("", String::as_str));
+        total -= residuum_memory::tokens::estimate_tokens(
+            formatted.get(start).map_or("", String::as_str),
+        );
         start += 1;
     }
 
@@ -266,7 +267,7 @@ pub(super) fn build_eval_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::ToolCall;
+    use residuum_inference::ToolCall;
 
     #[test]
     fn format_message_includes_tool_calls() {
@@ -478,9 +479,9 @@ mod tests {
     #[test]
     fn the_turn_transcript_leaves_out_the_models_thinking() {
         let transcript = vec![
-            crate::inference::Message::user("what is it?"),
-            crate::inference::Message::assistant("The answer is 42.".to_string(), None)
-                .with_thinking(vec![crate::inference::ThinkingBlock {
+            residuum_inference::Message::user("what is it?"),
+            residuum_inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![residuum_inference::ThinkingBlock {
                     text: "private reasoning about the answer".to_string(),
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),

@@ -14,8 +14,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::bus::usage::SessionUsageTotals;
-use crate::inference::Usage;
+use residuum_bus::usage::SessionUsageTotals;
+use residuum_inference::Usage;
 
 /// Token usage accumulated across the model calls made so far in a turn
 /// that's still running. Reset at the start of every turn; never persisted
@@ -57,7 +57,7 @@ impl TurnUsage {
 /// main agent's own workspace file ([`MainUsageSink`]), or a background
 /// session's registry entry (mirrored into its store record at
 /// completion; `SessionUsageSink` in the background registry does this).
-/// Mirrors `crate::agent::turn::TranscriptSink`'s split between the main
+/// Mirrors `crate::turn::TranscriptSink`'s split between the main
 /// agent's own persistence and a session's.
 #[async_trait]
 pub trait UsageSink: Send + Sync {

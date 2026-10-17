@@ -18,16 +18,16 @@ pub use watch::SubconsciousWatch;
 use anyhow::Context;
 use serde::Deserialize;
 
-use crate::config::{
-    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
-    WorkspaceLayout,
-};
-use crate::inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
 use parse::parse_subconscious_response;
 use prompt::{
     DEFAULT_SUBCONSCIOUS_PROMPT, build_eval_prompt, format_turn_transcript,
     subconscious_response_schema,
 };
+use residuum_config::{
+    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    WorkspaceLayout,
+};
+use residuum_inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
 
 /// Which evaluation pass is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +165,7 @@ pub struct SubconsciousConfig {
     /// plus learner sub-agent spawns).
     pub learning: bool,
     /// Per-role overrides for temperature and thinking.
-    pub role_overrides: Option<crate::config::RoleOverrides>,
+    pub role_overrides: Option<residuum_config::RoleOverrides>,
 }
 
 impl Default for SubconsciousConfig {
@@ -200,17 +200,17 @@ impl Subconscious {
     /// a transition notices exactly once rather than per call.
     #[must_use]
     pub fn build(
-        cfg: &crate::config::Config,
+        cfg: &residuum_config::Config,
         layout: &WorkspaceLayout,
-        http: crate::inference::SharedHttpClient,
-        publisher: crate::bus::Publisher,
+        http: residuum_inference::SharedHttpClient,
+        publisher: residuum_bus::Publisher,
     ) -> std::sync::Arc<Self> {
         let settings = &cfg.subconscious_settings;
         if !settings.enabled {
             return std::sync::Arc::new(Self::disabled(layout.clone()));
         }
 
-        let provider = match crate::inference::build_provider_chain_with_notices(
+        let provider = match residuum_inference::build_provider_chain_with_notices(
             &cfg.subconscious,
             cfg.max_tokens,
             http,
@@ -270,7 +270,7 @@ impl Subconscious {
     #[must_use]
     pub fn disabled(layout: WorkspaceLayout) -> Self {
         Self {
-            provider: Box::new(crate::inference::NullProvider),
+            provider: Box::new(residuum_inference::NullProvider),
             config: SubconsciousConfig::default(),
             layout,
         }
@@ -419,7 +419,7 @@ impl Subconscious {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::testing::MockMemoryProvider;
+    use residuum_memory::testing::MockMemoryProvider;
 
     const EMPTY_RESPONSE: &str = r#"{"findings": []}"#;
     const ACT_RESPONSE: &str = r#"{

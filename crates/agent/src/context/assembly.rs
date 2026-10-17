@@ -1,15 +1,15 @@
 //! System prompt assembly: combines identity, memory, and context into messages.
 
-use crate::inference::Message;
-use crate::memory::tokens::{estimate_message_tokens, estimate_tokens};
-use crate::workspace::identity::IdentityFiles;
+use residuum_inference::Message;
+use residuum_memory::tokens::{estimate_message_tokens, estimate_tokens};
+use residuum_workspace::identity::IdentityFiles;
 
 use super::super::recent_messages::RecentMessages;
 use super::prompt::{build_status_line, build_system_content};
 use super::types::{ContextBreakdown, MemoryContext, PromptContext, StatusLine};
 
 /// Compute a per-section token breakdown for the current agent context.
-pub(in crate::agent) fn compute_context_breakdown(
+pub(crate) fn compute_context_breakdown(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
@@ -57,7 +57,7 @@ pub(in crate::agent) fn compute_context_breakdown(
 /// system message with the current time (and optionally how long since the
 /// last message) is inserted immediately before the last user message.
 #[must_use]
-pub(in crate::agent) fn assemble_system_prompt(
+pub(crate) fn assemble_system_prompt(
     identity: &IdentityFiles,
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
@@ -83,7 +83,7 @@ pub(in crate::agent) fn assemble_system_prompt(
         // Insert before the last user message
         if let Some(pos) = messages
             .iter()
-            .rposition(|m| m.role == crate::inference::Role::User)
+            .rposition(|m| m.role == residuum_inference::Role::User)
         {
             messages.insert(pos, Message::system(tag));
         }
@@ -101,8 +101,8 @@ mod tests {
     use chrono::NaiveDateTime;
 
     use super::*;
-    use crate::agent::context::types::SkillsContext;
-    use crate::inference::Role;
+    use crate::context::types::SkillsContext;
+    use residuum_inference::Role;
 
     fn no_memory() -> MemoryContext<'static> {
         MemoryContext {
@@ -180,7 +180,7 @@ mod tests {
     fn assemble_attributes_every_user_message_with_a_sender() {
         let identity = IdentityFiles::default();
         let mut recent = RecentMessages::new();
-        let sender = |name: &str| crate::inference::MessageSender {
+        let sender = |name: &str| residuum_inference::MessageSender {
             name: name.to_string(),
             id: format!("id-{name}"),
             interface: "teams".to_string(),

@@ -5006,6 +5006,7 @@ dependencies = [
  "rand 0.8.6",
  "regex",
  "reqwest 0.13.3",
+ "residuum-agent",
  "residuum-bus",
  "residuum-config",
  "residuum-core",
@@ -5043,6 +5044,33 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.59.0",
+ "wiremock",
+]
+
+[[package]]
+name = "residuum-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-mcp",
+ "residuum-memory",
+ "residuum-skills",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
  "wiremock",
 ]
 

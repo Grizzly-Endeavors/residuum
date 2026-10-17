@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use super::{EvalPhase, Finding, Severity, Subconscious, TurnScratch};
-use crate::bus::interrupt::Interrupt;
-use crate::inference::Message;
+use residuum_bus::interrupt::Interrupt;
+use residuum_inference::Message;
 
 /// Record a correction the watch actually delivered to the agent this turn.
 fn record_applied(scratch: &Mutex<TurnScratch>, instruction: String) {
@@ -102,7 +102,7 @@ impl SubconsciousWatch {
         let corrections_delivered = Arc::clone(&self.corrections_delivered);
         let scratch = Arc::clone(&self.scratch);
 
-        crate::util::spawn_monitored("subconscious-mid-turn", async move {
+        residuum_core::util::spawn_monitored("subconscious-mid-turn", async move {
             match subconscious
                 .evaluate(&transcript, EvalPhase::MidTurn, None)
                 .await
@@ -152,10 +152,10 @@ impl SubconsciousWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WorkspaceLayout;
-    use crate::memory::testing::MockMemoryProvider;
     use crate::subconscious::SubconsciousConfig;
+    use residuum_config::WorkspaceLayout;
     use residuum_core::testing::wait;
+    use residuum_memory::testing::MockMemoryProvider;
 
     const ACT_RESPONSE: &str = r#"{
         "findings": [

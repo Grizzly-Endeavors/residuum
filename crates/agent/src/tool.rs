@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_keys::{Redactor, SharedAgentKeys};
-use crate::inference::{ToolDefinition, ToolError, ToolResult};
+use residuum_config::agent_keys::{Redactor, SharedAgentKeys};
+use residuum_inference::{ToolDefinition, ToolError, ToolResult};
 
 use super::auto_mode::SharedAutoMode;
 

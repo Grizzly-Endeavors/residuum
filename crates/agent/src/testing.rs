@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use residuum_core::testing::gate::{Gate, GateEntry};
 
 use super::Tool;
-use crate::inference::{ToolDefinition, ToolError, ToolResult};
+use residuum_inference::{ToolDefinition, ToolError, ToolResult};
 
 fn definition_named(name: &str) -> ToolDefinition {
     ToolDefinition {

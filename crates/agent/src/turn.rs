@@ -6,20 +6,20 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bus::origin::chat_interface_endpoint;
-use crate::bus::{
+use anyhow::Context;
+use residuum_bus::origin::chat_interface_endpoint;
+use residuum_bus::{
     EndpointName, MainConversationEvent, MessageEvent, NoticeEvent, NotifyName, Publisher,
     SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent, ToolCallEvent,
     ToolResultEvent, TurnUsageEvent, topics,
 };
-use crate::inference::{
+use residuum_inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, StreamSink, ToolCall,
     ToolDefinition, joined_thinking_text,
 };
-use crate::inference::{ToolError, ToolResult};
-use crate::mcp::SharedMcpRegistry;
-use crate::workspace::identity::IdentityFiles;
-use anyhow::Context;
+use residuum_inference::{ToolError, ToolResult};
+use residuum_mcp::SharedMcpRegistry;
+use residuum_workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
 use super::hop::HopCounter;
@@ -30,8 +30,8 @@ use super::tool::{
     truncate_tool_name_for_display,
 };
 use super::usage::{TurnUsage, UsageSink};
-use crate::bus::interrupt::{Interrupt, InterruptSource};
-use crate::bus::usage::SessionUsageTotals;
+use residuum_bus::interrupt::{Interrupt, InterruptSource};
+use residuum_bus::usage::SessionUsageTotals;
 
 /// Told each time one of a main turn's replies reaches the main
 /// conversation on its way to an endpoint. Whoever counts unread replies
@@ -108,7 +108,7 @@ impl<'a> From<&'a LiveOutputEndpoint> for TurnOutput<'a> {
 }
 
 /// Context for publishing streaming events during a turn.
-pub(crate) struct EventContext<'a> {
+pub struct EventContext<'a> {
     pub publisher: &'a Publisher,
     /// Told as each of a main turn's endpoint replies is published. `None`
     /// for a session's turn, and where nothing counts unread replies.
@@ -135,7 +135,7 @@ enum ToolActivity {
 }
 
 /// Where a turn's streaming events (tool activity, intermediate text) go.
-pub(crate) enum EventTarget<'a> {
+pub enum EventTarget<'a> {
     /// The main agent: the main conversation, and for a turn delivered to a
     /// chat interface that interface's endpoint topic, correlated to the
     /// message that started the turn. The endpoint may be absent (e.g. a
@@ -158,10 +158,10 @@ pub(crate) enum EventTarget<'a> {
 /// endpoint its conversation lives on, and the conversation id itself. See
 /// [`EventContext::session_conversation`].
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SessionConversationTarget<'a> {
-    pub(crate) session_address: &'a SessionAddress,
-    pub(crate) endpoint: &'a str,
-    pub(crate) conversation_id: &'a str,
+pub struct SessionConversationTarget<'a> {
+    pub session_address: &'a SessionAddress,
+    pub endpoint: &'a str,
+    pub conversation_id: &'a str,
 }
 
 impl EventContext<'_> {
@@ -216,7 +216,7 @@ impl EventContext<'_> {
                     ToolActivity::Call(tool_call) => SessionEventKind::ToolCall(tool_call),
                     ToolActivity::Result(result) => SessionEventKind::ToolResult(result),
                 };
-                crate::bus::session::publish_session_event(self.publisher, address, run_id, kind)
+                residuum_bus::session::publish_session_event(self.publisher, address, run_id, kind)
                     .await;
             }
         }
@@ -249,7 +249,7 @@ impl EventContext<'_> {
                         .publisher
                         .publish(
                             topics::Endpoint(ep.clone()),
-                            crate::bus::IntermediateEvent {
+                            residuum_bus::IntermediateEvent {
                                 correlation_id: correlation_id.to_owned(),
                                 content: content.to_owned(),
                             },
@@ -260,7 +260,7 @@ impl EventContext<'_> {
                 }
             }
             EventTarget::Session { address, run_id } => {
-                crate::bus::session::publish_session_event(
+                residuum_bus::session::publish_session_event(
                     self.publisher,
                     address,
                     run_id,
@@ -384,7 +384,7 @@ impl EventContext<'_> {
                     .await;
             }
             EventTarget::Session { address, run_id } => {
-                crate::bus::session::publish_session_event(
+                residuum_bus::session::publish_session_event(
                     self.publisher,
                     address,
                     run_id,
@@ -414,13 +414,13 @@ const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 /// bound to its run so the session store's transcript stays durable as the
 /// run progresses.
 #[async_trait]
-pub(crate) trait TranscriptSink: Send + Sync {
+pub trait TranscriptSink: Send + Sync {
     /// Append newly-produced messages to the durable transcript.
     async fn append(&self, messages: &[Message]);
 }
 
 /// Shared subsystem references needed for each turn iteration.
-pub(crate) struct TurnResources<'a> {
+pub struct TurnResources<'a> {
     pub provider: &'a dyn InferenceProvider,
     pub tools: &'a ToolRegistry,
     pub mcp_registry: &'a SharedMcpRegistry,
@@ -429,11 +429,11 @@ pub(crate) struct TurnResources<'a> {
     /// Maximum tool-call iterations before the turn stops itself
     /// gracefully. `None` (the default) means unlimited — the user's own
     /// Cancel / `stop_agent` is the intended safety valve for a runaway
-    /// turn. See [`crate::config::AgentAbilitiesConfig::max_tool_iterations`].
+    /// turn. See [`residuum_config::AgentAbilitiesConfig::max_tool_iterations`].
     pub max_tool_iterations: Option<usize>,
     /// Guards against a model repeating the exact same tool call over and
-    /// over. See [`crate::config::AgentAbilitiesConfig::repeat_call_guard`].
-    pub repeat_call_guard: crate::config::RepeatCallGuardConfig,
+    /// over. See [`residuum_config::AgentAbilitiesConfig::repeat_call_guard`].
+    pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
     /// Cancelled when the user asks to stop this turn. Raced directly
     /// against the in-flight model call so generation aborts immediately;
     /// turns that don't support being stopped (system/wake turns) pass a
@@ -584,7 +584,7 @@ async fn notice_thinking_dropped(
 }
 
 /// The plain-language notice for images a request left out.
-fn images_omitted_notice(omitted: &crate::inference::ImagesOmitted, count: usize) -> String {
+fn images_omitted_notice(omitted: &residuum_inference::ImagesOmitted, count: usize) -> String {
     let count = match count {
         1 => "1 image was".to_string(),
         n => format!("{n} images were"),
@@ -823,12 +823,17 @@ async fn finish_turn_with_notice(
 /// A main-agent turn streams each model call's text and reasoning to the
 /// main conversation while the call runs (see [`call_model`]); the frames
 /// that follow it carry the authoritative text.
+///
+/// # Errors
+///
+/// Returns an error when a model call fails, or when the model still returns
+/// an empty response with no tool calls once the turn's retries are used up.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 #[expect(
     clippy::too_many_arguments,
     reason = "turn execution context spans resources, contexts, and watchers"
 )]
-pub(crate) async fn execute_turn(
+pub async fn execute_turn(
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
@@ -1430,7 +1435,7 @@ async fn execute_mcp_tool(
 async fn run_dispatched_tool_call(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
-) -> (String, bool, Vec<crate::inference::ImageData>) {
+) -> (String, bool, Vec<residuum_inference::ImageData>) {
     let (result, used_mcp) = dispatch_tool_call(tool_call, resources).await;
     match result {
         Ok(r) => (r.output, r.is_error, r.images),
@@ -1484,14 +1489,14 @@ async fn execute_tool(
 
     let auto_mode = match resources.tools.auto_mode() {
         Some(gate) => {
-            let request = crate::agent::auto_mode::latest_user_request(recent_messages.messages());
+            let request = crate::auto_mode::latest_user_request(recent_messages.messages());
             gate.check(tool_call, request).await
         }
         None => None,
     };
     let blocked = auto_mode
         .as_ref()
-        .filter(|v| v.decision == crate::bus::auto_mode::AutoModeDecision::Blocked);
+        .filter(|v| v.decision == residuum_bus::auto_mode::AutoModeDecision::Blocked);
 
     let (mut output, is_error, images) = if let Some(verdict) = blocked {
         (verdict.blocked_message(), true, vec![])
@@ -1692,11 +1697,11 @@ async fn update_and_publish_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::testing::{BlockingTool, CountingTool, FixedOutputTool};
-    use crate::inference::Role;
+    use crate::testing::{BlockingTool, CountingTool, FixedOutputTool};
     use residuum_bus::testing::{bus_barrier, next_event};
     use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
+    use residuum_inference::Role;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
@@ -1712,7 +1717,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_reply_audience_hears_each_endpoint_reply_as_it_is_published() {
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let publisher = bus.publisher();
         let mut main = bus.subscribe(topics::MainConversation).await.unwrap();
         let audience = CountingAudience::default();
@@ -1872,8 +1877,8 @@ mod tests {
 
     #[tokio::test]
     async fn drain_injects_user_message_history_through_the_sink() {
-        use crate::bus::MessageEvent;
-        use crate::bus::origin::MessageOrigin;
+        use residuum_bus::MessageEvent;
+        use residuum_bus::origin::MessageOrigin;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
@@ -1919,19 +1924,19 @@ mod tests {
 
     #[tokio::test]
     async fn publish_intermediate_for_a_conversation_session_also_uses_session_response_event() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("discord");
-        let mut conv_sub: crate::bus::Subscriber<SessionResponseEvent> = bus_handle
+        let mut conv_sub: residuum_bus::Subscriber<SessionResponseEvent> = bus_handle
             .subscribe(topics::Endpoint(ep.clone()))
             .await
             .unwrap();
-        let mut intermediate_sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> =
+        let mut intermediate_sub: residuum_bus::Subscriber<residuum_bus::IntermediateEvent> =
             bus_handle
                 .subscribe(topics::Endpoint(ep.clone()))
                 .await
                 .unwrap();
-        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionEvent> =
+        let mut session_sub: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
             bus_handle.subscribe(topics::Sessions).await.unwrap();
 
         let address = SessionAddress::from("external-discord-chan-1");
@@ -1978,7 +1983,7 @@ mod tests {
         assert!(
             matches!(
                 session_event.kind,
-                crate::bus::SessionEventKind::Intermediate { ref content } if content == "checking the build now"
+                residuum_bus::SessionEventKind::Intermediate { ref content } if content == "checking the build now"
             ),
             "a conversation session's intermediate text must reach the web sessions stream too"
         );
@@ -1986,10 +1991,10 @@ mod tests {
 
     #[tokio::test]
     async fn publish_intermediate_without_a_session_conversation_uses_intermediate_event() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("telegram");
-        let mut sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
+        let mut sub: residuum_bus::Subscriber<residuum_bus::IntermediateEvent> = bus_handle
             .subscribe(topics::Endpoint(ep.clone()))
             .await
             .unwrap();
@@ -2013,14 +2018,15 @@ mod tests {
 
     #[tokio::test]
     async fn publish_intermediate_for_the_web_ui_reaches_only_the_main_conversation() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let ep = EndpointName::from(crate::config::WEB_UI_ENDPOINT);
-        let mut endpoint_sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
-        let mut main_sub: crate::bus::Subscriber<MainConversationEvent> = bus_handle
+        let ep = EndpointName::from(residuum_config::WEB_UI_ENDPOINT);
+        let mut endpoint_sub: residuum_bus::Subscriber<residuum_bus::IntermediateEvent> =
+            bus_handle
+                .subscribe(topics::Endpoint(ep.clone()))
+                .await
+                .unwrap();
+        let mut main_sub: residuum_bus::Subscriber<MainConversationEvent> = bus_handle
             .subscribe(topics::MainConversation)
             .await
             .unwrap();
@@ -2054,10 +2060,10 @@ mod tests {
 
     #[tokio::test]
     async fn publish_intermediate_with_no_output_endpoint_is_a_noop() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> =
+        let mut sub: residuum_bus::Subscriber<residuum_bus::IntermediateEvent> =
             bus_handle.subscribe(topics::Endpoint(ep)).await.unwrap();
 
         let events = EventContext {
@@ -2090,9 +2096,9 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::NullProvider;
+        let provider = residuum_inference::NullProvider;
         let tools = ToolRegistry::new();
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -2104,14 +2110,14 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
             usage_sink: None,
         };
 
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -2146,12 +2152,12 @@ mod tests {
     #[tokio::test]
     async fn execute_tool_redacts_agent_key_values_before_recording() {
         let dir = tempfile::tempdir().unwrap();
-        let keys = crate::agent_keys::AgentKeys::new_shared(dir.path());
+        let keys = residuum_config::agent_keys::AgentKeys::new_shared(dir.path());
         keys.set(
             "api_key",
             "sk-live-redactme42",
             None,
-            crate::agent_keys::KeyCreator::User,
+            residuum_config::agent_keys::KeyCreator::User,
         )
         .await
         .unwrap();
@@ -2172,8 +2178,8 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::NullProvider;
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let provider = residuum_inference::NullProvider;
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -2185,13 +2191,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
             usage_sink: None,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -2248,18 +2254,18 @@ mod tests {
         } else {
             "http://127.0.0.1:9".to_string()
         };
-        let service = crate::inference::system_one::SystemOneService::new(Some(
-            &crate::config::SystemOneConfig {
-                provider: crate::config::SystemOneProvider::Ollama,
+        let service = residuum_inference::system_one::SystemOneService::new(Some(
+            &residuum_config::SystemOneConfig {
+                provider: residuum_config::SystemOneProvider::Ollama,
                 url,
                 model: "nimble".to_string(),
                 api_key: None,
                 keep_alive: None,
             },
         ));
-        let gate = crate::agent::auto_mode::AutoModeGate::new_shared(
+        let gate = crate::auto_mode::AutoModeGate::new_shared(
             "scout",
-            crate::config::AutoModeConfig {
+            residuum_config::AutoModeConfig {
                 enabled: true,
                 deny: vec!["Running the counting tool".to_string()],
                 allow: Vec::new(),
@@ -2279,8 +2285,8 @@ mod tests {
             arguments: serde_json::json!({}),
             server: None,
         };
-        let provider = crate::inference::NullProvider;
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let provider = residuum_inference::NullProvider;
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -2292,13 +2298,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
             usage_sink: None,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -2356,8 +2362,8 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::NullProvider;
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let provider = residuum_inference::NullProvider;
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -2369,13 +2375,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
             usage_sink: None,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -2415,7 +2421,7 @@ mod tests {
         assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
         assert_eq!(
             msg.content,
-            crate::agent::tool::CANCELLED_WHILE_RUNNING,
+            crate::tool::CANCELLED_WHILE_RUNNING,
             "the transcript should say the tool was cancelled, not that it failed"
         );
     }
@@ -2430,8 +2436,8 @@ mod tests {
             server: None,
         };
 
-        let provider = crate::inference::NullProvider;
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let provider = residuum_inference::NullProvider;
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -2443,13 +2449,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
             usage_sink: None,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -2469,7 +2475,7 @@ mod tests {
             .first()
             .expect("a tool-result message should have been recorded");
         assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
-        assert_eq!(msg.content, crate::agent::tool::CANCELLED_BEFORE_START);
+        assert_eq!(msg.content, crate::tool::CANCELLED_BEFORE_START);
     }
 
     /// Returns a two-tool-call response exactly once; a second call means
@@ -2484,9 +2490,9 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[crate::inference::ToolDefinition],
+            _tools: &[residuum_inference::ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
             assert!(
                 !self.served.swap(true, Ordering::SeqCst),
                 "the turn should have stopped after the first batch, not called complete() again"
@@ -2524,7 +2530,7 @@ mod tests {
         let provider = TwoToolCallsProvider {
             served: AtomicBool::new(false),
         };
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -2536,13 +2542,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
             usage_sink: None,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = silent_events(&publisher);
         let memory_ctx = MemoryContext {
@@ -2598,7 +2604,7 @@ mod tests {
                 .first()
                 .expect("checked above: exactly 2 results")
                 .content,
-            crate::agent::tool::CANCELLED_WHILE_RUNNING,
+            crate::tool::CANCELLED_WHILE_RUNNING,
             "the call that was running when the stop landed was interrupted"
         );
         assert_eq!(
@@ -2606,7 +2612,7 @@ mod tests {
                 .get(1)
                 .expect("checked above: exactly 2 results")
                 .content,
-            crate::agent::tool::CANCELLED_BEFORE_START,
+            crate::tool::CANCELLED_BEFORE_START,
             "the second call in the batch must never have started"
         );
         assert!(
@@ -2624,11 +2630,11 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[crate::inference::ToolDefinition],
+            _tools: &[residuum_inference::ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
             let mut resp = InferenceResponse::new("cut off mid-sen".to_string(), vec![]);
-            resp.stop_reason = Some(crate::inference::StopReason::MaxTokens);
+            resp.stop_reason = Some(residuum_inference::StopReason::MaxTokens);
             Ok(resp)
         }
 
@@ -2644,7 +2650,7 @@ mod tests {
     /// running total is shared between them.
     #[derive(Default)]
     struct MockUsageSink {
-        calls: StdMutex<Vec<Option<crate::inference::Usage>>>,
+        calls: StdMutex<Vec<Option<residuum_inference::Usage>>>,
         tool_call_batches: StdMutex<Vec<u32>>,
         totals_to_return: StdMutex<Vec<SessionUsageTotals>>,
     }
@@ -2670,7 +2676,7 @@ mod tests {
 
     #[async_trait]
     impl UsageSink for MockUsageSink {
-        async fn accumulate(&self, usage: Option<crate::inference::Usage>) -> SessionUsageTotals {
+        async fn accumulate(&self, usage: Option<residuum_inference::Usage>) -> SessionUsageTotals {
             self.calls.lock().unwrap().push(usage);
             self.next_totals()
         }
@@ -2681,8 +2687,8 @@ mod tests {
         }
     }
 
-    fn usage(input: u32, output: u32) -> crate::inference::Usage {
-        crate::inference::Usage {
+    fn usage(input: u32, output: u32) -> residuum_inference::Usage {
+        residuum_inference::Usage {
             input_tokens: input,
             output_tokens: output,
             cache_creation_tokens: None,
@@ -2740,10 +2746,10 @@ mod tests {
 
     /// The usage progress a turn publishes to the main conversation, which is
     /// the only place it goes.
-    struct UsageFeed(crate::bus::Subscriber<MainConversationEvent>);
+    struct UsageFeed(residuum_bus::Subscriber<MainConversationEvent>);
 
     impl UsageFeed {
-        async fn follow(bus_handle: &crate::bus::BusHandle) -> Self {
+        async fn follow(bus_handle: &residuum_bus::BusHandle) -> Self {
             Self(
                 bus_handle
                     .subscribe(topics::MainConversation)
@@ -2765,7 +2771,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_usage_for_endpoint_target_maps_to_turn_usage_event() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
         let mut sub = UsageFeed::follow(&bus_handle).await;
@@ -2803,7 +2809,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_usage_with_no_output_endpoint_still_reports_to_the_main_conversation() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut sub = UsageFeed::follow(&bus_handle).await;
 
@@ -2825,9 +2831,9 @@ mod tests {
 
     #[tokio::test]
     async fn publish_usage_for_a_session_target_uses_session_event_kind_turn_usage() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut sub: crate::bus::Subscriber<crate::bus::SessionEvent> =
+        let mut sub: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
             bus_handle.subscribe(topics::Sessions).await.unwrap();
 
         let address = SessionAddress::from("spawned-x-0001");
@@ -2857,7 +2863,7 @@ mod tests {
         assert_eq!(event.run_id, "run-1");
         assert!(matches!(
             event.kind,
-            crate::bus::SessionEventKind::TurnUsage {
+            residuum_bus::SessionEventKind::TurnUsage {
                 output_tokens: 7,
                 has_usage: true,
                 tool_calls: 2,
@@ -2873,7 +2879,7 @@ mod tests {
             t.accumulate(Some(usage(100, 20)));
             t
         }]);
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
         let mut sub = UsageFeed::follow(&bus_handle).await;
@@ -2921,7 +2927,7 @@ mod tests {
     async fn update_and_publish_usage_with_zero_tool_calls_does_not_call_the_sinks_tool_call_path()
     {
         let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
         let events = EventContext {
@@ -2951,7 +2957,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_and_publish_usage_with_no_sink_still_publishes_the_turn_progress() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
         let mut sub = UsageFeed::follow(&bus_handle).await;
@@ -2981,7 +2987,7 @@ mod tests {
     #[tokio::test]
     async fn update_and_publish_usage_a_provider_with_no_usage_leaves_totals_blank() {
         let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
         let mut sub = UsageFeed::follow(&bus_handle).await;
@@ -3018,9 +3024,9 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[crate::inference::ToolDefinition],
+            _tools: &[residuum_inference::ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
             let mut resp = InferenceResponse::new("hello".to_string(), vec![]);
             resp.usage = Some(usage(10, 5));
             Ok(resp)
@@ -3035,7 +3041,7 @@ mod tests {
     async fn execute_turn_with_no_tool_calls_reports_zero_tool_calls() {
         let provider = TextOnlyProvider;
         let tools = ToolRegistry::new();
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3048,13 +3054,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             usage_sink: Some(&sink),
             hop_counter: &hop_counter,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
         let mut sub = UsageFeed::follow(&bus_handle).await;
@@ -3114,9 +3120,9 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[crate::inference::ToolDefinition],
+            _tools: &[residuum_inference::ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
             if self.served.swap(true, Ordering::SeqCst) {
                 let mut resp = InferenceResponse::new("done".to_string(), vec![]);
                 resp.usage = Some(usage(20, 5));
@@ -3163,7 +3169,7 @@ mod tests {
         let provider = ToolsThenTextProvider {
             served: AtomicBool::new(false),
         };
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3176,13 +3182,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             usage_sink: Some(&sink),
             hop_counter: &hop_counter,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
         let mut sub = UsageFeed::follow(&bus_handle).await;
@@ -3250,7 +3256,7 @@ mod tests {
     async fn execute_turn_notices_and_notes_a_truncated_response() {
         let provider = TruncatedProvider;
         let tools = ToolRegistry::new();
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions {
             max_tokens: Some(64),
@@ -3265,16 +3271,16 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             usage_sink: None,
             hop_counter: &hop_counter,
         };
 
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+        let mut notices: residuum_bus::Subscriber<residuum_bus::NoticeEvent> = bus_handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
@@ -3336,8 +3342,8 @@ mod tests {
             counting_tool_call("c3"),
         ];
 
-        let provider = crate::inference::NullProvider;
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let provider = residuum_inference::NullProvider;
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3349,7 +3355,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig {
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig {
                 enabled: true,
                 steer_after: 3,
                 stop_after: 6,
@@ -3359,7 +3365,7 @@ mod tests {
             usage_sink: None,
             hop_counter: &hop_counter,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -3422,8 +3428,8 @@ mod tests {
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
 
-        let provider = crate::inference::NullProvider;
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let provider = residuum_inference::NullProvider;
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3435,7 +3441,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig {
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig {
                 enabled: true,
                 steer_after: 3,
                 stop_after: 6,
@@ -3445,7 +3451,7 @@ mod tests {
             usage_sink: None,
             hop_counter: &hop_counter,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -3493,7 +3499,7 @@ mod tests {
         );
         assert_eq!(
             seventh.as_str(),
-            crate::agent::tool::CANCELLED_BEFORE_START,
+            crate::tool::CANCELLED_BEFORE_START,
             "the 7th call should be skipped outright, not attempted"
         );
     }
@@ -3507,8 +3513,8 @@ mod tests {
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
 
-        let provider = crate::inference::NullProvider;
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let provider = residuum_inference::NullProvider;
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3520,7 +3526,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig {
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig {
                 enabled: false,
                 steer_after: 3,
                 stop_after: 6,
@@ -3530,7 +3536,7 @@ mod tests {
             usage_sink: None,
             hop_counter: &hop_counter,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -3579,9 +3585,9 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[crate::inference::ToolDefinition],
+            _tools: &[residuum_inference::ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
             let n = self.completions.fetch_add(1, Ordering::SeqCst) + 1;
             Ok(InferenceResponse::new(
                 String::new(),
@@ -3603,7 +3609,7 @@ mod tests {
         let provider = RepeatingCallProvider {
             completions: AtomicUsize::new(0),
         };
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3615,13 +3621,13 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             usage_sink: None,
             hop_counter: &hop_counter,
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
@@ -3682,16 +3688,16 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[crate::inference::ToolDefinition],
+            _tools: &[residuum_inference::ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             let mut response = if call == 0 {
                 InferenceResponse::new(String::new(), vec![counting_tool_call("c1")])
             } else {
                 InferenceResponse::new("done".to_string(), vec![])
             };
-            response.images_omitted = Some(crate::inference::ImagesOmitted {
+            response.images_omitted = Some(residuum_inference::ImagesOmitted {
                 model: "glm-5.3".to_string(),
                 count: 9,
                 learned: call >= 3,
@@ -3704,8 +3710,8 @@ mod tests {
         }
     }
 
-    fn png() -> crate::inference::ImageData {
-        crate::inference::ImageData {
+    fn png() -> residuum_inference::ImageData {
+        residuum_inference::ImageData {
             media_type: "image/png".to_string(),
             data: "iVBORw0KGgo=".to_string(),
         }
@@ -3718,7 +3724,7 @@ mod tests {
         };
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(CountingTool::new(Arc::new(AtomicUsize::new(0)))));
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3730,16 +3736,16 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             usage_sink: None,
             hop_counter: &hop_counter,
         };
 
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+        let mut notices: residuum_bus::Subscriber<residuum_bus::NoticeEvent> = bus_handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
@@ -3822,9 +3828,9 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[crate::inference::ToolDefinition],
+            _tools: &[residuum_inference::ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             let mut response = if call.is_multiple_of(2) {
                 InferenceResponse::new(String::new(), vec![counting_tool_call("c1")])
@@ -3847,7 +3853,7 @@ mod tests {
         };
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(CountingTool::new(Arc::new(AtomicUsize::new(0)))));
-        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
         let stop_token = CancellationToken::new();
@@ -3859,16 +3865,16 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
-            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             usage_sink: None,
             hop_counter: &hop_counter,
         };
 
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+        let mut notices: residuum_bus::Subscriber<residuum_bus::NoticeEvent> = bus_handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();

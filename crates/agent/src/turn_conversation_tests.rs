@@ -15,18 +15,18 @@ use super::context::{MemoryContext, PromptContext};
 use super::recent_messages::RecentMessages;
 use super::testing::EchoTool;
 use super::turn::{EventContext, EventTarget, TranscriptSink, TurnResources, execute_turn};
-use crate::agent::ToolRegistry;
-use crate::bus::interrupt::Interrupt;
-use crate::bus::origin::MessageOrigin;
-use crate::bus::{
+use crate::ToolRegistry;
+use residuum_bus::interrupt::Interrupt;
+use residuum_bus::origin::MessageOrigin;
+use residuum_bus::{
     AgentMessageEvent, EndpointName, IntermediateEvent, MainConversationEvent, MessageEvent,
     SessionAddress, Subscriber, topics,
 };
-use crate::inference::{
+use residuum_inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     MessageSender, Role, StreamDelta, StreamSink, ThinkingBlock, ToolCall, ToolDefinition,
 };
-use crate::workspace::identity::IdentityFiles;
+use residuum_workspace::identity::IdentityFiles;
 
 /// What a scripted provider does while a model call is in flight.
 enum Push {
@@ -182,7 +182,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     let provider = ScriptedProvider::new(steps);
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(EchoTool));
-    let mcp_registry = crate::mcp::McpRegistry::new_shared();
+    let mcp_registry = residuum_mcp::McpRegistry::new_shared();
     let identity = IdentityFiles::default();
     let completion = CompletionOptions::default();
     let hop_counter = HopCounter::new(0);
@@ -194,19 +194,19 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
         identity: &identity,
         options: &completion,
         max_tool_iterations: options.max_tool_iterations,
-        repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+        repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
         stop_token: &options.stop_token,
         transcript_sink: Some(&sink),
         usage_sink: None,
         hop_counter: &hop_counter,
     };
 
-    let bus = crate::bus::spawn_broker();
+    let bus = residuum_bus::spawn_broker();
     let publisher = bus.publisher();
     let ep = EndpointName::from(
         options
             .delivered_to
-            .unwrap_or(crate::config::WEB_UI_ENDPOINT),
+            .unwrap_or(residuum_config::WEB_UI_ENDPOINT),
     );
     let mut main: Subscriber<MainConversationEvent> =
         bus.subscribe(topics::MainConversation).await.unwrap();
@@ -220,7 +220,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
         }
     } else {
         EventTarget::Endpoint {
-            output_endpoint: crate::agent::turn::TurnOutput::Fixed(Some(&ep)),
+            output_endpoint: crate::turn::TurnOutput::Fixed(Some(&ep)),
             correlation_id: TURN,
         }
     };
@@ -603,7 +603,7 @@ async fn a_teammates_message_folded_in_mid_turn_is_announced_with_its_sender() {
     assert!(announced.3.is_none(), "no person sent it");
     assert_eq!(
         announced.4.as_ref(),
-        Some(&crate::inference::AgentSender {
+        Some(&residuum_inference::AgentSender {
             address: "agent:atlas".to_string(),
             category: "teammate".to_string(),
         })

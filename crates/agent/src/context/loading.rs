@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use crate::skills::SharedSkillState;
+use residuum_skills::SharedSkillState;
 
 /// Load and format observations from the observation log JSON file.
 ///
@@ -13,10 +13,10 @@ use crate::skills::SharedSkillState;
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
-pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<String>> {
+pub async fn load_observations(path: &Path) -> anyhow::Result<Option<String>> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) if !content.trim().is_empty() => {
-            let log: crate::memory::types::ObservationLog = serde_json::from_str(&content)
+            let log: residuum_memory::types::ObservationLog = serde_json::from_str(&content)
                 .with_context(|| {
                     format!(
                         "corrupt observation log on disk at {} \
@@ -45,8 +45,8 @@ pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<Stri
 /// # Errors
 /// Returns an error if the file exists but cannot be parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
-pub(crate) async fn load_recent_context_narrative(path: &Path) -> anyhow::Result<Option<String>> {
-    let result = crate::memory::recent_context::load_recent_context(path)
+pub async fn load_recent_context_narrative(path: &Path) -> anyhow::Result<Option<String>> {
+    let result = residuum_memory::recent_context::load_recent_context(path)
         .await?
         .map(|ctx| ctx.narrative);
     if let Some(narrative) = &result {
@@ -58,7 +58,7 @@ pub(crate) async fn load_recent_context_narrative(path: &Path) -> anyhow::Result
 /// Build formatted strings for skills context from shared skill state.
 ///
 /// Returns `(index_text, active_instructions_text)` — each `Option<String>`.
-pub(crate) async fn build_skill_context_strings(
+pub async fn build_skill_context_strings(
     skill_state: &SharedSkillState,
 ) -> (Option<String>, Option<String>) {
     let state = skill_state.lock().await;

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// The soft and hard hop-count limits agent message delivery is checked
 /// against, resolved once from `[background]` config.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HopLimits {
+pub struct HopLimits {
     /// At or above this hop count, a delivered message carries a note asking
     /// the receiver to reply only if a reply is actually needed.
     pub soft: u32,
@@ -22,8 +22,8 @@ pub(crate) struct HopLimits {
     pub hard: u32,
 }
 
-impl From<&crate::config::BackgroundConfig> for HopLimits {
-    fn from(cfg: &crate::config::BackgroundConfig) -> Self {
+impl From<&residuum_config::BackgroundConfig> for HopLimits {
+    fn from(cfg: &residuum_config::BackgroundConfig) -> Self {
         Self {
             soft: cfg.hop_soft_limit,
             hard: cfg.hop_hard_limit,

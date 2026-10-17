@@ -1,3 +1,5 @@
+pub use residuum_agent as agent;
+pub use residuum_agent::subconscious;
 pub use residuum_bus as bus;
 pub use residuum_config as config;
 pub use residuum_config::agent_keys;
@@ -23,7 +25,6 @@ pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
 
 pub mod a2a;
 pub mod actions;
-pub mod agent;
 pub mod background;
 pub mod checkpoints;
 pub mod daemon;
@@ -37,7 +38,6 @@ pub mod notify;
 pub mod protocol;
 pub mod pulse;
 pub mod setup_wizard;
-pub mod subconscious;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod tools;
