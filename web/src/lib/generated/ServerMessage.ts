@@ -515,35 +515,7 @@ run_id: string,
 /**
  * The message body as main received it.
  */
-content: string, } | { "type": "session_user_message",
-/**
- * The reading session's address.
- */
-address: string,
-/**
- * The reading run's id.
- */
-run_id: string,
-/**
- * The message's id: the one its sender chose, or one given on delivery.
- */
-id: string,
-/**
- * The turn the message joined: the turn in flight, or the one it started.
- */
-turn_id: string,
-/**
- * The message as sent, without the header the session reads it with.
- */
-content: string,
-/**
- * The sender's address (`owner` for the owner).
- */
-from: string,
-/**
- * The sender's category.
- */
-from_category: string, } | { "type": "session_message_delivered",
+content: string, } | { "type": "session_message_delivered", 
 /**
  * The `id` from the `SessionSendMessage`.
  */
