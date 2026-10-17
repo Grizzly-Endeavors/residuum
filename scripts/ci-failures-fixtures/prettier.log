@@ -1,0 +1,14 @@
+2026-10-17T03:42:34.2318208Z ##[group]Run cd web && npm run format:check
+2026-10-17T03:42:34.2318935Z [36;1mcd web && npm run format:check[0m
+2026-10-17T03:42:34.2338979Z shell: /usr/bin/bash -e {0}
+2026-10-17T03:42:34.2339477Z ##[endgroup]
+2026-10-17T03:42:34.4438198Z 
+2026-10-17T03:42:34.4438516Z > residuum-web@0.0.1 format:check
+2026-10-17T03:42:34.4439791Z > prettier --check 'src/**/*.{ts,svelte,js,json,css}' 'build/**/*.ts' 'mock/**/*.ts' 'scripts/**/*.{ts,mjs}' 'e2e/**/*.ts' playwright.config.ts
+2026-10-17T03:42:34.4440917Z 
+2026-10-17T03:42:34.6128382Z Checking formatting...
+2026-10-17T03:42:48.8783154Z [[33mwarn[39m] src/probe-format.ts
+2026-10-17T03:42:48.8841055Z [[33mwarn[39m] src/ProbeFormat.svelte
+2026-10-17T03:42:59.5503561Z [[33mwarn[39m] Code style issues found in 2 files. Run Prettier with --write to fix.
+2026-10-17T03:42:59.6430036Z ##[error]Process completed with exit code 1.
+2026-10-17T03:42:59.6717937Z Post job cleanup.

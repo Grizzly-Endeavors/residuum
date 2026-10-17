@@ -1,0 +1,21 @@
+﻿2026-10-17T03:42:26.7052169Z Current runner version: '2.336.0'
+2026-10-17T03:42:26.7064532Z Runner name: 'lab-runners-wide-zvpmj-runner-hzwz9'
+2026-10-17T03:42:26.7066895Z Runner group name: 'default'
+2026-10-17T03:42:26.7068862Z Machine name: 'lab-runners-wide-zvpmj-runner-hzwz9'
+2026-10-17T03:42:26.7076026Z ##[group]GITHUB_TOKEN Permissions
+2026-10-17T03:42:26.7080166Z Contents: read
+2026-10-17T03:42:26.7081210Z Metadata: read
+2026-10-17T03:42:26.7082393Z Packages: read
+2026-10-17T03:42:26.7083413Z ##[endgroup]
+2026-10-17T03:42:26.7087435Z Secret source: Actions
+2026-10-17T03:42:26.7089165Z Cache mode: write
+2026-10-17T03:42:26.7189691Z Prepare workflow directory
+2026-10-17T03:42:26.7812564Z Prepare all required actions
+2026-10-17T03:42:26.8004709Z Complete job name: Probe Job Timeout
+2026-10-17T03:42:26.9234041Z ##[group]Run sleep 300
+2026-10-17T03:42:26.9235109Z [36;1msleep 300[0m
+2026-10-17T03:42:26.9280003Z shell: /usr/bin/bash -e {0}
+2026-10-17T03:42:26.9281651Z ##[endgroup]
+2026-10-17T03:43:38.2857745Z ##[error]The operation was canceled.
+2026-10-17T03:43:38.3196377Z Cleaning up orphan processes
+2026-10-17T03:43:38.3395503Z Terminate orphan process: pid (138) (sleep)

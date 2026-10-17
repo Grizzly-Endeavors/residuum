@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Lists the failing tests of the latest CI runs for a pull request, a branch, a
-# release tag or a commit, grouped by job and step, so one pass fixes everything
-# that broke. Each failure carries two flags. touched: this change edits a file the
+# Lists the failures of the latest CI runs for a pull request, a branch, a release
+# tag or a commit (failing tests, lint, type and format errors, timeouts), grouped
+# by job and step, so one pass fixes everything that broke. Each failure carries two flags. touched: this change edits a file the
 # failure names. seen elsewhere: the same failure was in a failed run on another
 # branch or tag within the last 14 days. A failure that is not touched but is seen
 # elsewhere is marked likely flake. Every other failure is presumed to come from
@@ -27,12 +27,27 @@
 #                  completed runs, and a run that failed and was then rerun to
 #                  green counts as failed.
 #
+# Each workflow's latest run on the commit is listed. An earlier run of the same
+# workflow is listed too when it has a failed job that no later run ran again: a
+# later run can skip that job, as Cross-Platform Checks does when it runs for an
+# unrelated label added to a PR, and the earlier failure still stands.
+#
+# A job that ran past its timeout-minutes ends cancelled, and its log reads like any
+# cancelled job's. So the check-run annotations of every cancelled job are read, and
+# one that says the job exceeded its maximum execution time is listed as timed out,
+# with the step it was in and that step's last lines. A step's own timeout-minutes
+# fails the job and says so in the log. A timeout names no file, so it is never
+# touched; it is seen elsewhere when the same step timed out on another branch.
+#
 # Job logs come from the jobs logs endpoint, which serves any completed job, so the
-# failures of a run still in progress are listed as they finish. Logs and job lists
-# of completed attempts are cached under target/ci-failures-cache/<run>-<attempt>/,
-# so a repeat call only asks GitHub about runs it has not seen. The log parser is
-# scripts/ci-failures-parse.awk; scripts/ci-failures-test.sh checks it against the
-# fixtures in scripts/ci-failures-fixtures/.
+# failures of a run still in progress are listed as they finish: the run is marked
+# in progress, with a "still running: N of M jobs finished" line, and the summary
+# says the list is partial. Logs, annotations and job lists of completed attempts
+# are cached under target/ci-failures-cache/<run>-<attempt>/, so a repeat call only
+# asks GitHub about runs it has not seen. The log parser is
+# scripts/ci-failures-parse.awk, which lists the kinds of failure it recognizes;
+# scripts/ci-failures-test.sh checks it against the fixtures in
+# scripts/ci-failures-fixtures/.
 #
 # Exit status: 0 once the report is printed, failures listed or not; 1 when GitHub
 # or git could not be queried, or a run failed with no failed job to list. The
@@ -175,11 +190,16 @@ done <<<"$repo_list"
 
 gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" > "$work/target-raw.json" \
     || die "could not list CI runs for ${sha:0:7}"
-# Every workflow that ran on the commit, latest run of each name.
+# Every run on the commit, grouped by workflow name, the latest run of each name
+# first and the earlier ones after it marked `earlier`. A later run can skip a job
+# an earlier one ran: Cross-Platform Checks runs again for every label added to a
+# PR and skips its checks for an unrelated label. So an earlier run's failed job is
+# reported unless a later run of the workflow ran that job again (see reported_jobs).
 jq -c -s --arg excluded "$EXCLUDED_WORKFLOW" '
     [ .[].workflow_runs[] | select(.name != $excluded) ]
-    | group_by(.name) | map(max_by(.id)) | sort_by(.name) | .[]
-    | {id, name, run_attempt, status, conclusion, head_branch, head_sha, html_url}
+    | group_by(.name) | .[] | sort_by(-.id) | to_entries[]
+    | .value + {earlier: (.key > 0)}
+    | {id, name, run_attempt, status, conclusion, head_branch, head_sha, html_url, earlier}
 ' "$work/target-raw.json" > "$work/target.jsonl" || die "could not read the CI runs for ${sha:0:7}"
 
 # The branch whose runs are this change's own, so the seen-elsewhere search skips them.
@@ -306,7 +326,26 @@ fetch_log() { # run attempt job
         return 1
     fi
 }
-export -f publish_copy fetch_jobs fetch_log
+# The check-run annotations of a cancelled job (a job's check run has the job's id).
+# A job that ran past its timeout-minutes ends cancelled, with a log like any other
+# cancelled job's; only its annotation says it ran out of time.
+fetch_annotations() { # run attempt job
+    set -o pipefail
+    local out="$cache/$1-$2/$3.annotations.json" tmp
+    if [[ -s "$out" ]]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$out")"
+    tmp="$(mktemp "$out.XXXXXX")" || return 1
+    if gh api "repos/$repo/check-runs/$3/annotations?per_page=100" > "$tmp"; then
+        mv "$tmp" "$out"
+    else
+        rm -f "$tmp"
+        echo "could not fetch the annotations of job $3 in run $1, attempt $2" >&2
+        return 1
+    fi
+}
+export -f publish_copy fetch_jobs fetch_log fetch_annotations
 
 unique_lines "$work/target-attempts.txt" "$work/look-attempts.txt" \
     | xargs -r -P 8 -L 1 bash -c 'fetch_jobs "$@"' _ || true
@@ -330,8 +369,46 @@ failed_jobs() { # attempts file
     done < "$1"
 }
 
+# "run attempt job" lines for the jobs of one list of attempts that were cancelled
+# while a step ran. A job that ran past its timeout-minutes is one of them.
+cancelled_jobs() { # attempts file
+    local run attempt file
+    while read -r run attempt _; do
+        file="$work/jobs/$run-$attempt.jsonl"
+        if [[ -f "$file" ]]; then
+            jq -r --arg r "$run" --arg a "$attempt" \
+                'select(.conclusion == "cancelled" and any(.steps[]?; .conclusion == "cancelled")) | "\($r) \($a) \(.id)"' "$file"
+        fi
+    done < "$1"
+}
+
 failed_jobs "$work/target-attempts.txt" > "$work/fetch-target.txt"
 failed_jobs "$work/look-attempts.txt" > "$work/fetch-look.txt"
+cancelled_jobs "$work/target-attempts.txt" > "$work/cancelled-target.txt"
+cancelled_jobs "$work/look-attempts.txt" > "$work/cancelled-look.txt"
+
+unique_lines "$work/cancelled-target.txt" "$work/cancelled-look.txt" \
+    | xargs -r -P 8 -L 1 bash -c 'fetch_annotations "$@"' _ || true
+
+# The cancelled jobs that ran out of time, with the annotation that says so. Their
+# logs are fetched and reported as a failed job's are.
+declare -A job_timeout=()
+for side in target look; do
+    while read -r run attempt job; do
+        annotations="$cache/$run-$attempt/$job.annotations.json"
+        if [[ ! -s "$annotations" ]]; then
+            echo "warning: could not fetch the annotations of cancelled job $job in run $run; if it timed out, it is not listed" >&2
+            query_errors=$((query_errors + 1))
+            continue
+        fi
+        timeout_msg="$(jq -r 'first(.[] | .message | select(test("exceeded the maximum execution time"))) // empty' "$annotations")" \
+            || die "could not read the annotations of job $job in run $run"
+        if [[ -n "$timeout_msg" ]]; then
+            job_timeout["$job"]="$timeout_msg"
+            echo "$run $attempt $job" >> "$work/fetch-$side.txt"
+        fi
+    done < "$work/cancelled-$side.txt"
+done
 
 unique_lines "$work/fetch-target.txt" "$work/fetch-look.txt" \
     | xargs -r -P 8 -L 1 bash -c 'fetch_log "$@"' _ || true
@@ -341,7 +418,8 @@ parse_job() { # run attempt job -> records in $work/rec; fails when the log is m
     if [[ ! -s "$log" ]]; then
         return 1
     fi
-    awk -f "$parser" "$log" > "$work/rec/$1-$3.tsv" || die "could not parse the log of job $3 in run $1"
+    awk -v job_timeout="${job_timeout[$3]:-}" -f "$parser" "$log" > "$work/rec/$1-$3.tsv" \
+        || die "could not parse the log of job $3 in run $1"
 }
 
 # --- seen-elsewhere index ---------------------------------------------------------
@@ -515,6 +593,44 @@ print_messages() { # messages indent
     done
 }
 
+# The jobs of one run to report, as "id<TAB>name<TAB>conclusion<TAB>steps" rows: the
+# jobs that failed, timed out or were cancelled, with the steps that failed, or for
+# a cancelled job the step that was cancelled. For an earlier run of a workflow
+# (earlier is true), a job a later run of the workflow ran again is left out,
+# because the later result stands; a job the later runs skipped, or do not have,
+# keeps its earlier result. The later runs' jobs are in ran_later.
+reported_jobs() { # jobs-file workflow earlier
+    local id job_name rest
+    while IFS=$'\t' read -r id job_name rest; do
+        [[ -n "$id" ]] || continue
+        if [[ "$3" == true ]]; then
+            if [[ -n "${ran_later[$2$US$job_name]:-}" ]]; then
+                continue
+            fi
+            # A cancelled job of an earlier run has no results to show.
+            if [[ "$rest" == cancelled* && -z "${job_timeout[$id]:-}" ]]; then
+                continue
+            fi
+        fi
+        printf '%s\t%s\t%s\n' "$id" "$job_name" "$rest"
+    done < <(
+        jq -r 'select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")
+            | (if .conclusion == "cancelled" then "cancelled" else "failure" end) as $step_end
+            | [.id, .name, .conclusion, ([.steps[]? | select(.conclusion == $step_end) | .name] | join(" + "))] | @tsv' \
+            "$1"
+    )
+}
+
+# Adds the jobs a run ran, every job it did not skip, to ran_later, so an earlier run
+# of the same workflow does not report them again. A job still running counts: its
+# result replaces the earlier one.
+remember_ran_jobs() { # jobs-file workflow
+    local job_name
+    while IFS= read -r job_name; do
+        ran_later["$2$US$job_name"]=1
+    done < <(jq -r 'select(.conclusion != "skipped") | .name' "$1")
+}
+
 # The packages the change touches, for the covers check. The pending-crates map is
 # read at the commit under test; a commit without one maps every root path to residuum.
 declare -A changed_pkgs=()
@@ -539,10 +655,23 @@ seen_n=0
 flake_n=0
 unparsed_n=0
 running_n=0
+# The jobs of each workflow that a later run on the commit ran, keyed by workflow
+# and job name, filled in as the runs are reported, latest run first.
+declare -A ran_later=()
 while IFS= read -r run_line; do
-    IFS=$'\t' read -r run_id attempt status conclusion name url branch head < <(
-        jq -r '[.id, .run_attempt, .status, (.conclusion // "-"), .name, .html_url, .head_branch, .head_sha] | @tsv' <<<"$run_line"
+    IFS=$'\t' read -r run_id attempt status conclusion name url branch head earlier < <(
+        jq -r '[.id, .run_attempt, .status, (.conclusion // "-"), .name, .html_url, .head_branch, .head_sha, (.earlier // false)] | @tsv' <<<"$run_line"
     )
+    jobs_file="$work/jobs/$run_id-$attempt.jsonl"
+    job_rows=""
+    if [[ -f "$jobs_file" ]]; then
+        job_rows="$(reported_jobs "$jobs_file" "$name" "$earlier")"
+        remember_ran_jobs "$jobs_file" "$name"
+        # An earlier run whose failed jobs a later run has all run again adds nothing.
+        if [[ "$earlier" == true && -z "$job_rows" ]]; then
+            continue
+        fi
+    fi
     if [[ "$status" == completed ]]; then
         state="$conclusion"
     else
@@ -552,10 +681,12 @@ while IFS= read -r run_line; do
     if [[ "$branch" == gh-readonly-queue/* ]]; then
         name="$name, merge queue batch ${head:0:7}"
     fi
+    if [[ "$earlier" == true ]]; then
+        state="$state, an earlier run whose jobs below a later run skipped"
+    fi
     echo
     echo "== $name - run $run_id - attempt $attempt - $state - $url"
 
-    jobs_file="$work/jobs/$run_id-$attempt.jsonl"
     if [[ ! -f "$jobs_file" ]]; then
         echo "   could not list this run's jobs; see the run page"
         continue
@@ -568,18 +699,22 @@ while IFS= read -r run_line; do
 
     listed=0
     while IFS=$'\t' read -r job_id job_name job_conclusion steps; do
-        if [[ "$job_conclusion" == cancelled ]]; then
+        [[ -n "$job_id" ]] || continue
+        if [[ "$job_conclusion" == cancelled && -z "${job_timeout[$job_id]:-}" ]]; then
             if [[ "$conclusion" == failure ]]; then
                 echo "   $job_name - cancelled, no results"
             fi
             continue
         fi
         listed=$((listed + 1))
-        if [[ -n "$steps" ]]; then
-            echo "   $job_name - step: $steps"
-        else
-            echo "   $job_name"
+        job_line="   $job_name"
+        if [[ "$job_conclusion" != failure ]]; then
+            job_line+=" - timed out"
         fi
+        if [[ -n "$steps" ]]; then
+            job_line+=" - step: $steps"
+        fi
+        echo "$job_line"
 
         if ! parse_job "$run_id" "$attempt" "$job_id"; then
             echo "     could not fetch this job's log; see the run page"
@@ -668,13 +803,9 @@ while IFS= read -r run_line; do
                 echo "     - $label_text   $flags"
             fi
         done < "$rec"
-    done < <(
-        jq -r 'select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")
-            | [.id, .name, .conclusion, ([.steps[]? | select(.conclusion == "failure") | .name] | join(" + "))] | @tsv' \
-            "$jobs_file"
-    )
+    done <<<"$job_rows"
 
-    if (( listed == 0 )) && [[ "$conclusion" == failure || "$conclusion" == startup_failure ]]; then
+    if (( listed == 0 )) && [[ "$earlier" != true ]] && [[ "$conclusion" == failure || "$conclusion" == startup_failure ]]; then
         echo "   the run failed but no failed job was listed; see $url"
         total=$((total + 1))
         query_errors=$((query_errors + 1))

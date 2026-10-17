@@ -6,13 +6,22 @@
 #
 # Output has one line per record, with fields separated by US (\037): kind, key,
 # title, files, count, projects, messages. Messages are separated by RS (\036).
-# The kinds are playwright, vitest, rust, lint, clippy, fmt, and unparsed.
+# The kinds are playwright, vitest, rust, lint, types (svelte-check and tsc), clippy,
+# fmt (rustfmt and Prettier), timeout, and unparsed.
 #
 # A step runs from one "##[group]Run" line, or one "Post job cleanup." line, to the
 # next. Only a step that failed, meaning it has an "##[error]" line, contributes
 # records, so warnings from passing steps are not reported. A failed step that
 # yields no record prints its last lines as one unparsed record, titled with the
 # step's name.
+#
+# A step that timed out gets a timeout record, with the step's last lines, ahead of
+# any other record it yields. A step's own timeout-minutes prints its message in the
+# log. A job's timeout-minutes does not: the log of a job that ran out of time has
+# only the "##[error]The operation was canceled." line a cancelled job has, and the
+# reason is in the job's check-run annotations. So the caller passes that
+# annotation as job_timeout (awk -v job_timeout=...) when the job timed out, and the
+# step that was cancelled is the one that ran out of time.
 
 BEGIN {
     FS = "\n"
@@ -34,7 +43,11 @@ BEGIN {
     vtleft = 0
     esl_file = ""
     cl_pending = 0
+    sc_pending = 0
+    sc_snippet = 0
+    step_timeout[0] = ""
     HANG = "libtest: still running after 60 seconds"
+    RUNNER_DIR = "^/home/runner/_work/[^/]+/[^/]+/"
 }
 
 function trim(s) {
@@ -100,8 +113,8 @@ function addproj(i, p) {
     rproj[i] = (rproj[i] == "" ? p : rproj[i] ", " p)
 }
 
-# Prints the last 15 relevant lines of log lines from..to-1 as one unparsed record.
-function unparsed(title, from, to,    k, cnt, picked, msgs, t) {
+# The last 15 relevant lines of log lines from..to-1, separated by RS.
+function lastlines(from, to,    k, cnt, picked, msgs, t) {
     cnt = 0
     for (k = to - 1; k >= from && cnt < 15; k--) {
         t = L[k]
@@ -114,7 +127,18 @@ function unparsed(title, from, to,    k, cnt, picked, msgs, t) {
     for (k = cnt; k >= 1; k--) {
         msgs = msgs (k < cnt ? RS2 : "") picked[k]
     }
-    print "unparsed" US "" US title US "" US "0" US "" US msgs
+    return msgs
+}
+
+# Prints the last lines of log lines from..to-1 as one unparsed record.
+function unparsed(title, from, to) {
+    print "unparsed" US "" US title US "" US "0" US "" US lastlines(from, to)
+}
+
+# Prints the timeout record of step s: the timeout's message and the step's last
+# lines before it.
+function timeoutrec(s) {
+    print "timeout" US "timeout|" step_title[s] US "timed out in step \"" step_title[s] "\": " step_timeout[s] US "" US "1" US "" US lastlines(step_start[s], step_err[s])
 }
 
 function printrec(i) {
@@ -144,11 +168,106 @@ line ~ /^##\[group\]Run / || line ~ /^Post job cleanup\.$/ {
     vtleft = 0
     esl_file = ""
     cl_pending = 0
+    sc_pending = 0
+    sc_snippet = 0
+    step_timeout[cur] = ""
     next
 }
 
 line ~ /^##\[error\]/ {
     step_err[cur] = nl
+    if (step_timeout[cur] == "") {
+        if (line ~ /^##\[error\]The action '.*' has timed out after /) {
+            step_timeout[cur] = line
+            sub(/^##\[error\]/, "", step_timeout[cur])
+        } else if (job_timeout != "" && line == "##[error]The operation was canceled.") {
+            step_timeout[cur] = job_timeout
+        }
+    }
+    sc_snippet = 0
+}
+
+# svelte-check: "<absolute path>:line:col", then "Error: message" or "Warn: message",
+# then for a Svelte diagnostic the link to its code, which names it, then the source
+# lines, which are skipped up to the next location or the closing "====" line. The
+# source lines can hold blank lines: a colour code alone on a line is blank once the
+# codes are stripped. CI runs svelte-check with --fail-on-warnings, so a warning
+# fails the step as an error does. One record per message per file, like clippy's,
+# with up to three places it was reported.
+sc_pending == 2 {
+    sc_pending = 0
+    if (line ~ /^https:\/\/svelte\.dev\/e\/[A-Za-z0-9_]+ \(svelte\)$/) {
+        code = line
+        sub(/^https:\/\/svelte\.dev\/e\//, "", code)
+        sub(/ .*$/, "", code)
+        sc_msg = sc_msg " (" code ")"
+    }
+    f = sc_loc
+    sub(/:[0-9]+:[0-9]+$/, "", f)
+    i = getrec("types", "types|" f "|" sc_msg, f ": " sc_msg, f)
+    addmsg(i, sc_loc)
+    sc_snippet = 1
+}
+line ~ /^\/[^ ]+\.(svelte|ts|tsx|js|mjs|cjs|css):[0-9]+:[0-9]+$/ {
+    sc_loc = line
+    sub(RUNNER_DIR, "", sc_loc)
+    sc_pending = 1
+    sc_snippet = 0
+    next
+}
+sc_pending == 1 {
+    sc_pending = 0
+    if (line ~ /^(Error|Warn): /) {
+        sc_msg = trim(line)
+        warn = (sc_msg ~ /^Warn: /)
+        sub(/^(Error|Warn): /, "", sc_msg)
+        if (warn) sc_msg = "warning: " sc_msg
+        sc_pending = 2
+        next
+    }
+}
+sc_snippet == 1 {
+    if (line ~ /^=+$/) sc_snippet = 0
+    next
+}
+
+# tsc, which checks the service worker after svelte-check: "file(line,col): error
+# TSnnnn: message", with the file relative to web/. One record per message per file.
+line ~ /^[^ (]+\.(ts|tsx|js|mjs|cjs)\([0-9]+,[0-9]+\): error TS[0-9]+: / {
+    f = line
+    sub(/\(.*$/, "", f)
+    f = "web/" f
+    loc = line
+    sub(/\): error TS[0-9]+: .*$/, "", loc)
+    sub(/^[^(]+\(/, "", loc)
+    sub(/,/, ":", loc)
+    msg = line
+    sub(/^[^ ]+: error /, "", msg)
+    msg = trim(msg)
+    i = getrec("types", "types|" f "|" msg, f ": " msg, f)
+    addmsg(i, f ":" loc)
+    next
+}
+
+# Prettier --check: "[warn] <file>" for each file it would rewrite, relative to web/,
+# then "[warn] Code style issues found ...". A file it could not parse is
+# "[error] <file>: <error>", followed by "[error]" lines of its code frame.
+line ~ /^\[warn\] [^ ]+$/ {
+    f = "web/" substr(line, 8)
+    i = getrec("fmt", "fmt|" f, "prettier: " f, f)
+    if (isnew) addmsg(i, "not formatted; npm run format (in web/) rewrites it")
+    next
+}
+line ~ /^\[error\] [^ ]+\.[A-Za-z]+: / {
+    f = line
+    sub(/^\[error\] /, "", f)
+    msg = f
+    sub(/: .*$/, "", f)
+    sub(/^[^ ]+: /, "", msg)
+    f = "web/" f
+    i = getrec("fmt", "fmt|" f, "prettier: " f, f)
+    if (isnew) addmsg(i, "could not parse: " msg)
+    next
 }
 
 # Rust: quiet-mode progress names, the per-test stdout blocks, and the panic.
@@ -420,6 +539,10 @@ END {
     for (s = 0; s <= nsteps; s++) {
         if (step_err[s] == 0) continue
         shown = 0
+        if (step_timeout[s] != "") {
+            timeoutrec(s)
+            shown++
+        }
         for (i = 1; i <= n; i++) {
             if (rstep[i] == s) {
                 printrec(i)

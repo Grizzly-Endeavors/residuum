@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Runs the log parser over each .log fixture in scripts/ci-failures-fixtures and
 # checks the records it prints against the fixture's .records file. Fields are shown
-# separated by tabs, and messages within a record by "|".
+# separated by tabs, and messages within a record by "|". A .job-timeout file beside
+# a log holds the check-run annotation of a job that ran past its timeout-minutes,
+# passed to the parser as job_timeout.
 #
 # Each .json fixture is a runs listing of the repository's merge_group runs, and
 # its .records file is the merge queue batch that scripts/ci-failures-queue.jq
@@ -17,7 +19,13 @@ trap 'rm -f "$actual"' EXIT
 status=0
 for log in "$dir"/ci-failures-fixtures/*.log; do
     expected="${log%.log}.records"
-    awk -f "$parser" "$log" | tr '\037\036' '\t|' > "$actual"
+    # A job that ran past its timeout-minutes: ci-failures.sh passes the annotation
+    # that says so, which the fixture keeps beside the log.
+    job_timeout=""
+    if [[ -f "${log%.log}.job-timeout" ]]; then
+        job_timeout="$(cat "${log%.log}.job-timeout")"
+    fi
+    awk -v job_timeout="$job_timeout" -f "$parser" "$log" | tr '\037\036' '\t|' > "$actual"
     if ! diff -u "$expected" "$actual"; then
         echo "ci-failures parser: $(basename "$log") does not match $(basename "$expected")" >&2
         status=1
@@ -187,6 +195,56 @@ residuum_core::x|
 CASES
 }
 check_it_module_file
+
+# reported_jobs picks the jobs of a run to report. For an earlier run of a workflow
+# on the commit, a job a later run ran again is left out, a job the later run
+# skipped keeps its failure, and a cancelled job is listed only when it timed out.
+check_reported_jobs() {
+    local fn jobs_file actual expected
+    # shellcheck disable=SC2034 # read by reported_jobs and remember_ran_jobs, which are evaluated from ci-failures.sh
+    local -A ran_later=() job_timeout=()
+    # shellcheck disable=SC2034 # read by reported_jobs and remember_ran_jobs, which are evaluated from ci-failures.sh
+    local US=$'\037'
+    fn="$(awk '/^reported_jobs\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
+    eval "$fn"
+    fn="$(awk '/^remember_ran_jobs\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
+    eval "$fn"
+    jobs_file="$(mktemp)"
+    # The later run: Rerun ran again and passed, Skipped was skipped.
+    printf '%s\n' \
+        '{"id":11,"name":"Rerun","conclusion":"success","steps":[]}' \
+        '{"id":12,"name":"Skipped","conclusion":"skipped","steps":[]}' >"$jobs_file"
+    remember_ran_jobs "$jobs_file" Checks
+    # The earlier run.
+    printf '%s\n' \
+        '{"id":1,"name":"Rerun","conclusion":"failure","steps":[{"name":"Test","conclusion":"failure"}]}' \
+        '{"id":2,"name":"Skipped","conclusion":"failure","steps":[{"name":"Build","conclusion":"failure"},{"name":"Lint","conclusion":"failure"}]}' \
+        '{"id":3,"name":"Passed","conclusion":"success","steps":[]}' \
+        '{"id":4,"name":"Cancelled","conclusion":"cancelled","steps":[{"name":"Wait","conclusion":"cancelled"}]}' \
+        '{"id":5,"name":"Out of time","conclusion":"cancelled","steps":[{"name":"Sleep","conclusion":"cancelled"}]}' >"$jobs_file"
+    job_timeout[5]="The job has exceeded the maximum execution time of 1m0s"
+    actual="$(reported_jobs "$jobs_file" Checks true)"
+    expected=$'2\tSkipped\tfailure\tBuild + Lint\n5\tOut of time\tcancelled\tSleep'
+    if [[ "$actual" != "$expected" ]]; then
+        echo "ci-failures reported_jobs: an earlier run gave '$actual', expected '$expected'" >&2
+        status=1
+    fi
+    actual="$(reported_jobs "$jobs_file" Checks false)"
+    expected=$'1\tRerun\tfailure\tTest\n2\tSkipped\tfailure\tBuild + Lint\n4\tCancelled\tcancelled\tWait\n5\tOut of time\tcancelled\tSleep'
+    if [[ "$actual" != "$expected" ]]; then
+        echo "ci-failures reported_jobs: the latest run gave '$actual', expected '$expected'" >&2
+        status=1
+    fi
+    # The later run was of another workflow, so it reruns none of these jobs.
+    actual="$(reported_jobs "$jobs_file" Other true)"
+    expected=$'1\tRerun\tfailure\tTest\n2\tSkipped\tfailure\tBuild + Lint\n5\tOut of time\tcancelled\tSleep'
+    if [[ "$actual" != "$expected" ]]; then
+        echo "ci-failures reported_jobs: another workflow's earlier run gave '$actual', expected '$expected'" >&2
+        status=1
+    fi
+    rm -f "$jobs_file"
+}
+check_reported_jobs
 
 if (( status == 0 )); then
     echo "ci-failures parser and queue selection: every fixture matches its .records file"

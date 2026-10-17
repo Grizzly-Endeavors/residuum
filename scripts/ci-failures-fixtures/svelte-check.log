@@ -1,0 +1,48 @@
+2026-10-17T03:42:38.3669108Z ##[group]Run cd web && npm run check
+2026-10-17T03:42:38.3669952Z [36;1mcd web && npm run check[0m
+2026-10-17T03:42:38.3691856Z shell: /usr/bin/bash -e {0}
+2026-10-17T03:42:38.3692443Z ##[endgroup]
+2026-10-17T03:42:38.5850526Z 
+2026-10-17T03:42:38.5851232Z > residuum-web@0.0.1 check
+2026-10-17T03:42:38.5853317Z > svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc -p src/sw/tsconfig.json
+2026-10-17T03:42:38.5857590Z 
+2026-10-17T03:43:04.5354180Z Loading svelte-check in workspace: /home/runner/_work/residuum/residuum/web
+2026-10-17T03:43:04.5355744Z Getting Svelte diagnostics...
+2026-10-17T03:43:04.5356316Z 
+2026-10-17T03:43:04.5412440Z /home/runner/_work/residuum/residuum/web/[32msrc/probe-types.ts[39m:1:14
+2026-10-17T03:43:04.5415972Z [31mError[39m: Type 'string' is not assignable to type 'number'. 
+2026-10-17T03:43:04.5418620Z [36mexport const [35mlimit[36m: number = 'ten';[39m
+2026-10-17T03:43:04.5420004Z 
+2026-10-17T03:43:04.5421706Z /home/runner/_work/residuum/residuum/web/[32msrc/probe-types.ts[39m:7:14
+2026-10-17T03:43:04.5424854Z [31mError[39m: Type 'number' is not assignable to type 'string'. 
+2026-10-17T03:43:04.5427292Z [36m
+2026-10-17T03:43:04.5429014Z export const [35mresult[36m: string = double('four');[39m
+2026-10-17T03:43:04.5430486Z 
+2026-10-17T03:43:04.5432042Z /home/runner/_work/residuum/residuum/web/[32msrc/probe-types.ts[39m:7:38
+2026-10-17T03:43:04.5435736Z [31mError[39m: Argument of type 'string' is not assignable to parameter of type 'number'. 
+2026-10-17T03:43:04.5438365Z [36m
+2026-10-17T03:43:04.5440112Z export const result: string = double([35m'four'[36m);[39m
+2026-10-17T03:43:04.5441603Z 
+2026-10-17T03:43:04.5443312Z /home/runner/_work/residuum/residuum/web/[32msrc/ProbeTypes.svelte[39m:2:7
+2026-10-17T03:43:04.5446537Z [31mError[39m: Type 'string' is not assignable to type 'number'. (ts)
+2026-10-17T03:43:04.5448832Z [36m<script lang="ts">
+2026-10-17T03:43:04.5450360Z   let [35mcount[36m: number = 'three';
+2026-10-17T03:43:04.5452171Z   const label: string = count;[39m
+2026-10-17T03:43:04.5453176Z 
+2026-10-17T03:43:04.5454761Z /home/runner/_work/residuum/residuum/web/[32msrc/ProbeTypes.svelte[39m:3:9
+2026-10-17T03:43:04.5458021Z [31mError[39m: Type 'number' is not assignable to type 'string'. (ts)
+2026-10-17T03:43:04.5460385Z [36m  let count: number = 'three';
+2026-10-17T03:43:04.5462147Z   const [35mlabel[36m: string = count;
+2026-10-17T03:43:04.5464064Z   function greet(name: string): string {[39m
+2026-10-17T03:43:04.5465191Z 
+2026-10-17T03:43:04.5466945Z /home/runner/_work/residuum/residuum/web/[32msrc/ProbeTypes.svelte[39m:7:9
+2026-10-17T03:43:04.5470700Z [31mError[39m: Argument of type 'number' is not assignable to parameter of type 'string'. (ts)
+2026-10-17T03:43:04.5473498Z [36m  }
+2026-10-17T03:43:04.5474655Z   greet([35m42[36m);
+2026-10-17T03:43:04.5475987Z </script>[39m
+2026-10-17T03:43:04.5476640Z 
+2026-10-17T03:43:04.5477156Z ====================================
+2026-10-17T03:43:04.5479294Z [31msvelte-check found 6 errors and 0 warnings in 2 files
+2026-10-17T03:43:04.7308232Z [39m
+2026-10-17T03:43:04.7354956Z ##[error]Process completed with exit code 1.
+2026-10-17T03:43:05.1081637Z Post job cleanup.
