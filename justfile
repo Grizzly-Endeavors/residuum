@@ -274,13 +274,13 @@ web-test *args: _web-deps
 web-coverage *args: _web-deps
     cd web && npm run test:coverage -- "$@"
 
-# End-to-end and accessibility specs in Chromium, desktop and phone. The visual specs are left out. Runs on this machine's Chromium, installed on first use; when that install fails or stalls, the run says so and moves to the Playwright container (needs Docker). Args go to playwright, e.g. `just web-e2e-fast e2e/smoke`
+# End-to-end and accessibility specs in Chromium, desktop and phone. The visual specs are left out. Runs on this machine's Chromium, installed on first use, in a loopback-only network so host network changes such as Docker containers starting can't abort its page loads (scripts/with-loopback-network.sh); when that install fails or stalls, the run says so and moves to the Playwright container (needs Docker). Args go to playwright, e.g. `just web-e2e-fast e2e/smoke`
 [group('web')]
 [positional-arguments]
 web-e2e-fast *args: _web-deps
     scripts/with-e2e-browser.sh npm --prefix web run e2e:fast -- "$@"
 
-# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). When this machine's Chromium can't be installed, the fast specs run in the container too. CI runs the fast specs in its Web End-to-End jobs and the visual comparisons in a job of their own that never fails a pull request
+# The whole end-to-end suite: the fast specs on this machine (in a loopback-only network, as web-e2e-fast), the visual comparisons in the Playwright container (needs Docker). When this machine's Chromium can't be installed, the fast specs run in the container too. CI runs the fast specs in its Web End-to-End jobs and the visual comparisons in a job of their own that never fails a pull request
 [group('web')]
 [positional-arguments]
 web-e2e *args: _web-deps
@@ -298,7 +298,7 @@ web-e2e-update *args: _web-deps
 web-e2e-webkit *args: _web-deps
     scripts/with-playwright-container.sh npm --prefix web run e2e:webkit -- "$@"
 
-# The end-to-end specs this branch adds or changes (every spec with WEB_STRESS_ALL=1), each run repeatedly (WEB_STRESS_REPEAT, default 5) with the browser's CPU throttled (WEB_STRESS_CPU_THROTTLE, default 4); on this machine's Chromium, or in the Playwright container when that can't be installed; args go to playwright, e.g. `just web-stress --grep "tab is titled"`
+# The end-to-end specs this branch adds or changes (every spec with WEB_STRESS_ALL=1), each run repeatedly (WEB_STRESS_REPEAT, default 5) with the browser's CPU throttled (WEB_STRESS_CPU_THROTTLE, default 4); on this machine's Chromium in a loopback-only network, or in the Playwright container when that can't be installed; args go to playwright, e.g. `just web-stress --grep "tab is titled"`
 [group('web')]
 [positional-arguments]
 web-stress *args: _web-deps

@@ -42,9 +42,11 @@ const webkitPhone = {
 
 /**
  * `scripts/with-playwright-container.sh` starts the Playwright container with
- * a browser server and sets this to its address. The `visual-*` projects and
- * `webkit-phone` drive that browser, and reach the mock on this machine through
- * `exposeNetwork`. `E2E_ALL_IN_CONTAINER` (below) adds the other projects.
+ * a browser server and sets this to its address (a `ws+unix://` socket when
+ * `scripts/with-loopback-network.sh` bridges it into its loopback-only network).
+ * The `visual-*` projects and `webkit-phone` drive that browser, and reach the
+ * mock on this machine through `exposeNetwork`. `E2E_ALL_IN_CONTAINER` (below)
+ * adds the other projects.
  */
 const containerBrowser = process.env.E2E_CONTAINER_WS ?? "";
 const inContainer =
@@ -53,12 +55,12 @@ const inContainer =
     : { connectOptions: { wsEndpoint: containerBrowser, exposeNetwork: "<loopback>" } };
 
 /**
- * `E2E_ALL_IN_CONTAINER=1` sends `desktop`, `phone` and the `preview-*` projects
- * to the container's browser too, so a machine with no Chromium of its own (the
- * CI runners) needs none. Without it they launch this machine's Chromium. The
- * variable only works under the container wrapper; with no container browser it
- * is an error, because a quiet fall-back to a host browser would hide that the
- * run isn't the one that was asked for.
+ * `E2E_ALL_IN_CONTAINER=1` sends `desktop`, `phone`, the `dev-*` and the
+ * `preview-*` projects to the container's browser too, so a machine with no
+ * Chromium of its own (the CI runners) needs none. Without it they launch this
+ * machine's Chromium. The variable only works under the container wrapper; with
+ * no container browser it is an error, because a quiet fall-back to a host
+ * browser would hide that the run isn't the one that was asked for.
  */
 const allInContainer = process.env.E2E_ALL_IN_CONTAINER === "1";
 if (allInContainer && containerBrowser === "") {
