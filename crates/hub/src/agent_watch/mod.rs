@@ -10,6 +10,7 @@
 //! |---|---|
 //! | Sessions: started, state changed, completed | [`AgentChangeKind::SessionStarted`], [`SessionStateChanged`](AgentChangeKind::SessionStateChanged), [`SessionCompleted`](AgentChangeKind::SessionCompleted) |
 //! | The system notification channel: outbound A2A task changes | [`AgentChangeKind::OutboundTaskChanged`] |
+//! | The system notification channel: pulse fires that finished without a session run | [`AgentChangeKind::PulseFireFinished`] |
 //! | `UserInbox`: an item saved by `user_inbox_add` | [`AgentChangeKind::UserInboxAdded`] |
 //! | The agent's workspace change feed, for the files in [`WatchedPath`] | [`AgentChangeKind::WatchedPathChanged`] |
 //! | The workspace change feed's resync, and its outages | [`AgentChangeKind::Resync`] |

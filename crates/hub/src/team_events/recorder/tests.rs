@@ -656,6 +656,76 @@ fn a_scheduled_run_that_failed_is_an_error_and_one_that_was_stopped_is_not() {
 }
 
 #[test]
+fn a_pulse_fire_without_a_session_is_told_as_a_scheduled_run_pointing_at_the_schedule() {
+    let mut recorder = recorder();
+    let at = chrono::Utc::now();
+    for (status, error) in [
+        (PulseFireStatus::Ok, None),
+        (PulseFireStatus::Stopped, None),
+        (
+            PulseFireStatus::Failed,
+            Some("the script for task 'check'\nexited with code 4"),
+        ),
+    ] {
+        recorder.on_agent_change(change(
+            "atlas",
+            AgentChangeKind::PulseFireFinished {
+                pulse: "watch".to_string(),
+                outcome: PulseFireOutcome {
+                    status,
+                    at,
+                    error: error.map(str::to_string),
+                },
+            },
+        ));
+    }
+
+    let told: Vec<_> = entries(&recorder)
+        .into_iter()
+        .map(|event| {
+            (
+                event.kind,
+                event.level,
+                event.summary,
+                event.target,
+                event.at,
+            )
+        })
+        .collect();
+    let schedule = Some(TeamEventTarget::AgentPlace {
+        agent: "atlas".to_string(),
+        place: TeamEventPlace::Schedule,
+    });
+    assert_eq!(
+        told,
+        [
+            (
+                TeamEventKind::ScheduledRunFinished,
+                TeamEventLevel::Info,
+                "atlas finished the pulse \"watch\"".to_string(),
+                schedule.clone(),
+                at,
+            ),
+            (
+                TeamEventKind::ScheduledRunFinished,
+                TeamEventLevel::Info,
+                "atlas's pulse \"watch\" was stopped".to_string(),
+                schedule.clone(),
+                at,
+            ),
+            (
+                TeamEventKind::ScheduledRunFinished,
+                TeamEventLevel::Error,
+                "atlas's pulse \"watch\" failed: the script for task 'check' exited with code 4"
+                    .to_string(),
+                schedule,
+                at,
+            ),
+        ]
+    );
+}
+
+#[test]
 fn runs_are_told_apart_by_agent_and_run_so_two_agents_can_share_an_address() {
     let mut recorder = recorder();
     start(

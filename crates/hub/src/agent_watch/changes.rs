@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use residuum_bus::remote_task::TrackedTask;
 use residuum_bus::session::{SessionInfo, SessionState};
-use residuum_bus::{AgentResultStatus, SessionAddress, SessionEvent};
+use residuum_bus::{AgentResultStatus, PulseFireOutcome, SessionAddress, SessionEvent};
 use residuum_memory::types::Visibility;
 
 /// How many session events a slow relay consumer can fall behind by before
@@ -99,6 +99,16 @@ pub enum AgentChangeKind {
     UserInboxAdded {
         /// The item's id.
         item_id: String,
+    },
+    /// A pulse fire finished without a session run: a `script_only` fire,
+    /// one stopped during its scripts, or one whose session couldn't start.
+    /// A fire that ran a session is told by its session's
+    /// [`Self::SessionCompleted`] instead.
+    PulseFireFinished {
+        /// The pulse's name.
+        pulse: String,
+        /// How the fire ended.
+        outcome: PulseFireOutcome,
     },
     /// A file the watcher follows changed. Sent once per kind per batch of
     /// file changes.

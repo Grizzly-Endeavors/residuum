@@ -19,8 +19,9 @@ use crate::launch::{AgentControl, agent_span};
 use residuum_background::registry::SessionRegistry;
 use residuum_bus::workspace_change::WorkspaceChange;
 use residuum_bus::{
-    BusError, BusHandle, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress,
-    SessionEvent, SessionEventKind, Subscriber, UserInboxAddedEvent, WorkspaceEvent, topics,
+    BusError, BusHandle, NotifyName, OutboundA2aTaskEvent, PulseFireChange, PulseFireEvent,
+    SYSTEM_CHANNEL, SessionAddress, SessionEvent, SessionEventKind, Subscriber,
+    UserInboxAddedEvent, WorkspaceEvent, topics,
 };
 use residuum_workspace::watch::WatchHealth;
 
@@ -111,6 +112,7 @@ impl AgentWatcher {
 struct Subscriptions {
     sessions: Subscriber<SessionEvent>,
     outbound: Subscriber<OutboundA2aTaskEvent>,
+    pulse_fires: Subscriber<PulseFireEvent>,
     user_inbox: Subscriber<UserInboxAddedEvent>,
     workspace: Subscriber<WorkspaceEvent>,
 }
@@ -141,6 +143,9 @@ impl Subscriptions {
             outbound: bus
                 .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
                 .await?,
+            pulse_fires: bus
+                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+                .await?,
             user_inbox: bus.subscribe(topics::UserInbox).await?,
             workspace: bus.subscribe(topics::Workspace).await?,
         })
@@ -162,6 +167,11 @@ impl Subscriptions {
                     Next::Skip => {}
                     Next::Closed => { state.bus_closed(); break; }
                 },
+                received = self.pulse_fires.recv() => match Next::of(received) {
+                    Next::Event(event) => state.on_pulse_fire(event),
+                    Next::Skip => {}
+                    Next::Closed => { state.bus_closed(); break; }
+                },
                 received = self.user_inbox.recv() => match Next::of(received) {
                     Next::Event(event) => state.on_user_inbox_added(event),
                     Next::Skip => {}
@@ -180,6 +190,9 @@ impl Subscriptions {
         }
         for event in self.outbound.drain() {
             state.on_outbound_task(event);
+        }
+        for event in self.pulse_fires.drain() {
+            state.on_pulse_fire(event);
         }
         for event in self.user_inbox.drain() {
             state.on_user_inbox_added(event);
@@ -288,6 +301,22 @@ impl WatchState {
 
     fn on_outbound_task(&self, event: OutboundA2aTaskEvent) {
         self.publish(AgentChangeKind::OutboundTaskChanged(Box::new(event.task)));
+    }
+
+    /// Pulse fires: one that finished without a session run becomes a
+    /// change. Every other fire change is the Schedule place's own, and a
+    /// fire that ran a session is told by its session's completion.
+    fn on_pulse_fire(&self, event: PulseFireEvent) {
+        if let PulseFireChange::Finished {
+            outcome,
+            session_run: false,
+        } = event.change
+        {
+            self.publish(AgentChangeKind::PulseFireFinished {
+                pulse: event.pulse,
+                outcome,
+            });
+        }
     }
 
     fn on_user_inbox_added(&self, event: UserInboxAddedEvent) {
@@ -639,6 +668,48 @@ mod tests {
         assert!(matches!(
             rig.next().await,
             AgentChangeKind::UserInboxAdded { item_id } if item_id == "20260930_note"
+        ));
+        rig.quiet().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_pulse_fire_that_finished_without_a_session_run_is_a_change() {
+        let mut rig = Rig::new().await;
+        let outcome = residuum_bus::PulseFireOutcome {
+            status: residuum_bus::PulseFireStatus::Failed,
+            at: chrono::Utc::now(),
+            error: Some("the script for task 'check' exited with code 4".to_string()),
+        };
+        let fire = |change| PulseFireEvent {
+            pulse: "watch".to_string(),
+            fire_id: "fire-1".to_string(),
+            change,
+            current_run: None,
+        };
+        let system = || topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
+        rig.publish(system(), fire(PulseFireChange::Started)).await;
+        rig.publish(
+            system(),
+            fire(PulseFireChange::Finished {
+                outcome: outcome.clone(),
+                session_run: true,
+            }),
+        )
+        .await;
+        rig.publish(system(), fire(PulseFireChange::Ended)).await;
+        rig.publish(
+            system(),
+            fire(PulseFireChange::Finished {
+                outcome: outcome.clone(),
+                session_run: false,
+            }),
+        )
+        .await;
+
+        assert!(matches!(
+            rig.next().await,
+            AgentChangeKind::PulseFireFinished { pulse, outcome: told }
+                if pulse == "watch" && told == outcome
         ));
         rig.quiet().await;
     }
