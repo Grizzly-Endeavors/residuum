@@ -129,6 +129,7 @@ tracing-appender = "0.2"
 opentelemetry = "0.33.1"
 opentelemetry_sdk = "0.33.1"
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "http-proto", "reqwest-client", "internal-logs"] }
+opentelemetry-http = { version = "0.33.1", default-features = false, features = ["reqwest"] }
 opentelemetry-proto = { version = "0.33.1", features = ["gen-tonic-messages", "trace"] }
 prost = "0.14"
 
