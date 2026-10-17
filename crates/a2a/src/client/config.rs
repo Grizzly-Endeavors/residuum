@@ -53,10 +53,9 @@ struct A2aAgentRaw {
 
 /// Problems with one raw a2a agent entry: an invalid name, an empty url.
 ///
-/// Shared by [`validate_a2a_agents_json`] (first-error-only, for the web
-/// settings API), [`load_a2a_agents_map`] (skip-with-warning, keeping the
-/// rest of the file), and [`diagnose_a2a_json`] (collect-all), so the three
-/// can never disagree about which entries are usable.
+/// Shared by [`load_a2a_agents_map`] (skip-with-warning, keeping the rest of
+/// the file) and [`diagnose_a2a_json`] (collect-all), so the two can never
+/// disagree about which entries are usable.
 fn entry_problems(name: &str, raw: &A2aAgentRaw) -> Vec<String> {
     let mut problems = Vec::new();
     if !is_valid_agent_name(name) {
@@ -71,27 +70,6 @@ fn entry_problems(name: &str, raw: &A2aAgentRaw) -> Vec<String> {
     problems
 }
 
-/// Validate `content` as a well-formed `config/a2a.json`: valid JSON matching
-/// the `{"agents": {"<name>": {"url": ..., "headers"?: ...}}}` shape, with
-/// every agent name well-formed and every url non-empty. Does not expand
-/// `${agent-key:...}`/`${ENV}` references or check reachability — those are
-/// handled (skip-with-warning, or a background retry) once the file actually
-/// loads, not at this validation step. Used by the web settings API before
-/// writing a raw edit.
-///
-/// # Errors
-/// Returns a plain-language message describing the first problem found.
-pub fn validate_a2a_agents_json(content: &str) -> Result<(), String> {
-    let file: A2aAgentsFile =
-        serde_json::from_str(content).map_err(|e| format!("invalid JSON: {e}"))?;
-    for (name, raw) in &file.agents {
-        if let Some(problem) = entry_problems(name, raw).into_iter().next() {
-            return Err(problem);
-        }
-    }
-    Ok(())
-}
-
 /// Diagnostics for `content` as `config/a2a.json`.
 ///
 /// Reuses `entry_problems`, the same per-entry check
@@ -99,7 +77,7 @@ pub fn validate_a2a_agents_json(content: &str) -> Result<(), String> {
 /// what loading skips. A JSON syntax error carries `serde_json`'s own
 /// line/column. Doesn't check `${agent-key:...}`/`${ENV}` header references
 /// — those need the agent-key store, which isn't available from content
-/// alone, matching [`validate_a2a_agents_json`]'s scope.
+/// alone.
 #[must_use]
 pub fn diagnose_a2a_json(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
     use residuum_core::diagnostics::{Diagnostic, Location};
@@ -342,36 +320,6 @@ mod tests {
         std::fs::write(&path, "not json").unwrap();
         let err = load_a2a_agents_map(&path, &AgentKeyStore::default()).unwrap_err();
         assert!(err.to_string().contains("failed to parse a2a.json"));
-    }
-
-    #[test]
-    fn validate_accepts_empty_and_well_formed_agents() {
-        validate_a2a_agents_json(r#"{"agents": {}}"#).unwrap();
-        validate_a2a_agents_json(
-            r#"{"agents": {"laptop": {"url": "https://x.example.com", "headers": {"a": "b"}}}}"#,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn validate_rejects_invalid_json() {
-        let err = validate_a2a_agents_json("not json").unwrap_err();
-        assert!(err.contains("invalid JSON"));
-    }
-
-    #[test]
-    fn validate_rejects_bad_name() {
-        let err = validate_a2a_agents_json(
-            r#"{"agents": {"Bad Name": {"url": "https://x.example.com"}}}"#,
-        )
-        .unwrap_err();
-        assert!(err.contains("Bad Name"));
-    }
-
-    #[test]
-    fn validate_rejects_empty_url() {
-        let err = validate_a2a_agents_json(r#"{"agents": {"laptop": {"url": ""}}}"#).unwrap_err();
-        assert!(err.contains("non-empty url"));
     }
 
     // ── diagnose_a2a_json ────────────────────────────────────────────────
