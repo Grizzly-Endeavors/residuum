@@ -95,17 +95,12 @@ if [[ "$hook_regex" != "$RUST_PATHS_RE" ]]; then
 fi
 
 # package_of maps a changed path to the package its covers check compares. Only a
-# Rust path maps to a package, a pending-crates file line matches exactly, and a
-# directory line matches by prefix.
+# Rust path maps to a package: a member's path to its crate, any other Rust path
+# to the root.
 check_package_of() {
     local fn name expected actual
     fn="$(awk '/^package_of\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
     eval "$fn"
-    # shellcheck disable=SC2034 # read by package_of, which is evaluated from ci-failures.sh
-    pending_lines="src/bus/ residuum-bus
-src/hub/team.rs residuum-background
-src/hub/ residuum-hub
-tests/it/x.rs residuum-test"
     while IFS='|' read -r name expected; do
         actual="$(package_of "$name")"
         if [[ "$actual" != "$expected" ]]; then
@@ -114,11 +109,10 @@ tests/it/x.rs residuum-test"
         fi
     done <<'CASES'
 crates/memory/src/x.rs|residuum-memory
-src/bus/a.rs|residuum-bus
-src/hub/team.rs|residuum-background
-src/hub/team.rs.orig|residuum-hub
+crates/gateway/src/x.rs|residuum-gateway
+src/bus/a.rs|residuum
 src/unknown.rs|residuum
-tests/it/x.rs|residuum-test
+tests/it/x.rs|residuum
 tests/it/y.rs|residuum
 build.rs|residuum
 docs/x.md|

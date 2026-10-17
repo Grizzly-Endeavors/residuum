@@ -210,10 +210,10 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 
 ### Used By
 
-- **`src/gateway/startup/mod.rs`** — constructs the `SessionRegistry`, `SessionStore` (running its startup sweep), `SessionRuntime`, and the shared `AgentMessenger`; builds the `SpawnContext` and the session tool factory it holds (`tools::SessionTools`); registers `message_agent` for the main agent (address `"main"`).
-- **`src/gateway/event_loop/run_loop.rs`** / **`reload.rs`** — wire `SessionRuntime`/`SessionRegistry`/`AgentMessenger` into `AgentRuntime`, and rebuild `SpawnContext` and its session tool factory (cloning the same `AgentMessenger`) on config reload.
+- **`crates/gateway/src/startup/mod.rs`** — constructs the `SessionRegistry`, `SessionStore` (running its startup sweep), `SessionRuntime`, and the shared `AgentMessenger`; builds the `SpawnContext` and the session tool factory it holds (`tools::SessionTools`); registers `message_agent` for the main agent (address `"main"`).
+- **`crates/gateway/src/event_loop/run_loop.rs`** / **`reload.rs`** — wire `SessionRuntime`/`SessionRegistry`/`AgentMessenger` into `AgentRuntime`, and rebuild `SpawnContext` and its session tool factory (cloning the same `AgentMessenger`) on config reload.
 - **`listener.rs`** — the sole caller of `SessionRuntime::spawn()`; handles both a fresh fork and a `message_agent`-triggered resume identically, since both arrive as a `SpawnRequestEvent`.
-- **`src/gateway/actions.rs`** — forks a `scheduled` session for each due scheduled action.
+- **`crates/gateway/src/actions.rs`** — forks a `scheduled` session for each due scheduled action.
 - **`crates/proactivity/src/pulse/executor.rs`** — builds a `SpawnRequestEvent` from a due pulse.
 - **`crates/interfaces/src/webhook.rs`** — forks an `external` session for a webhook routed to an agent.
 - **`crates/agent/src/subconscious/learning.rs`** — forks a `spawned` session running the `learner` skill.
@@ -223,7 +223,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`crates/tracing-service/src/client_context.rs`** / **`crates/tools/src/file_bug_report.rs`** / **`crates/hub/src/web/tracing_api.rs`** — read `SessionRegistry::subagent_snapshot()` to populate a bug report's `active_subagents`.
 - **`crates/agent/src/turn.rs`** — `execute_turn()` is what a session's executor calls to run its turn loop; its `drain_interrupts()` is what actually delivers an `Interrupt::AgentMessage` mid-turn.
 - **`crates/protocol/src/frames.rs`** — maps `SessionEvent`s to `session_*` WebSocket frames.
-- **`src/gateway/sessions.rs`** / **`src/gateway/web/sessions.rs`** / **`src/gateway/ws.rs`** / **`src/gateway/websocket/subscriber.rs`** — the web UI's sessions surface (Activity and the session panel): list live sessions (`SessionRegistry::list_live()`) and completed runs (`SessionStore::list_completed_runs()`), serve transcripts (`SessionStore::read_run()`/`read_incremental_transcript()`), deliver the owner's messages from a session panel through `AgentMessenger::send()` as sender `OWNER_ADDRESS` at hop 0 (and an artifact's HTTP messages as sender `artifact:<name>`, category `artifact`), stop sessions via `stop_named_session()` (in `registry.rs`, over `SessionRegistry::stop()`), and start `artifact` sessions by publishing a `SpawnRequestEvent` with `EventTrigger::Artifact`.
+- **`crates/gateway/src/sessions.rs`** / **`crates/gateway/src/web/sessions.rs`** / **`crates/gateway/src/ws.rs`** / **`crates/gateway/src/websocket/subscriber.rs`** — the web UI's sessions surface (Activity and the session panel): list live sessions (`SessionRegistry::list_live()`) and completed runs (`SessionStore::list_completed_runs()`), serve transcripts (`SessionStore::read_run()`/`read_incremental_transcript()`), deliver the owner's messages from a session panel through `AgentMessenger::send()` as sender `OWNER_ADDRESS` at hop 0 (and an artifact's HTTP messages as sender `artifact:<name>`, category `artifact`), stop sessions via `stop_named_session()` (in `registry.rs`, over `SessionRegistry::stop()`), and start `artifact` sessions by publishing a `SpawnRequestEvent` with `EventTrigger::Artifact`.
 
 ---
 

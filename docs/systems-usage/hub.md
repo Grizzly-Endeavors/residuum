@@ -168,7 +168,7 @@ One router serves everything the hub offers: the hub, team and per-agent routes,
 
 There is one log level for the whole hub. Every log line and span an agent produces carries an `agent` field: the agent's tasks, and everything they spawn, run inside a root span named `agent`. `residuum logs --agent <name>` filters on it. The span buffer that feeds bug reports and trace exports gives every span inside an agent's root span the same `agent` field.
 
-Each line's target is shown in display form: `residuum::` is dropped from the front, and a crate target `residuum_<x>::…` shows as `<x>::…`. So `residuum::gateway::event_loop` shows as `gateway::event_loop` and `residuum_hub::runtime` as `hub::runtime`. A crate's root target `residuum_<x>` shows as `<x>`; any other target with one segment, such as `residuum`, shows unchanged.
+Each line's target is shown in display form: `residuum::` is dropped from the front, and a crate target `residuum_<x>::…` shows as `<x>::…`. So `residuum_gateway::event_loop` shows as `gateway::event_loop` and `residuum_hub::runtime` as `hub::runtime`. A crate's root target `residuum_<x>` shows as `<x>`; any other target with one segment, such as `residuum`, shows unchanged.
 
 `residuum logs --module <value>` keeps a line when the value is a plain string prefix of its full target. It also matches when the value, with one leading `residuum::` removed, is a plain string prefix of the line's display form or of its module form (the target with its first segment removed). So `--module agent` matches `residuum::agent::core` and `residuum_config::agent_keys::store`, `--module memory` matches `residuum_memory::search`, `--module tunnel` matches `residuum_net::tunnel::v2`, and `--module residuum::mcp::client` matches `residuum_mcp::client`. A value can match lines from several crates; the result is their union.
 
@@ -196,7 +196,8 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_interfaces`: `interfaces`, the Discord, Telegram and Teams adapters, the webhook table and the Teams app setup, so `RUST_LOG=residuum_interfaces=trace`, or `RUST_LOG=residuum_interfaces::teams=trace` for the Teams adapter and its setup job.
 - `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum_hub`: `hub`, with the agent host, the hub's HTTP app and its web routes (`web`, `file_server`), `launch`, `update`, `features`, `config_watcher` and `last_known_good`, so `RUST_LOG=residuum_hub=trace`, or `RUST_LOG=residuum_hub::host=trace` for the agent host, `RUST_LOG=residuum_hub::web=trace` for the web routes the hub serves, `RUST_LOG=residuum_hub::update=trace` for self-updates and `RUST_LOG=residuum_hub::config_watcher=trace` for the config file watchers.
-- `residuum`: every other module, so `RUST_LOG=residuum::gateway=trace`.
+- `residuum_gateway`: `gateway`, the running agent's event loop, startup, reload and routes (`web`: sessions, scheduled, memory, model, the A2A status routes and the inbox), the WebSocket subscriber (`websocket`) and `turn_journal`, so `RUST_LOG=residuum_gateway=trace`, or `RUST_LOG=residuum_gateway::event_loop=trace` for the agent's event loop (its lines show as `gateway::event_loop::…`).
+- `residuum`: every other module, so `RUST_LOG=residuum::daemon=trace`.
 
 The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.
 

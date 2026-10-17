@@ -7,12 +7,14 @@ pub use residuum_checkpoints as checkpoints;
 pub use residuum_config as config;
 pub use residuum_config::agent_keys;
 pub use residuum_core::{build_info, diagnostics, process, time, util};
+pub use residuum_gateway as gateway;
 pub use residuum_hub as hub;
 pub use residuum_inference as inference;
 pub use residuum_interfaces as interfaces;
 pub use residuum_mcp as mcp;
 pub use residuum_memory as memory;
 pub use residuum_net::{pairing, remote_access};
+#[cfg(test)]
 pub(crate) use residuum_net::{tunnel, workbench};
 pub use residuum_notify as notify;
 pub use residuum_proactivity::{actions, pulse};
@@ -31,7 +33,6 @@ pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
 };
 
 pub mod daemon;
-pub mod gateway;
 #[cfg(test)]
 pub(crate) mod integration;
 pub mod logging;

@@ -1,0 +1,1145 @@
+//! WebSocket connection handler.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket};
+use axum::extract::{Extension, State};
+use axum::response::IntoResponse;
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument;
+
+use crate::types::GatewayState;
+use crate::websocket::subscriber::WsSubscribers;
+use residuum_bus::EndpointName;
+use residuum_bus::origin::MessageOrigin;
+use residuum_config::WEB_UI_ENDPOINT;
+use residuum_inference::ImageData;
+use residuum_net::workbench::ArtifactsOrigin;
+use residuum_protocol::{ClientMessage, ServerMessage};
+use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
+
+/// Axum handler that upgrades an HTTP request to a WebSocket connection.
+pub(super) async fn ws_handler(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<GatewayState>,
+    through_artifacts_origin: Option<Extension<ArtifactsOrigin>>,
+) -> impl IntoResponse {
+    // The upgraded connection runs in a task axum spawns with no span of its
+    // own; carrying the request's keeps the agent's `agent` log field on it.
+    let span = tracing::Span::current();
+    // A workbench page's socket isn't the user looking at the chat, so it
+    // doesn't count as a client (see `handle_connection`).
+    let counts_as_client = through_artifacts_origin.is_none();
+    ws.on_upgrade(move |socket| handle_connection(socket, state, counts_as_client).instrument(span))
+}
+
+/// Handle a single WebSocket connection.
+///
+/// Each connection subscribes to typed topics (`Endpoint` for responses, tool
+/// activity, turn lifecycle, and intermediates; `Notification` for system
+/// notices and errors) on the bus. A local channel
+/// carries per-connection messages (pong, errors, inbox confirmations) that
+/// bypass the bus. A forwarding task merges all sources and writes
+/// `ServerMessage` frames to the WebSocket.
+///
+/// Verbose filtering is server-side: tool call and result events (the main
+/// agent's and every session's) are dropped in the forwarding task when
+/// verbose mode is off.
+///
+/// `counts_as_client` is false for a connection opened through the artifacts
+/// origin: it neither resets the agent's unread count nor counts as someone
+/// being connected.
+async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_client: bool) {
+    // While a client connection is open the agent's unread count stays at
+    // zero: a client is there to show new messages.
+    let _client = counts_as_client.then(|| state.activity.client_connected());
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // The workspace prefixes this connection watches: replaced by the read
+    // loop, read by the forwarding task to filter change-feed batches.
+    let (watch_set_tx, watch_set_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+    // Subscribe to typed bus topics for this connection
+    let mut subs = match WsSubscribers::new(
+        &state.bus_handle,
+        &state.team_feed.bus,
+        EndpointName::from(WEB_UI_ENDPOINT),
+        state.file_registry.clone(),
+        watch_set_rx,
+        &state.turn_journal,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to subscribe to bus topics for ws connection");
+            return;
+        }
+    };
+
+    let resync = subs.resync_requests();
+    // Local channel for per-connection messages (pong, errors, inbox responses)
+    let (local_tx, mut local_rx) = mpsc::unbounded_channel::<ServerMessage>();
+
+    // The read loop sees a client's Close frame, but the forwarding task
+    // owns the send half that must answer it; this hands the frame across.
+    let (close_tx, mut close_rx) = oneshot::channel::<Option<CloseFrame>>();
+
+    // Per-connection verbose flag shared between read loop and forwarding task
+    let verbose = Arc::new(AtomicBool::new(false));
+    let verbose_fwd = Arc::clone(&verbose);
+
+    // Forwarding task: bus subscribers + local channel → WebSocket client
+    let fwd_handle = residuum_core::util::spawn_in_span(async move {
+        loop {
+            let msg = tokio::select! {
+                bus_msg = subs.recv() => {
+                    match bus_msg {
+                        Some(m) => Some(m),
+                        None => break,
+                    }
+                }
+                msg = local_rx.recv() => {
+                    match msg {
+                        Some(m) => Some(m),
+                        None => break,
+                    }
+                }
+                frame = &mut close_rx => {
+                    // Answer the client's Close and shut the transport down:
+                    // without both, the client sees code 1006 (abnormal
+                    // closure) instead of its own.
+                    if let Ok(frame) = frame {
+                        ws_tx.send(WsMessage::Close(frame)).await.ok();
+                    }
+                    ws_tx.close().await.ok();
+                    break;
+                }
+            };
+
+            let Some(msg) = msg.and_then(|m| shown_frame(m, verbose_fwd.load(Ordering::Relaxed)))
+            else {
+                continue;
+            };
+            if !send_frame(&mut ws_tx, &msg).await {
+                break; // client disconnected
+            }
+        }
+        // Nothing more will be forwarded: close, so the client knows to reconnect.
+        ws_tx.close().await.ok();
+    });
+
+    // Read loop: WebSocket client → bus / local channel
+    while let Some(frame) = ws_rx.next().await {
+        let raw = match frame {
+            Ok(WsMessage::Text(txt)) => txt,
+            Ok(WsMessage::Close(frame)) => {
+                answer_client_close(close_tx, fwd_handle, frame).await;
+                tracing::debug!("client disconnected");
+                return;
+            }
+            Ok(_) => continue, // ignore binary, ping, pong
+            Err(e) => {
+                tracing::debug!(error = %e, "websocket read error");
+                break;
+            }
+        };
+
+        let client_msg: ClientMessage = match serde_json::from_str(&raw) {
+            Ok(m) => m,
+            Err(e) => {
+                let err_msg = ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("malformed message: {e}"),
+                    details: None,
+                };
+                tracing::warn!(error = %e, "malformed WebSocket message from client");
+                local_tx.send(err_msg).ok();
+                continue;
+            }
+        };
+
+        let channels = ConnectionChannels {
+            local: &local_tx,
+            verbose: &verbose,
+            watch_set: &watch_set_tx,
+            resync: &resync,
+        };
+        if !handle_client_message(client_msg, &state, &channels).await {
+            break;
+        }
+    }
+
+    // Clean up: abort forwarding task when client disconnects
+    fwd_handle.abort();
+    tracing::debug!("client disconnected");
+}
+
+/// Hand the client's Close frame to the forwarding task, which owns the send
+/// half, and wait for it to answer before the connection tears down. Without
+/// an answer the client sees code 1006 (abnormal closure) instead of its own.
+async fn answer_client_close(
+    close_tx: oneshot::Sender<Option<CloseFrame>>,
+    fwd_handle: tokio::task::JoinHandle<()>,
+    frame: Option<CloseFrame>,
+) {
+    if close_tx.send(frame).is_ok() {
+        fwd_handle.await.ok();
+    } else {
+        fwd_handle.abort();
+    }
+}
+
+/// The per-connection state a client message can act on.
+struct ConnectionChannels<'a> {
+    /// Replies to this connection only.
+    local: &'a mpsc::UnboundedSender<ServerMessage>,
+    /// Whether tool events reach this connection.
+    verbose: &'a AtomicBool,
+    /// The workspace prefixes this connection watches.
+    watch_set: &'a tokio::sync::watch::Sender<WatchSet>,
+    /// Asks the forwarding task for a `turn_snapshot` frame.
+    resync: &'a mpsc::UnboundedSender<()>,
+}
+
+/// Dispatch a single client message. Returns `false` to break the read loop.
+#[expect(
+    clippy::too_many_lines,
+    reason = "match arms over many message variants"
+)]
+async fn handle_client_message(
+    msg: ClientMessage,
+    state: &GatewayState,
+    channels: &ConnectionChannels<'_>,
+) -> bool {
+    let ConnectionChannels {
+        local: local_tx,
+        verbose,
+        watch_set,
+        resync,
+    } = *channels;
+    match msg {
+        ClientMessage::SendMessage {
+            id,
+            content,
+            images,
+        } => {
+            // The id names the turn this message starts or joins in every
+            // frame about it, and an empty one reads as a message posted
+            // outside any turn. A client that sent none gets one made here.
+            let id = if id.is_empty() {
+                let generated = format!("ws-{}", uuid::Uuid::new_v4());
+                tracing::warn!(
+                    message_id = %generated,
+                    "client sent a message with an empty id; gave it one"
+                );
+                generated
+            } else {
+                id
+            };
+            if !images.is_empty()
+                && let Err(reason) = validate_images(&images)
+            {
+                local_tx
+                    .send(ServerMessage::Error {
+                        reply_to: Some(id),
+                        message: reason,
+                        details: None,
+                    })
+                    .ok();
+                return true;
+            }
+
+            let origin = MessageOrigin {
+                endpoint: WEB_UI_ENDPOINT.to_string(),
+                sender: None,
+                conversation: None,
+                agent_sender: None,
+            };
+            let msg_event = residuum_bus::MessageEvent {
+                id: id.clone(),
+                content,
+                origin,
+                timestamp: residuum_core::time::now_local(chrono_tz::UTC),
+                images,
+                context: None,
+            };
+            if let Err(e) = state
+                .publisher
+                .publish(residuum_bus::topics::UserMessage, msg_event)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to publish message to bus");
+                return false;
+            }
+        }
+        ClientMessage::SetVerbose { enabled } => {
+            verbose.store(enabled, Ordering::Relaxed);
+        }
+        ClientMessage::WatchWorkspace { prefixes } => {
+            replace_watch_set(prefixes, watch_health(state), watch_set, local_tx);
+        }
+        ClientMessage::Ping => {
+            local_tx.send(ServerMessage::Pong).ok();
+        }
+        ClientMessage::ResyncTurn => {
+            resync.send(()).ok();
+        }
+        ClientMessage::Reload => {
+            tracing::info!("reload requested by client");
+            local_tx.send(ServerMessage::Reloading).ok();
+            state
+                .reload_tx
+                .send(residuum_bus::control::ReloadSignal::Agent)
+                .ok();
+        }
+        ClientMessage::ServerCommand { name, args } => {
+            tracing::info!(command = %name, "server command from client");
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            state
+                .command_tx
+                .send(residuum_bus::control::ServerCommand {
+                    name,
+                    args,
+                    reply_tx: Some(reply_tx),
+                })
+                .await
+                .ok();
+
+            // Successful commands are already reflected via the normal bus
+            // broadcast (e.g. Notice/InlineOutput); only a rejection needs
+            // routing back here, scoped to this connection only.
+            let err_tx = local_tx.clone();
+            residuum_core::util::spawn_in_span(async move {
+                if let Ok(Err(reason)) = reply_rx.await {
+                    err_tx
+                        .send(ServerMessage::Error {
+                            reply_to: None,
+                            message: reason,
+                            details: None,
+                        })
+                        .ok();
+                }
+            });
+        }
+        ClientMessage::Cancel { reply_to } => {
+            tracing::info!(reply_to = %reply_to, "stop requested by client");
+            if state
+                .stop_tx
+                .try_send(residuum_bus::control::StopRequest {
+                    reply_to: Some(reply_to),
+                    result_tx: None,
+                })
+                .is_err()
+            {
+                tracing::warn!("failed to dispatch stop request: channel closed or full");
+            }
+        }
+        ClientMessage::SendQueuedNow { id } => {
+            send_queued_now(state, id, local_tx);
+        }
+        ClientMessage::WithdrawQueued { id } => {
+            withdraw_queued(state, id, local_tx).await;
+        }
+        ClientMessage::SessionSendMessage {
+            id,
+            address,
+            content,
+        } => {
+            tracing::info!(address = %address, "session message requested by client");
+            handle_session_command(
+                SessionCommand::SendMessage {
+                    id,
+                    address,
+                    content,
+                },
+                state,
+                local_tx,
+            )
+            .await;
+        }
+        ClientMessage::SessionStop { id, address } => {
+            handle_session_command(SessionCommand::Stop { id, address }, state, local_tx).await;
+        }
+        ClientMessage::InboxAdd { body } => {
+            tracing::info!("inbox add requested by client");
+            let dir = state.agent_inbox_dir.clone();
+            let tz = state.tz;
+            let tx = local_tx.clone();
+            residuum_core::util::spawn_in_span(async move {
+                let title = residuum_workspace::inbox::derive_title(&body);
+                match residuum_workspace::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
+                    Ok(_filename) => {
+                        tx.send(ServerMessage::Notice {
+                            message: "Added a note to the inbox.".to_string(),
+                            reload: None,
+                            reload_of: None,
+                        })
+                        .ok();
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "inbox add failed");
+                        tx.send(ServerMessage::Error {
+                            reply_to: None,
+                            message: "Couldn't add a note to the inbox. Try again.".to_string(),
+                            details: Some(format!("{e:#}")),
+                        })
+                        .ok();
+                    }
+                }
+            });
+        }
+    }
+    true
+}
+
+/// Whether live updates are off for either feed a connection can watch: the
+/// agent's own directory or the hub's team directory.
+fn watch_health(state: &GatewayState) -> WatchHealth {
+    if *state.team_feed.health.borrow() == WatchHealth::Off {
+        WatchHealth::Off
+    } else {
+        *state.workspace_watch_health.borrow()
+    }
+}
+
+/// Apply a `watch_workspace` request: replace the connection's watch set, or
+/// refuse the request with an `Error` frame and keep the current set. A
+/// connection that starts watching while no watcher runs is told live
+/// updates are off.
+fn replace_watch_set(
+    prefixes: Vec<String>,
+    health: WatchHealth,
+    watch_set: &tokio::sync::watch::Sender<WatchSet>,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    match WatchSet::parse(prefixes) {
+        Ok(set) => {
+            let watching = !set.is_empty();
+            watch_set.send_replace(set);
+            if watching && health == WatchHealth::Off {
+                local_tx
+                    .send(ServerMessage::WorkspaceWatchUnavailable {
+                        message: LIVE_UPDATES_OFF_MESSAGE.to_string(),
+                    })
+                    .ok();
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "refused a workspace watch request");
+            local_tx
+                .send(ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("Couldn't watch the workspace: {e}."),
+                    details: None,
+                })
+                .ok();
+        }
+    }
+}
+
+/// Whether `msg` is only sent to clients that turned verbose mode on: tool
+/// call and result events, the main agent's and sessions' alike.
+/// Write one frame to the client. Returns `false` once the client is gone; a
+/// frame that can't be serialized is logged and skipped.
+async fn send_frame(
+    ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    msg: &ServerMessage,
+) -> bool {
+    let json = match serde_json::to_string(msg) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize server message");
+            return true;
+        }
+    };
+    ws_tx.send(WsMessage::text(json)).await.is_ok()
+}
+
+/// Send a waiting message now: it is held out of the running turn, which is
+/// stopped, so the message starts the next one. Whichever turn is running is
+/// stopped, since a message left waiting after its own turn ended waits for
+/// the turn now running. A message no longer waiting is answered to this
+/// connection only.
+fn send_queued_now(
+    state: &GatewayState,
+    id: String,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    if !state.queued.send_now(&id) {
+        tracing::info!(msg_id = %id, "send now asked for a message no longer waiting");
+        local_tx
+            .send(ServerMessage::QueuedMessageUnavailable { id })
+            .ok();
+        return;
+    }
+    tracing::info!(msg_id = %id, "sending a waiting message now: stopping the running turn");
+    if state
+        .stop_tx
+        .try_send(residuum_bus::control::StopRequest {
+            reply_to: None,
+            result_tx: None,
+        })
+        .is_err()
+    {
+        // The message still starts the next turn, ahead of anything else
+        // waiting; only the stop that would have brought that turn sooner is lost.
+        tracing::warn!(msg_id = %id, "failed to dispatch the stop for a message to send now: channel closed or full");
+    }
+}
+
+/// Take back a waiting message, so the agent never reads it. Every
+/// connection hears it was withdrawn; a message no longer waiting is answered
+/// to this connection only.
+async fn withdraw_queued(
+    state: &GatewayState,
+    id: String,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    if !state.queued.withdraw(&id) {
+        tracing::info!(msg_id = %id, "withdraw asked for a message no longer waiting");
+        local_tx
+            .send(ServerMessage::QueuedMessageUnavailable { id })
+            .ok();
+        return;
+    }
+    tracing::info!(msg_id = %id, "withdrew a waiting message");
+    if let Err(e) = state
+        .publisher
+        .publish(
+            residuum_bus::topics::MainConversation,
+            residuum_bus::MainConversationEvent::MessageWithdrawn { id: id.clone() },
+        )
+        .await
+    {
+        // It is withdrawn either way; only other pages keep showing it as
+        // waiting, until their next snapshot or reload.
+        tracing::warn!(error = %e, msg_id = %id, "failed to announce a withdrawn message");
+        local_tx.send(ServerMessage::MessageWithdrawn { id }).ok();
+    }
+}
+
+/// `msg` as a connection gets it: a connection that isn't verbose gets no
+/// tool frames, neither on their own nor inside a `turn_snapshot`.
+fn shown_frame(mut msg: ServerMessage, verbose: bool) -> Option<ServerMessage> {
+    if verbose {
+        return Some(msg);
+    }
+    if is_verbose_only(&msg) {
+        return None;
+    }
+    if let ServerMessage::TurnSnapshot {
+        turn: Some(turn), ..
+    } = &mut msg
+    {
+        turn.frames.retain(|entry| !is_verbose_only(&entry.frame));
+    }
+    Some(msg)
+}
+
+fn is_verbose_only(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::ToolCall { .. }
+            | ServerMessage::ToolResult { .. }
+            | ServerMessage::SessionToolCall { .. }
+            | ServerMessage::SessionToolResult { .. }
+    )
+}
+
+/// Carry out a session command from the web UI and reply to this connection only.
+async fn handle_session_command(
+    command: SessionCommand,
+    state: &GatewayState,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    let reply = match command {
+        SessionCommand::SendMessage {
+            id,
+            address,
+            content,
+        } => {
+            match crate::sessions::send_session_message(
+                &state.agent_messenger,
+                &address,
+                content,
+                &crate::sessions::SessionMessageAuthor::Owner,
+            )
+            .await
+            {
+                Ok(outcome) => ServerMessage::SessionMessageDelivered {
+                    id,
+                    address,
+                    outcome,
+                },
+                Err(e) => ServerMessage::SessionCommandFailed {
+                    id,
+                    address,
+                    code: e.code,
+                    message: e.message,
+                },
+            }
+        }
+        SessionCommand::Stop { id, address } => {
+            match crate::sessions::stop_session(&state.session_registry, &address) {
+                Ok(()) => ServerMessage::SessionStopRequested { id, address },
+                Err(e) => ServerMessage::SessionCommandFailed {
+                    id,
+                    address,
+                    code: e.code,
+                    message: e.message,
+                },
+            }
+        }
+    };
+    if local_tx.send(reply).is_err() {
+        tracing::debug!("client disconnected before its session command reply was sent");
+    }
+}
+
+/// The session commands the web UI sends, split out of [`ClientMessage`] so
+/// [`handle_session_command`] can own their handling.
+enum SessionCommand {
+    SendMessage {
+        id: String,
+        address: String,
+        content: String,
+    },
+    Stop {
+        id: String,
+        address: String,
+    },
+}
+
+/// Maximum raw image size in bytes, per the model API's per-image limit (5 MB).
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// MIME types the model API accepts for image input.
+const ALLOWED_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+/// Validate image attachments before publishing to the bus.
+///
+/// Enforces the model API's own per-image limits — 5 MB and JPEG/PNG/GIF/WebP
+/// only — since those are provider facts, not a residuum-imposed cap. There
+/// is no limit on how many images a message can carry.
+///
+/// # Errors
+///
+/// Returns a human-readable error describing the first violation found.
+fn validate_images(images: &[ImageData]) -> Result<(), String> {
+    for img in images {
+        if !ALLOWED_MIME_TYPES.contains(&img.media_type.as_str()) {
+            return Err(format!(
+                "unsupported image type: {} (allowed: {})",
+                img.media_type,
+                ALLOWED_MIME_TYPES.join(", ")
+            ));
+        }
+
+        // Estimate raw bytes from base64 length: every 4 base64 chars = 3 bytes
+        let estimated_bytes = img.data.len() * 3 / 4;
+        if estimated_bytes > MAX_IMAGE_BYTES {
+            return Err(format!(
+                "image too large: ~{estimated_bytes} bytes (max {MAX_IMAGE_BYTES})"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use residuum_core::testing::wait;
+
+    #[test]
+    fn set_verbose_updates_flag() {
+        let flag = AtomicBool::new(false);
+
+        flag.store(true, Ordering::Relaxed);
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "should be true after storing true"
+        );
+
+        flag.store(false, Ordering::Relaxed);
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "should be false after storing false"
+        );
+    }
+
+    fn make_image(media_type: &str, data_len: usize) -> ImageData {
+        ImageData {
+            media_type: media_type.to_string(),
+            data: "A".repeat(data_len),
+        }
+    }
+
+    #[test]
+    fn validate_images_accepts_valid_input() {
+        let images = vec![make_image("image/jpeg", 100), make_image("image/png", 200)];
+        assert!(
+            validate_images(&images).is_ok(),
+            "valid images should pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_images_accepts_empty() {
+        assert!(
+            validate_images(&[]).is_ok(),
+            "empty images should pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_images_accepts_many_images() {
+        // There is no cap on how many images a message can carry.
+        let images: Vec<_> = (0..50).map(|_| make_image("image/png", 100)).collect();
+        assert!(
+            validate_images(&images).is_ok(),
+            "any number of images should be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_bad_mime_type() {
+        let images = vec![make_image("image/bmp", 100)];
+        let result = validate_images(&images);
+        assert!(result.is_err(), "should reject unsupported MIME type");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("unsupported")),
+            "error should mention 'unsupported'"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_oversized() {
+        // 7 MB worth of base64 (~9.3M base64 chars encode ~7M raw bytes)
+        let oversized_len = 7 * 1024 * 1024 * 4 / 3;
+        let images = vec![make_image("image/jpeg", oversized_len)];
+        let result = validate_images(&images);
+        assert!(result.is_err(), "should reject oversized image");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("too large")),
+            "error should mention 'too large'"
+        );
+    }
+
+    #[test]
+    fn validate_images_allows_all_mime_types() {
+        for mime in ALLOWED_MIME_TYPES {
+            let images = vec![make_image(mime, 100)];
+            assert!(validate_images(&images).is_ok(), "{mime} should be allowed");
+        }
+    }
+
+    #[test]
+    fn validate_images_accepts_max_bytes() {
+        // Compute base64 length such that estimated_bytes == MAX_IMAGE_BYTES exactly.
+        // estimated_bytes = data.len() * 3 / 4; we want this == MAX_IMAGE_BYTES (not greater).
+        let max_b64_len = MAX_IMAGE_BYTES * 4 / 3 + 1;
+        let images = vec![make_image("image/jpeg", max_b64_len)];
+        assert!(
+            validate_images(&images).is_ok(),
+            "image at exactly MAX_IMAGE_BYTES should be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_empty_media_type() {
+        let images = vec![make_image("", 100)];
+        let result = validate_images(&images);
+        assert!(result.is_err(), "empty media_type should be rejected");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("unsupported")),
+            "error should mention 'unsupported'"
+        );
+    }
+
+    #[test]
+    fn a_valid_watch_request_replaces_the_set() {
+        let (watch_tx, watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        replace_watch_set(
+            vec!["wiki".into()],
+            WatchHealth::Native,
+            &watch_tx,
+            &local_tx,
+        );
+        assert!(watch_rx.borrow().matches("wiki/a.md"));
+        assert!(
+            local_rx.try_recv().is_err(),
+            "a valid request needs no reply"
+        );
+
+        replace_watch_set(Vec::new(), WatchHealth::Native, &watch_tx, &local_tx);
+        assert!(watch_rx.borrow().is_empty(), "[] turns watching off");
+    }
+
+    #[test]
+    fn an_invalid_watch_prefix_yields_an_error_and_keeps_the_set() {
+        let (watch_tx, watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        replace_watch_set(
+            vec!["wiki".into()],
+            WatchHealth::Native,
+            &watch_tx,
+            &local_tx,
+        );
+        replace_watch_set(
+            vec!["notes".into(), "../secrets".into()],
+            WatchHealth::Native,
+            &watch_tx,
+            &local_tx,
+        );
+        assert!(matches!(
+            local_rx.try_recv(),
+            Ok(ServerMessage::Error { reply_to: None, message, .. }) if message.contains("../secrets")
+        ));
+        assert!(watch_rx.borrow().matches("wiki/a.md"));
+        assert!(!watch_rx.borrow().matches("notes/a.md"));
+    }
+
+    #[test]
+    fn watching_while_the_watcher_is_off_says_live_updates_are_off() {
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        replace_watch_set(Vec::new(), WatchHealth::Off, &watch_tx, &local_tx);
+        assert!(
+            local_rx.try_recv().is_err(),
+            "not watching, nothing to report"
+        );
+        replace_watch_set(vec![String::new()], WatchHealth::Off, &watch_tx, &local_tx);
+        assert!(matches!(
+            local_rx.try_recv(),
+            Ok(ServerMessage::WorkspaceWatchUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn verbose_filter_covers_main_and_session_tool_events_only() {
+        let tool_call = ServerMessage::SessionToolCall {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            id: "tc".into(),
+            name: "exec".into(),
+            arguments: serde_json::json!({}),
+            server: None,
+        };
+        let tool_result = ServerMessage::SessionToolResult {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            tool_call_id: "tc".into(),
+            name: "exec".into(),
+            output: "ok".into(),
+            is_error: false,
+            auto_mode: None,
+        };
+        let main_call = ServerMessage::ToolCall {
+            reply_to: "turn-1".into(),
+            call: 0,
+            id: "tc".into(),
+            name: "exec".into(),
+            arguments: serde_json::json!({}),
+            server: None,
+        };
+        assert!(is_verbose_only(&tool_call));
+        assert!(is_verbose_only(&tool_result));
+        assert!(is_verbose_only(&main_call));
+
+        let response = ServerMessage::SessionResponse {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            turn_id: "run-a-t1".into(),
+            content: "done".into(),
+        };
+        let error = ServerMessage::SessionError {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            message: "loop limit".into(),
+            details: None,
+        };
+        assert!(!is_verbose_only(&response));
+        assert!(!is_verbose_only(&error));
+    }
+
+    /// A minimal but real `GatewayState`, for exercising
+    /// `handle_client_message` directly rather than through the full
+    /// WebSocket stack. Mirrors the helper in `gateway/web/inbox.rs`'s own
+    /// test module.
+    fn make_test_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
+        make_test_gateway_state_with_receivers(workspace_dir).0
+    }
+
+    /// [`make_test_gateway_state`], with the receivers the event loop would
+    /// read the state's channels from.
+    fn make_test_gateway_state_with_receivers(
+        workspace_dir: &std::path::Path,
+    ) -> (GatewayState, crate::types::CoreReceivers) {
+        let (core, receivers) = crate::types::GatewayCore::new(
+            workspace_dir.to_path_buf(),
+            workspace_dir.to_path_buf(),
+        );
+        let session_registry =
+            std::sync::Arc::new(residuum_background::registry::SessionRegistry::new());
+        let session_store = std::sync::Arc::new(residuum_background::store::SessionStore::new(
+            workspace_dir.join("sessions"),
+        ));
+        let agent_messenger =
+            std::sync::Arc::new(residuum_background::messaging::AgentMessenger::new(
+                std::sync::Arc::clone(&session_registry),
+                core.publisher.clone(),
+                std::sync::Arc::clone(&session_store),
+                residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+            ));
+
+        let state = GatewayState {
+            turn_journal: crate::turn_journal::TurnJournal::default(),
+            queued: std::sync::Arc::default(),
+            reload_tx: core.reload_tx,
+            command_tx: core.command_tx,
+            stop_tx: core.stop_tx,
+            agent_inbox_dir: workspace_dir.join("inbox/agent"),
+            tz: chrono_tz::UTC,
+            publisher: core.publisher,
+            bus_handle: core.bus_handle,
+            file_registry: residuum_hub::file_server::FileRegistry::new("scout"),
+            webhooks: residuum_interfaces::webhook::WebhookTable::default(),
+            session_registry,
+            session_store,
+            agent_messenger,
+            skill_state: residuum_skills::SkillState::new_shared(
+                residuum_skills::SkillIndex::default(),
+                vec![],
+            ),
+            workspace_watch_health: tokio::sync::watch::channel(
+                residuum_workspace::watch::WatchHealth::Native,
+            )
+            .1,
+            team_feed: std::sync::Arc::new(residuum_hub::services::TeamChangeFeed::idle()),
+            action_store: std::sync::Arc::new(tokio::sync::Mutex::new(
+                residuum_proactivity::actions::store::ActionStore::new_empty(
+                    workspace_dir.join("scheduled_actions.json"),
+                ),
+            )),
+            layout: residuum_config::WorkspaceLayout::new(workspace_dir),
+            activity: residuum_hub::activity::ActivityTracker::new(
+                "test-agent",
+                tokio::sync::broadcast::channel(4).0,
+                residuum_hub::agent_watch::AgentChangeFeed::new(),
+            ),
+        };
+        (state, receivers)
+    }
+
+    async fn next_server_message(
+        local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
+    ) -> ServerMessage {
+        wait::next("a message to be sent", local_rx).await
+    }
+
+    /// Handle one client message on a connection with no watches, returning
+    /// what was sent back to that connection alone.
+    async fn handle_on_connection(
+        msg: ClientMessage,
+        state: &GatewayState,
+    ) -> mpsc::UnboundedReceiver<ServerMessage> {
+        let (local_tx, local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let keep_going = handle_client_message(
+            msg,
+            state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+        local_rx
+    }
+
+    #[tokio::test]
+    async fn withdrawing_a_waiting_message_tells_every_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let mut main: residuum_bus::Subscriber<residuum_bus::MainConversationEvent> = state
+            .bus_handle
+            .subscribe(residuum_bus::topics::MainConversation)
+            .await
+            .unwrap();
+        state.queued.enqueue("m1");
+
+        let mut local =
+            handle_on_connection(ClientMessage::WithdrawQueued { id: "m1".into() }, &state).await;
+
+        let event = main.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&event, residuum_bus::MainConversationEvent::MessageWithdrawn { id } if id == "m1"),
+            "expected the withdrawal on the main conversation, got {event:?}"
+        );
+        assert!(
+            local.try_recv().is_err(),
+            "nothing for this connection alone"
+        );
+        assert!(!state.queued.send_now("m1"), "it no longer waits");
+    }
+
+    #[tokio::test]
+    async fn acting_on_a_message_no_longer_waiting_says_so_to_that_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        for msg in [
+            ClientMessage::WithdrawQueued { id: "read".into() },
+            ClientMessage::SendQueuedNow { id: "read".into() },
+        ] {
+            let mut local = handle_on_connection(msg, &state).await;
+            let reply = next_server_message(&mut local).await;
+            assert!(
+                matches!(&reply, ServerMessage::QueuedMessageUnavailable { id } if id == "read"),
+                "expected QueuedMessageUnavailable, got {reply:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sending_a_waiting_message_now_stops_whichever_turn_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, mut receivers) = make_test_gateway_state_with_receivers(dir.path());
+        state.queued.enqueue("m1");
+
+        let mut local =
+            handle_on_connection(ClientMessage::SendQueuedNow { id: "m1".into() }, &state).await;
+
+        let stop = receivers.stop.try_recv().expect("a stop request");
+        assert_eq!(stop.reply_to, None);
+        assert!(state.queued.is_send_now("m1"));
+        assert!(
+            local.try_recv().is_err(),
+            "nothing for this connection alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_without_an_id_is_given_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let mut inbound: residuum_bus::Subscriber<residuum_bus::MessageEvent> = state
+            .bus_handle
+            .subscribe(residuum_bus::topics::UserMessage)
+            .await
+            .unwrap();
+        let (local_tx, _local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::SendMessage {
+                id: String::new(),
+                content: "hello".to_string(),
+                images: Vec::new(),
+            },
+            &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+
+        let event = inbound.recv().await.unwrap().unwrap();
+        assert!(
+            !event.id.is_empty(),
+            "an empty id would make the turn's reply look like a post outside any turn"
+        );
+        assert_eq!(event.content, "hello");
+    }
+
+    #[tokio::test]
+    async fn inbox_add_success_notice_reads_as_plain_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        std::fs::create_dir_all(&state.agent_inbox_dir).unwrap();
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::InboxAdd {
+                body: "remember this".to_string(),
+            },
+            &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+
+        let msg = next_server_message(&mut local_rx).await;
+        assert!(
+            matches!(&msg, ServerMessage::Notice { message, .. } if message == "Added a note to the inbox."),
+            "expected a plain-language Notice, got {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_add_failure_keeps_the_cause_out_of_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        // `agent_inbox_dir` is never created, so the save underneath
+        // `quick_add` fails and the client should see a plain-language
+        // notice with the cause moved to `details`.
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::InboxAdd {
+                body: "remember this".to_string(),
+            },
+            &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+
+        let msg = next_server_message(&mut local_rx).await;
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::Error { reply_to: None, message, details: Some(_) }
+                    if message == "Couldn't add a note to the inbox. Try again."
+            ),
+            "expected a plain-language Error with the cause in details, got {msg:?}"
+        );
+    }
+}

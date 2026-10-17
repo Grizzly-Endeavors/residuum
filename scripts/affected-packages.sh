@@ -18,9 +18,9 @@
 # `--workspace` when a path touches every package). stderr says which package was
 # chosen and why. --affected falls back to every package with a warning when a
 # manifest cannot be read, so a failure checks more, never less. --touched and
-# --covering have no fallback of their own: when the manifests or
-# scripts/pending-crates.txt cannot be read they exit non-zero, and the caller
-# runs every member or every module instead. --graph has no fallback either: it
+# --covering have no fallback of their own: when a manifest or a covers line
+# cannot be read they exit non-zero, and the caller runs every member or every
+# module instead. --graph has no fallback either: it
 # exits non-zero, because its output is compared with the manifests.
 #
 # Bash 3.2 compatible, because the pre-commit hook runs it on developers' machines
@@ -283,40 +283,11 @@ module_label() {
     echo "$kind:$name"
 }
 
-# Sets PACKAGE to the package a root path belongs to: the package of the longest
-# entry of scripts/pending-crates.txt (in PENDING) that names it, or residuum.
-pending_package() {
-    local path="$1" entry package best=""
-    PACKAGE="residuum"
-    while read -r entry package; do
-        [ -n "$entry" ] || continue
-        case "$entry" in
-        */)
-            case "$path" in
-            "$entry"*) ;;
-            *) continue ;;
-            esac
-            ;;
-        *)
-            [ "$path" = "$entry" ] || continue
-            ;;
-        esac
-        if [ "${#entry}" -gt "${#best}" ]; then
-            best="$entry"
-            PACKAGE="$package"
-        fi
-    done <<<"$PENDING"
-}
-
 # Prints the integration modules to run for the changed paths, one per line,
 # for --covering. A module is one whose covers line names the package a path
 # belongs to; a path under a module directory selects that module alone.
 covering_modules() {
     local table path direct
-    if ! PENDING="$(cat scripts/pending-crates.txt)"; then
-        echo "affected-packages: cannot read scripts/pending-crates.txt, so root paths cannot be mapped to packages" >&2
-        exit 1
-    fi
     table="$(covers_table)"
     while IFS= read -r path; do
         [ -n "$path" ] || continue
@@ -328,7 +299,6 @@ covering_modules() {
         classify_path "$path"
         case "$CLASSIFIED" in
         "" | ALL) continue ;;
-        residuum) pending_package "$path" ;;
         *) PACKAGE="$CLASSIFIED" ;;
         esac
         awk -v package="$PACKAGE" '$2 == package { print $1 }' <<<"$table"

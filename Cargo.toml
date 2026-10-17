@@ -41,6 +41,7 @@ residuum-mcp = { path = "crates/mcp", version = "0.1.0" }
 residuum-a2a = { path = "crates/a2a", version = "0.1.0" }
 residuum-tools = { path = "crates/tools", version = "0.1.0" }
 residuum-hub = { path = "crates/hub", version = "0.1.0" }
+residuum-gateway = { path = "crates/gateway", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
@@ -201,13 +202,13 @@ residuum-notify = { workspace = true }
 residuum-proactivity = { workspace = true }
 residuum-checkpoints = { workspace = true }
 residuum-hub = { workspace = true }
+residuum-gateway = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 anyhow = { workspace = true }
-base64 = { workspace = true }
 tempfile = { workspace = true }
 async-trait = { workspace = true }
 dotenvy = { workspace = true }
@@ -231,7 +232,6 @@ tokio-tungstenite = { workspace = true }
 rustls = { workspace = true }
 futures-util = { workspace = true }
 tower = { workspace = true }
-uuid = { workspace = true }
 rust-embed = { workspace = true }
 iana-time-zone = { workspace = true }
 
@@ -258,6 +258,7 @@ residuum-tools = { workspace = true, features = ["test-support"] }
 residuum-proactivity = { workspace = true, features = ["test-support"] }
 residuum-checkpoints = { workspace = true, features = ["test-support"] }
 residuum-hub = { workspace = true, features = ["test-support"] }
+residuum-gateway = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

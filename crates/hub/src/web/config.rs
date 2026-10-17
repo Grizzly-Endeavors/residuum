@@ -126,7 +126,7 @@ pub(super) async fn api_hub_config_raw_get(
 /// Same "save regardless, report what's wrong" contract as
 /// [`api_config_raw_put`] — a hub reload that can't load the new file keeps
 /// the hub running on its last-known-good config (see
-/// `gateway::reload::handle_hub_reload`).
+/// the gateway's `reload::handle_hub_reload`).
 pub(super) async fn api_hub_config_raw_put(
     State(state): State<HubApiState>,
     body: String,

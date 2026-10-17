@@ -198,9 +198,12 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-proactivity` | `crates/proactivity` | `pulse` (the heartbeat pulses: scheduling, scripts, the edit and next-run helpers, and `testing` behind `test-support`) and `actions` (scheduled actions and their store) | core, config, bus (dev: workspace) |
 | `residuum-notify` | `crates/notify` | `notify`: the notification channels (ntfy, webhook, the inbox, and the native macOS and Windows channels), the router and the subscriber, and `channel_builder`, whose `build_external_channels` is re-exported at the crate root | core, config, bus, workspace |
 | `residuum-hub` | `crates/hub` | `hub`: the agent host, the agent directory, provisioning, the hub's HTTP app and WebSocket (`http`), the web routes it serves and the embedded app's file type (`web`), `file_server`, `launch` (the `AgentLauncher` trait and the types the launcher hands back), push, the overview and the team event log, `update`, `features`, `config_watcher` and `last_known_good`, and `testing` behind `test-support` | core, config, bus, inference, tracing-service, memory, mcp, net, workspace, checkpoints, proactivity, agent, background, a2a, protocol, interfaces |
-| `residuum` | `.` | everything else: `daemon`, `gateway`, `wiring`, `logging`, `setup_wizard`, the `commands` of the binary, and the facade over the member crates | every member |
+| `residuum-gateway` | `crates/gateway` | `gateway`: a running agent's event loop, startup, reload and routes, the agent's `web` routes (sessions, scheduled, memory, model, the A2A status routes, the inbox), the WebSocket subscriber (`websocket`), `turn_journal`, and `GatewayLauncher`, which implements the hub's `AgentLauncher` | core, config, bus, inference, memory, net, mcp, a2a, tools, skills, tracing-service, agent, background, interfaces, workspace, protocol, notify, proactivity, checkpoints, hub |
+| `residuum` | `.` | everything else: `daemon`, `wiring`, `logging`, `setup_wizard`, the `commands` of the binary, and the facade over the member crates | every member |
 
 ```
+                 residuum-gateway
+                         │
              residuum-hub               residuum-tools
          ┌─────────┴────────┐                 │
 residuum-interfaces    residuum-a2a ◄─────────┘

@@ -7,8 +7,8 @@
 # The tree: crates/a with no workspace dependency, crates/b depending on a,
 # crates/net holding src/browser_landing.rs and depending on a in its dev
 # dependencies, and a root manifest depending on all three. It also holds the
-# integration modules and scripts/pending-crates.txt that --covering reads, set
-# up below with the cases that use them.
+# integration modules that --covering reads, set up below with the cases that use
+# them.
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,24 +53,17 @@ touch crates/net/src/browser_landing.rs
 
 # The integration modules, as tests/it and src/integration hold them, with the
 # covers line each carries. one covers residuum-a, two residuum-b and the root,
-# three/ (a directory module) residuum-a, later residuum-later, and four (under
-# src/integration) residuum-b. The container files and support are not modules.
-mkdir -p tests/it/three tests/it/support tests/fixtures src/integration scripts
+# three/ (a directory module) residuum-a, and four (under src/integration)
+# residuum-b. The container files and support are not modules.
+mkdir -p tests/it/three tests/it/support tests/fixtures src/integration
 printf 'mod one;\n' >tests/it/main.rs
 printf '//! covers: residuum-a\n' >tests/it/one.rs
 printf '//! covers: residuum-b, residuum\n' >tests/it/two.rs
 printf '//! covers: residuum-a\n' >tests/it/three/mod.rs
 touch tests/it/three/x.rs
-printf '//! covers: residuum-later\n' >tests/it/later.rs
 touch tests/it/support/mod.rs tests/fixtures/x
 touch src/integration/mod.rs
 printf '//! covers: residuum-b\n' >src/integration/four.rs
-# src/later/ is pending for residuum-later. The longer file entry takes its own
-# file out of that, to residuum-b.
-cat >scripts/pending-crates.txt <<'EOF'
-src/later/ residuum-later
-src/later/deep.rs residuum-b
-EOF
 
 status=0
 
@@ -178,8 +171,7 @@ web/app-shell-csp.txt||it:two
 .github/workflows/release.yml||it:two
 src/lib.rs||it:two
 src/main.rs||it:two
-src/later/x.rs||it:later
-src/later/deep.rs||integration:four it:two
+src/later/x.rs||it:two
 tests/it/one.rs||it:one
 tests/it/three/x.rs||it:three
 tests/it/main.rs||it:ALL
@@ -232,14 +224,6 @@ elif printf '%s\n' crates/a/src/lib.rs | "$script" --covering >/dev/null 2>&1; t
     status=1
 fi
 chmod 644 tests/it/one.rs
-
-# An unreadable pending-crates file fails --covering, for the same reason.
-mv scripts/pending-crates.txt scripts/pending-crates.txt.saved
-if printf '%s\n' src/later/x.rs | "$script" --covering >/dev/null 2>&1; then
-    echo "affected-packages: --covering succeeded without scripts/pending-crates.txt" >&2
-    status=1
-fi
-mv scripts/pending-crates.txt.saved scripts/pending-crates.txt
 
 # The hub reads two of the paths by path: web/app-shell-csp.txt from
 # crates/hub/src/web/assets.rs and .github/workflows/release.yml from
