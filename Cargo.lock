@@ -5014,6 +5014,7 @@ dependencies = [
  "residuum-memory",
  "residuum-net",
  "residuum-proactivity",
+ "residuum-protocol",
  "residuum-skills",
  "residuum-tracing-service",
  "residuum-workspace",
@@ -5252,6 +5253,22 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "residuum-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-inference",
+ "residuum-memory",
+ "residuum-workspace",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ts-rs",
 ]
 
 [[package]]

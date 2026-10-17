@@ -10,6 +10,7 @@ pub(crate) use residuum_net::{
 };
 pub use residuum_net::{pairing, remote_access};
 pub use residuum_proactivity::{actions, pulse};
+pub use residuum_protocol as protocol;
 pub use residuum_skills as skills;
 pub use residuum_tracing_service as tracing_service;
 pub use residuum_workspace as workspace;
@@ -34,7 +35,6 @@ pub(crate) mod integration;
 pub mod interfaces;
 pub mod logging;
 pub mod notify;
-pub mod protocol;
 pub mod setup_wizard;
 pub mod subconscious;
 #[cfg(test)]
