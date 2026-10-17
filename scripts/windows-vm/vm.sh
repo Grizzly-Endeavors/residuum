@@ -4,7 +4,7 @@
 #   vm.sh start | stop | restart | status
 #   vm.sh ssh [powershell...]      interactive shell, or run one command
 #   vm.sh provision [-Upgrade]     (re)install the toolchain in the guest
-#   vm.sh snapshot NAME | restore NAME | snapshots
+#   vm.sh snapshot NAME | restore NAME | delete-snapshot NAME | snapshots
 #
 # See docs/runbooks/windows-harness.md.
 set -euo pipefail
@@ -39,6 +39,12 @@ stop_vm() {
 require_stopped() {
     vm_running && die "stop the VM first (vm.sh stop); snapshots need a consistent disk"
     return 0
+}
+
+# Whether the disk has a snapshot named $1. qemu-img lists two header lines,
+# then one snapshot per line with its name in the second column.
+snapshot_exists() {
+    qemu-img snapshot -l "$DISK" | awk -v name="$1" 'NR > 2 && $2 == name { found = 1 } END { exit !found }'
 }
 
 cmd="${1:-status}"
@@ -91,8 +97,12 @@ case "$cmd" in
     snapshot)
         require_vm
         require_stopped
-        qemu-img snapshot -c "${1:?usage: vm.sh snapshot NAME}" "$DISK"
-        info "snapshot '$1' created"
+        name="${1:?usage: vm.sh snapshot NAME}"
+        # qemu-img takes a second snapshot under a name already used, and
+        # restoring by that name then picks the older one.
+        snapshot_exists "$name" && die "a snapshot named '$name' exists; delete it first (vm.sh delete-snapshot $name)"
+        qemu-img snapshot -c "$name" "$DISK"
+        info "snapshot '$name' created"
         ;;
     restore)
         require_vm
@@ -100,11 +110,19 @@ case "$cmd" in
         qemu-img snapshot -a "${1:?usage: vm.sh restore NAME}" "$DISK"
         info "disk restored to '$1'"
         ;;
+    delete-snapshot)
+        require_vm
+        require_stopped
+        name="${1:?usage: vm.sh delete-snapshot NAME}"
+        snapshot_exists "$name" || die "no snapshot named '$name' (vm.sh snapshots lists them)"
+        qemu-img snapshot -d "$name" "$DISK"
+        info "snapshot '$name' deleted"
+        ;;
     snapshots)
         require_vm
         qemu-img snapshot -l "$DISK"
         ;;
     *)
-        die "unknown command '$cmd' (start, stop, restart, status, ssh, provision, snapshot, restore, snapshots)"
+        die "unknown command '$cmd' (start, stop, restart, status, ssh, provision, snapshot, restore, delete-snapshot, snapshots)"
         ;;
 esac

@@ -34,6 +34,25 @@ serve *args: _web-dist
 run *args: _web-dist
     cargo run -- "$@"
 
+# --- docker ------------------------------------------------------------------
+
+# Build the source image (docker/Dockerfile), tagged `residuum`, with this checkout's version and commit as build args, since the image's build context leaves out `.git`; args go to `docker build`, e.g. `just docker-build -t residuum:test`
+[group('docker')]
+[positional-arguments]
+docker-build *args:
+    docker build -f docker/Dockerfile -t residuum \
+        --build-arg RESIDUUM_VERSION="$(git describe --tags --always)" \
+        --build-arg RESIDUUM_GIT_COMMIT="$(git rev-parse --short=12 HEAD)" \
+        "$@" .
+
+# docker compose with docker/docker-compose.yml, which builds the source image with this checkout's version and commit as `docker-build` does; args go to `docker compose`, e.g. `just docker-compose up -d --build`
+[group('docker')]
+[positional-arguments]
+docker-compose *args:
+    RESIDUUM_VERSION="$(git describe --tags --always)" \
+        RESIDUUM_GIT_COMMIT="$(git rev-parse --short=12 HEAD)" \
+        docker compose -f docker/docker-compose.yml "$@"
+
 # --- rust --------------------------------------------------------------------
 
 # Debug build

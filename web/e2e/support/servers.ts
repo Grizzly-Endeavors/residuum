@@ -3,42 +3,51 @@
  * the helpers read the same values, so nothing else spells a port.
  *
  * The mock's state is global to its server, so every worker gets its own pair:
- * a dev server and a preview server, `WORKER_PORT_STRIDE` ports above the
- * previous worker's. A worker's tests reset and drive only its own mock, which
- * is what lets the suite run on several workers at once.
+ * a dev server and a preview server. A worker's tests reset and drive only its
+ * own mock, which is what lets the suite run on several workers at once.
  *
- * Without `E2E_DEV_PORT` and `E2E_PREVIEW_PORT`, the Playwright process picks a
- * free block of ports for each (`workers * WORKER_PORT_STRIDE` wide) when it
- * loads the config, prints them, and writes them into those variables. Every
- * worker process loads this module again and finds the variables set, so all of
- * them read the same ports instead of choosing their own. That is what lets two
- * suites run at once on one machine, from two worktrees for instance, and keeps
- * the suite clear of `npm run dev:mock` (5173, artifacts on 5180) and
- * `just web-mock-preview` (4173). A developer who wants fixed ports sets the
- * variables; a port that is then taken is an error (the servers start with
- * `--strictPort`), never a server to reuse.
+ * Each server takes a port that is free when it binds, and its artifacts
+ * listener takes any free one. The mock prints both once they listen
+ * (`mock/listening.ts`), and Playwright, which waits on that line before it
+ * counts a server as started, stores the two ports in its environment under
+ * the names `launchOf` gives the pattern's groups. The worker processes start
+ * after the servers do and inherit that environment, which is how they find
+ * their servers. No port is chosen ahead of the bind, so two suites at once on
+ * one machine, from two worktrees for instance, never meet, and a mock you
+ * started yourself (`npm run dev:mock` on 5173, `just web-mock-preview` on
+ * 4173) can stay up.
+ *
+ * Vite's dev server can't be told to take any free port (it reads `--port 0`
+ * as its default, 5173), so the dev servers ask for `DEV_FIRST_PORT` without
+ * `--strictPort`, and Vite moves up one port at a time past the ones taken.
+ * The preview servers take port 0. Every server listens on 127.0.0.1 and the
+ * tests reach it there, by address rather than by `localhost`, which resolves
+ * to `::1` too, where another process can hold the same port.
+ *
+ * A developer who wants fixed ports sets `E2E_DEV_PORT` and `E2E_PREVIEW_PORT`
+ * to the first worker's; each later worker's sit `WORKER_PORT_STRIDE` above
+ * the previous one's and each artifacts listener `ARTIFACTS_PORT_OFFSET` above
+ * its server. A fixed port that is taken is an error (`--strictPort`), never a
+ * server to reuse.
  */
-import { execFileSync } from "node:child_process";
 import { availableParallelism } from "node:os";
+import { mockListeningPattern } from "../../mock/listening";
+
+/** The address every mock server listens on and the tests reach it at. */
+const HOST = "127.0.0.1";
 
 /**
- * Where automatically chosen blocks come from: the dev servers' somewhere in
- * the first range, the preview servers' in the second, so the two never
- * overlap. Both sit below Linux's ephemeral ports (32768 and up), which
- * outgoing connections take at random, and clear of 20000-30000, which the
- * Rust tests' port allocator owns (`crates/core/src/testing/ports.rs`).
+ * Where a dev server starts looking for a free port: below Linux's ephemeral
+ * ports (32768 and up), which outgoing connections take at random, and below
+ * 20000-30000, which the Rust tests' port allocator owns
+ * (`crates/core/src/testing/ports.rs`).
  */
-interface PortRange {
-  from: number;
-  to: number;
-}
-const AUTO_DEV_RANGE: PortRange = { from: 10_000, to: 15_000 };
-const AUTO_PREVIEW_RANGE: PortRange = { from: 15_000, to: 20_000 };
+const DEV_FIRST_PORT = 10_000;
 
-/** The artifacts listener sits this far above its server's port. */
+/** With fixed ports, how far an artifacts listener sits above its server. */
 const ARTIFACTS_PORT_OFFSET = 7;
 
-/** How far one worker's servers sit above the previous worker's, clear of the artifacts listener. */
+/** With fixed ports, how far one worker's servers sit above the previous worker's, clear of the artifacts listener. */
 const WORKER_PORT_STRIDE = 10;
 
 /**
@@ -48,12 +57,10 @@ const WORKER_PORT_STRIDE = 10;
 const MAX_DEFAULT_WORKERS = 6;
 
 export interface MockServer {
-  /** The port the server listens on. */
-  port: number;
-  /** The port of the mock's artifacts listener (`MOCK_ARTIFACTS_PORT`). */
-  artifactsPort: number;
   /** The server's origin, which is the `baseURL` of the projects that use it. */
   url: string;
+  /** The origin of the mock's artifacts listener, on the same host as `url`, as the app builds it. */
+  artifactsUrl: string;
 }
 
 /** `E2E_WORKERS`, or the default for this machine. */
@@ -75,83 +82,10 @@ export const workerCount = workersFrom();
 /** The highest port a first worker's servers may sit on, so the last worker's artifacts port is still a port. */
 const highestBase = 65535 - ARTIFACTS_PORT_OFFSET - (workerCount - 1) * WORKER_PORT_STRIDE;
 
-/**
- * Runs in a child process, because the config has to load synchronously. Tries
- * random bases in the range until every port of a block (each worker's server
- * and artifacts port) accepts a listener on all interfaces, which is how a
- * holder on any address, IPv4 or IPv6, shows up; prints the base.
- */
-const FREE_BLOCK_PROBE = `
-const net = require("node:net");
-const [from, to, workers, stride, artifactsOffset] = process.argv.slice(1).map(Number);
-const listenOn = (port, host) => new Promise((resolve) => {
-  const probe = net.createServer();
-  probe.once("error", (error) => resolve(error.code === "EAFNOSUPPORT" || error.code === "EADDRNOTAVAIL" ? "unsupported" : "taken"));
-  probe.listen({ port, host }, () => probe.close(() => resolve("free")));
-});
-const isFree = async (port) => {
-  const dual = await listenOn(port, "::");
-  return (dual === "unsupported" ? await listenOn(port, "0.0.0.0") : dual) === "free";
-};
-(async () => {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const base = from + Math.floor(Math.random() * (to - from - workers * stride));
-    let free = true;
-    for (let worker = 0; worker < workers && free; worker++) {
-      const port = base + worker * stride;
-      free = (await isFree(port)) && (await isFree(port + artifactsOffset));
-    }
-    if (free) {
-      console.log(base);
-      return;
-    }
-  }
-  process.exit(1);
-})();
-`;
-
-function freeBlockIn(range: PortRange): number {
-  let output: string;
-  try {
-    output = execFileSync(
-      process.execPath,
-      [
-        "-e",
-        FREE_BLOCK_PROBE,
-        String(range.from),
-        String(range.to),
-        String(workerCount),
-        String(WORKER_PORT_STRIDE),
-        String(ARTIFACTS_PORT_OFFSET),
-      ],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    );
-  } catch (error) {
-    throw new Error(
-      `found no free block of ${String(workerCount * WORKER_PORT_STRIDE)} ports between ${String(range.from)} and ${String(range.to)} for the mock servers. ` +
-        "Free some ports, or set E2E_DEV_PORT and E2E_PREVIEW_PORT.",
-      { cause: error },
-    );
-  }
-  return Number(output.trim());
-}
-
-/** The ports this process chose, so it can announce them once, after both are known. */
-const chosen: string[] = [];
-
-/**
- * The first worker's port for the servers `name` sets: the variable when set,
- * else a free block, which is then written into the variable for the worker
- * processes to read.
- */
-function portFrom(name: string, range: PortRange): number {
+/** The first worker's fixed port from the variable `name`, or `null` when it isn't set. */
+function fixedPortFrom(name: string): number | null {
   const raw = process.env[name];
-  if (raw === undefined || raw === "") {
-    const port = freeBlockIn(range);
-    process.env[name] = String(port);
-    chosen.push(`${name}=${String(port)}`);
-    return port;
-  }
+  if (raw === undefined || raw === "") return null;
   const port = Number(raw);
   if (!Number.isInteger(port) || port < 1 || port > highestBase) {
     throw new Error(
@@ -161,16 +95,73 @@ function portFrom(name: string, range: PortRange): number {
   return port;
 }
 
-function serverOn(port: number): MockServer {
+/** Which of a worker's servers a project drives. */
+export type MockServerKind = "dev" | "preview";
+
+const fixedBase: Record<MockServerKind, number | null> = {
+  dev: fixedPortFrom("E2E_DEV_PORT"),
+  preview: fixedPortFrom("E2E_PREVIEW_PORT"),
+};
+
+/** The environment variables Playwright stores a started server's ports in. */
+function portVariables(kind: MockServerKind, index: number): { port: string; artifacts: string } {
+  const stem = `E2E_MOCK_${kind.toUpperCase()}_${String(index)}`;
+  return { port: `${stem}_PORT`, artifacts: `${stem}_ARTIFACTS_PORT` };
+}
+
+/** How the config starts one server. */
+export interface MockServerLaunch {
+  /** Its name in Playwright's output. */
+  name: string;
+  /** The arguments that tell Vite where to listen. */
+  listenArgs: string;
+  /** `MOCK_ARTIFACTS_PORT`. */
+  artifactsPort: number;
+  /** The line that says it listens, which stores its ports where `serversOf` reads them. */
+  listening: RegExp;
+}
+
+/** How the config starts the `kind` server of the worker with this `parallelIndex`. */
+export function launchOf(kind: MockServerKind, index: number): MockServerLaunch {
+  const base = fixedBase[kind];
+  const fixed = base === null ? null : base + index * WORKER_PORT_STRIDE;
+  const port =
+    fixed === null
+      ? `--port ${String(kind === "dev" ? DEV_FIRST_PORT : 0)}`
+      : `--port ${String(fixed)} --strictPort`;
+  const variables = portVariables(kind, index);
   return {
-    port,
-    artifactsPort: port + ARTIFACTS_PORT_OFFSET,
-    url: `http://localhost:${port}`,
+    name: `${kind} ${String(index)}`,
+    listenArgs: `--host ${HOST} ${port}`,
+    artifactsPort: fixed === null ? 0 : fixed + ARTIFACTS_PORT_OFFSET,
+    // Playwright stores each named group under its name in upper case.
+    listening: mockListeningPattern(
+      variables.port.toLowerCase(),
+      variables.artifacts.toLowerCase(),
+    ),
   };
 }
 
-/** Which of a worker's servers a project drives. */
-export type MockServerKind = "dev" | "preview";
+/** A port Playwright stored for a started server. */
+function startedPort(name: string): number {
+  const raw = process.env[name] ?? "";
+  const port = Number(raw);
+  if (raw === "" || !Number.isInteger(port) || port < 1) {
+    throw new Error(
+      `${name} is "${raw}": Playwright sets it from the mock's "Listening on port" line when it starts the mock servers, so this process started before they did`,
+    );
+  }
+  return port;
+}
+
+function startedServer(kind: MockServerKind, index: number): MockServer {
+  const variables = portVariables(kind, index);
+  const port = startedPort(variables.port);
+  return {
+    url: `http://${HOST}:${String(port)}`,
+    artifactsUrl: `http://${HOST}:${String(startedPort(variables.artifacts))}`,
+  };
+}
 
 /**
  * One worker's servers: `dev`, the mock on the Vite dev server, which every
@@ -179,31 +170,20 @@ export type MockServerKind = "dev" | "preview";
  */
 export type WorkerServers = Record<MockServerKind, MockServer>;
 
-const devBase = portFrom("E2E_DEV_PORT", AUTO_DEV_RANGE);
-const previewBase = portFrom("E2E_PREVIEW_PORT", AUTO_PREVIEW_RANGE);
-
-if (chosen.length > 0) {
-  process.stdout.write(
-    `e2e mock servers: ${chosen.join(", ")} (${String(workerCount)} workers, ${String(WORKER_PORT_STRIDE)} ports apart)\n`,
-  );
-}
-
-/** Every worker's servers, indexed by the worker's `parallelIndex`. */
-export const workerServers: readonly WorkerServers[] = Array.from(
-  { length: workerCount },
-  (_, index) => ({
-    dev: serverOn(devBase + index * WORKER_PORT_STRIDE),
-    preview: serverOn(previewBase + index * WORKER_PORT_STRIDE),
-  }),
-);
-
-/** The servers of the worker with this `parallelIndex`. */
+/** The servers of the worker with this `parallelIndex`, once Playwright has started them. */
 export function serversOf(parallelIndex: number): WorkerServers {
-  const servers = workerServers[parallelIndex];
-  if (servers === undefined) {
+  if (!Number.isInteger(parallelIndex) || parallelIndex < 0 || parallelIndex >= workerCount) {
     throw new Error(
       `no mock servers for worker ${String(parallelIndex)}: the suite starts ${String(workerCount)}`,
     );
   }
-  return servers;
+  return {
+    dev: startedServer("dev", parallelIndex),
+    preview: startedServer("preview", parallelIndex),
+  };
+}
+
+/** Every worker's servers, indexed by the worker's `parallelIndex`, once Playwright has started them. */
+export function startedWorkerServers(): WorkerServers[] {
+  return Array.from({ length: workerCount }, (_, index) => serversOf(index));
 }

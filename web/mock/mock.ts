@@ -1,3 +1,4 @@
+import type { Server } from "node:net";
 import type { PreviewServer, ViteDevServer } from "vite";
 import { apiRoutes } from "./api-routes";
 import { appShellPolicy } from "./app-shell-policy";
@@ -6,6 +7,7 @@ import { createCloudCallbackHandler } from "./cloud";
 import { createMockEnv } from "./env";
 import { createHub } from "./hub";
 import { keepIdleConnectionsOpen } from "./http";
+import { mockListeningLine } from "./listening";
 import { apiMiddleware, createApiHandler, firstToHandle } from "./middleware";
 import { createRebuiltWorkerHandler } from "./rebuilt-worker";
 import { seedAgents } from "./scenario";
@@ -45,6 +47,29 @@ export function readMockOptions(env: NodeJS.ProcessEnv = process.env): MockOptio
     artifactsPort:
       numberFrom(env.MOCK_ARTIFACTS_PORT) ?? (deterministic ? DETERMINISTIC_ARTIFACTS_PORT : 0),
   };
+}
+
+/**
+ * The port `server` listens on, once it does: at once when it already listens,
+ * `null` when it has no port (a pipe), or, with `failsOnError`, when it fails
+ * to listen.
+ */
+function portOnceListening(server: Server, failsOnError: boolean): Promise<number | null> {
+  const port = (): number | null => {
+    const address = server.address();
+    return typeof address === "object" && address !== null ? address.port : null;
+  };
+  if (server.listening) return Promise.resolve(port());
+  return new Promise((resolve) => {
+    server.once("listening", () => {
+      resolve(port());
+    });
+    if (failsOnError) {
+      server.once("error", () => {
+        resolve(null);
+      });
+    }
+  });
 }
 
 /** What the mock needs of a Vite server: the dev server and the preview server both have it. */
@@ -95,6 +120,15 @@ export function startMock(
     listener.close();
     listener.closeAllConnections();
   });
+  if (host.httpServer !== null) {
+    // Only `listening` counts for the host: Vite moves on to the next port when one is taken, and each try fails with an `error` first.
+    void Promise.all([
+      portOnceListening(host.httpServer, false),
+      portOnceListening(listener, true),
+    ]).then(([port, artifactsPort]) => {
+      if (port !== null) log(mockListeningLine(port, artifactsPort));
+    });
+  }
 
   log("");
   log("  [mock] API mock server active");

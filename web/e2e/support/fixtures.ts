@@ -397,5 +397,5 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
 export function artifactsOrigin(): string {
   const info = test.info();
   const kind = (info.project.use as Partial<E2EOptions>).mockServer ?? "dev";
-  return `http://localhost:${String(serversOf(info.parallelIndex)[kind].artifactsPort)}`;
+  return serversOf(info.parallelIndex)[kind].artifactsUrl;
 }

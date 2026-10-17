@@ -25,6 +25,7 @@ The guest is set up as follows:
 - A local administrator `dev` that logs on automatically at every boot, so a desktop session exists for toasts and screenshots.
 - OpenSSH server (the upstream Win32-OpenSSH MSI) with PowerShell as the default shell, accepting only the generated key.
 - Automatic Windows Update and update reboots turned off; sleep, lock screen, and password expiry disabled.
+- The time zone set to UTC. QEMU starts the hardware clock at the host's UTC time, which Windows reads as time in its own zone, so the guest's clock is UTC whatever the host's zone.
 - Git, Node.js LTS, WinLibs MinGW-w64 GCC (msvcrt), and Rust at the version `rust-toolchain.toml` pins, with the `x86_64-pc-windows-gnu` host toolchain, matching the release target. The gnu toolchain bundles a linker but no C compiler, and the build compiles C through the `cc` crate (bundled SQLite, zstd, ring), so GCC is required. The WinLibs archive also puts CMake, NASM, yasm, Ninja and other build tools in `C:\winlibs\mingw64\bin`, which is on `PATH`; residuum's build needs none of them.
 - Defender exclusions for the harness directory, cargo, rustup, and the compiler.
 
@@ -77,10 +78,11 @@ Snapshots are internal to the qcow2 disk and require the VM to be stopped:
 scripts/windows-vm/vm.sh stop
 scripts/windows-vm/vm.sh snapshot before-experiment
 scripts/windows-vm/vm.sh restore provisioned
+scripts/windows-vm/vm.sh delete-snapshot before-experiment
 scripts/windows-vm/vm.sh snapshots
 ```
 
-Restoring to `provisioned` resets the guest to a clean toolchain install. Firmware variables and TPM state are not part of a snapshot. Nothing in the guest depends on them after installation.
+Restoring to `provisioned` resets the guest to a clean toolchain install. `snapshot` refuses a name already taken, since qemu-img would keep both and `restore` would pick the older one; to retake `provisioned` after `vm.sh provision`, stop the VM, `vm.sh delete-snapshot provisioned`, then `vm.sh snapshot provisioned`. Firmware variables and TPM state are not part of a snapshot. Nothing in the guest depends on them after installation.
 
 ## Evaluation expiry
 

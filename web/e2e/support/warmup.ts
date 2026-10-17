@@ -18,7 +18,7 @@
  * built ahead of time. Each worker has its own dev server with its own module
  * cache, so every one of them is warmed, at the same time.
  */
-import { workerServers } from "./servers";
+import { startedWorkerServers } from "./servers";
 
 const ENTRY = "/src/main.ts";
 
@@ -73,12 +73,15 @@ async function compileAll(origin: string, paths: readonly string[]): Promise<Com
 }
 
 export default async function warmDevServers(): Promise<void> {
+  const servers = startedWorkerServers();
+  const origins = (kind: "dev" | "preview"): string =>
+    servers.map((worker) => worker[kind].url).join(", ");
+  process.stderr.write(`Mock servers: dev ${origins("dev")}; preview ${origins("preview")}.\n`);
   const started = Date.now();
-  const counts = await Promise.all(workerServers.map(({ dev }) => warmDevServer(dev.url)));
+  const counts = await Promise.all(servers.map(({ dev }) => warmDevServer(dev.url)));
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
-  const servers =
-    counts.length === 1 ? "the dev server's" : `${String(counts.length)} dev servers'`;
-  process.stderr.write(`Warmed ${servers} ${String(counts[0] ?? 0)} modules in ${seconds}s.\n`);
+  const warmed = counts.length === 1 ? "the dev server's" : `${String(counts.length)} dev servers'`;
+  process.stderr.write(`Warmed ${warmed} ${String(counts[0] ?? 0)} modules in ${seconds}s.\n`);
 }
 
 /** Compile every module the dev server at `origin` can reach from the entry, and answer how many there were. */

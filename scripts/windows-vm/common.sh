@@ -8,11 +8,13 @@ REPO_ROOT="$(git -C "$HARNESS_DIR" rev-parse --show-toplevel)"
 
 VM_NAME="${RESIDUUM_WINVM_NAME:-residuum-win11}"
 VM_DIR="${RESIDUUM_WINVM_DIR:-$HOME/vms/$VM_NAME}"
+# shellcheck disable=SC2034 # read by the scripts that source this file
 WIN_ISO="${RESIDUUM_WINVM_ISO:-$HOME/vms/win11-enterprise-eval.iso}"
 SSH_PORT="${RESIDUUM_WINVM_SSH_PORT:-2222}"
 VNC_DISPLAY="${RESIDUUM_WINVM_VNC_DISPLAY:-59}"
 VM_CPUS="${RESIDUUM_WINVM_CPUS:-4}"
 VM_MEMORY_MIB="${RESIDUUM_WINVM_MEMORY_MIB:-16384}"
+# shellcheck disable=SC2034 # read by the scripts that source this file
 VM_DISK_SIZE="${RESIDUUM_WINVM_DISK_SIZE:-80G}"
 
 GUEST_USER="dev"
@@ -20,12 +22,14 @@ GUEST_ROOT='C:\residuum-harness'
 GUEST_ROOT_FWD="C:/residuum-harness"
 
 OVMF_CODE="/usr/share/OVMF/OVMF_CODE_4M.ms.fd"
+# shellcheck disable=SC2034 # read by the scripts that source this file
 OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
 
 DISK="$VM_DIR/disk.qcow2"
 VARS="$VM_DIR/OVMF_VARS.fd"
 TPM_DIR="$VM_DIR/tpm"
 SSH_KEY="$VM_DIR/id_ed25519"
+# shellcheck disable=SC2034 # read by the scripts that source this file
 PASSWORD_FILE="$VM_DIR/password"
 KNOWN_HOSTS="$VM_DIR/known_hosts"
 QEMU_PID="$VM_DIR/qemu.pid"
@@ -101,13 +105,16 @@ start_vm() {
         display_args=(-display gtk)
     fi
 
+    # Windows reads the hardware clock as local time in its own time zone,
+    # which the answer file sets to UTC (guest/autounattend.xml.tmpl), so the
+    # clock carries UTC, whatever the host's zone.
     qemu-system-x86_64 \
         -name "$VM_NAME" \
         -machine q35,accel=kvm,smm=on \
         -global driver=cfi.pflash01,property=secure,value=on \
         -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time \
         -smp "$VM_CPUS" -m "$VM_MEMORY_MIB" \
-        -rtc base=localtime \
+        -rtc base=utc \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$VARS" \
         -chardev socket,id=chrtpm,path="$TPM_DIR/swtpm-sock" \
@@ -151,6 +158,7 @@ guest_ps() {
     local remote_command="\$ErrorActionPreference = 'Stop'; iex ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encoded')))"
     local opts
     mapfile -t opts < <(ssh_opts)
+    # shellcheck disable=SC2029 # the command is built here to run in the guest
     ssh "${opts[@]}" "$GUEST_USER@127.0.0.1" "$remote_command"
 }
 

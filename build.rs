@@ -6,27 +6,36 @@ fn main() {
     );
     println!("cargo:rerun-if-changed=web/dist/");
 
-    // Capture git version for the update command.
-    // Tagged commit: v2026.03.02. Between tags: v2026.03.02-5-gabcdef1. No git: dev.
-    let version = std::process::Command::new("git")
-        .args(["describe", "--tags", "--always"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map_or_else(
-            || "dev".to_string(),
-            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        );
+    // The version for the update command and bug reports: `RESIDUUM_VERSION` from
+    // the build's environment when set (an image built from `docker/Dockerfile`,
+    // whose context leaves out `.git`, gets it as a build arg), else from git.
+    // Tagged commit: v2026.03.02. Between tags: v2026.03.02-5-gabcdef1. Neither: dev.
+    let version = from_build_env("RESIDUUM_VERSION")
+        .or_else(|| git_stdout(&["describe", "--tags", "--always"]))
+        .unwrap_or_else(|| "dev".to_string());
     println!("cargo:rustc-env=RESIDUUM_VERSION={version}");
 
-    // Capture short git commit hash for bug-report client context.
-    // Distinct from RESIDUUM_VERSION so reports can carry both a tag and a SHA.
-    // Unset (option_env! → None) when git is unavailable so the field serializes as null.
-    if let Some(commit) = git_stdout(&["rev-parse", "--short=12", "HEAD"]) {
+    // Short git commit hash for bug-report client context, from the environment
+    // or git in the same way. Distinct from RESIDUUM_VERSION so reports can carry
+    // both a tag and a SHA. Unset (option_env! → None) when neither has one, so
+    // the field serializes as null.
+    if let Some(commit) = from_build_env("RESIDUUM_GIT_COMMIT")
+        .or_else(|| git_stdout(&["rev-parse", "--short=12", "HEAD"]))
+    {
         println!("cargo:rustc-env=RESIDUUM_GIT_COMMIT={commit}");
     }
 
     watch_git_state();
+}
+
+/// The trimmed value of `name` in the build script's environment, or `None` when
+/// it is unset or blank. Cargo reruns the script when it changes.
+fn from_build_env(name: &str) -> Option<String> {
+    println!("cargo:rerun-if-env-changed={name}");
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Trimmed stdout of a successful git invocation, or `None` when git is

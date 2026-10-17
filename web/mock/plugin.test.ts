@@ -12,6 +12,7 @@ import type { Plugin } from "vite";
 import type { AgentSummary } from "../src/lib/generated/protocol";
 import type { WorkbenchInfo } from "../src/lib/types";
 import { WebSocket } from "ws";
+import { mockListeningLine, mockListeningPattern } from "./listening";
 import { mockServerPlugin } from "./plugin";
 import { frameText } from "./sockets";
 import { fetchJson } from "./test-support";
@@ -295,6 +296,22 @@ describe("the mock server plugin", () => {
       expect((await fetch(`http://127.0.0.1:${String(port)}/tip-splitter/`)).status).toBe(200);
     });
 
+    it("prints the ports it took once the server and the artifacts listener both listen", async () => {
+      vi.stubEnv("MOCK_DETERMINISTIC", "1");
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", "0");
+      const dev = await start();
+      const pattern = mockListeningPattern("port", "artifacts");
+      let groups: Record<string, string> | undefined;
+      await waitFor(() => {
+        groups = dev.logged.map((line) => pattern.exec(line)?.groups).find(Boolean);
+        expect(groups).toBeDefined();
+      });
+      expect(groups?.port).toBe(new URL(dev.baseUrl).port);
+      const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
+        .body as WorkbenchInfo;
+      expect(groups?.artifacts).toBe(String(info.port));
+    });
+
     it("says so, and reports artifacts as unavailable, when the port is taken", async () => {
       const taken = createServer();
       await new Promise<void>((resolve) => {
@@ -309,6 +326,9 @@ describe("the mock server plugin", () => {
         expect(
           dev.logged.some((line) => line.includes(`can't listen on port ${String(port)}`)),
         ).toBe(true);
+      });
+      await waitFor(() => {
+        expect(dev.logged).toContain(mockListeningLine(Number(new URL(dev.baseUrl).port), null));
       });
       const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
         .body as WorkbenchInfo;
