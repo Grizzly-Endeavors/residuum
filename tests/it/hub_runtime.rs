@@ -10,10 +10,6 @@
 )]
 #![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
-#![expect(
-    clippy::missing_assert_message,
-    reason = "test assertions name the failing condition in the assert itself"
-)]
 
 use std::sync::Arc;
 
@@ -251,14 +247,21 @@ impl RunningHub {
             .send()
             .await
             .unwrap();
-        assert!(response.status().is_success());
+        assert!(
+            response.status().is_success(),
+            "the hub refused the shutdown request: {}",
+            response.status()
+        );
         let exit = residuum_core::testing::wait::guarded(
             "the hub to stop after a shutdown request",
             self.exit,
         )
         .await
         .unwrap();
-        assert!(matches!(exit, HubExit::Shutdown));
+        assert!(
+            matches!(exit, HubExit::Shutdown),
+            "the hub did not exit with a shutdown after the shutdown request"
+        );
     }
 }
 
