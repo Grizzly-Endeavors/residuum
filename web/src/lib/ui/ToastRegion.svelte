@@ -143,7 +143,7 @@
     flex: 1;
     min-width: 0;
     padding: var(--space-4) 0;
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
   }
 

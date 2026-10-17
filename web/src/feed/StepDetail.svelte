@@ -123,7 +123,7 @@
     background: var(--color-stone-2);
     color: var(--color-text-2);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .step-arg {

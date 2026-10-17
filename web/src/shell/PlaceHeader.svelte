@@ -57,7 +57,7 @@
     gap: var(--space-6);
     font-size: var(--font-size-message);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   .place-sub {

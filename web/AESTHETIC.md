@@ -55,13 +55,15 @@ Onest for all UI and message text, JetBrains Mono only for code, file paths and 
 
 | Role | Size | Weight | Line height | Used for |
 |---|---|---|---|---|
-| Title | `title` 20px | semibold | `tight` | Page and settings-section titles |
-| Heading | `heading` 17px | semibold | `tight` | Section headings, dialog and state-card titles |
-| Message | `message` 15px | regular | `message` | Chat messages and agent prose |
-| UI | `ui` 14px | regular or medium | `ui` | Default text, controls, labels |
-| Secondary | `sm` 13px | regular to semibold | `ui` | Rows, rail places, section labels on pages, help text |
-| Meta | `xs` 12px | regular | `ui` | Timestamps, counts, group labels |
-| Code | `code` 0.86em inline, `xs` in blocks | regular or medium | inherited | Code, paths, ids |
+| Title | `title` 20px | semibold | `tight`, 27px | Page and settings-section titles |
+| Heading | `heading` 17px | semibold | `tight`, 23px | Section headings, dialog and state-card titles |
+| Message | `message` 15px | regular | `message`, 25px | Chat messages and agent prose |
+| UI | `ui` 14px | regular or medium | `ui`, 21px | Default text, controls, labels |
+| Secondary | `sm` 13px | regular to semibold | `ui`, 20px | Rows, rail places, section labels on pages, help text |
+| Meta | `xs` 12px | regular | `ui`, 18px | Timestamps, counts, group labels |
+| Code | `code` 0.86em inline, `xs` in blocks | regular or medium | inherited, at its own size | Code, paths, ids |
+
+Line heights are leading factors: `--line-height-tight` 1.35, `--line-height-ui` 1.5, `--line-height-message` 1.65. A component sets one as `--leading`, never as `line-height`, and the base styles make every element's line box its own font size times the factor, rounded to the nearest whole pixel. Those are the pixel values above, each within half a pixel of the bare product. Whole-pixel lines keep text from growing by a fraction of a pixel. WebKit's scroll anchoring scrolls by whole pixels, so after a fractional growth above the anchor it moves the page a pixel back and forth on every layout. Style lint rejects a `line-height` outside the base styles.
 
 The wordmark is Cinzel 500 in capitals with wide letter spacing, next to the `mark` icon in `vein`. Nothing else uses Cinzel or capitals.
 

@@ -61,7 +61,7 @@
 
   .attachment-caption {
     font-size: var(--font-size-message);
-    line-height: var(--line-height-message);
+    --leading: var(--line-height-message);
   }
 
   /* The image is a button that opens it full size. */
@@ -71,7 +71,7 @@
     padding: 0;
     border-radius: var(--corner-md);
     cursor: zoom-in;
-    line-height: 0;
+    --leading: 0;
   }
 
   .attachment-image {

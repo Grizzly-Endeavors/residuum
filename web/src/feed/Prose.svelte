@@ -81,7 +81,7 @@
   .prose {
     min-width: 0;
     font-size: var(--font-size-message);
-    line-height: var(--line-height-message);
+    --leading: var(--line-height-message);
     overflow-wrap: anywhere;
 
     &[data-size="compact"] {
@@ -104,7 +104,7 @@
       margin: var(--space-14) 0 var(--space-6);
       font-size: var(--font-size-message);
       font-weight: var(--font-weight-semibold);
-      line-height: var(--line-height-tight);
+      --leading: var(--line-height-tight);
     }
 
     :is(h3, h4) {
@@ -278,7 +278,7 @@
       background: var(--color-stone-2);
       font-family: var(--font-code);
       font-size: var(--font-size-xs);
-      line-height: var(--line-height-ui);
+      --leading: var(--line-height-ui);
       overflow-wrap: normal;
     }
 

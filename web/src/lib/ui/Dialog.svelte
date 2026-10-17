@@ -96,7 +96,7 @@
   .ui-dialog-title {
     font-size: var(--font-size-heading);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
     overflow-wrap: anywhere;
   }
 

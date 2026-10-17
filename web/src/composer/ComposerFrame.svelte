@@ -302,7 +302,7 @@
     border: 0;
     background: transparent;
     font-size: var(--font-size-message);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
 
     /* The composer's own ring shows focus. */
     &:focus-visible {

@@ -99,7 +99,7 @@
   .pj-hint {
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
   }
 

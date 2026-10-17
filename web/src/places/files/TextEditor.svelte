@@ -137,7 +137,7 @@
     overflow: hidden;
     font-family: var(--font-code);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-message);
+    --leading: var(--line-height-message);
   }
 
   /* The page of the document: the panel's deepest surface, edge to edge under its header. */

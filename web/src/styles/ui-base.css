@@ -19,7 +19,7 @@
   font-family: var(--font-ui);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-regular);
-  line-height: var(--line-height-ui);
+  --leading: var(--line-height-ui);
   color: var(--color-text);
   background: var(--color-stone-0);
   -webkit-font-smoothing: antialiased;
@@ -81,6 +81,26 @@
   font: inherit;
   color: inherit;
   letter-spacing: inherit;
+}
+
+/* ── Line boxes ────────────────────────────────────────────────────── */
+
+/* Every element's line box is its own font size times the inherited
+   `--leading` factor (a `--line-height-` token, set where a component would
+   set line-height), rounded to a whole pixel. WebKit's scroll anchoring scrolls
+   by whole pixels: content above the anchor that grows by a fraction of a pixel
+   leaves the anchor half a pixel off, and from then on every layout scrolls the
+   page a pixel back and forth. Whole-pixel lines keep text from growing by a
+   fraction. It comes after the controls' `font: inherit`, which would
+   otherwise hand a control its parent's line box at the parent's size. */
+:where(*, *::before, *::after) {
+  line-height: calc(var(--leading) * 1em);
+}
+
+@supports (line-height: round(1.5px, 1px)) {
+  :where(*, *::before, *::after) {
+    line-height: round(calc(var(--leading) * 1em), 1px);
+  }
 }
 
 :where(button) {

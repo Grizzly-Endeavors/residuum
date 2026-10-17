@@ -296,7 +296,7 @@
   .cloud-line {
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .cloud-line :global(strong) {
@@ -315,7 +315,7 @@
   .cloud-hint {
     color: var(--color-text-3);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .cloud-actions {

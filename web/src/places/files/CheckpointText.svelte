@@ -41,7 +41,7 @@
     color: var(--color-text-2);
     font-family: var(--font-code);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
@@ -52,7 +52,7 @@
 
   .checkpoint-line {
     display: block;
-    min-height: calc(var(--line-height-ui) * 1em);
+    min-height: 1lh;
     white-space: pre-wrap;
 
     &[data-kind="added"] {

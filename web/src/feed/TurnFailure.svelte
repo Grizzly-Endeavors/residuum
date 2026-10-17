@@ -58,7 +58,8 @@
     flex: none;
     place-items: center;
     width: 16px;
-    height: calc(var(--font-size-ui) * var(--line-height-ui));
+    /* The title's line box (ui size), which the base styles round to a whole pixel. */
+    height: round(calc(var(--font-size-ui) * var(--line-height-ui)), 1px);
     color: var(--color-err-text);
   }
 
@@ -73,12 +74,12 @@
   .failure-title {
     font-size: var(--font-size-ui);
     font-weight: var(--font-weight-medium);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .failure-message {
     color: var(--color-text-2);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
   }
 

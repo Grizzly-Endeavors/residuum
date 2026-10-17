@@ -70,7 +70,7 @@
   textarea.ui-input {
     height: auto;
     padding: var(--space-8) var(--space-12);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     resize: vertical;
   }
 

@@ -233,7 +233,7 @@
   .model-note {
     color: var(--color-text-3);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .model-heading,
