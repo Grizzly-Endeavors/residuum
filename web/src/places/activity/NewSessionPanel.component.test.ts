@@ -15,7 +15,7 @@ import { waitFor } from "../../test/wait";
 import { hub } from "../../lib/hub.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
 import { router } from "../../lib/router.svelte";
-import type { SessionSummary } from "../../lib/types";
+import type { ServerMessage, SessionSummary } from "../../lib/types";
 import { setViewedAgent } from "../../lib/viewed-agent";
 import { ws } from "../../lib/ws.svelte";
 import { NewSession } from "./new-session.svelte";
@@ -54,6 +54,19 @@ function started(address: string): SessionSummary {
     overlap: null,
     model: null,
     resolved_model: null,
+  };
+}
+
+const START_FAILED =
+  "The session spawned-session-1a2b couldn't start: its model has no working provider.";
+const START_FAILED_DETAILS = "failed to build provider chain for model medium: no API key";
+
+function startFailed(address: string): Extract<ServerMessage, { type: "session_start_failed" }> {
+  return {
+    type: "session_start_failed",
+    address,
+    error: START_FAILED,
+    error_details: START_FAILED_DETAILS,
   };
 }
 
@@ -119,7 +132,8 @@ describe("the new session panel", () => {
 
     expect(await screen.findByText("Starting")).toBeVisible();
     expect(starts).toEqual([{ prompt: "Plan the garden", model: "large" }]);
-    expect(session.prompt).toBe("");
+    // The task stays until the run starts, in case the start fails.
+    expect(session.prompt).toBe("Plan the garden");
     expect(replacePanel).not.toHaveBeenCalled();
 
     ws.sessions.handleFrame({ type: "session_started", session: started("spawned-session-1a2b") });
@@ -130,6 +144,71 @@ describe("the new session panel", () => {
         runId: "run-owner-1",
       });
     });
+    expect(session.prompt).toBe("");
+  });
+
+  it("gives the task back and says why when the session fails to start after the agent took it", async () => {
+    const replacePanel = vi.spyOn(router, "replacePanel").mockResolvedValue(true);
+    show();
+    const box = screen.getByRole("textbox", { name: "Task for the new session" });
+    await userEvent.type(box, "Plan the garden{Enter}");
+    expect(await screen.findByText("Starting")).toBeVisible();
+
+    ws.sessions.handleFrame(startFailed("spawned-session-1a2b"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(START_FAILED);
+    expect(screen.queryByText("Starting")).toBeNull();
+    expect(box).toHaveValue("Plan the garden");
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByText(START_FAILED_DETAILS)).toBeVisible();
+    expect(replacePanel).not.toHaveBeenCalled();
+
+    answer = () => jsonResponse({ address: "spawned-session-3c4d" }, 202);
+    await userEvent.click(screen.getByRole("button", { name: "Start the session" }));
+    expect(await screen.findByText("Starting")).toBeVisible();
+    expect(starts).toEqual([
+      { prompt: "Plan the garden", model: "medium" },
+      { prompt: "Plan the garden", model: "medium" },
+    ]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("gives the task back when the failure arrives before the agent's answer to the start", async () => {
+    answer = () => {
+      // The agent publishes the start before it answers, so its failure can come first.
+      ws.sessions.handleFrame(startFailed("spawned-session-1a2b"));
+      return jsonResponse({ address: "spawned-session-1a2b" }, 202);
+    };
+    const session = show();
+    const box = screen.getByRole("textbox", { name: "Task for the new session" });
+    await userEvent.type(box, "Plan the garden{Enter}");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(START_FAILED);
+    await waitFor(() => {
+      expect(session.address).toBeNull();
+    });
+    expect(screen.queryByText("Starting")).toBeNull();
+    expect(box).toHaveValue("Plan the garden");
+
+    answer = () => jsonResponse({ address: "spawned-session-3c4d" }, 202);
+    await userEvent.click(screen.getByRole("button", { name: "Start the session" }));
+    await waitFor(() => {
+      expect(starts).toHaveLength(2);
+    });
+    expect(await screen.findByText("Starting")).toBeVisible();
+  });
+
+  it("puts the task back if the box was emptied while it was starting", async () => {
+    show();
+    const box = screen.getByRole("textbox", { name: "Task for the new session" });
+    await userEvent.type(box, "Plan the garden{Enter}");
+    expect(await screen.findByText("Starting")).toBeVisible();
+    await userEvent.clear(box);
+
+    ws.sessions.handleFrame(startFailed("spawned-session-1a2b"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(START_FAILED);
+    expect(box).toHaveValue("Plan the garden");
   });
 
   it("keeps the task and says why when the session couldn't start", async () => {

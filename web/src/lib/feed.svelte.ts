@@ -507,6 +507,7 @@ export class FeedStore {
       case "session_broadcast_response":
       case "session_response":
       case "session_outbound_a2a_task":
+      case "session_start_failed":
       case "session_error":
       case "session_message_to_main":
       case "session_message_delivered":
@@ -916,7 +917,7 @@ export class FeedStore {
    * Show that the turn `turnId` couldn't finish, as the last thing in it. When
    * the user's own message began the turn, it is kept for Try again.
    */
-  private recordFailure(turnId: string, message: string, details: string | null): void {
+  private recordFailure(turnId: string, message: string, details: string | undefined): void {
     this.streams.finish(turnId, "interrupted");
     const asked = this.feed.findLast(
       (item): item is UserFeedItem =>
@@ -931,7 +932,7 @@ export class FeedStore {
       kind: "turn-failure",
       turnId,
       message,
-      ...(details === null || details === "" ? {} : { details }),
+      ...(details === undefined || details === "" ? {} : { details }),
       ...(asked === undefined
         ? {}
         : { retry: { content: asked.content, ...(images.length > 0 ? { images } : {}) } }),

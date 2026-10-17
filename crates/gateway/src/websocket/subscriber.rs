@@ -4,11 +4,13 @@ use crate::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
 use residuum_bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, MainConversationEvent, NoticeEvent, NotifyName,
     OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind, PulseFireEvent,
-    ResponseEvent, SessionEvent, Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
-    topics,
+    ResponseEvent, SessionEvent, SessionStartFailedEvent, Subscriber, TurnUsageEvent,
+    WorkbenchEvent, WorkspaceEvent, topics,
 };
 use residuum_hub::file_server::FileRegistry;
-use residuum_protocol::frames::{session_event_to_server_message, workspace_frame};
+use residuum_protocol::frames::{
+    session_event_to_server_message, session_start_failed_frame, workspace_frame,
+};
 use residuum_protocol::{QueuedMessage, ServerMessage, SnapshotFrame, TurnInProgress};
 use tokio::sync::mpsc;
 
@@ -250,6 +252,9 @@ pub struct WsSubscribers {
     /// Agent session lifecycle and turn events, forwarded as the
     /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
+    /// Owner-started sessions that couldn't be forked, forwarded as
+    /// `session_start_failed` frames.
+    pub session_start_failed: Subscriber<SessionStartFailedEvent>,
     /// Tasks sent to remote agents, for Activity's Running now.
     pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
     /// Pulse fires starting, moving to their session, and finishing, for
@@ -297,6 +302,7 @@ impl WsSubscribers {
             inline_output: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
             session: bus_handle.subscribe(topics::Sessions).await?,
+            session_start_failed: bus_handle.subscribe(topics::Sessions).await?,
             outbound_a2a: bus_handle.subscribe(system_topic()).await?,
             pulse_fire: bus_handle.subscribe(system_topic()).await?,
             workbench: bus_handle.subscribe(topics::Workbench).await?,
@@ -368,9 +374,11 @@ impl WsSubscribers {
                     _ => return None,
                 },
                 event = self.session.recv() => match event {
-                    Ok(Some(session_event)) => Some(
-                        session_event_to_server_message(session_event),
-                    ),
+                    Ok(Some(session_event)) => Some(session_event_to_server_message(session_event)),
+                    _ => return None,
+                },
+                event = self.session_start_failed.recv() => match event {
+                    Ok(Some(failed)) => Some(session_start_failed_frame(failed)),
                     _ => return None,
                 },
                 event = self.outbound_a2a.recv() => match event {
@@ -1110,6 +1118,49 @@ mod tests {
                     "error": null,
                 },
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn session_start_failed_event_maps_to_session_frame() {
+        let handle = residuum_bus::spawn_broker();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            &handle,
+            EndpointName::from("ws"),
+            residuum_hub::file_server::FileRegistry::new("scout"),
+            no_watch_set(),
+            &TurnJournal::spawn(&handle).await.unwrap(),
+        )
+        .await
+        .unwrap();
+        handle
+            .publisher()
+            .publish(
+                topics::Sessions,
+                SessionStartFailedEvent {
+                    address: "spawned-session-1a2b".into(),
+                    error: "The session spawned-session-1a2b couldn't start.".into(),
+                    error_details: Some("failed to build provider chain: no key".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        let ServerMessage::SessionStartFailed {
+            address,
+            error,
+            error_details,
+        } = msg
+        else {
+            panic!("expected a session_start_failed frame, got {msg:?}");
+        };
+        assert_eq!(address, "spawned-session-1a2b");
+        assert_eq!(error, "The session spawned-session-1a2b couldn't start.");
+        assert_eq!(
+            error_details.as_deref(),
+            Some("failed to build provider chain: no key")
         );
     }
 

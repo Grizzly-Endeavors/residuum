@@ -37,9 +37,9 @@ pub use events::{
     NoticeEvent, NotificationEvent, OutboundA2aTaskEvent, PostTurnActivityEvent,
     PostTurnActivityKind, PulseOverlap, ReloadOutcome, ReloadReport, ReloadedFiles, ResponseEvent,
     ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent,
-    SessionSpawnFailedEvent, SpawnRequestEvent, ToolCallEvent, ToolResultEvent, TurnLifecycleEvent,
-    TurnOrigin, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
-    ends_with_sentinel,
+    SessionSpawnFailedEvent, SessionStartFailedEvent, SpawnRequestEvent, ToolCallEvent,
+    ToolResultEvent, TurnLifecycleEvent, TurnOrigin, TurnUsageEvent, UserInboxAddedEvent,
+    WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use pulse_fire::{

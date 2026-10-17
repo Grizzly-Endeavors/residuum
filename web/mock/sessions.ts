@@ -80,7 +80,7 @@ function completeSession(
       run_id: session.run_id,
       status,
       error,
-      error_details: errorDetails,
+      ...(errorDetails === null ? {} : { error_details: errorDetails }),
       episode_id: session.episode_id,
     });
   });
@@ -431,6 +431,12 @@ async function startSession(ctx: RouteContext): Promise<void> {
   sessions.runCounter++;
   const { framing, ...identity } =
     artifactName === null ? ownerSession(state, fork) : artifactSession(state, artifactName);
+  if (artifactName === null && sessions.failNextOwnerStart) {
+    sessions.failNextOwnerStart = false;
+    failOwnerStart(state, identity.address);
+    json(res, 202, { address: identity.address });
+    return;
+  }
   const session: SessionSummary = {
     ...identity,
     state: "forking",
@@ -450,6 +456,23 @@ async function startSession(ctx: RouteContext): Promise<void> {
     runSessionTurn(state, session, `Working on it: ${prompt.slice(0, 80)}.`);
   });
   json(res, 202, { address: session.address });
+}
+
+/**
+ * An owner's start the agent took but couldn't fork: no run is listed, and a
+ * moment later every page is sent `session_start_failed` for its address, as
+ * the backend sends it when the session's model has no working provider.
+ */
+function failOwnerStart(state: MockState, address: string): void {
+  state.env.after(400, () => {
+    state.broadcast({
+      type: "session_start_failed",
+      address,
+      error: `The session ${address} couldn't start because its model (medium) couldn't be set up, usually because a provider's API key is missing. Check Settings → Model → Providers, then start the session again.`,
+      error_details:
+        "failed to build provider chain for model medium: no API key configured for provider anthropic",
+    });
+  });
 }
 
 // POST /api/sessions/:address/stop — stop any live session.
