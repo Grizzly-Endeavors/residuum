@@ -1990,27 +1990,18 @@ mod tests {
 
     #[test]
     fn deliver_losing_spawn_input_for_a_resume_delivers_each_message_under_its_own_id() {
+        use residuum_bus::session::{OWNER_ADDRESS as OWNER, TEAMMATE_SENDER_CATEGORY as TEAMMATE};
         let registry = Arc::new(SessionRegistry::new());
         let publisher = Publisher::noop();
         let address = SessionAddress::from("spawned-researcher-race-resume");
         let spawner = SessionAddress::from("spawned-lead-7c1d");
         let winner = SessionInfo {
-            address: address.clone(),
-            run_id: "run-winner".to_string(),
             category: SessionCategory::Spawned,
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
-            state: SessionState::Idle,
             spawner: Some(spawner.clone()),
-            depth: 2,
-            purpose: "already running".to_string(),
-            agent_skill: None,
-            model: residuum_config::ModelSelector::MEDIUM,
-            resolved_model: None,
             conversation_target: None,
-            started_at: Utc::now(),
-            usage: residuum_bus::usage::SessionUsageTotals::default(),
-            overlap: None,
+            ..conversation_winner_info(&address, "run-winner")
         };
         let mut rx = registry
             .register(winner.clone(), CancellationToken::new())
@@ -2032,16 +2023,11 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
             delivered_messages: vec![
+                residuum_bus::AgentMessageEvent::new(OWNER.into(), "owner", "are you there?", 0)
+                    .with_id("m-owner"),
                 residuum_bus::AgentMessageEvent::new(
-                    SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
-                    "owner",
-                    "are you there?",
-                    0,
-                )
-                .with_id("m-owner"),
-                residuum_bus::AgentMessageEvent::new(
-                    SessionAddress::from("agent:ivan"),
-                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+                    "agent:ivan".into(),
+                    TEAMMATE,
                     "the logs are in /tmp",
                     1,
                 )
@@ -2069,11 +2055,10 @@ mod tests {
                 }
             }
         }
-        let summary: Vec<(&str, &str, &str, &str, u32)> = delivered
+        let summary: Vec<(&str, &str, &str, u32)> = delivered
             .iter()
             .map(|m| {
                 (
-                    m.id.as_str(),
                     m.from.as_ref(),
                     m.from_category.as_str(),
                     m.content.as_str(),
@@ -2081,33 +2066,16 @@ mod tests {
                 )
             })
             .collect();
-        let prompt_id = delivered.get(2).map_or("", |m| m.id.as_str());
         assert_eq!(
             summary,
             vec![
-                (
-                    "m-owner",
-                    residuum_bus::session::OWNER_ADDRESS,
-                    "owner",
-                    "are you there?",
-                    0
-                ),
-                (
-                    "m-teammate",
-                    "agent:ivan",
-                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
-                    "the logs are in /tmp",
-                    1
-                ),
-                (
-                    prompt_id,
-                    spawner.as_ref(),
-                    "spawned",
-                    "[From: Jane via discord (#builds)] any news?",
-                    2
-                ),
+                (OWNER, "owner", "are you there?", 0),
+                ("agent:ivan", TEAMMATE, "the logs are in /tmp", 1),
+                (spawner.as_ref(), "spawned", config.prompt.as_str(), 2),
             ]
         );
+        let ids: Vec<&str> = delivered.iter().take(2).map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["m-owner", "m-teammate"], "each keeps its own id");
         assert!(
             delivered.iter().all(|m| !m.content.contains(context)),
             "the resume context stays out of the delivered messages"
