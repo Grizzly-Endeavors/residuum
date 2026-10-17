@@ -121,10 +121,10 @@
     display: flex;
     flex-direction: column;
     justify-content: flex-end;
-    max-height: calc(3 * var(--font-size-sm) * var(--line-height-ui));
+    max-height: 3lh;
     margin: var(--space-2) 0 var(--space-4) calc(var(--space-6) + var(--space-16) + var(--space-8));
     overflow: hidden;
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
   }
@@ -135,7 +135,7 @@
     border-radius: var(--corner-sm);
     background: var(--color-stone-2);
     color: var(--color-text-2);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
   }

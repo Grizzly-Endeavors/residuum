@@ -60,7 +60,7 @@
     border-radius: var(--corner-pill);
     font-size: var(--font-size-xs);
     font-weight: var(--font-weight-medium);
-    line-height: 1;
+    --leading: 1;
     white-space: nowrap;
   }
 

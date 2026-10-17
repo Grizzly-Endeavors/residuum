@@ -78,4 +78,4 @@ Changing any `[telegram]` value restarts the Telegram adapter on reload.
 
 ## Code
 
-`src/interfaces/telegram/`: `mod.rs` (shared state, reply routing, conversation listing), `handler.rs` (long polling, inbound messages, commands, group membership), `groups.rs` (whether a group message is addressed to the bot), `subscriber.rs` (outbound delivery). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Discord and Teams. The unaddressed-message buffer is `src/interfaces/context_buffer.rs`, shared with Discord and Teams.
+`crates/interfaces/src/telegram/`: `mod.rs` (shared state, reply routing, conversation listing), `handler.rs` (long polling, inbound messages, commands, group membership), `groups.rs` (whether a group message is addressed to the bot), `subscriber.rs` (outbound delivery). Owner and conversation state is `crates/interfaces/src/chat_state.rs`, shared with Discord and Teams. The unaddressed-message buffer is `crates/interfaces/src/context_buffer.rs`, shared with Discord and Teams.

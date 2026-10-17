@@ -149,7 +149,7 @@
   .step-lede {
     font-size: var(--font-size-sm);
     color: var(--color-text-2);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .card {

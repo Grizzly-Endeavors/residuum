@@ -263,7 +263,7 @@ Each row lists the workspace crates a crate depends on directly; every crate als
 | `residuum-agent` | skills, inference, memory, mcp, bus, workspace | 12.5k | 103 | 156k |
 | `residuum-background` | skills, inference, tracing-service, memory, mcp, bus, workspace, checkpoints, agent (dev: notify) | 14.6k | 113 | 143k |
 | `residuum-a2a` | skills, inference, tracing-service, memory, mcp, net, bus, workspace, checkpoints, proactivity, agent, background | 9.4k | 50 | 113k |
-| `residuum-interfaces` | inference, net, bus, workspace, checkpoints, background (dev: memory) | 15.1k | 77 | 103k |
+| `residuum-interfaces` | core, config, bus, inference, net, workspace, checkpoints, background (dev: memory) | 15.1k | 77 | 103k |
 | `residuum-tools` | skills, inference, tracing-service, memory, bus, workspace, checkpoints, proactivity, agent, background, a2a | 16.5k | 137 | 57k |
 | `residuum-hub` | inference, tracing-service, memory, mcp, net, bus, workspace, checkpoints, proactivity, agent, background, a2a, protocol, interfaces | 46.9k | 205 | 87k |
 | `residuum-gateway` | skills, inference, tracing-service, memory, mcp, net, bus, workspace, checkpoints, notify, proactivity, agent, background, a2a, tools, protocol, interfaces, hub | 21.7k | 228 | 41k |

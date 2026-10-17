@@ -186,12 +186,13 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_skills`: `skills`, so `RUST_LOG=residuum_skills=trace`.
 - `residuum_mcp`: `mcp`, so `RUST_LOG=residuum_mcp=trace`.
 - `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
-- `residuum_workspace`: `workspace` and `inbox`, so `RUST_LOG=residuum_workspace=trace`, or `RUST_LOG=residuum_workspace::watch=trace` for the change feed.
-- `residuum_agent`: `agent` and `subconscious`, so `RUST_LOG=residuum_agent=trace` for the turn loop, or `RUST_LOG=residuum_agent::subconscious=trace` for the subconscious watch.
-- `residuum_protocol`: `protocol` and its `frames`, so `RUST_LOG=residuum_protocol::frames=trace` for the bus-to-frame conversions.
+- `residuum_workspace`: `workspace` and `inbox`, so `RUST_LOG=residuum_workspace=trace`, or `RUST_LOG=residuum_workspace::watch=trace` for the change feed, and `RUST_LOG=residuum_workspace::inbox=trace` for the inbox (its lines show as `workspace::inbox::…`).
+- `residuum_agent`: `agent` and `subconscious`, so `RUST_LOG=residuum_agent=trace` for the turn loop, or `RUST_LOG=residuum_agent::subconscious=trace` for the subconscious watch (its lines show as `agent::subconscious::…`).
+- `residuum_protocol`: `protocol` and `frames`; it writes no log lines, so frame problems show in the logs of the crates that send and receive them.
 - `residuum_notify`: `notify`, so `RUST_LOG=residuum_notify=trace` for the notification router and its channels.
 - `residuum_background`: `background`, so `RUST_LOG=residuum_background=trace` for agent sessions, or `RUST_LOG=residuum_background::team=trace` for the team router (its lines show as `background::team::router`).
 - `residuum_a2a`: `a2a` and `diagnostics_dispatch`, so `RUST_LOG=residuum_a2a=trace` for the A2A listener and the outbound client, or `RUST_LOG=residuum_a2a::client=trace` for the outbound client alone.
+- `residuum_interfaces`: `interfaces`, the Discord, Telegram and Teams adapters, the webhook table and the Teams app setup, so `RUST_LOG=residuum_interfaces=trace`, or `RUST_LOG=residuum_interfaces::teams=trace` for the Teams adapter and its setup job.
 - `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.
 

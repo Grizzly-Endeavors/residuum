@@ -485,8 +485,8 @@ pub fn register_action_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::testing::bus_barrier;
     use crate::tools::{FileTracker, PathPolicy};
-    use residuum_bus::testing::bus_barrier;
 
     #[test]
     fn reload_timezone_tools_replaces_without_duplicating() {

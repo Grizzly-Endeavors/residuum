@@ -508,9 +508,9 @@ mod tests {
 
     // ── scripted pulses ──────────────────────────────────────────────────
 
+    use crate::bus::testing::{bus_barrier, next_event};
     use crate::bus::{BusHandle, NotifyName, SYSTEM_CHANNEL, Subscriber};
     use crate::pulse::types::PulseTask;
-    use residuum_bus::testing::{bus_barrier, next_event};
 
     fn scripted_deps(bus: &BusHandle, dir: &std::path::Path) -> ScriptedPulseDeps {
         ScriptedPulseDeps {

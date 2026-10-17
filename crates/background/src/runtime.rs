@@ -46,10 +46,10 @@ use residuum_bus::session::{SessionCategory, SessionInfo, SessionState, generate
 /// `max_concurrent` already has today.
 #[derive(Debug, Clone, Copy)]
 pub struct IdleTimeouts {
-    pub scheduled: Duration,
-    pub spawned: Duration,
-    pub external: Duration,
-    pub artifact: Duration,
+    pub(crate) scheduled: Duration,
+    pub(crate) spawned: Duration,
+    pub(crate) external: Duration,
+    pub(crate) artifact: Duration,
 }
 
 impl IdleTimeouts {
@@ -186,6 +186,14 @@ impl SessionRuntime {
             tracing_service: handles.tracing_service,
             tracing_client_context: handles.tracing_client_context,
         }
+    }
+
+    /// The registry this runtime tracks its sessions in, so a test can stop
+    /// one it started.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn registry(&self) -> &Arc<SessionRegistry> {
+        &self.registry
     }
 
     /// Fork and run a new session.
@@ -1615,53 +1623,13 @@ mod tests {
     use residuum_skills::{SkillIndex, SkillState};
     use residuum_workspace::identity::IdentityFiles;
 
-    use crate::testing::test_memory_extras;
+    use crate::testing::{
+        SequencedProvider, make_sequenced_resources, next_idle, sample_conversation_request,
+        test_checkpoints, test_memory_extras, test_runtime_held_idle, test_tracing_client_context,
+        test_tracing_service,
+    };
     use residuum_bus::MessageEvent;
     use residuum_bus::session::{MAIN_ADDRESS, MAIN_DEPTH};
-
-    /// A throwaway checkpoint engine for tests that need a `SessionRuntime`
-    /// but don't exercise checkpointing behavior themselves.
-    fn test_checkpoints(dir: &std::path::Path) -> Arc<residuum_checkpoints::CheckpointEngine> {
-        Arc::new(
-            residuum_checkpoints::CheckpointEngine::new(
-                "test-agent",
-                dir.join("workspace"),
-                &residuum_config::paths::TeamPaths::new(dir.join("team")),
-                dir.join("agent-config"),
-                dir.join("hub"),
-                &dir.join("checkpoints"),
-                None,
-            )
-            .unwrap(),
-        )
-    }
-
-    /// A `TracingService` with auto error reporting off, for tests that need
-    /// a `SessionRuntime` but don't exercise auto-reporting behavior
-    /// themselves — `on_error` calls through it are a guaranteed no-op.
-    fn test_tracing_service() -> Arc<TracingService> {
-        let (_, handle) = residuum_core::util::telemetry::SpanBufferLayer::new(
-            &residuum_core::util::telemetry::SpanBufferConfig::default(),
-        );
-        Arc::new(TracingService::new(
-            residuum_config::TracingConfig::default(),
-            handle,
-        ))
-    }
-
-    fn test_tracing_client_context() -> Arc<ClientContext> {
-        Arc::new(ClientContext {
-            version: "test".to_string(),
-            commit: None,
-            os: std::env::consts::OS.to_string(),
-            arch: std::env::consts::ARCH.to_string(),
-            model_provider: None,
-            model_name: None,
-            active_subagents: Vec::new(),
-            config_flags: std::collections::BTreeMap::new(),
-            agent: None,
-        })
-    }
 
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
     /// subscriber for the `AgentResultEvent`s it publishes on completion.
@@ -1906,36 +1874,6 @@ mod tests {
             timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
-        }
-    }
-
-    /// A conversation-triggered spawn request at a deterministic-style
-    /// address, wired with a conversation target so its turn output routes
-    /// back to it.
-    fn sample_conversation_request(address: &str) -> SessionSpawnRequest {
-        SessionSpawnRequest {
-            address: SessionAddress::from(address),
-            source_label: "discord:#builds".to_string(),
-            trigger: EventTrigger::Conversation,
-            agent_skill: None,
-            spawner: None,
-            depth: MAIN_DEPTH + 1,
-            subagent_config: SubAgentConfig {
-                prompt: "can you check the build?".to_string(),
-                context: None,
-                model: residuum_config::ModelSelector::MEDIUM,
-                resolved_model: None,
-                hop_count: 0,
-                sender: None,
-                inbound: None,
-                images: Vec::new(),
-                carried_history: Vec::new(),
-            },
-            conversation_target: Some(ConversationTarget {
-                endpoint: "discord".to_string(),
-                conversation_id: "chan-1".to_string(),
-            }),
-            overlap: None,
         }
     }
 
@@ -3481,136 +3419,6 @@ mod tests {
         );
         assert_eq!(event.session_address, info.address);
         assert_eq!(event.run_id, "run-7");
-    }
-
-    /// Provider that returns canned responses in sequence, one per call —
-    /// unlike `MockProvider`, which always returns the same response — so a
-    /// test can distinguish a run's first turn from its second.
-    struct SequencedProvider {
-        responses: Vec<String>,
-        call_count: std::sync::atomic::AtomicUsize,
-    }
-
-    impl SequencedProvider {
-        fn new(responses: Vec<&str>) -> Self {
-            Self {
-                responses: responses.into_iter().map(str::to_string).collect(),
-                call_count: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl residuum_inference::InferenceProvider for SequencedProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, InferenceError> {
-            let idx = self
-                .call_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let response = self
-                .responses
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| "no more responses configured".to_string());
-            Ok(InferenceResponse::new(response, vec![]))
-        }
-
-        fn model_name(&self) -> &'static str {
-            "sequenced"
-        }
-    }
-
-    fn make_sequenced_resources(responses: Vec<&str>) -> SubAgentResources {
-        let (layout, observer, merge_writer) = test_memory_extras();
-        SubAgentResources {
-            max_tool_iterations: None,
-            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
-            provider: Box::new(SequencedProvider::new(responses)),
-            tools: residuum_agent::ToolRegistry::new(),
-            mcp_registry: McpRegistry::new_shared(),
-            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
-            identity: IdentityFiles::default(),
-            options: CompletionOptions::default(),
-            skills_index: None,
-            observations: None,
-            recent_context: None,
-            layout,
-            observer,
-            merge_writer,
-            episode_skip_token_floor: 2000,
-            hop_counter: residuum_agent::HopCounter::new(0),
-        }
-    }
-
-    /// Build a runtime whose idle window outlasts any test, rather than
-    /// `test_runtime`'s 20ms: a session stays idle until the test delivers to
-    /// it or stops it, so the test never races the idle timeout completing
-    /// the run out from under it.
-    async fn test_runtime_held_idle() -> (
-        SessionRuntime,
-        residuum_bus::Subscriber<AgentResultEvent>,
-        residuum_bus::BusHandle,
-    ) {
-        let idle_window = Duration::from_hours(1);
-        let bus_handle = residuum_bus::spawn_broker();
-        let sub = bus_handle.subscribe(topics::Background).await.unwrap();
-        let registry = Arc::new(SessionRegistry::new());
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.path().to_path_buf();
-        // The store owns the guard, so the directory lives as long as any
-        // session task still writing through it.
-        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
-        let messenger = Arc::new(AgentMessenger::new(
-            Arc::clone(&registry),
-            bus_handle.publisher(),
-            Arc::clone(&store),
-            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
-        ));
-        let runtime = SessionRuntime::new(
-            registry,
-            store,
-            Arc::new(tokio::sync::Semaphore::new(3)),
-            IdleTimeouts {
-                scheduled: idle_window,
-                spawned: idle_window,
-                external: idle_window,
-                artifact: idle_window,
-            },
-            SessionRuntimeHandles {
-                publisher: bus_handle.publisher(),
-                tz: chrono_tz::UTC,
-                messenger,
-                checkpoints: test_checkpoints(&dir_path),
-                tracing_service: test_tracing_service(),
-                tracing_client_context: test_tracing_client_context(),
-            },
-        );
-        (runtime, sub, bus_handle)
-    }
-
-    /// Skip `events` to the next time the session at `address` reports
-    /// going `idle`, so each call matches one turn's idle and a test can tell
-    /// a second turn's idle from the first one's.
-    async fn next_idle(
-        events: &mut residuum_bus::Subscriber<residuum_bus::SessionEvent>,
-        address: &SessionAddress,
-        what: &str,
-    ) {
-        loop {
-            let event = next_event(what, events).await;
-            if &event.address == address
-                && matches!(
-                    event.kind,
-                    SessionEventKind::StateChanged(SessionState::Idle)
-                )
-            {
-                return;
-            }
-        }
     }
 
     #[tokio::test]

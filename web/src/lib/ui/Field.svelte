@@ -94,7 +94,7 @@
 
   .ui-field-hint {
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     color: var(--color-text-3);
   }
 
@@ -103,7 +103,7 @@
     align-items: flex-start;
     gap: var(--space-6);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     color: var(--color-err-text);
 
     & > :global(svg) {

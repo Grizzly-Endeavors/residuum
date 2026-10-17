@@ -1,0 +1,17 @@
+2026-10-17T03:48:21.5702611Z ##[group]Run cd web && npm run format:check
+2026-10-17T03:48:21.5703374Z [36;1mcd web && npm run format:check[0m
+2026-10-17T03:48:21.5722943Z shell: /usr/bin/bash -e {0}
+2026-10-17T03:48:21.5723465Z ##[endgroup]
+2026-10-17T03:48:21.7655583Z 
+2026-10-17T03:48:21.7656383Z > residuum-web@0.0.1 format:check
+2026-10-17T03:48:21.7657963Z > prettier --check 'src/**/*.{ts,svelte,js,json,css}' 'build/**/*.ts' 'mock/**/*.ts' 'scripts/**/*.{ts,mjs}' 'e2e/**/*.ts' playwright.config.ts
+2026-10-17T03:48:21.7659144Z 
+2026-10-17T03:48:21.9265025Z Checking formatting...
+2026-10-17T03:48:36.7328860Z [[33mwarn[39m] src/probe-format.ts
+2026-10-17T03:48:36.7414181Z [[31merror[39m] src/probe-syntax.ts: SyntaxError: Property assignment expected. (1:23)
+2026-10-17T03:48:36.7417652Z [[31merror[39m] [0m[31m[1m>[22m[39m[90m 1 |[39m [36mexport[39m [36mconst[39m a [33m=[39m {x[33m:[39m[35m1[39m[33m,[39m[33m,[39m}[33m;[39m
+2026-10-17T03:48:36.7420832Z [[31merror[39m]  [90m   |[39m                       [31m[1m^[22m[39m
+2026-10-17T03:48:36.7422478Z [[31merror[39m]  [90m 2 |[39m[0m
+2026-10-17T03:48:48.0534193Z Error occurred when checking code style in the above file.
+2026-10-17T03:48:48.1561467Z ##[error]Process completed with exit code 2.
+2026-10-17T03:48:48.4949202Z Post job cleanup.

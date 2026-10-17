@@ -1159,8 +1159,8 @@ pub async fn handle_inbound_message(
 mod tests {
     use super::*;
     use crate::bus::Subscriber;
+    use crate::bus::testing::{bus_barrier, next_event};
     use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
-    use residuum_bus::testing::{bus_barrier, next_event};
     use residuum_core::testing::wait;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;

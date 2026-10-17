@@ -2,10 +2,12 @@ pub use residuum_agent as agent;
 pub use residuum_agent::subconscious;
 pub use residuum_background as background;
 pub use residuum_bus as bus;
+pub use residuum_checkpoints as checkpoints;
 pub use residuum_config as config;
 pub use residuum_config::agent_keys;
 pub use residuum_core::{build_info, diagnostics, process, time, util};
 pub use residuum_inference as inference;
+pub use residuum_interfaces as interfaces;
 pub use residuum_mcp as mcp;
 pub use residuum_memory as memory;
 pub(crate) use residuum_net::{
@@ -34,7 +36,6 @@ pub mod gateway;
 pub mod hub;
 #[cfg(test)]
 pub(crate) mod integration;
-pub mod interfaces;
 pub mod logging;
 pub mod setup_wizard;
 #[cfg(test)]

@@ -19,7 +19,7 @@ pub struct MacosChannelConfig {
     pub throttle_window_secs: u64,
     pub sound: bool,
     pub app_name: String,
-    /// If unset, the "Open" action button is omitted from notifications.
+    /// Parsed from `channels.toml`; nothing reads it, since no handler receives the Open action.
     pub web_url: Option<String>,
 }
 

@@ -117,7 +117,7 @@ The main agent's own observation flow (the gateway's `memory` module) goes throu
 
 A `spawned` session's turn result is relayed to its **direct spawner** — the address recorded in `SessionInfo.spawner`, main or another session — via `AgentMessenger::send()`, from `maybe_relay_result()`/`relay_result_to_spawner()` in `runtime.rs`, after every turn (not only at completion), carrying the normal hop-count rules. A relay failure is never silent: it's logged at `warn` and appended as a system note to the run's own transcript (both the in-progress sidecar and, since it's also pushed onto `recent_messages`, the run's final completed record).
 
-`notify::router` subscribes to the bus `Background` topic and routes each `AgentResultEvent` by the disposition its session declared (via `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinels in its summary — computed in `runtime.rs::build_result_event`, using the same rule the old bridge module used): `Silent` results are discarded; `spawned`-category results (`EventTrigger::Agent`) are discarded here too, since they were already relayed per-turn as above; `artifact`-category results (`EventTrigger::Artifact`) are discarded whatever their disposition, since they belong to the artifact that started them; everything else files to the inbox, plus every configured notification channel when `Urgent`.
+`notify::router` subscribes to the bus `Background` topic and routes each `AgentResultEvent` by the disposition its session declared (via `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinels in its summary — computed in `runtime.rs::build_result_event`): `Silent` results are discarded; `spawned`-category results (`EventTrigger::Agent`) are discarded here too, since they were already relayed per-turn as above; `artifact`-category results (`EventTrigger::Artifact`) are discarded whatever their disposition, since they belong to the artifact that started them; everything else files to the inbox, plus every configured notification channel when `Urgent`.
 
 ---
 
@@ -181,7 +181,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 
 **Decision: Delivery to a running session reuses `execute_turn`'s existing interrupt draining; delivery to main reuses the existing inbound-message bus path.**
 
-**Why:** `execute_turn`'s tool loop already drains its `interrupt_rx` at every checkpoint — wiring a session's real interrupt channel into that (replacing the dead-end receiver every fork used to get) is enough to deliver "an interrupt at the next tool-call boundary" with no new mid-turn plumbing. Main's own turn loop already treats an inbound `MessageEvent` as an interrupt when a turn is running and as fresh input when idle (this is how a relayed session result reaches main today) — reusing it for `message_agent` avoids a second, parallel delivery mechanism for the one target that isn't a session.
+**Why:** `execute_turn`'s tool loop already drains its `interrupt_rx` at every checkpoint — wiring a session's real interrupt channel into that is enough to deliver "an interrupt at the next tool-call boundary" with no new mid-turn plumbing. Main's own turn loop already treats an inbound `MessageEvent` as an interrupt when a turn is running and as fresh input when idle (this is how a relayed session result reaches main today) — reusing it for `message_agent` avoids a second, parallel delivery mechanism for the one target that isn't a session.
 
 ---
 
@@ -215,7 +215,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`listener.rs`** — the sole caller of `SessionRuntime::spawn()`; handles both a fresh fork and a `message_agent`-triggered resume identically, since both arrive as a `SpawnRequestEvent`.
 - **`src/gateway/actions.rs`** — forks a `scheduled` session for each due scheduled action.
 - **`crates/proactivity/src/pulse/executor.rs`** — builds a `SpawnRequestEvent` from a due pulse.
-- **`src/interfaces/webhook.rs`** — forks an `external` session for a webhook routed to an agent.
+- **`crates/interfaces/src/webhook.rs`** — forks an `external` session for a webhook routed to an agent.
 - **`crates/agent/src/subconscious/learning.rs`** — forks a `spawned` session running the `learner` skill.
 - **`src/tools/background.rs`** — `stop_agent`/`list_agents` (read the `SessionRegistry` directly), `subagent_spawn` (publishes a `SpawnRequestEvent` with a pre-generated address).
 - **`src/tools/registry.rs`** — `SessionTools`, the `SessionToolFactory` the gateway hands `SpawnContext`: it builds every session's tool registry.
@@ -231,7 +231,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | The crate's exports: `SessionRegistry`, `SessionRuntime` with `SessionRuntimeHandles` and `SessionSpawnRequest`, `SessionStore`, `AgentMessenger`/`DeliveryOutcome`/`SendError`, `SubAgentResources`/`build_subagent_resources`, `SubAgentBuildConfig`/`SubAgentConfig`, `SpawnContext`/`BackgroundTierActiveIndex`, `SessionMemoryEnv`, `spawn_listener`, `OwnerSessionStart`/`load_main_conversation`, and a re-export of `HopCounter` from `residuum_agent::hop` (defined there, alongside the main agent, since both main and sessions track one). `listener`, `owner_session`, `runtime`, `session_memory` and `spawn_context` are private modules whose items the crate root re-exports. |
+| `lib.rs` | The crate's exports: `SessionRegistry`, `SessionRuntime` with `SessionRuntimeHandles` and `SessionSpawnRequest`, `SessionStore`, `AgentMessenger`/`DeliveryOutcome`/`SendError`, `SubAgentResources`/`build_subagent_resources`, `SubAgentBuildConfig`/`SubAgentConfig`, `SpawnContext`/`BackgroundTierActiveIndex`, `SessionMemoryEnv`, `spawn_listener`, `OwnerSessionStart`/`load_main_conversation`. `listener`, `owner_session`, `runtime`, `session_memory` and `spawn_context` are private modules whose items the crate root re-exports. |
 | `registry.rs` | `SessionRegistry`, `ResumePoint`, the interrupt-channel plumbing (`register()`/`deliver()`). |
 | `store.rs` | `SessionStore`, `RunRecord`, `RunTranscriptSink`, `RunCursor`: per-run metadata persistence, the incrementally-appended transcript file, the startup incomplete-run recovery sweep, and the paginated newest-first listing of completed runs (`list_completed_runs()`). |
 | `session_memory.rs` | `SessionMemory`, `SessionMemoryEnv`, `complete_session_memory()`: per-turn staging and the completion pipeline that merges into global memory. |

@@ -160,7 +160,7 @@
     display: grid;
     flex: none;
     place-items: center;
-    height: calc(var(--font-size-sm) * var(--line-height-ui));
+    height: 1lh;
     transition: transform var(--duration-base) var(--ease-out);
 
     [aria-expanded="true"] > & {

@@ -74,11 +74,11 @@
   .ui-empty-title {
     font-size: var(--font-size-heading);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   .ui-empty-text {
-    line-height: var(--line-height-message);
+    --leading: var(--line-height-message);
     color: var(--color-text-2);
   }
 

@@ -18,18 +18,18 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 reqwest = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }
 
-# macOS native notifications (Apple Silicon only)
+# macOS native notifications
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-user-notifications = { workspace = true }
 block2 = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
 
 # Windows toast notifications
 [target.'cfg(windows)'.dependencies]

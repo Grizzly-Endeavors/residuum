@@ -179,8 +179,8 @@ mod tests {
     use super::*;
     use crate::actions::types::ScheduledAction;
     use crate::bus::Subscriber;
+    use crate::bus::testing::next_event;
     use chrono::{Duration, Utc};
-    use residuum_bus::testing::next_event;
 
     fn due_action(id: &str, name: &str) -> ScheduledAction {
         let now = Utc::now();

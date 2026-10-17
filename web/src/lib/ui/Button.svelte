@@ -72,7 +72,7 @@
     border-radius: var(--corner-sm);
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
-    line-height: 1;
+    --leading: 1;
     white-space: nowrap;
     transition:
       background-color var(--duration-fast) var(--ease-out),

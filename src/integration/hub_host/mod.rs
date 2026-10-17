@@ -24,6 +24,7 @@ use crate::background::team::{
     A2aVisibility, Actor, AgentErrorKind, AgentState, CreateAgentRequest, LifecycleError,
     TeamDirectory,
 };
+use crate::bus::testing::bus_barrier;
 use crate::config::{HubConfig, WorkspaceLayout};
 use crate::hub::directory::AgentDirectory;
 use crate::hub::host::AgentHost;
@@ -36,7 +37,6 @@ use crate::hub::test_support::{mount_reply, write_agent};
 use crate::hub::types::{AgentActivity, AgentPatch, HubEvent, RestoreAgentRequest};
 use crate::inference::testing::model::GatedModel;
 use crate::workspace::watch::WatchHealth;
-use residuum_bus::testing::bus_barrier;
 use residuum_core::testing::gate::Gate;
 use residuum_core::testing::ports::reserve_port;
 use residuum_core::testing::wait;

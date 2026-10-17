@@ -353,7 +353,7 @@
   .setup-title {
     font-size: var(--font-size-title);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
 
     /* Focus lands here when a step opens; the heading isn't a control. */
     &:focus {

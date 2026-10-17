@@ -84,6 +84,9 @@
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
 
+  /* Leading factors. A component sets one as `--leading`, never as
+     line-height: the base styles (ui-base.css) make every element's line box
+     its font size times the factor, rounded to a whole pixel. */
   --line-height-tight: 1.35;
   --line-height-ui: 1.5;
   --line-height-message: 1.65;

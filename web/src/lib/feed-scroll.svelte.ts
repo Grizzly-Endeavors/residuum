@@ -21,8 +21,9 @@
 // little first as Chromium carries a keyboard scroll still under way into it
 // (the glide ends on arriving, at `scrollend`, at reader input or at the
 // scroller's next move of its own); moving the position up to keep it in range
-// when the content or the view shrinks past it; and a move it makes while the
-// page changes the feed's items (`takeInUpdate`).
+// when the content or the view shrinks past it, judged against the content as
+// it is and as it was before anything grew in place (`keptInRange`); and a move
+// it makes while the page changes what the feed shows (`takeInUpdate`).
 //
 // "The end" means the end of the content, not the end of the scrolling area.
 // A feed can reserve room below its last line (a persistent buffer, and a
@@ -122,6 +123,8 @@ export class FeedScroller {
    * seen the feed laid out.
    */
   private knownTop: number | null = null;
+  /** How tall the content was where the scroller last took the position in. */
+  private knownHeight = 0;
   /**
    * The browser's glide for End is under way: its moves, either way, aren't
    * the reader's.
@@ -186,7 +189,8 @@ export class FeedScroller {
     }
     const top = el.scrollTop;
     const from = this.knownTop;
-    this.knownTop = top;
+    const fromHeight = this.knownHeight;
+    this.know(top);
     // Where the browser has the position as the feed shows again isn't the reader's move.
     if (this.hidden) {
       this.hidden = false;
@@ -201,15 +205,37 @@ export class FeedScroller {
       return;
     }
     if (this.held) return;
-    // The browser moves the position up by itself only to keep it in range:
-    // where it was is past the end of the range now, and it lands at the end.
-    const clamped = up && from > el.scrollHeight - el.clientHeight + 0.5 && this.atBottom();
-    if (up && !clamped) {
+    if (up && !this.keptInRange(from, top, fromHeight)) {
       this.following = false;
     } else if (this.nearEnd()) {
       this.following = true;
     }
     this.refreshPill();
+  }
+
+  /** Record `top` as where the position is, over the content as it is now. */
+  private know(top: number): void {
+    this.knownTop = top;
+    this.knownHeight = this.el?.scrollHeight ?? 0;
+  }
+
+  /**
+   * Whether a move up from `from` to `top` is the browser keeping the position
+   * in range: where it was is past the end of the range, and it lands at the
+   * end. The range is judged both as it is now and as it was where the scroller last took the
+   * position in (`fromHeight`), since content can grow in place (an image
+   * loading, a font swapping in) after the move and before its event: the view
+   * grows, the browser keeps the position in range, and then the content below
+   * a following reader grows.
+   */
+  private keptInRange(from: number, top: number, fromHeight: number): boolean {
+    const el = this.el;
+    if (!el) return false;
+    const view = el.clientHeight;
+    return [el.scrollHeight, fromHeight].some((height) => {
+      const end = height - view;
+      return from > end + 0.5 && Math.abs(end - top) <= SCROLL_END_SLACK_PX;
+    });
   }
 
   /**
@@ -228,17 +254,20 @@ export class FeedScroller {
   }
 
   /**
-   * Where the browser moved the position while the page changed the items
-   * isn't the reader's move. Seen in WebKit on every chat open: an older
-   * episode replaced the feed's loading row, and the position went up 36px,
-   * as far as the content without either allowed, before the episode was laid
-   * out. Against the episode, that move looked like the reader leaving the
-   * bottom, and the chat opened 850px short of its newest message.
+   * Where the browser moved the position while the page changed what the feed
+   * shows (its items, or the turn in flight) isn't the reader's move. Seen in
+   * WebKit on every chat open: an older episode replaced the feed's loading
+   * row, and the position went up 36px, as far as the content without either
+   * allowed, before the episode was laid out. Against the episode, that move
+   * looked like the reader leaving the bottom, and the chat opened 850px short
+   * of its newest message. Seen in WebKit too as a sent message's turn
+   * started and its block appeared: the position went up 1575px, and the
+   * reader was left far above their own message.
    */
   private takeInUpdate(): void {
     const el = this.el;
     this.updating = false;
-    if (el && !isHidden(el) && !this.hidden) this.knownTop = el.scrollTop;
+    if (el && !isHidden(el) && !this.hidden) this.know(el.scrollTop);
   }
 
   /** Scroll at once to `top`, as the scroller's own move, and record where it left the position. */
@@ -246,7 +275,7 @@ export class FeedScroller {
     const el = this.el;
     if (!el) return;
     el.scrollTo({ top, behavior: "instant" });
-    this.knownTop = el.scrollTop;
+    this.know(el.scrollTop);
     this.hidden = false;
     // An instant scroll ends a glide under way.
     this.endGlide = false;
@@ -372,7 +401,8 @@ export class FeedScroller {
     // Capture: before the control's own click handler changes what is shown.
     el.addEventListener("click", this.onPress, true);
     this.hidden = isHidden(el);
-    this.knownTop = this.hidden ? null : el.scrollTop;
+    this.know(el.scrollTop);
+    if (this.hidden) this.knownTop = null;
     this.lastEnd = this.contentEnd();
     this.lastViewport = el.clientHeight;
     this.lastRoom = this.bottomRoom();
@@ -436,7 +466,7 @@ export class FeedScroller {
     this.held = false;
     const el = this.el;
     if (!el || isHidden(el)) return;
-    this.knownTop = el.scrollTop;
+    this.know(el.scrollTop);
     this.following = this.nearEnd();
     this.refreshPill();
   }

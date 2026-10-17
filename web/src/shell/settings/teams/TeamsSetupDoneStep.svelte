@@ -122,7 +122,7 @@
   .reminder-text {
     font-size: var(--font-size-xs);
     color: var(--color-text-2);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .cleanup-box {
