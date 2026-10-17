@@ -143,14 +143,19 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       turn_id: turnId,
     });
     setSessionState(state, session, "idle");
-    if (session.spawner === "main") {
-      state.broadcast({
-        type: "session_message_to_main",
-        address: session.address,
-        run_id: session.run_id,
-        content: reply,
-      });
-    }
+    if (session.spawner === "main") messageMainFrom(state, session, reply);
+  });
+}
+
+/**
+ * `session` sends main `body`, as the backend relays a session's result: with
+ * the header that names the sender, and the sender, run included, alongside.
+ */
+export function messageMainFrom(state: MockState, session: SessionSummary, body: string): void {
+  state.messageMain(`[Agent Message from ${session.address} (${session.category})]\n${body}`, {
+    address: session.address,
+    category: session.category,
+    run_id: session.run_id,
   });
 }
 

@@ -149,11 +149,6 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
             message,
             details,
         },
-        SessionEventKind::MessageToMain { content } => ServerMessage::SessionMessageToMain {
-            address,
-            run_id,
-            content,
-        },
     }
 }
 

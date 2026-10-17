@@ -128,3 +128,26 @@ describe("the times in the store's history", () => {
     expect(episodes).not.toHaveProperty("timestamp");
   });
 });
+
+describe("a session's message to main in history", () => {
+  it("keeps the run that sent it, so Open session opens that run", () => {
+    const { items } = convertHistory(
+      [
+        message("user", "[Agent Message from spawned-1 (spawned)]\nResult", {
+          visibility: "background",
+          agent_sender: { address: "spawned-1", category: "spawned", run_id: "run-4" },
+        }),
+        message("user", "[Agent Message from spawned-2 (spawned)]\nOlder result", {
+          visibility: "background",
+          agent_sender: { address: "spawned-2", category: "spawned" },
+        }),
+      ],
+      { mode: "main" },
+    );
+
+    expect(items).toMatchObject([
+      { kind: "agent-message", from: "spawned-1", content: "Result", runId: "run-4" },
+      { kind: "agent-message", from: "spawned-2", content: "Older result", runId: null },
+    ]);
+  });
+});

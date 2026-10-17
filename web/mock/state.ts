@@ -1,6 +1,7 @@
 import type {
   A2aVisibility,
   AgentLastError,
+  AgentSender,
   AgentListResponse,
   AgentState,
   AgentSummary,
@@ -117,6 +118,13 @@ export interface MockState {
    * back still gets it. Set by the agent socket.
    */
   journalOnly: (frame: ServerMessage) => void;
+  /**
+   * Hand the main conversation a message one of the agent's own sessions
+   * sent it (`content` with the header the backend writes, `sender` naming
+   * the session and its run): it joins the turn in flight, or starts one. Set
+   * by the agent socket.
+   */
+  messageMain: (content: string, sender: AgentSender) => void;
   /**
    * Open tasks sent to remote agents, for the sessions sidebar. `laptop`'s
    * task is unreachable, so stopping it answers `502 unreachable` and the
@@ -358,6 +366,7 @@ export function createState(
     dropSockets: () => {},
     broadcast: () => {},
     journalOnly: () => {},
+    messageMain: () => {},
     compressedAt: null,
     inboxItems: [],
     inboxArchive: [],

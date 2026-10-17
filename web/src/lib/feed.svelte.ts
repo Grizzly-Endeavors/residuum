@@ -509,7 +509,6 @@ export class FeedStore {
       case "session_outbound_a2a_task":
       case "session_start_failed":
       case "session_error":
-      case "session_message_to_main":
       case "session_message_delivered":
       case "session_stop_requested":
       case "session_command_failed":
@@ -701,23 +700,6 @@ export class FeedStore {
     this.feed.push({ id: nextFeedId(), kind: "local-system", content });
   }
 
-  /**
-   * Add a message a session sent the main agent (its relayed result, or a
-   * `message_agent` call), as it arrives live.
-   */
-  pushAgentMessage(from: string, runId: string, content: string, category: string | null): void {
-    this.feed.push({
-      id: nextFeedId(),
-      kind: "agent-message",
-      from,
-      category,
-      content,
-      runId,
-      timestamp: localTimestamp(),
-      ...this.reachedLiveTurn(),
-    });
-  }
-
   /** The cumulative totals as `GET /api/usage` read them, on binding and on connect. */
   setSessionUsage(totals: SessionUsageTotals): void {
     this.sessionUsage = totals;
@@ -837,11 +819,12 @@ export class FeedStore {
   }
 
   /**
-   * A person's or a teammate's message entering the main conversation, from
-   * any channel. One this page sent is already shown. One that arrives while
-   * its turn runs joins it; any other starts the turn that follows, which
-   * `turn_started` then announces. A teammate's shows as the card history
-   * gives it.
+   * A message from a person, a teammate or one of this agent's own sessions
+   * entering the main conversation, from any channel. One this page sent is
+   * already shown. One that arrives while its turn runs joins it; any other
+   * starts the turn that follows, which `turn_started` then announces. An
+   * agent's (`agent_sender` set) shows as the card history gives it, opening
+   * the run that sent it when the sender names one.
    */
   private receiveUserMessage(msg: UserMessageFrame): void {
     // The agent read a waiting message: it joins the feed here, where the agent read it.
@@ -863,7 +846,7 @@ export class FeedStore {
         from,
         category,
         content: body,
-        runId: null,
+        runId: msg.agent_sender.run_id ?? null,
         timestamp,
         messageId: msg.id,
         turnId: msg.turn_id,
