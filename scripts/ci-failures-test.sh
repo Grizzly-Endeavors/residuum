@@ -246,6 +246,31 @@ check_reported_jobs() {
 }
 check_reported_jobs
 
+# skip_earlier_run leaves out an earlier run only once it has finished with nothing to
+# report. An earlier run still in progress is kept, so its failures so far are shown.
+check_skip_earlier_run() {
+    local fn
+    fn="$(awk '/^skip_earlier_run\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
+    eval "$fn"
+    if ! skip_earlier_run true completed ""; then
+        echo "ci-failures skip_earlier_run: a finished earlier run with no rows was kept" >&2
+        status=1
+    fi
+    if skip_earlier_run true in_progress ""; then
+        echo "ci-failures skip_earlier_run: an earlier run still in progress was skipped" >&2
+        status=1
+    fi
+    if skip_earlier_run true completed "2	Skipped	failure	Build"; then
+        echo "ci-failures skip_earlier_run: a finished earlier run with rows was skipped" >&2
+        status=1
+    fi
+    if skip_earlier_run false completed ""; then
+        echo "ci-failures skip_earlier_run: the latest run was skipped" >&2
+        status=1
+    fi
+}
+check_skip_earlier_run
+
 if (( status == 0 )); then
     echo "ci-failures parser and queue selection: every fixture matches its .records file"
 fi

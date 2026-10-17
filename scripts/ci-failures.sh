@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Lists the failures of the latest CI runs for a pull request, a branch, a release
 # tag or a commit (failing tests, lint, type and format errors, timeouts), grouped
-# by job and step, so one pass fixes everything that broke. Each failure carries two flags. touched: this change edits a file the
-# failure names. seen elsewhere: the same failure was in a failed run on another
-# branch or tag within the last 14 days. A failure that is not touched but is seen
-# elsewhere is marked likely flake. Every other failure is presumed to come from
-# this change.
+# by job and step, so one pass fixes everything that broke. Each failure carries two
+# flags. touched: this change edits a file the failure names. seen elsewhere: the
+# same failure was in a failed run on another branch or tag within the last 14 days.
+# A failure that is not touched but is seen elsewhere is marked likely flake. Every
+# other failure is presumed to come from this change.
 #
 # For a PR number, the latest merge queue batch of the PR is listed as well when it
 # did not succeed: the full suite runs only in the queue, on a commit that is not
@@ -397,7 +397,7 @@ for side in target look; do
     while read -r run attempt job; do
         annotations="$cache/$run-$attempt/$job.annotations.json"
         if [[ ! -s "$annotations" ]]; then
-            echo "warning: could not fetch the annotations of cancelled job $job in run $run; if it timed out, it is not listed" >&2
+            echo "warning: could not fetch the annotations of cancelled job $job in run $run; a timeout of that job is not listed or matched elsewhere" >&2
             query_errors=$((query_errors + 1))
             continue
         fi
@@ -621,6 +621,13 @@ reported_jobs() { # jobs-file workflow earlier
     )
 }
 
+# Whether an earlier run is left out of the report: it is when a later run reran all
+# of its failed jobs (no rows) and it has finished. A run still in progress is kept,
+# so its failures so far show and the summary counts it as partial.
+skip_earlier_run() { # earlier status job-rows
+    [[ "$1" == true && "$2" == completed && -z "$3" ]]
+}
+
 # Adds the jobs a run ran, every job it did not skip, to ran_later, so an earlier run
 # of the same workflow does not report them again. A job still running counts: its
 # result replaces the earlier one.
@@ -667,8 +674,7 @@ while IFS= read -r run_line; do
     if [[ -f "$jobs_file" ]]; then
         job_rows="$(reported_jobs "$jobs_file" "$name" "$earlier")"
         remember_ran_jobs "$jobs_file" "$name"
-        # An earlier run whose failed jobs a later run has all run again adds nothing.
-        if [[ "$earlier" == true && -z "$job_rows" ]]; then
+        if skip_earlier_run "$earlier" "$status" "$job_rows"; then
             continue
         fi
     fi
@@ -682,7 +688,7 @@ while IFS= read -r run_line; do
         name="$name, merge queue batch ${head:0:7}"
     fi
     if [[ "$earlier" == true ]]; then
-        state="$state, an earlier run whose jobs below a later run skipped"
+        state="$state, earlier run; a later run of this workflow did not rerun the jobs below"
     fi
     echo
     echo "== $name - run $run_id - attempt $attempt - $state - $url"
