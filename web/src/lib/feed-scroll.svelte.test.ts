@@ -537,6 +537,29 @@ describe("FeedScroller", () => {
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(2100);
     });
+
+    it("doesn't take it for them leaving when content grows in place before the move's event", () => {
+      const { feed, observer, scroller } = attached();
+      // The view grows by 30px and the browser moves the position up to keep
+      // it in range; then an image in the last message loads, 240px below the
+      // reader, before the move's scroll event.
+      feed.geometry.clientHeight = 530;
+      feed.geometry.scrollHeight = 2240;
+      feed.scrollBy(1470);
+      expect(scroller.isFollowing).toBe(true);
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(2240);
+      expect(scroller.scrolledUp).toBe(false);
+    });
+
+    it("still takes a move up for the reader's when content grew in place before its event", () => {
+      const { feed, scroller } = attached();
+      // An image loads below the reader, and they scroll up 10px before the
+      // scroller has seen the content grow.
+      feed.geometry.scrollHeight = 2240;
+      feed.scrollBy(1490);
+      expect(scroller.isFollowing).toBe(false);
+    });
   });
 
   describe("a flick", () => {
