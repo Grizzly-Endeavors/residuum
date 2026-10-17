@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::bus::NotificationEvent;
+use residuum_bus::NotificationEvent;
 
 use super::channels::NotificationChannel;
 

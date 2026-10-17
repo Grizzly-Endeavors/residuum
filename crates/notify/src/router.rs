@@ -7,7 +7,7 @@
 //! - agent-spawned (`spawned` sessions) → discard here; each turn's result is
 //!   already relayed to the session's direct spawner as it happens, via
 //!   `AgentMessenger` from the session runtime (see
-//!   `crate::background::runtime::relay_result_to_spawner`), not through this
+//!   `relay_result_to_spawner` in the background runtime), not through this
 //!   router
 //! - artifact-started (`artifact` sessions) → discard; their output reaches
 //!   the artifact that started them through the session stream, and is never
@@ -22,7 +22,7 @@
 
 use tokio::task::JoinHandle;
 
-use crate::bus::{
+use residuum_bus::{
     AgentResultEvent, AgentResultStatus, BusHandle, EndpointRegistry, EventTrigger, NoticeEvent,
     NotificationEvent, NotifyName, Publisher, ResultDisposition, SYSTEM_CHANNEL, Subscriber,
     topics,
@@ -34,7 +34,7 @@ use crate::bus::{
 /// by its declared disposition.
 ///
 /// Returns `None` if subscription fails.
-pub(crate) async fn spawn_notification_router(
+pub async fn spawn_notification_router(
     bus_handle: &BusHandle,
     endpoint_registry: EndpointRegistry,
     publisher: Publisher,
@@ -52,7 +52,9 @@ pub(crate) async fn spawn_notification_router(
         publisher,
     };
 
-    Some(crate::util::spawn_in_span(router_loop(subscriber, router)))
+    Some(residuum_core::util::spawn_in_span(router_loop(
+        subscriber, router,
+    )))
 }
 
 /// The notification router state.
@@ -88,7 +90,7 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     }
 
     // A `spawned` session's result is relayed to its direct spawner as each
-    // turn happens (see `crate::background::runtime::relay_result_to_spawner`),
+    // turn happens (see `relay_result_to_spawner` in the background runtime),
     // not through this router — the disposition rules below (inbox, urgent
     // fanout) are for `scheduled` results only.
     if matches!(event.source, EventTrigger::Agent) {
@@ -245,7 +247,7 @@ async fn publish_to_targets(
                 );
             }
         } else {
-            let topic = topics::Notification(crate::bus::NotifyName::from(target.as_str()));
+            let topic = topics::Notification(residuum_bus::NotifyName::from(target.as_str()));
             if let Err(e) = publisher.publish(topic, notification.clone()).await {
                 tracing::warn!(
                     topic = %target,
@@ -261,8 +263,8 @@ async fn publish_to_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{EndpointCapabilities, EndpointEntry, TopicId};
     use chrono::NaiveDate;
+    use residuum_bus::{EndpointCapabilities, EndpointEntry, TopicId};
     use residuum_core::testing::{clock, wait};
 
     fn sample_timestamp() -> chrono::NaiveDateTime {
@@ -274,7 +276,7 @@ mod tests {
 
     fn sample_event(disposition: ResultDisposition) -> AgentResultEvent {
         AgentResultEvent {
-            session_address: crate::bus::SessionAddress::from("scheduled-email-check-0001"),
+            session_address: residuum_bus::SessionAddress::from("scheduled-email-check-0001"),
             run_id: "t1".into(),
             source_label: "pulse:email_check".into(),
             agent_skill: None,
@@ -289,7 +291,7 @@ mod tests {
 
     fn registry_with_channels(names: &[&str]) -> EndpointRegistry {
         EndpointRegistry::from_entries(names.iter().map(|name| EndpointEntry {
-            id: crate::bus::EndpointId::from(*name),
+            id: residuum_bus::EndpointId::from(*name),
             topic: TopicId::Notification(NotifyName::from(*name)),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: (*name).to_string(),
@@ -326,13 +328,13 @@ mod tests {
     fn interactive_endpoints_are_never_delivery_targets() {
         let reg = EndpointRegistry::from_entries([
             EndpointEntry {
-                id: crate::bus::EndpointId::from("ntfy_phone"),
+                id: residuum_bus::EndpointId::from("ntfy_phone"),
                 topic: TopicId::Notification(NotifyName::from("ntfy_phone")),
                 capabilities: EndpointCapabilities::NOTIFY_ONLY,
                 display_name: "ntfy_phone".to_string(),
             },
             EndpointEntry {
-                id: crate::bus::EndpointId::from("websocket"),
+                id: residuum_bus::EndpointId::from("websocket"),
                 topic: TopicId::Notification(NotifyName::from("websocket")),
                 capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "websocket".to_string(),
@@ -348,7 +350,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn silent_result_is_delivered_nowhere() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let router = NotificationRouter {
             endpoint_registry: registry_with_channels(&["ntfy_phone"]),
@@ -363,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn urgent_result_reaches_inbox_and_channel() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let mut ntfy_sub: Subscriber<NotificationEvent> = handle
             .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
@@ -392,7 +394,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn normal_result_does_not_reach_a_channel() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut ntfy_sub: Subscriber<NotificationEvent> = handle
             .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
             .await
@@ -415,7 +417,7 @@ mod tests {
         // this router must not also relay it to main (which would double up
         // for main-spawned sessions, and be outright wrong for a session
         // spawned by another session).
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut user_sub = handle.subscribe(topics::UserMessage).await.unwrap();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let router = NotificationRouter {
@@ -443,7 +445,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn conversation_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let mut ntfy_sub: Subscriber<NotificationEvent> = handle
             .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
@@ -472,7 +474,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn conversation_session_result_stays_out_of_the_inbox_when_normal() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let router = NotificationRouter {
             endpoint_registry: registry_with_channels(&[]),
@@ -494,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_triggered_result_still_reaches_the_inbox() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let router = NotificationRouter {
             endpoint_registry: registry_with_channels(&[]),
@@ -515,7 +517,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn artifact_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let mut user_sub = handle.subscribe(topics::UserMessage).await.unwrap();
         let mut ntfy_sub: Subscriber<NotificationEvent> = handle
@@ -551,7 +553,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_pulse_inbox_item_carries_the_failure_reason() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let router = NotificationRouter {
             endpoint_registry: registry_with_channels(&[]),
@@ -579,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn stopped_pulse_inbox_item_says_it_was_stopped() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let router = NotificationRouter {
             endpoint_registry: registry_with_channels(&[]),
@@ -612,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_pulse_publishes_an_owner_notice() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut notice_sub: Subscriber<NoticeEvent> = handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -641,7 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_action_publishes_an_owner_notice_naming_the_action() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut notice_sub: Subscriber<NoticeEvent> = handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -671,7 +673,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn completed_pulse_publishes_no_failure_notice() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut notice_sub: Subscriber<NoticeEvent> = handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -697,7 +699,7 @@ mod tests {
         // (see `relay_result_to_spawner`), never routed through this
         // notice — a failure notice here would be redundant with that relay
         // and, for a deeply nested spawn, attributed to the wrong thing.
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut notice_sub: Subscriber<NoticeEvent> = handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await

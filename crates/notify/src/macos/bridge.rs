@@ -9,19 +9,17 @@ use super::MacosChannelConfig;
 use super::categories::{
     MacosInterruptionLevel, MacosNotificationAction, NOTIFICATION_CATEGORY_ID,
 };
-use crate::bus::NotificationEvent;
-use crate::notify::batch_aggregator::{self, NotificationBridge};
+use crate::batch_aggregator::{self, NotificationBridge};
 use async_trait::async_trait;
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
-use objc2::{ClassType, msg_send};
 use objc2_foundation::{NSBundle, NSError, NSSet, NSString};
 use objc2_user_notifications::{
     UNMutableNotificationContent, UNNotificationCategory, UNNotificationCategoryOptions,
     UNNotificationInterruptionLevel, UNNotificationRequest, UNNotificationSound,
     UNUserNotificationCenter,
 };
+use residuum_bus::NotificationEvent;
 
 /// Text content for a macOS notification.
 pub struct NotificationText {
@@ -137,7 +135,7 @@ impl MacosBridge {
         let cat_id = category_id.to_string();
         let thread = thread_id.to_string();
 
-        crate::util::spawn_blocking_in_span(move || {
+        residuum_core::util::spawn_blocking_in_span(move || {
             post_notification_sync(&id, &text, &cat_id, interruption_level, sound, &thread);
         })
         .await
@@ -177,22 +175,6 @@ impl MacosBridge {
             "background-results",
         )
         .await
-    }
-
-    pub fn handle_action(&self, action_id: &str, notification_id: &str) {
-        // "dismiss" is the default macOS action and needs no handling
-        if action_id == "open" {
-            if let Some(ref web_url) = self.config.web_url {
-                let url = format!("{web_url}/notification/{notification_id}");
-                open_url(&url);
-            } else {
-                tracing::debug!(
-                    action_id,
-                    notification_id,
-                    "open action received but no web_url configured, skipping"
-                );
-            }
-        }
     }
 
     #[must_use]
@@ -321,29 +303,5 @@ fn post_notification_sync(
             category_id,
             "panic in macOS notification posting"
         );
-    }
-}
-
-/// Uses raw `msg_send!` because `objc2-app-kit` doesn't expose
-/// `NSWorkspace.open(_:)` as a safe wrapper yet.
-fn open_url(url_str: &str) {
-    let result = std::panic::catch_unwind(|| {
-        let ns_url_str = NSString::from_str(url_str);
-        unsafe {
-            let url: Option<Retained<objc2_foundation::NSURL>> =
-                msg_send![objc2_foundation::NSURL::class(), URLWithString: &*ns_url_str];
-            if let Some(url) = url {
-                let cls_name = c"NSWorkspace";
-                let workspace: Retained<objc2_foundation::NSObject> = msg_send![
-                    objc2::runtime::AnyClass::get(cls_name).unwrap_unchecked(),
-                    sharedWorkspace
-                ];
-                let _: Bool = msg_send![&*workspace, openURL: &*url];
-            }
-        }
-    });
-
-    if result.is_err() {
-        tracing::warn!(url = url_str, "failed to open URL");
     }
 }

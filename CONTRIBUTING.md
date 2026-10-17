@@ -188,8 +188,9 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-net` | `crates/net` | `tunnel`, `remote_access`, `pairing`, `workbench`, and the request helpers they share with the gateway (`browser_landing`, `cross_site`, `remote_control_guard`) | core, config |
 | `residuum-bus` | `crates/bus` | `bus`: the topic broker and the payloads it carries (the session vocabulary, message origins, attachments, usage, workspace changes, interrupts), and `testing` behind `test-support` | core, config, inference, memory |
 | `residuum-workspace` | `crates/workspace` | `workspace`: identity files, bootstrapping, team files, the config, MCP patching, and the change feed (`watch`); `inbox`, the user and agent inboxes and the inbound attachment code; and `testing` behind `test-support` | core, config, bus, inference, mcp |
+| `residuum-notify` | `crates/notify` | `notify`: the notification channels (ntfy, webhook, the inbox, and the native macOS and Windows channels), the router and the subscriber, and `channel_builder`, whose `build_external_channels` is re-exported at the crate root | core, config, bus, workspace |
 | `residuum-proactivity` | `crates/proactivity` | `pulse` (the heartbeat pulses: scheduling, scripts, the edit and next-run helpers, and `testing` behind `test-support`) and `actions` (scheduled actions and their store) | core, config, bus (dev: workspace) |
-| `residuum` | `.` | everything else: gateway, hub, interfaces, agent, tools, background, a2a, notify, checkpoints, subconscious, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
+| `residuum` | `.` | everything else: gateway, hub, interfaces, agent, tools, background, a2a, checkpoints, subconscious, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
 
 ```
 residuum-memory     residuum-mcp

@@ -1,15 +1,15 @@
 //! Batch aggregator wiring for the Windows notification channel.
 //!
 //! The debounce-window batching logic itself lives in
-//! [`crate::notify::batch_aggregator`], shared with the macOS channel;
+//! [`crate::batch_aggregator`], shared with the macOS channel;
 //! this module just spawns it with the Windows bridge.
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::bridge::WindowsBridge;
-use crate::bus::NotificationEvent;
-use crate::notify::batch_aggregator;
+use crate::batch_aggregator;
+use residuum_bus::NotificationEvent;
 
 #[must_use]
 pub fn spawn(
@@ -17,5 +17,5 @@ pub fn spawn(
     bridge: WindowsBridge,
     throttle_window_secs: u64,
 ) -> JoinHandle<()> {
-    crate::util::spawn_in_span(batch_aggregator::run(rx, bridge, throttle_window_secs))
+    residuum_core::util::spawn_in_span(batch_aggregator::run(rx, bridge, throttle_window_secs))
 }

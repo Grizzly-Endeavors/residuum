@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use crate::bus::NotificationEvent;
-use crate::inbox;
+use residuum_bus::NotificationEvent;
+use residuum_workspace::inbox;
 
 /// A channel that can deliver notifications.
 #[async_trait]
@@ -56,7 +56,7 @@ impl NotificationChannel for InboxChannel {
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         let source_label = format!("{}:{}", notification.source.as_str(), notification.title);
 
-        let now = crate::time::now_local(self.tz);
+        let now = residuum_core::time::now_local(self.tz);
         let event_time = notification
             .timestamp
             .format("%Y-%m-%d %H:%M:%S")
@@ -81,7 +81,7 @@ impl NotificationChannel for InboxChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::EventTrigger;
+    use residuum_bus::EventTrigger;
 
     fn make_notification() -> NotificationEvent {
         NotificationEvent {

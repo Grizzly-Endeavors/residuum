@@ -756,8 +756,7 @@ pub(crate) async fn spawn_notify_subscribers(
     use crate::notify::subscriber::run_notify_subscriber;
 
     let external_channels =
-        crate::notify::channel_builder::build_external_channels(channel_configs, http.client())
-            .await;
+        crate::notify::build_external_channels(channel_configs, http.client()).await;
 
     let mut handles = Vec::new();
 

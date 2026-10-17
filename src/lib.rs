@@ -9,6 +9,7 @@ pub(crate) use residuum_net::{
     browser_landing, cross_site, remote_control_guard, tunnel, workbench,
 };
 pub use residuum_net::{pairing, remote_access};
+pub use residuum_notify as notify;
 pub use residuum_proactivity::{actions, pulse};
 pub use residuum_skills as skills;
 pub use residuum_tracing_service as tracing_service;
@@ -33,7 +34,6 @@ pub mod hub;
 pub(crate) mod integration;
 pub mod interfaces;
 pub mod logging;
-pub mod notify;
 pub mod protocol;
 pub mod setup_wizard;
 pub mod subconscious;

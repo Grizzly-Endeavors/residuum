@@ -1,7 +1,7 @@
 //! Generic subscriber loop for notification channels.
 
 use super::channels::NotificationChannel;
-use crate::bus::{NotificationEvent, Subscriber};
+use residuum_bus::{NotificationEvent, Subscriber};
 
 /// Run a subscriber loop that delivers `NotificationEvent`s to a channel.
 ///
@@ -47,9 +47,9 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::{Mutex, Notify};
 
-    use crate::bus::EventTrigger;
-    use crate::bus::{NotificationEvent, NotifyName, spawn_broker, topics};
-    use crate::notify::channels::NotificationChannel;
+    use crate::channels::NotificationChannel;
+    use residuum_bus::EventTrigger;
+    use residuum_bus::{NotificationEvent, NotifyName, spawn_broker, topics};
 
     use super::run_notify_subscriber;
 
@@ -129,7 +129,8 @@ mod tests {
         let should_fail = Arc::new(AtomicBool::new(false));
         let (channel, delivered, processed) = MockChannel::new(Arc::clone(&should_fail));
 
-        let loop_task = crate::util::spawn_in_span(run_notify_subscriber(sub, Box::new(channel)));
+        let loop_task =
+            residuum_core::util::spawn_in_span(run_notify_subscriber(sub, Box::new(channel)));
 
         pub_.publish(topic, make_notification_event())
             .await
@@ -159,7 +160,8 @@ mod tests {
         let should_fail = Arc::new(AtomicBool::new(true));
         let (channel, delivered, processed) = MockChannel::new(Arc::clone(&should_fail));
 
-        let loop_task = crate::util::spawn_in_span(run_notify_subscriber(sub, Box::new(channel)));
+        let loop_task =
+            residuum_core::util::spawn_in_span(run_notify_subscriber(sub, Box::new(channel)));
 
         // First notification — delivery will fail
         pub_.publish(

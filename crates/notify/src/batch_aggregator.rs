@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 
-use crate::bus::NotificationEvent;
+use residuum_bus::NotificationEvent;
 
 /// Platform-specific delivery for an already-batched notification.
 ///
@@ -164,7 +164,7 @@ mod tests {
         NotificationEvent {
             title: task_name.to_string(),
             content: format!("Summary for {task_name}"),
-            source: crate::bus::EventTrigger::Pulse,
+            source: residuum_bus::EventTrigger::Pulse,
             urgent: false,
             timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
                 .unwrap()

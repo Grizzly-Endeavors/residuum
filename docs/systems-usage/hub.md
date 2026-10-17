@@ -186,6 +186,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_mcp`: `mcp`, so `RUST_LOG=residuum_mcp=trace`.
 - `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
 - `residuum_workspace`: `workspace` and `inbox`, so `RUST_LOG=residuum_workspace=trace`, or `RUST_LOG=residuum_workspace::watch=trace` for the change feed.
+- `residuum_notify`: `notify`, so `RUST_LOG=residuum_notify=trace` for the notification router and its channels.
 - `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.
 

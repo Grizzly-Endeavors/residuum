@@ -25,6 +25,7 @@ residuum-core = { path = "crates/core", version = "0.1.0" }
 residuum-config = { path = "crates/config", version = "0.1.0" }
 residuum-bus = { path = "crates/bus", version = "0.1.0" }
 residuum-workspace = { path = "crates/workspace", version = "0.1.0" }
+residuum-notify = { path = "crates/notify", version = "0.1.0" }
 residuum-proactivity = { path = "crates/proactivity", version = "0.1.0" }
 residuum-skills = { path = "crates/skills", version = "0.1.0" }
 residuum-tracing-service = { path = "crates/tracing-service", version = "0.1.0" }
@@ -98,6 +99,15 @@ a2a-client = { package = "a2a-client-lf", version = "0.2.5", default-features = 
 
 # Workspace change feed (OS file notifications)
 notify = "8.2"
+
+# macOS native notifications (Apple Silicon only)
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = "0.3"
+block2 = "0.6"
+
+# Windows toast notifications
+tauri-winrt-notification = "0.8.1"
 
 # Logging
 tracing = "0.1"
@@ -173,6 +183,7 @@ residuum-skills = { workspace = true }
 residuum-tracing-service = { workspace = true }
 residuum-bus = { workspace = true }
 residuum-workspace = { workspace = true }
+residuum-notify = { workspace = true }
 residuum-proactivity = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -226,21 +237,13 @@ ts-rs = { workspace = true }
 gix = { workspace = true }
 similar = { workspace = true }
 
-# macOS native notifications (Apple Silicon only)
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = "0.3"
-objc2-user-notifications = "0.3"
-block2 = "0.6"
-
 # Unix process signals (Linux + macOS)
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
-# Windows process management and notifications
+# Windows process management
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
-tauri-winrt-notification = "0.8.1"
 
 [dev-dependencies]
 residuum-core = { workspace = true, features = ["test-support"] }
