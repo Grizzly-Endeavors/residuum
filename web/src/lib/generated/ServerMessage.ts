@@ -533,19 +533,7 @@ code: SessionCommandErrorCode,
 /**
  * Human-readable explanation, suitable to show the user.
  */
-message: string, } | { "type": "session_outbound_a2a_task", task: OutboundA2aTaskSummary, } | { "type": "session_start_failed",
-/**
- * The address the session would have run at.
- */
-address: string,
-/**
- * Plain-language explanation of why it couldn't start.
- */
-error: string,
-/**
- * Full technical cause chain behind `error`.
- */
-error_details?: string, } | { "type": "artifact_updated",
+message: string, } | { "type": "session_outbound_a2a_task", task: OutboundA2aTaskSummary, } | { "type": "artifact_updated", 
 /**
  * Artifact name, as used in `/workbench/{name}`.
  */
