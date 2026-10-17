@@ -120,7 +120,9 @@ test("a message sent while the run works waits until the session reads it", asyn
   await sendFromComposer(messageBox(panel), SEND);
   const waiting = panel.getByRole("region", { name: "Waiting for this session to read" });
   await expect(waiting.getByText("And the old notes")).toBeVisible();
-  await expect(waiting.getByRole("button")).toHaveCount(0);
+  // Dismiss is the only thing to ask of it.
+  await expect(waiting.getByRole("button")).toHaveCount(1);
+  await expect(waiting.getByRole("button", { name: "Dismiss" })).toBeVisible();
   await scanPanel(page, isMobile);
 
   // The turn reads it after its tool batch, at 1.2s, and answers it at 2.4s.
