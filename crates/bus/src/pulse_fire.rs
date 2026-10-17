@@ -83,12 +83,12 @@ pub enum PulseFireChange {
     /// The fire finished.
     Finished {
         outcome: PulseFireOutcome,
-        /// `true` when a session run ended the fire, so the session store
-        /// already records this outcome; `false` for a fire that ended
+        /// The run id of the session run that ended the fire, whose outcome
+        /// the session store already records; `None` for a fire that ended
         /// before or without one (a `script_only` fire, one stopped during
         /// its scripts, one whose session couldn't start), whose outcome
         /// the event loop records in `pulse_state.json`.
-        session_run: bool,
+        session_run_id: Option<String>,
     },
     /// The fire ended without an outcome to show: the agent is stopping, or
     /// the fire's task ended without finishing it.

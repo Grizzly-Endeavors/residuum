@@ -220,11 +220,21 @@
                       </p>
                     {/if}
                     {#if pulse.last_outcome}
-                      <p
-                        class="row-sub"
-                        data-failed={pulse.last_outcome.status === "failed" || undefined}
-                      >
-                        {lastRun(pulse.last_outcome, now)}
+                      {@const last = pulse.last_outcome}
+                      <p class="row-sub">
+                        <span data-failed={last.status === "failed" || undefined}
+                          >{lastRun(last, now)}</span
+                        >
+                        {#if last.run_id === undefined}
+                          <span>No session ran</span>
+                        {:else}
+                          {@const session = sessionLocation(last.run_id)}
+                          <a
+                            href={formatLocation(session)}
+                            aria-label="Open session of the last run"
+                            onclick={(event) => followLink(event, session)}>Open session</a
+                          >
+                        {/if}
                       </p>
                     {/if}
                     {#each pulse.problems as problem (problem)}
@@ -403,7 +413,7 @@
     color: var(--color-text-3);
     font-size: var(--font-size-sm);
 
-    &[data-failed] {
+    [data-failed] {
       color: var(--color-err-text);
     }
   }

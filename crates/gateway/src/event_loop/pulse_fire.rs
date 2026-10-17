@@ -167,7 +167,7 @@ async fn end_stopped_fire(fire: PulseFire) {
             at: Utc::now(),
             error: None,
         },
-        false,
+        None,
     )
     .await;
 }
@@ -191,7 +191,7 @@ async fn deliver_script_only(
     if let Err(e) = deps.publisher.publish(topics::Background, event).await {
         tracing::warn!(pulse = %pulse.name, error = %e, "failed to publish script-only pulse result");
     }
-    fire.finish(outcome, false).await;
+    fire.finish(outcome, None).await;
 }
 
 /// A fire's outcome from the status of the run that ended it.
@@ -279,7 +279,7 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
                     SessionEventKind::Completed { status, .. }
                         if run_id.as_ref().is_none_or(|id| *id == event.run_id) =>
                     {
-                        fire.finish(fire_outcome(&status), true).await;
+                        fire.finish(fire_outcome(&status), Some(event.run_id)).await;
                         return;
                     }
                     SessionEventKind::Started(_)
@@ -335,7 +335,7 @@ async fn end_unstarted_fire(fire: PulseFire, failed: SessionStartFailedEvent, st
             at: Utc::now(),
             error: Some(failed.error),
         },
-        false,
+        None,
     )
     .await;
 }
@@ -372,7 +372,7 @@ async fn end_unrequested_fire(fire: PulseFire) {
             at: Utc::now(),
             error: Some(error),
         },
-        false,
+        None,
     )
     .await;
 }
@@ -528,15 +528,15 @@ mod tests {
         }
     }
 
-    fn finished_outcome(event: &PulseFireEvent) -> (PulseFireOutcome, bool) {
+    fn finished_outcome(event: &PulseFireEvent) -> (PulseFireOutcome, Option<String>) {
         let PulseFireChange::Finished {
             outcome,
-            session_run,
+            session_run_id,
         } = &event.change
         else {
             panic!("expected the fire to finish, got {event:?}");
         };
-        (outcome.clone(), *session_run)
+        (outcome.clone(), session_run_id.clone())
     }
 
     fn live_session(address: &SessionAddress, run_id: &str) -> SessionInfo {
@@ -667,10 +667,13 @@ mod tests {
         assert!(matches!(result.status, AgentResultStatus::Completed));
         assert_eq!(result.source_label, "pulse:watch");
         let finished = next_after_start(&mut events).await;
-        let (outcome, session_run) = finished_outcome(&finished);
+        let (outcome, session_run_id) = finished_outcome(&finished);
         assert_eq!(outcome.status, PulseFireStatus::Ok);
         assert_eq!(outcome.error, None);
-        assert!(!session_run, "the event loop records a script-only fire");
+        assert_eq!(
+            session_run_id, None,
+            "the event loop records a script-only fire"
+        );
         assert_eq!(
             finished.current_run, None,
             "nothing of the pulse is running"
@@ -735,13 +738,13 @@ mod tests {
             "{}",
             notice.message
         );
-        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        let (outcome, session_run_id) = finished_outcome(&next_after_start(&mut events).await);
         assert_eq!(outcome.status, PulseFireStatus::Failed);
         assert_eq!(
             outcome.error.as_deref(),
             Some("the script for task 'check' exited with code 4")
         );
-        assert!(!session_run);
+        assert_eq!(session_run_id, None);
     }
 
     // ── fires that run a session ─────────────────────────────────────────
@@ -817,10 +820,14 @@ mod tests {
         )
         .await;
         let finished = next_event("the fire's finish", &mut events).await;
-        let (outcome, session_run) = finished_outcome(&finished);
+        let (outcome, session_run_id) = finished_outcome(&finished);
         assert_eq!(outcome.status, PulseFireStatus::Failed);
         assert_eq!(outcome.error.as_deref(), Some("the model call timed out"));
-        assert!(session_run, "the session store records this one");
+        assert_eq!(
+            session_run_id.as_deref(),
+            Some("run-1"),
+            "the session store records this one"
+        );
         assert_eq!(finished.current_run, None);
         task.await.unwrap();
         assert_eq!(deps.fires.current_run("watch", &deps.registry), None);
@@ -853,9 +860,9 @@ mod tests {
             matches!(change, PulseFireChange::Finished { .. })
         })
         .await;
-        let (outcome, session_run) = finished_outcome(&finished);
+        let (outcome, session_run_id) = finished_outcome(&finished);
         assert_eq!(outcome.status, PulseFireStatus::Ok);
-        assert!(session_run);
+        assert_eq!(session_run_id.as_deref(), Some("run-1"));
         task.await.unwrap();
     }
 
@@ -890,7 +897,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        let (outcome, session_run_id) = finished_outcome(&next_after_start(&mut events).await);
         assert_eq!(outcome.status, PulseFireStatus::Failed);
         assert_eq!(
             outcome.error.as_deref(),
@@ -900,8 +907,8 @@ mod tests {
             ),
             "the plain sentence, as the listener words it"
         );
-        assert!(
-            !session_run,
+        assert_eq!(
+            session_run_id, None,
             "no session run records it, so the event loop does"
         );
         task.await.unwrap();
@@ -930,7 +937,7 @@ mod tests {
 
         run_pulse_fire(pulse, None, None, deps.clone(), fire).await;
 
-        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        let (outcome, session_run_id) = finished_outcome(&next_after_start(&mut events).await);
         assert_eq!(outcome.status, PulseFireStatus::Failed);
         assert_eq!(
             outcome.error.as_deref(),
@@ -939,7 +946,7 @@ mod tests {
                  run; if it keeps failing, the agent's logs have the details."
             )
         );
-        assert!(!session_run);
+        assert_eq!(session_run_id, None);
         assert!(
             deps.registry.fire_stops().claim(&fire_id).is_none(),
             "the ended fire withdrew its stop token"
@@ -1011,9 +1018,9 @@ mod tests {
 
         assert!(deps.fires.stop("watch", &fire_id));
 
-        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        let (outcome, session_run_id) = finished_outcome(&next_after_start(&mut events).await);
         assert_eq!(outcome.status, PulseFireStatus::Stopped);
-        assert!(!session_run);
+        assert_eq!(session_run_id, None);
         task.await.unwrap();
         bus_barrier(&bus).await;
         assert!(
@@ -1048,9 +1055,9 @@ mod tests {
         complete_session(&deps, &spawn.address, "run-1", AgentResultStatus::Cancelled).await;
 
         let finished = next_event("the fire's finish", &mut events).await;
-        let (outcome, session_run) = finished_outcome(&finished);
+        let (outcome, session_run_id) = finished_outcome(&finished);
         assert_eq!(outcome.status, PulseFireStatus::Stopped);
-        assert!(session_run);
+        assert_eq!(session_run_id.as_deref(), Some("run-1"));
         task.await.unwrap();
     }
 
@@ -1071,9 +1078,12 @@ mod tests {
         assert_eq!(spawn.fire_id.as_deref(), Some(fire_id.as_str()));
         assert!(deps.fires.stop("watch", &fire_id));
 
-        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        let (outcome, session_run_id) = finished_outcome(&next_after_start(&mut events).await);
         assert_eq!(outcome.status, PulseFireStatus::Stopped);
-        assert!(!session_run, "no session ran, so the event loop records it");
+        assert_eq!(
+            session_run_id, None,
+            "no session ran, so the event loop records it"
+        );
         task.await.unwrap();
         assert!(
             claim_session_stop(&deps, &spawn).is_none(),
@@ -1108,9 +1118,13 @@ mod tests {
             matches!(change, PulseFireChange::Finished { .. })
         })
         .await;
-        let (outcome, session_run) = finished_outcome(&finished);
+        let (outcome, session_run_id) = finished_outcome(&finished);
         assert_eq!(outcome.status, PulseFireStatus::Stopped);
-        assert!(session_run, "the session store records the cancelled run");
+        assert_eq!(
+            session_run_id.as_deref(),
+            Some("run-1"),
+            "the session store records the cancelled run"
+        );
         task.await.unwrap();
     }
 
@@ -1128,9 +1142,12 @@ mod tests {
         assert!(deps.fires.stop("watch", fire.id()));
         run_pulse_fire(pulse, None, None, deps.clone(), fire).await;
 
-        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        let (outcome, session_run_id) = finished_outcome(&next_after_start(&mut events).await);
         assert_eq!(outcome.status, PulseFireStatus::Stopped);
-        assert!(!session_run, "no session ran, so the event loop records it");
+        assert_eq!(
+            session_run_id, None,
+            "no session ran, so the event loop records it"
+        );
         bus_barrier(&bus).await;
         assert!(
             spawns.drain().is_empty(),

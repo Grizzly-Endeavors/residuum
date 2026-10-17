@@ -99,10 +99,11 @@ fn unsessioned_fire_outcome(
     match &event.change {
         PulseFireChange::Finished {
             outcome,
-            session_run: false,
+            session_run_id: None,
         } => Some((event.pulse.as_str(), outcome)),
         PulseFireChange::Finished {
-            session_run: true, ..
+            session_run_id: Some(_),
+            ..
         }
         | PulseFireChange::Started
         | PulseFireChange::SessionRequested
@@ -390,7 +391,7 @@ mod tests {
         };
         let unsessioned = fire_event(PulseFireChange::Finished {
             outcome: outcome.clone(),
-            session_run: false,
+            session_run_id: None,
         });
         assert_eq!(
             unsessioned_fire_outcome(&unsessioned),
@@ -399,7 +400,7 @@ mod tests {
 
         let sessioned = fire_event(PulseFireChange::Finished {
             outcome,
-            session_run: true,
+            session_run_id: Some("run-1".to_string()),
         });
         assert_eq!(
             unsessioned_fire_outcome(&sessioned),
@@ -427,7 +428,7 @@ mod tests {
                 at: chrono::Utc::now(),
                 error: Some("the script for task 'check' exited with code 4".to_string()),
             },
-            session_run: false,
+            session_run_id: None,
         });
 
         if let Some((pulse, outcome)) = unsessioned_fire_outcome(&event) {

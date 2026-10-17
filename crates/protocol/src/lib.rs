@@ -241,7 +241,13 @@ pub struct OutboundA2aTaskSummary {
 impl From<PulseFireEvent> for ServerMessage {
     fn from(event: PulseFireEvent) -> Self {
         let last_outcome = match &event.change {
-            PulseFireChange::Finished { outcome, .. } => Some(outcome.into()),
+            PulseFireChange::Finished {
+                outcome,
+                session_run_id,
+            } => Some(ScheduledRunOutcome {
+                run_id: session_run_id.clone(),
+                ..outcome.into()
+            }),
             PulseFireChange::Started
             | PulseFireChange::SessionRequested
             | PulseFireChange::SessionStarted
@@ -332,14 +338,22 @@ pub struct ScheduledRunOutcome {
     #[ts(type = "string")]
     pub at: DateTime<Utc>,
     pub error: Option<String>,
+    /// The session run this was, which the session panel opens. Absent for
+    /// a pulse fire that ran no session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
+/// A pulse fire's outcome, with no session run: the fire's session run id,
+/// when it had one, is the event's to add.
 impl From<&PulseFireOutcome> for ScheduledRunOutcome {
     fn from(outcome: &PulseFireOutcome) -> Self {
         Self {
             status: outcome.status.into(),
             at: outcome.at,
             error: outcome.error.clone(),
+            run_id: None,
         }
     }
 }
@@ -1053,6 +1067,53 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finished_fire(session_run_id: Option<&str>) -> PulseFireEvent {
+        PulseFireEvent {
+            pulse: "watch".to_string(),
+            fire_id: "fire-1".to_string(),
+            change: PulseFireChange::Finished {
+                outcome: PulseFireOutcome {
+                    status: PulseFireStatus::Ok,
+                    at: DateTime::parse_from_rfc3339("2099-01-01T12:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    error: None,
+                },
+                session_run_id: session_run_id.map(str::to_string),
+            },
+            current_run: None,
+        }
+    }
+
+    #[test]
+    fn a_finished_fire_s_frame_names_its_session_run_only_when_it_had_one() {
+        let last_outcome = |id| {
+            serde_json::to_value(ServerMessage::from(finished_fire(id)))
+                .unwrap()
+                .get("last_outcome")
+                .cloned()
+        };
+
+        assert_eq!(
+            last_outcome(Some("run-1")),
+            Some(serde_json::json!({
+                "status": "completed",
+                "at": "2099-01-01T12:00:00Z",
+                "error": null,
+                "run_id": "run-1",
+            }))
+        );
+        assert_eq!(
+            last_outcome(None),
+            Some(serde_json::json!({
+                "status": "completed",
+                "at": "2099-01-01T12:00:00Z",
+                "error": null,
+            })),
+            "a fire that ran no session has no run_id"
+        );
+    }
 
     #[test]
     fn client_message_deserialize_send_message() {

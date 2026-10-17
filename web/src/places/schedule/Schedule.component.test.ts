@@ -145,7 +145,12 @@ describe("Schedule", () => {
               previous_started_at: soon(-12),
             },
           },
-          last_outcome: { status: "failed", at: soon(-60), error: "the model timed out" },
+          last_outcome: {
+            status: "failed",
+            at: soon(-60),
+            error: "the model timed out",
+            run_id: "run-1",
+          },
         }),
         pulse("nightly_review", {
           enabled: false,
@@ -185,6 +190,10 @@ describe("Schedule", () => {
     expect(screen.getByText("Every 2 hours, between 08:00 and 22:00")).toBeTruthy();
     expect(screen.getByText("Started while the run from 12m ago was still going")).toBeTruthy();
     expect(screen.getByText("Last run failed 1h ago: the model timed out")).toBeTruthy();
+    expect(
+      within(rowOf("Inbox check")).getByRole("link", { name: "Open session of the last run" }),
+    ).toHaveAttribute("href", "/agent/atlas/schedule?panel=session:atlas:run-1");
+    expect(within(rowOf("Inbox check")).queryByText("No session ran")).toBeNull();
     expect(screen.getByText("in 34m")).toBeTruthy();
     expect(screen.getByText("Paused")).toBeTruthy();
     expect(screen.getByText("Won't run until fixed")).toBeTruthy();
@@ -262,7 +271,10 @@ describe("Schedule", () => {
       "Last run failed 2m ago: check_disk.sh exited with status 1: /data is 97% full",
     );
     expect(line).toHaveAttribute("data-failed");
-    expect(within(rowOf("Disk watch")).queryByRole("button", { name: /^Stop/ })).toBeNull();
+    const disk = rowOf("Disk watch");
+    expect(within(disk).getByText("No session ran")).toBeTruthy();
+    expect(within(disk).queryByRole("link", { name: /Open session/ })).toBeNull();
+    expect(within(disk).queryByRole("button", { name: /^Stop/ })).toBeNull();
   });
 
   it("stops a fire, shows it stopping, and shows the stopped run once it ends", async () => {

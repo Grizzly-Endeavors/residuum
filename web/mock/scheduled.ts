@@ -196,12 +196,13 @@ function lastOutcome(state: MockState, source: string): ScheduledRunOutcome | nu
           status: run.outcome ?? "completed",
           at: run.completed_at ?? run.started_at,
           error: run.error,
+          run_id: run.run_id,
         };
   const pulse = pulseOf(source);
   const fire = pulse === null ? undefined : state.scheduled.lastFires[pulse];
   if (fire === undefined) return session;
   if (session === null) return fire;
-  return Date.parse(fire.at) >= Date.parse(session.at) ? fire : session;
+  return Date.parse(fire.at) > Date.parse(session.at) ? fire : session;
 }
 
 /** Tell the agent's pages that a fire of `pulse` changed, and with what outcome when it ended with one. */

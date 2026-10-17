@@ -237,6 +237,7 @@ async fn last_outcome(store: &SessionStore, source_label: &str) -> Option<Schedu
         status,
         at: record.completed_at.unwrap_or(record.started_at),
         error: record.outcome_error,
+        run_id: Some(record.run_id),
     })
 }
 
@@ -674,6 +675,7 @@ mod tests {
             status: SessionRunStatus::Completed,
             at,
             error: None,
+            run_id: Some("run-1".to_string()),
         };
 
         assert_eq!(newer_outcome(None, None), None);
@@ -690,6 +692,7 @@ mod tests {
                 status: SessionRunStatus::Failed,
                 at: later,
                 error: Some("the script for task 'check' exited with code 4".to_string()),
+                run_id: None,
             })
         );
         assert_eq!(
@@ -705,6 +708,7 @@ mod tests {
                 status: SessionRunStatus::Cancelled,
                 at: earlier,
                 error: None,
+                run_id: None,
             }),
             "a stopped fire reads as a cancelled run"
         );
@@ -827,6 +831,11 @@ mod tests {
             .expect("should have an outcome");
         assert_eq!(outcome.status, SessionRunStatus::Failed);
         assert_eq!(outcome.error.as_deref(), Some("the model call timed out"));
+        assert_eq!(
+            outcome.run_id.as_deref(),
+            Some(info.run_id.as_str()),
+            "a session run's outcome names its run"
+        );
     }
 
     #[tokio::test]

@@ -68,6 +68,7 @@ describe("the Scheduled view routes", () => {
       expect(check?.next_fire_at).toBe(harness.state.env.clock.isoIn(3_600_000));
       // The newest finished `pulse:inbox_check` run in the sample sessions.
       expect(check?.last_outcome).toMatchObject({ status: "completed", error: null });
+      expect(check?.last_outcome?.run_id).toEqual(expect.any(String));
     });
 
     it("gives a disabled pulse no next fire, and a pulse that failed to load its problems", async () => {
@@ -188,6 +189,7 @@ describe("the Scheduled view routes", () => {
       };
       const [check] = await pulses();
       expect(check).toMatchObject({ current_run: null, last_outcome: outcome });
+      expect(check?.last_outcome).not.toHaveProperty("run_id");
       expect(fireFrames().at(-1)).toMatchObject({ current_run: null, last_outcome: outcome });
     });
 

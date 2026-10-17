@@ -308,7 +308,7 @@ impl WatchState {
     fn on_pulse_fire(&self, event: PulseFireEvent) {
         if let PulseFireChange::Finished {
             outcome,
-            session_run: false,
+            session_run_id: None,
         } = event.change
         {
             self.publish(AgentChangeKind::PulseFireFinished {
@@ -691,7 +691,7 @@ mod tests {
             system(),
             fire(PulseFireChange::Finished {
                 outcome: outcome.clone(),
-                session_run: true,
+                session_run_id: Some("run-1".to_string()),
             }),
         )
         .await;
@@ -700,7 +700,7 @@ mod tests {
             system(),
             fire(PulseFireChange::Finished {
                 outcome: outcome.clone(),
-                session_run: false,
+                session_run_id: None,
             }),
         )
         .await;

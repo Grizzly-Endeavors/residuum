@@ -11,4 +11,9 @@ export type ScheduledRunOutcome = { status: SessionRunStatus,
 /**
  * When the run finished.
  */
-at: string, error: string | null, };
+at: string, error: string | null, 
+/**
+ * The session run this was, which the session panel opens. Absent for
+ * a pulse fire that ran no session.
+ */
+run_id?: string, };

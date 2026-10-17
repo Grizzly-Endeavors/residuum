@@ -335,14 +335,18 @@ impl PulseFire {
         .await;
     }
 
-    /// Finish the fire with `outcome`; `session_run` says whether a session
-    /// run ended it (see [`PulseFireChange::Finished`]).
-    pub(crate) async fn finish(mut self, outcome: PulseFireOutcome, session_run: bool) {
+    /// Finish the fire with `outcome`; `session_run_id` is the session run
+    /// that ended it, if one did (see [`PulseFireChange::Finished`]).
+    pub(crate) async fn finish(
+        mut self,
+        outcome: PulseFireOutcome,
+        session_run_id: Option<String>,
+    ) {
         self.leave_tracker();
         self.ended = true;
         self.announce(PulseFireChange::Finished {
             outcome,
-            session_run,
+            session_run_id,
         })
         .await;
     }
@@ -505,12 +509,12 @@ mod tests {
             "the fire's own session is not a second, untracked run"
         );
 
-        fire.finish(ok_outcome(), true).await;
+        fire.finish(ok_outcome(), Some("run-7".to_string())).await;
         let finished = next_event("the finish", &mut events).await;
         assert!(matches!(
             finished.change,
             PulseFireChange::Finished {
-                session_run: true,
+                session_run_id: Some(_),
                 ..
             }
         ));
@@ -568,7 +572,7 @@ mod tests {
             "the first fire is still in its scripts"
         );
 
-        second.finish(ok_outcome(), false).await;
+        second.finish(ok_outcome(), None).await;
         let older = f.fires.current_run("watch", &f.registry).unwrap();
         assert_eq!(
             older.fire_id.as_deref(),
@@ -576,7 +580,7 @@ mod tests {
             "the older fire still running is the current run again"
         );
         assert_eq!(older.overlap, None);
-        first.finish(ok_outcome(), false).await;
+        first.finish(ok_outcome(), None).await;
         assert_eq!(f.fires.overlap("watch", &f.registry), None);
     }
 

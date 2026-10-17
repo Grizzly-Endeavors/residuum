@@ -1109,7 +1109,7 @@ mod tests {
                             at,
                             error: None,
                         },
-                        session_run: false,
+                        session_run_id: None,
                     },
                     current_run: Some(residuum_bus::PulseFireRun {
                         fire_id: Some("fire-1".into()),
