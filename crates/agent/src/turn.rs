@@ -821,7 +821,7 @@ async fn finish_turn_with_notice(
 /// produced but not included in the return value.
 ///
 /// A main-agent turn streams each model call's text and reasoning to the
-/// main conversation while the call runs (see [`call_model`]); the frames
+/// main conversation while the call runs (see `call_model`); the frames
 /// that follow it carry the authoritative text.
 ///
 /// # Errors
