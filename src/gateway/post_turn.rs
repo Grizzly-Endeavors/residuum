@@ -690,12 +690,12 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::bus::testing::next_event;
     use crate::bus::{NotifyName, SYSTEM_CHANNEL, Subscriber};
     use crate::config::WorkspaceLayout;
     use crate::inference::testing::model::GatedProvider;
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
-    use residuum_bus::testing::next_event;
     use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
 

@@ -437,12 +437,12 @@ pub(crate) async fn execute_forced_reflection(
 mod tests {
     use super::*;
     use crate::agent::{AgentConfig, HopCounter};
+    use crate::bus::testing::{bus_barrier, next_event};
     use crate::bus::{ErrorEvent, NoticeEvent, NotifyName, SYSTEM_CHANNEL, spawn_broker, topics};
     use crate::inference::CompletionOptions;
     use crate::memory::recent_messages::append_recent_messages;
     use crate::memory::reflector::{Reflector, ReflectorConfig};
     use crate::memory::search::MemoryIndex;
-    use residuum_bus::testing::{bus_barrier, next_event};
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::UTC;
 

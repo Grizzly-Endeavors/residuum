@@ -195,19 +195,19 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-protocol` | `crates/protocol` | `protocol`: the WebSocket client and server frames and the payloads they carry (the ts-exported wire types), and `frames`, the conversions from bus session events and workspace changes to frames | bus, inference, workspace (dev: config, memory) |
 | `residuum-proactivity` | `crates/proactivity` | `pulse` (the heartbeat pulses: scheduling, scripts, the edit and next-run helpers, and `testing` behind `test-support`) and `actions` (scheduled actions and their store) | core, config, bus (dev: workspace) |
 | `residuum-notify` | `crates/notify` | `notify`: the notification channels (ntfy, webhook, the inbox, and the native macOS and Windows channels), the router and the subscriber, and `channel_builder`, whose `build_external_channels` is re-exported at the crate root | core, config, bus, workspace |
-| `residuum` | `.` | everything else: gateway, hub, tools, a2a, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
+| `residuum` | `.` | everything else: `a2a`, `daemon`, `gateway`, `hub`, `tools`, `wiring`, `logging`, `setup_wizard`, the `commands` of the binary, and the facade over the member crates | every member |
 
 ```
 residuum-interfaces
         │
 residuum-background
         │
-residuum-checkpoints    residuum-notify
-        │                     │
-        └──────────┬──────────┘
+residuum-agent    residuum-checkpoints    residuum-protocol    residuum-notify
+        │                  │                      │                   │
+        └────────┬─────────┴──────────────────────┴───────────────────┘
              residuum-workspace
         │
-residuum-bus
+residuum-bus    residuum-proactivity
         │
 residuum-memory     residuum-mcp
        │                  │
@@ -219,13 +219,13 @@ residuum-memory     residuum-mcp
                               residuum-core
 ```
 
-The diagram draws the chain of dependencies that sets the layers; each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw (`residuum-background` also depends on `residuum-agent` and most of the crates below it, `residuum-interfaces` also depends on `residuum-net`, `residuum-bus` and `residuum-inference`, `residuum-workspace` on `residuum-mcp` and `residuum-inference`, and `residuum-bus` on `residuum-inference`).
+The diagram draws the chain of dependencies that sets the layers; each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw (`residuum-background` also depends on most of the crates below it, `residuum-agent` also depends on `residuum-bus`, `residuum-memory`, `residuum-mcp` and `residuum-skills`, `residuum-interfaces` also depends on `residuum-net`, `residuum-bus` and `residuum-inference`, `residuum-workspace` on `residuum-mcp` and `residuum-inference`, `residuum-protocol` on `residuum-bus` and `residuum-inference`, `residuum-proactivity` on `residuum-bus` alone, and `residuum-bus` on `residuum-inference`).
 
 Only the root has a build script and embeds `web/dist`, so every member crate builds and tests without a web build. The root alone reads the build variables (`RESIDUUM_VERSION` and `RESIDUUM_GIT_COMMIT`, set by `build.rs`), and only into `residuum::BUILD_INFO`; everything else takes a `BuildInfo` (or its `version`) as a parameter, and `testing::source_scan` enforces this. `include_str!` and `CARGO_MANIFEST_DIR` paths in a member reach the repository's `assets/` and `web/` from the crate's directory (`../../../assets/…` from `crates/config/src/`). A file a member embeds from outside its own directory and outside `assets/` is not covered by that: `crates/net/src/browser_landing.rs` embeds `web/src/styles/tokens.css`, and such a path must appear in `RUST_PATHS_RE` in both `.github/workflows/ci.yml` and `.githooks/pre-push`, be classified to its crate in `classify_path` in `scripts/affected-packages.sh`, and have an arm in the pre-push hook's `plan_rust_tests` (for `tokens.css`, `residuum-net`). A file a test reads by path follows the same rule: `web/app-shell-csp.txt` and `.github/workflows/release.yml` belong to `residuum-hub` when it is a member crate with the file that reads each (`crates/hub/src/web/assets.rs`, `crates/hub/src/update.rs`), and to the root otherwise. Without the `RUST_PATHS_RE` entry, CI runs no Rust checks for a change to that file alone, so a breakage can reach `main`.
 
 ### Dependency rules
 
-- **Dependencies point down the graph.** No member depends on the root or on a crate above it. Code only the root uses lives in the root; code a lower crate and the root share lives in the lowest crate that uses it. When a lower crate needs something from above, it takes a trait or a parameter: inference's `NoticeSink`, which the root implements for the bus `Publisher`, carries its failover notices.
+- **Dependencies point down the graph.** No member depends on the root or on a crate above it. Code only the root uses lives in the root; code a lower crate and the root share lives in the lowest crate that uses it. When a lower crate needs something from above, it takes a trait or a parameter: inference's `NoticeSink`, which `residuum-bus` implements for its `Publisher`, carries its failover notices.
 - **No cycles, dev-dependencies included.** A crate dev-depends only on crates at or below its normal dependencies. Cargo accepts a dev-dependency cycle without a word and compiles the crate twice, so its types and globals stop unifying.
 - **`test-support` is enabled only from `[dev-dependencies]`**, never from `[dependencies]`, a `[target.*.dependencies]` table, or a `[features]` entry such as `default` or a named feature that lists the crate's own `test-support`, `<member>/test-support` or `<member>?/test-support` (a crate's own `test-support` feature may turn on a workspace dependency's, as inference's turns on `residuum-core/test-support`), so no test helper reaches the release binary. A package that depends on a workspace crate with a `test-support` feature turns it on in its `[dev-dependencies]`, so `cargo test -p` and the workspace run build that crate with the same features and share the build.
 - **`test-support` code compiles two ways**: with the feature, in another crate's tests, and with `cfg(test)` alone, in the crate's own tests. An external crate such code needs is declared twice: as an optional dependency the feature turns on, and in `[dev-dependencies]` (config's `tempfile` is the pattern). A workspace crate's `test-support` that such code needs is turned on by the feature (`residuum-core/test-support` in inference's, for `testing::model`'s use of core's `gate`); the dev-dependency already has it on, by the rule above.

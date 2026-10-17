@@ -970,7 +970,7 @@ mod tests {
     use crate::agent::hop::HopLimits;
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
-    use residuum_bus::testing::bus_barrier;
+    use crate::bus::testing::bus_barrier;
     use residuum_core::testing::wait;
 
     fn messenger() -> (Arc<AgentMessenger>, crate::bus::BusHandle) {

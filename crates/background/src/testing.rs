@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use residuum_bus::session::{MAIN_DEPTH, SessionState};
+use residuum_bus::testing::next_event;
 use residuum_bus::{
     AgentResultEvent, ConversationTarget, EventTrigger, SessionAddress, SessionEventKind, topics,
 };
-use residuum_bus::testing::next_event;
 use residuum_config::WorkspaceLayout;
 use residuum_inference::{
     CompletionOptions, InferenceError, InferenceResponse, Message, ToolDefinition,
@@ -23,12 +23,12 @@ use residuum_skills::{SkillIndex, SkillState};
 use residuum_tracing_service::{ClientContext, TracingService};
 use residuum_workspace::identity::IdentityFiles;
 
+use crate::messaging::AgentMessenger;
 use crate::registry::SessionRegistry;
 use crate::runtime::{IdleTimeouts, SessionRuntime, SessionRuntimeHandles, SessionSpawnRequest};
 use crate::store::SessionStore;
 use crate::subagent::SubAgentResources;
 use crate::types::SubAgentConfig;
-use crate::messaging::AgentMessenger;
 
 /// A throwaway checkpoint engine for tests that need a `SessionRuntime`
 /// but don't exercise checkpointing behavior themselves.

@@ -3673,7 +3673,9 @@ mod tests {
         let _capture = log.capture();
         let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
         let mut chat: residuum_bus::Subscriber<residuum_bus::SessionResponseEvent> = bus_handle
-            .subscribe(topics::Endpoint(residuum_bus::EndpointName::from("discord")))
+            .subscribe(topics::Endpoint(residuum_bus::EndpointName::from(
+                "discord",
+            )))
             .await
             .unwrap();
         let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();

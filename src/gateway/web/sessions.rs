@@ -667,8 +667,8 @@ pub(crate) async fn api_session_message(
 
 #[cfg(test)]
 mod tests {
+    use crate::bus::testing::{bus_barrier, next_event};
     use chrono::{Duration, TimeZone, Utc};
-    use residuum_bus::testing::{bus_barrier, next_event};
     use tokio_util::sync::CancellationToken;
 
     use super::*;

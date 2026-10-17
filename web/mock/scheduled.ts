@@ -144,7 +144,7 @@ function parseActiveHours(hours: string): readonly [number, number] | null {
 
 /**
  * The first wall-clock moment at or after `local` inside the window, `null`
- * for a window that never opens: `next_active_moment` in `src/pulse/next_run.rs`.
+ * for a window that never opens: `next_active_moment` in `crates/proactivity/src/pulse/next_run.rs`.
  */
 function intoActiveHours(local: number, [start, end]: readonly [number, number]): number | null {
   if (start === end) return null;
@@ -158,7 +158,7 @@ function intoActiveHours(local: number, [start, end]: readonly [number, number])
 
 /**
  * When the pulse next runs, as an instant in milliseconds, or `null` when it
- * will not: `next_run_at` in `src/pulse/next_run.rs`, the one calculation behind
+ * will not: `next_run_at` in `crates/proactivity/src/pulse/next_run.rs`, the one calculation behind
  * the Scheduled view's `next_fire_at` and the overview's `upcoming`.
  *
  * It is the first moment at or after the later of `nowMs` and the end of the

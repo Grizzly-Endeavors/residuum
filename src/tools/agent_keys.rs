@@ -184,7 +184,7 @@ impl Tool for AgentKeyDeleteTool {
 mod tests {
     use super::*;
     use crate::agent_keys::AgentKeys;
-    use residuum_bus::testing::bus_barrier;
+    use crate::bus::testing::bus_barrier;
 
     #[tokio::test]
     async fn list_shows_metadata_never_values() {

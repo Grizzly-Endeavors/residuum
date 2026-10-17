@@ -513,7 +513,7 @@ impl Tool for UserInboxAddTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use residuum_bus::testing::bus_barrier;
+    use crate::bus::testing::bus_barrier;
     use residuum_core::testing::wait;
 
     #[test]
