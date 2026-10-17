@@ -8,7 +8,6 @@
 //! when a push touches one of those packages or the module's own files.
 
 mod a2a_server;
-mod conversation_chat;
 mod hub_agent_tools;
 mod hub_host;
 mod hub_runtime;

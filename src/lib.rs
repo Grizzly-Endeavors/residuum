@@ -30,7 +30,6 @@ pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
 };
 
 pub use residuum_a2a as a2a;
-pub use residuum_checkpoints as checkpoints;
 pub mod daemon;
 pub mod gateway;
 pub mod hub;
