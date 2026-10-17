@@ -21,7 +21,7 @@ pub(super) const MOST_UPCOMING: usize = 3;
 
 /// What reading an agent's upcoming runs found.
 pub struct UpcomingRead {
-    /// The next runs, soonest first, at most [`MOST_UPCOMING`].
+    /// The next runs, soonest first, at most `MOST_UPCOMING`.
     pub runs: Vec<UpcomingRun>,
     /// What could not be read, one plain sentence each, which the service
     /// reports once for as long as it stays unreadable.

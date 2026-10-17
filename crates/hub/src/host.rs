@@ -1710,7 +1710,7 @@ impl AgentHost {
         self.checkpoint_engine_for(&slot.name, &slot.dir)
     }
 
-    /// [`Self::checkpoint_engine`] for an agent that has no slot, such as a
+    /// `checkpoint_engine` for an agent that has no slot, such as a
     /// deleted one.
     ///
     /// # Errors
