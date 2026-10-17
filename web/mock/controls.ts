@@ -374,6 +374,17 @@ function lagSessionRelay({ res, hub }: RouteContext): void {
 }
 
 /**
+ * The next session the owner starts on the agent (from Activity's New
+ * session or `/multitask`) is accepted with `202`, then fails to fork: its
+ * pages are sent `session_start_failed` instead of `session_started`. Only
+ * that one start fails; reset disarms it.
+ */
+function failNextSessionStart({ res, state }: RouteContext): void {
+  state.sessions.failNextOwnerStart = true;
+  json(res, 200, { armed: true });
+}
+
+/**
  * `{ online }`: take the hub WebSocket down (`false`), dropping every page and
  * refusing new connections, or let pages connect again (`true`). The HTTP API
  * stays up. Reset brings the socket back.
@@ -408,6 +419,7 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/agent-file", handler: changeAgentFileControl },
   { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
+  { method: "POST", pattern: "/api/mock/fail-next-session-start", handler: failNextSessionStart },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
   { method: "POST", pattern: "/api/mock/session-message", handler: sessionMessage },
   { method: "POST", pattern: "/api/mock/telegram-message", handler: telegramMessage },

@@ -4,7 +4,7 @@
   import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
   import { runIcon } from "../../lib/session-format";
-  import { Banner, SegmentedControl } from "../../lib/ui";
+  import { Banner, Disclosure, SegmentedControl } from "../../lib/ui";
   import type { Choice } from "../../lib/ui";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import type { NewSession } from "./new-session.svelte";
@@ -13,7 +13,8 @@
 
   // A session the owner starts by hand, in the context panel: which model it
   // runs on, and the message box whose first message starts it clean. Once
-  // the run shows up in the agent's sessions, the session panel takes over.
+  // the run shows up in the agent's sessions, the session panel takes over;
+  // if the agent says it couldn't start, the task comes back with why.
 
   let { session }: { session: NewSession } = $props();
 
@@ -32,7 +33,16 @@
     const run = session.run;
     if (run === undefined) return;
     untrack(() => {
+      session.handOver();
       void router.replacePanel({ kind: "session", agent: session.agent, runId: run.run_id });
+    });
+  });
+
+  $effect(() => {
+    const failure = session.failure;
+    if (failure === undefined) return;
+    untrack(() => {
+      session.takeBack(failure);
     });
   });
 </script>
@@ -59,7 +69,14 @@
       hint="Which of {label}'s models it runs on. Larger ones take on harder work and cost more."
     />
     {#if session.error}
-      <Banner tone="error">{session.error}</Banner>
+      <Banner tone="error">
+        {session.error}
+        {#if session.errorDetails}
+          <Disclosure summary="Details" tone="quiet">
+            <pre class="new-session-error-details">{session.errorDetails}</pre>
+          </Disclosure>
+        {/if}
+      </Banner>
     {/if}
   </div>
 
@@ -92,6 +109,13 @@
     overflow-y: auto;
     /* The message box sits under the scrolling body rather than over it, so a hairline parts the two. */
     border-bottom: 1px solid var(--color-line-soft);
+  }
+
+  .new-session-error-details {
+    margin-top: var(--space-6);
+    font-size: var(--font-size-xs);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .new-session-about {

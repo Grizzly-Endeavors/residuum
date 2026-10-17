@@ -202,7 +202,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
             type: "error",
             reply_to: null,
             message: `Couldn't watch the workspace: ${problem}.`,
-            details: null,
           });
         }
         break;
@@ -254,7 +253,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
           type: "error",
           reply_to: null,
           message: `malformed message: ${err instanceof Error ? err.message : String(err)}`,
-          details: null,
         } satisfies ServerMessage);
         return;
       }

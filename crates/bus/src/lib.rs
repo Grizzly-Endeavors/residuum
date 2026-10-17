@@ -35,9 +35,10 @@ pub use events::{
     HEARTBEAT_URGENT, InlineOutputEvent, IntermediateEvent, MainConversationEvent, MessageEvent,
     NoticeEvent, NotificationEvent, OutboundA2aTaskEvent, PostTurnActivityEvent,
     PostTurnActivityKind, PulseOverlap, ReloadOutcome, ReloadReport, ReloadedFiles, ResponseEvent,
-    ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent, SpawnRequestEvent,
-    ToolCallEvent, ToolResultEvent, TurnLifecycleEvent, TurnOrigin, TurnUsageEvent,
-    UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
+    ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent,
+    SessionStartFailedEvent, SpawnRequestEvent, ToolCallEvent, ToolResultEvent, TurnLifecycleEvent,
+    TurnOrigin, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
+    ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

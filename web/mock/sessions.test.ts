@@ -6,6 +6,8 @@ import type {
   SessionSummary,
 } from "../src/lib/generated/protocol";
 import type { SessionTranscriptResponse } from "../src/lib/types";
+import { controlRoutes } from "./controls";
+import { createMockEnv } from "./env";
 import { sendSessionMessage, sessionRoutes, spawnSession, stopSession } from "./sessions";
 import { createState, type MockState } from "./state";
 import {
@@ -303,6 +305,49 @@ describe("sessions endpoints", () => {
   });
 });
 
+describe("an owner start that fails after it is accepted", () => {
+  let harness: RouteHarness;
+  let env: ReturnType<typeof createMockEnv>;
+
+  beforeEach(async () => {
+    env = createMockEnv({ deterministic: true });
+    env.setTimeMode("manual");
+    harness = await startRouteHarness([...sessionRoutes, ...controlRoutes], env);
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it("answers 202, lists no run, then says why it couldn't start; the next start succeeds", async () => {
+    expect((await post(harness, "/api/mock/fail-next-session-start", {})).status).toBe(200);
+    const failed = await post(harness, "/api/sessions", { prompt: "plan the garden" });
+    expect(failed).toEqual({ status: 202, body: { address: "spawned-session-a001" } });
+    expect(harness.state.sessions.live.map((s) => s.address)).not.toContain("spawned-session-a001");
+    expect(harness.frames).toEqual([]);
+
+    await env.advance(400);
+    expect(harness.frames).toEqual([
+      {
+        type: "session_start_failed",
+        address: "spawned-session-a001",
+        error: expect.stringContaining("couldn't start") as unknown,
+        error_details: expect.stringContaining("failed to build provider chain") as unknown,
+      },
+    ]);
+
+    const retried = await post(harness, "/api/sessions", { prompt: "plan the garden" });
+    expect(retried).toEqual({ status: 202, body: { address: "spawned-session-a002" } });
+    expect(harness.frames.map((f) => f.type)).toContain("session_started");
+  });
+
+  it("leaves an artifact's start alone", async () => {
+    await post(harness, "/api/mock/fail-next-session-start", {});
+    await post(harness, "/api/sessions", { prompt: "split the tip" }, ARTIFACT_HEADER);
+    expect(harness.frames.map((f) => f.type)).toEqual(["session_started"]);
+  });
+});
+
 describe("session commands and lifecycle", () => {
   let state: MockState;
   let frames: ServerMessage[];
@@ -425,9 +470,10 @@ describe("session commands and lifecycle", () => {
       run_id: "run-live-discord",
       status: "cancelled",
       error: null,
-      error_details: null,
       episode_id: null,
     });
+    // As on the wire, a finish with no details leaves the key out.
+    expect(frames.at(-1)).not.toHaveProperty("error_details");
   });
 
   it("refuses to stop a session that is winding down, finished, or unknown", () => {

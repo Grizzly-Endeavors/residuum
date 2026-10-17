@@ -311,7 +311,7 @@ export class SessionRun {
           summary.completed_at = isoNow();
           summary.outcome = frame.status;
           summary.error = frame.error;
-          summary.error_details = frame.error_details;
+          summary.error_details = frame.error_details ?? null;
           summary.episode_id = frame.episode_id;
         }
         // A run that ends mid-turn ends the turn with it: stopped when the

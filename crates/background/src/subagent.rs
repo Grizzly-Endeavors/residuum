@@ -24,6 +24,7 @@ use residuum_memory::observer::Observer;
 use residuum_skills::{SharedSkillState, SkillState};
 use residuum_workspace::identity::IdentityFiles;
 
+use super::fork_failure::ForkFailure;
 use super::session_tools::SessionToolScope;
 use super::types::SubAgentBuildConfig;
 
@@ -192,7 +193,9 @@ async fn prepare_session_skill_state(
         guard
             .activate(name)
             .await
-            .with_context(|| format!("failed to activate skill '{name}' for sub-agent"))?;
+            .with_context(|| ForkFailure::Skill {
+                name: name.to_string(),
+            })?;
     }
 
     let skills_index = {
@@ -515,6 +518,22 @@ mod tests {
             episode_skip_token_floor: 2000,
             hop_counter: residuum_agent::HopCounter::new(0),
         }
+    }
+
+    #[tokio::test]
+    async fn a_skill_that_does_not_resolve_fails_the_fork_as_a_skill_failure() {
+        let main_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+
+        let Err(err) = prepare_session_skill_state(&main_state, Some("ghost")).await else {
+            panic!("a skill that isn't installed must not activate");
+        };
+        assert_eq!(
+            err.downcast_ref::<ForkFailure>(),
+            Some(&ForkFailure::Skill {
+                name: "ghost".to_string()
+            }),
+            "the owner is told which skill couldn't load"
+        );
     }
 
     /// A skill that lives only in `team/skills/` resolves as a session role:

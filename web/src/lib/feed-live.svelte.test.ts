@@ -594,7 +594,7 @@ describe("text streaming in", () => {
     const { store } = setup();
     store.handleMessage(started("t1"));
     store.handleMessage(delta(0, "The port"));
-    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope.", details: null });
+    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope." });
     expect(store.feed.find((item) => item.kind === "assistant")).toMatchObject({
       cut: "interrupted",
     });

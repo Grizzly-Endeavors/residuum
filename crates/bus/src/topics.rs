@@ -8,7 +8,8 @@ use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
     IntermediateEvent, MainConversationEvent, MessageEvent, NoticeEvent, NotificationEvent,
     OutboundA2aTaskEvent, PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent,
-    SpawnRequestEvent, TurnLifecycleEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
+    SessionStartFailedEvent, SpawnRequestEvent, TurnLifecycleEvent, UserInboxAddedEvent,
+    WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -165,6 +166,11 @@ impl Carries<SessionEvent> for Sessions {
     // real behavior from the user, and keeping the occasional `TurnUsage`
     // instance around costs nothing a slow-subscriber backlog warning
     // (`broker::LOSSLESS_BACKLOG_WARN_THRESHOLD`) doesn't already cover.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+impl Carries<SessionStartFailedEvent> for Sessions {
+    // The only word the owner gets that a start they are waiting on failed:
+    // a dropped one leaves the web UI's New session panel showing Starting.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
@@ -388,6 +394,10 @@ mod tests {
             DeliveryMode::Lossless
         );
         assert_eq!(
+            <Endpoint as Carries<ConversationTypingEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+        assert_eq!(
             <Endpoint as Carries<ErrorEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
@@ -410,6 +420,10 @@ mod tests {
             <Sessions as Carries<SessionEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
+        assert_eq!(
+            <Sessions as Carries<SessionStartFailedEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
 
         assert_eq!(
             <UserMessage as Carries<MessageEvent>>::DELIVERY_MODE,
@@ -430,6 +444,14 @@ mod tests {
         );
         assert_eq!(
             <Notification as Carries<ErrorEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+        assert_eq!(
+            <Notification as Carries<OutboundA2aTaskEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+        assert_eq!(
+            <Notification as Carries<PostTurnActivityEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
 

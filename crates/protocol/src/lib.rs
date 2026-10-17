@@ -664,6 +664,7 @@ pub enum ServerMessage {
         message: String,
         /// Full technical cause chain, shown behind a details toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         details: Option<String>,
     },
     /// Keepalive pong.
@@ -753,9 +754,26 @@ pub enum ServerMessage {
         /// expandable "details" toggle as a live `SessionError`. `None` when
         /// there's nothing richer to show.
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         error_details: Option<String>,
         /// Episode the run was merged into, if it produced one.
         episode_id: Option<String>,
+    },
+    /// A start or a resume of a session the owner started was accepted but
+    /// couldn't be forked, so no run was registered for it: no
+    /// `SessionStarted` or `SessionCompleted` follows for it. For a first
+    /// start no run exists at the address; a failed resume leaves the
+    /// address's earlier runs. Matched to the start by `address`, which the
+    /// start's reply named.
+    SessionStartFailed {
+        /// Address the start was given.
+        address: String,
+        /// Plain-language explanation for the owner, with what to do next.
+        error: String,
+        /// Full technical cause chain, shown behind a details toggle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        error_details: Option<String>,
     },
     /// A session turn began.
     SessionTurnStarted {
@@ -861,6 +879,7 @@ pub enum ServerMessage {
         message: String,
         /// Full technical cause chain, shown behind a details toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         details: Option<String>,
     },
     /// Reply to `SessionSendMessage`: the message was handed to the session.
@@ -1541,6 +1560,39 @@ mod tests {
                 "code": "unknown_address",
                 "message": "no such session",
             })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_session_start_failed() {
+        let msg = ServerMessage::SessionStartFailed {
+            address: "spawned-session-1a2b".into(),
+            error: "The session spawned-session-1a2b couldn't start.".into(),
+            error_details: Some("failed to build provider chain: no key".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "session_start_failed",
+                "address": "spawned-session-1a2b",
+                "error": "The session spawned-session-1a2b couldn't start.",
+                "error_details": "failed to build provider chain: no key",
+            })
+        );
+
+        let without_details = ServerMessage::SessionStartFailed {
+            address: "spawned-session-1a2b".into(),
+            error: "The session spawned-session-1a2b couldn't start.".into(),
+            error_details: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&without_details).unwrap(),
+            serde_json::json!({
+                "type": "session_start_failed",
+                "address": "spawned-session-1a2b",
+                "error": "The session spawned-session-1a2b couldn't start.",
+            }),
+            "a None error_details must not appear in the JSON at all"
         );
     }
 

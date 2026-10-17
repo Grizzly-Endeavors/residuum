@@ -3,7 +3,9 @@
 
 use residuum_bus::session::SessionInfo;
 use residuum_bus::workspace_change::WorkspaceResyncReason;
-use residuum_bus::{AgentResultStatus, SessionEvent, SessionEventKind, WorkspaceEvent};
+use residuum_bus::{
+    AgentResultStatus, SessionEvent, SessionEventKind, SessionStartFailedEvent, WorkspaceEvent,
+};
 use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges};
 
 use super::{ServerMessage, SessionRunStatus, SessionSummary};
@@ -33,6 +35,21 @@ pub fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         overlap: info.overlap.clone(),
         model: Some(info.model.to_string()),
         resolved_model: info.resolved_model.clone(),
+    }
+}
+
+/// The frame for an owner-started session that couldn't be forked.
+#[must_use]
+pub fn session_start_failed_frame(event: SessionStartFailedEvent) -> ServerMessage {
+    let SessionStartFailedEvent {
+        address,
+        error,
+        error_details,
+    } = event;
+    ServerMessage::SessionStartFailed {
+        address: address.to_string(),
+        error,
+        error_details,
     }
 }
 

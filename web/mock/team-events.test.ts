@@ -370,7 +370,6 @@ describe("the team event routes", () => {
       run_id: run.run_id,
       status: "completed",
       error: null,
-      error_details: null,
       episode_id: null,
     });
     const failing = { ...run, run_id: "run-action-2", source_label: "action:nightly digest" };
@@ -381,7 +380,6 @@ describe("the team event routes", () => {
       run_id: failing.run_id,
       status: "failed",
       error: "The model is unavailable.",
-      error_details: null,
       episode_id: null,
     });
 
