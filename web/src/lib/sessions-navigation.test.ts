@@ -88,6 +88,47 @@ describe("finding the run to show for a session address", () => {
     expect(surface).toHaveBeenCalledWith("error", "There's no record of the session spawned-z-1.");
   });
 
+  it("says why the session couldn't start, with its details, when its start failed", async () => {
+    const fetchMock = respond(200, { live: [], completed: [], next_cursor: null });
+    const surface = vi.spyOn(notifications, "surface").mockImplementation(() => {});
+    const s = store();
+    s.handleFrame({
+      type: "session_start_failed",
+      address: "spawned-multitask-a1",
+      error: "The session spawned-multitask-a1 couldn't start: its model has no working provider.",
+      error_details: "failed to build provider chain for model medium: no API key",
+    });
+    expect(s.startFailure("spawned-multitask-a1")).toEqual({
+      error: "The session spawned-multitask-a1 couldn't start: its model has no working provider.",
+      details: "failed to build provider chain for model medium: no API key",
+    });
+
+    await expect(s.resolveRun("spawned-multitask-a1", null)).resolves.toBeNull();
+    expect(surface).toHaveBeenCalledWith(
+      "error",
+      "The session spawned-multitask-a1 couldn't start: its model has no working provider.",
+      "failed to build provider chain for model medium: no API key",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps each failed start by its address, and forgets one once a run starts there", async () => {
+    respond(200, { live: [], completed: [], next_cursor: null });
+    const surface = vi.spyOn(notifications, "surface").mockImplementation(() => {});
+    const s = store();
+    s.handleFrame({ type: "session_start_failed", address: "spawned-a-1", error: "A failed." });
+    s.handleFrame({ type: "session_start_failed", address: "spawned-b-1", error: "B failed." });
+    expect(s.startFailure("spawned-a-1")).toEqual({ error: "A failed.", details: null });
+    expect(s.startFailure("spawned-b-1")).toEqual({ error: "B failed.", details: null });
+    expect(s.startFailure("spawned-c-1")).toBeUndefined();
+
+    s.handleFrame({ type: "session_started", session: summary("run-a", "spawned-a-1") });
+    expect(s.startFailure("spawned-a-1")).toBeUndefined();
+    await expect(s.resolveRun("spawned-a-1", null)).resolves.toBe("run-a");
+    await expect(s.resolveRun("spawned-b-1", null)).resolves.toBeNull();
+    expect(surface).toHaveBeenCalledExactlyOnceWith("error", "B failed.", undefined);
+  });
+
   it("tells the user when the lookup fails", async () => {
     respond(500, { error: "boom" });
     const surface = vi.spyOn(notifications, "surface").mockImplementation(() => {});
