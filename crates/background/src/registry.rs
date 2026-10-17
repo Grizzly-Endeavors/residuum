@@ -1145,12 +1145,12 @@ mod tests {
     }
 
     fn sample_agent_message() -> Interrupt {
-        Interrupt::AgentMessage(residuum_bus::AgentMessageEvent {
-            from: SessionAddress::from(MAIN_ADDRESS),
-            from_category: "main".to_string(),
-            content: "hello".to_string(),
-            hop_count: 0,
-        })
+        Interrupt::AgentMessage(residuum_bus::AgentMessageEvent::new(
+            SessionAddress::from(MAIN_ADDRESS),
+            "main",
+            "hello",
+            0,
+        ))
     }
 
     #[test]

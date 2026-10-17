@@ -1749,10 +1749,12 @@ mod tests {
         messenger
             .send(
                 "main",
-                residuum_bus::SessionAddress::from("agent-beta"),
-                "teammate".to_string(),
-                "a teammate's note".to_string(),
-                5,
+                residuum_bus::AgentMessageEvent::new(
+                    residuum_bus::SessionAddress::from("agent-beta"),
+                    "teammate",
+                    "a teammate's note",
+                    5,
+                ),
             )
             .await
             .unwrap();
@@ -2409,10 +2411,12 @@ mod tests {
         messenger
             .send(
                 "main",
-                residuum_bus::SessionAddress::from("spawned-researcher-0001"),
-                "spawned".to_string(),
-                "still working".to_string(),
-                7,
+                residuum_bus::AgentMessageEvent::new(
+                    residuum_bus::SessionAddress::from("spawned-researcher-0001"),
+                    "spawned",
+                    "still working",
+                    7,
+                ),
             )
             .await
             .unwrap();
@@ -2781,12 +2785,14 @@ mod tests {
         let messenger = test_messenger();
 
         let late = process_leftover_interrupts(
-            vec![Interrupt::AgentMessage(residuum_bus::AgentMessageEvent {
-                from: residuum_bus::SessionAddress::from("spawned-researcher-0001"),
-                from_category: "spawned".to_string(),
-                content: "still looping".to_string(),
-                hop_count: 12,
-            })],
+            vec![Interrupt::AgentMessage(
+                residuum_bus::AgentMessageEvent::new(
+                    residuum_bus::SessionAddress::from("spawned-researcher-0001"),
+                    "spawned",
+                    "still looping",
+                    12,
+                ),
+            )],
             &mut agent,
             &messenger,
         );
@@ -3280,10 +3286,12 @@ mod tests {
         messenger
             .send(
                 "main",
-                residuum_bus::SessionAddress::from("agent-beta"),
-                "teammate".to_string(),
-                "please review".to_string(),
-                5,
+                residuum_bus::AgentMessageEvent::new(
+                    residuum_bus::SessionAddress::from("agent-beta"),
+                    "teammate",
+                    "please review",
+                    5,
+                ),
             )
             .await
             .unwrap();

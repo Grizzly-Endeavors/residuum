@@ -374,12 +374,12 @@ pub(crate) fn race_guard_interrupt(
     {
         return Interrupt::UserMessage(inbound);
     }
-    Interrupt::AgentMessage(AgentMessageEvent {
-        from: spawner.unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
-        from_category: category.as_str().to_string(),
+    Interrupt::AgentMessage(AgentMessageEvent::new(
+        spawner.unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
+        category.as_str(),
         content,
         hop_count,
-    })
+    ))
 }
 
 /// Build resources and hand the run to `SessionRuntime`, once
@@ -423,6 +423,7 @@ async fn fork_and_spawn(
             inbound: event.inbound,
             images: event.images,
             carried_history: event.carried_history,
+            delivered_messages: event.delivered_messages,
         },
         conversation_target: event.conversation,
         overlap: event.overlap,
@@ -499,6 +500,7 @@ mod tests {
             inbound: Some(inbound),
             overlap: None,
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         }
     }
 

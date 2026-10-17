@@ -73,6 +73,12 @@ pub enum ClientMessage {
         address: String,
         /// The message content.
         content: String,
+        /// The message's id, which the session's `SessionUserMessage`
+        /// carries when it reads the message. Without one the message is
+        /// given one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        message_id: Option<String>,
     },
     /// Stop a live agent session: cancels any in-flight turn and moves it
     /// straight to `completing`. Answered with `SessionStopRequested` or
@@ -775,6 +781,28 @@ pub enum ServerMessage {
         /// Identifies the turn within the run.
         turn_id: String,
     },
+    /// A session read a message sent to it (the owner's, an artifact's, a
+    /// teammate's or another agent's): mid-turn, at a tool-call checkpoint of
+    /// the turn `turn_id`, or as the input that started the turn `turn_id`,
+    /// in which case it follows that turn's `SessionTurnStarted`.
+    SessionUserMessage {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// The message's id: the one its sender chose, or the one it was
+        /// given when it sent none.
+        id: String,
+        /// The turn that read it.
+        turn_id: String,
+        /// The message as sent, without the sender header the session sees.
+        content: String,
+        /// The sender's address (`owner` for the owner).
+        from: String,
+        /// The sender's category label (`owner`, `artifact`, `teammate`,
+        /// `main`, `spawned`, ...).
+        from_category: String,
+    },
     /// A session invoked a tool (verbose only).
     SessionToolCall {
         /// Session address.
@@ -1474,8 +1502,17 @@ mod tests {
         .unwrap();
         assert!(matches!(
             &send,
-            ClientMessage::SessionSendMessage { id, address, content }
+            ClientMessage::SessionSendMessage { id, address, content, message_id: None }
                 if id == "c1" && address == "spawned-a-0001" && content == "hi"
+        ));
+        let with_message_id: ClientMessage = serde_json::from_str(
+            r#"{"type":"session_send_message","id":"c3","address":"spawned-a-0001","content":"hi","message_id":"m-1"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &with_message_id,
+            ClientMessage::SessionSendMessage { id, message_id: Some(message_id), .. }
+                if id == "c3" && message_id == "m-1"
         ));
 
         let stop: ClientMessage =

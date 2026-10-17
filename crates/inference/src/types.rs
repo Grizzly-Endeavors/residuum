@@ -49,6 +49,13 @@ pub struct Message {
     /// gets it unchanged. Providers decide which of it they replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<ThinkingBlock>,
+    /// The id of the message this entry records, for a message one agent,
+    /// the owner or an artifact sent a session: the id its sender chose (or
+    /// was given), which the session's `session_user_message` frame carries
+    /// when the session reads it. Lets a reader of the transcript match the
+    /// entry to that message. `None` for every other entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// One piece of a model's reasoning, as its provider returned it.
@@ -274,6 +281,7 @@ impl Message {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         }
     }
 
@@ -289,6 +297,7 @@ impl Message {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         }
     }
 
@@ -304,6 +313,7 @@ impl Message {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         }
     }
 
@@ -319,6 +329,7 @@ impl Message {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         }
     }
 
@@ -334,6 +345,7 @@ impl Message {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         }
     }
 
@@ -353,6 +365,7 @@ impl Message {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         }
     }
 
@@ -367,6 +380,13 @@ impl Message {
     #[must_use]
     pub fn with_agent_sender(mut self, agent_sender: Option<AgentSender>) -> Self {
         self.agent_sender = agent_sender;
+        self
+    }
+
+    /// Attach the id of the message this entry records.
+    #[must_use]
+    pub fn with_id(mut self, id: Option<String>) -> Self {
+        self.id = id;
         self
     }
 
@@ -745,6 +765,20 @@ mod tests {
         assert_eq!(legacy.sender, None);
         let plain = serde_json::to_string(&Message::user("hi")).unwrap();
         assert!(!plain.contains("sender"), "absent sender is not serialized");
+    }
+
+    #[test]
+    fn message_id_round_trips_and_is_optional_on_disk() {
+        let msg = Message::user("hi").with_id(Some("m-1".to_string()));
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id.as_deref(), Some("m-1"));
+
+        // Transcripts written before message ids existed have no `id` key.
+        let legacy: Message = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        assert_eq!(legacy.id, None);
+        let plain = serde_json::to_value(Message::user("hi")).unwrap();
+        assert!(plain.get("id").is_none(), "absent id is not serialized");
     }
 
     #[test]

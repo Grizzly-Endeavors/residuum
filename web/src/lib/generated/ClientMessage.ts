@@ -51,7 +51,13 @@ address: string,
 /**
  * The message content.
  */
-content: string, } | { "type": "session_stop", 
+content: string, 
+/**
+ * The message's id, which the session's `SessionUserMessage`
+ * carries when it reads the message. Without one the message is
+ * given one.
+ */
+message_id?: string, } | { "type": "session_stop", 
 /**
  * Client-generated correlation ID for the reply.
  */

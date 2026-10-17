@@ -245,9 +245,10 @@ impl AgentMessenger {
             .remove(message_id);
     }
 
-    /// Send `content` from `from` (identified by address and category) to
-    /// `to`, carrying `hop_count`. `to` may be `"main"`, a live session's
-    /// address, or a completed (or completing) session's address.
+    /// Send `message` to `to`. `to` may be `"main"`, a live session's
+    /// address, or a completed (or completing) session's address. The
+    /// message keeps its id wherever it lands, so the session that reads it
+    /// reports the same id (see [`SessionEventKind::MessageRead`]).
     ///
     /// # Errors
     ///
@@ -261,33 +262,31 @@ impl AgentMessenger {
     pub async fn send(
         &self,
         to: &str,
-        from: SessionAddress,
-        from_category: String,
-        content: String,
-        hop_count: u32,
+        mut message: AgentMessageEvent,
     ) -> Result<DeliveryOutcome, SendError> {
+        let hop_count = message.hop_count;
         if hop_count >= self.hop_limits.hard {
-            self.refuse_hop_limit(&from, to, hop_count).await;
+            self.refuse_hop_limit(&message.from, to, hop_count).await;
             return Err(SendError::HopLimitExceeded {
                 hop_count,
                 limit: self.hop_limits.hard,
             });
         }
-        let content = self.apply_soft_note(hop_count, content);
+        message.content = self.apply_soft_note(hop_count, std::mem::take(&mut message.content));
 
         if to == MAIN_ADDRESS {
+            let AgentMessageEvent {
+                from,
+                from_category,
+                content,
+                ..
+            } = message;
             self.deliver_to_main(from, from_category, content, hop_count)
                 .await?;
             return Ok(DeliveryOutcome::Main);
         }
 
         let address = SessionAddress::from(to);
-        let message = AgentMessageEvent {
-            from: from.clone(),
-            from_category: from_category.clone(),
-            content: content.clone(),
-            hop_count,
-        };
         match self
             .registry
             .deliver(&address, Interrupt::AgentMessage(message.clone()))
@@ -403,12 +402,7 @@ impl AgentMessenger {
         let sender = from.clone();
         let sender_is_teammate = from_category == TEAMMATE_SENDER_CATEGORY;
         let body = content.clone();
-        let msg = AgentMessageEvent {
-            from,
-            from_category,
-            content,
-            hop_count,
-        };
+        let msg = AgentMessageEvent::new(from, from_category, content, hop_count);
         let event = MessageEvent::from_agent(&msg);
         let message_id = event.id.clone();
         self.pending_main_hops
@@ -480,6 +474,7 @@ impl AgentMessenger {
             msg.format_for_agent(),
             hop_count,
             Vec::new(),
+            vec![msg],
         )
         .await
     }
@@ -518,7 +513,23 @@ impl AgentMessenger {
             .max()
             .unwrap_or(0);
         let images = pending.iter().flat_map(PendingInput::images).collect();
-        publish_resume(&self.publisher, address, point, combined, hop_count, images).await
+        let delivered = pending
+            .iter()
+            .filter_map(|input| match input {
+                PendingInput::Agent(msg) => Some(msg.clone()),
+                PendingInput::External(_) => None,
+            })
+            .collect();
+        publish_resume(
+            &self.publisher,
+            address,
+            point,
+            combined,
+            hop_count,
+            images,
+            delivered,
+        )
+        .await
     }
 
     /// Deliver an inbound conversation message to its session by its
@@ -719,6 +730,7 @@ async fn publish_conversation_spawn(
         inbound: Some(original_inbound),
         overlap: None,
         carried_history: Vec::new(),
+        delivered_messages: Vec::new(),
     };
     publisher
         .publish(topics::Background, event)
@@ -759,6 +771,7 @@ async fn publish_conversation_resume(
         inbound: Some(inbound.clone()),
         overlap: None,
         carried_history: Vec::new(),
+        delivered_messages: Vec::new(),
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
         tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
@@ -1076,6 +1089,7 @@ async fn resume_or_deliver_after_clear(
                 msg.format_for_agent(),
                 hop_count,
                 Vec::new(),
+                vec![msg.clone()],
             )
             .await
             {
@@ -1101,7 +1115,8 @@ async fn resume_or_deliver_after_clear(
 
 /// Build and publish the `SpawnRequestEvent` that resumes `address` from
 /// `point`, with `prompt` as the new run's opening input and `hop_count` as
-/// its first turn's hop count. Free function (not a method) so it can be
+/// its first turn's hop count. `delivered` are the agent messages `prompt`
+/// carries, which the new run's first turn reports as read. Free function (not a method) so it can be
 /// shared between [`AgentMessenger`]'s own resume paths and [`deferred_resume`],
 /// which runs on a detached task with no `&AgentMessenger` to call through.
 async fn publish_resume(
@@ -1111,6 +1126,7 @@ async fn publish_resume(
     prompt: String,
     hop_count: u32,
     images: Vec<ImageData>,
+    delivered: Vec<AgentMessageEvent>,
 ) -> Result<(), SendError> {
     let event = residuum_bus::SpawnRequestEvent {
         address: address.clone(),
@@ -1142,6 +1158,7 @@ async fn publish_resume(
         images,
         overlap: None,
         carried_history: Vec::new(),
+        delivered_messages: delivered,
     };
 
     publisher
@@ -1252,10 +1269,12 @@ mod tests {
         let outcome = messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-3f9a"),
-                "spawned".to_string(),
-                "found the answer".to_string(),
-                0,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-3f9a"),
+                    "spawned",
+                    "found the answer",
+                    0,
+                ),
             )
             .await
             .unwrap();
@@ -1284,10 +1303,12 @@ mod tests {
         messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-3f9c"),
-                "spawned".to_string(),
-                "found the answer".to_string(),
-                0,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-3f9c"),
+                    "spawned",
+                    "found the answer",
+                    0,
+                ),
             )
             .await
             .unwrap();
@@ -1311,10 +1332,12 @@ mod tests {
         messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-3f9b"),
-                "spawned".to_string(),
-                "an update".to_string(),
-                4,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-3f9b"),
+                    "spawned",
+                    "an update",
+                    4,
+                ),
             )
             .await
             .unwrap();
@@ -1348,10 +1371,12 @@ mod tests {
         let outcome = messenger
             .send(
                 info.address.as_ref(),
-                SessionAddress::from(MAIN_ADDRESS),
-                "main".to_string(),
-                "how's it going?".to_string(),
-                0,
+                AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "how's it going?",
+                    0,
+                ),
             )
             .await
             .unwrap();
@@ -1367,10 +1392,7 @@ mod tests {
         let outcome = messenger
             .send(
                 "spawned-ghost-0000",
-                SessionAddress::from(MAIN_ADDRESS),
-                "main".to_string(),
-                "hello?".to_string(),
-                0,
+                AgentMessageEvent::new(SessionAddress::from(MAIN_ADDRESS), "main", "hello?", 0),
             )
             .await
             .unwrap();
@@ -1403,10 +1425,12 @@ mod tests {
                 messenger
                     .send(
                         info.address.as_ref(),
-                        SessionAddress::from(MAIN_ADDRESS),
-                        "main".to_string(),
-                        "filler".to_string(),
-                        0,
+                        AgentMessageEvent::new(
+                            SessionAddress::from(MAIN_ADDRESS),
+                            "main",
+                            "filler",
+                            0,
+                        ),
                     )
                     .await
                     .is_ok()
@@ -1416,10 +1440,7 @@ mod tests {
         let err = messenger
             .send(
                 info.address.as_ref(),
-                SessionAddress::from(MAIN_ADDRESS),
-                "main".to_string(),
-                "one more?".to_string(),
-                0,
+                AgentMessageEvent::new(SessionAddress::from(MAIN_ADDRESS), "main", "one more?", 0),
             )
             .await
             .expect_err("a saturated channel must error rather than silently resume");
@@ -1466,10 +1487,12 @@ mod tests {
             "send to return for a completing target, not block on its teardown",
             messenger.send(
                 address.as_ref(),
-                SessionAddress::from(MAIN_ADDRESS),
-                "main".to_string(),
-                "any updates?".to_string(),
-                0,
+                AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "any updates?",
+                    0,
+                ),
             ),
         )
         .await
@@ -1523,12 +1546,12 @@ mod tests {
         );
         let mut winner_rx = registry.register(winner, CancellationToken::new()).unwrap();
 
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from(MAIN_ADDRESS),
-            from_category: "main".to_string(),
-            content: "second message".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from(MAIN_ADDRESS),
+            "main",
+            "second message",
+            0,
+        );
         let done = resume_or_deliver_after_clear(
             &registry,
             &publisher,
@@ -1573,12 +1596,12 @@ mod tests {
             )
             .await;
 
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from(MAIN_ADDRESS),
-            from_category: "main".to_string(),
-            content: "still there?".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from(MAIN_ADDRESS),
+            "main",
+            "still there?",
+            0,
+        );
         let done =
             resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
         assert!(done, "resuming is a final outcome");
@@ -1586,6 +1609,15 @@ mod tests {
         let event = next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("still there?"));
+        assert_eq!(
+            event
+                .delivered_messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![msg.id.as_str()],
+            "a deferred resume hands the new run the message it delivers"
+        );
     }
 
     #[tokio::test]
@@ -1605,10 +1637,13 @@ mod tests {
         let outcome = messenger
             .send(
                 address.as_ref(),
-                SessionAddress::from(MAIN_ADDRESS),
-                "main".to_string(),
-                "any updates?".to_string(),
-                3,
+                AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "any updates?",
+                    3,
+                )
+                .with_id("m-resume"),
             )
             .await
             .unwrap();
@@ -1616,6 +1651,16 @@ mod tests {
 
         let event = sub.recv().await.unwrap().unwrap();
         assert_eq!(event.address, address);
+        let delivered: Vec<&str> = event
+            .delivered_messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(
+            delivered,
+            vec!["m-resume"],
+            "the resumed run is handed the message, id and all, to report it read"
+        );
         assert_eq!(event.skill.as_ref().map(AsRef::as_ref), Some("researcher"));
         assert!(event.prompt.contains("any updates?"));
         assert_eq!(
@@ -1669,10 +1714,7 @@ mod tests {
         messenger
             .send(
                 address.as_ref(),
-                SessionAddress::from(MAIN_ADDRESS),
-                "main".to_string(),
-                "hi".to_string(),
-                0,
+                AgentMessageEvent::new(SessionAddress::from(MAIN_ADDRESS), "main", "hi", 0),
             )
             .await
             .unwrap();
@@ -1694,18 +1736,18 @@ mod tests {
         registry.record_resume_point(&address, point.clone()).await;
 
         let messages = vec![
-            PendingInput::Agent(AgentMessageEvent {
-                from: SessionAddress::from(MAIN_ADDRESS),
-                from_category: "main".to_string(),
-                content: "first".to_string(),
-                hop_count: 1,
-            }),
-            PendingInput::Agent(AgentMessageEvent {
-                from: SessionAddress::from("spawned-other-0001"),
-                from_category: "spawned".to_string(),
-                content: "second".to_string(),
-                hop_count: 5,
-            }),
+            PendingInput::Agent(AgentMessageEvent::new(
+                SessionAddress::from(MAIN_ADDRESS),
+                "main",
+                "first",
+                1,
+            )),
+            PendingInput::Agent(AgentMessageEvent::new(
+                SessionAddress::from("spawned-other-0001"),
+                "spawned",
+                "second",
+                5,
+            )),
         ];
 
         messenger
@@ -1768,12 +1810,12 @@ mod tests {
         registry.record_resume_point(&address, point.clone()).await;
 
         let pending = vec![
-            PendingInput::Agent(AgentMessageEvent {
-                from: SessionAddress::from(MAIN_ADDRESS),
-                from_category: "main".to_string(),
-                content: "checking in".to_string(),
-                hop_count: 2,
-            }),
+            PendingInput::Agent(AgentMessageEvent::new(
+                SessionAddress::from(MAIN_ADDRESS),
+                "main",
+                "checking in",
+                2,
+            )),
             PendingInput::External(sample_inbound("any updates?", None)),
         ];
 
@@ -1786,6 +1828,15 @@ mod tests {
         assert!(event.prompt.contains("checking in"));
         assert!(event.prompt.contains("any updates?"));
         assert!(event.prompt.contains("Jane"), "{}", event.prompt);
+        assert_eq!(
+            event
+                .delivered_messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["checking in"],
+            "only the agent message is handed over to be reported read"
+        );
         assert_eq!(
             event.hop_count, 2,
             "the agent message's hop count is higher than the conversation message's (always 0)"
@@ -1951,10 +2002,12 @@ mod tests {
         let err = messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-0005"),
-                "spawned".to_string(),
-                "hello".to_string(),
-                0,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0005"),
+                    "spawned",
+                    "hello",
+                    0,
+                ),
             )
             .await
             .expect_err("a noop publisher must surface as a delivery failure");
@@ -1971,10 +2024,12 @@ mod tests {
         messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-leak"),
-                "spawned".to_string(),
-                "hello".to_string(),
-                3,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-leak"),
+                    "spawned",
+                    "hello",
+                    3,
+                ),
             )
             .await
             .expect_err("a noop publisher must surface as a delivery failure");
@@ -1996,10 +2051,12 @@ mod tests {
         messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-0006"),
-                "spawned".to_string(),
-                "still going".to_string(),
-                5,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0006"),
+                    "spawned",
+                    "still going",
+                    5,
+                ),
             )
             .await
             .unwrap();
@@ -2022,10 +2079,12 @@ mod tests {
         messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-0007"),
-                "spawned".to_string(),
-                "just starting".to_string(),
-                1,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0007"),
+                    "spawned",
+                    "just starting",
+                    1,
+                ),
             )
             .await
             .unwrap();
@@ -2044,10 +2103,12 @@ mod tests {
         let err = messenger
             .send(
                 MAIN_ADDRESS,
-                SessionAddress::from("spawned-researcher-0008"),
-                "spawned".to_string(),
-                "are we there yet".to_string(),
-                10,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0008"),
+                    "spawned",
+                    "are we there yet",
+                    10,
+                ),
             )
             .await
             .expect_err("hop count at the hard limit must be refused");
@@ -2100,10 +2161,7 @@ mod tests {
         let outcome = messenger
             .send(
                 receiver_info.address.as_ref(),
-                sender_info.address.clone(),
-                "spawned".to_string(),
-                "loop!".to_string(),
-                3,
+                AgentMessageEvent::new(sender_info.address.clone(), "spawned", "loop!", 3),
             )
             .await;
         assert!(
@@ -2163,10 +2221,7 @@ mod tests {
         let outcome = messenger
             .send(
                 receiver_info.address.as_ref(),
-                sender_info.address.clone(),
-                "spawned".to_string(),
-                "loop!".to_string(),
-                3,
+                AgentMessageEvent::new(sender_info.address.clone(), "spawned", "loop!", 3),
             )
             .await;
         assert!(matches!(outcome, Err(SendError::HopLimitExceeded { .. })));

@@ -149,6 +149,7 @@ mod tests {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         });
     }
 
@@ -200,6 +201,7 @@ mod tests {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         });
     }
 
@@ -213,6 +215,7 @@ mod tests {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         });
     }
 
@@ -231,6 +234,7 @@ mod tests {
             sender: None,
             agent_sender: None,
             thinking: Vec::new(),
+            id: None,
         });
     }
 

@@ -52,6 +52,10 @@ pub(crate) enum TurnKickoff {
         /// conversation-triggered spawn or resume. Empty for every other
         /// trigger.
         images: Vec<ImageData>,
+        /// The agent messages `prompt` carries, for a resume by a message:
+        /// the turn reports each as read, and its opening message carries
+        /// the first one's id. Empty for every other trigger.
+        delivered: Vec<AgentMessageEvent>,
     },
     /// A later turn, started because another agent's message reached this
     /// session while it was idle.
@@ -75,6 +79,17 @@ impl TurnKickoff {
         }
     }
 
+    /// The messages from other agents, the owner or an artifact this
+    /// kickoff hands the turn, which the turn reports as read once it has
+    /// started.
+    pub(crate) fn delivered_messages(&self) -> &[AgentMessageEvent] {
+        match self {
+            Self::Initial { delivered, .. } => delivered,
+            Self::AgentMessage(msg) => std::slice::from_ref(msg),
+            Self::External(_) => &[],
+        }
+    }
+
     /// Render this kickoff as the turn's opening message(s).
     fn into_messages(self) -> Vec<Message> {
         match self {
@@ -83,6 +98,7 @@ impl TurnKickoff {
                 context,
                 sender: None,
                 images,
+                delivered,
                 ..
             } => {
                 // No sender: preserve the original single-message rendering
@@ -99,13 +115,14 @@ impl TurnKickoff {
                 } else {
                     Message::user_with_images(text, images)
                 };
-                vec![user]
+                vec![user.with_id(first_id(&delivered))]
             }
             Self::Initial {
                 prompt,
                 context,
                 sender: Some(sender),
                 images,
+                delivered,
                 ..
             } => {
                 let mut msgs = Vec::new();
@@ -117,13 +134,21 @@ impl TurnKickoff {
                 } else {
                     Message::user_with_images(prompt, images)
                 };
-                msgs.push(user.with_sender(Some(sender)));
+                msgs.push(user.with_sender(Some(sender)).with_id(first_id(&delivered)));
                 msgs
             }
             Self::AgentMessage(msg) => vec![msg.to_history_message()],
             Self::External(inbound) => inbound.into_history_messages(),
         }
     }
+}
+
+/// The id an opening message carrying `delivered` records: the first
+/// message's. One history entry holds one id, so when a resume combines
+/// several messages into one opening message, the others are matched by
+/// their read events alone.
+fn first_id(delivered: &[AgentMessageEvent]) -> Option<String> {
+    delivered.first().map(|msg| msg.id.clone())
 }
 
 /// Everything needed to run a session turn, gathered at fork time.
@@ -287,6 +312,8 @@ pub(crate) struct SessionTurnIdentity<'a> {
     pub(crate) publisher: &'a Publisher,
     pub(crate) address: &'a SessionAddress,
     pub(crate) run_id: &'a str,
+    /// Identifies this turn within the run (the id its `TurnStarted` carries).
+    pub(crate) turn_id: &'a str,
 }
 
 /// Where a conversation session additionally delivers its intermediate turn
@@ -379,6 +406,7 @@ pub(crate) async fn execute_subagent(
     // during the turn raise it further (see `agent::turn::drain_interrupts`).
     resources.hop_counter.set(kickoff.hop_count());
 
+    let delivered = kickoff.delivered_messages().to_vec();
     // No identity/wiki/skills content here — that lives in the system message.
     let kickoff_messages = kickoff.into_messages();
     recent_messages.extend(kickoff_messages.clone());
@@ -413,6 +441,7 @@ pub(crate) async fn execute_subagent(
         target: EventTarget::Session {
             address: identity.address,
             run_id: identity.run_id,
+            turn_id: identity.turn_id,
         },
         session_conversation: conversation_output.map(|out| SessionConversationTarget {
             session_address: identity.address,
@@ -420,6 +449,11 @@ pub(crate) async fn execute_subagent(
             conversation_id: out.conversation_id,
         }),
     };
+    // The messages that started this turn are read now: they are in the
+    // transcript, and nothing else has been published since `TurnStarted`.
+    for msg in &delivered {
+        events.publish_message_read(msg).await;
+    }
     // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
         &turn_resources,
@@ -458,6 +492,7 @@ mod tests {
             publisher: Box::leak(Box::new(Publisher::noop())),
             address: Box::leak(Box::new(SessionAddress::from("spawned-test-0001"))),
             run_id,
+            turn_id: "run-t1",
         }
     }
 
@@ -468,6 +503,7 @@ mod tests {
             hop_count: 0,
             sender: None,
             images: Vec::new(),
+            delivered: Vec::new(),
         }
     }
 
@@ -663,12 +699,12 @@ mod tests {
 
         execute_subagent(
             &test_identity("run-msg"),
-            TurnKickoff::AgentMessage(AgentMessageEvent {
-                from: residuum_bus::SessionAddress::from("main"),
-                from_category: "main".to_string(),
-                content: "how's it going?".to_string(),
-                hop_count: 0,
-            }),
+            TurnKickoff::AgentMessage(AgentMessageEvent::new(
+                residuum_bus::SessionAddress::from("main"),
+                "main",
+                "how's it going?",
+                0,
+            )),
             &mut recent_messages,
             &resources,
             TurnExecution {
@@ -712,6 +748,7 @@ mod tests {
                 hop_count: 0,
                 sender: Some(sample_sender()),
                 images: Vec::new(),
+                delivered: Vec::new(),
             },
             &mut recent_messages,
             &resources,
@@ -748,6 +785,7 @@ mod tests {
                 hop_count: 0,
                 sender: Some(sample_sender()),
                 images: Vec::new(),
+                delivered: Vec::new(),
             },
             &mut recent_messages,
             &resources,
@@ -792,6 +830,7 @@ mod tests {
                 hop_count: 0,
                 sender: None,
                 images: vec![image.clone()],
+                delivered: Vec::new(),
             },
             &mut recent_messages,
             &resources,
@@ -874,12 +913,12 @@ mod tests {
         let resources = make_resources("wrapping up");
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
-        tx.send(Interrupt::AgentMessage(AgentMessageEvent {
-            from: residuum_bus::SessionAddress::from("main"),
-            from_category: "main".to_string(),
-            content: "any updates?".to_string(),
-            hop_count: 0,
-        }))
+        tx.send(Interrupt::AgentMessage(AgentMessageEvent::new(
+            residuum_bus::SessionAddress::from("main"),
+            "main",
+            "any updates?",
+            0,
+        )))
         .unwrap();
 
         let mut recent_messages = RecentMessages::new();
@@ -1162,6 +1201,7 @@ mod tests {
             publisher: &publisher,
             address: &address,
             run_id: "run-conv-tool",
+            turn_id: "run-t1",
         };
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();

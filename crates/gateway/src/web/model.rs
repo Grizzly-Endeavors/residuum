@@ -228,6 +228,7 @@ fn build_request(
                 sender: None,
                 agent_sender: None,
                 thinking: Vec::new(),
+                id: None,
             });
         }
     } else {
