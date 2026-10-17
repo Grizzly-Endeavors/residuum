@@ -1,4 +1,3 @@
-src/checkpoints/ residuum-checkpoints
 src/notify/ residuum-notify
 src/agent/ residuum-agent
 src/subconscious/ residuum-agent

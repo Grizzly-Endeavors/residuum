@@ -25,7 +25,7 @@ pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
 pub mod a2a;
 pub mod agent;
 pub mod background;
-pub mod checkpoints;
+pub use residuum_checkpoints as checkpoints;
 pub mod daemon;
 pub mod gateway;
 pub mod hub;

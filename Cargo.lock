@@ -4991,7 +4991,6 @@ dependencies = [
  "dotenvy",
  "fd-lock",
  "futures-util",
- "gix",
  "globset",
  "hex",
  "iana-time-zone",
@@ -5007,6 +5006,7 @@ dependencies = [
  "regex",
  "reqwest 0.13.3",
  "residuum-bus",
+ "residuum-checkpoints",
  "residuum-config",
  "residuum-core",
  "residuum-inference",
@@ -5025,7 +5025,6 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "serenity",
- "similar",
  "tauri-winrt-notification",
  "teloxide-core",
  "tempfile",
@@ -5070,6 +5069,25 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "residuum-checkpoints"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gix",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-workspace",
+ "serde",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ts-rs",
 ]
 
 [[package]]

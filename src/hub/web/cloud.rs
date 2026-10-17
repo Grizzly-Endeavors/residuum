@@ -414,7 +414,7 @@ token = "secret:cloud_token"
                 reload_tx,
                 tunnel_status_rx,
                 secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-                checkpoints: crate::checkpoints::test_engine(),
+                checkpoints: crate::checkpoints::testing::test_engine(),
                 sign_ins,
             });
 
@@ -446,7 +446,7 @@ token = "secret:cloud_token"
             reload_tx,
             tunnel_status_rx,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
             sign_ins: super::super::cloud_sign_in::PendingSignIns::default(),
         }
     }
