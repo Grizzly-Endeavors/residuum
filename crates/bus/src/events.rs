@@ -663,6 +663,13 @@ pub struct SpawnRequestEvent {
     /// publishes a [`SessionEventKind::MessageRead`] for each. Empty for
     /// every other request.
     pub delivered_messages: Vec<AgentMessageEvent>,
+    /// The conversation's chat messages a resume delivers as the new run's
+    /// opening input, in the order they arrived. `prompt` holds them
+    /// combined, which is how the new run reads them. A resume that loses
+    /// the race for its address delivers each into the run that won it as
+    /// the chat message it is, the way a conversation's message reaches a
+    /// running conversation session. Empty for every other request.
+    pub delivered_chat_messages: Vec<MessageEvent>,
 }
 
 /// Marks a pulse fire that started while an earlier fire of the same pulse

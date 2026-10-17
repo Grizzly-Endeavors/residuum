@@ -72,6 +72,7 @@ impl OwnerSessionStart {
             carried_history: self.fork_of.unwrap_or_default(),
             fire_id: None,
             delivered_messages: Vec::new(),
+            delivered_chat_messages: Vec::new(),
         }
     }
 }

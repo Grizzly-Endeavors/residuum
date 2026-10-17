@@ -361,11 +361,12 @@ impl SessionRuntime {
 /// floor, deliver it into the run that won, the same way a `message_agent`
 /// call would.
 ///
-/// A resume that carries agent messages delivers each of them unchanged, as
-/// its own interrupt (see
-/// [`listener::losing_resume_messages`](super::listener::losing_resume_messages)),
-/// so each keeps its id and sender; one that cannot be delivered is logged
-/// with its id and dropped.
+/// A resume by messages delivers each of them unchanged, as its own
+/// interrupt (see
+/// [`listener::deliver_losing_resume`](super::listener::deliver_losing_resume)):
+/// an agent message keeps its id and sender, and one that cannot be
+/// delivered is logged with its id and dropped; a conversation's chat
+/// message arrives as the chat message it is, and is never dropped.
 ///
 /// A chat user's message (a `Conversation`-triggered request carrying its
 /// original inbound message) is never dropped here: a saturated or
@@ -388,25 +389,8 @@ fn deliver_losing_spawn_input(
         "refusing to register a session run: address is already live; falling back to \
          delivering its input into the run that won the race"
     );
-    if !config.delivered_messages.is_empty() {
-        let messages = super::listener::losing_resume_messages(
-            config.delivered_messages.clone(),
-            &config.prompt,
-            info.spawner.clone(),
-            info.category,
-            config.hop_count,
-        );
-        for (id, outcome) in
-            super::listener::deliver_each_message(registry, &info.address, messages)
-        {
-            tracing::error!(
-                address = %info.address,
-                message_id = %id,
-                outcome = ?outcome,
-                "failed to deliver a resume's message into the run that won the race; message \
-                 dropped"
-            );
-        }
+    if !config.delivered_messages.is_empty() || !config.delivered_chat_messages.is_empty() {
+        deliver_losing_resume_input(registry, publisher, info, config);
         return;
     }
     // Mirrors `SpawnRequestEvent::kickoff_text` — `config` is already the
@@ -467,6 +451,7 @@ fn deliver_losing_spawn_input(
                 carried_history: Vec::new(),
                 fire_id: None,
                 delivered_messages: Vec::new(),
+                delivered_chat_messages: Vec::new(),
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
@@ -489,6 +474,41 @@ fn deliver_losing_spawn_input(
                 "failed to deliver a spawn's input into the run that won the race; input dropped"
             );
         }
+    }
+}
+
+/// [`deliver_losing_spawn_input`] for a resume by messages: each message is
+/// delivered as it was sent, and an agent message that cannot be delivered
+/// is logged with its id.
+fn deliver_losing_resume_input(
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
+    info: &SessionInfo,
+    config: &SubAgentConfig,
+) {
+    let messages = super::listener::losing_resume_messages(
+        config.delivered_messages.clone(),
+        config.delivered_chat_messages.clone(),
+        &config.prompt,
+        info.spawner.clone(),
+        info.category,
+        config.hop_count,
+    );
+    let spawn = super::messaging::ConversationSpawn {
+        source_label: info.source_label.clone(),
+        model: config.model.clone(),
+        skill: info.agent_skill.clone(),
+    };
+    for (id, outcome) in
+        super::listener::deliver_losing_resume(registry, publisher, &info.address, messages, spawn)
+    {
+        tracing::error!(
+            address = %info.address,
+            message_id = %id,
+            outcome = ?outcome,
+            "failed to deliver a resume's message into the run that won the race; message \
+             dropped"
+        );
     }
 }
 
@@ -1891,6 +1911,7 @@ mod tests {
                 images: Vec::new(),
                 carried_history: Vec::new(),
                 delivered_messages: Vec::new(),
+                delivered_chat_messages: Vec::new(),
             },
             conversation_target: None,
             overlap: None,
@@ -1969,6 +1990,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
             delivered_messages: Vec::new(),
+            delivered_chat_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -1997,7 +2019,7 @@ mod tests {
     }
 
     #[test]
-    fn deliver_losing_spawn_input_for_a_resume_delivers_each_message_under_its_own_id() {
+    fn deliver_losing_spawn_input_for_a_resume_delivers_each_message_as_it_was_sent() {
         use residuum_bus::session::{OWNER_ADDRESS as OWNER, TEAMMATE_SENDER_CATEGORY as TEAMMATE};
         let registry = Arc::new(SessionRegistry::new());
         let publisher = Publisher::noop();
@@ -2041,6 +2063,7 @@ mod tests {
                 )
                 .with_id("m-teammate"),
             ],
+            delivered_chat_messages: vec![jane_chat_message("m-chat", "any news?")],
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -2054,15 +2077,7 @@ mod tests {
             &register_error,
         );
 
-        let mut delivered = Vec::new();
-        while let Ok(interrupt) = rx.try_recv() {
-            match interrupt {
-                Interrupt::AgentMessage(m) => delivered.push(m),
-                Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
-                    panic!("a losing resume delivers agent messages only")
-                }
-            }
-        }
+        let (delivered, chat_delivered) = split_agent_then_chat(&mut rx);
         let summary: Vec<(&str, &str, &str, u32)> = delivered
             .iter()
             .map(|m| {
@@ -2079,15 +2094,74 @@ mod tests {
             vec![
                 (OWNER, "owner", "are you there?", 0),
                 ("agent:ivan", TEAMMATE, "the logs are in /tmp", 1),
-                (spawner.as_ref(), "spawned", config.prompt.as_str(), 2),
-            ]
+            ],
+            "the chat text is not delivered as an agent message from the spawner"
         );
-        let ids: Vec<&str> = delivered.iter().take(2).map(|m| m.id.as_str()).collect();
+        let ids: Vec<&str> = delivered.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["m-owner", "m-teammate"], "each keeps its own id");
+        let chat_summary: Vec<(&str, &str, Option<&str>)> = chat_delivered
+            .iter()
+            .map(|m| {
+                (
+                    m.id.as_str(),
+                    m.content.as_str(),
+                    m.origin.sender.as_ref().map(|s| s.name.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            chat_summary,
+            vec![("m-chat", "any news?", Some("Jane"))],
+            "the chat message arrives as the chat message it is, with its own sender"
+        );
         assert!(
             delivered.iter().all(|m| !m.content.contains(context)),
             "the resume context stays out of the delivered messages"
         );
+    }
+
+    /// A chat message from Jane in `#builds`.
+    fn jane_chat_message(id: &str, content: &str) -> MessageEvent {
+        let inbound = sample_inbound_message(content);
+        MessageEvent {
+            id: id.to_string(),
+            origin: residuum_bus::origin::MessageOrigin {
+                sender: Some(residuum_inference::MessageSender {
+                    name: "Jane".to_string(),
+                    id: "discord-jane".to_string(),
+                    interface: "discord".to_string(),
+                    location: Some("#builds".to_string()),
+                }),
+                ..inbound.origin
+            },
+            ..inbound
+        }
+    }
+
+    /// Everything in `rx`, as the agent messages and then the chat messages
+    /// it holds; fails if an agent message follows a chat message, or
+    /// anything else is there.
+    fn split_agent_then_chat(
+        rx: &mut mpsc::Receiver<Interrupt>,
+    ) -> (Vec<residuum_bus::AgentMessageEvent>, Vec<MessageEvent>) {
+        let mut agent = Vec::new();
+        let mut chat = Vec::new();
+        while let Ok(interrupt) = rx.try_recv() {
+            match interrupt {
+                Interrupt::AgentMessage(m) => {
+                    assert!(
+                        chat.is_empty(),
+                        "the agent messages arrive ahead of the chat messages"
+                    );
+                    agent.push(m);
+                }
+                Interrupt::UserMessage(m) => chat.push(m),
+                Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                    panic!("a losing resume delivers agent and chat messages only")
+                }
+            }
+        }
+        (agent, chat)
     }
 
     fn conversation_winner_info(address: &SessionAddress, run_id: &str) -> SessionInfo {
@@ -2154,6 +2228,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
             delivered_messages: Vec::new(),
+            delivered_chat_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -2215,6 +2290,7 @@ mod tests {
             images: Vec::new(),
             carried_history: Vec::new(),
             delivered_messages: Vec::new(),
+            delivered_chat_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
