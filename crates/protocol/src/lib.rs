@@ -753,6 +753,7 @@ pub enum ServerMessage {
         /// expandable "details" toggle as a live `SessionError`. `None` when
         /// there's nothing richer to show.
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         error_details: Option<String>,
         /// Episode the run was merged into, if it produced one.
         episode_id: Option<String>,
@@ -875,6 +876,7 @@ pub enum ServerMessage {
         message: String,
         /// Full technical cause chain, shown behind a details toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         details: Option<String>,
     },
     /// A session's message reached the main agent (a turn-result relay or a

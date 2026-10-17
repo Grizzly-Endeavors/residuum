@@ -436,7 +436,7 @@ export class SessionsStore {
       episode_id: frame.episode_id,
       outcome: frame.status,
       error: frame.error,
-      error_details: frame.error_details,
+      error_details: frame.error_details ?? null,
     };
     this.finished.all.prepend(finished);
     const kind = this.finished[finished.category];

@@ -324,7 +324,7 @@ error: string | null,
  * expandable "details" toggle as a live `SessionError`. `None` when
  * there's nothing richer to show.
  */
-error_details: string | null, 
+error_details?: string, 
 /**
  * Episode the run was merged into, if it produced one.
  */
@@ -485,7 +485,7 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details: string | null, } | { "type": "session_message_to_main", 
+details?: string, } | { "type": "session_message_to_main", 
 /**
  * Sending session's address.
  */

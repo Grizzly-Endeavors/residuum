@@ -170,7 +170,6 @@ describe("the finished list", () => {
       run_id: "run-1",
       status: "failed",
       error: "the site timed out",
-      error_details: null,
       episode_id: null,
     });
     expect(s.live).toEqual([]);
@@ -179,6 +178,7 @@ describe("the finished list", () => {
     expect(finished?.state).toBe("completed");
     expect(finished?.outcome).toBe("failed");
     expect(finished?.error).toBe("the site timed out");
+    expect(finished?.error_details).toBeNull();
     // A kind not loaded yet takes it with its first page.
     expect(s.finished.spawned.runs).toEqual([]);
   });
@@ -205,7 +205,6 @@ describe("stopping from the list", () => {
       run_id: "run-1",
       status: "cancelled",
       error: null,
-      error_details: null,
       episode_id: null,
     });
     expect(s.stopping.has("spawned-x-1")).toBe(false);

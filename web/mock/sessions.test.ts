@@ -452,9 +452,10 @@ describe("session commands and lifecycle", () => {
       run_id: "run-live-discord",
       status: "cancelled",
       error: null,
-      error_details: null,
       episode_id: null,
     });
+    // As on the wire, a finish with no details leaves the key out.
+    expect(frames.at(-1)).not.toHaveProperty("error_details");
   });
 
   it("refuses to stop a session that is winding down, finished, or unknown", () => {

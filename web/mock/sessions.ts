@@ -80,7 +80,7 @@ function completeSession(
       run_id: session.run_id,
       status,
       error,
-      error_details: errorDetails,
+      ...(errorDetails === null ? {} : { error_details: errorDetails }),
       episode_id: session.episode_id,
     });
   });
