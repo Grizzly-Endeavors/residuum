@@ -11,7 +11,7 @@ pub(super) const BACKLOG: &[(&str, usize)] = &[];
 /// Test code where the clock is the stimulus rather than a guess, with why.
 pub(super) const ALLOWED: &[(&str, usize, &str)] = &[
     (
-        "src/integration/a2a_server.rs",
+        "tests/it/a2a_server.rs",
         1,
         "the harness's `Drop` removes the workspace while detached session and checkpoint writers may still be finishing; teardown is synchronous, with nothing to await their end on, so the removal retries between short pauses",
     ),

@@ -210,17 +210,13 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 anyhow = { workspace = true }
 tempfile = { workspace = true }
-async-trait = { workspace = true }
 dotenvy = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 regex = { workspace = true }
 globset = { workspace = true }
-tokio-util = { workspace = true }
 fd-lock = { workspace = true }
 a2a = { workspace = true }
-a2a-server = { workspace = true }
-a2a-client = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
@@ -228,10 +224,7 @@ clap = { workspace = true }
 owo-colors = { workspace = true }
 rpassword = { workspace = true }
 axum = { workspace = true }
-tokio-tungstenite = { workspace = true }
 rustls = { workspace = true }
-futures-util = { workspace = true }
-tower = { workspace = true }
 rust-embed = { workspace = true }
 iana-time-zone = { workspace = true }
 
@@ -264,6 +257,13 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 ts-rs = { workspace = true }
 wiremock = { workspace = true }
+async-trait = { workspace = true }
+tokio-util = { workspace = true }
+a2a-server = { workspace = true }
+a2a-client = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+tower = { workspace = true }
 
 [package.metadata.cargo-shear]
 # ctor is used by crates/core/src/testing/crypto.rs, which this package includes by

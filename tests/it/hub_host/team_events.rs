@@ -1,10 +1,15 @@
 //! The team event log against real agents: each kind of entry appears once,
 //! from the thing that really causes it, and nothing else does.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 
 use super::*;
-use crate::background::team::{TeamLink, parse_team_address};
-use crate::hub::agent_watch::AgentChangeKind;
-use crate::hub::team_events::{
+use residuum::background::team::{TeamLink, parse_team_address};
+use residuum::hub::agent_watch::AgentChangeKind;
+use residuum::hub::team_events::{
     PageQuery, TeamEvent, TeamEventKind, TeamEventLevel, TeamEventTarget,
 };
 
@@ -42,7 +47,7 @@ async fn entry(hub: &Fixture, kind: TeamEventKind, agent: Option<&str>) -> TeamE
 fn chat_of(agent: &str) -> TeamEventTarget {
     TeamEventTarget::AgentPlace {
         agent: agent.to_string(),
-        place: crate::hub::team_events::TeamEventPlace::Chat,
+        place: residuum::hub::team_events::TeamEventPlace::Chat,
     }
 }
 
@@ -202,7 +207,7 @@ async fn a_hub_wide_notice_is_told_and_keeps_its_level_and_agent() {
     let hub = Fixture::new(&["scout"], "").await;
 
     hub.host.notice(
-        crate::hub::types::NoticeLevel::Warn,
+        residuum::hub::types::NoticeLevel::Warn,
         "scout's Teams adapter can't use port 3978".to_string(),
         Some("scout".to_string()),
     );
@@ -228,7 +233,8 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
     // A teammate's message starts a background turn that still replies.
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
+    let main =
+        residuum::bus::SessionAddress::from(residuum::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();
@@ -236,7 +242,7 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
         let change = wait::guarded("the background turn to end", changes.recv())
             .await
             .unwrap();
-        if matches!(change.kind, AgentChangeKind::TurnEnded(ref turn) if turn.visibility == crate::memory::types::Visibility::Background)
+        if matches!(change.kind, AgentChangeKind::TurnEnded(ref turn) if turn.visibility == residuum::memory::types::Visibility::Background)
         {
             break;
         }

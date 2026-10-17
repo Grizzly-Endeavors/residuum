@@ -8,10 +8,9 @@
 #                         depends on one of them, directly or not, through normal,
 #                         dev or build dependencies
 #   --touched             the member packages the paths are in, without dependents
-#   --covering            the integration modules to run for the paths, one per line:
-#                         `it:<m>` for tests/it/<m>, `integration:<m>` for
-#                         src/integration/<m>, and `it:ALL` or `integration:ALL`
-#                         for a path every module reads
+#   --covering            the integration test modules to run for the paths, one per
+#                         line: `it:<m>` for tests/it/<m>, and `it:ALL` for a path
+#                         every module reads
 #   --graph               the workspace dependency graph, one "package: deps" line each
 #
 # stdout is the cargo package arguments (`-p residuum-x -p residuum`, or
@@ -195,9 +194,8 @@ touched_packages() {
 }
 
 # Prints one "<label> <package>" line for each name on the covers line of each
-# integration module: tests/it/<m>.rs or tests/it/<m>/mod.rs, and the same under
-# src/integration. The container files (tests/it/main.rs, src/integration/mod.rs)
-# and tests/it/support are not modules.
+# integration module: tests/it/<m>.rs or tests/it/<m>/mod.rs. The container file
+# (tests/it/main.rs) and tests/it/support are not modules.
 covers_table() {
     local file name
     shopt -s nullglob
@@ -210,16 +208,6 @@ covers_table() {
         name="${file#tests/it/}"
         name="${name%%/*}"
         if [ "$name" != support ]; then covers_of "it:$name" "$file"; fi
-    done
-    for file in src/integration/*.rs; do
-        name="${file##*/}"
-        name="${name%.rs}"
-        if [ "$name" != mod ]; then covers_of "integration:$name" "$file"; fi
-    done
-    for file in src/integration/*/mod.rs; do
-        name="${file#src/integration/}"
-        name="${name%%/*}"
-        covers_of "integration:$name" "$file"
     done
     shopt -u nullglob
 }
@@ -245,23 +233,16 @@ covers_of() {
     ' "$2"
 }
 
-# Prints the module label a path under tests/it or src/integration selects
-# directly, and nothing for any other path. A path that every module reads
-# selects all of its directory's modules.
+# Prints the module label a path under tests/it selects directly, and nothing
+# for any other path. A path that every module reads selects all of them.
 direct_module() {
     local path="$1"
     case "$path" in
     tests/it/main.rs | tests/it/support/* | tests/fixtures/* | assets/*)
         echo "it:ALL"
         ;;
-    src/integration/mod.rs)
-        echo "integration:ALL"
-        ;;
     tests/it/*)
         module_label it "${path#tests/it/}"
-        ;;
-    src/integration/*)
-        module_label integration "${path#src/integration/}"
         ;;
     esac
     return 0
@@ -283,9 +264,9 @@ module_label() {
     echo "$kind:$name"
 }
 
-# Prints the integration modules to run for the changed paths, one per line,
-# for --covering. A module is one whose covers line names the package a path
-# belongs to; a path under a module directory selects that module alone.
+# Prints the integration test modules to run for the changed paths, one per
+# line, for --covering. A module is one whose covers line names the package a
+# path belongs to; a path under a module directory selects that module alone.
 covering_modules() {
     local table path direct
     table="$(covers_table)"

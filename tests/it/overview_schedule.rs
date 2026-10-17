@@ -6,6 +6,19 @@
 //! depend on the day it runs.
 //!
 //! covers: residuum-hub, residuum-gateway
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
+#![expect(
+    clippy::missing_assert_message,
+    reason = "test assertions name the failing condition in the assert itself"
+)]
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -16,13 +29,13 @@ use axum::http::{Request, StatusCode};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
-use crate::actions::store::ActionStore;
-use crate::background::registry::SessionRegistry;
-use crate::background::store::SessionStore;
-use crate::config::WorkspaceLayout;
-use crate::gateway::web::scheduled::{ScheduledApiState, scheduled_api_router};
-use crate::hub::AgentFiles;
-use crate::hub::overview::upcoming;
+use residuum::actions::store::ActionStore;
+use residuum::background::registry::SessionRegistry;
+use residuum::background::store::SessionStore;
+use residuum::config::WorkspaceLayout;
+use residuum::gateway::web::scheduled::{ScheduledApiState, scheduled_api_router};
+use residuum::hub::AgentFiles;
+use residuum::hub::overview::upcoming;
 
 /// `HEARTBEAT.yml` in `dir`, with a pulse for each of `(name, schedule,
 /// active hours)`.

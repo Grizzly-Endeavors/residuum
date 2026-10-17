@@ -170,7 +170,7 @@ check_it_module_file() {
     local -A repo_files=()
     fn="$(awk '/^it_module_file\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
     eval "$fn"
-    for name in src/integration/four.rs src/integration/five/mod.rs tests/it/six.rs; do
+    for name in tests/it/four.rs tests/it/five/mod.rs tests/it/six.rs; do
         repo_files["$name"]=1
     done
     while IFS='|' read -r name expected; do
@@ -180,10 +180,11 @@ check_it_module_file() {
             status=1
         fi
     done <<'CASES'
-integration::four::t|src/integration/four.rs
-integration::five::tests::x|src/integration/five/mod.rs
-integration::nine::x|
-integration::four|
+four::t|tests/it/four.rs
+five::tests::x|tests/it/five/mod.rs
+integration::four::t|
+nine::x|
+four|
 six::x|tests/it/six.rs
 residuum_core::x|
 CASES

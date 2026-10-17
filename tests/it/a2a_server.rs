@@ -4,6 +4,12 @@
 //! client driving it over HTTP. See `docs/systems-usage/a2a.md`.
 //!
 //! covers: residuum-a2a, residuum-background, residuum-tools
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
 
 use residuum_core::testing::gate::{Gate, GateEntry};
 use residuum_core::testing::ports::{ReservedPort, reserve_port};
@@ -22,36 +28,36 @@ use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::a2a::card::{CardRuntime, CardState, SharedCardState};
-use crate::a2a::executor::SessionExecutor;
-use crate::a2a::handler::{ResiduumA2aHandler, resume_in_progress_tasks};
-use crate::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
-use crate::a2a::listener::{A2aListener, agent_handler_router};
-use crate::a2a::static_directory::StaticAgentDirectory;
-use crate::a2a::task_store::{CALLER_METADATA_KEY, FileTaskStore, SharedTaskStore};
-use crate::actions::store::ActionStore;
-use crate::agent::HopCounter;
-use crate::agent::hop::HopLimits;
-use crate::background::messaging::AgentMessenger;
-use crate::background::registry::SessionRegistry;
-use crate::background::session_tools::{SessionToolFactory as _, SessionToolScope};
-use crate::background::store::SessionStore;
-use crate::background::subagent::SubAgentResources;
-use crate::background::testing::test_memory_extras;
-use crate::background::types::SubAgentConfig;
-use crate::background::{SessionRuntime, SessionSpawnRequest};
-use crate::bus::{
+use residuum::a2a::card::{CardRuntime, CardState, SharedCardState};
+use residuum::a2a::executor::SessionExecutor;
+use residuum::a2a::handler::{ResiduumA2aHandler, resume_in_progress_tasks};
+use residuum::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
+use residuum::a2a::listener::{A2aListener, agent_handler_router};
+use residuum::a2a::static_directory::StaticAgentDirectory;
+use residuum::a2a::task_store::{CALLER_METADATA_KEY, FileTaskStore, SharedTaskStore};
+use residuum::actions::store::ActionStore;
+use residuum::agent::HopCounter;
+use residuum::agent::hop::HopLimits;
+use residuum::background::messaging::AgentMessenger;
+use residuum::background::registry::SessionRegistry;
+use residuum::background::session_tools::{SessionToolFactory as _, SessionToolScope};
+use residuum::background::store::SessionStore;
+use residuum::background::subagent::SubAgentResources;
+use residuum::background::testing::test_memory_extras;
+use residuum::background::types::SubAgentConfig;
+use residuum::background::{SessionRuntime, SessionSpawnRequest};
+use residuum::bus::{
     BusHandle, EndpointRegistry, Publisher, SessionAddress, SpawnRequestEvent, topics,
 };
-use crate::config::{A2aConfig, A2aVisibility, Config, ModelSelector, WorkspaceLayout};
-use crate::inference::{
+use residuum::config::{A2aConfig, A2aVisibility, Config, ModelSelector, WorkspaceLayout};
+use residuum::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ToolCall,
     ToolDefinition,
 };
-use crate::mcp::McpRegistry;
-use crate::skills::{SkillIndex, SkillState};
-use crate::tools::SessionTools;
-use crate::workspace::identity::IdentityFiles;
+use residuum::mcp::McpRegistry;
+use residuum::skills::{SkillIndex, SkillState};
+use residuum::tools::SessionTools;
+use residuum::workspace::identity::IdentityFiles;
 
 /// The name of the one agent the harness serves.
 const AGENT_NAME: &str = "solo";
@@ -105,8 +111,8 @@ impl InferenceProvider for ScriptedProvider {
 /// whole `Config` (`gather_for_bug_report`) — nothing here is exercised by
 /// the a2a path itself.
 fn test_config(dir: &std::path::Path) -> Config {
-    use crate::config::RetryConfig;
-    use crate::config::{
+    use residuum::config::RetryConfig;
+    use residuum::config::{
         AgentAbilitiesConfig, BackgroundConfig, GatewayConfig, IdleConfig, LearningConfig,
         MemoryConfig, SkillsConfig, SubconsciousSettings, ToolsConfig, TracingConfig,
         WebSearchConfig,
@@ -141,7 +147,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         retry: RetryConfig::default(),
         background: BackgroundConfig::default(),
         agent: AgentAbilitiesConfig::default(),
-        auto_mode: crate::config::AutoModeConfig::default(),
+        auto_mode: residuum::config::AutoModeConfig::default(),
         idle: IdleConfig::default(),
         temperature: None,
         thinking: None,
@@ -151,7 +157,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         },
         tracing: TracingConfig::default(),
         role_overrides: HashMap::new(),
-        model_catalog: crate::config::ModelCatalog::default(),
+        model_catalog: residuum::config::ModelCatalog::default(),
         config_dir: dir.to_path_buf(),
         load_notices: vec![],
     }
@@ -169,7 +175,7 @@ struct Harness {
     session_registry: Arc<SessionRegistry>,
     messenger: Arc<AgentMessenger>,
     bus_handle: BusHandle,
-    skill_state: crate::skills::SharedSkillState,
+    skill_state: residuum::skills::SharedSkillState,
     card_state: SharedCardState,
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
@@ -201,7 +207,7 @@ impl Drop for Harness {
 
 /// Options for building a [`Harness`], so each test only sets what it needs.
 struct HarnessOptions {
-    card_skills: Vec<crate::a2a::card::AgentCardSkillFile>,
+    card_skills: Vec<residuum::a2a::card::AgentCardSkillFile>,
     workspace_skill: Option<(&'static str, &'static str)>,
     idle_timeout: Duration,
 }
@@ -225,7 +231,7 @@ async fn setup_workspace(
     tempfile::TempDir,
     PathBuf,
     WorkspaceLayout,
-    crate::skills::SharedSkillState,
+    residuum::skills::SharedSkillState,
 ) {
     let tempdir = tempfile::tempdir().unwrap();
     let workspace_dir = tempdir.path().to_path_buf();
@@ -237,7 +243,7 @@ async fn setup_workspace(
         .await
         .unwrap();
 
-    let skill_dirs = vec![crate::config::SkillDir::agent(layout.skills_dir())];
+    let skill_dirs = vec![residuum::config::SkillDir::agent(layout.skills_dir())];
     if let Some((name, description)) = opts.workspace_skill {
         let skill_dir = layout.skills_dir().join(name);
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
@@ -251,7 +257,7 @@ async fn setup_workspace(
     let skill_index = SkillIndex::scan(&skill_dirs).await.unwrap();
     let skill_state = SkillState::new_shared(skill_index, skill_dirs);
 
-    let card_file = crate::a2a::card::AgentCardFile {
+    let card_file = residuum::a2a::card::AgentCardFile {
         name: "Test Agent".to_string(),
         description: "a test a2a agent".to_string(),
         skills: opts.card_skills.clone(),
@@ -273,27 +279,27 @@ async fn setup_workspace(
 fn build_support_deps(
     workspace_dir: &std::path::Path,
 ) -> (
-    Arc<crate::memory::search::HybridSearcher>,
-    Arc<crate::tracing_service::TracingService>,
-    Arc<crate::tracing_service::ClientContext>,
+    Arc<residuum::memory::search::HybridSearcher>,
+    Arc<residuum::tracing_service::TracingService>,
+    Arc<residuum::tracing_service::ClientContext>,
 ) {
     let cfg = test_config(workspace_dir);
-    let search_index = Arc::new(crate::memory::search::MemoryIndex::empty().unwrap());
-    let hybrid_searcher = Arc::new(crate::memory::search::HybridSearcher::new(
+    let search_index = Arc::new(residuum::memory::search::MemoryIndex::empty().unwrap());
+    let hybrid_searcher = Arc::new(residuum::memory::search::HybridSearcher::new(
         Arc::clone(&search_index),
         None,
         None,
-        crate::config::SearchConfig::default(),
+        residuum::config::SearchConfig::default(),
     ));
-    let (_, span_buffer) = crate::util::telemetry::SpanBufferLayer::new(
-        &crate::util::telemetry::SpanBufferConfig::default(),
+    let (_, span_buffer) = residuum::util::telemetry::SpanBufferLayer::new(
+        &residuum::util::telemetry::SpanBufferConfig::default(),
     );
-    let tracing_service = Arc::new(crate::tracing_service::TracingService::new(
+    let tracing_service = Arc::new(residuum::tracing_service::TracingService::new(
         cfg.tracing.clone(),
         span_buffer,
     ));
     let tracing_client_context = Arc::new(
-        crate::tracing_service::client_context::gather_for_bug_report(
+        residuum::tracing_service::client_context::gather_for_bug_report(
             residuum_core::testing::HARNESS_BUILD,
             &cfg,
         ),
@@ -307,12 +313,12 @@ struct RuntimeDeps {
     session_registry: Arc<SessionRegistry>,
     messenger: Arc<AgentMessenger>,
     bus_handle: BusHandle,
-    skill_state: crate::skills::SharedSkillState,
+    skill_state: residuum::skills::SharedSkillState,
     workspace_dir: PathBuf,
     layout: WorkspaceLayout,
-    a2a_hub: Arc<crate::a2a::A2aClientHub>,
-    a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
-    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    a2a_hub: Arc<residuum::a2a::A2aClientHub>,
+    a2a_tracker: Arc<residuum::a2a::RemoteTaskTracker>,
+    checkpoints: Arc<residuum::checkpoints::CheckpointEngine>,
 }
 
 /// Build the scripted-provider queue/call-log and spawn the mini background
@@ -342,8 +348,8 @@ fn start_scripted_sessions(
         action_notify: Arc::new(tokio::sync::Notify::new()),
         endpoint_registry: EndpointRegistry::from_entries(std::iter::empty()),
         tools_path: Arc::new(tokio::sync::RwLock::new(None)),
-        path_policy: crate::tools::PathPolicy::new_shared(),
-        agent_keys: crate::agent_keys::AgentKeys::new_shared(&deps.workspace_dir),
+        path_policy: residuum::tools::PathPolicy::new_shared(),
+        agent_keys: residuum::agent_keys::AgentKeys::new_shared(&deps.workspace_dir),
         hybrid_searcher,
         tracing_service,
         tracing_client_context,
@@ -368,7 +374,7 @@ fn start_a2a_listener(
     let port = held.port();
     let inner = DefaultRequestHandler::new(
         executor,
-        crate::a2a::task_store::DelegatingTaskStore(Arc::clone(task_store)),
+        residuum::a2a::task_store::DelegatingTaskStore(Arc::clone(task_store)),
     )
     .with_capabilities(a2a::AgentCapabilities {
         streaming: Some(true),
@@ -381,7 +387,7 @@ fn start_a2a_listener(
 
     let directory = StaticAgentDirectory::new().with_agent(
         AGENT_NAME,
-        crate::background::team::A2aVisibility::Public,
+        residuum::background::team::A2aVisibility::Public,
         agent_handler_router(handler, Arc::clone(card_state)),
     );
 
@@ -396,7 +402,7 @@ fn start_a2a_listener(
     // The listener serves on the reserved socket itself, so no other process
     // can take the port, and connections queue on it until it accepts them.
     .with_bound_listener(held.into_tokio_listener());
-    crate::util::spawn_in_span(listener.start());
+    residuum::util::spawn_in_span(listener.start());
     (keys, shutdown_tx, port)
 }
 
@@ -407,8 +413,8 @@ fn build_harness_runtime(
     session_registry: &Arc<SessionRegistry>,
     session_store: &Arc<SessionStore>,
     messenger: &Arc<AgentMessenger>,
-    checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
-    background_config: &crate::config::BackgroundConfig,
+    checkpoints: &Arc<residuum::checkpoints::CheckpointEngine>,
+    background_config: &residuum::config::BackgroundConfig,
     bus_handle: &BusHandle,
     workspace_dir: &std::path::Path,
 ) -> Arc<SessionRuntime> {
@@ -418,7 +424,7 @@ fn build_harness_runtime(
         Arc::clone(session_store),
         Arc::new(tokio::sync::Semaphore::new(8)),
         background_config,
-        crate::background::SessionRuntimeHandles {
+        residuum::background::SessionRuntimeHandles {
             publisher: bus_handle.publisher(),
             tz: chrono_tz::UTC,
             messenger: Arc::clone(messenger),
@@ -446,7 +452,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     );
     let card_state = CardState::load(&layout.agent_card_json(), &card_runtime).unwrap();
 
-    let bus_handle = crate::bus::spawn_broker();
+    let bus_handle = residuum::bus::spawn_broker();
     let session_registry = Arc::new(SessionRegistry::new());
     let session_store = Arc::new(SessionStore::new(layout.sessions_dir()));
     let messenger = Arc::new(AgentMessenger::new(
@@ -455,15 +461,15 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         Arc::clone(&session_store),
         HopLimits { soft: 8, hard: 32 },
     ));
-    let background_config = crate::config::BackgroundConfig {
+    let background_config = residuum::config::BackgroundConfig {
         idle_timeout_external: opts.idle_timeout,
-        ..crate::config::BackgroundConfig::default()
+        ..residuum::config::BackgroundConfig::default()
     };
     let checkpoints = Arc::new(
-        crate::checkpoints::CheckpointEngine::new(
+        residuum::checkpoints::CheckpointEngine::new(
             "test-agent",
             layout.root().to_path_buf(),
-            &crate::config::paths::TeamPaths::new(workspace_dir.clone().join("team")),
+            &residuum::config::paths::TeamPaths::new(workspace_dir.clone().join("team")),
             workspace_dir.join("config"),
             workspace_dir.clone(),
             &workspace_dir.join("checkpoints"),
@@ -481,8 +487,8 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         &workspace_dir,
     );
 
-    let a2a_hub = crate::a2a::A2aClientHub::new_shared();
-    let a2a_tracker = crate::a2a::RemoteTaskTracker::load(
+    let a2a_hub = residuum::a2a::A2aClientHub::new_shared();
+    let a2a_tracker = residuum::a2a::RemoteTaskTracker::load(
         layout.a2a_outbound_json(),
         Arc::clone(&a2a_hub),
         Arc::clone(&messenger),
@@ -546,7 +552,7 @@ struct MiniListenerDeps {
     runtime: Arc<SessionRuntime>,
     session_registry: Arc<SessionRegistry>,
     messenger: Arc<AgentMessenger>,
-    skill_state: crate::skills::SharedSkillState,
+    skill_state: residuum::skills::SharedSkillState,
     publisher: Publisher,
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
@@ -554,21 +560,21 @@ struct MiniListenerDeps {
     action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: Arc<tokio::sync::Notify>,
     endpoint_registry: EndpointRegistry,
-    tools_path: crate::config::SharedToolsPath,
-    path_policy: crate::tools::SharedPathPolicy,
-    agent_keys: crate::agent_keys::SharedAgentKeys,
-    hybrid_searcher: Arc<crate::memory::search::HybridSearcher>,
-    tracing_service: Arc<crate::tracing_service::TracingService>,
-    tracing_client_context: Arc<crate::tracing_service::ClientContext>,
-    a2a_hub: Arc<crate::a2a::A2aClientHub>,
-    a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
-    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    tools_path: residuum::config::SharedToolsPath,
+    path_policy: residuum::tools::SharedPathPolicy,
+    agent_keys: residuum::agent_keys::SharedAgentKeys,
+    hybrid_searcher: Arc<residuum::memory::search::HybridSearcher>,
+    tracing_service: Arc<residuum::tracing_service::TracingService>,
+    tracing_client_context: Arc<residuum::tracing_service::ClientContext>,
+    a2a_hub: Arc<residuum::a2a::A2aClientHub>,
+    a2a_tracker: Arc<residuum::a2a::RemoteTaskTracker>,
+    checkpoints: Arc<residuum::checkpoints::CheckpointEngine>,
     gate: GateEntry,
 }
 
 fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps) {
-    crate::util::spawn_in_span(async move {
-        let mut sub: crate::bus::Subscriber<SpawnRequestEvent> =
+    residuum::util::spawn_in_span(async move {
+        let mut sub: residuum::bus::Subscriber<SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         loop {
             let Ok(Some(event)) = sub.recv().await else {
@@ -623,11 +629,11 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         tracing_client_context: Arc::clone(&deps.tracing_client_context),
         build: residuum_core::testing::HARNESS_BUILD,
         web_search_backend: None,
-        model_catalog: crate::config::ModelCatalog::default().into_shared(),
+        model_catalog: residuum::config::ModelCatalog::default().into_shared(),
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
-        lifecycle: crate::tools::LifecycleAccess::new(
-            crate::background::team::DirectoryHandle::unbound(),
+        lifecycle: residuum::tools::LifecycleAccess::new(
+            residuum::background::team::DirectoryHandle::unbound(),
             "test",
         ),
         messenger: Arc::clone(&deps.messenger),
@@ -641,7 +647,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
     let tools = session_tools.build(SessionToolScope {
         own_address: event.address.clone(),
         own_depth: event.depth,
-        category: crate::bus::session::SessionCategory::from_trigger(&event.source),
+        category: residuum::bus::session::SessionCategory::from_trigger(&event.source),
         trigger: event.source.clone(),
         conversation_target: event.conversation.clone(),
         hop_counter: hop_counter.clone(),
@@ -650,7 +656,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
 
     SubAgentResources {
         max_tool_iterations: None,
-        repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+        repeat_call_guard: residuum::config::RepeatCallGuardConfig::default(),
         provider: Box::new(ScriptedProvider {
             queue: Arc::clone(&deps.queue),
             seen: Arc::clone(&deps.seen),
@@ -1138,7 +1144,7 @@ async fn restart_continuation_resumes_a_task_left_in_progress() {
     );
     let inner = DefaultRequestHandler::new(
         executor,
-        crate::a2a::task_store::DelegatingTaskStore(Arc::clone(&harness.task_store)),
+        residuum::a2a::task_store::DelegatingTaskStore(Arc::clone(&harness.task_store)),
     )
     .with_capabilities(a2a::AgentCapabilities {
         streaming: Some(true),
@@ -1207,13 +1213,13 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
 /// own, returning its address.
 fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> SessionAddress {
     let child_address = SessionAddress::from("spawned-fake-child-0001");
-    let child_info = crate::bus::session::SessionInfo {
+    let child_info = residuum::bus::session::SessionInfo {
         address: child_address.clone(),
         run_id: "run-fake-child".to_string(),
-        category: crate::bus::session::SessionCategory::Spawned,
-        trigger: crate::bus::EventTrigger::Agent,
+        category: residuum::bus::session::SessionCategory::Spawned,
+        trigger: residuum::bus::EventTrigger::Agent,
         source_label: "agent:fake-child".to_string(),
-        state: crate::bus::session::SessionState::Running,
+        state: residuum::bus::session::SessionState::Running,
         spawner: Some(spawner.clone()),
         depth: 2,
         purpose: "pretending to work".to_string(),
@@ -1222,7 +1228,7 @@ fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> Sess
         resolved_model: None,
         conversation_target: None,
         started_at: chrono::Utc::now(),
-        usage: crate::bus::usage::SessionUsageTotals::default(),
+        usage: residuum::bus::usage::SessionUsageTotals::default(),
         overlap: None,
     };
     harness
@@ -1237,7 +1243,7 @@ fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> Sess
 /// the A2A stream only after the executor has handled that completion, so
 /// what the test changes afterwards cannot race the executor's decision.
 async fn wait_for_first_run_completion_handled(
-    session_events: &mut crate::bus::Subscriber<crate::bus::SessionEvent>,
+    session_events: &mut residuum::bus::Subscriber<residuum::bus::SessionEvent>,
     bus_handle: &BusHandle,
     address: &SessionAddress,
 ) {
@@ -1248,9 +1254,12 @@ async fn wait_for_first_run_completion_handled(
             if event.address != *address {
                 continue;
             }
-            if let crate::bus::SessionEventKind::TurnStarted { turn_id } = event.kind {
+            if let residuum::bus::SessionEventKind::TurnStarted { turn_id } = event.kind {
                 first_turn.get_or_insert(turn_id);
-            } else if matches!(event.kind, crate::bus::SessionEventKind::Completed { .. }) {
+            } else if matches!(
+                event.kind,
+                residuum::bus::SessionEventKind::Completed { .. }
+            ) {
                 return;
             }
         }
@@ -1261,10 +1270,10 @@ async fn wait_for_first_run_completion_handled(
         .publisher()
         .publish(
             topics::Sessions,
-            crate::bus::SessionEvent {
+            residuum::bus::SessionEvent {
                 address: address.clone(),
                 run_id: "run-marker".to_string(),
-                kind: crate::bus::SessionEventKind::Response {
+                kind: residuum::bus::SessionEventKind::Response {
                     turn_id: first_turn,
                     content: "completion handled".to_string(),
                 },
@@ -1290,7 +1299,7 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
     }
 
     // Opened before the request so the parent run's own events are all seen.
-    let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> = harness
+    let mut session_events: residuum::bus::Subscriber<residuum::bus::SessionEvent> = harness
         .bus_handle
         .subscribe(topics::Sessions)
         .await
@@ -1392,7 +1401,7 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
 #[tokio::test]
 async fn skill_metadata_maps_to_a_matching_workspace_skill() {
     let harness = spawn_harness(HarnessOptions {
-        card_skills: vec![crate::a2a::card::AgentCardSkillFile {
+        card_skills: vec![residuum::a2a::card::AgentCardSkillFile {
             id: "reporter".to_string(),
             name: "Reporter".to_string(),
             description: "writes reports".to_string(),

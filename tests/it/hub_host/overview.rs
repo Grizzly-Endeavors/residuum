@@ -1,12 +1,21 @@
 //! The team overview against real agents: what a running agent does reaches
 //! its overview and the hub socket's `agent_overview` frames, and a stopped
 //! agent is answered from its files.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
 
 use super::*;
-use crate::background::team::{TeamLink, parse_team_address};
-use crate::hub::overview::{AgentOverview, LastMessageRole};
-use crate::memory::recent_messages::RecentMessage;
-use crate::memory::types::Visibility;
+use residuum::background::team::{TeamLink, parse_team_address};
+use residuum::hub::overview::{AgentOverview, LastMessageRole};
+use residuum::memory::recent_messages::RecentMessage;
+use residuum::memory::types::Visibility;
 
 /// The next frame of `agent`'s overview that satisfies `wanted`.
 async fn overview_frame(
@@ -54,8 +63,8 @@ async fn file_inbox_item(hub: &Fixture, agent: &str, id: &str) {
     super::agent_watch::agent_bus(hub, agent)
         .publisher()
         .publish(
-            crate::bus::topics::UserInbox,
-            crate::bus::UserInboxAddedEvent {
+            residuum::bus::topics::UserInbox,
+            residuum::bus::UserInboxAddedEvent {
                 item_id: id.to_string(),
             },
         )
@@ -91,7 +100,8 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
     let mut turns = hub.host.agent_changes().subscribe();
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
+    let main =
+        residuum::bus::SessionAddress::from(residuum::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();
@@ -99,7 +109,7 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
         let change = wait::guarded("the background turn to end", turns.recv())
             .await
             .unwrap();
-        if matches!(change.kind, crate::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn) if turn.visibility == Visibility::Background)
+        if matches!(change.kind, residuum::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn) if turn.visibility == Visibility::Background)
         {
             break;
         }
@@ -158,7 +168,7 @@ async fn a_started_agents_last_message_is_read_from_its_history_on_disk() {
     let layout = WorkspaceLayout::new(hub.root.path().join("scout"));
     std::fs::create_dir_all(layout.memory_dir()).unwrap();
     let recent = vec![RecentMessage {
-        message: crate::inference::Message::user("remember the milk"),
+        message: residuum::inference::Message::user("remember the milk"),
         timestamp: chrono::NaiveDate::from_ymd_opt(2026, 9, 30)
             .unwrap()
             .and_hms_opt(8, 15, 0)

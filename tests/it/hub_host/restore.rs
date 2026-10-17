@@ -1,9 +1,15 @@
 //! Restoring deleted agents against a real host: the HTTP round trip, the
 //! deleted-agent listing, explicit checkpoints, and the races and reuses of
 //! a name.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
 
 use super::*;
-use crate::checkpoints::{CheckpointContext, CheckpointTrigger, RepoKind};
+use residuum::checkpoints::{CheckpointContext, CheckpointTrigger, RepoKind};
 
 async fn send_json(
     hub: &Fixture,
@@ -57,7 +63,7 @@ async fn restore_over_http(hub: &Fixture, body: Value) -> (u16, Value) {
 /// Set when the deletion of `name` is recorded as having happened.
 fn pin_deletion_time(hub: &Fixture, name: &str, at: &str) {
     let checkpoints_dir = hub.host.checkpoints_dir();
-    let path = crate::checkpoints::agent_repos_dir(&checkpoints_dir, name).join("deleted.json");
+    let path = residuum::checkpoints::agent_repos_dir(&checkpoints_dir, name).join("deleted.json");
     let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     record
         .as_object_mut()
@@ -322,7 +328,7 @@ async fn a_restore_racing_a_create_of_the_same_name_leaves_one_consistent_agent(
     assert_eq!(names, ["nova", "scout"]);
     let nova = dir_of(&hub, "nova");
     let hub_config = HubConfig::load_at(&hub.services.hub_dir).unwrap();
-    assert!(crate::config::Config::load_agent_at(&nova, &hub_config).is_ok());
+    assert!(residuum::config::Config::load_agent_at(&nova, &hub_config).is_ok());
     assert!(hub.host.team_paths().agent_role_page("nova").is_file());
     assert_eq!(hub.state_of("nova"), AgentState::Running);
     let actual = &deleted_names(&hub).await;
@@ -399,7 +405,7 @@ async fn a_deletion_without_a_record_is_listed_at_its_last_checkpoint() {
     let deleted = delete_over_http(&hub, "nova").await;
     let checkpoints_dir = hub.host.checkpoints_dir();
     std::fs::remove_file(
-        crate::checkpoints::agent_repos_dir(&checkpoints_dir, "nova").join("deleted.json"),
+        residuum::checkpoints::agent_repos_dir(&checkpoints_dir, "nova").join("deleted.json"),
     )
     .unwrap();
 

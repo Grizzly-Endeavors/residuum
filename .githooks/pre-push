@@ -382,7 +382,6 @@ pick_packages() {
 # accumulate, a choice of every test wins over a filtered one, and the member
 # list is the union.
 #   src/lib.rs, src/main.rs        every root unit test, lib and bin
-#   src/integration/**             the modules their covers lines select (below)
 #   src/<mod>/**, src/<mod>.rs     the root unit tests of that module (`<mod>::`),
 #                                  and the bin's too when main.rs declares it
 #   other src/** paths             every root unit test (no module declares them)
@@ -446,9 +445,6 @@ plan_rust_tests() {
         src/lib.rs | src/main.rs)
             unit_all=1
             unit_reason="$path changed"
-            ;;
-        src/integration/*)
-            # The integration modules are chosen by their covers lines, below.
             ;;
         src/*)
             mod="${path#src/}"
@@ -537,15 +533,12 @@ plan_rust_tests() {
     done <<<"$CHANGED_PATHS"
 
     # The integration modules the paths select by their covers lines. A failed
-    # selection selects them all. The integration:: unit filters are added even
-    # when every integration test runs below, since the unit run may be narrower.
-    pick_packages "$dir" --covering "$CHANGED_PATHS" it:ALL integration:ALL
+    # selection selects them all.
+    pick_packages "$dir" --covering "$CHANGED_PATHS" it:ALL
     for module in ${PICKED[@]+"${PICKED[@]}"}; do
         case "$module" in
         it:ALL) it_all=1 ;;
         it:*) it_modules+=("${module#it:}") ;;
-        integration:ALL) add_filter integration:: ;;
-        integration:*) add_filter "integration::${module#integration:}::" ;;
         esac
     done
     # The it binary is one of the test targets --test '*' runs, so it is selected

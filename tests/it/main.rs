@@ -11,17 +11,24 @@
 //! install a global tracing subscriber, because every other module's tests run
 //! alongside it.
 
+mod a2a_server;
 mod background;
 mod daemon;
 mod feedback_submit;
 mod file_attachment;
 mod gateway;
+mod hub_agent_tools;
+mod hub_host;
+mod hub_runtime;
 mod inbox;
 mod macos_notifications;
 mod mcp;
 mod memory;
+mod overview_schedule;
 mod proactivity;
+mod session_send_message;
 mod skills;
 mod smoke;
 mod subconscious;
 mod support;
+mod team_files;
