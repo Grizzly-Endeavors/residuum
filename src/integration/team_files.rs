@@ -19,7 +19,7 @@ use crate::config::paths::TeamPaths;
 use crate::hub::web::workbench::{WorkbenchApiState, workbench_api_router};
 use crate::hub::web::{ConfigApiState, WorkspaceScope, agent_repair_api_router};
 use crate::inference::ToolResult;
-use crate::tools::team_namespace_tests::tools_for;
+use crate::tools::testing::tools_for;
 use crate::tunnel::TunnelStatus;
 use crate::workbench::WorkbenchServing;
 use crate::workspace::team_files::TeamWriter;

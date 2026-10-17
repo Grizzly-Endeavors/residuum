@@ -191,17 +191,20 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-agent` | `crates/agent` | `agent`: the turn loop, context assembly, the auto mode gate, usage, the `Tool` trait and the `ToolRegistry` container, the `TeamRoster` trait, and `testing` (the test tools) behind `test-support`; `subconscious`, the mid-turn and end-of-turn watch | core, config, bus, inference, memory, mcp, skills, workspace |
 | `residuum-background` | `crates/background` | `background`: agent sessions (the session registry, runtime and store, the spawn listener and fork construction, per-run memory, owner sessions), agent messaging, the `team` slice (the team router, `TeamDirectory`, the agent lifecycle types), the `session_tools` factory trait, and `testing` behind `test-support` | core, config, bus, inference, memory, mcp, skills, tracing-service, workspace, checkpoints, agent (dev: notify) |
 | `residuum-a2a` | `crates/a2a` | `a2a`: the caller-key store, the agent cards, the hub's A2A listener and its per-request auth, the per-agent server (`agent_a2a_router`), the session executor, the task store, the outbound client (`client`), `public_url`, and `diagnostics_dispatch`; `StaticAgentDirectory` behind `test-support` | core, config, bus, agent, background, workspace, inference, skills, proactivity, net |
+| `residuum-tools` | `crates/tools` | `tools`: the agent-invoked tools and their registration functions (`registration`), the main registry builder and its parity test (`main_tools`), the session tool factory (`SessionTools`), and `testing` (`RegistryHarness`, `tools_for`) behind `test-support` | core, config, bus, inference, memory, skills, tracing-service, workspace, checkpoints, proactivity, agent, background, a2a |
 | `residuum-checkpoints` | `crates/checkpoints` | `checkpoints`: the workspace checkpoint history (the engine, the repository backend, notices and types), and `testing` behind `test-support` | core, config, bus, workspace |
 | `residuum-interfaces` | `crates/interfaces` | `interfaces`: the Discord, Telegram and Teams adapters (their subscribers, handlers and shared chat state), the webhook table, the outbound and boot-retry helpers, `AdapterSenders`, and the Teams app setup (`teams::{atk, atk_runner, setup_job, setup_types}`) | core, config, bus, inference, net, workspace, checkpoints, background (dev: memory) |
 | `residuum-protocol` | `crates/protocol` | `protocol`: the WebSocket client and server frames and the payloads they carry (the ts-exported wire types), and `frames`, the conversions from bus session events and workspace changes to frames | bus, inference, workspace (dev: config, memory) |
 | `residuum-proactivity` | `crates/proactivity` | `pulse` (the heartbeat pulses: scheduling, scripts, the edit and next-run helpers, and `testing` behind `test-support`) and `actions` (scheduled actions and their store) | core, config, bus (dev: workspace) |
 | `residuum-notify` | `crates/notify` | `notify`: the notification channels (ntfy, webhook, the inbox, and the native macOS and Windows channels), the router and the subscriber, and `channel_builder`, whose `build_external_channels` is re-exported at the crate root | core, config, bus, workspace |
-| `residuum` | `.` | everything else: `daemon`, `gateway`, `hub`, `tools`, `update`, `features`, `wiring`, `logging`, `setup_wizard`, the `commands` of the binary, and the facade over the member crates | every member |
+| `residuum` | `.` | everything else: `daemon`, `gateway`, `hub`, `update`, `features`, `wiring`, `logging`, `setup_wizard`, the `commands` of the binary, and the facade over the member crates | every member |
 
 ```
-residuum-interfaces    residuum-a2a
-        │                     │
-residuum-background ──────────┘
+residuum-interfaces    residuum-a2a    residuum-tools
+        │                     │               │
+        │                     └───────┬───────┘
+        │                             │
+residuum-background ──────────────────┘
         │
 residuum-agent    residuum-checkpoints    residuum-protocol    residuum-notify
         │                  │                      │                   │

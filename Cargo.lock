@@ -4984,7 +4984,6 @@ dependencies = [
  "chrono-tz",
  "clap",
  "ctor",
- "dom_smoothie",
  "dotenvy",
  "fd-lock",
  "futures-util",
@@ -5013,6 +5012,7 @@ dependencies = [
  "residuum-proactivity",
  "residuum-protocol",
  "residuum-skills",
+ "residuum-tools",
  "residuum-tracing-service",
  "residuum-workspace",
  "ring",
@@ -5468,6 +5468,45 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "residuum-tools"
+version = "0.1.0"
+dependencies = [
+ "a2a-lf",
+ "a2a-server-lf",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "dom_smoothie",
+ "futures-util",
+ "reqwest 0.13.3",
+ "residuum-a2a",
+ "residuum-agent",
+ "residuum-background",
+ "residuum-bus",
+ "residuum-checkpoints",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-memory",
+ "residuum-proactivity",
+ "residuum-skills",
+ "residuum-tracing-service",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

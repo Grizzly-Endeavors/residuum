@@ -192,6 +192,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_notify`: `notify`, so `RUST_LOG=residuum_notify=trace` for the notification router and its channels.
 - `residuum_background`: `background`, so `RUST_LOG=residuum_background=trace` for agent sessions, or `RUST_LOG=residuum_background::team=trace` for the team router (its lines show as `background::team::router`).
 - `residuum_a2a`: `a2a` and `diagnostics_dispatch`, so `RUST_LOG=residuum_a2a=trace` for the A2A listener and the outbound client, or `RUST_LOG=residuum_a2a::client=trace` for the outbound client alone.
+- `residuum_tools`: `tools`, the agent-invoked tools, their registration and the session tool factory, so `RUST_LOG=residuum_tools=trace`.
 - `residuum_interfaces`: `interfaces`, the Discord, Telegram and Teams adapters, the webhook table and the Teams app setup, so `RUST_LOG=residuum_interfaces=trace`, or `RUST_LOG=residuum_interfaces::teams=trace` for the Teams adapter and its setup job.
 - `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum`: every other module, so `RUST_LOG=residuum::hub=trace`.

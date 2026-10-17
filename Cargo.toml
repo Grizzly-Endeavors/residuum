@@ -39,6 +39,7 @@ residuum-memory = { path = "crates/memory", version = "0.1.0" }
 residuum-net = { path = "crates/net", version = "0.1.0" }
 residuum-mcp = { path = "crates/mcp", version = "0.1.0" }
 residuum-a2a = { path = "crates/a2a", version = "0.1.0" }
+residuum-tools = { path = "crates/tools", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
@@ -186,6 +187,7 @@ residuum-memory = { workspace = true }
 residuum-net = { workspace = true }
 residuum-mcp = { workspace = true }
 residuum-a2a = { workspace = true }
+residuum-tools = { workspace = true }
 residuum-skills = { workspace = true }
 residuum-tracing-service = { workspace = true }
 residuum-bus = { workspace = true }
@@ -205,7 +207,6 @@ toml = { workspace = true }
 toml_edit = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-dom_smoothie = { workspace = true }
 base64 = { workspace = true }
 tempfile = { workspace = true }
 async-trait = { workspace = true }
@@ -261,6 +262,7 @@ residuum-agent = { workspace = true, features = ["test-support"] }
 residuum-background = { workspace = true, features = ["test-support"] }
 residuum-workspace = { workspace = true, features = ["test-support"] }
 residuum-a2a = { workspace = true, features = ["test-support"] }
+residuum-tools = { workspace = true, features = ["test-support"] }
 residuum-proactivity = { workspace = true, features = ["test-support"] }
 residuum-checkpoints = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }

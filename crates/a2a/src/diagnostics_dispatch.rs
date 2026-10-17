@@ -11,7 +11,7 @@
 //! understands.
 //!
 //! Reused in three places: after an agent `write_file`/`edit_file` call
-//! (`src/tools/write.rs`, `src/tools/edit.rs`), the `POST
+//! (`crates/tools/src/write.rs`, `crates/tools/src/edit.rs`), the `POST
 //! /api/agents/{name}/workspace/validate` endpoint and the raw config save handlers
 //! (`src/hub/web/workspace.rs`, `config.rs`, `providers.rs`), and the
 //! load/reload notices for these files.

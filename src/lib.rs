@@ -18,6 +18,7 @@ pub use residuum_notify as notify;
 pub use residuum_proactivity::{actions, pulse};
 pub use residuum_protocol as protocol;
 pub use residuum_skills as skills;
+pub use residuum_tools as tools;
 pub use residuum_tracing_service as tracing_service;
 pub use residuum_workspace as workspace;
 pub use residuum_workspace::inbox;
@@ -39,5 +40,4 @@ pub mod logging;
 pub mod setup_wizard;
 #[cfg(test)]
 pub(crate) mod testing;
-pub mod tools;
 pub mod wiring;
