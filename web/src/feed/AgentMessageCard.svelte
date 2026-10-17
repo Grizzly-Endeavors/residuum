@@ -127,7 +127,8 @@
   }
 
   .card-body.clamped {
-    max-height: calc(var(--line-height-message) * 8em);
+    /* Eight of the prose's lines, each rounded to a whole pixel as the base styles round them. */
+    max-height: calc(8 * round(calc(var(--line-height-message) * 1em), 1px));
     overflow: hidden;
   }
 

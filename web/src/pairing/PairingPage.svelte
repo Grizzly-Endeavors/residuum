@@ -173,12 +173,12 @@
   .pair-title {
     font-size: var(--font-size-title);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   .pair-lede {
     color: var(--color-text-2);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .pair-code {

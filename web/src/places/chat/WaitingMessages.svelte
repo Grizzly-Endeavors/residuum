@@ -157,7 +157,7 @@
 
   .waiting-text {
     font-size: var(--font-size-message);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }

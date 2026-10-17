@@ -51,12 +51,12 @@
   .setup-group-title {
     font-size: var(--font-size-ui);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   .setup-group-hint {
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     color: var(--color-text-2);
   }
 

@@ -62,6 +62,11 @@
         returnFocus: takesFocus ? from : false,
       });
 
+      // `place` runs on every scroll. Moving the card by `translate` and
+      // writing the room and side only when they change keep that from laying
+      // out the page: a layout on every scroll kept WebKit's scroll anchoring
+      // scrolling Home a pixel back and forth while a menu was open.
+      let room = "";
       const place = (): void => {
         // A trigger that went away (its row re-rendered) leaves nothing to sit beside.
         if (!from?.isConnected) {
@@ -75,10 +80,13 @@
           { width: viewport.clientWidth, height: viewport.clientHeight },
           { side, align, gap: GAP, margin: MARGIN },
         );
-        element.style.top = `${String(placed.top)}px`;
-        element.style.left = `${String(placed.left)}px`;
-        element.style.setProperty("--float-room", `${String(placed.room)}px`);
-        element.dataset.side = placed.side;
+        element.style.translate = `${String(placed.left)}px ${String(placed.top)}px`;
+        const placedRoom = `${String(placed.room)}px`;
+        if (placedRoom !== room) {
+          room = placedRoom;
+          element.style.setProperty("--float-room", placedRoom);
+        }
+        if (element.dataset.side !== placed.side) element.dataset.side = placed.side;
       };
 
       // Tab past either end leaves the layer for its trigger; Tab in a menu,
@@ -192,7 +200,7 @@
     background: var(--color-stone-4);
     color: var(--color-text);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
     pointer-events: none;
     animation-duration: var(--duration-fast);
   }

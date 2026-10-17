@@ -70,7 +70,7 @@
   .section-title {
     font-size: var(--font-size-title);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   .section-lede {

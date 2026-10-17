@@ -244,7 +244,6 @@
     min-width: 0;
     font-family: var(--font-code);
     font-size: var(--font-size-xs);
-    line-height: inherit;
     overflow-wrap: anywhere;
   }
 

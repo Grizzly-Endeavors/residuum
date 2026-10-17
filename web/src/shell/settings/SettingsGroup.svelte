@@ -61,7 +61,7 @@
   .set-group-title {
     font-size: var(--font-size-message);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   .set-group-foot {
@@ -73,6 +73,6 @@
     margin-top: calc(var(--space-4) * -1);
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 </style>
