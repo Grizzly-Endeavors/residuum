@@ -117,7 +117,8 @@ build.rs|residuum
 docs/x.md|
 web/src/app.ts|
 .github/workflows/web-checks.yml|
-.github/workflows/release.yml|residuum
+.github/workflows/release.yml|residuum-hub
+web/app-shell-csp.txt|residuum-hub
 src/daemon.rs.orig|residuum
 CASES
 }

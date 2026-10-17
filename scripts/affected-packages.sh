@@ -133,17 +133,6 @@ if [ "$graph_ok" -eq 0 ]; then
     exit 0
 fi
 
-# Sets CLASSIFIED to the package whose tests read a file by path: residuum-hub when
-# the hub is a member crate and holds the source file $1 that reads it, else the
-# root package.
-reader_package() {
-    if [ -f "crates/hub/Cargo.toml" ] && [ -f "crates/hub/$1" ]; then
-        CLASSIFIED="residuum-hub"
-    else
-        CLASSIFIED="residuum"
-    fi
-}
-
 # Sets CLASSIFIED to the package a changed path touches, to ALL when it touches
 # every package, or to nothing when no package builds from it.
 classify_path() {
@@ -162,11 +151,8 @@ classify_path() {
     tests/fixtures/* | assets/* | .cargo/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | clippy.toml | rustfmt.toml | deny.toml | .github/workflows/ci.yml | .github/workflows/rust-checks.yml | scripts/affected-packages* | scripts/check-crate-isolation.sh)
         CLASSIFIED="ALL"
         ;;
-    web/app-shell-csp.txt)
-        reader_package src/web/assets.rs
-        ;;
-    .github/workflows/release.yml)
-        reader_package src/update.rs
+    web/app-shell-csp.txt | .github/workflows/release.yml)
+        CLASSIFIED="residuum-hub"
         ;;
     src/* | tests/* | build.rs | web/src/lib/generated/* | scripts/check-generated-types.sh | scripts/export-generated-types.sh)
         CLASSIFIED="residuum"

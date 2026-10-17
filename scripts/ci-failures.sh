@@ -514,7 +514,7 @@ module_files() { # a::b::c::test -> the repo files that hold module a::b::c
 # a::b::test is in, as tests/it/a.rs or tests/it/a/mod.rs.
 # Prints nothing for a bare name or a member crate's test.
 it_module_file() { # a::b::test -> tests/it/a.rs or tests/it/a/mod.rs
-    local name="$1" seg0 rest cand
+    local name="$1" seg0 cand
     if [[ "$name" != *::* || "$name" =~ ^residuum_ ]]; then
         return 0
     fi
@@ -540,7 +540,8 @@ module_covers() { # tests/it file -> package names
 
 # The package a changed path belongs to, or nothing when no Rust check reads the
 # path, so docs, the web app and the workflows count for no package. crates/<dir>/
-# is residuum-<dir>. Any other Rust path is in the root package, residuum.
+# is residuum-<dir>. The two paths residuum-hub reads by path belong to it, as the
+# hub's tests do. Any other Rust path is in the root package, residuum.
 package_of() { # path -> package
     local path="$1"
     if ! grep -qE "$RUST_PATHS_RE" <<<"$path"; then
@@ -550,7 +551,10 @@ package_of() { # path -> package
         echo "residuum-${BASH_REMATCH[1]}"
         return 0
     fi
-    echo residuum
+    case "$path" in
+    web/app-shell-csp.txt | .github/workflows/release.yml) echo residuum-hub ;;
+    *) echo residuum ;;
+    esac
 }
 
 print_messages() { # messages indent
