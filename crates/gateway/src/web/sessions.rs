@@ -1584,7 +1584,15 @@ mod tests {
             matches!(&spawn.source, EventTrigger::Artifact(name) if name == "wiki"),
             "a resumed artifact session stays an artifact session"
         );
-        assert!(spawn.prompt.contains("workbench artifact \"wiki\""));
+        let delivered: Vec<String> = spawn
+            .delivered_messages
+            .iter()
+            .map(residuum_bus::AgentMessageEvent::format_for_agent)
+            .collect();
+        assert!(
+            matches!(delivered.as_slice(), [text] if text.contains("workbench artifact \"wiki\"")),
+            "the resumed run opens with the artifact's message: {delivered:?}"
+        );
     }
 
     #[tokio::test]

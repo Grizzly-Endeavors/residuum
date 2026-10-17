@@ -118,6 +118,20 @@ impl SessionMessageAuthor {
     }
 }
 
+/// The longest message id a sender may choose. An id is written into the
+/// session's transcript and every frame that names the message.
+const MAX_MESSAGE_ID_LEN: usize = 128;
+
+/// Whether `id` is usable as a sender-chosen message id: not empty, at most
+/// [`MAX_MESSAGE_ID_LEN`] bytes, and only ASCII letters, digits, `-` and `_`.
+fn is_valid_message_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_MESSAGE_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// A message [`send_session_message`] handed to a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionMessageSent {
@@ -140,7 +154,9 @@ pub(crate) struct SessionMessageSent {
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when the request is unusable (empty
-/// content, or `main`, which is messaged through the normal chat), when no
+/// content, a chosen id that is empty, longer than 128 bytes or holds
+/// anything but letters, digits, `-` and `_`, or `main`, which is messaged
+/// through the normal chat), when no
 /// session has ever run at `address`, when the session is too busy to take
 /// another message, or when delivery fails.
 pub(crate) async fn send_session_message(
@@ -160,6 +176,18 @@ pub(crate) async fn send_session_message(
         return Err(SessionCommandError::new(
             SessionCommandErrorCode::InvalidRequest,
             "The main agent is messaged from the main chat, not as a session.",
+        ));
+    }
+
+    if let Some(chosen) = id.as_deref()
+        && !is_valid_message_id(chosen)
+    {
+        return Err(SessionCommandError::new(
+            SessionCommandErrorCode::InvalidRequest,
+            format!(
+                "The message id must be 1 to {MAX_MESSAGE_ID_LEN} characters of letters, \
+                 digits, dashes and underscores."
+            ),
         ));
     }
 
@@ -428,6 +456,42 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(main.code, SessionCommandErrorCode::InvalidRequest);
+
+        for bad in [String::new(), "has space".to_string(), "x".repeat(129)] {
+            let refused = send_session_message(
+                &messenger,
+                "spawned-nope-0000",
+                Some(bad.clone()),
+                "hi".to_string(),
+                &SessionMessageAuthor::Owner,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                refused.code,
+                SessionCommandErrorCode::InvalidRequest,
+                "id {bad:?} is refused"
+            );
+            assert!(
+                refused.message.contains("message id"),
+                "{}",
+                refused.message
+            );
+        }
+        let longest = send_session_message(
+            &messenger,
+            "spawned-nope-0000",
+            Some(format!("web-{}", "a".repeat(124))),
+            "hi".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            longest.code,
+            SessionCommandErrorCode::UnknownAddress,
+            "a 128-byte id of the allowed characters is accepted"
+        );
     }
 
     #[tokio::test]

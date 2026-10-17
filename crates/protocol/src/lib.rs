@@ -908,6 +908,9 @@ pub enum ServerMessage {
         id: String,
         /// The target session's address.
         address: String,
+        /// The message's id: the `message_id` the command chose, or the one
+        /// it was given. The session's `SessionUserMessage` carries it.
+        message_id: String,
         /// Where the message landed.
         outcome: SessionDeliveryOutcome,
     },
@@ -1529,6 +1532,7 @@ mod tests {
         let delivered = ServerMessage::SessionMessageDelivered {
             id: "c1".into(),
             address: "spawned-a-0001".into(),
+            message_id: "web-1".into(),
             outcome: SessionDeliveryOutcome::Resumed,
         };
         assert_eq!(
@@ -1537,6 +1541,7 @@ mod tests {
                 "type": "session_message_delivered",
                 "id": "c1",
                 "address": "spawned-a-0001",
+                "message_id": "web-1",
                 "outcome": "resumed",
             })
         );

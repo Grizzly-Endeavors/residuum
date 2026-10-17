@@ -71,13 +71,16 @@ export function parseClientMessage(raw: string): ClientMessage {
     case "send_queued_now":
     case "withdraw_queued":
       return { type, id: requiredString(body, "id") };
-    case "session_send_message":
+    case "session_send_message": {
+      const messageId = stringField(body, "message_id");
       return {
         type,
         id: requiredString(body, "id"),
         address: requiredString(body, "address"),
         content: requiredString(body, "content"),
+        ...(messageId === undefined ? {} : { message_id: messageId }),
       };
+    }
     case "session_stop":
       return { type, id: requiredString(body, "id"), address: requiredString(body, "address") };
     case "watch_workspace":
@@ -208,7 +211,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       }
 
       case "session_send_message":
-        sendSessionMessage(state, reply, msg.id, msg.address, msg.content);
+        sendSessionMessage(state, reply, msg.id, msg.address, msg.content, msg.message_id);
         break;
 
       case "session_stop":

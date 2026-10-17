@@ -576,6 +576,7 @@ async fn handle_session_command(
                 Ok(sent) => ServerMessage::SessionMessageDelivered {
                     id,
                     address,
+                    message_id: sent.id,
                     outcome: sent.outcome,
                 },
                 Err(e) => ServerMessage::SessionCommandFailed {

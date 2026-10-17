@@ -525,6 +525,11 @@ id: string,
  */
 address: string, 
 /**
+ * The message's id: the `message_id` the command chose, or the one
+ * it was given. The session's `SessionUserMessage` carries it.
+ */
+message_id: string, 
+/**
  * Where the message landed.
  */
 outcome: SessionDeliveryOutcome, } | { "type": "session_stop_requested", 

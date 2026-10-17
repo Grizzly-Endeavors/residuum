@@ -36,6 +36,11 @@ const OWNER_MESSAGE_LABEL =
 const OWNER_ADDRESS = "owner";
 const OWNER_CATEGORY = "owner";
 
+/** A message id a sender may choose, as the backend accepts one. */
+const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const INVALID_MESSAGE_ID =
+  "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.";
+
 /** Where a session command's reply goes: the socket that sent the command. */
 export type SessionReply = (frame: ServerMessage) => void;
 
@@ -302,9 +307,21 @@ export function sendSessionMessage(
   id: string,
   address: string,
   content: string,
+  chosenId?: string,
 ): void {
   const { sessions } = state;
   const live = sessions.live.find((s) => s.address === address);
+  if (chosenId !== undefined && !MESSAGE_ID.test(chosenId)) {
+    reply({
+      type: "session_command_failed",
+      id,
+      address,
+      code: "invalid_request",
+      message: INVALID_MESSAGE_ID,
+    });
+    return;
+  }
+  const messageId = chosenId ?? `msg-s-${String(state.env.nextId())}`;
   if (content.includes("busy")) {
     reply({
       type: "session_command_failed",
@@ -316,9 +333,15 @@ export function sendSessionMessage(
     return;
   }
   if (live) {
-    reply({ type: "session_message_delivered", id, address, outcome: "live" });
+    reply({
+      type: "session_message_delivered",
+      id,
+      address,
+      message_id: messageId,
+      outcome: "live",
+    });
     const ack = `Understood: "${content.slice(0, 60)}". Adjusting course.`;
-    deliverMessage(state, live, ownerMessage(state, undefined, content, ack));
+    deliverMessage(state, live, ownerMessage(state, messageId, content, ack));
     return;
   }
   const prev = sessions.completed.find((s) => s.address === address);
@@ -332,14 +355,20 @@ export function sendSessionMessage(
     });
     return;
   }
-  reply({ type: "session_message_delivered", id, address, outcome: "resumed" });
+  reply({
+    type: "session_message_delivered",
+    id,
+    address,
+    message_id: messageId,
+    outcome: "resumed",
+  });
   state.env.after(300, () => {
     resumeRun(state, prev, {
       runIdPrefix: "run-resumed",
       messages: [
         ownerMessage(
           state,
-          undefined,
+          messageId,
           content,
           "Picking this back up. Here's where it stands now.",
         ),
@@ -570,6 +599,10 @@ async function messageSessionRoute(ctx: RouteContext): Promise<void> {
       content.trim() ? "main can't be messaged this way" : "content must not be empty",
       "invalid_request",
     );
+    return;
+  }
+  if (chosenId !== undefined && !MESSAGE_ID.test(chosenId)) {
+    sessionError(ctx, 400, INVALID_MESSAGE_ID, "invalid_request");
     return;
   }
   const artifactName = artifactIdentity(req);

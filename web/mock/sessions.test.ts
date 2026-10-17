@@ -274,6 +274,16 @@ describe("sessions endpoints", () => {
       const unknown = await post(harness, "/api/sessions/nope/messages", { content: "hi" });
       expect(unknown.status).toBe(404);
       expect(unknown.body.code).toBe("unknown_address");
+      const badId = await post(harness, `/api/sessions/${DISCORD}/messages`, {
+        content: "hi",
+        id: "has space",
+      });
+      expect(badId.status).toBe(400);
+      expect(badId.body).toEqual({
+        error:
+          "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.",
+        code: "invalid_request",
+      });
     });
 
     it("delivers to a live session, attributed to the artifact or the owner, and reads it as a turn begins", async () => {
@@ -406,7 +416,13 @@ describe("session commands and lifecycle", () => {
   it("delivers to a live session and runs a turn: running, tool call, reply, idle", () => {
     sendSessionMessage(state, reply, "c2", DISCORD, "status?");
     expect(replies).toEqual([
-      { type: "session_message_delivered", id: "c2", address: DISCORD, outcome: "live" },
+      {
+        type: "session_message_delivered",
+        id: "c2",
+        address: DISCORD,
+        message_id: expect.stringMatching(/^msg-s-/) as string,
+        outcome: "live",
+      },
     ]);
     expect(types(frames)).toEqual([
       "session_state_changed",
@@ -437,15 +453,36 @@ describe("session commands and lifecycle", () => {
     expect(frames.at(-1)).toMatchObject({ type: "session_message_to_main", address: RESEARCH });
   });
 
+  it("refuses a chosen message id the backend would refuse", () => {
+    sendSessionMessage(state, reply, "c16", DISCORD, "hi", "x".repeat(129));
+    expect(replies).toEqual([
+      {
+        type: "session_command_failed",
+        id: "c16",
+        address: DISCORD,
+        code: "invalid_request",
+        message:
+          "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.",
+      },
+    ]);
+    expect(frames).toEqual([]);
+  });
+
   it("rejects an address it has never seen", () => {
     sendSessionMessage(state, reply, "c4", "nope", "hi");
     expect(replies[0]).toMatchObject({ type: "session_command_failed", code: "unknown_address" });
   });
 
   it("resumes a finished session after a short wait, as a new forking run", () => {
-    sendSessionMessage(state, reply, "c5", TELEGRAM, "resume me");
+    sendSessionMessage(state, reply, "c5", TELEGRAM, "resume me", "web-c5");
     expect(replies).toEqual([
-      { type: "session_message_delivered", id: "c5", address: TELEGRAM, outcome: "resumed" },
+      {
+        type: "session_message_delivered",
+        id: "c5",
+        address: TELEGRAM,
+        message_id: "web-c5",
+        outcome: "resumed",
+      },
     ]);
     expect(frames).toEqual([]);
 
@@ -457,9 +494,10 @@ describe("session commands and lifecycle", () => {
     expect(summaryOf("run-resumed-1")?.state).toBe("forking");
     vi.advanceTimersByTime(400);
     expect(summaryOf("run-resumed-1")?.state).toBe("running");
-    // The new run's first turn reads the message.
+    // The new run's first turn reads the message, under the id it was sent with.
     expect(frames.at(-1)).toMatchObject({
       type: "session_user_message",
+      id: "web-c5",
       run_id: "run-resumed-1",
       content: "resume me",
       from: "owner",

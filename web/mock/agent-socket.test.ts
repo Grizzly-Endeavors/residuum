@@ -294,11 +294,13 @@ describe("agent socket", () => {
         id: "s2",
         address: "spawned-research-3f9a",
         content: "keep going",
+        message_id: "web-s2",
       });
       expect(await socket.nextOfType("session_message_delivered")).toEqual({
         type: "session_message_delivered",
         id: "s2",
         address: "spawned-research-3f9a",
+        message_id: "web-s2",
         outcome: "live",
       });
     });
