@@ -507,6 +507,7 @@ export class FeedStore {
       case "session_broadcast_response":
       case "session_response":
       case "session_outbound_a2a_task":
+      case "session_start_failed":
       case "session_error":
       case "session_message_to_main":
       case "session_message_delivered":

@@ -32,6 +32,14 @@ export function isSessionFrame(msg: ServerMessage): msg is SessionFrame {
   return msg.type.startsWith("session_");
 }
 
+/** Why a session the owner started couldn't start, as a `session_start_failed` frame says. */
+export interface SessionStartFailure {
+  /** Plain-language explanation, to show as it is. */
+  error: string;
+  /** The full technical cause, for a details toggle, when there is one. */
+  details: string | null;
+}
+
 /** What the Finished list shows: one kind of run, or every kind. */
 export type FinishedKind = SessionCategory | "all";
 
@@ -171,6 +179,12 @@ export class SessionsStore {
    * button in Activity to show it.
    */
   stopping = new SvelteSet<string>();
+  /**
+   * Why each session the owner started that never got a run couldn't start,
+   * by address. Kept by address rather than by the start request, since the
+   * failure can arrive before the request that started it has its answer.
+   */
+  private readonly startFailures = new SvelteMap<string, SessionStartFailure>();
   /** Open tasks the agent sent to remote agents, newest first. */
   outbound = $state<OutboundA2aTaskSummary[]>([]);
   /** Why the outbound task list couldn't load, if it couldn't. */
@@ -275,15 +289,26 @@ export class SessionsStore {
     );
   }
 
+  /** Why the session at `address` couldn't start, when its start failed and no run has started there since. */
+  startFailure(address: string): SessionStartFailure | undefined {
+    return this.startFailures.get(address);
+  }
+
   /**
    * The run to show for a session address: `runId` when known, else its newest
    * run (live first), looked up on the server if it isn't loaded. Null, after
-   * telling the user, when there is none.
+   * telling the user, when there is none, saying why it couldn't start when
+   * its start failed.
    */
   async resolveRun(address: string, runId: string | null): Promise<string | null> {
     if (runId) return runId;
     const known = this.findByAddress(address);
     if (known) return known.run_id;
+    const failure = this.startFailures.get(address);
+    if (failure) {
+      notifications.surface("error", failure.error, failure.details ?? undefined);
+      return null;
+    }
     return lookUpNewestRun(requireAgent(this.deps.agent), address);
   }
 
@@ -327,7 +352,14 @@ export class SessionsStore {
         this.applyOutbound(frame.task);
         return;
       case "session_started":
+        this.startFailures.delete(frame.session.address);
         this.live = [frame.session, ...this.live.filter((s) => s.run_id !== frame.session.run_id)];
+        return;
+      case "session_start_failed":
+        this.startFailures.set(frame.address, {
+          error: frame.error,
+          details: frame.error_details ?? null,
+        });
         return;
       case "session_message_delivered":
       case "session_stop_requested":
@@ -347,6 +379,9 @@ export class SessionsStore {
       case "session_message_to_main":
         this.handleRunFrame(frame);
         return;
+      default:
+        // A frame type with no case above fails to compile here.
+        frame satisfies never;
     }
   }
 
