@@ -7,8 +7,8 @@ on:
   pull_request:
 
 jobs:
-  probe-typecheck:
-    name: Probe Type Check
+  probe-svelte-warning:
+    name: Probe Svelte Warning
     runs-on: lab-runners-wide
     steps:
       - uses: actions/checkout@v7
@@ -16,35 +16,18 @@ jobs:
       - name: Install web dependencies
         run: cd web && npm ci
 
-      - name: Write files with type errors
+      - name: Write a file with a Svelte warning
         run: |
-          cat > web/src/ProbeTypes.svelte <<'EOF'
-          <script lang="ts">
-            let count: number = 'three';
-            const label: string = count;
-            function greet(name: string): string {
-              return name.toUpperCase();
-            }
-            greet(42);
-          </script>
-
-          <p>{label}</p>
-          EOF
-          cat > web/src/probe-types.ts <<'EOF'
-          export const limit: number = 'ten';
-
-          export function double(value: number): number {
-            return value * 2;
-          }
-
-          export const result: string = double('four');
+          cat > web/src/ProbeWarning.svelte <<'EOF'
+          <img src="/probe.png" />
+          <div on:click={() => {}}>probe</div>
           EOF
 
       - name: Web type check
         run: cd web && npm run check
 
-  probe-format:
-    name: Probe Format Check
+  probe-service-worker-types:
+    name: Probe Service Worker Types
     runs-on: lab-runners-wide
     steps:
       - uses: actions/checkout@v7
@@ -52,37 +35,29 @@ jobs:
       - name: Install web dependencies
         run: cd web && npm ci
 
-      - name: Write misformatted files
+      - name: Write a service worker file with type errors
         run: |
-          printf 'export const a = {x:1,y:2};\nexport function f( n:number ){return n+1}\n' > web/src/probe-format.ts
-          printf '<script lang="ts">\nlet n = 1\n</script>\n<p   >{n}</p>\n' > web/src/ProbeFormat.svelte
+          cat > web/src/sw/probe.ts <<'EOF'
+          export const limit: number = 'ten';
+          export const name: string = limit;
+          EOF
+
+      - name: Web type check
+        run: cd web && npm run check
+
+  probe-format-syntax:
+    name: Probe Format Syntax Error
+    runs-on: lab-runners-wide
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Write an unparseable file and a misformatted one
+        run: |
+          printf 'export const a = {x:1,,};\n' > web/src/probe-syntax.ts
+          printf 'export const b = {x:1,y:2};\n' > web/src/probe-format.ts
 
       - name: Web format check
         run: cd web && npm run format:check
-
-  probe-job-timeout:
-    name: Probe Job Timeout
-    runs-on: lab-runners-wide
-    timeout-minutes: 1
-    steps:
-      - name: Sleep past the job timeout
-        run: sleep 300
-
-  probe-step-timeout:
-    name: Probe Step Timeout
-    runs-on: lab-runners-wide
-    steps:
-      - name: Sleep past the step timeout
-        timeout-minutes: 1
-        run: sleep 300
-
-      - name: Runs after the timed-out step
-        if: always()
-        run: echo after
-
-  probe-long:
-    name: Probe Long Running
-    runs-on: lab-runners-wide
-    steps:
-      - name: Stay in progress
-        run: sleep 600
