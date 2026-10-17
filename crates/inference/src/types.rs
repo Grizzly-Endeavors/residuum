@@ -774,9 +774,10 @@ mod tests {
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id.as_deref(), Some("m-1"));
 
-        // Transcripts written before message ids existed have no `id` key.
-        let legacy: Message = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
-        assert_eq!(legacy.id, None);
+        // A transcript entry without an `id` key loads with none.
+        let without_id: Message =
+            serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        assert_eq!(without_id.id, None);
         let plain = serde_json::to_value(Message::user("hi")).unwrap();
         assert!(plain.get("id").is_none(), "absent id is not serialized");
     }
