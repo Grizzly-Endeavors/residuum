@@ -872,6 +872,24 @@ pub enum SessionEventKind {
     },
 }
 
+/// A session the owner started by hand (from the web UI's New session panel,
+/// `POST /api/sessions`, or `/multitask`) was accepted but couldn't be forked,
+/// so it never got a run.
+///
+/// Carried on [`super::topics::Sessions`] beside [`SessionEvent`], which needs
+/// a run id a failed start never has. The web UI matches it to the start it is
+/// waiting on by `address`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStartFailedEvent {
+    /// Address the start was given, the one its caller was told.
+    pub address: SessionAddress,
+    /// Plain-language sentence for the owner: what went wrong and what to do
+    /// next.
+    pub error: String,
+    /// Full technical cause chain, for a Details disclosure or the logs.
+    pub error_details: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Typed topic event enums
 // ---------------------------------------------------------------------------
