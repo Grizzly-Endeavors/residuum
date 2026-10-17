@@ -174,6 +174,12 @@ impl AgentMessenger {
         &self.publisher
     }
 
+    /// The session store this messenger records delivery notes in, shared
+    /// with the spawn listener's deferred deliveries.
+    pub(crate) fn store(&self) -> &Arc<SessionStore> {
+        &self.store
+    }
+
     /// Recover the hop count of an agent message delivered to main, given
     /// the `MessageEvent.id` it arrived under. Removes the entry on read.
     /// Returns `0` for any id this messenger never published under — a
@@ -881,18 +887,67 @@ pub(crate) fn deliver_chat_messages_in_order(
         let publisher = publisher.clone();
         let address = address.clone();
         residuum_core::util::spawn_in_span(async move {
-            for chat_message in undelivered {
-                deferred_conversation_resume(
-                    Arc::clone(&registry),
-                    publisher.clone(),
-                    address.clone(),
-                    chat_message,
-                    spawn.clone(),
-                )
-                .await;
-            }
+            deferred_conversation_resumes(registry, publisher, address, undelivered, spawn).await;
         });
         return;
+    }
+}
+
+/// Deliver the rest of a losing resume's messages, from the first agent
+/// message its winning run could not take because that run is tearing down
+/// or has left the registry, on one detached task, in the order a resumed
+/// run reads them: each agent message the way [`AgentMessenger::send`]
+/// delivers one to a completing session (see [`deferred_resume`]), then each
+/// chat message the way [`AgentMessenger::deliver_conversation`] delivers
+/// one (see [`deferred_conversation_resume`]). The first message to find no
+/// live run resumes the session; each later one is delivered into that run,
+/// or loses the race at the spawn listener and is delivered there.
+pub(crate) fn defer_losing_resume(
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
+    store: &Arc<SessionStore>,
+    address: &SessionAddress,
+    agent_messages: Vec<AgentMessageEvent>,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    let registry = Arc::clone(registry);
+    let publisher = publisher.clone();
+    let store = Arc::clone(store);
+    let address = address.clone();
+    residuum_core::util::spawn_in_span(async move {
+        for msg in agent_messages {
+            deferred_resume(
+                Arc::clone(&registry),
+                publisher.clone(),
+                Arc::clone(&store),
+                address.clone(),
+                msg,
+            )
+            .await;
+        }
+        deferred_conversation_resumes(registry, publisher, address, chat_messages, spawn).await;
+    });
+}
+
+/// Run [`deferred_conversation_resume`] for each of `chat_messages` in turn,
+/// so they reach the session in the order they arrived.
+async fn deferred_conversation_resumes(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    for chat_message in chat_messages {
+        deferred_conversation_resume(
+            Arc::clone(&registry),
+            publisher.clone(),
+            address.clone(),
+            chat_message,
+            spawn.clone(),
+        )
+        .await;
     }
 }
 
@@ -1029,19 +1084,20 @@ struct NoteSinks<'a> {
     publisher: &'a Publisher,
 }
 
-/// Wait for `address` to leave the registry, then re-run the same
-/// live-vs-resume decision [`AgentMessenger::send`] makes for a fresh call —
-/// the deferred half of `send`'s `Completing` branch, run on its own
-/// detached task so the original sender never blocks on it.
+/// Re-run the same live-vs-resume decision [`AgentMessenger::send`] makes
+/// for a fresh call, waiting for `address` to leave the registry whenever
+/// its run is tearing down — the deferred half of `send`'s `Completing`
+/// branch, run on its own detached task so the original sender never
+/// blocks on it.
 ///
-/// By the time the wait ends, another deferred message queued at the same
-/// address may already have resumed it (a live run now exists to deliver
-/// into), so re-checking liveness here — rather than blindly publishing
-/// another resume — is what keeps two messages queued to one completing
-/// session from producing two runs, with the second silently dropped once
-/// the spawn listener's own liveness guard refuses it. A `Completing` result
-/// here (another resume raced in and is *already* tearing down again) waits
-/// once more rather than giving up.
+/// Another deferred message queued at the same address may already have
+/// resumed it (a live run now exists to deliver into), so checking liveness
+/// on each pass, rather than blindly publishing another resume, is what
+/// keeps two messages queued to one completing session from producing two
+/// runs, with the second silently dropped once the spawn listener's own
+/// liveness guard refuses it. A `Completing` result (the run is still
+/// tearing down, or another resume raced in and is *already* tearing down
+/// again) waits for the address to clear rather than giving up.
 async fn deferred_resume(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
@@ -1050,26 +1106,22 @@ async fn deferred_resume(
     msg: AgentMessageEvent,
 ) {
     loop {
-        registry.wait_until_clear(&address).await;
-        let done =
-            resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
+        let done = deliver_or_resume_deferred(&registry, &publisher, &store, &address, &msg).await;
         if done {
             return;
         }
-        // Falling through loops back to `wait_until_clear` again — another
-        // resume raced in and is already tearing down once more.
+        registry.wait_until_clear(&address).await;
     }
 }
 
-/// The decision `deferred_resume` makes once `address` has been observed
-/// clear: if a run is now live there (another deferred message queued at the
-/// same address already resumed it before this one got a chance to check),
-/// deliver `msg` into it directly instead of blindly publishing a second
-/// resume; otherwise resume it. Returns `false` only for
-/// [`DeliverOutcome::Completing`] (another resume raced in and is *already*
-/// tearing down again), telling the caller to wait and retry — every other
-/// outcome, success or failure, is final.
-async fn resume_or_deliver_after_clear(
+/// The decision `deferred_resume` makes on each pass: if a run is live at
+/// `address` (another deferred message queued at the same address already
+/// resumed it before this one got a chance to check), deliver `msg` into it
+/// directly instead of blindly publishing a second resume; if none is,
+/// resume it. Returns `false` only for [`DeliverOutcome::Completing`] (the
+/// run there is tearing down), telling the caller to wait for the address
+/// to clear and retry — every other outcome, success or failure, is final.
+async fn deliver_or_resume_deferred(
     registry: &SessionRegistry,
     publisher: &Publisher,
     store: &SessionStore,
@@ -1154,7 +1206,8 @@ async fn resume_or_deliver_after_clear(
 /// What a resume by messages hands the new run as its opening input.
 struct ResumeOpening {
     /// The conversation messages combined, as the new run reads them after
-    /// its agent messages; empty when there are none.
+    /// its agent messages: made from `chat_messages` alone, and empty when
+    /// there are none.
     prompt: String,
     /// The new run's first turn's hop count.
     hop_count: u32,
@@ -1636,7 +1689,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_or_deliver_after_clear_delivers_into_a_run_that_already_won_the_race() {
+    async fn deliver_or_resume_deferred_delivers_into_a_run_that_already_won_the_race() {
         // The exact "loop-defeat" scenario item 3 exists to prevent: two
         // messages queued to one completing session must never produce two
         // runs. `wait_until_clear` only tells the caller the address *was*
@@ -1664,7 +1717,7 @@ mod tests {
             "second message",
             0,
         );
-        let done = resume_or_deliver_after_clear(
+        let done = deliver_or_resume_deferred(
             &registry,
             &publisher,
             &store,
@@ -1692,7 +1745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_or_deliver_after_clear_resumes_when_the_address_is_genuinely_free() {
+    async fn deliver_or_resume_deferred_resumes_when_the_address_is_genuinely_free() {
         let bus_handle = residuum_bus::spawn_broker();
         let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
@@ -1714,8 +1767,7 @@ mod tests {
             "still there?",
             0,
         );
-        let done =
-            resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
+        let done = deliver_or_resume_deferred(&registry, &publisher, &store, &address, &msg).await;
         assert!(done, "resuming is a final outcome");
 
         let event = next_event("a genuinely free address to be resumed", &mut spawn_sub).await;

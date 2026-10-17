@@ -202,6 +202,16 @@ impl SessionRuntime {
         &self.registry
     }
 
+    /// Where a run that loses the race for its address delivers its input
+    /// (see [`deliver_losing_spawn_input`]).
+    fn race_guard_sinks(&self) -> super::listener::RaceGuardSinks<'_> {
+        super::listener::RaceGuardSinks {
+            registry: &self.registry,
+            publisher: &self.publisher,
+            store: &self.store,
+        }
+    }
+
     /// Fork and run a new session.
     ///
     /// Registers the session as `forking` immediately (so it is discoverable
@@ -240,8 +250,7 @@ impl SessionRuntime {
             Ok(rx) => rx,
             Err(e) => {
                 deliver_losing_spawn_input(
-                    &self.registry,
-                    &self.publisher,
+                    self.race_guard_sinks(),
                     &info,
                     &req.subagent_config,
                     &e,
@@ -364,9 +373,13 @@ impl SessionRuntime {
 /// A resume by messages delivers each of them unchanged, as its own
 /// interrupt (see
 /// [`listener::deliver_losing_resume`](super::listener::deliver_losing_resume)):
-/// an agent message keeps its id and sender, and one that cannot be
-/// delivered is logged with its id and dropped; a conversation's chat
-/// message arrives as the chat message it is, and is never dropped.
+/// an agent message keeps its id and sender, and a conversation's chat
+/// message arrives as the chat message it is. When the winning run is
+/// tearing down or has left the registry, they are delivered in order on a
+/// detached task, resuming the session if they must, and the sinks' store
+/// is where that task records a note for a sender whose message still could
+/// not be delivered. An agent message the winning run's saturated channel refuses
+/// is logged with its id and dropped.
 ///
 /// A chat user's message (a `Conversation`-triggered request carrying its
 /// original inbound message) is never dropped here: a saturated or
@@ -377,8 +390,7 @@ impl SessionRuntime {
 /// gives up, unchanged — an unusual double-register race, with a live
 /// agent on the other end able to notice and retry itself.
 fn deliver_losing_spawn_input(
-    registry: &Arc<SessionRegistry>,
-    publisher: &Publisher,
+    sinks: super::listener::RaceGuardSinks<'_>,
     info: &SessionInfo,
     config: &SubAgentConfig,
     register_error: &super::registry::RegisterError,
@@ -390,7 +402,7 @@ fn deliver_losing_spawn_input(
          delivering its input into the run that won the race"
     );
     if !config.delivered_messages.is_empty() || !config.delivered_chat_messages.is_empty() {
-        deliver_losing_resume_input(registry, publisher, info, config);
+        deliver_losing_resume_input(sinks, info, config);
         return;
     }
     // Mirrors `SpawnRequestEvent::kickoff_text` — `config` is already the
@@ -420,7 +432,7 @@ fn deliver_losing_spawn_input(
     } else {
         None
     };
-    let outcome = registry.deliver(&info.address, interrupt);
+    let outcome = sinks.registry.deliver(&info.address, interrupt);
     match outcome {
         DeliverOutcome::Delivered => {}
         DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive
@@ -453,8 +465,8 @@ fn deliver_losing_spawn_input(
                 delivered_messages: Vec::new(),
                 delivered_chat_messages: Vec::new(),
             };
-            let registry = Arc::clone(registry);
-            let publisher = publisher.clone();
+            let registry = Arc::clone(sinks.registry);
+            let publisher = sinks.publisher.clone();
             let address = info.address.clone();
             residuum_core::util::spawn_in_span(async move {
                 super::messaging::retry_race_guard_user_message(
@@ -478,30 +490,25 @@ fn deliver_losing_spawn_input(
 }
 
 /// [`deliver_losing_spawn_input`] for a resume by messages: each message is
-/// delivered as it was sent, and an agent message that cannot be delivered
-/// is logged with its id.
+/// delivered as it was sent, and an agent message the winning run's
+/// saturated channel refuses is logged with its id.
 fn deliver_losing_resume_input(
-    registry: &Arc<SessionRegistry>,
-    publisher: &Publisher,
+    sinks: super::listener::RaceGuardSinks<'_>,
     info: &SessionInfo,
     config: &SubAgentConfig,
 ) {
-    let messages = super::listener::losing_resume_messages(
-        config.delivered_messages.clone(),
-        config.delivered_chat_messages.clone(),
-        &config.prompt,
-        info.spawner.clone(),
-        info.category,
-        config.hop_count,
-    );
     let spawn = super::messaging::ConversationSpawn {
         source_label: info.source_label.clone(),
         model: config.model.clone(),
         skill: info.agent_skill.clone(),
     };
-    for (id, outcome) in
-        super::listener::deliver_losing_resume(registry, publisher, &info.address, messages, spawn)
-    {
+    for (id, outcome) in super::listener::deliver_losing_resume(
+        sinks,
+        &info.address,
+        config.delivered_messages.clone(),
+        config.delivered_chat_messages.clone(),
+        spawn,
+    ) {
         tracing::error!(
             address = %info.address,
             message_id = %id,
@@ -1685,8 +1692,8 @@ mod tests {
 
     use crate::testing::{
         SequencedProvider, make_sequenced_resources, next_idle, sample_conversation_request,
-        test_checkpoints, test_memory_extras, test_runtime_held_idle, test_tracing_client_context,
-        test_tracing_service,
+        test_checkpoints, test_memory_extras, test_runtime_held_idle, test_store,
+        test_tracing_client_context, test_tracing_service,
     };
     use residuum_bus::MessageEvent;
     use residuum_bus::session::{MAIN_ADDRESS, MAIN_DEPTH};
@@ -1997,8 +2004,7 @@ mod tests {
         };
 
         deliver_losing_spawn_input(
-            &registry,
-            &publisher,
+            race_guard_sinks(&registry, &publisher, &test_store()),
             &losing_info,
             &config,
             &register_error,
@@ -2070,8 +2076,7 @@ mod tests {
         };
 
         deliver_losing_spawn_input(
-            &registry,
-            &publisher,
+            race_guard_sinks(&registry, &publisher, &test_store()),
             &losing_info,
             &config,
             &register_error,
@@ -2164,6 +2169,18 @@ mod tests {
         (agent, chat)
     }
 
+    fn race_guard_sinks<'a>(
+        registry: &'a Arc<SessionRegistry>,
+        publisher: &'a Publisher,
+        store: &'a Arc<SessionStore>,
+    ) -> crate::listener::RaceGuardSinks<'a> {
+        crate::listener::RaceGuardSinks {
+            registry,
+            publisher,
+            store,
+        }
+    }
+
     fn conversation_winner_info(address: &SessionAddress, run_id: &str) -> SessionInfo {
         SessionInfo {
             address: address.clone(),
@@ -2234,8 +2251,7 @@ mod tests {
             address: address.clone(),
         };
         deliver_losing_spawn_input(
-            &registry,
-            &publisher,
+            race_guard_sinks(&registry, &publisher, &test_store()),
             &losing_info,
             &config,
             &register_error,
@@ -2296,8 +2312,7 @@ mod tests {
             address: address.clone(),
         };
         deliver_losing_spawn_input(
-            &registry,
-            &publisher,
+            race_guard_sinks(&registry, &publisher, &test_store()),
             &losing_info,
             &config,
             &register_error,
@@ -4758,6 +4773,7 @@ mod tests {
         crate::listener::deliver_race_guard_content(
             &runtime.registry,
             &bus_handle.publisher(),
+            &runtime.store,
             loser,
         )
         .unwrap();

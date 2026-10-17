@@ -17,6 +17,7 @@ use crate::messaging::ConversationSpawn;
 use crate::registry::{DeliverOutcome, SessionRegistry};
 use crate::runtime::SessionSpawnRequest;
 use crate::spawn_context::{SpawnContext, build_spawn_resources};
+use crate::store::SessionStore;
 use crate::types::SubAgentConfig;
 use residuum_bus::MessageEvent;
 use residuum_bus::interrupt::Interrupt;
@@ -355,6 +356,7 @@ fn handle_spawn_request<'a>(
                     return deliver_race_guard_content(
                         &ctx.session_registry,
                         &ctx.publisher,
+                        ctx.messenger.store(),
                         event,
                     )
                     .map(|()| SpawnOutcome::Accepted);
@@ -373,9 +375,12 @@ fn handle_spawn_request<'a>(
 /// [`deliver_losing_resume`]): an agent message as its own
 /// [`Interrupt::AgentMessage`], so it keeps its id and sender and the
 /// winning run reports it read under that id, and a conversation's chat
-/// message as its own [`Interrupt::UserMessage`], with its own sender. Any
-/// other request's content becomes one interrupt, of the kind
-/// [`race_guard_interrupt`] picks.
+/// message as its own [`Interrupt::UserMessage`], with its own sender. When
+/// the winning run is tearing down or has left the registry, the messages
+/// go to a detached task that delivers them in order, resuming the session
+/// if it must; `store` is where that task records a note for a sender whose
+/// message still could not be delivered. Any other request's content
+/// becomes one interrupt, of the kind [`race_guard_interrupt`] picks.
 ///
 /// A chat user's message (a `Conversation`-triggered request carrying its
 /// original inbound message, which [`race_guard_interrupt`] renders as
@@ -388,13 +393,15 @@ fn handle_spawn_request<'a>(
 ///
 /// # Errors
 ///
-/// Returns an error if delivering an *agent* message fails (the winning
-/// run's channel is saturated, its own teardown is underway, or it has
-/// already left the registry) — that content is dropped in that case, and
-/// the error names the id of each message dropped.
+/// Returns an error if delivering an *agent* message fails: for a resume by
+/// messages, an agent message the winning run's saturated channel refused,
+/// and for any other request, input the winning run could not take — that
+/// content is dropped in that case, and a resume's error names the id of
+/// each message dropped.
 pub(crate) fn deliver_race_guard_content(
     registry: &Arc<SessionRegistry>,
     publisher: &Publisher,
+    store: &Arc<SessionStore>,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
     let address = event.address.clone();
@@ -405,15 +412,17 @@ pub(crate) fn deliver_race_guard_content(
             model: event.model,
             skill: event.skill,
         };
-        let messages = losing_resume_messages(
+        let failed = deliver_losing_resume(
+            RaceGuardSinks {
+                registry,
+                publisher,
+                store,
+            },
+            &address,
             event.delivered_messages,
             event.delivered_chat_messages,
-            &event.prompt,
-            event.spawner,
-            category,
-            event.hop_count,
+            spawn,
         );
-        let failed = deliver_losing_resume(registry, publisher, &address, messages, spawn);
         if failed.is_empty() {
             return Ok(());
         }
@@ -516,80 +525,81 @@ pub(crate) fn race_guard_interrupt(
     ))
 }
 
-/// The messages a resume by messages that lost the race for its address
-/// delivers into the run that won it. The resume's context, a pointer to
-/// the previous run, is left out: the run that won the address resumed from
-/// the same point and already has it.
-#[derive(Debug)]
-pub(crate) struct LosingResumeMessages {
-    /// Each agent message the resume carried, unchanged (its own id, sender,
-    /// category and hop count).
-    pub(crate) agent: Vec<AgentMessageEvent>,
-    /// Each conversation chat message the resume carried, unchanged (its own
-    /// id, sender, context and images).
-    pub(crate) chat: Vec<MessageEvent>,
+/// Where [`deliver_losing_resume`] delivers: the registry holding the run
+/// that won the address, the publisher a resume goes out on when that run
+/// is gone, and the store a deferred delivery records a sender's note in.
+#[derive(Clone, Copy)]
+pub(crate) struct RaceGuardSinks<'a> {
+    pub(crate) registry: &'a Arc<SessionRegistry>,
+    pub(crate) publisher: &'a Publisher,
+    pub(crate) store: &'a Arc<SessionStore>,
 }
 
-/// Sort a losing resume's input into the messages it delivers (see
-/// [`LosingResumeMessages`]). `prompt` combines the chat messages for a run
-/// that opens with them, so it is not delivered when there are any; a
-/// `prompt` with no chat messages behind it is delivered after the agent
-/// messages as one message from `spawner` (or `main` if it has none).
-pub(crate) fn losing_resume_messages(
-    agent: Vec<AgentMessageEvent>,
-    chat: Vec<MessageEvent>,
-    prompt: &str,
-    spawner: Option<SessionAddress>,
-    category: SessionCategory,
-    hop_count: u32,
-) -> LosingResumeMessages {
-    let mut agent = agent;
-    if chat.is_empty() && !prompt.is_empty() {
-        agent.push(AgentMessageEvent::new(
-            spawner.unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
-            category.as_str(),
-            prompt,
-            hop_count,
-        ));
-    }
-    LosingResumeMessages { agent, chat }
-}
-
-/// Deliver a losing resume's messages into the live run at `address`: the
-/// agent messages first, one by one, each as an [`Interrupt::AgentMessage`],
-/// then the chat messages in order, each as an [`Interrupt::UserMessage`]
-/// (see [`super::messaging::deliver_chat_messages_in_order`], which never
-/// drops one and starts the session with `spawn` if it must). This is the
-/// order a run that wins the address reads them in. Returns the id and
-/// outcome of each agent message that could not be delivered.
+/// Deliver a losing resume's messages into the run that won its address,
+/// in the order a run that wins the address reads them: each agent message
+/// unchanged (its own id, sender, category and hop count), one by one, as
+/// an [`Interrupt::AgentMessage`], then each chat message in order as an
+/// [`Interrupt::UserMessage`] (see
+/// [`super::messaging::deliver_chat_messages_in_order`], which never drops
+/// one and starts the session with `spawn` if it must). The resume's
+/// context, a pointer to the previous run, is left out: the run that won
+/// the address resumed from the same point and already has it.
+///
+/// From the first agent message the winning run can't take because it is
+/// tearing down or has left the registry, that message and every message
+/// after it, agent and chat, are delivered in order on a detached task (see
+/// [`super::messaging::defer_losing_resume`]), the way a message to a
+/// completing session is, so none is dropped. Returns the id and outcome
+/// of each agent message the winning run's saturated channel refused.
 pub(crate) fn deliver_losing_resume(
-    registry: &Arc<SessionRegistry>,
-    publisher: &Publisher,
+    sinks: RaceGuardSinks<'_>,
     address: &SessionAddress,
-    messages: LosingResumeMessages,
+    agent_messages: Vec<AgentMessageEvent>,
+    chat_messages: Vec<MessageEvent>,
     spawn: ConversationSpawn,
 ) -> Vec<(String, DeliverOutcome)> {
-    let failed = messages
-        .agent
-        .into_iter()
-        .filter_map(|msg| {
-            let id = msg.id.clone();
-            match registry.deliver(address, Interrupt::AgentMessage(msg)) {
-                DeliverOutcome::Delivered => None,
-                outcome @ (DeliverOutcome::Completing
-                | DeliverOutcome::Full
-                | DeliverOutcome::NotLive) => Some((id, outcome)),
+    let mut refused = Vec::new();
+    let mut agent_messages = agent_messages.into_iter();
+    while let Some(msg) = agent_messages.next() {
+        match sinks
+            .registry
+            .deliver(address, Interrupt::AgentMessage(msg.clone()))
+        {
+            DeliverOutcome::Delivered => {}
+            DeliverOutcome::Full => refused.push((msg.id, DeliverOutcome::Full)),
+            outcome @ (DeliverOutcome::Completing | DeliverOutcome::NotLive) => {
+                let undelivered: Vec<AgentMessageEvent> =
+                    std::iter::once(msg).chain(agent_messages).collect();
+                tracing::warn!(
+                    address = %address,
+                    ?outcome,
+                    agent_messages = undelivered.len(),
+                    chat_messages = chat_messages.len(),
+                    "the run that won a resume's address is tearing down or gone; delivering \
+                     the resume's remaining messages in order on a detached task rather than \
+                     dropping them"
+                );
+                super::messaging::defer_losing_resume(
+                    sinks.registry,
+                    sinks.publisher,
+                    sinks.store,
+                    address,
+                    undelivered,
+                    chat_messages,
+                    spawn,
+                );
+                return refused;
             }
-        })
-        .collect();
+        }
+    }
     super::messaging::deliver_chat_messages_in_order(
-        registry,
-        publisher,
+        sinks.registry,
+        sinks.publisher,
         address,
-        messages.chat,
+        chat_messages,
         spawn,
     );
-    failed
+    refused
 }
 
 /// Build resources and hand the run to `SessionRuntime`, once
@@ -689,6 +699,7 @@ pub(crate) fn session_spawn_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::test_store;
     use anyhow::Context as _;
     use residuum_bus::ConversationTarget;
     use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
@@ -863,7 +874,7 @@ mod tests {
 
         let second_msg = sample_inbound("m2", "any updates?", "Jane");
         let second_event = conversation_spawn_event(second_msg, address);
-        deliver_race_guard_content(&registry, &publisher, second_event)
+        deliver_race_guard_content(&registry, &publisher, &test_store(), second_event)
             .expect("delivering into the live run must succeed");
 
         let delivered = rx
@@ -920,7 +931,7 @@ mod tests {
 
         let new_msg = sample_inbound("the-new-message", "can anyone see this?", "Jane");
         let new_event = conversation_spawn_event(new_msg, address);
-        deliver_race_guard_content(&registry, &publisher, new_event)
+        deliver_race_guard_content(&registry, &publisher, &test_store(), new_event)
             .expect("a saturated channel must hand off to a retry, not error");
 
         let interrupt = wait::next_matching(
@@ -958,7 +969,7 @@ mod tests {
 
         let new_msg = sample_inbound("the-new-message", "can anyone see this?", "Jane");
         let new_event = conversation_spawn_event(new_msg, address);
-        deliver_race_guard_content(&registry, &publisher, new_event)
+        deliver_race_guard_content(&registry, &publisher, &test_store(), new_event)
             .expect("a target that just finished must hand off to a retry, not error");
 
         let republished = next_event("a fresh spawn request to be republished", &mut spawns).await;
@@ -1081,7 +1092,7 @@ mod tests {
             vec![owner_message("m-owner", "are you there?"), teammate],
         );
 
-        deliver_race_guard_content(&registry, &Publisher::noop(), event)
+        deliver_race_guard_content(&registry, &Publisher::noop(), &test_store(), event)
             .expect("delivering into the live run must succeed");
 
         let mut delivered = Vec::new();
@@ -1134,7 +1145,7 @@ mod tests {
             ],
         );
 
-        deliver_race_guard_content(&registry, &Publisher::noop(), event)
+        deliver_race_guard_content(&registry, &Publisher::noop(), &test_store(), event)
             .expect("delivering into the live run must succeed");
 
         let delivered: Vec<(String, String, String)> = wait::drain(&mut rx)
@@ -1203,7 +1214,7 @@ mod tests {
             ],
         );
 
-        deliver_race_guard_content(&registry, &Publisher::noop(), event)
+        deliver_race_guard_content(&registry, &Publisher::noop(), &test_store(), event)
             .expect("a saturated channel hands the chat messages to a retry, not an error");
 
         // `next_matching` discards what it skips, so the second wait only
@@ -1255,7 +1266,7 @@ mod tests {
             ],
         );
 
-        deliver_race_guard_content(&registry, &publisher, event)
+        deliver_race_guard_content(&registry, &publisher, &test_store(), event)
             .expect("a winner that already finished hands the chat messages to a retry");
 
         for id in ["m-chat-1", "m-chat-2"] {
@@ -1278,45 +1289,76 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_losing_resume_delivers_its_chat_messages_rather_than_the_prompt_they_make() {
-        let messages = losing_resume_messages(
-            vec![owner_message("m-owner", "are you there?")],
-            vec![sample_inbound("m-chat", "any news?", "Jane")],
-            "[From: Jane via discord (#builds)] any news?",
-            None,
-            SessionCategory::External,
-            1,
-        );
-        let agent: Vec<&str> = messages.agent.iter().map(|m| m.id.as_str()).collect();
-        let chat: Vec<&str> = messages.chat.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(agent, ["m-owner"], "the prompt is not delivered from main");
-        assert_eq!(chat, ["m-chat"]);
-    }
-
-    #[test]
-    fn a_losing_resume_delivers_a_prompt_with_no_chat_messages_behind_it_after_its_messages() {
-        let messages = losing_resume_messages(
-            vec![owner_message("m-owner", "are you there?")],
-            Vec::new(),
-            "follow up on the report",
-            None,
-            SessionCategory::Spawned,
-            1,
-        );
-        let summary: Vec<(&str, &str)> = messages
-            .agent
-            .iter()
-            .map(|m| (m.from.as_ref(), m.content.as_str()))
-            .collect();
-        assert_eq!(
-            summary,
+    #[tokio::test]
+    async fn a_losing_mixed_resume_whose_winner_is_gone_still_delivers_its_agent_messages() {
+        let bus_handle = residuum_bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let address = SessionAddress::from("external-discord-race-gone-mixed");
+        registry
+            .record_resume_point(
+                &address,
+                crate::registry::ResumePoint {
+                    previous_run_id: "run-winner".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Conversation,
+                    source_label: "discord:#builds".to_string(),
+                    agent_skill: None,
+                    model: ModelSelector::MEDIUM,
+                    spawner: None,
+                    depth: 1,
+                    conversation_target: Some(ConversationTarget {
+                        endpoint: "discord".to_string(),
+                        conversation_id: "chan-1".to_string(),
+                    }),
+                    recorded_at: chrono::Utc::now(),
+                },
+            )
+            .await;
+        let event = mixed_resume_event(
+            address.as_ref(),
             vec![
-                (residuum_bus::session::OWNER_ADDRESS, "are you there?"),
-                (MAIN_ADDRESS, "follow up on the report"),
-            ]
+                owner_message("m-owner-1", "are you there?"),
+                owner_message("m-owner-2", "check the logs"),
+            ],
+            vec![sample_inbound("m-chat", "any news?", "Jane")],
         );
-        assert!(messages.chat.is_empty());
+
+        deliver_race_guard_content(&registry, &publisher, &test_store(), event)
+            .expect("a winner that already finished hands the messages to a deferred delivery");
+
+        // Nothing forks the published resumes here, so each message finds
+        // no live run and resumes the session itself, in the order a
+        // resumed run reads them.
+        for id in ["m-owner-1", "m-owner-2"] {
+            let resume =
+                next_event(format!("a resume carrying agent message {id}"), &mut spawns).await;
+            assert_eq!(resume.address, address);
+            let delivered: Vec<(&str, &str)> = resume
+                .delivered_messages
+                .iter()
+                .map(|m| (m.id.as_str(), m.from.as_ref()))
+                .collect();
+            assert_eq!(
+                delivered,
+                [(id, residuum_bus::session::OWNER_ADDRESS)],
+                "each agent message resumes the session unchanged, with its own id and sender"
+            );
+            assert!(resume.inbound.is_none());
+        }
+        let resume = next_event(
+            "a conversation resume carrying the chat message",
+            &mut spawns,
+        )
+        .await;
+        assert_eq!(
+            resume.inbound.as_ref().map(|m| m.id.as_str()),
+            Some("m-chat"),
+            "the chat message follows the agent messages"
+        );
+        assert!(resume.delivered_messages.is_empty());
     }
 
     // ── handle_spawn_failure dedup ───────────────────────────────────────
