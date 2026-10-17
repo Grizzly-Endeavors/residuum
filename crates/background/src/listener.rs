@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
+use crate::fork_failure::owner_start_failure_message;
 use crate::registry::{DeliverOutcome, SessionRegistry};
 use crate::runtime::SessionSpawnRequest;
 use crate::spawn_context::{SpawnContext, build_spawn_resources};
@@ -21,7 +22,7 @@ use residuum_bus::interrupt::Interrupt;
 use residuum_bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
 use residuum_bus::{
     AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
-    SessionAddress, SpawnRequestEvent, Subscriber, topics,
+    SessionAddress, SessionStartFailedEvent, SpawnRequestEvent, Subscriber, topics,
 };
 
 /// Subscribe to the `Background` topic and fork sessions on demand.
@@ -166,18 +167,34 @@ async fn handle_spawn_failure(
 /// Tell the owner a session they started by hand couldn't start. Their start
 /// was already accepted (the web UI is waiting for the run to appear, or a
 /// chat command already named its address), so the failure has to reach them
-/// on its own.
+/// on its own: as a `SessionStartFailedEvent` the web UI matches to the start
+/// by address, and as a notice. Both carry the same plain-language sentence;
+/// the event also carries the full cause chain.
 async fn notify_owner_start_failed(
     publisher: &Publisher,
     address: &SessionAddress,
     error: &anyhow::Error,
 ) {
-    tracing::warn!(address = %address, error = format!("{error:#}"), "failed to fork a session the owner started");
-    let notice = format!("The session {address} you started couldn't start: {error}");
+    let details = format!("{error:#}");
+    tracing::warn!(address = %address, error = %details, "failed to fork a session the owner started");
+    let message = owner_start_failure_message(address, error);
+    if let Err(e) = publisher
+        .publish(
+            topics::Sessions,
+            SessionStartFailedEvent {
+                address: address.clone(),
+                error: message.clone(),
+                error_details: Some(details),
+            },
+        )
+        .await
+    {
+        tracing::warn!(address = %address, error = %e, "failed to publish an owner session's start failure");
+    }
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent::new(notice),
+            NoticeEvent::new(message),
         )
         .await
     {
@@ -219,6 +236,8 @@ fn handle_spawn_request<'a>(
                         "spawn target is completing; deferring until it clears the registry"
                     );
                     let ctx = Arc::clone(ctx);
+                    let owner_address =
+                        super::owner_session::is_owner_start(&event).then(|| event.address.clone());
                     residuum_core::util::spawn_in_span(async move {
                         ctx.session_registry.wait_until_clear(&event.address).await;
                         // Re-run the full guard rather than forking directly:
@@ -233,7 +252,14 @@ fn handle_spawn_request<'a>(
                         // instead of blindly clobbering a run that won the
                         // race.
                         if let Err(e) = handle_spawn_request(&ctx, event).await {
-                            tracing::warn!(error = %e, "failed to fork deferred session resume");
+                            if let Some(address) = owner_address {
+                                notify_owner_start_failed(&ctx.publisher, &address, &e).await;
+                            } else {
+                                tracing::warn!(
+                                    error = format!("{e:#}"),
+                                    "failed to fork deferred session resume"
+                                );
+                            }
                         }
                     });
                     return Ok(());
@@ -444,6 +470,7 @@ async fn fork_and_spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
     use residuum_bus::ConversationTarget;
     use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
     use residuum_bus::session::SessionInfo;
@@ -749,25 +776,231 @@ mod tests {
     #[tokio::test]
     async fn an_owner_session_that_fails_to_start_tells_the_owner_which_one() {
         let bus = residuum_bus::spawn_broker();
-        let mut sub: Subscriber<NoticeEvent> = bus
+        let mut notices: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let error = Err::<(), _>(anyhow::anyhow!("no API key for the medium tier"))
+            .context(crate::fork_failure::ForkFailure::ProviderChain {
+                model: "medium".to_string(),
+            })
+            .unwrap_err();
 
         notify_owner_start_failed(
             &bus.publisher(),
             &SessionAddress::from("spawned-multitask-1a2b"),
-            &anyhow::anyhow!("no API key for the medium tier"),
+            &error,
         )
         .await;
 
-        let notice = next_event("the owner's failure notice", &mut sub).await;
-        assert!(
-            notice.message.contains("spawned-multitask-1a2b"),
-            "{}",
-            notice.message
+        let failure = next_event("the owner's start failure", &mut failures).await;
+        assert_eq!(
+            failure.address,
+            SessionAddress::from("spawned-multitask-1a2b")
         );
-        assert!(notice.message.contains("no API key"), "{}", notice.message);
+        assert_eq!(
+            failure.error,
+            crate::fork_failure::owner_start_failure_message(&failure.address, &error)
+        );
+        assert_eq!(
+            failure.error_details.as_deref(),
+            Some("failed to build provider chain for model medium: no API key for the medium tier"),
+            "the details carry the whole cause chain"
+        );
+        let notice = next_event("the owner's failure notice", &mut notices).await;
+        assert_eq!(
+            notice.message, failure.error,
+            "the notice says the same plain sentence as the frame"
+        );
+    }
+
+    // ── owner start failures through the listener ───────────────────────
+
+    struct NoSessionTools;
+
+    impl crate::session_tools::SessionToolFactory for NoSessionTools {
+        fn build(
+            &self,
+            _scope: crate::session_tools::SessionToolScope,
+        ) -> residuum_agent::ToolRegistry {
+            residuum_agent::ToolRegistry::new()
+        }
+    }
+
+    /// A spawn context on `bus` whose every tier falls back to one Anthropic
+    /// model with no API key, so every fork fails building its provider chain.
+    async fn spawn_context_without_a_working_provider(bus: &BusHandle) -> Arc<SpawnContext> {
+        let (session_runtime, _results, _runtime_bus) =
+            crate::testing::test_runtime_held_idle().await;
+        let (layout, observer, merge_writer) = crate::testing::test_memory_extras();
+        let registry = Arc::new(SessionRegistry::new());
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::store::SessionStore::new(store_dir.path().to_path_buf())
+                .with_tempdir_guard(store_dir),
+        );
+        let messenger = Arc::new(crate::messaging::AgentMessenger::new(
+            Arc::clone(&registry),
+            bus.publisher(),
+            store,
+            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+        ));
+        let kind = residuum_config::ProviderKind::Anthropic;
+        let keyless = residuum_config::ProviderSpec {
+            name: kind.to_string(),
+            model: residuum_config::ModelSpec {
+                kind,
+                model: "claude-test".to_string(),
+            },
+            provider_url: kind.default_url().to_string(),
+            api_key: None,
+            keep_alive: None,
+            session_affinity: None,
+            image_input: residuum_config::ImageInput::Undeclared,
+        };
+        Arc::new(SpawnContext {
+            background_config: residuum_config::BackgroundConfig::default(),
+            main_provider_specs: vec![keyless],
+            model_catalog: Arc::new(tokio::sync::RwLock::new(
+                residuum_config::ModelCatalog::default(),
+            )),
+            http_client: residuum_inference::SharedHttpClient::new(
+                &residuum_inference::HttpClientConfig::default(),
+            )
+            .unwrap(),
+            max_tokens: 1024,
+            retry_config: residuum_config::RetryConfig::default(),
+            options: residuum_inference::CompletionOptions::default(),
+            max_tool_iterations: None,
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            layout,
+            role_overrides: HashMap::new(),
+            session_tools: Arc::new(NoSessionTools),
+            session_runtime: Arc::new(session_runtime),
+            session_registry: registry,
+            publisher: bus.publisher(),
+            skill_state: residuum_skills::SkillState::new_shared(
+                residuum_skills::SkillIndex::default(),
+                vec![],
+            ),
+            mcp_registry: residuum_mcp::McpRegistry::new_shared(),
+            observer,
+            merge_writer,
+            messenger,
+            bg_tier_active_index: crate::spawn_context::BackgroundTierActiveIndex::default(),
+        })
+    }
+
+    fn owner_start() -> SpawnRequestEvent {
+        crate::owner_session::OwnerSessionStart {
+            prompt: "summarize the build logs".to_string(),
+            model: ModelSelector::MEDIUM,
+            fork_of: None,
+            conversation: None,
+        }
+        .into_spawn_event()
+    }
+
+    fn assert_is_the_provider_failure(failure: &SessionStartFailedEvent, address: &SessionAddress) {
+        assert_eq!(&failure.address, address);
+        assert!(
+            failure.error.starts_with(&format!(
+                "The session {address} couldn't start because its model (medium) couldn't be set up"
+            )),
+            "{}",
+            failure.error
+        );
+        let details = failure.error_details.as_deref().unwrap_or_default();
+        assert!(
+            details.starts_with("failed to build provider chain for model medium: ")
+                && details.contains("API key"),
+            "the details carry the cause under the step: {details}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_owner_start_that_fails_to_fork_publishes_its_start_failure() {
+        let bus = residuum_bus::spawn_broker();
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let mut notices: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(ctx, &bus).await.unwrap();
+
+        let start = owner_start();
+        let address = start.address.clone();
+        bus.publisher()
+            .publish(topics::Background, start)
+            .await
+            .unwrap();
+
+        let failure = next_event("the owner start's failure", &mut failures).await;
+        assert_is_the_provider_failure(&failure, &address);
+        let notice = next_event("the owner start's failure notice", &mut notices).await;
+        assert_eq!(notice.message, failure.error);
+    }
+
+    #[tokio::test]
+    async fn a_deferred_owner_start_that_fails_to_fork_publishes_its_start_failure() {
+        let bus = residuum_bus::spawn_broker();
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let start = owner_start();
+        let address = start.address.clone();
+        let mut previous = sample_live_conversation_info(address.as_ref());
+        previous.run_id = "run-previous".to_string();
+        let _interrupts = ctx
+            .session_registry
+            .register(previous, CancellationToken::new())
+            .unwrap();
+        ctx.session_registry
+            .set_state(&address, SessionState::Completing);
+
+        handle_spawn_request(&ctx, start)
+            .await
+            .expect("a start at a completing address is deferred, not refused");
+        ctx.session_registry.remove(&address, "run-previous");
+
+        let failure = next_event("the deferred owner start's failure", &mut failures).await;
+        assert_is_the_provider_failure(&failure, &address);
+    }
+
+    #[tokio::test]
+    async fn a_start_an_agent_made_publishes_no_start_failure() {
+        let bus = residuum_bus::spawn_broker();
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(ctx, &bus).await.unwrap();
+
+        let mut by_main = owner_start();
+        by_main.spawner = Some(SessionAddress::from(MAIN_ADDRESS));
+        bus.publisher()
+            .publish(topics::Background, by_main)
+            .await
+            .unwrap();
+        // The listener handles requests in order, so once the owner's start
+        // has failed, main's has been handled too.
+        let owners = owner_start();
+        let owners_address = owners.address.clone();
+        bus.publisher()
+            .publish(topics::Background, owners)
+            .await
+            .unwrap();
+
+        let failure = next_event("the owner start's failure", &mut failures).await;
+        assert_eq!(
+            failure.address, owners_address,
+            "only the owner's start reports a start failure"
+        );
+        bus_barrier(&bus).await;
+        assert_eq!(failures.drain(), Vec::<SessionStartFailedEvent>::new());
     }
 
     #[tokio::test]
