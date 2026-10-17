@@ -1988,6 +1988,132 @@ mod tests {
         }
     }
 
+    #[test]
+    fn deliver_losing_spawn_input_for_a_resume_delivers_each_message_under_its_own_id() {
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
+        let address = SessionAddress::from("spawned-researcher-race-resume");
+        let spawner = SessionAddress::from("spawned-lead-7c1d");
+        let winner = SessionInfo {
+            address: address.clone(),
+            run_id: "run-winner".to_string(),
+            category: SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: SessionState::Idle,
+            spawner: Some(spawner.clone()),
+            depth: 2,
+            purpose: "already running".to_string(),
+            agent_skill: None,
+            model: residuum_config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: None,
+            started_at: Utc::now(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        };
+        let mut rx = registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let context = "[Resumed session] Your previous run was merged as episode ep-1.";
+        let config = SubAgentConfig {
+            prompt: "[From: Jane via discord (#builds)] any news?".to_string(),
+            context: Some(context.to_string()),
+            model: residuum_config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            hop_count: 2,
+            sender: None,
+            inbound: None,
+            images: Vec::new(),
+            carried_history: Vec::new(),
+            delivered_messages: vec![
+                residuum_bus::AgentMessageEvent::new(
+                    SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+                    "owner",
+                    "are you there?",
+                    0,
+                )
+                .with_id("m-owner"),
+                residuum_bus::AgentMessageEvent::new(
+                    SessionAddress::from("agent:ivan"),
+                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+                    "the logs are in /tmp",
+                    1,
+                )
+                .with_id("m-teammate"),
+            ],
+        };
+        let register_error = crate::registry::RegisterError {
+            address: address.clone(),
+        };
+
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
+
+        let mut delivered = Vec::new();
+        while let Ok(interrupt) = rx.try_recv() {
+            match interrupt {
+                Interrupt::AgentMessage(m) => delivered.push(m),
+                Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                    panic!("a losing resume delivers agent messages only")
+                }
+            }
+        }
+        let summary: Vec<(&str, &str, &str, &str, u32)> = delivered
+            .iter()
+            .map(|m| {
+                (
+                    m.id.as_str(),
+                    m.from.as_ref(),
+                    m.from_category.as_str(),
+                    m.content.as_str(),
+                    m.hop_count,
+                )
+            })
+            .collect();
+        let prompt_id = delivered.get(2).map_or("", |m| m.id.as_str());
+        assert_eq!(
+            summary,
+            vec![
+                (
+                    "m-owner",
+                    residuum_bus::session::OWNER_ADDRESS,
+                    "owner",
+                    "are you there?",
+                    0
+                ),
+                (
+                    "m-teammate",
+                    "agent:ivan",
+                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+                    "the logs are in /tmp",
+                    1
+                ),
+                (
+                    prompt_id,
+                    spawner.as_ref(),
+                    "spawned",
+                    "[From: Jane via discord (#builds)] any news?",
+                    2
+                ),
+            ]
+        );
+        assert!(
+            delivered.iter().all(|m| !m.content.contains(context)),
+            "the resume context stays out of the delivered messages"
+        );
+    }
+
     fn conversation_winner_info(address: &SessionAddress, run_id: &str) -> SessionInfo {
         SessionInfo {
             address: address.clone(),
