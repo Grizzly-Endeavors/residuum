@@ -135,12 +135,6 @@ impl PathPolicy {
         Arc::new(RwLock::new(Self::new()))
     }
 
-    /// Create a new shared path policy with blocked paths.
-    #[must_use]
-    pub fn new_shared_with_blocked(blocked_paths: HashSet<PathBuf>) -> SharedPathPolicy {
-        Arc::new(RwLock::new(Self::with_blocked_paths(blocked_paths)))
-    }
-
     /// Create a new shared path policy with blocked paths and the agent's
     /// view of the team namespace.
     #[must_use]
