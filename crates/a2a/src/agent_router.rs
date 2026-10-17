@@ -78,7 +78,7 @@ pub struct AgentA2a {
     pub public_url: String,
     /// The relay tunnel's status, for rebuilding the card on a workspace
     /// reload with the current relay address.
-    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    pub(crate) tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     /// Keeps the card's relay address current as the tunnel connects and
     /// disconnects; ends when this value is dropped.
     _card_url_watch: AbortOnDrop,

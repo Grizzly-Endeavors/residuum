@@ -48,20 +48,17 @@ impl StaticAgentDirectory {
     }
 
     /// Move an agent to `state`, as a stop or failure would.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn set_state(&self, name: &str, state: AgentState) {
         self.change(name, |entry| entry.state = state);
     }
 
     /// Change an agent's A2A visibility.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn set_visibility(&self, name: &str, visibility: A2aVisibility) {
         self.change(name, |entry| entry.visibility = visibility);
     }
 
     /// Add a running agent after construction, replacing one of the same
     /// name.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn add_agent(&self, name: &str, visibility: A2aVisibility, router: Router) {
         self.agents
             .write()
@@ -77,7 +74,6 @@ impl StaticAgentDirectory {
     }
 
     /// Remove an agent.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn remove_agent(&self, name: &str) {
         self.agents
             .write()
@@ -85,7 +81,6 @@ impl StaticAgentDirectory {
             .remove(name);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     fn change(&self, name: &str, apply: impl FnOnce(&mut Entry)) {
         if let Some(entry) = self
             .agents
