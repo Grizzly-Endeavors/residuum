@@ -65,7 +65,7 @@ build: _web-dist
 release: web-build
     cargo build --release
 
-# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test gateway::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
+# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test logging::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
 test *args: _web-dist
@@ -104,7 +104,7 @@ test *args: _web-dist
 test-crate crate *args:
     cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
 
-# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress gateway::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`, which skips the web build. A note on stderr says when a filter names a member crate; a warning says when no test matched
+# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress logging::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`, which skips the web build. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
 stress *args:
@@ -399,9 +399,9 @@ _web-unlink:
 _web-deps: _web-unlink
     @[ web/node_modules/.package-lock.json -nt web/package-lock.json ] || (cd web && npm ci)
 
-# build.rs panics without web/dist, and the gateway's asset tests read dist/sw.js. Rebuilds a dist that is
-# missing, incomplete or stale: sw.js is the last file a build writes, so a dist without it is unfinished,
-# and a source newer than it was edited since. Tests and the mock aren't built into dist and don't count.
+# build.rs panics without web/dist, and the root's `wiring` tests read the embedded app. Rebuilds a dist
+# that is missing, incomplete or stale: sw.js is the last file a build writes, so a dist without it is
+# unfinished, and a source newer than it was edited since. Tests and the mock aren't built into dist and don't count.
 [private]
 _web-dist: _web-deps
     #!/usr/bin/env bash

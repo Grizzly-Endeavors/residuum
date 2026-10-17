@@ -77,15 +77,16 @@ pub async fn handle_server_command(
     }
 }
 
-/// Faults the hub's tests inject into an agent's event loop to prove the
-/// loop's failure stays that agent's own. The hub's tests run this crate with
-/// `test-support` on, so the command is reachable from them and nowhere else.
+/// Faults the `hub_host` integration tests (`tests/it/hub_host/`) inject into
+/// an agent's event loop to prove the loop's failure stays that agent's own.
+/// Those tests turn on this crate's `test-support`, so the command exists only
+/// in test builds.
 #[cfg(any(test, feature = "test-support"))]
 mod fault_injection {
     /// Panic the way an internal bug in the event loop would.
     #[expect(
         clippy::panic,
-        reason = "test-support helper: the fault the hub's tests inject into the event loop"
+        reason = "test-support helper: the fault the hub_host tests inject into the event loop"
     )]
     pub(super) fn panic_in_event_loop() -> ! {
         panic!("forced panic in the agent event loop");

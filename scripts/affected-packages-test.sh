@@ -170,7 +170,7 @@ web/app-shell-csp.txt||it:two
 .github/workflows/release.yml||it:two
 src/lib.rs||it:two
 src/main.rs||it:two
-src/later/x.rs||it:two
+src/daemon.rs||it:two
 tests/it/one.rs||it:one
 tests/it/three/x.rs||it:three
 tests/it/main.rs||it:ALL

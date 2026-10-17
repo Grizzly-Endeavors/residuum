@@ -708,8 +708,8 @@ run_rust_checks() {
     shear_check "$dir"
     (
         cd "$dir" || exit 1
-        # build.rs refuses to compile without web/dist, and the gateway's tests
-        # read the built service worker, so the Rust checks build it when
+        # build.rs refuses to compile without web/dist, and the root's `wiring`
+        # tests read the embedded app, so the Rust checks build it when
         # web_dist_needs_build says the dist is not the one they need.
         if web_dist_needs_build "$dir" "$sha"; then
             ensure_web_deps web || exit 1

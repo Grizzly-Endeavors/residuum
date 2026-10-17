@@ -19,8 +19,8 @@
 # manifest cannot be read, so a failure checks more, never less. --touched and
 # --covering have no fallback of their own: when a manifest or a covers line
 # cannot be read they exit non-zero, and the caller runs every member or every
-# module instead. --graph has no fallback either: it
-# exits non-zero, because its output is compared with the manifests.
+# module instead. --graph has no fallback either: it exits non-zero, because its
+# output is compared with the manifests.
 #
 # Bash 3.2 compatible, because the pre-commit hook runs it on developers' machines
 # (no mapfile, no associative arrays). The graph is read with awk, not cargo, so

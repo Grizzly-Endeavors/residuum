@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use residuum_bus::Publisher;
-use residuum_config::Config;
-use residuum_config::WorkspaceLayout;
+use residuum_config::{Config, WorkspaceLayout};
 use residuum_core::util::FatalError;
 use residuum_inference::{
     EmbeddingProvider, SharedHttpClient, build_provider_chain, build_provider_chain_with_notices,

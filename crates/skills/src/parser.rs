@@ -398,7 +398,7 @@ mod tests {
     /// the same `parse_skill_md` the workspace skill scanner uses.
     ///
     /// A bundled skill is embedded into the binary at compile time
-    /// (`include_str!` in the root crate's `workspace::bootstrap`) and written into every new
+    /// (`include_str!` in the workspace crate's `bootstrap`) and written into every new
     /// workspace verbatim, so a frontmatter defect here — invalid YAML, a bad
     /// name, an empty description — ships broken to every user and is
     /// dropped by `SkillIndex::scan`'s skip handling, surfacing only as a
