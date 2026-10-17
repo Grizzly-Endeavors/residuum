@@ -3,6 +3,12 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      # The version and commit the binary reports. The build context leaves out
+      # .git, so they come from the environment: `just docker-compose up --build`
+      # sets both from the checkout. Unset, the version is `dev`.
+      args:
+        RESIDUUM_VERSION: ${RESIDUUM_VERSION:-}
+        RESIDUUM_GIT_COMMIT: ${RESIDUUM_GIT_COMMIT:-}
     ports:
       # The web UI and API. The A2A listener (7702) is left unpublished; add
       # "7702:7702" only if callers outside the container should reach it directly.

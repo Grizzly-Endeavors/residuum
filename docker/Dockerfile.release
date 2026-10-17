@@ -19,6 +19,10 @@ RUN chmod +x residuum && useradd -m residuum
 
 USER residuum
 
+# A volume mounted where the image has no directory starts out owned by root,
+# which the residuum user can't write to; one the image has takes its owner.
+RUN mkdir -p /home/residuum/.residuum
+
 VOLUME ["/home/residuum/.residuum"]
 
 EXPOSE 7700
