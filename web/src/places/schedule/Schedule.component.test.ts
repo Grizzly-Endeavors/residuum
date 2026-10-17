@@ -294,6 +294,59 @@ describe("Schedule", () => {
     expect(screen.getByText("Last run was stopped just now")).toBeTruthy();
   });
 
+  it("stops an action's run through its session, and shows it stopping until it ends", async () => {
+    const user = userEvent.setup();
+    scheduled.reset("atlas");
+    const frames = captureFrames();
+    const run: ScheduledCurrentRun = {
+      fire_id: null,
+      phase: "session",
+      started_at: soon(-2),
+      address: "scheduled-3",
+      run_id: "run-3",
+      overlap: null,
+    };
+    const actions: ActionInfo[] = [{ ...digest, current_run: run }];
+    const requests = serveSchedule([], actions);
+    render(Schedule, { agent: "atlas" });
+    const stop = await screen.findByRole("button", { name: "Stop Weekly digest" });
+
+    const row = stop.closest("li");
+    if (row === null) throw new Error("no row for Weekly digest");
+    expect(within(row).getByText("Running session")).toBeTruthy();
+    expect(within(row).getByRole("link", { name: "Open session" })).toHaveAttribute(
+      "href",
+      "/agent/atlas/schedule?panel=session:atlas:run-3",
+    );
+
+    await user.click(stop);
+    expect(requests).toContain("/api/agents/atlas/sessions/scheduled-3/stop");
+    expect(stop).toHaveAttribute("aria-busy", "true");
+
+    // A load that still shows the run keeps Stop busy.
+    await user.click(screen.getByRole("button", { name: "Reload the schedule" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Stop Weekly digest" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+
+    // The session ends, and the load its frame starts no longer has the run.
+    actions[0] = digest;
+    frames.emit({
+      type: "session_completed",
+      address: "scheduled-3",
+      run_id: "run-3",
+      status: "cancelled",
+      error: null,
+      episode_id: null,
+    });
+    await settle();
+    expect(screen.queryByRole("button", { name: "Stop Weekly digest" })).toBeNull();
+    expect(screen.queryByText("Running session")).toBeNull();
+    expect(scheduled.stopping.size).toBe(0);
+  });
+
   it("stops the earlier fire a run overlaps, leaving the newer one running", async () => {
     const user = userEvent.setup();
     scheduled.reset("atlas");
