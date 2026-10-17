@@ -17,17 +17,14 @@ use ring::pbkdf2;
 
 type Aes256Gcm16 = AesGcm<Aes256, U16>;
 
-use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
-use crate::config::paths::{agent_dir, hub_dir, team_dir};
-use crate::config::secrets::SecretStore;
-use crate::config::{Config, HubConfig};
-use crate::util::FatalError;
+use residuum_checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
+use residuum_config::paths::{agent_dir, hub_dir, team_dir};
+use residuum_config::secrets::SecretStore;
+use residuum_config::{Config, HubConfig};
+use residuum_core::util::FatalError;
 
 /// Pinned CLI version constant for Microsoft 365 Agents Toolkit.
 pub const ATK_CLI_VERSION: &str = "1.1.17";
-
-/// Pinned npm package name for Microsoft 365 Agents Toolkit CLI.
-pub const ATK_PACKAGE_NAME: &str = "@microsoft/m365agentstoolkit-cli";
 
 /// Default global key used by ATK `LocalCrypto.fixedCryptr`.
 pub const ATK_DEFAULT_GLOBAL_KEY: &str = "teamsfx_global_key";
@@ -37,23 +34,25 @@ pub const CRYPTO_PREFIX: &str = "crypto_";
 
 /// Embedded template for `m365agents.yml`.
 pub const TEAMS_SETUP_M365AGENTS_YML: &str =
-    include_str!("../../../assets/bundled-skills/teams-setup/templates/m365agents.yml");
+    include_str!("../../../../assets/bundled-skills/teams-setup/templates/m365agents.yml");
 
 /// Embedded template for `appPackage/manifest.json`.
-pub const TEAMS_SETUP_MANIFEST_JSON: &str =
-    include_str!("../../../assets/bundled-skills/teams-setup/templates/appPackage/manifest.json");
+pub const TEAMS_SETUP_MANIFEST_JSON: &str = include_str!(
+    "../../../../assets/bundled-skills/teams-setup/templates/appPackage/manifest.json"
+);
 
 /// Embedded default 192x192 PNG color icon.
 pub const TEAMS_SETUP_COLOR_PNG: &[u8] =
-    include_bytes!("../../../assets/bundled-skills/teams-setup/templates/appPackage/color.png");
+    include_bytes!("../../../../assets/bundled-skills/teams-setup/templates/appPackage/color.png");
 
 /// Embedded default 32x32 PNG outline icon.
-pub const TEAMS_SETUP_OUTLINE_PNG: &[u8] =
-    include_bytes!("../../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png");
+pub const TEAMS_SETUP_OUTLINE_PNG: &[u8] = include_bytes!(
+    "../../../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png"
+);
 
 /// Embedded template for `env/.env.residuum`.
 pub const TEAMS_SETUP_ENV_RESIDUUM: &str =
-    include_str!("../../../assets/bundled-skills/teams-setup/templates/env/.env.residuum");
+    include_str!("../../../../assets/bundled-skills/teams-setup/templates/env/.env.residuum");
 
 /// Validate that `bytes` begins with a valid PNG signature and has an IHDR chunk
 /// matching `expected_w` and `expected_h`.
@@ -480,7 +479,7 @@ pub fn resolve_atk_paths(residuum_root: &Path, agent_name: &str) -> AtkPaths {
 pub async fn derive_cloud_teams_endpoint(residuum_root: &Path, agent_name: &str) -> Option<String> {
     let hub_path = hub_dir(residuum_root);
     let gateway_addr = HubConfig::load_at_for_start(&hub_path, residuum_root).map_or_else(
-        |_| crate::config::GatewayConfig::default().addr(),
+        |_| residuum_config::GatewayConfig::default().addr(),
         |hub| hub.gateway.addr(),
     );
     derive_cloud_teams_endpoint_from_addr(&gateway_addr, agent_name).await
@@ -739,9 +738,12 @@ async fn write_scaffold_project(
         ))
     })?;
 
-    crate::util::fs::atomic_write(&project_dir.join("m365agents.yml"), payload.m365_content)
-        .await?;
-    crate::util::fs::atomic_write(
+    residuum_core::util::fs::atomic_write(
+        &project_dir.join("m365agents.yml"),
+        payload.m365_content,
+    )
+    .await?;
+    residuum_core::util::fs::atomic_write(
         &app_package_dir.join("manifest.json"),
         payload.manifest_content,
     )
@@ -752,7 +754,8 @@ async fn write_scaffold_project(
     tokio::fs::write(app_package_dir.join("outline.png"), payload.outline_bytes)
         .await
         .map_err(|e| FatalError::Config(format!("failed to write outline.png: {e}")))?;
-    crate::util::fs::atomic_write(&env_dir.join(".env.residuum"), payload.env_content).await?;
+    residuum_core::util::fs::atomic_write(&env_dir.join(".env.residuum"), payload.env_content)
+        .await?;
     Ok(())
 }
 
@@ -776,7 +779,7 @@ pub async fn scaffold_atk_project(
     residuum_root: &Path,
     options: &AtkScaffoldOptions,
 ) -> Result<ScaffoldAtkResult, FatalError> {
-    crate::config::paths::validate_agent_name(&options.agent_name).map_err(FatalError::Config)?;
+    residuum_config::paths::validate_agent_name(&options.agent_name).map_err(FatalError::Config)?;
 
     let agent_path = agent_dir(residuum_root, &options.agent_name);
     if !agent_path.exists() {
@@ -950,8 +953,9 @@ pub async fn import_atk_project(
     let patch_map = patch
         .as_object()
         .ok_or_else(|| FatalError::Config("failed to construct teams config patch".to_string()))?;
-    let patched_toml = crate::config::patch::apply_patch(&existing_toml, patch_map, "config.toml")
-        .map_err(FatalError::Config)?;
+    let patched_toml =
+        residuum_config::patch::apply_patch(&existing_toml, patch_map, "config.toml")
+            .map_err(FatalError::Config)?;
 
     // 3. Validate patched config BEFORE saving secret or modifying disk
     Config::validate_agent_toml(&patched_toml, &agent_path, agent_name, &hub)
@@ -995,7 +999,7 @@ pub async fn import_atk_project(
     }
 
     // 6. Write patched config to disk
-    if let Err(e) = crate::util::fs::atomic_write(&config_path, &patched_toml).await {
+    if let Err(e) = residuum_core::util::fs::atomic_write(&config_path, &patched_toml).await {
         return Err(FatalError::Config(format!(
             "failed to write {}: {e}. Secret 'teams' was stored in hub SecretStore, but agent config was not updated.",
             config_path.display()
@@ -1081,14 +1085,14 @@ mod tests {
         let (schema, doc): (serde_json::Value, serde_json::Value) = match file {
             "m365agents.yml" => (
                 serde_json::from_str(include_str!(
-                    "../../../tests/fixtures/m365agents-v1.13.yaml.schema.json"
+                    "../../../../tests/fixtures/m365agents-v1.13.yaml.schema.json"
                 ))
                 .unwrap(),
                 serde_yaml_ng::from_str(content).unwrap(),
             ),
             "appPackage/manifest.json" => (
                 serde_json::from_str(include_str!(
-                    "../../../tests/fixtures/teams-manifest-v1.17.schema.json"
+                    "../../../../tests/fixtures/teams-manifest-v1.17.schema.json"
                 ))
                 .unwrap(),
                 serde_json::from_str(&filled).unwrap(),

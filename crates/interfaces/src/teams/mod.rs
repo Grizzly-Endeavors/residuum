@@ -28,15 +28,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::background::registry::SessionRegistry;
-use crate::bus::control::{ServerCommand, StopRequest};
-use crate::bus::conversations::{ConversationSource, KnownConversation};
-use crate::bus::{EndpointName, Publisher};
-use crate::config::TeamsConfig;
-use crate::interfaces::AdapterSenders;
-use crate::interfaces::context_buffer::ContextBuffer;
-use crate::interfaces::reply_targets::ReplyTargets;
-use crate::remote_access::TEAMS_MESSAGES_PATH;
+use crate::AdapterSenders;
+use crate::context_buffer::ContextBuffer;
+use crate::reply_targets::ReplyTargets;
+use residuum_background::registry::SessionRegistry;
+use residuum_bus::control::{ServerCommand, StopRequest};
+use residuum_bus::conversations::{ConversationSource, KnownConversation};
+use residuum_bus::{EndpointName, Publisher};
+use residuum_config::TeamsConfig;
+use residuum_net::remote_access::TEAMS_MESSAGES_PATH;
 
 use self::auth::TokenValidator;
 use self::connector::ConnectorClient;
@@ -58,7 +58,7 @@ pub(super) struct TeamsRuntime {
     reply_targets: ReplyTargets<ConversationRef>,
     inbound_tx: tokio::sync::mpsc::Sender<activity::Activity>,
     publisher: Publisher,
-    reload_tx: crate::bus::control::ReloadSender,
+    reload_tx: residuum_bus::control::ReloadSender,
     command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: Arc<SessionRegistry>,
@@ -96,7 +96,7 @@ impl TeamsRuntime {
         target: &ConversationRef,
         text: &str,
     ) -> Result<(), connector::ConnectorError> {
-        for chunk in crate::interfaces::chunking::chunk_text(text, subscriber::MAX_MESSAGE_BYTES) {
+        for chunk in crate::chunking::chunk_text(text, subscriber::MAX_MESSAGE_BYTES) {
             self.connector
                 .send_activity(target, &connector::message_activity(&chunk))
                 .await?;
@@ -121,7 +121,7 @@ pub struct TeamsInterface {
     cfg: TeamsConfig,
     senders: AdapterSenders,
     bind: String,
-    layout: crate::config::WorkspaceLayout,
+    layout: residuum_config::WorkspaceLayout,
     tz: chrono_tz::Tz,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -141,7 +141,7 @@ impl TeamsInterface {
             cfg,
             senders,
             bind,
-            layout: crate::config::WorkspaceLayout::new(workspace_dir),
+            layout: residuum_config::WorkspaceLayout::new(workspace_dir),
             tz,
             shutdown_rx,
         }
@@ -166,11 +166,11 @@ impl TeamsInterface {
             .context("failed to build teams http client")?;
         let (store, chat_state_notice) = TeamsStore::load(self.layout.teams_state_json()).await?;
         if let Some(notice) = chat_state_notice {
-            crate::bus::notice::publish_notice(&self.senders.publisher, notice).await;
+            residuum_bus::notice::publish_notice(&self.senders.publisher, notice).await;
         }
-        let subs = crate::interfaces::BaseSubscribers::new(
+        let subs = crate::BaseSubscribers::new(
             &self.senders.bus_handle,
-            EndpointName::from(crate::config::TEAMS_ENDPOINT),
+            EndpointName::from(residuum_config::TEAMS_ENDPOINT),
         )
         .await
         .context("failed to subscribe to teams bus topics")?;
@@ -219,15 +219,17 @@ impl TeamsInterface {
             .with_state(Arc::clone(&rt));
 
         let worker_rt = Arc::clone(&rt);
-        let worker = crate::util::spawn_in_span(async move {
+        let worker = residuum_core::util::spawn_in_span(async move {
             while let Some(activity) = inbound_rx.recv().await {
                 handler::process_activity(&worker_rt, activity).await;
             }
         });
-        let outbound =
-            crate::util::spawn_in_span(subscriber::run_teams_subscriber(Arc::clone(&rt), subs));
+        let outbound = residuum_core::util::spawn_in_span(subscriber::run_teams_subscriber(
+            Arc::clone(&rt),
+            subs,
+        ));
         let _registration = self.senders.conversations.register(
-            crate::config::TEAMS_ENDPOINT,
+            residuum_config::TEAMS_ENDPOINT,
             Arc::clone(&rt) as Arc<dyn ConversationSource>,
         );
 

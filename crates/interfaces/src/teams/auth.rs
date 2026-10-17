@@ -303,7 +303,7 @@ pub(super) mod test_support {
     }
 
     /// The public half of the test key, published under `kid = "key-1"`.
-    pub(in crate::interfaces::teams) fn test_key(endorsements: &[&str]) -> SigningKey {
+    pub(in crate::teams) fn test_key(endorsements: &[&str]) -> SigningKey {
         let components: ring::signature::RsaPublicKeyComponents<Vec<u8>> =
             test_keypair().public().into();
         SigningKey {
@@ -315,10 +315,7 @@ pub(super) mod test_support {
     }
 
     /// Sign a JWT with the test key.
-    pub(in crate::interfaces::teams) fn sign(
-        header: &serde_json::Value,
-        claims: &serde_json::Value,
-    ) -> String {
+    pub(in crate::teams) fn sign(header: &serde_json::Value, claims: &serde_json::Value) -> String {
         let signed = format!(
             "{}.{}",
             URL_SAFE_NO_PAD.encode(header.to_string()),
@@ -338,7 +335,7 @@ pub(super) mod test_support {
     }
 
     /// A currently valid connector token for `app_id` and `service_url`.
-    pub(in crate::interfaces::teams) fn valid_token(app_id: &str, service_url: &str) -> String {
+    pub(in crate::teams) fn valid_token(app_id: &str, service_url: &str) -> String {
         let now = chrono::Utc::now().timestamp();
         sign(
             &serde_json::json!({ "alg": "RS256", "kid": "key-1" }),
@@ -354,7 +351,7 @@ pub(super) mod test_support {
 
     impl TokenValidator {
         /// A validator that already holds the test key, so it never fetches.
-        pub(in crate::interfaces::teams) fn with_test_key(app_id: &str) -> Self {
+        pub(in crate::teams) fn with_test_key(app_id: &str) -> Self {
             Self {
                 http: reqwest::Client::new(),
                 app_id: app_id.to_string(),

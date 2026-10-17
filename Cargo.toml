@@ -26,6 +26,7 @@ residuum-config = { path = "crates/config", version = "0.1.0" }
 residuum-bus = { path = "crates/bus", version = "0.1.0" }
 residuum-agent = { path = "crates/agent", version = "0.1.0" }
 residuum-background = { path = "crates/background", version = "0.1.0" }
+residuum-interfaces = { path = "crates/interfaces", version = "0.1.0" }
 residuum-workspace = { path = "crates/workspace", version = "0.1.0" }
 residuum-protocol = { path = "crates/protocol", version = "0.1.0" }
 residuum-notify = { path = "crates/notify", version = "0.1.0" }
@@ -188,6 +189,7 @@ residuum-tracing-service = { workspace = true }
 residuum-bus = { workspace = true }
 residuum-agent = { workspace = true }
 residuum-background = { workspace = true }
+residuum-interfaces = { workspace = true }
 residuum-workspace = { workspace = true }
 residuum-protocol = { workspace = true }
 residuum-notify = { workspace = true }
@@ -207,9 +209,6 @@ tempfile = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
 dotenvy = { workspace = true }
-aes-gcm = { workspace = true }
-aes = { workspace = true }
-hex = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 regex = { workspace = true }
@@ -239,8 +238,6 @@ url = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 iana-time-zone = { workspace = true }
-serenity = { workspace = true }
-teloxide-core = { workspace = true }
 ts-rs = { workspace = true }
 
 # Unix process signals (Linux + macOS)
@@ -267,7 +264,6 @@ ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
-jsonschema = { workspace = true }
 
 [package.metadata.cargo-shear]
 # ctor is used by crates/core/src/testing/crypto.rs, which this package includes by

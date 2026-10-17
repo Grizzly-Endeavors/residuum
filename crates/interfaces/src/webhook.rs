@@ -10,7 +10,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
-use crate::config::{WebhookFormat, WebhookRouting};
+use residuum_config::{WebhookFormat, WebhookRouting};
 
 /// Per-webhook endpoint configuration (built from `WebhookEntry` at startup).
 #[derive(Clone, Debug)]
@@ -25,8 +25,8 @@ pub struct WebhookEndpointState {
     pub routing: WebhookRouting,
 }
 
-impl From<&crate::config::WebhookEntry> for WebhookEndpointState {
-    fn from(entry: &crate::config::WebhookEntry) -> Self {
+impl From<&residuum_config::WebhookEntry> for WebhookEndpointState {
+    fn from(entry: &residuum_config::WebhookEntry) -> Self {
         Self {
             secret: entry.secret.clone(),
             format: entry.format.clone(),
@@ -46,14 +46,14 @@ pub struct WebhookTable(std::sync::Arc<std::sync::RwLock<HashMap<String, Webhook
 impl WebhookTable {
     /// Build a table from the resolved `[webhooks.*]` config.
     #[must_use]
-    pub fn from_config(webhooks: &HashMap<String, crate::config::WebhookEntry>) -> Self {
+    pub fn from_config(webhooks: &HashMap<String, residuum_config::WebhookEntry>) -> Self {
         let table = Self::default();
         table.replace_from_config(webhooks);
         table
     }
 
     /// Replace every webhook with the resolved `[webhooks.*]` config.
-    pub fn replace_from_config(&self, webhooks: &HashMap<String, crate::config::WebhookEntry>) {
+    pub fn replace_from_config(&self, webhooks: &HashMap<String, residuum_config::WebhookEntry>) {
         let fresh = webhooks
             .iter()
             .map(|(name, entry)| (name.clone(), WebhookEndpointState::from(entry)))
@@ -84,7 +84,7 @@ impl From<HashMap<String, WebhookEndpointState>> for WebhookTable {
 #[derive(Clone)]
 pub struct WebhookState {
     /// Publisher for sending events onto the bus.
-    pub publisher: crate::bus::Publisher,
+    pub publisher: residuum_bus::Publisher,
     /// Named webhook endpoint configurations.
     pub webhooks: WebhookTable,
     /// Timezone for inbox item timestamps.
@@ -124,7 +124,7 @@ pub async fn webhook_handler(
             .unwrap_or("");
 
         let provided = auth.strip_prefix("Bearer ").unwrap_or("");
-        if !crate::util::secrets_match(provided, expected) {
+        if !residuum_core::util::secrets_match(provided, expected) {
             tracing::warn!(webhook = %name, "webhook authentication failed");
             return (
                 StatusCode::UNAUTHORIZED,
@@ -182,16 +182,16 @@ async fn route_webhook_content(
 ) -> (StatusCode, String) {
     match routing {
         WebhookRouting::Inbox => {
-            let notification = crate::bus::NotificationEvent {
+            let notification = residuum_bus::NotificationEvent {
                 title: format!("webhook:{name}"),
                 content,
-                source: crate::bus::EventTrigger::Webhook(name.to_string()),
+                source: residuum_bus::EventTrigger::Webhook(name.to_string()),
                 urgent: false,
-                timestamp: crate::time::now_local(state.tz),
+                timestamp: residuum_core::time::now_local(state.tz),
             };
             if let Err(e) = state
                 .publisher
-                .publish(crate::bus::topics::Inbox, notification)
+                .publish(residuum_bus::topics::Inbox, notification)
                 .await
             {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
@@ -202,18 +202,18 @@ async fn route_webhook_content(
             }
         }
         WebhookRouting::Agent(skill) => {
-            let trigger = crate::bus::EventTrigger::Webhook(name.to_string());
-            let address = crate::bus::session::generate_address(&trigger, name);
-            let spawn_event = crate::bus::SpawnRequestEvent {
+            let trigger = residuum_bus::EventTrigger::Webhook(name.to_string());
+            let address = residuum_bus::session::generate_address(&trigger, name);
+            let spawn_event = residuum_bus::SpawnRequestEvent {
                 address,
-                skill: Some(crate::bus::SkillName::from(skill.as_str())),
+                skill: Some(residuum_bus::SkillName::from(skill.as_str())),
                 source_label: format!("webhook:{name}"),
                 prompt: content,
                 context: None,
                 source: trigger,
-                model: crate::config::ModelSelector::MEDIUM,
+                model: residuum_config::ModelSelector::MEDIUM,
                 spawner: None,
-                depth: crate::bus::session::MAIN_DEPTH + 1,
+                depth: residuum_bus::session::MAIN_DEPTH + 1,
                 hop_count: 0,
                 sender: None,
                 conversation: None,
@@ -224,7 +224,7 @@ async fn route_webhook_content(
             };
             if let Err(e) = state
                 .publisher
-                .publish(crate::bus::topics::Background, spawn_event)
+                .publish(residuum_bus::topics::Background, spawn_event)
                 .await
             {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
@@ -321,19 +321,19 @@ mod tests {
     use axum::routing::post;
     use tower::ServiceExt;
 
-    use crate::config::WebhookRouting;
+    use residuum_config::WebhookRouting;
     use residuum_core::testing::wait;
 
     async fn make_app(
         webhooks: HashMap<String, WebhookEndpointState>,
     ) -> (
         axum::Router,
-        crate::bus::Subscriber<crate::bus::NotificationEvent>,
+        residuum_bus::Subscriber<residuum_bus::NotificationEvent>,
     ) {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let subscriber = bus_handle
-            .subscribe(crate::bus::topics::Inbox)
+            .subscribe(residuum_bus::topics::Inbox)
             .await
             .unwrap();
         let state = WebhookState {
@@ -367,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_added_by_reload_is_served_without_rebinding() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let table = WebhookTable::default();
         let app = axum::Router::new()
             .route("/webhook/{name}", post(webhook_handler))
@@ -391,7 +391,7 @@ mod tests {
         let mut reloaded = HashMap::new();
         reloaded.insert(
             "github".to_string(),
-            crate::config::WebhookEntry {
+            residuum_config::WebhookEntry {
                 secret: Some("s3cret".to_string()),
                 routing: WebhookRouting::Inbox,
                 format: WebhookFormat::Parsed,
@@ -649,10 +649,10 @@ mod tests {
             content_fields: None,
             routing: WebhookRouting::Agent("code_reviewer".to_string()),
         };
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut preset_sub = bus_handle
-            .subscribe(crate::bus::topics::Background)
+            .subscribe(residuum_bus::topics::Background)
             .await
             .unwrap();
 
@@ -674,7 +674,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event: crate::bus::SpawnRequestEvent =
+        let event: residuum_bus::SpawnRequestEvent =
             wait::guarded("the webhook spawn request", preset_sub.recv())
                 .await
                 .unwrap()

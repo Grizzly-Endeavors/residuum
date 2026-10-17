@@ -12,8 +12,8 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::bus::conversations::KnownConversation;
-use crate::bus::origin::ConversationKind;
+use residuum_bus::conversations::KnownConversation;
+use residuum_bus::origin::ConversationKind;
 
 /// A conversation reference for interfaces that reach a chat by its ID alone
 /// (Discord channels, Telegram chats); the ID is the store key.
@@ -294,7 +294,7 @@ where
     async fn persist(&self, state: &StoredState<C>) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(state)
             .context("failed to serialize chat interface state")?;
-        crate::util::fs::atomic_write(&self.path, &json)
+        residuum_core::util::fs::atomic_write(&self.path, &json)
             .await
             .with_context(|| {
                 format!(

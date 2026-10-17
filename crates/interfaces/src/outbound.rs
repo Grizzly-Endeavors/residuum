@@ -22,12 +22,12 @@ use std::ops::ControlFlow;
 
 use async_trait::async_trait;
 
-use crate::bus::attachment::FileAttachment;
-use crate::bus::{
+use crate::notify_main_of_undeliverable_session_output;
+use residuum_bus::attachment::FileAttachment;
+use residuum_bus::{
     BusError, ConversationTypingEvent, ErrorEvent, IntermediateEvent, MessageEvent, ResponseEvent,
     SessionResponseEvent, TurnLifecycleEvent, topics,
 };
-use crate::interfaces::notify_main_of_undeliverable_session_output;
 
 use super::BaseSubscribers;
 
@@ -58,7 +58,7 @@ pub(crate) trait ChatOutbound: Send + Sync {
     fn unknown_conversation_reason(&self) -> &'static str;
 
     /// Publishes delivery-failure notices and notes to main.
-    fn publisher(&self) -> &crate::bus::Publisher;
+    fn publisher(&self) -> &residuum_bus::Publisher;
 
     /// Where a main-agent turn replies: the conversation that started it, or
     /// the owner's direct messages for proactive output.
@@ -472,7 +472,7 @@ async fn tell_main<C: ChatOutbound>(chat: &C, note: String) {
 async fn report_failing_replies<C: ChatOutbound>(chat: &C, reason: &str) {
     let platform = chat.display_name();
     let next_step = next_step_for(chat, reason);
-    crate::bus::notice::publish_error(
+    residuum_bus::notice::publish_error(
         chat.publisher(),
         format!(
             "Replies to {platform} aren't getting through, so messages there look unanswered. \
@@ -501,7 +501,7 @@ async fn report_failing_replies<C: ChatOutbound>(chat: &C, reason: &str) {
 /// to set that up, and main hears that the output went nowhere.
 async fn report_no_owner<C: ChatOutbound>(chat: &C) {
     let platform = chat.display_name();
-    crate::bus::notice::publish_notice(
+    residuum_bus::notice::publish_notice(
         chat.publisher(),
         format!(
             "The agent tried to send you something on {platform}, but you haven't messaged the \
@@ -559,7 +559,7 @@ async fn report_undelivered_message<C: ChatOutbound>(
             reason,
         ),
     };
-    crate::bus::notice::publish_error(chat.publisher(), message, details).await;
+    residuum_bus::notice::publish_error(chat.publisher(), message, details).await;
     let fix_note = chat
         .explain_failure(reason)
         .map(|fix| format!(" {fix}"))
@@ -582,10 +582,10 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::bus::{
+    use residuum_bus::testing::next_event;
+    use residuum_bus::{
         BusHandle, EndpointName, NoticeEvent, NotifyName, SYSTEM_CHANNEL, SessionAddress,
     };
-    use residuum_bus::testing::next_event;
     use residuum_core::testing::{clock, wait};
 
     const ENDPOINT: &str = "fakechat";
@@ -594,7 +594,7 @@ mod tests {
     /// `"owner-dm"` for the owner, otherwise a conversation id.
     #[derive(Clone)]
     struct FakeChat {
-        publisher: crate::bus::Publisher,
+        publisher: residuum_bus::Publisher,
         replies: HashMap<String, String>,
         conversations: Vec<String>,
         failing: Vec<String>,
@@ -668,7 +668,7 @@ mod tests {
             "no such conversation"
         }
 
-        fn publisher(&self) -> &crate::bus::Publisher {
+        fn publisher(&self) -> &residuum_bus::Publisher {
             &self.publisher
         }
 
@@ -821,7 +821,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn system_notices_and_errors_never_reach_the_chat() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let chat = FakeChat::new(&handle);
         start(&handle, chat.clone()).await;
         let publisher = handle.publisher();
@@ -865,7 +865,7 @@ mod tests {
     // only once the loop has nothing left to handle.
     #[tokio::test(start_paused = true)]
     async fn by_default_the_chat_gets_final_replies_and_typing_through_the_turn() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut chat = FakeChat::new(&handle);
         chat.conversations.push("group-7".to_string());
         start(&handle, chat.clone()).await;
@@ -895,7 +895,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn deliver_intermediate_posts_text_written_before_a_tool_call() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut chat = FakeChat::new(&handle);
         chat.conversations.push("group-7".to_string());
         chat.deliver_intermediate = true;
@@ -923,7 +923,7 @@ mod tests {
     // is not a failure: nothing is reported until the final reply fails.
     #[tokio::test(start_paused = true)]
     async fn an_unsent_intermediate_is_never_reported_as_a_failure() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let (mut errors, mut main) = subscribe_to_reports(&handle).await;
         let mut chat = FakeChat::new(&handle);
         chat.failing.push("owner-dm".to_string());
@@ -972,7 +972,7 @@ mod tests {
 
     #[tokio::test]
     async fn turn_error_answers_the_conversation_that_started_the_turn() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let mut chat = FakeChat::new(&handle);
         chat.replies.insert("m1".to_string(), "group-7".to_string());
         start(&handle, chat.clone()).await;
@@ -1003,7 +1003,7 @@ mod tests {
 
     #[tokio::test]
     async fn undeliverable_addressed_message_becomes_a_web_error_not_a_chat_message() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let (mut errors, mut main) = subscribe_to_reports(&handle).await;
         let mut chat = FakeChat::new(&handle);
         chat.conversations.push("group-7".to_string());
@@ -1067,7 +1067,7 @@ mod tests {
     /// every time, to the web UI and to main, so the tests use one as a marker
     /// that every event published before it has been handled.
     async fn only_event_before<E>(
-        sub: &mut crate::bus::Subscriber<E>,
+        sub: &mut residuum_bus::Subscriber<E>,
         marker: &str,
         text: impl Fn(&E) -> &str,
     ) -> E
@@ -1091,8 +1091,8 @@ mod tests {
     /// Exactly one failing-replies error and one note to main came before
     /// the reports naming `marker`.
     async fn expect_one_report_before(
-        errors: &mut crate::bus::Subscriber<ErrorEvent>,
-        main: &mut crate::bus::Subscriber<MessageEvent>,
+        errors: &mut residuum_bus::Subscriber<ErrorEvent>,
+        main: &mut residuum_bus::Subscriber<MessageEvent>,
         marker: &str,
     ) {
         let note = only_event_before(main, marker, note_text).await;
@@ -1110,7 +1110,7 @@ mod tests {
     }
 
     /// Waits for the owner-facing error that says `FakeChat` replies are failing.
-    async fn expect_failing_replies_error(errors: &mut crate::bus::Subscriber<ErrorEvent>) {
+    async fn expect_failing_replies_error(errors: &mut residuum_bus::Subscriber<ErrorEvent>) {
         let error = next_event("the failing-replies error", errors).await;
         assert_failing_replies_error(&error);
     }
@@ -1141,8 +1141,8 @@ mod tests {
     async fn subscribe_to_reports(
         handle: &BusHandle,
     ) -> (
-        crate::bus::Subscriber<ErrorEvent>,
-        crate::bus::Subscriber<MessageEvent>,
+        residuum_bus::Subscriber<ErrorEvent>,
+        residuum_bus::Subscriber<MessageEvent>,
     ) {
         let errors = handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
@@ -1154,7 +1154,7 @@ mod tests {
 
     #[tokio::test]
     async fn failing_replies_are_reported_once_until_one_gets_through() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let (mut errors, mut main) = subscribe_to_reports(&handle).await;
         let mut chat = FakeChat::new(&handle);
         chat.replies.insert("ok".to_string(), "group-7".to_string());
@@ -1203,12 +1203,12 @@ mod tests {
 
     #[tokio::test]
     async fn output_with_no_owner_is_reported_once_until_something_is_delivered() {
-        let handle = crate::bus::spawn_broker();
-        let mut notices: crate::bus::Subscriber<NoticeEvent> = handle
+        let handle = residuum_bus::spawn_broker();
+        let mut notices: residuum_bus::Subscriber<NoticeEvent> = handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
-        let mut main: crate::bus::Subscriber<MessageEvent> =
+        let mut main: residuum_bus::Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
         let chat = FakeChat::new(&handle);
         chat.no_owner.store(true, Ordering::SeqCst);
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_intermediate_message_is_reported() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let (mut errors, mut main) = subscribe_to_reports(&handle).await;
         let mut chat = FakeChat::new(&handle);
         chat.failing.push("owner-dm".to_string());
@@ -1294,7 +1294,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_turn_error_is_reported() {
-        let handle = crate::bus::spawn_broker();
+        let handle = residuum_bus::spawn_broker();
         let (mut errors, mut main) = subscribe_to_reports(&handle).await;
         let mut chat = FakeChat::new(&handle);
         chat.failing.push("owner-dm".to_string());

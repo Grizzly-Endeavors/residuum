@@ -1011,7 +1011,7 @@ mod tests {
             ),
             // Below fake-tool scripts whose raw strings hold a column-0 `}`.
             (
-                "src/interfaces/teams/setup_job.rs",
+                "crates/interfaces/src/teams/setup_job.rs",
                 "async fn test_job_failure_mid_provision_records_created_and_retry() {",
             ),
         ];

@@ -6,12 +6,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bus::origin::ConversationKind;
-use crate::interfaces::chat_state::{ChatStateStore, ConversationRecord};
+use crate::chat_state::{ChatStateStore, ConversationRecord};
+use residuum_bus::origin::ConversationKind;
 
 /// Everything needed to post into a conversation later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(in crate::interfaces) struct ConversationRef {
+pub(crate) struct ConversationRef {
     pub(super) conversation_id: String,
     pub(super) service_url: String,
     pub(super) kind: ConversationKind,

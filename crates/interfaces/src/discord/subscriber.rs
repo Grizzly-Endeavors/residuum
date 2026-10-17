@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use serenity::http::Http;
 use serenity::model::id::ChannelId;
 
-use crate::bus::attachment::FileAttachment;
-use crate::interfaces::chunking::chunk_text;
-use crate::interfaces::outbound::ChatOutbound;
+use crate::chunking::chunk_text;
+use crate::outbound::ChatOutbound;
+use residuum_bus::attachment::FileAttachment;
 
 use super::DiscordState;
 
@@ -27,11 +27,11 @@ struct DiscordOutbound {
 
 /// Receives events from the bus and delivers them to Discord.
 pub(super) async fn run_discord_subscriber(
-    subs: crate::interfaces::BaseSubscribers,
+    subs: crate::BaseSubscribers,
     http: Arc<Http>,
     state: Arc<DiscordState>,
 ) {
-    crate::interfaces::outbound::run(subs, DiscordOutbound { http, state }).await;
+    crate::outbound::run(subs, DiscordOutbound { http, state }).await;
 }
 
 #[async_trait]
@@ -54,7 +54,7 @@ impl ChatOutbound for DiscordOutbound {
         "that is not a Discord channel ID"
     }
 
-    fn publisher(&self) -> &crate::bus::Publisher {
+    fn publisher(&self) -> &residuum_bus::Publisher {
         &self.state.publisher
     }
 
@@ -83,7 +83,7 @@ impl ChatOutbound for DiscordOutbound {
     fn start_typing(&self, channel_id: ChannelId) -> tokio::sync::watch::Sender<()> {
         let http = Arc::clone(&self.http);
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             loop {
                 if let Err(e) = channel_id.broadcast_typing(&http).await {
                     tracing::trace!(error = %e, "discord typing indicator failed");

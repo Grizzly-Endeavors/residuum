@@ -215,7 +215,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 - **`listener.rs`** — the sole caller of `SessionRuntime::spawn()`; handles both a fresh fork and a `message_agent`-triggered resume identically, since both arrive as a `SpawnRequestEvent`.
 - **`src/gateway/actions.rs`** — forks a `scheduled` session for each due scheduled action.
 - **`crates/proactivity/src/pulse/executor.rs`** — builds a `SpawnRequestEvent` from a due pulse.
-- **`src/interfaces/webhook.rs`** — forks an `external` session for a webhook routed to an agent.
+- **`crates/interfaces/src/webhook.rs`** — forks an `external` session for a webhook routed to an agent.
 - **`crates/agent/src/subconscious/learning.rs`** — forks a `spawned` session running the `learner` skill.
 - **`src/tools/background.rs`** — `stop_agent`/`list_agents` (read the `SessionRegistry` directly), `subagent_spawn` (publishes a `SpawnRequestEvent` with a pre-generated address).
 - **`src/tools/registry.rs`** — `SessionTools`, the `SessionToolFactory` the gateway hands `SpawnContext`: it builds every session's tool registry.
