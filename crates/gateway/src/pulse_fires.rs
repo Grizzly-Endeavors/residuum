@@ -314,6 +314,14 @@ impl PulseFire {
             .update(&self.id, |fire| fire.run_id = Some(run_id));
     }
 
+    /// Take the fire out of the tracker, and withdraw the stop token it
+    /// offered its session, so a request it published but no listener has
+    /// forked yet forks nothing.
+    fn leave_tracker(&self) {
+        self.fires.remove(&self.id);
+        self.registry.fire_stops().withdraw(&self.id);
+    }
+
     /// Publish `change`, with the pulse's run in flight as of now.
     pub(crate) async fn announce(&self, change: PulseFireChange) {
         announce(
@@ -330,7 +338,7 @@ impl PulseFire {
     /// Finish the fire with `outcome`; `session_run` says whether a session
     /// run ended it (see [`PulseFireChange::Finished`]).
     pub(crate) async fn finish(mut self, outcome: PulseFireOutcome, session_run: bool) {
-        self.fires.remove(&self.id);
+        self.leave_tracker();
         self.ended = true;
         self.announce(PulseFireChange::Finished {
             outcome,
@@ -342,7 +350,7 @@ impl PulseFire {
     /// End the fire with no outcome to show: the agent is stopping, or the
     /// bus closed under it.
     pub(crate) async fn end(mut self) {
-        self.fires.remove(&self.id);
+        self.leave_tracker();
         self.ended = true;
         self.announce(PulseFireChange::Ended).await;
     }
@@ -353,7 +361,7 @@ impl Drop for PulseFire {
         if self.ended {
             return;
         }
-        self.fires.remove(&self.id);
+        self.leave_tracker();
         tracing::warn!(
             pulse = %self.pulse,
             fire = %self.id,

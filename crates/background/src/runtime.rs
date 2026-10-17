@@ -107,6 +107,11 @@ pub struct SessionSpawnRequest {
     /// Set when this is a pulse fire that started while its previous run was
     /// still live. `None` for every other trigger. See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,
+    /// The token the pulse fire that asked for this session offered (see
+    /// [`crate::fire_stops`]), which becomes the parent of the session's own
+    /// stop token, so stopping the fire stops the session. `None` for every
+    /// other session, which gets a fresh token.
+    pub stop: Option<CancellationToken>,
 }
 
 /// Shared handles [`SessionRuntime::new`] stores as-is, grouped to keep its
@@ -229,7 +234,7 @@ impl SessionRuntime {
             overlap: req.overlap,
         };
 
-        let stop_token = CancellationToken::new();
+        let stop_token = req.stop.unwrap_or_default();
         let interrupt_rx = match self.registry.register(info.clone(), stop_token.clone()) {
             Ok(rx) => rx,
             Err(e) => {
@@ -432,6 +437,7 @@ fn deliver_losing_spawn_input(
                 images: config.images.clone(),
                 overlap: None,
                 carried_history: Vec::new(),
+                fire_id: None,
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
@@ -1853,6 +1859,7 @@ mod tests {
             },
             conversation_target: None,
             overlap: None,
+            stop: None,
         }
     }
 
@@ -4076,6 +4083,32 @@ mod tests {
             SessionEventKind::Error { .. } => "error".to_string(),
             SessionEventKind::MessageToMain { .. } => "message_to_main".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_fire_was_stopped_ends_before_its_first_turn() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let fire_stop = CancellationToken::new();
+        let mut request = sample_request("scheduled-watch-stopped");
+        request.spawner = None;
+        request.stop = Some(fire_stop.child_token());
+        fire_stop.cancel();
+
+        runtime.spawn(request, Some(make_resources("never asked")));
+
+        let collected = collect_until_completed(&mut events).await;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        assert!(
+            !labels.iter().any(|label| label == "turn_started"),
+            "no turn starts, so no model is called: {labels:?}"
+        );
+        assert_eq!(
+            labels.last().map(String::as_str),
+            Some("completed:cancelled"),
+            "{labels:?}"
+        );
     }
 
     #[tokio::test]

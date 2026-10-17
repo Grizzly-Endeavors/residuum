@@ -453,6 +453,7 @@ pub(crate) async fn api_session_start(
         images: Vec::new(),
         overlap: None,
         carried_history: Vec::new(),
+        fire_id: None,
     };
     if let Err(e) = state.publisher.publish(topics::Background, event).await {
         tracing::warn!(artifact = %artifact, address = %address, error = %e, "failed to publish an artifact's session start");

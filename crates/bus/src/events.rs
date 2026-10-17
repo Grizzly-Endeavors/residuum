@@ -600,6 +600,12 @@ pub struct SpawnRequestEvent {
     /// still live in the registry. `None` for every other trigger, and for a
     /// pulse fire that found no live previous run. See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,
+    /// The pulse fire asking for this session, whose stop token the spawn
+    /// listener claims from the session registry as the parent of the
+    /// session's own: a fire stopped before the fork forks nothing, and one
+    /// stopped after it ends the run before its first turn. `None` for every
+    /// other request.
+    pub fire_id: Option<String>,
     /// Main's saved conversation, for a fork of it (the owner's
     /// `/multitask`): the new run sends these to the model ahead of its task
     /// on every turn, but keeps them out of its own transcript and memory.

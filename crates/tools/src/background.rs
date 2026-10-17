@@ -421,6 +421,7 @@ impl Tool for SubagentSpawnTool {
             images: Vec::new(),
             overlap: None,
             carried_history: Vec::new(),
+            fire_id: None,
         };
 
         self.deps.publisher

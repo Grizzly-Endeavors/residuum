@@ -464,10 +464,30 @@ pub(crate) fn race_guard_interrupt(
 
 /// Build resources and hand the run to `SessionRuntime`, once
 /// `handle_spawn_request` has confirmed the address is free to take it.
+///
+/// A pulse fire's request forks only while the fire is still going: its
+/// session's stop token is claimed from the fire (see
+/// [`crate::fire_stops`]), and a fire that was stopped or has ended forks
+/// nothing, which the fire already knows from withdrawing its offer.
 async fn fork_and_spawn(
     ctx: &Arc<SpawnContext>,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
+    let stop = match &event.fire_id {
+        Some(fire_id) => {
+            let Some(stop) = ctx.session_registry.fire_stops().claim(fire_id) else {
+                tracing::info!(
+                    address = %event.address,
+                    source = %event.source_label,
+                    fire = %fire_id,
+                    "the pulse fire was stopped before its session was forked; not forking it"
+                );
+                return Ok(());
+            };
+            Some(stop)
+        }
+        None => None,
+    };
     let skill = event.skill.as_ref().map(|s| s.as_ref().to_string());
     let category = SessionCategory::from_trigger(&event.source);
 
@@ -506,6 +526,7 @@ async fn fork_and_spawn(
         },
         conversation_target: event.conversation,
         overlap: event.overlap,
+        stop,
     };
 
     let log_address = request.address.clone();
@@ -580,6 +601,7 @@ mod tests {
             inbound: Some(inbound),
             overlap: None,
             carried_history: Vec::new(),
+            fire_id: None,
         }
     }
 
@@ -1025,6 +1047,62 @@ mod tests {
             conversation: None,
         }
         .into_spawn_event()
+    }
+
+    /// A fire of the pulse `watch` asking for its session, as fire `fire-1`.
+    fn pulse_fire_request() -> SpawnRequestEvent {
+        SpawnRequestEvent {
+            address: SessionAddress::from("scheduled-watch-0a1b"),
+            source_label: "pulse:watch".to_string(),
+            source: EventTrigger::Pulse,
+            spawner: None,
+            fire_id: Some("fire-1".to_string()),
+            ..owner_start()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pulse_fire_stopped_before_the_fork_forks_nothing() {
+        let bus = residuum_bus::spawn_broker();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let fire_stop = CancellationToken::new();
+        ctx.session_registry
+            .fire_stops()
+            .offer("fire-1", fire_stop.clone());
+        fire_stop.cancel();
+
+        let request = pulse_fire_request();
+        let address = request.address.clone();
+        // With no working provider, a fork that went ahead would fail here.
+        handle_spawn_request(&ctx, request)
+            .await
+            .expect("a stopped fire's request is dropped, not failed");
+
+        assert!(ctx.session_registry.get(&address).is_none());
+        assert!(
+            !ctx.session_registry.fire_stops().withdraw("fire-1"),
+            "no session claimed the fire's stop token"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pulse_fire_still_going_hands_its_stop_token_to_the_fork() {
+        let bus = residuum_bus::spawn_broker();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        ctx.session_registry
+            .fire_stops()
+            .offer("fire-1", CancellationToken::new());
+
+        let outcome = handle_spawn_request(&ctx, pulse_fire_request()).await;
+
+        assert!(
+            outcome.is_err(),
+            "the fork went ahead, and failed on its provider"
+        );
+        assert!(
+            ctx.session_registry.fire_stops().withdraw("fire-1"),
+            "the fork claimed the fire's stop token before building the session"
+        );
     }
 
     /// A resume point at `address`, as a finished run of an owner session

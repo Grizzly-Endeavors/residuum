@@ -211,9 +211,12 @@ fn fire_outcome(status: &AgentResultStatus) -> PulseFireOutcome {
 /// Ask for the fire's session and follow it until it ends: until the
 /// session completes, or the spawn listener says it couldn't start.
 ///
-/// The owner's Stop stops the session through the registry; one that lands
-/// before the session registers stops it as soon as it does.
-async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &FireDeps) {
+/// The fire offers its stop token to the session it asks for (see
+/// [`residuum_background::fire_stops`]), so a stop stops that session
+/// wherever it is: one that lands before the spawn listener forks it means
+/// it is never forked, and one that lands later has already cancelled the
+/// session's own stop token, a child of the fire's.
+async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: &FireDeps) {
     let address = spawn.address.clone();
     let pulse = spawn.source_label.clone();
     // Subscribed before the spawn is published, so neither the session's
@@ -240,6 +243,10 @@ async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &Fir
             return;
         }
     };
+    spawn.fire_id = Some(fire.id().to_string());
+    deps.registry
+        .fire_stops()
+        .offer(fire.id(), fire.stop_token().clone());
     publish_pulse_spawn(&deps.publisher, spawn).await;
 
     let mut run_id: Option<String> = None;
@@ -248,19 +255,19 @@ async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &Fir
         tokio::select! {
             () = fire.stop_token().cancelled(), if !stop_requested => {
                 stop_requested = true;
-                tracing::info!(pulse = %pulse, fire = %fire.id(), "stopping a pulse fire's session");
-                if run_id.is_some() {
-                    deps.registry.stop(&address);
+                if !deps.registry.fire_stops().withdraw(fire.id()) {
+                    // The listener hadn't forked the session, and now never
+                    // will.
+                    end_stopped_fire(fire).await;
+                    return;
                 }
+                tracing::info!(pulse = %pulse, fire = %fire.id(), "stopping a pulse fire's session");
             }
             event = sessions.recv() => match event {
                 Ok(Some(event)) if event.address == address => match event.kind {
                     SessionEventKind::Started(_) if run_id.is_none() => {
                         fire.session_registered(event.run_id.clone());
                         run_id = Some(event.run_id);
-                        if stop_requested {
-                            deps.registry.stop(&address);
-                        }
                         fire.announce(PulseFireChange::SessionStarted).await;
                     }
                     // A run id the fire doesn't know yet is still its own:
@@ -293,21 +300,7 @@ async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &Fir
             },
             failed = failures.recv() => match failed {
                 Ok(Some(failed)) if failed.address == address => {
-                    tracing::warn!(
-                        pulse = %pulse,
-                        fire = %fire.id(),
-                        error = failed.error_details.as_deref().unwrap_or(&failed.error),
-                        "a pulse fire's session couldn't start"
-                    );
-                    fire.finish(
-                        PulseFireOutcome {
-                            status: PulseFireStatus::Failed,
-                            at: Utc::now(),
-                            error: Some(failed.error),
-                        },
-                        false,
-                    )
-                    .await;
+                    end_unstarted_fire(fire, failed, stop_requested).await;
                     return;
                 }
                 Ok(Some(_)) | Err(_) => {}
@@ -318,6 +311,31 @@ async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &Fir
             },
         }
     }
+}
+
+/// End a fire whose session the spawn listener couldn't fork: as stopped
+/// when the fire had been stopped by then, else as failed with the
+/// listener's plain-language reason, the full cause going to the log.
+async fn end_unstarted_fire(fire: PulseFire, failed: SessionStartFailedEvent, stopped: bool) {
+    if stopped {
+        end_stopped_fire(fire).await;
+        return;
+    }
+    tracing::warn!(
+        pulse = %fire.pulse(),
+        fire = %fire.id(),
+        error = failed.error_details.as_deref().unwrap_or(&failed.error),
+        "a pulse fire's session couldn't start"
+    );
+    fire.finish(
+        PulseFireOutcome {
+            status: PulseFireStatus::Failed,
+            at: Utc::now(),
+            error: Some(failed.error),
+        },
+        false,
+    )
+    .await;
 }
 
 /// Publish a due pulse's spawn request, which forks its session.
@@ -511,17 +529,25 @@ mod tests {
         }
     }
 
-    /// Stand in for the spawn listener and session runtime: register the
-    /// session at `address` and announce its start, as `SessionRuntime::spawn`
-    /// does. Returns the session's stop token.
-    async fn start_session(
+    /// Stand in for the spawn listener: claim the stop token the fire
+    /// offered for `spawn`'s session, as `fork_and_spawn` does. `None` when
+    /// the listener would fork nothing.
+    fn claim_session_stop(deps: &FireDeps, spawn: &SpawnRequestEvent) -> Option<CancellationToken> {
+        let fire_id = spawn.fire_id.as_deref().expect("a fire's request names it");
+        deps.registry.fire_stops().claim(fire_id)
+    }
+
+    /// Stand in for the session runtime: register the session at `address`
+    /// with `stop` as its stop token and announce its start, as
+    /// `SessionRuntime::spawn` does.
+    async fn register_session(
         deps: &FireDeps,
         address: &SessionAddress,
         run_id: &str,
-    ) -> CancellationToken {
-        let stop = CancellationToken::new();
+        stop: CancellationToken,
+    ) {
         let info = live_session(address, run_id);
-        deps.registry.register(info.clone(), stop.clone()).unwrap();
+        deps.registry.register(info.clone(), stop).unwrap();
         deps.publisher
             .publish(
                 topics::Sessions,
@@ -533,6 +559,18 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    /// Stand in for the spawn listener and the session runtime together:
+    /// fork `spawn`'s session with the stop token claimed from its fire, and
+    /// announce its start. Returns the session's stop token.
+    async fn start_session(
+        deps: &FireDeps,
+        spawn: &SpawnRequestEvent,
+        run_id: &str,
+    ) -> CancellationToken {
+        let stop = claim_session_stop(deps, spawn).expect("the fire is still going");
+        register_session(deps, &spawn.address, run_id, stop.clone()).await;
         stop
     }
 
@@ -729,7 +767,7 @@ mod tests {
         assert_eq!(in_session.address.as_ref(), Some(&spawn.address));
         assert_eq!(in_session.run_id, None);
 
-        let _stop = start_session(&deps, &spawn.address, "run-1").await;
+        let _stop = start_session(&deps, &spawn, "run-1").await;
         let registered = next_event("the session's start", &mut events).await;
         assert_eq!(registered.change, PulseFireChange::SessionStarted);
         assert_eq!(
@@ -778,7 +816,7 @@ mod tests {
         assert_eq!(run.phase, PulseFirePhase::Session);
         assert_eq!(run.address.as_ref(), Some(&spawn.address));
 
-        start_session(&deps, &spawn.address, "run-1").await;
+        start_session(&deps, &spawn, "run-1").await;
         complete_session(&deps, &spawn.address, "run-1", AgentResultStatus::Completed).await;
         let finished = next_change_where(&mut events, |change| {
             matches!(change, PulseFireChange::Finished { .. })
@@ -929,7 +967,7 @@ mod tests {
         let fire_id = fire.id().to_string();
         let task = tokio::spawn(run_pulse_fire(pulse, None, None, deps.clone(), fire));
         let spawn = next_event("the pulse's spawn request", &mut spawns).await;
-        let session_stop = start_session(&deps, &spawn.address, "run-1").await;
+        let session_stop = start_session(&deps, &spawn, "run-1").await;
         next_change_where(&mut events, |change| {
             *change == PulseFireChange::SessionStarted
         })
@@ -947,11 +985,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stop_before_the_session_registers_stops_it_once_it_does() {
+    async fn a_stop_before_the_listener_forks_the_session_forks_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let bus = residuum_bus::spawn_broker();
         let mut spawns: Subscriber<SpawnRequestEvent> =
             bus.subscribe(topics::Background).await.unwrap();
+        let mut events = fire_events(&bus).await;
         let deps = fire_deps(&bus, dir.path());
 
         let pulse = plain_pulse();
@@ -959,11 +998,49 @@ mod tests {
         let fire_id = fire.id().to_string();
         let task = tokio::spawn(run_pulse_fire(pulse, None, None, deps.clone(), fire));
         let spawn = next_event("the pulse's spawn request", &mut spawns).await;
+        assert_eq!(spawn.fire_id.as_deref(), Some(fire_id.as_str()));
         assert!(deps.fires.stop("watch", &fire_id));
 
-        let session_stop = start_session(&deps, &spawn.address, "run-1").await;
-        wait::guarded("the session to be stopped", session_stop.cancelled()).await;
+        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        assert_eq!(outcome.status, PulseFireStatus::Stopped);
+        assert!(!session_run, "no session ran, so the event loop records it");
+        task.await.unwrap();
+        assert!(
+            claim_session_stop(&deps, &spawn).is_none(),
+            "the listener forks nothing for a fire stopped before the fork"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_after_the_fork_has_cancelled_the_session_before_it_registers() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = residuum_bus::spawn_broker();
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+        let mut events = fire_events(&bus).await;
+        let deps = fire_deps(&bus, dir.path());
+
+        let pulse = plain_pulse();
+        let fire = begin(&deps, &pulse);
+        let fire_id = fire.id().to_string();
+        let task = tokio::spawn(run_pulse_fire(pulse, None, None, deps.clone(), fire));
+        let spawn = next_event("the pulse's spawn request", &mut spawns).await;
+        let session_stop = claim_session_stop(&deps, &spawn).expect("the fire is still going");
+        assert!(deps.fires.stop("watch", &fire_id));
+        assert!(
+            session_stop.is_cancelled(),
+            "the session's stop token is cancelled before it registers"
+        );
+
+        register_session(&deps, &spawn.address, "run-1", session_stop).await;
         complete_session(&deps, &spawn.address, "run-1", AgentResultStatus::Cancelled).await;
+        let finished = next_change_where(&mut events, |change| {
+            matches!(change, PulseFireChange::Finished { .. })
+        })
+        .await;
+        let (outcome, session_run) = finished_outcome(&finished);
+        assert_eq!(outcome.status, PulseFireStatus::Stopped);
+        assert!(session_run, "the session store records the cancelled run");
         task.await.unwrap();
     }
 

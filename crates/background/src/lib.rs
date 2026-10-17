@@ -7,6 +7,7 @@
 mod crypto;
 
 pub mod conversation_router;
+pub mod fire_stops;
 mod fork_failure;
 pub(crate) mod listener;
 pub mod messaging;
