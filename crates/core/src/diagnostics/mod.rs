@@ -3,7 +3,7 @@
 //! [`Diagnostic`] is what every validator returns: a severity, a message, and
 //! where the problem is. The validators themselves live beside the file types
 //! they check, and the dispatcher that picks one by file path is
-//! `a2a::diagnostics_dispatch`.
+//! `diagnostics_dispatch` in `residuum-a2a`, a crate above this one.
 
 /// How serious a diagnostic is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -47,7 +47,7 @@ const PREFERENCE_NAMES = [
 /** A request the mock refuses with `400`. */
 class BadRequest extends Error {}
 
-/** The backend's error for a body it can't use (`parse_body` in `src/hub/http/lifecycle.rs`). */
+/** The backend's error for a body it can't use (`parse_body` in `crates/hub/src/http/lifecycle.rs`). */
 function badBody(reason: string): BadRequest {
   return new BadRequest(`the request body isn't valid for this route: ${reason}`);
 }

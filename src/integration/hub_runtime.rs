@@ -14,7 +14,7 @@ use crate::config::HubConfig;
 use crate::hub::directory::AgentDirectory as _;
 use crate::hub::host::AgentHost;
 use crate::hub::runtime::{HubExit, HubInputs, HubRuntime};
-use crate::hub::test_support::{mount_reply, write_agent};
+use crate::hub::testing::{mount_reply, write_agent};
 use crate::hub::types::{HubEvent, NoticeLevel};
 use residuum_core::testing::ports::reserve_port;
 
@@ -101,7 +101,7 @@ impl RunningHub {
             root: root.path().to_path_buf(),
             build: residuum_core::testing::HARNESS_BUILD,
             launcher: Arc::new(crate::gateway::GatewayLauncher::new()),
-            assets: crate::hub::test_support::fixture_assets,
+            assets: crate::hub::testing::fixture_assets,
             on_ready: Box::new(|dir| {
                 std::fs::write(crate::config::HubPaths::new(dir).ready_file(), "ready").unwrap();
             }),
@@ -116,9 +116,9 @@ impl RunningHub {
         )
         .await
         .unwrap();
-        let events = runtime.host.subscribe();
-        let host = Arc::clone(&runtime.host);
-        let push = Arc::clone(&runtime.services.push);
+        let events = runtime.host().subscribe();
+        let host = Arc::clone(runtime.host());
+        let push = Arc::clone(&runtime.services().push);
         Self {
             root,
             gateway_port,

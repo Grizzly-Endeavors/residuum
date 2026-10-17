@@ -375,7 +375,7 @@ mod tests {
     fn match_dispatch_module_by_display_path() {
         assert!(module_matches(
             "a2a::diagnostics",
-            "residuum::a2a::diagnostics_dispatch"
+            "residuum_a2a::diagnostics_dispatch"
         ));
     }
 

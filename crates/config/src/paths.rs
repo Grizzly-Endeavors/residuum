@@ -24,7 +24,7 @@ const RESERVED_NAMES: &[&str] = &[HUB_DIR_NAME, TEAM_DIR_NAME, "agents"];
 
 /// Longest accepted agent directory name, matching the relay's own slug
 /// validation (the directory name is also the A2A path segment) — see
-/// `src/a2a/client/siblings.rs`'s `is_valid_sibling_slug`. The name a person
+/// `crates/a2a/src/client/siblings.rs`'s `is_valid_sibling_slug`. The name a person
 /// types is checked in `agent_name`.
 pub(crate) const MAX_AGENT_NAME_LEN: usize = 24;
 

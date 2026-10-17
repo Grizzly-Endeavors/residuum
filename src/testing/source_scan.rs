@@ -552,7 +552,7 @@ const EXEC_GRANT_HELPERS: &[&str] = &[
 /// a program.
 const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
     (
-        "src/hub/update.rs",
+        "crates/hub/src/update.rs",
         2,
         "makes a directory read-only (0o555) and restores it (0o755)",
     ),
@@ -562,7 +562,7 @@ const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
         "makes an object directory unwritable (0o500) and restores it (0o700)",
     ),
     (
-        "src/hub/web/agent_keys.rs",
+        "crates/hub/src/web/agent_keys.rs",
         2,
         "makes an object directory unwritable (0o500) and restores it (0o700) in a drop guard",
     ),
@@ -635,8 +635,6 @@ const MODULE_DIRS: [ModuleDir; 2] = [
     },
 ];
 
-const PENDING_CRATES: &str = "scripts/pending-crates.txt";
-
 /// The `name` of each member package under `root`, read from its manifest.
 fn member_packages(root: &Path) -> Result<BTreeSet<String>, String> {
     let manifest_path = root.join("Cargo.toml");
@@ -660,48 +658,6 @@ fn member_packages(root: &Path) -> Result<BTreeSet<String>, String> {
         packages.insert(name.to_string());
     }
     Ok(packages)
-}
-
-/// The `<path> <package>` lines of `scripts/pending-crates.txt`. Each path must
-/// exist: a directory when it ends in `/`, a file otherwise.
-fn pending_crates(root: &Path, problems: &mut Vec<String>) -> Vec<(String, String)> {
-    let path = root.join(PENDING_CRATES);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) => {
-            problems.push(format!("failed to read {PENDING_CRATES}: {err}"));
-            return Vec::new();
-        }
-    };
-    let mut entries = Vec::new();
-    for (idx, line) in text.lines().enumerate() {
-        let number = idx + 1;
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        let &[rel, package] = fields.as_slice() else {
-            problems.push(format!(
-                "{PENDING_CRATES}:{number} must be `<path> <package>`"
-            ));
-            continue;
-        };
-        let target = root.join(rel.trim_end_matches('/'));
-        let exists = if rel.ends_with('/') {
-            target.is_dir()
-        } else {
-            target.is_file()
-        };
-        if !exists {
-            problems.push(format!(
-                "{PENDING_CRATES}:{number} names {rel}, which is not an existing {}",
-                if rel.ends_with('/') {
-                    "directory"
-                } else {
-                    "file"
-                }
-            ));
-        }
-        entries.push((rel.to_string(), package.to_string()));
-    }
-    entries
 }
 
 /// The leading `//!` doc lines of a file that concern its covers line: the names
@@ -833,18 +789,15 @@ fn top_level_modules(
     modules
 }
 
-/// Problems with the covers lines, the `mod` lines that declare the modules
-/// under `MODULE_DIRS`, and `scripts/pending-crates.txt`. An empty result is a
-/// pass. A missing directory fails unless it is optional.
+/// Problems with the covers lines and the `mod` lines that declare the modules
+/// under `MODULE_DIRS`. An empty result is a pass. A missing directory fails
+/// unless it is optional.
 fn covers_problems(root: &Path) -> Vec<String> {
     let mut problems = Vec::new();
     let mut valid_packages = BTreeSet::from(["residuum".to_string()]);
     match member_packages(root) {
         Ok(packages) => valid_packages.extend(packages),
         Err(err) => problems.push(err),
-    }
-    for (_, package) in pending_crates(root, &mut problems) {
-        valid_packages.insert(package);
     }
     let mod_decl = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;").unwrap();
     for module_dir in &MODULE_DIRS {
@@ -939,7 +892,7 @@ fn check_covers_lines(
     for name in names {
         if !valid_packages.contains(name) {
             problems.push(format!(
-                "{rel} names {name}, which is neither residuum, a member package, nor a package in {PENDING_CRATES}"
+                "{rel} names {name}, which is neither residuum nor a member package"
             ));
         } else if !seen.insert(name) {
             problems.push(format!("{rel} names {name} more than once"));
@@ -989,7 +942,7 @@ mod tests {
                 "tokio::time::sleep(std::time::Duration::from_millis(500)).await;",
             ),
             (
-                "src/hub/host.rs",
+                "crates/hub/src/host.rs",
                 "pub fn publish(&self, event: HubEvent) {",
             ),
         ];
@@ -1002,11 +955,11 @@ mod tests {
         let test = [
             ("crates/agent/src/turn.rs", "use tokio::sync::mpsc;"),
             (
-                "src/hub/host.rs",
-                "pub(crate) fn reloads_finished(&self, name: &str) -> Option<u64> {",
+                "crates/hub/src/host.rs",
+                "pub fn reloads_finished(&self, name: &str) -> Option<u64> {",
             ),
             (
-                "src/hub/host.rs",
+                "crates/hub/src/host.rs",
                 ".map(|running| *running.control.reload_done.borrow())",
             ),
             // Below fake-tool scripts whose raw strings hold a column-0 `}`.
@@ -1024,7 +977,7 @@ mod tests {
         for path in [
             "src/integration/hub_host/mod.rs",
             "src/integration/hub_host/agent_watch.rs",
-            "src/hub/test_support.rs",
+            "crates/hub/src/testing.rs",
             "tests/it/smoke.rs",
         ] {
             assert!(
@@ -1424,14 +1377,13 @@ mod tests {
 
     /// Each `tests/it` and `src/integration` module carries one canonical covers
     /// line naming real packages, no file inside a module directory carries one,
-    /// the `mod` lines match the files, and every path in
-    /// `scripts/pending-crates.txt` exists.
+    /// and the `mod` lines match the files.
     #[test]
     fn it_covers() {
         let problems = covers_problems(&crate_root());
         assert!(
             problems.is_empty(),
-            "covers and pending-crates problems:\n{}",
+            "covers problems:\n{}",
             problems.join("\n")
         );
     }

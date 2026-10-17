@@ -2,7 +2,7 @@
 //
 // Shapes for the hub API and `/api/hub/ws`. The backend exports the agent
 // shapes, the list envelopes and every hub WebSocket frame through ts-rs
-// (`src/hub/types.rs`); they are re-exported from `generated/`. Only the
+// (`crates/hub/src/types.rs`); they are re-exported from `generated/`. Only the
 // status and stop-all bodies, which the backend builds inline, are
 // hand-written here, and `HubServerMessage` joins the generated frame types.
 

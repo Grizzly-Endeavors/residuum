@@ -9,7 +9,7 @@ export const HUB_STATE_NAME = "hub";
 /** The boot id the hub announces in deterministic mode, where a random one would differ between runs. */
 export const MOCK_DETERMINISTIC_BOOT_ID = "00000000-0000-4000-8000-000000000000";
 
-/** The detectable capabilities the mock implements (a subset of `src/hub/features.rs`). */
+/** The detectable capabilities the mock implements (a subset of `crates/hub/src/features.rs`). */
 export const MOCK_FEATURES: readonly string[] = [
   "model-complete",
   "artifact-sessions",

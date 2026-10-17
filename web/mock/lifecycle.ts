@@ -22,7 +22,7 @@ const STARTUP_MS = 400;
 /** How long a running agent takes to stop, which it spends listed as stopping. */
 const STOP_MS = 250;
 
-/** The backend's error for a body it can't use (`parse_body` in `src/hub/http/lifecycle.rs`). */
+/** The backend's error for a body it can't use (`parse_body` in `crates/hub/src/http/lifecycle.rs`). */
 function badBodyMessage(err: unknown): string {
   return `the request body isn't valid for this route: ${err instanceof Error ? err.message : String(err)}`;
 }

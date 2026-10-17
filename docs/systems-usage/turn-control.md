@@ -35,7 +35,7 @@ The user sees which tool was interrupted and how many calls were skipped through
 - **Unix**: the shell is spawned in its own process group (`pid == pgid`), and the group is sent `SIGKILL` via `killpg` — reaching the shell and everything it forked, never residuum's own process group.
 - **Windows**: `taskkill /T /F /PID <pid>` is run against the shell's pid — `/T` walks the OS's own parent/child bookkeeping to kill the whole tree, since Windows has no direct equivalent of a process group here.
 
-Either way, whatever stdout/stderr the command had already produced is kept and returned with the timeout or cancellation notice, instead of being discarded — the output pipes are drained on their own tasks the whole time the command runs, so a kill only stops new output, not what's already captured. See [`exec`](../../src/tools/TOOLS.md) for the exact message shapes.
+Either way, whatever stdout/stderr the command had already produced is kept and returned with the timeout or cancellation notice, instead of being discarded — the output pipes are drained on their own tasks the whole time the command runs, so a kill only stops new output, not what's already captured. See [`exec`](../../crates/tools/src/TOOLS.md) for the exact message shapes.
 
 This applies per tool call, not per command in general: a planned feature (tracked as a `gh` issue) will let `exec` start a command that outlives the tool call and hands it off elsewhere (e.g. a background session). That command is not killed by a turn stop, because the kill is tied to the tool call's own lifetime, not to the process it started.
 

@@ -1,5 +1,0 @@
-src/a2a/ residuum-a2a
-src/tools/ residuum-tools
-src/hub/ residuum-hub
-src/gateway/ residuum-gateway
-src/gateway/startup/tools.rs residuum-tools

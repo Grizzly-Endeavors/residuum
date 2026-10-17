@@ -204,7 +204,7 @@ export class FeedStore {
   usageProblem = $state<string | null>(null);
   /**
    * Whether the background post-turn observer/reflector cycle is
-   * currently running (see `crate::gateway::post_turn` on the server) —
+   * currently running (see the gateway's `post_turn` module on the server) —
    * drives a quiet "updating memory…" indicator. Never blocks anything;
    * this work runs off the event loop, so a turn can start while it's
    * still in flight.

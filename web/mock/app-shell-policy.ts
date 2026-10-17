@@ -5,7 +5,7 @@ import { WEB_ROOT } from "./assets";
 
 /**
  * The Content-Security-Policy the hub sends with every HTML document it serves
- * (`src/hub/web/assets.rs`), read from the one file both use, so the app
+ * (`crates/hub/src/web/assets.rs`), read from the one file both use, so the app
  * runs under the same policy against the mock as against the hub.
  */
 export const APP_SHELL_CSP = readFileSync(resolve(WEB_ROOT, "app-shell-csp.txt"), "utf-8").trim();

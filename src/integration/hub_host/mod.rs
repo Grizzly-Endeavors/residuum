@@ -33,7 +33,7 @@ use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::services::HubServices;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
-use crate::hub::test_support::{mount_reply, write_agent};
+use crate::hub::testing::{mount_reply, write_agent};
 use crate::hub::types::{AgentActivity, AgentPatch, HubEvent, RestoreAgentRequest};
 use crate::inference::testing::model::GatedModel;
 use crate::workspace::watch::WatchHealth;
@@ -151,7 +151,7 @@ impl Fixture {
             &overview,
             reload_tx,
             None,
-            crate::hub::test_support::fixture_assets,
+            crate::hub::testing::fixture_assets,
         )
         .unwrap();
         crate::util::spawn_in_span(async move {
@@ -955,7 +955,7 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
     let reloads_before = {
         let slot = hub.host.slot("scout").unwrap();
         let guard = slot.lock();
-        *guard.running.as_ref().unwrap().control.reload_done.borrow()
+        *guard.running().unwrap().control().reload_done.borrow()
     };
 
     let summary = hub
@@ -985,7 +985,7 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
     let reloads_after = {
         let slot = hub.host.slot("scout").unwrap();
         let guard = slot.lock();
-        *guard.running.as_ref().unwrap().control.reload_done.borrow()
+        *guard.running().unwrap().control().reload_done.borrow()
     };
     assert!(reloads_after > reloads_before, "the agent reloaded");
     assert_eq!(hub.state_of("scout"), AgentState::Running);
@@ -1166,9 +1166,8 @@ async fn the_listing_and_snapshot_show_an_agent_as_stopping_from_the_stop_reques
         .slot("scout")
         .unwrap()
         .lock()
-        .running
-        .as_ref()
-        .map(|running| Arc::clone(&running.stop_requested))
+        .running()
+        .map(|running| Arc::clone(running.stop_requested()))
         .unwrap();
     stop_requested.store(true, Ordering::SeqCst);
 
@@ -1350,12 +1349,15 @@ where
 fn is_hub_level(event: &CapturedEvent) -> bool {
     // These hub modules run on an agent's behalf, so their lines must carry its `agent` field.
     const AGENT_CHECKED_HUB_MODULES: &[&str] = &[
-        "residuum::hub::config_watcher",
-        "residuum::hub::last_known_good",
-        "residuum::hub::features",
+        "residuum_hub::web",
+        "residuum_hub::file_server",
+        "residuum_hub::config_watcher",
+        "residuum_hub::last_known_good",
+        "residuum_hub::launch",
+        "residuum_hub::features",
     ];
     let hub_prefixes = [
-        "residuum::hub",
+        "residuum_hub",
         "residuum_background::team",
         "residuum_net::tunnel",
         "residuum::daemon",
@@ -2023,7 +2025,7 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
     let model_url = hub.mock("bob").uri();
     for round in 0..12 {
         if round > 0 {
-            crate::hub::test_support::write_agent(hub.root.path(), "bob", &model_url);
+            crate::hub::testing::write_agent(hub.root.path(), "bob", &model_url);
             hub.host.adopt("bob");
         }
         // Odd rounds start with a broken model config, so the racing starts
@@ -2075,7 +2077,7 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
             "round {round}: the deleted agent still has a slot"
         );
         assert!(
-            slot.lock().running.is_none(),
+            slot.lock().running().is_none(),
             "round {round}: a runtime outlived the deleted agent"
         );
     }
@@ -2123,7 +2125,7 @@ async fn a_corrupt_or_truncated_config_keeps_the_last_loaded_visibility() {
 #[tokio::test]
 async fn an_agent_whose_config_never_loaded_is_private() {
     let hub = Fixture::new(&["atlas"], "").await;
-    crate::hub::test_support::write_agent(hub.root.path(), "ghost", "http://127.0.0.1:1");
+    crate::hub::testing::write_agent(hub.root.path(), "ghost", "http://127.0.0.1:1");
     std::fs::write(config_path(&hub, "ghost"), "[a2a\nvisibility = ").unwrap();
     hub.host.adopt("ghost");
 
@@ -2851,10 +2853,8 @@ async fn relay_list_where(
 #[tokio::test]
 async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let relay_agents = crate::hub::relay_agents::RelayAgents::spawn(
-        Arc::clone(&hub.host) as Arc<dyn AgentDirectory>,
-        true,
-    );
+    let relay_agents =
+        crate::hub::RelayAgents::spawn(Arc::clone(&hub.host) as Arc<dyn AgentDirectory>, true);
     let mut rx = relay_agents.subscribe();
     let enabled = |list: &[crate::tunnel::AgentInfo], name: &str| {
         list.iter().find(|a| a.name == name).map(|a| a.a2a_enabled)
@@ -2905,10 +2905,8 @@ async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
 #[tokio::test]
 async fn the_relay_agent_list_stops_announcing_agents_when_the_hub_shuts_down() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let relay_agents = crate::hub::relay_agents::RelayAgents::spawn(
-        Arc::clone(&hub.host) as Arc<dyn AgentDirectory>,
-        true,
-    );
+    let relay_agents =
+        crate::hub::RelayAgents::spawn(Arc::clone(&hub.host) as Arc<dyn AgentDirectory>, true);
     let mut rx = relay_agents.subscribe();
     hub.host.start_autostart().await;
     relay_list_where(&mut rx, |list| {

@@ -553,11 +553,9 @@ module_covers() { # tests/it file -> package names
 
 # The package a changed path belongs to, or nothing when no Rust check reads the
 # path, so docs, the web app and the workflows count for no package. crates/<dir>/
-# is residuum-<dir>. Any other Rust path takes the package of the pending-crates.txt
-# line that names it (a file line exactly, a directory line, ending in /, by prefix),
-# the longest such line winning, or residuum when none does.
+# is residuum-<dir>. Any other Rust path is in the root package, residuum.
 package_of() { # path -> package
-    local path="$1" best_len=0 best_pkg=residuum pattern pkg
+    local path="$1"
     if ! grep -qE "$RUST_PATHS_RE" <<<"$path"; then
         return 0
     fi
@@ -565,19 +563,7 @@ package_of() { # path -> package
         echo "residuum-${BASH_REMATCH[1]}"
         return 0
     fi
-    while read -r pattern pkg; do
-        [[ -n "$pattern" ]] || continue
-        if [[ "$pattern" == */ ]]; then
-            [[ "$path" == "$pattern"* ]] || continue
-        else
-            [[ "$path" == "$pattern" ]] || continue
-        fi
-        if (( ${#pattern} > best_len )); then
-            best_len=${#pattern}
-            best_pkg="$pkg"
-        fi
-    done <<<"$pending_lines"
-    echo "$best_pkg"
+    echo residuum
 }
 
 print_messages() { # messages indent
@@ -638,10 +624,8 @@ remember_ran_jobs() { # jobs-file workflow
     done < <(jq -r 'select(.conclusion != "skipped") | .name' "$1")
 }
 
-# The packages the change touches, for the covers check. The pending-crates map is
-# read at the commit under test; a commit without one maps every root path to residuum.
+# The packages the change touches, for the covers check.
 declare -A changed_pkgs=()
-pending_lines="$(git show "$sha:scripts/pending-crates.txt" 2>/dev/null || true)"
 for file in "${!changed[@]}"; do
     changed_pkg="$(package_of "$file")"
     if [[ -n "$changed_pkg" ]]; then

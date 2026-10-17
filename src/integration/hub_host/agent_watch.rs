@@ -62,10 +62,9 @@ pub(super) fn agent_bus(hub: &Fixture, name: &str) -> crate::bus::BusHandle {
         .slot(name)
         .unwrap()
         .lock()
-        .running
-        .as_ref()
+        .running()
         .expect("the agent is running")
-        .control
+        .control()
         .bus
         .clone()
 }
