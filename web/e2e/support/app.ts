@@ -69,8 +69,8 @@ const LAZY_LOADING = /^(Opening|Loading settings|Loading the file)$/;
 /** How many failed requests a wait's failure names; the rest are counted. */
 const FAILED_REQUESTS_LISTED = 15;
 
-/** The requests each page has failed since its document last changed, in the order they failed. */
-const failedRequests = new WeakMap<Page, { total: number; listed: string[] }>();
+/** The requests each page has failed since its current document started loading, in the order they failed. */
+const failedRequests = new WeakMap<Page, string[]>();
 
 /**
  * Record the requests `page` fails, so a wait that times out can name them. A
@@ -78,34 +78,35 @@ const failedRequests = new WeakMap<Page, { total: number; listed: string[] }>();
  * in-flight loads with `ERR_NETWORK_CHANGED`, and the app then never renders:
  * the failure names the cause instead of looking like a slow load. `intended`
  * marks the requests the harness aborts on purpose, which are left out.
+ *
+ * The record starts again only when a new main-frame document starts loading.
+ * In-app navigation (the router's `pushState` and `replaceState`) keeps it, so
+ * the failures of the load a wait is still watching are not dropped.
  */
 export function recordFailedRequests(page: Page, intended: (url: URL) => boolean): void {
-  const record = { total: 0, listed: [] as string[] };
-  failedRequests.set(page, record);
-  page.on("framenavigated", (frame) => {
-    if (frame !== page.mainFrame()) return;
-    record.total = 0;
-    record.listed = [];
+  const failed: string[] = [];
+  failedRequests.set(page, failed);
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+    failed.length = 0;
   });
   page.on("requestfailed", (request) => {
     const url = new URL(request.url());
     if (intended(url)) return;
-    record.total += 1;
-    if (record.listed.length < FAILED_REQUESTS_LISTED) {
-      const reason = request.failure()?.errorText ?? "failed";
-      record.listed.push(`${request.method()} ${url.pathname} ${reason}`);
-    }
+    const reason = request.failure()?.errorText ?? "failed";
+    failed.push(`${request.method()} ${url.pathname} ${reason}`);
   });
 }
 
 /** Add the page's failed requests to a failed wait's error, so the message says what the page could not load. */
 function explainWithFailedRequests(page: Page, error: unknown): unknown {
-  const record = failedRequests.get(page);
-  if (!(error instanceof Error) || record === undefined || record.total === 0) return error;
-  const rest = record.total - record.listed.length;
+  const failed = failedRequests.get(page);
+  if (!(error instanceof Error) || failed === undefined || failed.length === 0) return error;
+  const listed = failed.slice(0, FAILED_REQUESTS_LISTED);
+  const rest = failed.length - listed.length;
   const lines = [
-    `${record.total} request${record.total === 1 ? "" : "s"} the page made failed:`,
-    ...record.listed.map((line) => `  ${line}`),
+    `${failed.length} request${failed.length === 1 ? "" : "s"} the page made failed:`,
+    ...listed.map((line) => `  ${line}`),
   ];
   if (rest > 0) lines.push(`  ...and ${rest} more`);
   error.message = [error.message, ...lines].join("\n");
@@ -186,8 +187,8 @@ export async function settleAnimations(page: Page): Promise<void> {
 export async function waitForApp(page: Page, options: AppReadyOptions = {}): Promise<void> {
   try {
     await appRendered(page, options.hub ?? (hubReach.lost ? "lost" : "connected"));
+    await fontsLoaded(page);
   } catch (error) {
     throw explainWithFailedRequests(page, error);
   }
-  await fontsLoaded(page);
 }
