@@ -5,10 +5,10 @@
 //! implements [`SessionToolFactory`] (the gateway hands background
 //! `tools::SessionTools`).
 
-use crate::agent::{HopCounter, ToolRegistry};
-use crate::bus::session::SessionCategory;
-use crate::bus::{ConversationTarget, EventTrigger, SessionAddress};
-use crate::skills::SharedSkillState;
+use residuum_agent::{HopCounter, ToolRegistry};
+use residuum_bus::session::SessionCategory;
+use residuum_bus::{ConversationTarget, EventTrigger, SessionAddress};
+use residuum_skills::SharedSkillState;
 
 /// What one session run's tools are scoped to; everything else they need is
 /// the factory's.

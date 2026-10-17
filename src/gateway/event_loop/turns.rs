@@ -2344,7 +2344,7 @@ mod tests {
             Arc::new(crate::background::registry::SessionRegistry::new()),
             publisher.clone(),
             store,
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         let conversation_router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
             &messenger,
@@ -2446,7 +2446,7 @@ mod tests {
             Arc::new(crate::background::registry::SessionRegistry::new()),
             publisher.clone(),
             store,
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         let conversation_router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
             &messenger,
@@ -2550,7 +2550,7 @@ mod tests {
             Arc::clone(&registry),
             publisher.clone(),
             store,
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         let conversation_router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
             &messenger,
@@ -2682,7 +2682,7 @@ mod tests {
             Arc::new(crate::background::registry::SessionRegistry::new()),
             handle.publisher(),
             store,
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ))
     }
 
@@ -3020,7 +3020,7 @@ mod tests {
                 Arc::new(crate::background::registry::SessionRegistry::new()),
                 publisher.clone(),
                 store,
-                crate::background::HopLimits { soft: 8, hard: 32 },
+                crate::agent::hop::HopLimits { soft: 8, hard: 32 },
             ));
             let router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
                 &messenger,
@@ -3348,7 +3348,7 @@ mod tests {
             Arc::new(crate::background::registry::SessionRegistry::new()),
             publisher.clone(),
             store,
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         let conversation_router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
             &messenger,

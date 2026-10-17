@@ -4,7 +4,7 @@
 //! registry's public discovery surface, and pulse execution's spawn-request
 //! structure. Session lifecycle mechanics (fork → running → idle →
 //! completed, transcript persistence) are covered where they're exercised —
-//! `src/background/runtime.rs` and `src/background/store.rs` — since driving
+//! `crates/background/src/runtime.rs` and `crates/background/src/store.rs` — since driving
 //! them from here would mean re-exposing crate-internal construction just
 //! for the test.
 //!

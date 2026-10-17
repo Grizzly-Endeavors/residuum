@@ -13,7 +13,7 @@ use axum::routing::post;
 use serde::{Deserialize, Serialize};
 
 use super::artifact_identity::artifact_identity;
-use crate::background::spawn_context::SpawnContext;
+use crate::background::SpawnContext;
 use crate::config::RetryConfig;
 use crate::config::ThinkingConfig;
 use crate::config::{BackgroundModelTier, BackgroundModelsConfig, ProviderSpec, RoleOverrides};

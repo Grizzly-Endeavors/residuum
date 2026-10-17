@@ -16,16 +16,16 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::bus::interrupt::Interrupt;
-use crate::bus::session::{MAIN_ADDRESS, SessionInfo, SessionState, slugify};
-use crate::bus::{ConversationTarget, EventTrigger, SessionAddress, SkillName};
-use crate::config::ModelSelector;
+use residuum_bus::interrupt::Interrupt;
+use residuum_bus::session::{MAIN_ADDRESS, SessionInfo, SessionState, slugify};
+use residuum_bus::{ConversationTarget, EventTrigger, SessionAddress, SkillName};
+use residuum_config::ModelSelector;
 
 /// Capacity of a session's interrupt channel: agent messages delivered to it
 /// (mid-turn, or to wake it while idle). Sized like the main agent's own
 /// interrupt channel — deliveries are infrequent relative to this, so the
 /// buffer exists to smooth bursts, not as a throughput bound.
-pub(crate) const INTERRUPT_CHANNEL_CAPACITY: usize = 32;
+pub const INTERRUPT_CHANNEL_CAPACITY: usize = 32;
 
 /// What happened when [`SessionRegistry::deliver`] tried to hand a message
 /// to a session's interrupt channel.
@@ -72,7 +72,7 @@ impl std::error::Error for RegisterError {}
 /// its in-flight turn or idle wait, and the sender half of its interrupt
 /// channel — how a message addressed to this session actually reaches it
 /// (an interrupt at its next tool-call boundary while running, or the input
-/// for a new turn while idle; see `crate::background::messaging`).
+/// for a new turn while idle; see `crate::messaging`).
 struct SessionEntry {
     info: SessionInfo,
     stop_token: CancellationToken,
@@ -223,7 +223,7 @@ impl SessionRegistry {
     /// See [`DeliverOutcome`] for what each outcome means to the caller.
     /// A `completing` run is deliberately never handed a message: its
     /// channel is about to be drained and dropped by its own teardown (see
-    /// `crate::background::runtime::finish_run`), so anything accepted here
+    /// `crate::runtime::finish_run`), so anything accepted here
     /// after that point could be silently lost.
     pub fn deliver(&self, address: &SessionAddress, message: Interrupt) -> DeliverOutcome {
         let guard = self.lock();
@@ -354,13 +354,13 @@ impl SessionRegistry {
     ///
     /// Returns the updated totals, or `None` if the address is unknown —
     /// the session may already have completed and left the registry,
-    /// which the caller (the turn's [`crate::agent::usage::UsageSink`])
+    /// which the caller (the turn's [`residuum_agent::usage::UsageSink`])
     /// treats the same as a provider reporting no usage.
     pub fn accumulate_usage(
         &self,
         address: &SessionAddress,
-        usage: Option<crate::inference::Usage>,
-    ) -> Option<crate::bus::usage::SessionUsageTotals> {
+        usage: Option<residuum_inference::Usage>,
+    ) -> Option<residuum_bus::usage::SessionUsageTotals> {
         let mut guard = self.lock();
         let entry = guard.get_mut(address)?;
         entry.info.usage.accumulate(usage);
@@ -371,13 +371,13 @@ impl SessionRegistry {
     ///
     /// Returns the updated totals, or `None` if the address is unknown —
     /// the session may already have completed and left the registry, which
-    /// the caller (the turn's [`crate::agent::usage::UsageSink`]) treats the
+    /// the caller (the turn's [`residuum_agent::usage::UsageSink`]) treats the
     /// same as a turn with no sink to record into.
     pub fn accumulate_tool_calls(
         &self,
         address: &SessionAddress,
         n: u32,
-    ) -> Option<crate::bus::usage::SessionUsageTotals> {
+    ) -> Option<residuum_bus::usage::SessionUsageTotals> {
         let mut guard = self.lock();
         let entry = guard.get_mut(address)?;
         entry.info.usage.record_tool_calls(n);
@@ -503,10 +503,10 @@ impl SessionRegistry {
 
     /// Snapshot formatted for the bug-report `active_subagents` field.
     #[must_use]
-    pub fn subagent_snapshot(&self) -> Vec<crate::tracing_service::Subagent> {
+    pub fn subagent_snapshot(&self) -> Vec<residuum_tracing_service::Subagent> {
         self.list_live()
             .into_iter()
-            .map(|info| crate::tracing_service::Subagent {
+            .map(|info| residuum_tracing_service::Subagent {
                 name: info.address.to_string(),
                 status: format!("{} ({})", info.state, info.source_label),
             })
@@ -520,9 +520,9 @@ impl SessionRegistry {
     }
 }
 
-/// A session's own [`crate::agent::usage::UsageSink`]: accumulates onto its
+/// A session's own [`residuum_agent::usage::UsageSink`]: accumulates onto its
 /// registry entry, which mirrors into the run's store record at
-/// completion (see [`crate::background::store::RunRecord::starting`]) so
+/// completion (see [`crate::store::RunRecord::starting`]) so
 /// a finished run's totals aren't lost.
 pub struct SessionUsageSink<'a> {
     /// The registry the session's entry lives in.
@@ -532,17 +532,17 @@ pub struct SessionUsageSink<'a> {
 }
 
 #[async_trait::async_trait]
-impl crate::agent::usage::UsageSink for SessionUsageSink<'_> {
+impl residuum_agent::usage::UsageSink for SessionUsageSink<'_> {
     async fn accumulate(
         &self,
-        usage: Option<crate::inference::Usage>,
-    ) -> crate::bus::usage::SessionUsageTotals {
+        usage: Option<residuum_inference::Usage>,
+    ) -> residuum_bus::usage::SessionUsageTotals {
         self.registry
             .accumulate_usage(&self.address, usage)
             .unwrap_or_default()
     }
 
-    async fn record_tool_calls(&self, n: u32) -> crate::bus::usage::SessionUsageTotals {
+    async fn record_tool_calls(&self, n: u32) -> residuum_bus::usage::SessionUsageTotals {
         self.registry
             .accumulate_tool_calls(&self.address, n)
             .unwrap_or_default()
@@ -594,7 +594,7 @@ async fn persist_resume_points(
     points: &HashMap<SessionAddress, ResumePoint>,
 ) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(points).context("failed to serialize resume points")?;
-    crate::util::fs::atomic_write(path, &json).await
+    residuum_core::util::fs::atomic_write(path, &json).await
 }
 
 /// Why [`stop_named_session`] refused to stop a session. The `Display` text
@@ -676,7 +676,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::session::SessionCategory;
+    use residuum_bus::session::SessionCategory;
 
     fn sample_info(address: &str) -> SessionInfo {
         SessionInfo {
@@ -694,7 +694,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -820,8 +820,8 @@ mod tests {
         assert!(registry.get(&SessionAddress::from("nope")).is_none());
     }
 
-    fn usage(input: u32, output: u32) -> crate::inference::Usage {
-        crate::inference::Usage {
+    fn usage(input: u32, output: u32) -> residuum_inference::Usage {
+        residuum_inference::Usage {
             input_tokens: input,
             output_tokens: output,
             cache_creation_tokens: None,
@@ -919,7 +919,8 @@ mod tests {
             registry: &registry,
             address: info.address.clone(),
         };
-        let totals = crate::agent::usage::UsageSink::accumulate(&sink, Some(usage(200, 40))).await;
+        let totals =
+            residuum_agent::usage::UsageSink::accumulate(&sink, Some(usage(200, 40))).await;
         assert_eq!(totals.input_tokens, 200);
         assert_eq!(registry.get(&info.address).unwrap().usage.output_tokens, 40);
     }
@@ -936,7 +937,7 @@ mod tests {
             registry: &registry,
             address: info.address.clone(),
         };
-        let totals = crate::agent::usage::UsageSink::record_tool_calls(&sink, 4).await;
+        let totals = residuum_agent::usage::UsageSink::record_tool_calls(&sink, 4).await;
         assert_eq!(totals.tool_calls, 4);
         assert_eq!(registry.get(&info.address).unwrap().usage.tool_calls, 4);
     }
@@ -948,10 +949,10 @@ mod tests {
             registry: &registry,
             address: SessionAddress::from("gone"),
         };
-        let totals = crate::agent::usage::UsageSink::accumulate(&sink, Some(usage(10, 5))).await;
+        let totals = residuum_agent::usage::UsageSink::accumulate(&sink, Some(usage(10, 5))).await;
         assert_eq!(
             totals,
-            crate::bus::usage::SessionUsageTotals::default(),
+            residuum_bus::usage::SessionUsageTotals::default(),
             "a session no longer in the registry has nowhere to accumulate; the sink degrades to a no-op"
         );
     }
@@ -1144,7 +1145,7 @@ mod tests {
     }
 
     fn sample_agent_message() -> Interrupt {
-        Interrupt::AgentMessage(crate::bus::AgentMessageEvent {
+        Interrupt::AgentMessage(residuum_bus::AgentMessageEvent {
             from: SessionAddress::from(MAIN_ADDRESS),
             from_category: "main".to_string(),
             content: "hello".to_string(),
@@ -1224,7 +1225,7 @@ mod tests {
 
         let waiter_registry = std::sync::Arc::clone(&registry);
         let address = info.address.clone();
-        let waiter = crate::util::spawn_in_span(async move {
+        let waiter = residuum_core::util::spawn_in_span(async move {
             waiter_registry.wait_until_clear(&address).await;
         });
 
@@ -1256,7 +1257,7 @@ mod tests {
             .unwrap();
 
         let waiter_registry = std::sync::Arc::clone(&registry);
-        let waiter = crate::util::spawn_in_span(async move {
+        let waiter = residuum_core::util::spawn_in_span(async move {
             waiter_registry.wait_until_empty().await;
         });
 
@@ -1412,7 +1413,7 @@ mod tests {
 
         let recordings = (0..32).map(|i| {
             let registry = std::sync::Arc::clone(&registry);
-            crate::util::spawn_in_span(async move {
+            residuum_core::util::spawn_in_span(async move {
                 let address = SessionAddress::from(format!("external-concurrent-{i}"));
                 registry
                     .record_resume_point(&address, sample_resume_point(&format!("run-{i}")))

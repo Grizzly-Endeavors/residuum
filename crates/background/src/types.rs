@@ -2,16 +2,16 @@
 
 use std::sync::Arc;
 
-use crate::agent::HopCounter;
-use crate::bus::MessageEvent;
-use crate::bus::SessionAddress;
-use crate::bus::session::SessionCategory;
-use crate::config::ModelSelector;
-use crate::config::WorkspaceLayout;
-use crate::inference::{ImageData, MessageSender};
-use crate::memory::merge_writer::MemoryMergeWriter;
-use crate::memory::observer::Observer;
-use crate::workspace::identity::IdentityFiles;
+use residuum_agent::HopCounter;
+use residuum_bus::MessageEvent;
+use residuum_bus::SessionAddress;
+use residuum_bus::session::SessionCategory;
+use residuum_config::ModelSelector;
+use residuum_config::WorkspaceLayout;
+use residuum_inference::{ImageData, MessageSender};
+use residuum_memory::merge_writer::MemoryMergeWriter;
+use residuum_memory::observer::Observer;
+use residuum_workspace::identity::IdentityFiles;
 
 use super::session_tools::SessionToolFactory;
 
@@ -41,7 +41,7 @@ pub struct SubAgentConfig {
     /// The original inbound message that triggered this run, for a
     /// conversation-triggered spawn — carried so that if this run loses the
     /// race to register its own address (see
-    /// `crate::background::listener::race_guard_interrupt`), its content can
+    /// `crate::listener::race_guard_interrupt`), its content can
     /// still be delivered into the winning run as `Interrupt::UserMessage`
     /// with correct sender attribution, instead of a plain agent message
     /// misattributed to `main`. `None` for every other trigger.
@@ -52,8 +52,8 @@ pub struct SubAgentConfig {
     /// of their own.
     pub images: Vec<ImageData>,
     /// Main's saved conversation, for a fork of it. See
-    /// [`crate::bus::SpawnRequestEvent::carried_history`].
-    pub carried_history: Vec<crate::inference::Message>,
+    /// [`residuum_bus::SpawnRequestEvent::carried_history`].
+    pub carried_history: Vec<residuum_inference::Message>,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display
@@ -71,13 +71,13 @@ pub struct SubAgentBuildConfig {
     /// Identity files for the system prompt.
     pub identity: IdentityFiles,
     /// LLM completion options for the session turn.
-    pub options: crate::inference::CompletionOptions,
+    pub options: residuum_inference::CompletionOptions,
     /// Maximum tool-call iterations for this session's turns before a turn
     /// stops itself gracefully. `None` means unlimited.
     pub max_tool_iterations: Option<usize>,
     /// Guards against a model repeating the exact same tool call in this
     /// session's turns.
-    pub repeat_call_guard: crate::config::RepeatCallGuardConfig,
+    pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
     /// Skill to activate for this session, if any. Its body becomes the
     /// session's role instructions through the normal active-skill path.
     pub skill: Option<String>,
@@ -105,10 +105,10 @@ pub struct SubAgentBuildConfig {
     /// This session's category, for its tools' scope.
     pub session_category: SessionCategory,
     /// What triggered this session, for its tools' scope.
-    pub trigger: crate::bus::EventTrigger,
+    pub trigger: residuum_bus::EventTrigger,
     /// The conversation this session replies to, for a conversation-triggered
     /// session, for its tools' scope. `None` for every other trigger.
-    pub conversation_target: Option<crate::bus::ConversationTarget>,
+    pub conversation_target: Option<residuum_bus::ConversationTarget>,
     /// This session's current-turn hop counter, seeded from the input hop
     /// count that started its first turn (see [`SubAgentConfig::hop_count`]),
     /// and shared with the session's `message_agent`/`subagent_spawn` tools

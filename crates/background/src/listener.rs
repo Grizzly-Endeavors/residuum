@@ -12,14 +12,14 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use crate::background::registry::{DeliverOutcome, SessionRegistry};
-use crate::background::runtime::SessionSpawnRequest;
-use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
-use crate::background::types::SubAgentConfig;
-use crate::bus::MessageEvent;
-use crate::bus::interrupt::Interrupt;
-use crate::bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
-use crate::bus::{
+use crate::registry::{DeliverOutcome, SessionRegistry};
+use crate::runtime::SessionSpawnRequest;
+use crate::spawn_context::{SpawnContext, build_spawn_resources};
+use crate::types::SubAgentConfig;
+use residuum_bus::MessageEvent;
+use residuum_bus::interrupt::Interrupt;
+use residuum_bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
+use residuum_bus::{
     AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
     SessionAddress, SpawnRequestEvent, Subscriber, topics,
 };
@@ -29,7 +29,7 @@ use crate::bus::{
 /// Returns a `JoinHandle` for shutdown coordination. The task runs until the
 /// bus shuts down or the subscriber closes.
 #[tracing::instrument(skip_all)]
-pub(crate) async fn spawn_listener(
+pub async fn spawn_listener(
     ctx: Arc<SpawnContext>,
     bus_handle: &BusHandle,
 ) -> Option<JoinHandle<()>> {
@@ -46,7 +46,9 @@ pub(crate) async fn spawn_listener(
 
     tracing::info!("spawn listener subscribed to Background topic");
 
-    Some(crate::util::spawn_in_span(listener_loop(ctx, subscriber)))
+    Some(residuum_core::util::spawn_in_span(listener_loop(
+        ctx, subscriber,
+    )))
 }
 
 /// Main loop: reads spawn requests and executes them.
@@ -217,7 +219,7 @@ fn handle_spawn_request<'a>(
                         "spawn target is completing; deferring until it clears the registry"
                     );
                     let ctx = Arc::clone(ctx);
-                    crate::util::spawn_in_span(async move {
+                    residuum_core::util::spawn_in_span(async move {
                         ctx.session_registry.wait_until_clear(&event.address).await;
                         // Re-run the full guard rather than forking directly:
                         // by the time the wait ends, another spawn/resume for
@@ -324,7 +326,7 @@ fn deliver_race_guard_content(
             );
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
-            crate::util::spawn_in_span(async move {
+            residuum_core::util::spawn_in_span(async move {
                 super::messaging::retry_race_guard_user_message(
                     registry, publisher, address, inbound, event,
                 )
@@ -344,7 +346,7 @@ fn deliver_race_guard_content(
 /// Build the interrupt a spawn/resume request's content becomes when its
 /// target address has already been won by another attempt (see
 /// [`handle_spawn_request`]'s `Forking | Running | Idle` branch, and
-/// `crate::background::runtime::deliver_losing_spawn_input`, which hits the
+/// `crate::runtime::deliver_losing_spawn_input`, which hits the
 /// same situation from the narrower race window between a spawn request
 /// clearing that guard and actually registering).
 ///
@@ -393,7 +395,7 @@ async fn fork_and_spawn(
         ctx,
         &event.model,
         skill.as_deref(),
-        crate::background::spawn_context::NewSessionContext {
+        crate::spawn_context::NewSessionContext {
             own_address: event.address.clone(),
             own_depth: event.depth,
             category,
@@ -442,13 +444,13 @@ async fn fork_and_spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::ConversationTarget;
-    use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
-    use crate::bus::session::SessionInfo;
-    use crate::config::ModelSelector;
-    use crate::inference::MessageSender;
+    use residuum_bus::ConversationTarget;
+    use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
+    use residuum_bus::session::SessionInfo;
     use residuum_bus::testing::{bus_barrier, next_event};
+    use residuum_config::ModelSelector;
     use residuum_core::testing::wait;
+    use residuum_inference::MessageSender;
     use tokio_util::sync::CancellationToken;
 
     fn sample_inbound(id: &str, content: &str, sender_name: &str) -> MessageEvent {
@@ -519,7 +521,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -657,7 +659,7 @@ mod tests {
             .register(info, CancellationToken::new())
             .expect("the winner registers the one live run");
 
-        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+        for _ in 0..crate::registry::INTERRUPT_CHANNEL_CAPACITY {
             assert!(matches!(
                 registry.deliver(
                     &SessionAddress::from(address),
@@ -692,7 +694,7 @@ mod tests {
         // the registry) before this content can be delivered into it. The
         // message must still not be dropped — it gets a fresh spawn/resume
         // attempt through the ordinary listener pipeline instead.
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let registry = Arc::new(SessionRegistry::new());
         let address = "external-discord-chan-3";
@@ -723,7 +725,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_pulse_spawn_failure_publishes_a_notice() {
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -746,7 +748,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_owner_session_that_fails_to_start_tells_the_owner_which_one() {
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -770,7 +772,7 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_identical_pulse_failure_does_not_renotice() {
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -805,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn pulse_failure_renotices_once_the_error_changes() {
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -836,7 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_spawn_failure_notice_names_it_a_scheduled_action() {
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -863,7 +865,7 @@ mod tests {
         // automatically the way a pulse or action is, so this dedup+notice
         // mechanism is scoped to scheduled triggers only — every other
         // failure just keeps warning (unchanged from before).
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await

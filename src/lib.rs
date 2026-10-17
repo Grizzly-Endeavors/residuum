@@ -1,5 +1,6 @@
 pub use residuum_agent as agent;
 pub use residuum_agent::subconscious;
+pub use residuum_background as background;
 pub use residuum_bus as bus;
 pub use residuum_config as config;
 pub use residuum_config::agent_keys;
@@ -25,7 +26,6 @@ pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
 };
 
 pub mod a2a;
-pub mod background;
 pub use residuum_checkpoints as checkpoints;
 pub mod daemon;
 pub mod gateway;

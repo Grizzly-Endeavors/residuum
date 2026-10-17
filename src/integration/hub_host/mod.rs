@@ -1356,7 +1356,7 @@ fn is_hub_level(event: &CapturedEvent) -> bool {
     ];
     let hub_prefixes = [
         "residuum::hub",
-        "residuum::background::team",
+        "residuum_background::team",
         "residuum_net::tunnel",
         "residuum::daemon",
     ];

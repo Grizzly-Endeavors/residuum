@@ -967,7 +967,7 @@ impl RemoteTaskTracker {
 mod tests {
     use super::*;
     use crate::a2a::client::hub::AgentSource;
-    use crate::background::HopLimits;
+    use crate::agent::hop::HopLimits;
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
     use residuum_bus::testing::bus_barrier;

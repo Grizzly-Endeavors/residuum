@@ -6,14 +6,14 @@
 //! claim, `respond_to_others`, standing) is decided upstream by each
 //! interface handler before the message ever reaches the bus. This router
 //! only decides who handles an already-admitted message:
-//! [`crate::bus::origin::MessageOrigin::belongs_to_main`] is the actual
+//! [`residuum_bus::origin::MessageOrigin::belongs_to_main`] is the actual
 //! routing predicate; this module is the delivery side once that predicate
 //! says a message is not main's.
 
 use std::sync::Arc;
 
-use crate::bus::MessageEvent;
-use crate::config::ModelSelector;
+use residuum_bus::MessageEvent;
+use residuum_config::ModelSelector;
 
 use super::messaging::{AgentMessenger, ConversationSpawn};
 use super::registry::conversation_session_address;
@@ -102,7 +102,7 @@ impl ConversationRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
+    use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
     use residuum_bus::testing::next_event;
     use residuum_core::testing::wait;
 
@@ -112,7 +112,7 @@ mod tests {
             content: "can you check the build?".to_string(),
             origin: MessageOrigin {
                 endpoint: endpoint.to_string(),
-                sender: location.map(|loc| crate::inference::MessageSender {
+                sender: location.map(|loc| residuum_inference::MessageSender {
                     name: "Jane".to_string(),
                     id: "discord-jane".to_string(),
                     interface: endpoint.to_string(),
@@ -133,11 +133,11 @@ mod tests {
 
     fn router() -> (
         ConversationRouter,
-        crate::bus::BusHandle,
-        Arc<crate::background::registry::SessionRegistry>,
+        residuum_bus::BusHandle,
+        Arc<crate::registry::SessionRegistry>,
     ) {
-        let bus_handle = crate::bus::spawn_broker();
-        let registry = Arc::new(crate::background::registry::SessionRegistry::new());
+        let bus_handle = residuum_bus::spawn_broker();
+        let registry = Arc::new(crate::registry::SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(super::super::store::SessionStore::new(
             dir.path().to_path_buf(),
@@ -146,7 +146,7 @@ mod tests {
             Arc::clone(&registry),
             bus_handle.publisher(),
             store,
-            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
+            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         (ConversationRouter::new(messenger), bus_handle, registry)
     }
@@ -154,8 +154,8 @@ mod tests {
     #[tokio::test]
     async fn routing_the_same_conversation_twice_resolves_to_the_same_address() {
         let (router, bus_handle, _registry) = router();
-        let mut spawns: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> = bus_handle
-            .subscribe(crate::bus::topics::Background)
+        let mut spawns: residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent> = bus_handle
+            .subscribe(residuum_bus::topics::Background)
             .await
             .unwrap();
 
@@ -226,25 +226,25 @@ mod tests {
         // the way a live session's own tool loop drains it continuously.
         let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-1");
-        let info = crate::bus::session::SessionInfo {
+        let info = residuum_bus::session::SessionInfo {
             address: address.clone(),
             run_id: "run-1".to_string(),
-            category: crate::bus::session::SessionCategory::External,
-            trigger: crate::bus::EventTrigger::Conversation,
+            category: residuum_bus::session::SessionCategory::External,
+            trigger: residuum_bus::EventTrigger::Conversation,
             source_label: "discord:#builds".to_string(),
-            state: crate::bus::session::SessionState::Idle,
+            state: residuum_bus::session::SessionState::Idle,
             spawner: None,
             depth: 1,
             purpose: "chat".to_string(),
             agent_skill: None,
-            model: crate::config::ModelSelector::MEDIUM,
+            model: residuum_config::ModelSelector::MEDIUM,
             resolved_model: None,
-            conversation_target: Some(crate::bus::ConversationTarget {
+            conversation_target: Some(residuum_bus::ConversationTarget {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         // The receiver must stay alive and be drained below like a live
@@ -257,17 +257,17 @@ mod tests {
             .unwrap();
         // Saturate the session's interrupt channel directly so the router's
         // own delivery attempt below finds it full.
-        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+        for _ in 0..crate::registry::INTERRUPT_CHANNEL_CAPACITY {
             assert!(matches!(
                 registry.deliver(
                     &address,
-                    crate::bus::interrupt::Interrupt::UserMessage(inbound(
+                    residuum_bus::interrupt::Interrupt::UserMessage(inbound(
                         "discord",
                         "chan-1",
                         Some("#builds"),
                     )),
                 ),
-                crate::background::registry::DeliverOutcome::Delivered
+                crate::registry::DeliverOutcome::Delivered
             ));
         }
 
@@ -285,18 +285,18 @@ mod tests {
             |interrupt| {
                 matches!(
                     interrupt,
-                    crate::bus::interrupt::Interrupt::UserMessage(m) if m.id == "the-new-message"
+                    residuum_bus::interrupt::Interrupt::UserMessage(m) if m.id == "the-new-message"
                 )
             },
         )
         .await;
         match interrupt {
-            crate::bus::interrupt::Interrupt::UserMessage(m) => {
+            residuum_bus::interrupt::Interrupt::UserMessage(m) => {
                 assert_eq!(m.content, "can anyone see this?");
             }
-            crate::bus::interrupt::Interrupt::AgentMessage(_)
-            | crate::bus::interrupt::Interrupt::Subconscious(_)
-            | crate::bus::interrupt::Interrupt::Stopped => {
+            residuum_bus::interrupt::Interrupt::AgentMessage(_)
+            | residuum_bus::interrupt::Interrupt::Subconscious(_)
+            | residuum_bus::interrupt::Interrupt::Stopped => {
                 panic!("the new user message should be the one delivered")
             }
         }
@@ -311,25 +311,25 @@ mod tests {
         // blocking on however long that teardown takes.
         let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-2");
-        let info = crate::bus::session::SessionInfo {
+        let info = residuum_bus::session::SessionInfo {
             address: address.clone(),
             run_id: "run-1".to_string(),
-            category: crate::bus::session::SessionCategory::External,
-            trigger: crate::bus::EventTrigger::Conversation,
+            category: residuum_bus::session::SessionCategory::External,
+            trigger: residuum_bus::EventTrigger::Conversation,
             source_label: "discord:#builds".to_string(),
-            state: crate::bus::session::SessionState::Completing,
+            state: residuum_bus::session::SessionState::Completing,
             spawner: None,
             depth: 1,
             purpose: "chat".to_string(),
             agent_skill: None,
-            model: crate::config::ModelSelector::MEDIUM,
+            model: residuum_config::ModelSelector::MEDIUM,
             resolved_model: None,
-            conversation_target: Some(crate::bus::ConversationTarget {
+            conversation_target: Some(residuum_bus::ConversationTarget {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-2".to_string(),
             }),
             started_at: chrono::Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         };
         registry

@@ -5006,6 +5006,7 @@ dependencies = [
  "regex",
  "reqwest 0.13.3",
  "residuum-agent",
+ "residuum-background",
  "residuum-bus",
  "residuum-checkpoints",
  "residuum-config",
@@ -5071,6 +5072,40 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "residuum-background"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "futures-util",
+ "residuum-agent",
+ "residuum-bus",
+ "residuum-checkpoints",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-mcp",
+ "residuum-memory",
+ "residuum-skills",
+ "residuum-tracing-service",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ts-rs",
  "wiremock",
 ]
 

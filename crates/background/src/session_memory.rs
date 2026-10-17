@@ -1,7 +1,7 @@
 //! Per-run session memory: threshold-based mid-run staging and the
 //! completion pipeline that merges a finished run into global memory.
 //!
-//! Mirrors the main agent's observer flow (see `crate::gateway::memory`):
+//! Mirrors the main agent's observer flow (the gateway's `memory` module):
 //! the run's own messages are checked against the same observer thresholds,
 //! staged extractions are held locally (invisible to any other agent until
 //! the run completes), and the run's full transcript is submitted to the
@@ -9,24 +9,24 @@
 
 use chrono_tz::Tz;
 
-use crate::bus::{HEARTBEAT_OK, ends_with_sentinel};
-use crate::config::WorkspaceLayout;
-use crate::inference::Message;
-use crate::memory::merge_writer::MemoryMergeWriter;
-use crate::memory::observer::{ExtractedObservation, Extraction, ObserveAction, Observer};
-use crate::memory::recent_messages::RecentMessage;
-use crate::memory::tokens::estimate_message_tokens;
-use crate::memory::types::{SourceTag, Visibility};
+use residuum_bus::{HEARTBEAT_OK, ends_with_sentinel};
+use residuum_config::WorkspaceLayout;
+use residuum_inference::Message;
+use residuum_memory::merge_writer::MemoryMergeWriter;
+use residuum_memory::observer::{ExtractedObservation, Extraction, ObserveAction, Observer};
+use residuum_memory::recent_messages::RecentMessage;
+use residuum_memory::tokens::estimate_message_tokens;
+use residuum_memory::types::{SourceTag, Visibility};
 
 /// The subsystems a run's memory pipeline writes through, grouped because
 /// both a live run's completion and startup recovery of an interrupted run
 /// need the exact same set.
-pub(crate) struct SessionMemoryEnv<'a> {
-    pub(crate) observer: &'a Observer,
-    pub(crate) merge_writer: &'a MemoryMergeWriter,
-    pub(crate) layout: &'a WorkspaceLayout,
-    pub(crate) episode_skip_token_floor: usize,
-    pub(crate) tz: Tz,
+pub struct SessionMemoryEnv<'a> {
+    pub observer: &'a Observer,
+    pub merge_writer: &'a MemoryMergeWriter,
+    pub layout: &'a WorkspaceLayout,
+    pub episode_skip_token_floor: usize,
+    pub tz: Tz,
 }
 
 /// A run's working memory: observations extracted mid-run but not yet
@@ -92,7 +92,7 @@ impl SessionMemory {
 /// Wrap plain messages as `RecentMessage`s with `Background` visibility, for
 /// the observer's extraction and threshold-check APIs.
 fn wrap(messages: &[Message], tz: Tz) -> Vec<RecentMessage> {
-    let now = crate::time::now_local(tz);
+    let now = residuum_core::time::now_local(tz);
     messages
         .iter()
         .map(|m| RecentMessage {
@@ -113,7 +113,7 @@ fn wrap(messages: &[Message], tz: Tz) -> Vec<RecentMessage> {
 /// way). Anything staged mid-run is merged regardless of how the run ended.
 ///
 /// Takes the run's address/run id/category as a [`SourceTag`] rather than a
-/// [`crate::bus::session::SessionInfo`] so it can be reused both by a live run's
+/// [`residuum_bus::session::SessionInfo`] so it can be reused both by a live run's
 /// completion and by startup recovery, which only has a persisted
 /// [`super::store::RunRecord`] to work from.
 #[tracing::instrument(skip_all, fields(session.address = tag.session_address.as_deref().unwrap_or("unknown"), run.id = tag.run_id.as_deref().unwrap_or("unknown")))]
@@ -194,9 +194,9 @@ pub(crate) async fn complete_session_memory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::Message;
-    use crate::memory::observer::{Observer, ObserverConfig};
-    use crate::memory::testing::MockMemoryProvider;
+    use residuum_inference::Message;
+    use residuum_memory::observer::{Observer, ObserverConfig};
+    use residuum_memory::testing::MockMemoryProvider;
     use std::sync::Arc;
 
     fn sample_tag() -> SourceTag {
@@ -224,9 +224,10 @@ mod tests {
     fn merge_writer(dir: &std::path::Path) -> MemoryMergeWriter {
         let layout = WorkspaceLayout::new(dir);
         let search_index = Arc::new(
-            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+            residuum_memory::search::MemoryIndex::open_or_create(&layout.search_index_dir())
+                .unwrap(),
         );
-        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let reflector = residuum_memory::reflector::Reflector::disabled(chrono_tz::UTC);
         MemoryMergeWriter::new(reflector, layout, search_index, None, None)
     }
 
@@ -341,7 +342,7 @@ mod tests {
             id.is_some(),
             "a HEARTBEAT_OK run with staged observations must still merge"
         );
-        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+        let log = residuum_memory::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         assert_eq!(
@@ -410,7 +411,7 @@ mod tests {
         .await;
 
         assert!(id.is_some(), "a substantial run should merge an episode");
-        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+        let log = residuum_memory::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         assert_eq!(log.observations.len(), 1);

@@ -18,11 +18,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use crate::agent::TeamRoster;
-use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
-use crate::bus::SessionAddress;
-use crate::bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
-use crate::config::canonicalize_display_name;
+use crate::messaging::{AgentMessenger, DeliveryOutcome, SendError};
+use residuum_agent::TeamRoster;
+use residuum_bus::SessionAddress;
+use residuum_bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
+use residuum_config::canonicalize_display_name;
 
 use super::directory::{DirectoryHandle, TeamDirectory};
 use super::types::{AgentState, AgentSummary, LifecycleError};

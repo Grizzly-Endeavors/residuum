@@ -22,11 +22,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
-use crate::agent::turn::TranscriptSink;
-use crate::bus::{AgentResultStatus, PulseOverlap};
-use crate::inference::Message;
+use residuum_agent::turn::TranscriptSink;
+use residuum_bus::{AgentResultStatus, PulseOverlap};
+use residuum_inference::Message;
 
-use crate::bus::session::SessionInfo;
+use residuum_bus::session::SessionInfo;
 
 /// On-disk record for a single run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ pub struct RunRecord {
     /// this record is written, so a completed run keeps its
     /// final totals.
     #[serde(default)]
-    pub usage: crate::bus::usage::SessionUsageTotals,
+    pub usage: residuum_bus::usage::SessionUsageTotals,
     /// How the run ended — `"completed"`, `"cancelled"`, or `"failed"` —
     /// filled in by [`SessionStore::complete_run`]. `None` while the run is
     /// still live (`state` says so already), and `None` for a record written
@@ -142,7 +142,7 @@ impl RunRecord {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunFilter<'a> {
     /// Only runs in this category (a
-    /// [`SessionCategory`](crate::bus::session::SessionCategory) label).
+    /// [`SessionCategory`](residuum_bus::session::SessionCategory) label).
     pub category: Option<&'a str>,
     /// Only runs at this session address.
     pub address: Option<&'a str>,
@@ -173,7 +173,7 @@ struct RunRecordHeader {
     #[serde(default)]
     episode_id: Option<String>,
     #[serde(default)]
-    usage: crate::bus::usage::SessionUsageTotals,
+    usage: residuum_bus::usage::SessionUsageTotals,
     #[serde(default)]
     outcome: Option<String>,
     #[serde(default)]
@@ -334,7 +334,7 @@ pub struct SessionStore {
     /// Keeps a test fixture's backing temp directory alive (and cleaned up
     /// on drop) for as long as this store is in use, instead of leaking it
     /// with [`tempfile::TempDir::keep`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     tempdir_guard: Option<tempfile::TempDir>,
 }
 
@@ -344,16 +344,16 @@ impl SessionStore {
     pub fn new(sessions_dir: PathBuf) -> Self {
         Self {
             sessions_dir,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             tempdir_guard: None,
         }
     }
 
     /// Attach a temp directory guard so it's dropped (and cleaned up)
     /// together with this store instead of being leaked.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub(crate) fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
+    pub fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
         self.tempdir_guard = Some(dir);
         self
     }
@@ -392,7 +392,7 @@ impl SessionStore {
     /// live, so a crash mid-turn loses at most the message currently in
     /// flight. Best-effort: a failure here degrades crash recovery, not the
     /// run itself, so it is logged and swallowed rather than propagated.
-    pub(crate) async fn append_transcript(
+    pub async fn append_transcript(
         &self,
         run_id: &str,
         started_at: DateTime<Utc>,
@@ -479,7 +479,7 @@ impl SessionStore {
     /// whose task panicked mid-turn. Returns an empty vec if the file is
     /// missing or a line fails to parse (a torn write at the very end of the
     /// file, from a crash mid-append).
-    pub(crate) async fn read_incremental_transcript(
+    pub async fn read_incremental_transcript(
         &self,
         run_id: &str,
         started_at: DateTime<Utc>,
@@ -506,7 +506,7 @@ impl SessionStore {
 
     /// Find a run's metadata record file by run id, without needing to know
     /// its start date up front — mirrors
-    /// [`crate::memory::episode_store::find_episode_path`]'s directory walk.
+    /// [`residuum_memory::episode_store::find_episode_path`]'s directory walk.
     ///
     /// Returns `Ok(None)` when the sessions directory is missing or no run
     /// with this id exists, and `Err` only on I/O failures reading
@@ -531,7 +531,7 @@ impl SessionStore {
     /// # Errors
     /// Returns an error if the sessions directory cannot be read, or the
     /// record file cannot be read or parsed.
-    pub(crate) async fn read_run(
+    pub async fn read_run(
         &self,
         run_id: &str,
     ) -> anyhow::Result<Option<(RunRecord, Vec<Message>)>> {
@@ -710,7 +710,7 @@ impl SessionStore {
     /// observation, and merge — for every run left incomplete by a prior
     /// process exit, from its persisted transcript, then mark it completed.
     /// Returns the number of runs recovered.
-    pub(crate) async fn recover_incomplete_runs(
+    pub async fn recover_incomplete_runs(
         &self,
         env: &super::session_memory::SessionMemoryEnv<'_>,
     ) -> usize {
@@ -848,10 +848,10 @@ impl SessionStore {
     ) -> Option<String> {
         let summary = transcript
             .last()
-            .filter(|m| m.role == crate::inference::Role::Assistant)
+            .filter(|m| m.role == residuum_inference::Role::Assistant)
             .map(|m| m.content.clone())
             .unwrap_or_default();
-        let tag = crate::memory::types::SourceTag::session(
+        let tag = residuum_memory::types::SourceTag::session(
             record.address.clone(),
             record.run_id.clone(),
             record.category.clone(),
@@ -902,7 +902,7 @@ async fn write_record(path: &Path, record: &RunRecord) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("session run path has no parent directory"))?;
     tokio::fs::create_dir_all(dir).await?;
     let json = serde_json::to_string_pretty(record)?;
-    crate::util::fs::atomic_write(path, &json).await?;
+    residuum_core::util::fs::atomic_write(path, &json).await?;
     Ok(())
 }
 
@@ -927,18 +927,18 @@ impl TranscriptSink for RunTranscriptSink<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::session_memory::SessionMemoryEnv;
-    use crate::bus::session::{SessionCategory, SessionState};
-    use crate::bus::{EventTrigger, SessionAddress};
+    use crate::session_memory::SessionMemoryEnv;
+    use residuum_bus::session::{SessionCategory, SessionState};
+    use residuum_bus::{EventTrigger, SessionAddress};
 
     /// Build a `SessionMemoryEnv` whose observer/reflector never fire, so
     /// startup recovery tests exercise the skip path deterministically.
     fn test_env() -> (
-        crate::config::WorkspaceLayout,
-        std::sync::Arc<crate::memory::observer::Observer>,
-        std::sync::Arc<crate::memory::merge_writer::MemoryMergeWriter>,
+        residuum_config::WorkspaceLayout,
+        std::sync::Arc<residuum_memory::observer::Observer>,
+        std::sync::Arc<residuum_memory::merge_writer::MemoryMergeWriter>,
     ) {
-        crate::background::subagent::test_memory_extras()
+        crate::testing::test_memory_extras()
     }
 
     fn sample_info() -> SessionInfo {
@@ -953,11 +953,11 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
-            model: crate::config::ModelSelector::MEDIUM,
+            model: residuum_config::ModelSelector::MEDIUM,
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -1034,7 +1034,7 @@ mod tests {
         // The registry accumulates usage onto `info.usage` as the run's
         // turns complete; the caller refreshes its own copy from the
         // registry before finalizing (see `background::runtime::finish_run`).
-        info.usage.accumulate(Some(crate::inference::Usage {
+        info.usage.accumulate(Some(residuum_inference::Usage {
             input_tokens: 200,
             output_tokens: 40,
             cache_creation_tokens: None,
@@ -1079,7 +1079,7 @@ mod tests {
         let record = RunRecord::from(header);
         assert_eq!(
             record.usage,
-            crate::bus::usage::SessionUsageTotals::default()
+            residuum_bus::usage::SessionUsageTotals::default()
         );
     }
 
@@ -1329,23 +1329,24 @@ mod tests {
             .await;
         let path = store.run_path(&info.run_id, info.started_at);
 
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         let search_index = std::sync::Arc::new(
-            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+            residuum_memory::search::MemoryIndex::open_or_create(&layout.search_index_dir())
+                .unwrap(),
         );
-        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
-        let merge_writer = crate::memory::merge_writer::MemoryMergeWriter::new(
+        let reflector = residuum_memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = residuum_memory::merge_writer::MemoryMergeWriter::new(
             reflector,
             layout.clone(),
             search_index,
             None,
             None,
         );
-        let observer = crate::memory::observer::Observer::new(
-            Box::new(crate::memory::testing::MockMemoryProvider::new(
+        let observer = residuum_memory::observer::Observer::new(
+            Box::new(residuum_memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
-            crate::memory::observer::ObserverConfig::default(),
+            residuum_memory::observer::ObserverConfig::default(),
         );
         let env = SessionMemoryEnv {
             observer: &observer,
@@ -1391,23 +1392,24 @@ mod tests {
             .await;
         let path = store.run_path(&info.run_id, info.started_at);
 
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         let search_index = std::sync::Arc::new(
-            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+            residuum_memory::search::MemoryIndex::open_or_create(&layout.search_index_dir())
+                .unwrap(),
         );
-        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
-        let merge_writer = crate::memory::merge_writer::MemoryMergeWriter::new(
+        let reflector = residuum_memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = residuum_memory::merge_writer::MemoryMergeWriter::new(
             reflector,
             layout.clone(),
             search_index,
             None,
             None,
         );
-        let observer = crate::memory::observer::Observer::new(
-            Box::new(crate::memory::testing::MockMemoryProvider::new(
+        let observer = residuum_memory::observer::Observer::new(
+            Box::new(residuum_memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
-            crate::memory::observer::ObserverConfig::default(),
+            residuum_memory::observer::ObserverConfig::default(),
         );
         let env = SessionMemoryEnv {
             observer: &observer,
@@ -1455,23 +1457,24 @@ mod tests {
             )
             .await;
 
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         let search_index = std::sync::Arc::new(
-            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+            residuum_memory::search::MemoryIndex::open_or_create(&layout.search_index_dir())
+                .unwrap(),
         );
-        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
-        let merge_writer = crate::memory::merge_writer::MemoryMergeWriter::new(
+        let reflector = residuum_memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = residuum_memory::merge_writer::MemoryMergeWriter::new(
             reflector,
             layout.clone(),
             search_index,
             None,
             None,
         );
-        let observer = crate::memory::observer::Observer::new(
-            Box::new(crate::memory::testing::MockMemoryProvider::new(
+        let observer = residuum_memory::observer::Observer::new(
+            Box::new(residuum_memory::testing::MockMemoryProvider::new(
                 r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
             )),
-            crate::memory::observer::ObserverConfig::default(),
+            residuum_memory::observer::ObserverConfig::default(),
         );
         let env = SessionMemoryEnv {
             observer: &observer,
@@ -1486,16 +1489,16 @@ mod tests {
             Message::user("investigate the issue"),
             Message::assistant(big_content, None),
         ];
-        let tag = crate::memory::types::SourceTag::session(
+        let tag = residuum_memory::types::SourceTag::session(
             info.address.to_string(),
             info.run_id.clone(),
             info.category.as_str(),
         );
-        let episode_id = crate::background::session_memory::complete_session_memory(
+        let episode_id = crate::session_memory::complete_session_memory(
             tag,
             "done",
             &transcript,
-            crate::background::session_memory::SessionMemory::new(),
+            crate::session_memory::SessionMemory::new(),
             &env,
         )
         .await;
@@ -1521,7 +1524,7 @@ mod tests {
             "recovery should backfill the existing episode id, not mint a new one"
         );
 
-        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+        let log = residuum_memory::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
         assert_eq!(
@@ -1531,7 +1534,7 @@ mod tests {
         );
 
         let latest =
-            crate::memory::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
+            residuum_memory::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
         assert_eq!(
             latest, episode_id,
             "recovery must not mint a second episode for the same run"
