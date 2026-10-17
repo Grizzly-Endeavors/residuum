@@ -199,10 +199,10 @@ fn role_line(team: &TeamPaths, name: &str) -> Option<String> {
 pub struct RunningAgent {
     /// The routers, reload and stop channels, and cleanup the agent started
     /// with.
-    pub control: AgentControl,
+    pub(crate) control: AgentControl,
     /// Set before the stop signal is sent, so the supervisor can tell a
     /// requested stop from a failure.
-    pub stop_requested: Arc<AtomicBool>,
+    pub(crate) stop_requested: Arc<AtomicBool>,
     /// Set before the agent's task is aborted after a stop timed out.
     forced: Arc<AtomicBool>,
     /// Turns `true` once the supervisor has recorded the agent's exit.
@@ -210,10 +210,25 @@ pub struct RunningAgent {
     abort: AbortHandle,
 }
 
+impl RunningAgent {
+    /// The routers, reload and stop channels, and cleanup the agent started with.
+    #[must_use]
+    pub fn control(&self) -> &AgentControl {
+        &self.control
+    }
+
+    /// Set before the stop signal is sent, so the supervisor can tell a requested
+    /// stop from a failure.
+    #[must_use]
+    pub fn stop_requested(&self) -> &Arc<AtomicBool> {
+        &self.stop_requested
+    }
+}
+
 pub struct SlotState {
     state: AgentState,
     last_error: Option<AgentLastError>,
-    pub running: Option<RunningAgent>,
+    pub(crate) running: Option<RunningAgent>,
     generation: u64,
     /// Autostart and visibility from the last config that loaded, as last
     /// published. `None` until one has loaded. Summaries and the A2A
@@ -223,6 +238,14 @@ pub struct SlotState {
     /// Whether the config file could not be used the last time it was read,
     /// so the problem is logged once per streak instead of on every request.
     meta_unreadable: bool,
+}
+
+impl SlotState {
+    /// The running agent, when one is running.
+    #[must_use]
+    pub fn running(&self) -> Option<&RunningAgent> {
+        self.running.as_ref()
+    }
 }
 
 /// One agent the host knows about.

@@ -257,7 +257,7 @@ pub(crate) fn env_var_name(raw: &str) -> Option<&str> {
 ///
 /// Used to keep a raw value the settings UI is about to store from
 /// accidentally being a reference to something else (see
-/// the root crate's `hub::web::secrets::api_secrets_set`).
+/// the hub's `web::secrets::api_secrets_set`).
 #[must_use]
 pub fn is_reference(value: &str) -> bool {
     value.starts_with("secret:") || env_var_name(value).is_some()

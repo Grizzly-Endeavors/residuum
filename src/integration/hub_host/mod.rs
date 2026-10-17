@@ -955,7 +955,7 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
     let reloads_before = {
         let slot = hub.host.slot("scout").unwrap();
         let guard = slot.lock();
-        *guard.running.as_ref().unwrap().control.reload_done.borrow()
+        *guard.running().unwrap().control().reload_done.borrow()
     };
 
     let summary = hub
@@ -985,7 +985,7 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
     let reloads_after = {
         let slot = hub.host.slot("scout").unwrap();
         let guard = slot.lock();
-        *guard.running.as_ref().unwrap().control.reload_done.borrow()
+        *guard.running().unwrap().control().reload_done.borrow()
     };
     assert!(reloads_after > reloads_before, "the agent reloaded");
     assert_eq!(hub.state_of("scout"), AgentState::Running);
@@ -1166,9 +1166,8 @@ async fn the_listing_and_snapshot_show_an_agent_as_stopping_from_the_stop_reques
         .slot("scout")
         .unwrap()
         .lock()
-        .running
-        .as_ref()
-        .map(|running| Arc::clone(&running.stop_requested))
+        .running()
+        .map(|running| Arc::clone(running.stop_requested()))
         .unwrap();
     stop_requested.store(true, Ordering::SeqCst);
 
@@ -2078,7 +2077,7 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
             "round {round}: the deleted agent still has a slot"
         );
         assert!(
-            slot.lock().running.is_none(),
+            slot.lock().running().is_none(),
             "round {round}: a runtime outlived the deleted agent"
         );
     }
