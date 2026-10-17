@@ -170,14 +170,14 @@ There is one log level for the whole hub. Every log line and span an agent produ
 
 Each line's target is shown in display form: `residuum::` is dropped from the front, and a crate target `residuum_<x>::…` shows as `<x>::…`. So `residuum_gateway::event_loop` shows as `gateway::event_loop` and `residuum_hub::runtime` as `hub::runtime`. A crate's root target `residuum_<x>` shows as `<x>`; any other target with one segment, such as `residuum`, shows unchanged.
 
-`residuum logs --module <value>` keeps a line when the value is a plain string prefix of its full target. It also matches when the value, with one leading `residuum::` removed, is a plain string prefix of the line's display form or of its module form (the target with its first segment removed). So `--module agent` matches `residuum::agent::core` and `residuum_config::agent_keys::store`, `--module memory` matches `residuum_memory::search`, `--module tunnel` matches `residuum_net::tunnel::v2`, and `--module residuum::mcp::client` matches `residuum_mcp::client`. A value can match lines from several crates; the result is their union.
+`residuum logs --module <value>` keeps a line when the value is a plain string prefix of its full target. It also matches when the value, with one leading `residuum::` removed, is a plain string prefix of the line's display form or of its module form (the target with its first segment removed). So `--module agent` matches `residuum_agent::core` and `residuum_config::agent_keys::store`, `--module memory` matches `residuum_memory::search`, `--module tunnel` matches `residuum_net::tunnel::v2`, and `--module residuum::mcp::client` matches `residuum_mcp::client`. A value can match lines from several crates; the result is their union.
 
 A `residuum logs` run without `--watch` that was given `--module`, `--level` or `--agent` and printed no entries writes one line to stderr after reading the whole file: `No log entries matched (--module <value>, --level <value>, --agent <value>).` It names only the filters given. The exit status is 0.
 
 `RUST_LOG` is a developer override; `log_level` in `hub/config.toml` is unaffected by it. Its directives match targets by prefix, so a directive names the crate a module lives in. Each module lives in one of these crates:
 
-- `residuum_core`: `util`, `time` and `diagnostics`, so `RUST_LOG=residuum_core::util::fs=trace`.
-- `residuum_config`: `config` and `agent_keys`, so `RUST_LOG=residuum_config=trace` for config loading and `RUST_LOG=residuum_config::agent_keys=trace` for the agent-key store.
+- `residuum_core`: `util`, `time`, `diagnostics`, `build_info` and `process`, so `RUST_LOG=residuum_core::util::fs=trace`, or `RUST_LOG=residuum_core::process=trace` for process-tree management and the shell runner.
+- `residuum_config`: `config`, `agent_keys` and `channels`, so `RUST_LOG=residuum_config=trace` for config loading and `RUST_LOG=residuum_config::agent_keys=trace` for the agent-key store.
 - `residuum_bus`: `bus`, so `RUST_LOG=residuum_bus=trace` for the broker and its routing.
 - `residuum_checkpoints`: `checkpoints`, so `RUST_LOG=residuum_checkpoints=trace` for the checkpoint engine and its repositories.
 - `residuum_inference`: `inference`, so `RUST_LOG=residuum_inference=trace`, or `RUST_LOG=residuum_inference::providers::anthropic=trace` for one provider.
@@ -185,7 +185,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_net`: `tunnel`, `remote_access`, `pairing`, `workbench`, `browser_landing`, `cross_site` and `remote_control_guard`, so `RUST_LOG=residuum_net::tunnel=trace` for the relay tunnel and `RUST_LOG=residuum_net::remote_access=trace` for the secure tunnel's certificates and pins.
 - `residuum_skills`: `skills`, so `RUST_LOG=residuum_skills=trace`.
 - `residuum_mcp`: `mcp`, so `RUST_LOG=residuum_mcp=trace`.
-- `residuum_tracing_service`: `tracing_service`, so `RUST_LOG=residuum_tracing_service=trace`.
+- `residuum_tracing_service`: `tracing_service` and `client_context`, so `RUST_LOG=residuum_tracing_service=trace`.
 - `residuum_workspace`: `workspace` and `inbox`, so `RUST_LOG=residuum_workspace=trace`, or `RUST_LOG=residuum_workspace::watch=trace` for the change feed, and `RUST_LOG=residuum_workspace::inbox=trace` for the inbox (its lines show as `workspace::inbox::…`).
 - `residuum_agent`: `agent` and `subconscious`, so `RUST_LOG=residuum_agent=trace` for the turn loop, or `RUST_LOG=residuum_agent::subconscious=trace` for the subconscious watch (its lines show as `agent::subconscious::…`).
 - `residuum_protocol`: `protocol` and `frames`; it writes no log lines, so frame problems show in the logs of the crates that send and receive them.
@@ -197,7 +197,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_proactivity`: `pulse` and `actions`, so `RUST_LOG=residuum_proactivity=trace`, or `RUST_LOG=residuum_proactivity::pulse=trace` for the pulse scheduler.
 - `residuum_hub`: `hub`, with the agent host, the hub's HTTP app and its web routes (`web`, `file_server`), `launch`, `update`, `features`, `config_watcher` and `last_known_good`, so `RUST_LOG=residuum_hub=trace`, or `RUST_LOG=residuum_hub::host=trace` for the agent host, `RUST_LOG=residuum_hub::web=trace` for the web routes the hub serves, `RUST_LOG=residuum_hub::update=trace` for self-updates and `RUST_LOG=residuum_hub::config_watcher=trace` for the config file watchers.
 - `residuum_gateway`: `gateway`, the running agent's event loop, startup, reload and routes (`web`: sessions, scheduled, memory, model, the A2A status routes and the inbox), the WebSocket subscriber (`websocket`) and `turn_journal`, so `RUST_LOG=residuum_gateway=trace`, or `RUST_LOG=residuum_gateway::event_loop=trace` for the agent's event loop (its lines show as `gateway::event_loop::…`).
-- `residuum`: every other module, so `RUST_LOG=residuum::daemon=trace`.
+- `residuum`: `daemon`, `logging`, `setup_wizard`, `wiring` and the CLI `commands`, so `RUST_LOG=residuum::daemon=trace`, or `RUST_LOG=residuum::commands=trace` for the CLI.
 
 The default filters (`residuum=debug,warn` and `residuum=trace,warn`) also enable every workspace crate, because each crate's library name starts with `residuum_`.
 
