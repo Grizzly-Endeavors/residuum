@@ -298,8 +298,12 @@ describe("Jump to latest", () => {
     await settle();
     screen.getByRole("button", { name: "Jump to latest" }).click();
     await settle();
-    expect(scrolled).toHaveBeenCalledWith({ top: 2000, behavior: "smooth" });
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+    // It glides there a frame at a time, to the bottom of the scroll range.
+    await waitFor(() => {
+      expect(geometry.scrollTop).toBe(1500);
+    });
+    expect(scrolled).not.toHaveBeenCalledWith(expect.objectContaining({ behavior: "smooth" }));
   });
 
   it("jumps without gliding when the reader asks for less motion", async () => {
