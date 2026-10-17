@@ -2,18 +2,18 @@
 //! scheduler finds it due until its scripts and its session (if it has one)
 //! have finished.
 //!
-//! The event loop registers a fire with [`PulseFires::begin`] and runs it on
-//! its own task, holding the returned [`PulseFire`]. That handle moves the
+//! The event loop registers a fire with `PulseFires::begin` and runs it on
+//! its own task, holding the returned `PulseFire`. That handle moves the
 //! fire from its script phase to its session phase, finishes it with an
 //! outcome, and on drop (a panic, an early return) takes it out of the
 //! tracker, so no stale entry outlives its task. Every change is published
-//! as a [`PulseFireEvent`] on the system channel, carrying the pulse's run
+//! as a `PulseFireEvent` on the system channel, carrying the pulse's run
 //! in flight as the Schedule place shows it.
 //!
 //! Each fire has a stop token, a child of the agent's own, which kills its
 //! running script, keeps it from starting its session, or stops that
 //! session: the Schedule place's per-fire Stop cancels it through
-//! [`PulseFires::stop`], and stopping the agent cancels them all. Nothing
+//! `PulseFires::stop`, and stopping the agent cancels them all. Nothing
 //! here is persisted: after a restart no fire is in flight.
 
 use std::collections::HashMap;
