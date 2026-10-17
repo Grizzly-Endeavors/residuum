@@ -97,6 +97,8 @@ serde_yaml_ng = "0.10"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 # Unix process signals (Linux + macOS)
 nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
+# Windows process management (the daemon)
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
 fd-lock = "4"
 unicode-normalization = "0.1.25"
 
@@ -207,23 +209,18 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = { workspace = true }
 anyhow = { workspace = true }
 tempfile = { workspace = true }
 dotenvy = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
-regex = { workspace = true }
-globset = { workspace = true }
 fd-lock = { workspace = true }
-a2a = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 clap = { workspace = true }
 owo-colors = { workspace = true }
 rpassword = { workspace = true }
-axum = { workspace = true }
 rustls = { workspace = true }
 rust-embed = { workspace = true }
 iana-time-zone = { workspace = true }
@@ -234,7 +231,7 @@ nix = { workspace = true }
 
 # Windows process management
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
+windows-sys = { workspace = true }
 
 [dev-dependencies]
 residuum-core = { workspace = true, features = ["test-support"] }
@@ -253,7 +250,6 @@ residuum-checkpoints = { workspace = true, features = ["test-support"] }
 residuum-hub = { workspace = true, features = ["test-support"] }
 residuum-gateway = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 ts-rs = { workspace = true }
 wiremock = { workspace = true }
@@ -264,6 +260,11 @@ a2a-client = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 tower = { workspace = true }
+toml = { workspace = true }
+regex = { workspace = true }
+globset = { workspace = true }
+a2a = { workspace = true }
+axum = { workspace = true }
 
 [package.metadata.cargo-shear]
 # ctor is used by crates/core/src/testing/crypto.rs, which this package includes by
