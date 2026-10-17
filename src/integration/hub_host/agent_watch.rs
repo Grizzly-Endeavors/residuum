@@ -325,7 +325,7 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
         .unwrap();
     // The barrier proves the publish has reached every subscriber of the bus.
     // The stopped agent's watcher has none left to reach the feed.
-    bus_wait::bus_barrier(&bus).await;
+    bus_barrier(&bus).await;
     assert!(wait::drain(&mut changes).is_empty());
 }
 

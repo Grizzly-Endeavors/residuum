@@ -204,7 +204,7 @@ mod tests {
             dir: dir.to_path_buf(),
             serving,
             tunnel_status_rx: rx,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
             team: None,
         })
     }

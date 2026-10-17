@@ -2,7 +2,7 @@
 //!
 //! These run on every platform because they exercise TOML parsing, not the
 //! macOS APIs. Behavior of the macOS types themselves is covered by the unit
-//! tests beside the code in `src/notify/macos/`.
+//! tests beside the code in `crates/notify/src/macos/`.
 //!
 //! covers: residuum-notify
 

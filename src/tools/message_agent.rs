@@ -351,7 +351,7 @@ impl Tool for MessageAgentTool {
 mod tests {
     use super::*;
     use crate::a2a::AgentSource;
-    use crate::background::HopLimits;
+    use crate::agent::hop::HopLimits;
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
 

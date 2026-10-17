@@ -23,6 +23,15 @@ publish = false
 # Workspace members
 residuum-core = { path = "crates/core", version = "0.1.0" }
 residuum-config = { path = "crates/config", version = "0.1.0" }
+residuum-bus = { path = "crates/bus", version = "0.1.0" }
+residuum-agent = { path = "crates/agent", version = "0.1.0" }
+residuum-background = { path = "crates/background", version = "0.1.0" }
+residuum-interfaces = { path = "crates/interfaces", version = "0.1.0" }
+residuum-workspace = { path = "crates/workspace", version = "0.1.0" }
+residuum-protocol = { path = "crates/protocol", version = "0.1.0" }
+residuum-notify = { path = "crates/notify", version = "0.1.0" }
+residuum-proactivity = { path = "crates/proactivity", version = "0.1.0" }
+residuum-checkpoints = { path = "crates/checkpoints", version = "0.1.0" }
 residuum-skills = { path = "crates/skills", version = "0.1.0" }
 residuum-tracing-service = { path = "crates/tracing-service", version = "0.1.0" }
 residuum-inference = { path = "crates/inference", version = "0.1.0" }
@@ -96,6 +105,15 @@ a2a-client = { package = "a2a-client-lf", version = "0.2.5", default-features = 
 # Workspace change feed (OS file notifications)
 notify = "8.2"
 
+# macOS native notifications
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = "0.3"
+block2 = "0.6"
+
+# Windows toast notifications
+tauri-winrt-notification = "0.8.1"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -168,6 +186,15 @@ residuum-net = { workspace = true }
 residuum-mcp = { workspace = true }
 residuum-skills = { workspace = true }
 residuum-tracing-service = { workspace = true }
+residuum-bus = { workspace = true }
+residuum-agent = { workspace = true }
+residuum-background = { workspace = true }
+residuum-interfaces = { workspace = true }
+residuum-workspace = { workspace = true }
+residuum-protocol = { workspace = true }
+residuum-notify = { workspace = true }
+residuum-proactivity = { workspace = true }
+residuum-checkpoints = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -182,9 +209,6 @@ tempfile = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
 dotenvy = { workspace = true }
-aes-gcm = { workspace = true }
-aes = { workspace = true }
-hex = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 regex = { workspace = true }
@@ -196,7 +220,6 @@ fd-lock = { workspace = true }
 a2a = { workspace = true }
 a2a-server = { workspace = true }
 a2a-client = { workspace = true }
-notify = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
@@ -215,27 +238,15 @@ url = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 iana-time-zone = { workspace = true }
-serenity = { workspace = true }
-teloxide-core = { workspace = true }
 ts-rs = { workspace = true }
-gix = { workspace = true }
-similar = { workspace = true }
-
-# macOS native notifications (Apple Silicon only)
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = "0.3"
-objc2-user-notifications = "0.3"
-block2 = "0.6"
 
 # Unix process signals (Linux + macOS)
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
-# Windows process management and notifications
+# Windows process management
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
-tauri-winrt-notification = "0.8.1"
 
 [dev-dependencies]
 residuum-core = { workspace = true, features = ["test-support"] }
@@ -243,11 +254,16 @@ residuum-config = { workspace = true, features = ["test-support"] }
 residuum-inference = { workspace = true, features = ["test-support"] }
 residuum-memory = { workspace = true, features = ["test-support"] }
 residuum-net = { workspace = true, features = ["test-support"] }
+residuum-bus = { workspace = true, features = ["test-support"] }
+residuum-agent = { workspace = true, features = ["test-support"] }
+residuum-background = { workspace = true, features = ["test-support"] }
+residuum-workspace = { workspace = true, features = ["test-support"] }
+residuum-proactivity = { workspace = true, features = ["test-support"] }
+residuum-checkpoints = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
-jsonschema = { workspace = true }
 
 [package.metadata.cargo-shear]
 # ctor is used by crates/core/src/testing/crypto.rs, which this package includes by

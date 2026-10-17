@@ -580,11 +580,8 @@ async fn spawn_bus_infrastructure(
     {
         bus_infra_handles.push(h);
     }
-    if let Some(h) = crate::background::listener::spawn_listener(
-        Arc::clone(&parts.spawn_context),
-        &core.bus_handle,
-    )
-    .await
+    if let Some(h) =
+        crate::background::spawn_listener(Arc::clone(&parts.spawn_context), &core.bus_handle).await
     {
         bus_infra_handles.push(h);
     }

@@ -289,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_is_empty_before_any_checkpoint() {
-        let router = app(crate::checkpoints::test_engine());
+        let router = app(crate::checkpoints::testing::test_engine());
         let resp = router
             .oneshot(
                 Request::builder()
@@ -306,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn show_missing_checkpoint_is_404() {
-        let router = app(crate::checkpoints::test_engine());
+        let router = app(crate::checkpoints::testing::test_engine());
         let resp = router
             .oneshot(
                 Request::builder()
@@ -375,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_report_zero_before_any_checkpoint() {
-        let router = app(crate::checkpoints::test_engine());
+        let router = app(crate::checkpoints::testing::test_engine());
         let resp = router
             .oneshot(
                 Request::builder()

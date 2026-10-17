@@ -33,7 +33,7 @@ use crate::workspace::bootstrap::ensure_workspace_labeled;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::team_files::TeamWriteCoordinator;
 
-use crate::background::spawn_context::SpawnContext;
+use crate::background::SpawnContext;
 
 use crate::tools::main_tools::{self, ToolRegistryDeps};
 use tools::CreateAgentArgs;
@@ -433,8 +433,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         observer: Arc::clone(inputs.session_observer),
         merge_writer: Arc::clone(inputs.merge_writer),
         messenger: Arc::clone(inputs.messenger),
-        bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
-        ),
+        bg_tier_active_index: crate::background::BackgroundTierActiveIndex::default(),
     })
 }
 
@@ -470,7 +469,7 @@ async fn init_session_registry_and_messenger(
     let registry = Arc::new(SessionRegistry::load(layout.resume_points_json()).await);
     let store = Arc::new(SessionStore::new(layout.sessions_dir()));
 
-    let recovery_env = crate::background::session_memory::SessionMemoryEnv {
+    let recovery_env = crate::background::SessionMemoryEnv {
         observer: session_observer,
         merge_writer,
         layout,
@@ -490,7 +489,7 @@ async fn init_session_registry_and_messenger(
             Arc::clone(&registry),
             publisher.clone(),
             Arc::clone(&store),
-            crate::background::HopLimits::from(&cfg.background),
+            crate::agent::hop::HopLimits::from(&cfg.background),
         )
         .with_team(team),
     );
@@ -521,7 +520,7 @@ fn build_session_runtime(inputs: &SessionRuntimeInputs<'_>) -> Arc<SessionRuntim
         Arc::clone(inputs.store),
         Arc::clone(inputs.session_budget),
         &inputs.cfg.background,
-        crate::background::runtime::SessionRuntimeHandles {
+        crate::background::SessionRuntimeHandles {
             publisher: inputs.publisher.clone(),
             tz: inputs.cfg.timezone,
             messenger: Arc::clone(inputs.messenger),
@@ -756,8 +755,7 @@ pub(crate) async fn spawn_notify_subscribers(
     use crate::notify::subscriber::run_notify_subscriber;
 
     let external_channels =
-        crate::notify::channel_builder::build_external_channels(channel_configs, http.client())
-            .await;
+        crate::notify::build_external_channels(channel_configs, http.client()).await;
 
     let mut handles = Vec::new();
 

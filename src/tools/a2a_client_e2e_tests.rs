@@ -15,7 +15,7 @@ use crate::a2a::client::hub::AgentSource;
 use crate::a2a::{A2aClientHub, RemoteTaskTracker};
 use crate::agent::HopCounter;
 use crate::agent::Tool;
-use crate::background::HopLimits;
+use crate::agent::hop::HopLimits;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;

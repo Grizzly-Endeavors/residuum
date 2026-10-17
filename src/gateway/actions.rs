@@ -179,7 +179,7 @@ mod tests {
     use super::*;
     use crate::actions::types::ScheduledAction;
     use crate::bus::Subscriber;
-    use crate::testing::bus_wait;
+    use crate::bus::testing::next_event;
     use chrono::{Duration, Utc};
 
     fn due_action(id: &str, name: &str) -> ScheduledAction {
@@ -213,7 +213,7 @@ mod tests {
         )
         .await;
 
-        let event = bus_wait::next_event("a spawn request", &mut sub).await;
+        let event = next_event("a spawn request", &mut sub).await;
         assert_eq!(event.source_label, "action:morning digest");
 
         let locked = action_store.lock().await;
@@ -297,10 +297,10 @@ mod tests {
         .await;
 
         let mut texts = vec![
-            bus_wait::next_event("the first held-action notice", &mut notices)
+            next_event("the first held-action notice", &mut notices)
                 .await
                 .message,
-            bus_wait::next_event("the second held-action notice", &mut notices)
+            next_event("the second held-action notice", &mut notices)
                 .await
                 .message,
         ];
@@ -337,7 +337,7 @@ mod tests {
             &ModelCatalog::default(),
         )
         .await;
-        let event = bus_wait::next_event("the valid action's spawn", &mut spawns).await;
+        let event = next_event("the valid action's spawn", &mut spawns).await;
         assert_eq!(event.source_label, "action:explicit model");
         assert_eq!(
             event.model,

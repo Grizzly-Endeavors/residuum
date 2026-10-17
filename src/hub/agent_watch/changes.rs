@@ -249,6 +249,19 @@ impl AgentChangeReceiver {
 }
 
 #[cfg(test)]
+impl residuum_core::testing::wait::Recv for AgentChangeReceiver {
+    type Item = AgentChange;
+
+    async fn recv_next(&mut self) -> Option<Self::Item> {
+        self.recv().await
+    }
+
+    fn try_next(&mut self) -> Option<Self::Item> {
+        self.try_recv()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

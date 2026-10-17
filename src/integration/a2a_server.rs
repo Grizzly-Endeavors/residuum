@@ -31,14 +31,15 @@ use crate::a2a::static_directory::StaticAgentDirectory;
 use crate::a2a::task_store::{CALLER_METADATA_KEY, FileTaskStore, SharedTaskStore};
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
-use crate::background::HopLimits;
+use crate::agent::hop::HopLimits;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::background::runtime::{SessionRuntime, SessionSpawnRequest};
 use crate::background::session_tools::{SessionToolFactory as _, SessionToolScope};
 use crate::background::store::SessionStore;
-use crate::background::subagent::{SubAgentResources, test_memory_extras};
+use crate::background::subagent::SubAgentResources;
+use crate::background::testing::test_memory_extras;
 use crate::background::types::SubAgentConfig;
+use crate::background::{SessionRuntime, SessionSpawnRequest};
 use crate::bus::{
     BusHandle, EndpointRegistry, Publisher, SessionAddress, SpawnRequestEvent, topics,
 };
@@ -417,7 +418,7 @@ fn build_harness_runtime(
         Arc::clone(session_store),
         Arc::new(tokio::sync::Semaphore::new(8)),
         background_config,
-        crate::background::runtime::SessionRuntimeHandles {
+        crate::background::SessionRuntimeHandles {
             publisher: bus_handle.publisher(),
             tz: chrono_tz::UTC,
             messenger: Arc::clone(messenger),
@@ -537,10 +538,10 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
 
 /// Everything [`spawn_mini_background_listener`] needs to turn a
 /// [`SpawnRequestEvent`] into a real session run, standing in for the
-/// production `background::listener::spawn_listener` +
+/// production `background::spawn_listener` +
 /// `spawn_context::build_spawn_resources` pipeline: this test drives
 /// `SessionRuntime::spawn` directly with a scripted provider instead of a
-/// real LLM, exactly as `background/runtime.rs`'s own tests do.
+/// real LLM, exactly as `crates/background/src/runtime.rs`'s own tests do.
 struct MiniListenerDeps {
     runtime: Arc<SessionRuntime>,
     session_registry: Arc<SessionRegistry>,

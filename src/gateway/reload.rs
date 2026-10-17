@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use crate::background::spawn_context::SpawnContext;
+use crate::background::SpawnContext;
 use crate::bus::notice::{publish_notice, publish_reload_notice};
 use crate::bus::{ReloadOutcome, ReloadedFiles};
 use crate::config::Config;
@@ -712,8 +712,7 @@ fn build_spawn_context(
         observer,
         merge_writer: Arc::clone(&rt.merge_writer),
         messenger: Arc::clone(&rt.agent_messenger),
-        bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
-        ),
+        bg_tier_active_index: crate::background::BackgroundTierActiveIndex::default(),
     })
 }
 

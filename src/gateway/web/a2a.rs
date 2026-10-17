@@ -484,7 +484,7 @@ mod tests {
             memory_dir: None,
             reload_tx: None,
             scope: crate::hub::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
         }
     }
 
@@ -498,7 +498,7 @@ mod tests {
             Arc::new(crate::background::store::SessionStore::new(
                 dir.join("sessions"),
             )),
-            crate::background::HopLimits { soft: 8, hard: 32 },
+            crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
         let tracker = RemoteTaskTracker::load(
             dir.join("outbound.json"),

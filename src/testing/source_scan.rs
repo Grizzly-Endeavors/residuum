@@ -557,7 +557,7 @@ const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
         "makes a directory read-only (0o555) and restores it (0o755)",
     ),
     (
-        "src/checkpoints/engine.rs",
+        "crates/checkpoints/src/engine.rs",
         2,
         "makes an object directory unwritable (0o500) and restores it (0o700)",
     ),
@@ -981,11 +981,11 @@ mod tests {
         let sources = crate_sources();
         let production = [
             (
-                "src/agent/turn.rs",
+                "crates/agent/src/turn.rs",
                 "use tokio_util::sync::CancellationToken;",
             ),
             (
-                "src/agent/turn.rs",
+                "crates/agent/src/turn.rs",
                 "tokio::time::sleep(std::time::Duration::from_millis(500)).await;",
             ),
             (
@@ -1000,7 +1000,7 @@ mod tests {
             );
         }
         let test = [
-            ("src/agent/turn.rs", "use tokio::sync::mpsc;"),
+            ("crates/agent/src/turn.rs", "use tokio::sync::mpsc;"),
             (
                 "src/hub/host.rs",
                 "pub(crate) fn reloads_finished(&self, name: &str) -> Option<u64> {",
@@ -1011,7 +1011,7 @@ mod tests {
             ),
             // Below fake-tool scripts whose raw strings hold a column-0 `}`.
             (
-                "src/interfaces/teams/setup_job.rs",
+                "crates/interfaces/src/teams/setup_job.rs",
                 "async fn test_job_failure_mid_provision_records_created_and_retry() {",
             ),
         ];

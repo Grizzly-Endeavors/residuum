@@ -690,12 +690,12 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::bus::testing::next_event;
     use crate::bus::{NotifyName, SYSTEM_CHANNEL, Subscriber};
     use crate::config::WorkspaceLayout;
     use crate::inference::testing::model::GatedProvider;
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
-    use crate::testing::bus_wait;
     use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
 
@@ -782,7 +782,7 @@ mod tests {
         active: bool,
     ) {
         loop {
-            let event = bus_wait::next_event("a memory cycle activity signal", activity).await;
+            let event = next_event("a memory cycle activity signal", activity).await;
             if event.kind == PostTurnActivityKind::Memory && event.active == active {
                 return;
             }

@@ -1,17 +1,5 @@
-src/bus/ residuum-bus
-src/workspace/ residuum-workspace
-src/inbox/ residuum-workspace
-src/checkpoints/ residuum-checkpoints
-src/notify/ residuum-notify
-src/pulse/ residuum-proactivity
-src/actions/ residuum-proactivity
-src/agent/ residuum-agent
-src/subconscious/ residuum-agent
-src/background/ residuum-background
 src/a2a/ residuum-a2a
 src/tools/ residuum-tools
-src/interfaces/ residuum-interfaces
 src/hub/ residuum-hub
 src/gateway/ residuum-gateway
 src/gateway/startup/tools.rs residuum-tools
-src/protocol/ residuum-protocol

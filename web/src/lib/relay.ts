@@ -2,7 +2,7 @@
 //
 // Messages between agents reach a transcript as user-role text with a header
 // the backend writes (`AgentMessageEvent::format_for_agent` in
-// `src/bus/events.rs`), plus a structured `agent_sender` field. The field is
+// `crates/bus/src/events.rs`), plus a structured `agent_sender` field. The field is
 // what the UI trusts: anyone can type the header. The header is only honoured
 // for history written before the field existed, and only where a person
 // couldn't have typed it. Keep these patterns in step with that function.

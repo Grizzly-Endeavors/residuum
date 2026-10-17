@@ -485,7 +485,7 @@ pub fn register_action_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::bus_wait;
+    use crate::bus::testing::bus_barrier;
     use crate::tools::{FileTracker, PathPolicy};
 
     #[test]
@@ -540,7 +540,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "{}", result.output);
-        bus_wait::bus_barrier(bus).await;
+        bus_barrier(bus).await;
         !added.drain().is_empty()
     }
 

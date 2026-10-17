@@ -24,6 +24,7 @@ use crate::background::team::{
     A2aVisibility, Actor, AgentErrorKind, AgentState, CreateAgentRequest, LifecycleError,
     TeamDirectory,
 };
+use crate::bus::testing::bus_barrier;
 use crate::config::{HubConfig, WorkspaceLayout};
 use crate::hub::directory::AgentDirectory;
 use crate::hub::host::AgentHost;
@@ -35,7 +36,6 @@ use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{mount_reply, write_agent};
 use crate::hub::types::{AgentActivity, AgentPatch, HubEvent, RestoreAgentRequest};
 use crate::inference::testing::model::GatedModel;
-use crate::testing::bus_wait;
 use crate::workspace::watch::WatchHealth;
 use residuum_core::testing::gate::Gate;
 use residuum_core::testing::ports::reserve_port;
@@ -1356,7 +1356,7 @@ fn is_hub_level(event: &CapturedEvent) -> bool {
     ];
     let hub_prefixes = [
         "residuum::hub",
-        "residuum::background::team",
+        "residuum_background::team",
         "residuum_net::tunnel",
         "residuum::daemon",
     ];
@@ -2527,7 +2527,7 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
         panic!("the WebSocket closed before it answered the ping");
     })
     .await;
-    bus_wait::bus_barrier(&agent_watch::agent_bus(&hub, "alpha")).await;
+    bus_barrier(&agent_watch::agent_bus(&hub, "alpha")).await;
     hub.gate("alpha").open_all();
 
     let replies = wait::guarded("both messages to be answered", async {

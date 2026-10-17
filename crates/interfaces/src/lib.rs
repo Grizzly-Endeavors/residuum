@@ -1,0 +1,870 @@
+//! Communication interfaces between the user and the agent.
+
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;
+
+pub(crate) mod boot_retry;
+pub(crate) mod chat_state;
+pub mod chunking;
+pub mod commands;
+pub(crate) mod context_buffer;
+pub mod discord;
+mod outbound;
+pub(crate) mod reply_targets;
+pub mod teams;
+pub mod telegram;
+pub mod webhook;
+
+use std::path::Path;
+
+use residuum_background::registry::{SessionRegistry, conversation_session_address};
+use residuum_bus::origin::{ConversationContext, ConversationKind};
+use residuum_bus::{
+    BusError, BusHandle, ConversationTypingEvent, EndpointName, ErrorEvent, IntermediateEvent,
+    ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
+};
+
+/// Common subscriber fields shared by Discord, Telegram, and similar interfaces.
+pub(crate) struct BaseSubscribers {
+    pub(crate) response: Subscriber<ResponseEvent>,
+    /// Conversation sessions' turn output for this endpoint (distinct from
+    /// `response`, which carries the main agent's replies and `send_message`
+    /// posts — see [`residuum_bus::SessionResponseEvent`]).
+    pub(crate) session_response: Subscriber<SessionResponseEvent>,
+    pub(crate) turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    /// A conversation session's own turn start/end, for a typing indicator
+    /// on its conversation — the session equivalent of `turn_lifecycle`,
+    /// keyed by conversation id instead of correlation id.
+    pub(crate) conversation_typing: Subscriber<ConversationTypingEvent>,
+    pub(crate) intermediate: Subscriber<IntermediateEvent>,
+    /// Failures of main-agent turns this endpoint started. System notices
+    /// and other errors are not subscribed: an external chat carries only
+    /// conversation, and the web UI shows the rest.
+    pub(crate) turn_error: Subscriber<ErrorEvent>,
+}
+
+impl BaseSubscribers {
+    pub(crate) async fn new(bus_handle: &BusHandle, ep: EndpointName) -> Result<Self, BusError> {
+        Ok(Self {
+            response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            session_response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            conversation_typing: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            intermediate: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            turn_error: bus_handle.subscribe(topics::Endpoint(ep)).await?,
+        })
+    }
+}
+
+/// Bundled senders for spawning a chat adapter (Discord or Telegram).
+#[derive(Clone)]
+pub struct AdapterSenders {
+    pub publisher: residuum_bus::Publisher,
+    pub bus_handle: BusHandle,
+    pub reload: residuum_bus::control::ReloadSender,
+    pub command: tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
+    pub stop: tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
+    /// Looked up when a `/stop` command targets a conversation session
+    /// rather than main — see `dispatch_stop_request`.
+    pub session_registry: std::sync::Arc<SessionRegistry>,
+    /// Where the adapter registers the conversations it can reach.
+    pub conversations: residuum_bus::conversations::ConversationDirectory,
+}
+
+/// Tell `main` that a conversation session's turn output could not be
+/// delivered to its own conversation.
+///
+/// A session never talks to the owner directly and its own conversation
+/// can't show a delivery failure either (the failure is precisely that the
+/// interface couldn't reach it), so this is the only way the failure becomes
+/// visible to the agent system at all — `main` decides whether the owner
+/// needs to hear about it. Logged at `error` regardless of whether the
+/// notice itself reaches main.
+pub(crate) async fn notify_main_of_undeliverable_session_output(
+    publisher: &residuum_bus::Publisher,
+    session_address: &residuum_bus::SessionAddress,
+    conversation_id: &str,
+    reason: &str,
+) {
+    tracing::error!(
+        session = %session_address,
+        conversation = %conversation_id,
+        reason,
+        "conversation session's output could not be delivered; notifying main"
+    );
+    let event = residuum_bus::MessageEvent::from_background(format!(
+        "[Delivery Failed] session {session_address}'s reply to conversation {conversation_id} \
+         could not be delivered: {reason}"
+    ));
+    if let Err(e) = publisher.publish(topics::UserMessage, event).await {
+        tracing::warn!(error = %e, "failed to notify main about undeliverable session output");
+    }
+}
+
+/// Channels a chat adapter needs to carry out slash-command side effects.
+pub(crate) struct CommandDispatch<'a> {
+    pub(crate) reload_tx: &'a residuum_bus::control::ReloadSender,
+    pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
+    pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
+    /// Looked up to stop a conversation session's turn — see
+    /// `dispatch_stop_request` — never touched by any other command.
+    pub(crate) session_registry: &'a SessionRegistry,
+    pub(crate) inbox_dir: &'a Path,
+    pub(crate) tz: chrono_tz::Tz,
+    /// Publishes the spawn request `/multitask` starts its fork with.
+    pub(crate) publisher: &'a residuum_bus::Publisher,
+    /// Main's saved conversation (`recent_messages.json`), which `/multitask`
+    /// forks.
+    pub(crate) main_conversation: &'a Path,
+}
+
+/// Run a slash command typed into a chat interface and return the reply text.
+///
+/// `interface` (e.g. `"telegram"`) labels logs and the inbox source;
+/// `sender_name` is who typed it. `conversation` is the conversation the
+/// command was typed in, exactly as it would appear on an ordinary message
+/// from the same sender — `None` only for an interface with no conversation
+/// concept. It decides `/stop`'s target; every other command ignores it.
+pub(crate) async fn run_chat_command(
+    name: &str,
+    args: Option<&str>,
+    dispatch: &CommandDispatch<'_>,
+    interface: &str,
+    sender_name: &str,
+    conversation: Option<&ConversationContext>,
+) -> String {
+    let result = commands::execute_command(name, args, &commands::CommandContext::default());
+    let source = format!("{interface} command");
+    match result.side_effect {
+        Some(commands::CommandSideEffect::Reload) => {
+            tracing::info!(interface, "reload requested via chat command");
+            if dispatch
+                .reload_tx
+                .send(residuum_bus::control::ReloadSignal::Agent)
+                .is_err()
+            {
+                tracing::warn!(command = %name, interface, "reload_tx closed, reload dropped");
+            }
+            result.response
+        }
+        Some(commands::CommandSideEffect::ServerCommand {
+            name: server_command,
+            args: server_args,
+        }) => {
+            dispatch_server_command(
+                dispatch.command_tx,
+                server_command,
+                server_args,
+                result.response,
+                &source,
+            )
+            .await
+        }
+        Some(commands::CommandSideEffect::InboxAdd(body)) => {
+            inbox_add_from_command(
+                dispatch.inbox_dir,
+                &body,
+                &format!("{interface}:{sender_name}"),
+                dispatch.tz,
+                result.response,
+            )
+            .await
+        }
+        Some(commands::CommandSideEffect::Stop) => {
+            dispatch_stop_request(
+                dispatch.stop_tx,
+                dispatch.session_registry,
+                interface,
+                conversation,
+                &source,
+            )
+            .await
+        }
+        Some(commands::CommandSideEffect::StopSession(session_name)) => {
+            tracing::info!(session = %session_name, source = %source, "named session stop requested via chat command");
+            dispatch_stop_named_session(dispatch.session_registry, &session_name)
+        }
+        Some(commands::CommandSideEffect::ListSessions) => {
+            format_session_list(dispatch.session_registry)
+        }
+        Some(commands::CommandSideEffect::Multitask(task)) => {
+            start_multitask(dispatch, interface, conversation, task).await
+        }
+        None => result.response,
+    }
+}
+
+/// Fork the main conversation into a session that works on `task` —
+/// `/multitask <task>` — and reply with where it is. Only main's own
+/// conversation (the owner's DM, per [`resolve_stop_target`]) can be forked;
+/// the fork posts its replies back into that DM.
+async fn start_multitask(
+    dispatch: &CommandDispatch<'_>,
+    interface: &str,
+    conversation: Option<&ConversationContext>,
+    task: String,
+) -> String {
+    if matches!(
+        resolve_stop_target(interface, conversation),
+        StopTarget::Conversation(_)
+    ) {
+        return "/multitask forks the conversation you and I have in our direct messages, \
+                so it only works there."
+            .to_string();
+    }
+    let history =
+        match residuum_background::load_main_conversation(dispatch.main_conversation).await {
+            Ok(history) => history,
+            Err(e) => {
+                tracing::error!(
+                    error = format!("{e:#}"),
+                    interface,
+                    "couldn't read main's conversation for /multitask"
+                );
+                return "Couldn't read our conversation to fork it, so nothing was started. \
+                    The logs have the details."
+                    .to_string();
+            }
+        };
+    let event = residuum_background::OwnerSessionStart {
+        prompt: task,
+        model: residuum_config::ModelSelector::MEDIUM,
+        fork_of: Some(history),
+        conversation: conversation.map(|ctx| residuum_bus::ConversationTarget {
+            endpoint: interface.to_string(),
+            conversation_id: ctx.id.clone(),
+        }),
+    }
+    .into_spawn_event();
+    let address = event.address.clone();
+    if let Err(e) = dispatch.publisher.publish(topics::Background, event).await {
+        tracing::warn!(error = %e, interface, "failed to publish a /multitask fork");
+        return "Couldn't start the fork because I'm shutting down or restarting. \
+                Try again shortly."
+            .to_string();
+    }
+    tracing::info!(address = %address, interface, "owner forked main's conversation with /multitask");
+    format!(
+        "Forked into session {address}. Its replies will show up here, starting with \
+         \"{address}:\". Open it from Activity in the web UI to follow up, or stop it with \
+         /stop {address}."
+    )
+}
+
+/// Stop a named session — `/stop <name>` — through the same registry stop
+/// path as the web UI's per-session stop button
+/// ([`residuum_background::registry::stop_named_session`]): a running turn is
+/// interrupted and an idle session is ended, so a session listed by
+/// `/sessions` can always be stopped by name.
+fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
+    match residuum_background::registry::stop_named_session(session_registry, name) {
+        Ok(()) => format!("stopping session '{name}'."),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// Build the `/sessions` response: every live session's address, purpose,
+/// state, and elapsed time since it started.
+fn format_session_list(session_registry: &SessionRegistry) -> String {
+    let mut sessions = session_registry.list_live();
+    if sessions.is_empty() {
+        return "No sessions are running.".to_string();
+    }
+    sessions.sort_by(|a, b| a.address.as_ref().cmp(b.address.as_ref()));
+
+    let now = chrono::Utc::now();
+    let mut lines = vec![format!("{} running session(s):", sessions.len())];
+    for info in sessions {
+        let elapsed = now.signed_duration_since(info.started_at);
+        lines.push(format!(
+            "  {} [{}] {} ({})",
+            info.address,
+            info.state.as_str(),
+            info.purpose,
+            format_elapsed(elapsed)
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Format a duration as a short, human "Xm" / "Xh Ym" label for the
+/// `/sessions` list. Negative or zero durations (clock skew, or a session
+/// that just started) render as `"0m"` rather than something confusing.
+fn format_elapsed(elapsed: chrono::Duration) -> String {
+    let total_mins = elapsed.num_minutes().max(0);
+    let hours = total_mins / 60;
+    let mins = total_mins % 60;
+    if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
+/// Where a `/stop` command should be aimed, resolved from the conversation
+/// it was typed in — the same routing rule as an ordinary message (see
+/// [`residuum_bus::origin::MessageOrigin::belongs_to_main`]): the
+/// owner's own DM (or an interface with no conversation concept, i.e. the
+/// web UI) targets main, every other admitted conversation — a group chat,
+/// a channel, or a non-owner DM — targets that conversation's own session
+/// instead. Every chat interface already restricts commands to the owner,
+/// so `conversation.is_owner` is always true by the time a command reaches
+/// this; it's still checked so the rule reads the same as the one for
+/// ordinary messages rather than silently relying on that.
+enum StopTarget {
+    /// Stop the main agent's current turn.
+    Main,
+    /// Stop this conversation's own session, addressed the same way
+    /// [`residuum_background::ConversationRouter`] addresses it.
+    Conversation(residuum_bus::SessionAddress),
+}
+
+fn resolve_stop_target(endpoint: &str, conversation: Option<&ConversationContext>) -> StopTarget {
+    match conversation {
+        Some(ctx) if !(ctx.kind == ConversationKind::Personal && ctx.is_owner) => {
+            StopTarget::Conversation(conversation_session_address(endpoint, &ctx.id))
+        }
+        _ => StopTarget::Main,
+    }
+}
+
+#[tracing::instrument(skip_all, fields(source = %source))]
+pub(crate) async fn inbox_add_from_command(
+    inbox_dir: &Path,
+    body: &str,
+    source: &str,
+    tz: chrono_tz::Tz,
+    ok_response: String,
+) -> String {
+    let title = residuum_workspace::inbox::derive_title(body);
+    match residuum_workspace::inbox::quick_add(inbox_dir, &title, body, source, tz).await {
+        Ok(_) => ok_response,
+        Err(e) => format!("failed to add inbox item: {e}"),
+    }
+}
+
+/// Dispatch a named server command and wait for its reply.
+///
+/// Creates a oneshot channel, sends the command, and waits up to 10 seconds
+/// for a response. Falls back to `fallback` on timeout or channel close.
+#[tracing::instrument(skip_all, fields(command = %name, source = %source))]
+pub(crate) async fn dispatch_server_command(
+    command_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
+    name: &'static str,
+    args: Option<String>,
+    fallback: String,
+    source: &str,
+) -> String {
+    use std::time::Duration;
+    tracing::info!(command = %name, source = %source, "server command dispatched");
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if let Err(e) = command_tx.try_send(residuum_bus::control::ServerCommand {
+        name: name.to_string(),
+        args,
+        reply_tx: Some(reply_tx),
+    }) {
+        tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
+    }
+    match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
+        Ok(Ok(Ok(msg))) => msg,
+        Ok(Ok(Err(reason))) => reason,
+        Ok(Err(_)) => {
+            tracing::warn!(command = %name, "server command reply channel closed before response");
+            fallback
+        }
+        Err(_) => {
+            tracing::warn!(command = %name, timeout_secs = 10, "server command timed out waiting for reply");
+            fallback
+        }
+    }
+}
+
+/// Dispatch a `/stop` command to whichever turn it targets and wait for the
+/// outcome: the main agent's, or the session behind the conversation it was
+/// typed in — see [`resolve_stop_target`] and [`StopTarget`].
+///
+/// A conversation session is stopped through the session registry
+/// directly (the same synchronous, atomic check-and-cancel the web UI's
+/// per-session stop uses via
+/// [`residuum_background::registry::SessionRegistry::stop_if_running`]), so
+/// there is no channel for a stale request to sit in — the reply always
+/// reflects the session's actual state at the moment this call happens.
+///
+/// Main is stopped through `stop_tx` instead: unlike `dispatch_server_command`,
+/// this doesn't go through `command_tx` — that pipeline only drains between
+/// turns, too late to stop one in progress. `stop_tx` reaches the active
+/// turn's own select loop directly, which answers every request it reads
+/// (including one that arrives with nothing running); a request that
+/// arrives in the window between two turns is drained and answered by
+/// `handle_idle_stop_request` or `drain_stale_stop_requests`, so it can
+/// never be held and applied to a turn other than the one running when it
+/// was handled.
+#[tracing::instrument(skip_all, fields(source = %source))]
+pub(crate) async fn dispatch_stop_request(
+    stop_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
+    session_registry: &SessionRegistry,
+    endpoint: &str,
+    conversation: Option<&ConversationContext>,
+    source: &str,
+) -> String {
+    match resolve_stop_target(endpoint, conversation) {
+        StopTarget::Conversation(address) => {
+            tracing::info!(source = %source, %address, "stop requested for conversation session");
+            if session_registry.stop_if_running(&address) {
+                tracing::info!(%address, "stopped the conversation session's running turn");
+                "stopped the current turn.".to_string()
+            } else {
+                "nothing is running right now.".to_string()
+            }
+        }
+        StopTarget::Main => dispatch_main_stop_request(stop_tx, source).await,
+    }
+}
+
+/// Stop the main agent's currently running turn and wait for the outcome.
+async fn dispatch_main_stop_request(
+    stop_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
+    source: &str,
+) -> String {
+    use std::time::Duration;
+    tracing::info!(source = %source, "stop requested for main");
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    if let Err(e) = stop_tx.try_send(residuum_bus::control::StopRequest {
+        reply_to: None,
+        result_tx: Some(result_tx),
+    }) {
+        tracing::warn!(source = %source, error = %e, "failed to dispatch stop request");
+        return "couldn't reach the agent to stop it — try again in a moment.".to_string();
+    }
+    match tokio::time::timeout(Duration::from_secs(5), result_rx).await {
+        Ok(Ok(true)) => "stopped the current turn.".to_string(),
+        Ok(Ok(false)) => "nothing is running right now.".to_string(),
+        Ok(Err(_)) => {
+            tracing::warn!(source = %source, "stop reply channel closed before response");
+            "nothing is running right now.".to_string()
+        }
+        Err(_) => {
+            tracing::warn!(source = %source, "stop request timed out waiting for reply");
+            "couldn't confirm the stop in time — it may still have worked.".to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use residuum_background::registry::SessionRegistry;
+    use residuum_bus::control::StopRequest;
+    use residuum_bus::session::{SessionCategory, SessionInfo, SessionState};
+    use residuum_bus::{EventTrigger, MessageEvent, SessionAddress, Subscriber};
+    use residuum_config::ModelSelector;
+    use tokio_util::sync::CancellationToken;
+
+    fn session_info(address: &str, state: SessionState) -> SessionInfo {
+        SessionInfo {
+            address: SessionAddress::from(address),
+            run_id: "run-1".to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state,
+            spawner: None,
+            depth: 1,
+            purpose: "chat-1".to_string(),
+            agent_skill: None,
+            model: ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: None,
+            started_at: chrono::Utc::now(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        }
+    }
+
+    fn group_chat(id: &str) -> ConversationContext {
+        ConversationContext {
+            id: id.to_string(),
+            kind: ConversationKind::GroupChat,
+            is_owner: true,
+        }
+    }
+
+    fn owner_dm(id: &str) -> ConversationContext {
+        ConversationContext {
+            id: id.to_string(),
+            kind: ConversationKind::Personal,
+            is_owner: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn group_chat_stop_reaches_the_conversation_session_and_not_main() {
+        let registry = SessionRegistry::new();
+        let address = conversation_session_address("discord", "chan-1");
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info(address.as_ref(), SessionState::Running),
+                token.clone(),
+            )
+            .unwrap();
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+
+        let reply = dispatch_stop_request(
+            &stop_tx,
+            &registry,
+            "discord",
+            Some(&group_chat("chan-1")),
+            "test",
+        )
+        .await;
+
+        assert_eq!(reply, "stopped the current turn.");
+        assert!(
+            token.is_cancelled(),
+            "the conversation session's turn must be the one stopped"
+        );
+        assert!(
+            stop_rx.try_recv().is_err(),
+            "main's stop channel must never be touched by a conversation's /stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_dm_stop_reaches_main_and_never_touches_a_session() {
+        let registry = SessionRegistry::new();
+        // Registered at the address a (wrongly) session-targeted stop would
+        // hit, so a regression that ignores `belongs_to_main` shows up here.
+        let address = conversation_session_address("discord", "dm-1");
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info(address.as_ref(), SessionState::Running),
+                token.clone(),
+            )
+            .unwrap();
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+        residuum_core::util::spawn_in_span(async move {
+            let req = stop_rx.recv().await.unwrap();
+            req.result_tx.unwrap().send(true).ok();
+        });
+
+        let reply = dispatch_stop_request(
+            &stop_tx,
+            &registry,
+            "discord",
+            Some(&owner_dm("dm-1")),
+            "test",
+        )
+        .await;
+
+        assert_eq!(reply, "stopped the current turn.");
+        assert!(
+            !token.is_cancelled(),
+            "the owner's own DM must stop main, never a conversation session"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_ui_stop_with_no_conversation_reaches_main() {
+        let registry = SessionRegistry::new();
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+        residuum_core::util::spawn_in_span(async move {
+            let req = stop_rx.recv().await.unwrap();
+            req.result_tx.unwrap().send(true).ok();
+        });
+
+        let reply = dispatch_stop_request(&stop_tx, &registry, "ws", None, "test").await;
+
+        assert_eq!(reply, "stopped the current turn.");
+    }
+
+    #[tokio::test]
+    async fn stop_with_nothing_running_in_the_conversation_reports_that_and_is_discarded() {
+        let registry = SessionRegistry::new();
+        let address = conversation_session_address("discord", "chan-2");
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info(address.as_ref(), SessionState::Idle),
+                token.clone(),
+            )
+            .unwrap();
+        let (stop_tx, _stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+
+        let reply = dispatch_stop_request(
+            &stop_tx,
+            &registry,
+            "discord",
+            Some(&group_chat("chan-2")),
+            "test",
+        )
+        .await;
+
+        assert_eq!(reply, "nothing is running right now.");
+        assert!(
+            !token.is_cancelled(),
+            "a stop request with nothing running must not be held and applied to whatever \
+             the session runs next"
+        );
+        assert_eq!(
+            registry.get(&address).unwrap().state,
+            SessionState::Idle,
+            "the idle session must be left exactly as it was"
+        );
+    }
+
+    #[tokio::test]
+    async fn undeliverable_session_output_reaches_main_as_background_input() {
+        let bus_handle = residuum_bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        notify_main_of_undeliverable_session_output(
+            &publisher,
+            &SessionAddress::from("external-discord-0001"),
+            "chan-1",
+            "the bot is no longer in that channel",
+        )
+        .await;
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert!(event.content.contains("external-discord-0001"));
+        assert!(event.content.contains("chan-1"));
+        assert!(event.content.contains("no longer in that channel"));
+        assert!(
+            event.origin.belongs_to_main(),
+            "the notice must reach main, never a conversation session"
+        );
+    }
+
+    /// What a `/multitask` test needs to run `start_multitask`: the channels a
+    /// dispatch borrows, a saved main conversation, and the bus its fork's
+    /// spawn request is published on.
+    struct MultitaskFixture {
+        bus: residuum_bus::BusHandle,
+        reload_tx: residuum_bus::control::ReloadSender,
+        command_tx: tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
+        stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
+        registry: SessionRegistry,
+        publisher: residuum_bus::Publisher,
+        dir: tempfile::TempDir,
+    }
+
+    impl MultitaskFixture {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            residuum_memory::recent_messages::append_recent_messages(
+                &dir.path().join("recent_messages.json"),
+                &[residuum_inference::Message::user(
+                    "should we repaint the shed?",
+                )],
+                residuum_memory::types::Visibility::User,
+                chrono_tz::UTC,
+                Some("turn-1"),
+            )
+            .await
+            .unwrap();
+            let bus = residuum_bus::spawn_broker();
+            Self {
+                publisher: bus.publisher(),
+                bus,
+                reload_tx: tokio::sync::mpsc::unbounded_channel().0,
+                command_tx: tokio::sync::mpsc::channel(1).0,
+                stop_tx: tokio::sync::mpsc::channel(1).0,
+                registry: SessionRegistry::new(),
+                dir,
+            }
+        }
+
+        fn main_conversation(&self) -> std::path::PathBuf {
+            self.dir.path().join("recent_messages.json")
+        }
+
+        async fn multitask(&self, conversation: &ConversationContext, task: &str) -> String {
+            let main_conversation = self.main_conversation();
+            let dispatch = CommandDispatch {
+                reload_tx: &self.reload_tx,
+                command_tx: &self.command_tx,
+                stop_tx: &self.stop_tx,
+                session_registry: &self.registry,
+                inbox_dir: self.dir.path(),
+                tz: chrono_tz::UTC,
+                publisher: &self.publisher,
+                main_conversation: &main_conversation,
+            };
+            run_chat_command(
+                "multitask",
+                Some(task),
+                &dispatch,
+                "telegram",
+                "owner",
+                Some(conversation),
+            )
+            .await
+        }
+    }
+
+    #[tokio::test]
+    async fn multitask_in_the_owner_s_dm_forks_main_and_replies_into_that_dm() {
+        let fx = MultitaskFixture::new().await;
+        let mut spawns: Subscriber<residuum_bus::SpawnRequestEvent> =
+            fx.bus.subscribe(topics::Background).await.unwrap();
+
+        let reply = fx.multitask(&owner_dm("dm-1"), "price out the paint").await;
+
+        let spawn =
+            residuum_bus::testing::next_event("the fork's spawn request", &mut spawns).await;
+        assert!(reply.contains(spawn.address.as_ref()), "{reply}");
+        assert_eq!(spawn.prompt, "price out the paint");
+        assert_eq!(spawn.spawner, None, "its replies never go to main");
+        let carried: Vec<&str> = spawn
+            .carried_history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(carried, ["should we repaint the shed?"]);
+        let target = spawn.conversation.expect("the fork replies into the DM");
+        assert_eq!(target.endpoint, "telegram");
+        assert_eq!(target.conversation_id, "dm-1");
+    }
+
+    #[tokio::test]
+    async fn multitask_in_a_group_chat_is_refused() {
+        let fx = MultitaskFixture::new().await;
+
+        let reply = fx
+            .multitask(&group_chat("group-1"), "price out the paint")
+            .await;
+
+        assert!(reply.contains("only works there"), "{reply}");
+    }
+
+    #[test]
+    fn multitask_without_a_task_shows_its_usage() {
+        let result = commands::execute_command(
+            "multitask",
+            Some("  "),
+            &commands::CommandContext::default(),
+        );
+
+        assert_eq!(result.response, "usage: /multitask <task>");
+        assert!(result.side_effect.is_none());
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_stops_a_running_session() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("pulse-email_check-0001", SessionState::Running),
+                token.clone(),
+            )
+            .unwrap();
+
+        let reply = dispatch_stop_named_session(&registry, "pulse-email_check-0001");
+
+        assert_eq!(reply, "stopping session 'pulse-email_check-0001'.");
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_ends_an_idle_session_like_the_web_ui() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("scheduled-backup-0001", SessionState::Idle),
+                token.clone(),
+            )
+            .unwrap();
+
+        let reply = dispatch_stop_named_session(&registry, "scheduled-backup-0001");
+
+        assert_eq!(reply, "stopping session 'scheduled-backup-0001'.");
+        assert!(
+            token.is_cancelled(),
+            "an idle session is ended, the same as the web UI's stop button"
+        );
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_refuses_main() {
+        let registry = SessionRegistry::new();
+        let reply = dispatch_stop_named_session(&registry, "main");
+        assert_eq!(reply, "The main agent can't be stopped as a session.");
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_reports_an_unknown_name() {
+        let registry = SessionRegistry::new();
+        let reply = dispatch_stop_named_session(&registry, "no-such-session");
+        assert_eq!(
+            reply,
+            "no-such-session isn't running, so there's nothing to stop."
+        );
+    }
+
+    #[test]
+    fn format_session_list_reports_nothing_running() {
+        let registry = SessionRegistry::new();
+        assert_eq!(format_session_list(&registry), "No sessions are running.");
+    }
+
+    #[test]
+    fn format_session_list_includes_address_state_and_purpose() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("pulse-email_check-0001", SessionState::Running),
+                token,
+            )
+            .unwrap();
+
+        let listing = format_session_list(&registry);
+
+        assert!(listing.contains("1 running session"));
+        assert!(listing.contains("pulse-email_check-0001"));
+        assert!(listing.contains("running"));
+        assert!(listing.contains("chat-1"), "purpose should be included");
+    }
+
+    #[test]
+    fn format_elapsed_renders_minutes_and_hours() {
+        assert_eq!(format_elapsed(chrono::Duration::minutes(5)), "5m");
+        assert_eq!(format_elapsed(chrono::Duration::minutes(65)), "1h 5m");
+        assert_eq!(
+            format_elapsed(chrono::Duration::seconds(-5)),
+            "0m",
+            "clock skew or a just-started session must not render negative"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_add_from_command_keeps_the_full_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let long_line = "a".repeat(100);
+        let body = format!("{long_line}\nmore body text");
+
+        inbox_add_from_command(
+            dir.path(),
+            &body,
+            "discord:someone",
+            chrono_tz::UTC,
+            "added".to_string(),
+        )
+        .await;
+
+        let mut entries = std::fs::read_dir(dir.path()).unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        let contents = std::fs::read_to_string(entry.path()).unwrap();
+        assert!(
+            contents.contains(&long_line),
+            "the title should keep the full first line, not truncate to 60 chars: {contents}"
+        );
+    }
+}
