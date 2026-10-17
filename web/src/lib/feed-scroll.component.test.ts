@@ -256,6 +256,35 @@ describe("FeedScroller, Home and End on what is in the feed", () => {
     expect(scroller.isFollowing).toBe(true);
   });
 
+  it("leaves them to a media player in the feed, which seeks with them", () => {
+    const { content, scrollTo } = feed();
+    content.insertAdjacentHTML(
+      "beforeend",
+      `<audio id="voice" controls></audio><video id="clip" controls><track kind="captions"></video>`,
+    );
+    for (const id of ["voice", "clip"]) {
+      const player = document.getElementById(id) as HTMLElement;
+      expect(press(player, "Home").defaultPrevented).toBe(false);
+      expect(press(player, "End").defaultPrevented).toBe(false);
+    }
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("leaves them to a widget in the feed that moves with Home and End itself", () => {
+    const { content, scrollTo } = feed();
+    content.insertAdjacentHTML(
+      "beforeend",
+      `<div id="tabs" role="tablist"><button id="tab" role="tab">Notes</button></div>`,
+    );
+    const tab = document.getElementById("tab") as HTMLElement;
+    const tabs = document.getElementById("tabs") as HTMLElement;
+
+    expect(press(tab, "Home").defaultPrevented).toBe(false);
+    expect(press(tab, "End").defaultPrevented).toBe(false);
+    expect(press(tabs, "End").defaultPrevented).toBe(false);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it("leaves them to an area in the feed that scrolls up and down on its own", () => {
     const { content, scrollTo } = feed();
     content.insertAdjacentHTML(

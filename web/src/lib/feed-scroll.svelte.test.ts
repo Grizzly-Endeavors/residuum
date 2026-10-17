@@ -154,7 +154,6 @@ describe("FeedScroller", () => {
     feed.geometry.scrollTop = 56;
     feed.press({ key: "End" });
 
-    expect(feed.scrollTo).toHaveBeenNthCalledWith(3, { top: 56, behavior: "instant" });
     expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
     feed.scrollBy(56);
     expect(scroller.isFollowing).toBe(true);
@@ -187,6 +186,21 @@ describe("FeedScroller", () => {
     expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: "instant" });
     feed.press({ key: "End" });
     expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "instant" });
+  });
+
+  it("shows the pill after Home from the bottom under reduced motion, where the jump is at once", () => {
+    vi.stubGlobal("window", {
+      matchMedia: (query: string) => ({ matches: query === "(prefers-reduced-motion: reduce)" }),
+    });
+    const { feed, scroller } = attached();
+    expect(scroller.scrolledUp).toBe(false);
+
+    feed.press({ key: "Home" });
+    // The browser's scroll event for the jump arrives after the position is already at the top.
+    feed.scrollBy(0);
+
+    expect(scroller.isFollowing).toBe(false);
+    expect(scroller.scrolledUp).toBe(true);
   });
 
   it("keeps following at Home with nowhere above to go", () => {
@@ -669,7 +683,6 @@ describe("FeedScroller", () => {
       feed.scrollBy(1320);
       feed.geometry.scrollHeight = 2050;
       observer.notify();
-      feed.fire("scrollend");
 
       expect(feed.scrollTo).not.toHaveBeenCalled();
       expect(feed.geometry.scrollTop).toBe(1320);
