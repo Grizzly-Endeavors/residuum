@@ -1,0 +1,88 @@
+name: CI Failures Probe
+
+# Throwaway: produces real failure logs for the ci-failures parser fixtures
+# (issues 582 and 580). The broken web files are written by a step at run time,
+# so nothing broken is committed.
+on:
+  pull_request:
+
+jobs:
+  probe-typecheck:
+    name: Probe Type Check
+    runs-on: lab-runners-wide
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Write files with type errors
+        run: |
+          cat > web/src/ProbeTypes.svelte <<'EOF'
+          <script lang="ts">
+            let count: number = 'three';
+            const label: string = count;
+            function greet(name: string): string {
+              return name.toUpperCase();
+            }
+            greet(42);
+          </script>
+
+          <p>{label}</p>
+          EOF
+          cat > web/src/probe-types.ts <<'EOF'
+          export const limit: number = 'ten';
+
+          export function double(value: number): number {
+            return value * 2;
+          }
+
+          export const result: string = double('four');
+          EOF
+
+      - name: Web type check
+        run: cd web && npm run check
+
+  probe-format:
+    name: Probe Format Check
+    runs-on: lab-runners-wide
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Write misformatted files
+        run: |
+          printf 'export const a = {x:1,y:2};\nexport function f( n:number ){return n+1}\n' > web/src/probe-format.ts
+          printf '<script lang="ts">\nlet n = 1\n</script>\n<p   >{n}</p>\n' > web/src/ProbeFormat.svelte
+
+      - name: Web format check
+        run: cd web && npm run format:check
+
+  probe-job-timeout:
+    name: Probe Job Timeout
+    runs-on: lab-runners-wide
+    timeout-minutes: 1
+    steps:
+      - name: Sleep past the job timeout
+        run: sleep 300
+
+  probe-step-timeout:
+    name: Probe Step Timeout
+    runs-on: lab-runners-wide
+    steps:
+      - name: Sleep past the step timeout
+        timeout-minutes: 1
+        run: sleep 300
+
+      - name: Runs after the timed-out step
+        if: always()
+        run: echo after
+
+  probe-long:
+    name: Probe Long Running
+    runs-on: lab-runners-wide
+    steps:
+      - name: Stay in progress
+        run: sleep 600
