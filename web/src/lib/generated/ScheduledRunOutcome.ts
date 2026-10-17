@@ -3,6 +3,12 @@ import type { SessionRunStatus } from "./SessionRunStatus";
 
 /**
  * One run's outcome, for a pulse's or action's "last outcome" in the
- * Schedule place.
+ * Schedule place: the session store's last completed run, or, for a pulse,
+ * a newer fire that ended without a session run (a `script_only` fire, one
+ * stopped during its scripts, or one whose session couldn't start).
  */
-export type ScheduledRunOutcome = { status: SessionRunStatus, at: string, error: string | null, };
+export type ScheduledRunOutcome = { status: SessionRunStatus, 
+/**
+ * When the run finished.
+ */
+at: string, error: string | null, };

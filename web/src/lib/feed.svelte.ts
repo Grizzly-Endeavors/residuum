@@ -516,6 +516,10 @@ export class FeedStore {
         // the main chat feed.
         break;
 
+      case "pulse_fire_changed":
+        // Pulse fires belong to the Schedule place.
+        break;
+
       case "artifact_updated":
       case "artifact_removed":
         // The Workbench follows artifacts on the hub socket.

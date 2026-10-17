@@ -80,6 +80,9 @@ describe("the Scheduled view routes", () => {
       const run = startRun("pulse:inbox_check");
       const [check] = await pulses();
       expect(check?.current_run).toEqual({
+        fire_id: null,
+        phase: "session",
+        started_at: run.started_at,
         address: run.address,
         run_id: run.run_id,
         overlap: null,

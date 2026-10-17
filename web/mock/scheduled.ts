@@ -112,7 +112,14 @@ function currentRun(state: MockState, source: string): ScheduledCurrentRun | nul
   );
   return run === undefined
     ? null
-    : { address: run.address, run_id: run.run_id, overlap: run.overlap };
+    : {
+        fire_id: null,
+        phase: "session",
+        started_at: run.started_at,
+        address: run.address,
+        run_id: run.run_id,
+        overlap: run.overlap,
+      };
 }
 
 /** The newest finished run of `source`, as the Scheduled view shows its outcome. */

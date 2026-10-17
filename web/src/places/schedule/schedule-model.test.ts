@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ActionInfo, PulseInfo } from "../../lib/types";
+import type { ActionInfo, PulseInfo, ScheduledCurrentRun } from "../../lib/types";
 import {
   actionWhen,
   lastRun,
@@ -108,11 +108,25 @@ describe("lastRun", () => {
 
 describe("overlapNote", () => {
   it("names when the run it overlapped started, and is null for a run that didn't", () => {
-    const run = { address: "scheduled-1", run_id: "run-2", overlap: null };
+    const run: ScheduledCurrentRun = {
+      fire_id: "fire-2",
+      phase: "session",
+      started_at: iso(-MINUTE),
+      address: "scheduled-1",
+      run_id: "run-2",
+      overlap: null,
+    };
     expect(overlapNote(run, NOW)).toBeNull();
     expect(
       overlapNote(
-        { ...run, overlap: { previous_run_id: "run-1", previous_started_at: iso(-12 * MINUTE) } },
+        {
+          ...run,
+          overlap: {
+            previous_run_id: "run-1",
+            previous_fire_id: "fire-1",
+            previous_started_at: iso(-12 * MINUTE),
+          },
+        },
         NOW,
       ),
     ).toBe("Started while the run from 12m ago was still going");

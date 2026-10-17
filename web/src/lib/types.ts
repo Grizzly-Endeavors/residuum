@@ -44,6 +44,7 @@ export type {
   RestoreOutcome,
   UndoOutcome,
   CheckpointTrigger,
+  PulseFirePhase,
   PulseOverlap,
   PulseInfo,
   ActionInfo,

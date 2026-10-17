@@ -98,9 +98,16 @@ describe("Schedule", () => {
         pulse("inbox_check", {
           active_hours: "08:00-22:00",
           current_run: {
+            fire_id: "fire-2",
+            phase: "session",
+            started_at: soon(-1),
             address: "scheduled-1",
             run_id: "run-2",
-            overlap: { previous_run_id: "run-1", previous_started_at: soon(-12) },
+            overlap: {
+              previous_run_id: "run-1",
+              previous_fire_id: "fire-1",
+              previous_started_at: soon(-12),
+            },
           },
           last_outcome: { status: "failed", at: soon(-60), error: "the model timed out" },
         }),

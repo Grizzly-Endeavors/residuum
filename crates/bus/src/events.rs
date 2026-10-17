@@ -620,7 +620,7 @@ pub struct PulseOverlap {
     /// `None` while that fire is still running its scripts or waiting for
     /// its session to start.
     pub previous_run_id: Option<String>,
-    /// Id of the earlier fire (see [`crate::PulseFireEvent`]). `None` when
+    /// Id of the earlier fire, which its Stop endpoint takes. `None` when
     /// the earlier run is a session no fire tracks.
     #[serde(default)]
     pub previous_fire_id: Option<String>,
