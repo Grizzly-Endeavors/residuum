@@ -55,8 +55,8 @@ pub(crate) enum TurnKickoff {
         images: Vec<ImageData>,
         /// The agent messages a resume delivers: the turn opens with each
         /// as its own entry, after `context` and ahead of `prompt` (which
-        /// then holds only the resume's other input), and reports each as
-        /// read. Empty for every other trigger.
+        /// then holds only the resume's chat messages, combined, or is
+        /// empty), and reports each as read. Empty for every other trigger.
         delivered: Vec<AgentMessageEvent>,
         /// Whether this is a resume whose `prompt` is the chat messages it
         /// delivers, combined (see
