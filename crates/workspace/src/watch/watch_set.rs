@@ -1,7 +1,7 @@
 //! A WebSocket connection's watched path prefixes, and which changes they
 //! match.
 
-use crate::bus::workspace_change::WorkspaceChange;
+use residuum_bus::workspace_change::WorkspaceChange;
 
 /// A batch with more matching changes than this reaches a connection as a
 /// resync instead of a change list.
@@ -134,7 +134,7 @@ fn normalize_prefix(prefix: String) -> Result<String, InvalidWatchPrefix> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::workspace_change::WorkspaceChangeKind;
+    use residuum_bus::workspace_change::WorkspaceChangeKind;
 
     fn set(prefixes: &[&str]) -> WatchSet {
         WatchSet::parse(prefixes.iter().map(ToString::to_string).collect()).unwrap()

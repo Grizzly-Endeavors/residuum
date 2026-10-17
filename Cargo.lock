@@ -4998,7 +4998,6 @@ dependencies = [
  "jsonschema",
  "mime_guess",
  "nix 0.29.0",
- "notify",
  "objc2",
  "objc2-foundation",
  "objc2-user-notifications",
@@ -5016,6 +5015,7 @@ dependencies = [
  "residuum-net",
  "residuum-skills",
  "residuum-tracing-service",
+ "residuum-workspace",
  "ring",
  "rpassword",
  "rust-embed",
@@ -5268,6 +5268,36 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "residuum-workspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "futures-util",
+ "notify",
+ "reqwest 0.13.3",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-mcp",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "ts-rs",
+ "wiremock",
 ]
 
 [[package]]

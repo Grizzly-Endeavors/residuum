@@ -1,8 +1,8 @@
 //! Identity file loading for agent context assembly.
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
-use crate::config::WorkspaceLayout;
+use residuum_config::WorkspaceLayout;
 
 /// Loaded identity files: the agent's own `SOUL.md` and `BOOTSTRAP.md`, plus
 /// the team layer's `AGENTS.md`, `USER.md` and wiki index.
@@ -123,7 +123,7 @@ async fn read_optional(path: &std::path::Path) -> Result<ReadResult, FatalError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::bootstrap::ensure_workspace;
+    use crate::bootstrap::ensure_workspace;
 
     #[tokio::test]
     async fn load_bootstrap_none_after_deletion() {
@@ -132,7 +132,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -154,7 +154,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )

@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::OwnedMutexGuard;
 
 use super::version::version_token;
-use crate::config::paths::TeamPaths;
+use residuum_config::paths::TeamPaths;
 
 /// The name of the directory prefix that addresses the shared team layer.
 pub const TEAM_PREFIX: &str = "team";
@@ -104,7 +104,7 @@ pub struct TeamWriteCoordinator {
 
 impl TeamWriteCoordinator {
     /// A coordinator for the team directory `team` names. Callers take
-    /// `team` from their [`crate::config::WorkspaceLayout`], so the
+    /// `team` from their [`residuum_config::WorkspaceLayout`], so the
     /// directory is located the same way everywhere.
     #[must_use]
     pub fn new(team: &TeamPaths) -> Self {
@@ -301,7 +301,7 @@ impl TeamPathGuard {
                 .await
                 .with_context(|| format!("failed to create directory {}", parent.display()))?;
         }
-        crate::util::fs::atomic_write(&self.path, bytes).await?;
+        residuum_core::util::fs::atomic_write(&self.path, bytes).await?;
         let version = current_version(&self.path)
             .await
             .with_context(|| format!("failed to stat {} after writing", self.path.display()))?;
@@ -548,7 +548,8 @@ pub fn team_relative_path(path: &str) -> Option<PathBuf> {
 /// Lexically normalize `path` (drop `.`, apply `..`), then canonicalize its
 /// nearest existing ancestor, so the result is stable whether or not the file
 /// exists and whichever symlinked spelling reached it.
-pub(crate) fn canonical_key(path: &Path) -> PathBuf {
+#[must_use]
+pub fn canonical_key(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {

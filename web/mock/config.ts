@@ -55,7 +55,7 @@ const VALID: ValidateResponse = { valid: true };
  * Merge a JSON diff (the shape the Settings form's diff builders in
  * `lib/settings-toml.ts` send) into a plain object in place — the mock's
  * stand-in for the real backend's `toml_edit`/JSON-merge patching
- * (`crates/config/src/patch.rs`, `src/workspace/mcp_patch.rs`). Comment
+ * (`crates/config/src/patch.rs`, `crates/workspace/src/mcp_patch.rs`). Comment
  * preservation doesn't apply here (mock state is never a real file with
  * comments), but the merge semantics match: `null` removes a key, a nested
  * object recurses, and `{"$inline": {...}}` sets the key to that inner

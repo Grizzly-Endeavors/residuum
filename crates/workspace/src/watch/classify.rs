@@ -6,7 +6,7 @@ use notify::EventKind;
 use notify::event::{ModifyKind, RenameMode};
 
 use super::batcher::{RawChange, RawOp};
-use crate::workspace::access::is_blocked_path;
+use crate::access::is_blocked_path;
 
 /// What one notification means for the workspace.
 #[derive(Debug, Default, PartialEq, Eq)]

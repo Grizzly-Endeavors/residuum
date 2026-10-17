@@ -19,8 +19,8 @@ use tokio::time::Instant;
 use super::WatchHealth;
 use super::batcher::{ChangeBatcher, PathState, ReadyBatch, resolve_changes};
 use super::classify::{WorkspaceRoots, classify};
-use crate::bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
-use crate::bus::{Publisher, WorkspaceEvent, topics};
+use residuum_bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
+use residuum_bus::{Publisher, WorkspaceEvent, topics};
 
 /// Raw notifications buffered between the OS watcher's thread and the
 /// batching loop. Past this, notifications are dropped and the next batch
@@ -41,14 +41,15 @@ type RawEvent = notify::Result<notify::Event>;
 /// With a `prefix`, `root` is a directory that appears in the workspace
 /// namespace under that prefix (the team directory as `team`): published
 /// paths carry it, and the access policy is applied to the prefixed path.
-pub(crate) fn spawn_change_feed(
+#[must_use]
+pub fn spawn_change_feed(
     root: PathBuf,
     prefix: Option<&str>,
     publisher: Publisher,
     health: watch::Sender<WatchHealth>,
 ) -> JoinHandle<()> {
     let prefix = prefix.map(str::to_string);
-    crate::util::spawn_in_span(async move {
+    residuum_core::util::spawn_in_span(async move {
         let (raw_tx, raw_rx) = mpsc::channel(RAW_EVENT_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
         let sink = RawSink {
@@ -136,7 +137,9 @@ impl Backend {
 async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backend> {
     if mode == Mode::Native {
         let (root_owned, sink) = (root.to_path_buf(), sink.clone());
-        match crate::util::spawn_blocking_in_span(move || start_native(&root_owned, sink)).await {
+        match residuum_core::util::spawn_blocking_in_span(move || start_native(&root_owned, sink))
+            .await
+        {
             Ok(Ok(watcher)) => {
                 return Some(Backend {
                     mode: Mode::Native,
@@ -156,7 +159,9 @@ async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backen
         }
     }
     let (root_owned, sink) = (root.to_path_buf(), sink.clone());
-    match crate::util::spawn_blocking_in_span(move || start_polling(&root_owned, sink)).await {
+    match residuum_core::util::spawn_blocking_in_span(move || start_polling(&root_owned, sink))
+        .await
+    {
         Ok(Ok(watcher)) => Some(Backend {
             mode: Mode::Polling,
             _watcher: Box::new(watcher),
@@ -354,7 +359,7 @@ impl FeedLoop {
             }
             ReadyBatch::Paths(paths) => {
                 let root = self.root.clone();
-                match crate::util::spawn_blocking_in_span(move || {
+                match residuum_core::util::spawn_blocking_in_span(move || {
                     resolve_changes(paths, |path| path_state(&root, path))
                 })
                 .await
@@ -430,8 +435,8 @@ mod tests {
     use notify::event::{CreateKind, ModifyKind, RenameMode};
 
     use super::*;
-    use crate::bus::Subscriber;
-    use crate::bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
+    use residuum_bus::Subscriber;
+    use residuum_bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
 
     fn change(path: &str, kind: WorkspaceChangeKind) -> WorkspaceChange {
         WorkspaceChange {
@@ -462,7 +467,7 @@ mod tests {
 
     async fn harness_with_prefix(prefix: Option<&str>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (raw_tx, raw_rx) = mpsc::channel(RAW_EVENT_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
@@ -473,7 +478,7 @@ mod tests {
             Arc::clone(&overflowed),
             bus.publisher(),
         );
-        let task = crate::util::spawn_in_span(async move { feed.run(Mode::Native).await });
+        let task = residuum_core::util::spawn_in_span(async move { feed.run(Mode::Native).await });
         Harness {
             dir,
             raw_tx,
@@ -686,7 +691,7 @@ mod tests {
         // Created before the watcher starts, so its own (visible) directory
         // creation isn't part of the change list this test asserts on.
         std::fs::create_dir(root.join("memory")).unwrap();
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
         let task = spawn_change_feed(root.clone(), None, bus.publisher(), health_tx);
@@ -696,12 +701,12 @@ mod tests {
             |h| *h != WatchHealth::Starting,
         )
         .await;
-        crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
+        crate::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
 
         std::fs::create_dir(root.join(".index")).unwrap();
         std::fs::write(root.join(".index").join("seg"), "x").unwrap();
         std::fs::write(root.join("memory").join("vectors.db"), "x").unwrap();
-        crate::util::fs::atomic_write(&root.join("a.md"), "hello")
+        residuum_core::util::fs::atomic_write(&root.join("a.md"), "hello")
             .await
             .unwrap();
         let first = collect_until(&mut sub, |c| c.path == "a.md").await;
@@ -729,7 +734,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir(root.join("workbench")).unwrap();
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
         let task = spawn_change_feed(root.clone(), Some("team"), bus.publisher(), health_tx);
@@ -739,9 +744,9 @@ mod tests {
             |h| *h != WatchHealth::Starting,
         )
         .await;
-        crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
+        crate::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
 
-        crate::util::fs::atomic_write(&root.join("workbench").join("tool.html"), "hi")
+        residuum_core::util::fs::atomic_write(&root.join("workbench").join("tool.html"), "hi")
             .await
             .unwrap();
         let seen = collect_until(&mut sub, |c| c.path == "team/workbench/tool.html").await;
@@ -750,10 +755,8 @@ mod tests {
             "every path from the team feed carries the prefix: {seen:?}"
         );
 
-        let team_watch =
-            crate::workspace::watch::WatchSet::parse(vec!["team/workbench".into()]).unwrap();
-        let agent_watch =
-            crate::workspace::watch::WatchSet::parse(vec!["workbench".into()]).unwrap();
+        let team_watch = crate::watch::WatchSet::parse(vec!["team/workbench".into()]).unwrap();
+        let agent_watch = crate::watch::WatchSet::parse(vec!["workbench".into()]).unwrap();
         assert!(seen.iter().any(|c| team_watch.matches(&c.path)));
         assert!(seen.iter().all(|c| !agent_watch.matches(&c.path)));
         task.abort();
@@ -763,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn the_polling_fallback_reports_changes() {
         let dir = tempfile::tempdir().unwrap();
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (raw_tx, raw_rx) = mpsc::channel(RAW_EVENT_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
@@ -777,7 +780,7 @@ mod tests {
             .unwrap();
         assert_eq!(backend.health(), WatchHealth::Polling);
         let mut feed = FeedLoop::new(dir.path(), None, raw_rx, overflowed, bus.publisher());
-        let task = crate::util::spawn_in_span(async move { feed.run(Mode::Polling).await });
+        let task = residuum_core::util::spawn_in_span(async move { feed.run(Mode::Polling).await });
 
         std::fs::write(dir.path().join("polled.md"), "x").unwrap();
         let seen = collect_until(&mut sub, |c| c.path == "polled.md").await;

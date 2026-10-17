@@ -11,6 +11,8 @@ pub(crate) use residuum_net::{
 pub use residuum_net::{pairing, remote_access};
 pub use residuum_skills as skills;
 pub use residuum_tracing_service as tracing_service;
+pub use residuum_workspace as workspace;
+pub use residuum_workspace::inbox;
 
 /// The version and commit of this binary. Only this crate reads the build
 /// variables; everything else takes the value passed down from here.
@@ -27,7 +29,6 @@ pub mod checkpoints;
 pub mod daemon;
 pub mod gateway;
 pub mod hub;
-pub mod inbox;
 #[cfg(test)]
 pub(crate) mod integration;
 pub mod interfaces;
@@ -41,4 +42,3 @@ pub mod subconscious;
 pub(crate) mod testing;
 pub mod tools;
 pub mod wiring;
-pub mod workspace;

@@ -10,7 +10,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::bus::attachment::FileAttachment;
+use residuum_bus::attachment::FileAttachment;
 
 pub mod attachment;
 
@@ -29,7 +29,7 @@ pub struct InboxItem {
     /// Origin label (e.g. `"cron:backup"`, `"discord"`, `"agent"`).
     pub source: String,
     /// When the item was created.
-    #[serde(with = "crate::time::minute_format")]
+    #[serde(with = "residuum_core::time::minute_format")]
     pub timestamp: NaiveDateTime,
     /// Whether the agent has read this item.
     pub read: bool,
@@ -82,7 +82,7 @@ pub async fn resolve_attachments(
         match tokio::fs::metadata(&path).await {
             Ok(meta) => resolved.push(InboxAttachment {
                 filename: file_name.to_string(),
-                mime_type: crate::bus::attachment::detect_mime_type(&path),
+                mime_type: residuum_bus::attachment::detect_mime_type(&path),
                 size: meta.len(),
                 url: format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
             }),
@@ -213,7 +213,7 @@ pub async fn quick_add(
     source: &str,
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<String> {
-    let now = crate::time::now_local(tz);
+    let now = residuum_core::time::now_local(tz);
     let filename = unique_filename(inbox_dir, title, now).await;
     let item = InboxItem {
         title: title.to_string(),
@@ -252,7 +252,7 @@ pub async fn quick_add_with_attachments(
     tz: chrono_tz::Tz,
     attachment_paths: &[PathBuf],
 ) -> anyhow::Result<(String, Vec<String>)> {
-    let now = crate::time::now_local(tz);
+    let now = residuum_core::time::now_local(tz);
     let filename = unique_filename(inbox_dir, title, now).await;
     let item_id = filename.trim_end_matches(".json");
 
@@ -433,7 +433,7 @@ pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> an
     let json = serde_json::to_string_pretty(item)
         .with_context(|| format!("failed to serialize inbox item for {}", target.display()))?;
 
-    crate::util::fs::atomic_write(&target, &json)
+    residuum_core::util::fs::atomic_write(&target, &json)
         .await
         .inspect_err(|e| {
             tracing::warn!(path = %target.display(), error = %e, "atomic write failed, orphaned tmp may remain");
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn archive_sibling_follows_the_workspace_layout() {
-        let layout = crate::config::WorkspaceLayout::new("/tmp/ws");
+        let layout = residuum_config::WorkspaceLayout::new("/tmp/ws");
         assert_eq!(
             archive_sibling(&layout.user_inbox_dir()),
             Some(layout.user_inbox_archive_dir()),
@@ -889,7 +889,7 @@ mod tests {
     #[tokio::test]
     async fn unique_filename_avoids_ids_held_by_the_archive() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.user_inbox_archive_dir())
             .await
             .unwrap();
@@ -914,7 +914,7 @@ mod tests {
     #[tokio::test]
     async fn a_new_item_after_archiving_the_same_title_leaves_both_intact() {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::config::WorkspaceLayout::new(dir.path());
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
         let inbox = layout.user_inbox_dir();
         let archive = layout.user_inbox_archive_dir();
         tokio::fs::create_dir_all(&inbox).await.unwrap();

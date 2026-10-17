@@ -6,31 +6,31 @@ use std::path::Path;
 
 use tokio::io::AsyncWriteExt;
 
-use crate::config::paths::TeamPaths;
-use crate::util::FatalError;
-use crate::workspace::team_files::{TeamPathGuard, TeamWriteCoordinator, TeamWriter};
+use crate::team_files::{TeamPathGuard, TeamWriteCoordinator, TeamWriter};
+use residuum_config::paths::TeamPaths;
+use residuum_core::util::FatalError;
 
-const DEFAULT_AGENTS: &str = include_str!("../../assets/team-bootstrap/AGENTS.md");
-const DEFAULT_USER: &str = include_str!("../../assets/team-bootstrap/USER.md");
-const DEFAULT_WIKI_INDEX: &str = include_str!("../../assets/team-bootstrap/wiki/index.md");
-const DEFAULT_WIKI_LOG: &str = include_str!("../../assets/team-bootstrap/wiki/log.md");
+const DEFAULT_AGENTS: &str = include_str!("../../../assets/team-bootstrap/AGENTS.md");
+const DEFAULT_USER: &str = include_str!("../../../assets/team-bootstrap/USER.md");
+const DEFAULT_WIKI_INDEX: &str = include_str!("../../../assets/team-bootstrap/wiki/index.md");
+const DEFAULT_WIKI_LOG: &str = include_str!("../../../assets/team-bootstrap/wiki/log.md");
 const DEFAULT_WIKI_AGENTS_INDEX: &str =
-    include_str!("../../assets/team-bootstrap/wiki/agents/index.md");
+    include_str!("../../../assets/team-bootstrap/wiki/agents/index.md");
 
 /// The first agent's `HEARTBEAT.yml`: the built-in pulses including
 /// `wiki_lint`, which checks the shared team wiki and so belongs to exactly
 /// one agent.
 const FIRST_AGENT_HEARTBEAT: &str = concat!(
-    include_str!("../../assets/workspace-bootstrap/heartbeat/base.yml"),
-    include_str!("../../assets/workspace-bootstrap/heartbeat/wiki-lint.yml"),
-    include_str!("../../assets/workspace-bootstrap/heartbeat/starters.yml"),
+    include_str!("../../../assets/workspace-bootstrap/heartbeat/base.yml"),
+    include_str!("../../../assets/workspace-bootstrap/heartbeat/wiki-lint.yml"),
+    include_str!("../../../assets/workspace-bootstrap/heartbeat/starters.yml"),
 );
 
 /// The created-agent `HEARTBEAT.yml`: the same built-in pulses without
 /// `wiki_lint`.
 const CREATED_AGENT_HEARTBEAT: &str = concat!(
-    include_str!("../../assets/workspace-bootstrap/heartbeat/base.yml"),
-    include_str!("../../assets/workspace-bootstrap/heartbeat/starters.yml"),
+    include_str!("../../../assets/workspace-bootstrap/heartbeat/base.yml"),
+    include_str!("../../../assets/workspace-bootstrap/heartbeat/starters.yml"),
 );
 
 /// Description written to a role page whose agent has not described its
@@ -153,12 +153,13 @@ pub async fn restore_agent_role_page(
     struct Frontmatter {
         description: Option<String>,
     }
-    let role = crate::util::parse_frontmatter_md::<Frontmatter>(page_text, "agent role page")
-        .ok()
-        .and_then(|(frontmatter, _body)| frontmatter.description)
-        .map(|description| single_line(&description))
-        .filter(|description| !description.is_empty())
-        .unwrap_or_else(|| ROLE_PLACEHOLDER.to_string());
+    let role =
+        residuum_core::util::parse_frontmatter_md::<Frontmatter>(page_text, "agent role page")
+            .ok()
+            .and_then(|(frontmatter, _body)| frontmatter.description)
+            .map(|description| single_line(&description))
+            .filter(|description| !description.is_empty())
+            .unwrap_or_else(|| ROLE_PLACEHOLDER.to_string());
     create_role_page(team, coordinator, writer, name, name, &role, page_text).await
 }
 

@@ -2,8 +2,8 @@
 //!
 //! The watcher turns OS file notifications into debounced batches of
 //! workspace-relative changes, drops paths the workspace access policy hides,
-//! and publishes each batch as a [`crate::bus::WorkspaceEvent`] on
-//! [`crate::bus::topics::Workspace`]. WebSocket connections filter batches by
+//! and publishes each batch as a [`residuum_bus::WorkspaceEvent`] on
+//! [`residuum_bus::topics::Workspace`]. WebSocket connections filter batches by
 //! their own [`WatchSet`], and the workbench derives artifact reloads from the
 //! same stream.
 //!
@@ -21,7 +21,7 @@ mod watch_set;
 
 use serde::Serialize;
 
-pub(crate) use feed::spawn_change_feed;
+pub use feed::spawn_change_feed;
 pub use watch_set::{InvalidWatchPrefix, MAX_CHANGES_PER_FRAME, WatchSet, WatchedChanges};
 
 /// Whether the change feed is running, and how. An agent's
@@ -44,8 +44,12 @@ pub enum WatchHealth {
 /// slower: changes arrive up to two seconds late, which turns into timeouts
 /// under load with no hint of the cause. The usual cause on Linux is running
 /// out of inotify instances (`fs.inotify.max_user_instances`).
-#[cfg(test)]
-pub(crate) fn assert_native_watch(health: WatchHealth, what: &str) {
+///
+/// # Panics
+///
+/// Panics when the watcher is not on native notifications where the platform has them.
+#[cfg(any(test, feature = "test-support"))]
+pub fn assert_native_watch(health: WatchHealth, what: &str) {
     assert_ne!(health, WatchHealth::Starting, "{what} hasn't started yet");
     assert_ne!(health, WatchHealth::Off, "{what} couldn't start at all");
     if cfg!(any(target_os = "linux", target_os = "macos")) {

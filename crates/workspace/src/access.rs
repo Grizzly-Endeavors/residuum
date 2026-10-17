@@ -29,7 +29,7 @@ const INTERNAL_DB_PATHS: &[&str] = &["memory/vectors.db", "team/vectors.db"];
 ///   depth, including the directory itself.
 /// - One of `INTERNAL_DB_PATHS`, or one of its `-wal`/`-shm`/`-journal`
 ///   sidecar files.
-/// - An atomic-write temp file (see [`crate::util::fs::is_atomic_write_temp`]).
+/// - An atomic-write temp file (see [`residuum_core::util::fs::is_atomic_write_temp`]).
 /// - A `config/*.last-known-good.toml` copy. Last-known-good copies live in
 ///   `hub/`; a copy inside the workspace's `config/` directory would hold
 ///   plaintext provider keys, so it is never exposed even if one appears.
@@ -45,7 +45,7 @@ pub fn is_blocked_path(relative: &str) -> bool {
     Path::new(relative)
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(crate::util::fs::is_atomic_write_temp)
+        .is_some_and(residuum_core::util::fs::is_atomic_write_temp)
 }
 
 /// Whether `relative` is a `*.last-known-good.toml` file directly inside the

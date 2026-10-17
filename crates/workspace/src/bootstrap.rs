@@ -1,182 +1,190 @@
 //! Workspace bootstrapping: creates required directories and default identity files.
 
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 use super::team_files::TeamWriteCoordinator;
-use crate::config::WorkspaceLayout;
+use residuum_config::WorkspaceLayout;
 
 // ── Workspace bootstrap content (embedded at compile time from assets/) ──────
 
-const DEFAULT_SOUL: &str = include_str!("../../assets/workspace-bootstrap/SOUL.md");
+const DEFAULT_SOUL: &str = include_str!("../../../assets/workspace-bootstrap/SOUL.md");
 
 /// Default content for BOOTSTRAP.md -- first-run guidance.
 ///
 /// This file is written once during workspace creation and should be deleted
 /// by the agent after the first conversation. A `.bootstrapped` sentinel file
 /// prevents it from being recreated on subsequent startups.
-const DEFAULT_BOOTSTRAP: &str = include_str!("../../assets/workspace-bootstrap/BOOTSTRAP.md");
+const DEFAULT_BOOTSTRAP: &str = include_str!("../../../assets/workspace-bootstrap/BOOTSTRAP.md");
 
 /// Default observer content guidance written to memory/OBSERVER.md.
 ///
 /// Contains only the customizable content portion — the output format spec is
 /// always injected by the Rust code and cannot be lost by editing this file.
 const DEFAULT_OBSERVER_PROMPT: &str =
-    include_str!("../../assets/workspace-bootstrap/memory/OBSERVER.md");
+    include_str!("../../../assets/workspace-bootstrap/memory/OBSERVER.md");
 
 /// Default reflector content guidance written to memory/REFLECTOR.md.
 ///
 /// Contains only the customizable content portion — the output format spec is
 /// always injected by the Rust code and cannot be lost by editing this file.
 const DEFAULT_REFLECTOR_PROMPT: &str =
-    include_str!("../../assets/workspace-bootstrap/memory/REFLECTOR.md");
+    include_str!("../../../assets/workspace-bootstrap/memory/REFLECTOR.md");
 
 /// Default `config/agent-card.json` -- what this agent advertises to other
 /// agents reaching it over A2A. See `docs/systems-usage/a2a.md`.
 const DEFAULT_AGENT_CARD: &str =
-    include_str!("../../assets/workspace-bootstrap/config/agent-card.json");
+    include_str!("../../../assets/workspace-bootstrap/config/agent-card.json");
 
 /// Built-in `introspection` skill, used by the reflection pulse to review
 /// episode memory and deliver suggestions.
 const INTROSPECTION_SKILL_MD: &str =
-    include_str!("../../assets/bundled-skills/introspection/SKILL.md");
+    include_str!("../../../assets/bundled-skills/introspection/SKILL.md");
 
 /// Built-in `learner` skill, spawned by the subconscious when a single learnable
 /// signal is detected in the live conversation. Corroborates the signal and makes
 /// it durable (preference promotion or a queued recovery fix).
-const LEARNER_SKILL_MD: &str = include_str!("../../assets/bundled-skills/learner/SKILL.md");
+const LEARNER_SKILL_MD: &str = include_str!("../../../assets/bundled-skills/learner/SKILL.md");
 
 /// Built-in `memory-analyst` skill, used to answer synthesized questions about the
 /// user or past history so the main agent gets grounded conclusions instead of raw
 /// search excerpts.
 const MEMORY_ANALYST_SKILL_MD: &str =
-    include_str!("../../assets/bundled-skills/memory-analyst/SKILL.md");
+    include_str!("../../../assets/bundled-skills/memory-analyst/SKILL.md");
 
 /// Built-in `wiki` skill: the knowledge wiki's page format, index rules, and
 /// ingest/lint procedures. Activated before writing to the wiki, and the role
 /// of the `memory_tending` and `wiki_lint` pulses.
-const WIKI_SKILL_MD: &str = include_str!("../../assets/bundled-skills/wiki/SKILL.md");
+const WIKI_SKILL_MD: &str = include_str!("../../../assets/bundled-skills/wiki/SKILL.md");
 
 /// Built-in `workbench` skill: building interactive HTML artifacts in `workbench/`
 /// that open in a tab of their own, with the injected `residuum` SDK.
-const WORKBENCH_SKILL_MD: &str = include_str!("../../assets/bundled-skills/workbench/SKILL.md");
+const WORKBENCH_SKILL_MD: &str = include_str!("../../../assets/bundled-skills/workbench/SKILL.md");
 
 /// Endpoint, event, and blocked-route reference for the `workbench` skill.
 const WORKBENCH_REF_API: &str =
-    include_str!("../../assets/bundled-skills/workbench/references/api.md");
+    include_str!("../../../assets/bundled-skills/workbench/references/api.md");
 
 /// Default subconscious check policy written to SUBCONSCIOUS.md.
 ///
 /// Contains only the customizable check guidance — the output format spec is
 /// always injected by the Rust code and cannot be lost by editing this file.
-const DEFAULT_SUBCONSCIOUS: &str = include_str!("../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
+const DEFAULT_SUBCONSCIOUS: &str =
+    include_str!("../../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
 
 // ── Bundled skill content (embedded at compile time from assets/) ────────────
 
 // residuum-system skill
-const SYSTEM_SKILL_MD: &str = include_str!("../../assets/bundled-skills/residuum-system/SKILL.md");
+const SYSTEM_SKILL_MD: &str =
+    include_str!("../../../assets/bundled-skills/residuum-system/SKILL.md");
 
 /// Every reference file of the residuum-system skill, as `(file name, content)`.
 /// SKILL.md links to each by name; the bootstrap writes all of them.
 const SYSTEM_REFS: &[(&str, &str)] = &[
     (
         "config.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/config.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/config.md"),
     ),
     (
         "agent-keys.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/agent-keys.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/agent-keys.md"),
     ),
     (
         "memory-system.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/memory-system.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/memory-system.md"),
     ),
     (
         "checkpoints.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/checkpoints.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/checkpoints.md"),
     ),
     (
         "heartbeats.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/heartbeats.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/heartbeats.md"),
     ),
     (
         "inbox.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/inbox.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/inbox.md"),
     ),
     (
         "scheduled-actions.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/scheduled-actions.md"),
+        include_str!(
+            "../../../assets/bundled-skills/residuum-system/references/scheduled-actions.md"
+        ),
     ),
     (
         "skills.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/skills.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/skills.md"),
     ),
     (
         "tools.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/tools.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/tools.md"),
     ),
     (
         "mcp.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/mcp.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/mcp.md"),
     ),
     (
         "notifications.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/notifications.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/notifications.md"),
     ),
     (
         "background-tasks.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/background-tasks.md"),
+        include_str!(
+            "../../../assets/bundled-skills/residuum-system/references/background-tasks.md"
+        ),
     ),
     (
         "subconscious.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/subconscious.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/subconscious.md"),
     ),
     (
         "a2a.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/a2a.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/a2a.md"),
     ),
     (
         "team-files.md",
-        include_str!("../../assets/bundled-skills/residuum-system/references/team-files.md"),
+        include_str!("../../../assets/bundled-skills/residuum-system/references/team-files.md"),
     ),
 ];
 
 // residuum-getting-started skill
 const GETTING_STARTED_SKILL_MD: &str =
-    include_str!("../../assets/bundled-skills/residuum-getting-started/SKILL.md");
+    include_str!("../../../assets/bundled-skills/residuum-getting-started/SKILL.md");
 const GETTING_STARTED_ORGANIZED: &str = include_str!(
-    "../../assets/bundled-skills/residuum-getting-started/workflows/getting-organized.md"
+    "../../../assets/bundled-skills/residuum-getting-started/workflows/getting-organized.md"
 );
 const GETTING_STARTED_MONITORING: &str = include_str!(
-    "../../assets/bundled-skills/residuum-getting-started/workflows/monitoring-setup.md"
+    "../../../assets/bundled-skills/residuum-getting-started/workflows/monitoring-setup.md"
 );
 const GETTING_STARTED_EXTENDING: &str = include_str!(
-    "../../assets/bundled-skills/residuum-getting-started/workflows/extending-capabilities.md"
+    "../../../assets/bundled-skills/residuum-getting-started/workflows/extending-capabilities.md"
 );
 const GETTING_STARTED_UNDERSTANDING: &str = include_str!(
-    "../../assets/bundled-skills/residuum-getting-started/workflows/understanding-the-agent.md"
+    "../../../assets/bundled-skills/residuum-getting-started/workflows/understanding-the-agent.md"
 );
 const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
-    "../../assets/bundled-skills/residuum-getting-started/workflows/always-on-assistant.md"
+    "../../../assets/bundled-skills/residuum-getting-started/workflows/always-on-assistant.md"
 );
 
 // skill-authoring skill
 const SKILL_AUTHORING_SKILL_MD: &str =
-    include_str!("../../assets/bundled-skills/skill-authoring/SKILL.md");
-const SKILL_AUTHORING_REF_STANDARDS: &str =
-    include_str!("../../assets/bundled-skills/skill-authoring/references/authoring-standards.md");
+    include_str!("../../../assets/bundled-skills/skill-authoring/SKILL.md");
+const SKILL_AUTHORING_REF_STANDARDS: &str = include_str!(
+    "../../../assets/bundled-skills/skill-authoring/references/authoring-standards.md"
+);
 
 // teams-setup skill
-const TEAMS_SETUP_SKILL_MD: &str = include_str!("../../assets/bundled-skills/teams-setup/SKILL.md");
+const TEAMS_SETUP_SKILL_MD: &str =
+    include_str!("../../../assets/bundled-skills/teams-setup/SKILL.md");
 const TEAMS_SETUP_M365AGENTS_YML: &str =
-    include_str!("../../assets/bundled-skills/teams-setup/templates/m365agents.yml");
+    include_str!("../../../assets/bundled-skills/teams-setup/templates/m365agents.yml");
 const TEAMS_SETUP_MANIFEST_JSON: &str =
-    include_str!("../../assets/bundled-skills/teams-setup/templates/appPackage/manifest.json");
+    include_str!("../../../assets/bundled-skills/teams-setup/templates/appPackage/manifest.json");
 const TEAMS_SETUP_ENV_RESIDUUM: &str =
-    include_str!("../../assets/bundled-skills/teams-setup/templates/env/.env.residuum");
+    include_str!("../../../assets/bundled-skills/teams-setup/templates/env/.env.residuum");
 const TEAMS_SETUP_COLOR_PNG: &[u8] =
-    include_bytes!("../../assets/bundled-skills/teams-setup/templates/appPackage/color.png");
+    include_bytes!("../../../assets/bundled-skills/teams-setup/templates/appPackage/color.png");
 const TEAMS_SETUP_OUTLINE_PNG: &[u8] =
-    include_bytes!("../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png");
+    include_bytes!("../../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png");
 
 /// Ensure the agent's workspace directory structure exists with default
 /// identity files, and that the shared team layer it belongs to exists.
@@ -416,7 +424,7 @@ async fn write_soul(path: &std::path::Path, name: &str) -> Result<(), FatalError
 /// run the first-run interview. `config/config.toml` and
 /// `config/providers.toml` are not part of it either; the caller writes them.
 #[must_use]
-pub(crate) fn blank_agent_template(
+pub fn blank_agent_template(
     layout: &WorkspaceLayout,
     name: &str,
 ) -> Vec<(std::path::PathBuf, String)> {
@@ -678,7 +686,7 @@ async fn write_if_missing(
 mod tests {
     use super::*;
 
-    const DEFAULT_TEAM_USER: &str = include_str!("../../assets/team-bootstrap/USER.md");
+    const DEFAULT_TEAM_USER: &str = include_str!("../../../assets/team-bootstrap/USER.md");
 
     #[test]
     fn blank_template_names_the_agent_and_has_no_bootstrap_file() {
@@ -765,7 +773,7 @@ mod tests {
 
         ensure_workspace_labeled(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
             Some("Mist"),
@@ -784,7 +792,7 @@ mod tests {
     async fn bootstrap_replaces_an_unedited_template_soul() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("mist"));
-        let coordinator = crate::workspace::team_files::TeamWriteCoordinator::new(layout.team());
+        let coordinator = crate::team_files::TeamWriteCoordinator::new(layout.team());
 
         ensure_workspace_labeled(&layout, &coordinator, None, None, Some("Mist"))
             .await
@@ -810,7 +818,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -881,7 +889,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -907,7 +915,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -937,7 +945,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -955,7 +963,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -976,7 +984,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1084,7 +1092,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1120,7 +1128,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             Some("Alex"),
             None,
         )
@@ -1142,7 +1150,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1162,7 +1170,7 @@ mod tests {
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1174,7 +1182,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1192,7 +1200,7 @@ mod tests {
         // First run: BOOTSTRAP.md and sentinel are created
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1217,7 +1225,7 @@ mod tests {
         // Second run: BOOTSTRAP.md should NOT be recreated
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1236,7 +1244,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1261,7 +1269,7 @@ mod tests {
         // Run again
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1289,7 +1297,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             Some("Alex"),
             None,
         )
@@ -1312,7 +1320,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             Some("Alex"),
             Some("America/New_York"),
         )
@@ -1339,7 +1347,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )
@@ -1362,7 +1370,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             Some("America/New_York"),
         )
@@ -1383,7 +1391,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             Some(""),
             Some(""),
         )
@@ -1406,7 +1414,7 @@ mod tests {
 
         ensure_workspace(
             &layout,
-            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            &crate::team_files::TeamWriteCoordinator::new(layout.team()),
             None,
             None,
         )

@@ -7,8 +7,8 @@ use serde::Deserialize;
 
 use anyhow::Context;
 
-use crate::config::{ExternalChannelConfig, ExternalChannelKind};
-use crate::mcp::types::{McpServerEntry, McpTransport};
+use residuum_config::{ExternalChannelConfig, ExternalChannelKind};
+use residuum_mcp::types::{McpServerEntry, McpTransport};
 
 // ── MCP loader ───────────────────────────────────────────────────────────────
 
@@ -150,8 +150,8 @@ pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpSe
 /// what loading skips. A JSON syntax error carries `serde_json`'s own
 /// line/column.
 #[must_use]
-pub fn diagnose_mcp_json(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
-    use crate::diagnostics::{Diagnostic, Location};
+pub fn diagnose_mcp_json(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
+    use residuum_core::diagnostics::{Diagnostic, Location};
 
     let file: McpConfigFile = match serde_json::from_str(content) {
         Ok(f) => f,
@@ -360,8 +360,8 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
 /// never disagree with what loading skips or ignores. A TOML syntax error
 /// carries the parser's own line/column.
 #[must_use]
-pub fn diagnose_channels_toml(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
-    use crate::diagnostics::{Diagnostic, Location};
+pub fn diagnose_channels_toml(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
+    use residuum_core::diagnostics::{Diagnostic, Location};
 
     let file: ChannelsFile = match toml::from_str(content) {
         Ok(f) => f,
@@ -1114,7 +1114,7 @@ web_url = "http://localhost:3000"
 
     #[test]
     fn diagnose_channels_toml_reports_syntax_error_with_line_column() {
-        use crate::diagnostics::Location;
+        use residuum_core::diagnostics::Location;
 
         let diagnostics = diagnose_channels_toml("not valid toml [[[");
         assert_eq!(diagnostics.len(), 1);
@@ -1131,7 +1131,7 @@ web_url = "http://localhost:3000"
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
             diagnostics[0].severity,
-            crate::diagnostics::Severity::Warning
+            residuum_core::diagnostics::Severity::Warning
         );
         assert!(diagnostics[0].message.contains("default_category"));
     }
@@ -1173,7 +1173,7 @@ url = "https://hooks.example.com/notify"
 
     #[test]
     fn diagnose_mcp_json_reports_syntax_error_with_line_column() {
-        use crate::diagnostics::Location;
+        use residuum_core::diagnostics::Location;
 
         let diagnostics = diagnose_mcp_json("not valid json {{{");
         assert_eq!(diagnostics.len(), 1);
@@ -1188,7 +1188,10 @@ url = "https://hooks.example.com/notify"
         let content = r#"{"mcpServers": {"broken": {"type": "sse", "url": "http://x"}}}"#;
         let diagnostics = diagnose_mcp_json(content);
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, crate::diagnostics::Severity::Error);
+        assert_eq!(
+            diagnostics[0].severity,
+            residuum_core::diagnostics::Severity::Error
+        );
         assert!(diagnostics[0].message.contains("broken"));
     }
 

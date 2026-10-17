@@ -9,7 +9,7 @@
 // fields untouched by the edit) survives on the server.
 //
 // Patch value conventions (mirrored by `crates/config/src/patch.rs` and
-// `src/workspace/mcp_patch.rs`):
+// `crates/workspace/src/mcp_patch.rs`):
 //   - a nested object recurses into (or creates) the matching TOML/JSON table
 //   - `null` removes that key, or a whole named entry (provider/webhook/MCP
 //     server) when the value is a whole entry rather than a single field
@@ -679,7 +679,7 @@ function extractOverrides(v: unknown, key: string, overrides: Record<string, Rol
 /**
  * Parse `mcp.json` into form entries, representing each server's transport
  * truthfully. Mirrors the backend loader's transport resolution
- * (`src/workspace/config.rs`): `type` takes priority over `transport`;
+ * (`crates/workspace/src/config.rs`): `type` takes priority over `transport`;
  * `"streamable-http"`/`"http"` is HTTP, everything else (including a
  * missing field) is stdio. An HTTP server's URL falls back to `command`
  * for display, matching the loader.

@@ -187,7 +187,8 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-mcp` | `crates/mcp` | `mcp`: the MCP client and the server registry | core, config, inference |
 | `residuum-net` | `crates/net` | `tunnel`, `remote_access`, `pairing`, `workbench`, and the request helpers they share with the gateway (`browser_landing`, `cross_site`, `remote_control_guard`) | core, config |
 | `residuum-bus` | `crates/bus` | `bus`: the topic broker and the payloads it carries (the session vocabulary, message origins, attachments, usage, workspace changes, interrupts), and `testing` behind `test-support` | core, config, inference, memory |
-| `residuum` | `.` | everything else: gateway, hub, interfaces, agent, tools, background, a2a, workspace, notify, inbox, checkpoints, pulse, subconscious, actions, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
+| `residuum-workspace` | `crates/workspace` | `workspace`: identity files, bootstrapping, team files, the config, MCP patching, and the change feed (`watch`); `inbox`, the user and agent inboxes and the inbound attachment code; and `testing` behind `test-support` | core, config, bus, inference, mcp |
+| `residuum` | `.` | everything else: gateway, hub, interfaces, agent, tools, background, a2a, notify, checkpoints, pulse, subconscious, actions, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
 
 ```
 residuum-memory     residuum-mcp

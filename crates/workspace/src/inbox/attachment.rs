@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 
-use crate::inference::ImageData;
+use residuum_inference::ImageData;
 
 /// Images larger than 20 MB are saved but not sent inline to the model.
 pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;
@@ -195,7 +195,7 @@ pub async fn finalize_attachment(
             info.size,
         ),
         source: platform.to_lowercase(),
-        timestamp: crate::time::now_local(tz),
+        timestamp: residuum_core::time::now_local(tz),
         read: false,
         attachments: vec![PathBuf::from("inbox").join(&saved_name)],
     };
