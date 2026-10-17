@@ -46,11 +46,32 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventLog {
     }
 }
 
+/// Two empty dispatchers kept registered for the whole test process.
+///
+/// tracing-core resolves a call site's interest against the calling thread's
+/// own default alone while exactly one dispatcher is registered. A call site
+/// first hit on a thread with no capture would then cache "never" and drop
+/// its events for every later capture. Keeping two registered means the
+/// interest is always resolved against every live dispatcher.
+static RESIDENT_DISPATCHERS: std::sync::OnceLock<[tracing::Dispatch; 2]> =
+    std::sync::OnceLock::new();
+
 impl EventLog {
     /// Route this thread's log events here until the guard drops.
     #[must_use]
     pub fn capture(&self) -> tracing::subscriber::DefaultGuard {
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(self.clone()))
+        RESIDENT_DISPATCHERS.get_or_init(|| {
+            [
+                tracing::Dispatch::new(tracing_subscriber::registry()),
+                tracing::Dispatch::new(tracing_subscriber::registry()),
+            ]
+        });
+        let guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(self.clone()));
+        // Call sites this thread registered before the capture were cached
+        // without it; recompute them now that it is live.
+        tracing::callsite::rebuild_interest_cache();
+        guard
     }
 
     /// Every event logged so far.
@@ -78,5 +99,35 @@ impl EventLog {
             .into_iter()
             .filter(|event| event.text.contains(needle))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EventLog;
+
+    /// One call site shared by the test's threads: its first call registers
+    /// it with the dispatchers live on that thread.
+    fn emit_probe() {
+        tracing::info!("callsite probe");
+    }
+
+    #[test]
+    fn a_callsite_first_hit_on_another_thread_is_still_captured() {
+        let log = EventLog::default();
+        let _capture = log.capture();
+
+        // A thread with no capture of its own registers the call site, as a
+        // parallel test that never captures logs would.
+        std::thread::spawn(emit_probe)
+            .join()
+            .expect("probe thread should finish");
+
+        emit_probe();
+        assert_eq!(
+            log.matching("callsite probe").len(),
+            1,
+            "a call site another thread registered first is still captured here"
+        );
     }
 }

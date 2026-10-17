@@ -67,6 +67,14 @@ async fn a_conversation_session_s_send_message_to_its_chat_posts() {
         final_text.drain().is_empty(),
         "the turn's final text stays in the session"
     );
+    // The session logs before it goes idle, so its idle line being captured
+    // shows the log capture saw this turn; the absence check below means
+    // nothing without it.
+    assert!(
+        !log.matching("session idle, awaiting further input")
+            .is_empty(),
+        "the session's log lines from this turn are captured"
+    );
     assert!(
         !log.events()
             .iter()

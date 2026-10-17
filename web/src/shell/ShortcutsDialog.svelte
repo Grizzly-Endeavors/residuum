@@ -32,6 +32,19 @@
       ],
     },
     {
+      heading: "In the conversation",
+      shortcuts: [
+        {
+          keys: [["Home"]],
+          does: "Go to the start of the conversation, loading earlier messages",
+        },
+        {
+          keys: [["End"]],
+          does: "Go to the newest message, and follow new replies again",
+        },
+      ],
+    },
+    {
       heading: "In lists and menus",
       shortcuts: [
         { keys: [["↑"], ["↓"]], does: "Move between rows" },

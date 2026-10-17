@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeedScroller } from "./feed-scroll.svelte";
 
-// Opening and closing things in a feed, against real elements. jsdom lays
-// nothing out, so each element's top is a number the test moves.
+// Opening and closing things in a feed, and Home and End pressed on what is
+// in it, against real elements. jsdom lays nothing out, so each element's top
+// is a number the test moves.
 
 class ManualObserver {
   static instances: ManualObserver[] = [];
@@ -213,5 +214,101 @@ describe("FeedScroller, opening and closing things", () => {
     other.click();
     expect(scroller.isFollowing).toBe(true);
     expect(content.style.minHeight).toBe("");
+  });
+});
+
+describe("FeedScroller, Home and End on what is in the feed", () => {
+  /** Press `key` on `target`, as the browser does: the event bubbles up to the feed. */
+  function press(target: Element, key: string): KeyboardEvent {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it("takes them on a control in the feed, which doesn't use them", () => {
+    const { button, scrollTo } = feed();
+    expect(press(button, "Home").defaultPrevented).toBe(true);
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: "smooth" });
+    expect(press(button, "End").defaultPrevented).toBe(true);
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
+  });
+
+  it("leaves them, and the keys that scroll up, to a field or editable text in the feed", () => {
+    const { content, scroller, scrollTo } = feed();
+    content.insertAdjacentHTML(
+      "beforeend",
+      `<input id="field"><textarea id="box"></textarea><select id="choice"></select><div id="editable" contenteditable="true"><span id="word">word</span></div>`,
+    );
+    const editable = document.getElementById("editable") as HTMLElement;
+    const word = document.getElementById("word") as HTMLElement;
+    // jsdom leaves `isContentEditable` out.
+    for (const el of [editable, word])
+      Object.defineProperty(el, "isContentEditable", { value: true });
+
+    for (const id of ["field", "box", "choice", "editable", "word"]) {
+      const target = document.getElementById(id) as HTMLElement;
+      expect(press(target, "Home").defaultPrevented).toBe(false);
+      expect(press(target, "End").defaultPrevented).toBe(false);
+      press(target, "ArrowUp");
+      press(target, "PageUp");
+    }
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(scroller.isFollowing).toBe(true);
+  });
+
+  it("leaves them to a media player in the feed, which seeks with them", () => {
+    const { content, scrollTo } = feed();
+    content.insertAdjacentHTML(
+      "beforeend",
+      `<audio id="voice" controls></audio><video id="clip" controls><track kind="captions"></video>`,
+    );
+    for (const id of ["voice", "clip"]) {
+      const player = document.getElementById(id) as HTMLElement;
+      expect(press(player, "Home").defaultPrevented).toBe(false);
+      expect(press(player, "End").defaultPrevented).toBe(false);
+    }
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("leaves them to a widget in the feed that moves with Home and End itself", () => {
+    const { content, scrollTo } = feed();
+    content.insertAdjacentHTML(
+      "beforeend",
+      `<div id="tabs" role="tablist"><button id="tab" role="tab">Notes</button></div>`,
+    );
+    const tab = document.getElementById("tab") as HTMLElement;
+    const tabs = document.getElementById("tabs") as HTMLElement;
+
+    expect(press(tab, "Home").defaultPrevented).toBe(false);
+    expect(press(tab, "End").defaultPrevented).toBe(false);
+    expect(press(tabs, "End").defaultPrevented).toBe(false);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("leaves them to an area in the feed that scrolls up and down on its own", () => {
+    const { content, scrollTo } = feed();
+    content.insertAdjacentHTML(
+      "beforeend",
+      `<div id="inner" style="overflow-y: auto"><button id="inside">Copy</button></div>`,
+    );
+    const inner = document.getElementById("inner") as HTMLElement;
+    const inside = document.getElementById("inside") as HTMLElement;
+    Object.defineProperty(inner, "scrollHeight", { get: () => 900 });
+    Object.defineProperty(inner, "clientHeight", { get: () => 300 });
+
+    expect(press(inside, "End").defaultPrevented).toBe(false);
+    expect(press(inner, "Home").defaultPrevented).toBe(false);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("takes them inside an area that could scroll but has nothing to", () => {
+    const { content, scrollTo } = feed();
+    content.insertAdjacentHTML(
+      "beforeend",
+      `<div id="inner" style="overflow-y: auto"><button id="inside">Copy</button></div>`,
+    );
+    const inside = document.getElementById("inside") as HTMLElement;
+    expect(press(inside, "End").defaultPrevented).toBe(true);
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
   });
 });
