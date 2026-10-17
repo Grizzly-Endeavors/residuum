@@ -96,11 +96,10 @@ container_port="${BASH_REMATCH[1]}"
 
 bridge_dir="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/residuum-e2e.XXXXXX")"
 socket="$bridge_dir/browser.sock"
-bridge_pid=""
 stop_bridge() {
-    if [ -n "$bridge_pid" ]; then
-        kill "$bridge_pid" 2>/dev/null || true
-        wait "$bridge_pid" 2>/dev/null || true
+    if [ -n "${BRIDGE_PID:-}" ]; then
+        kill "$BRIDGE_PID" 2>/dev/null || true
+        wait "$BRIDGE_PID" 2>/dev/null || true
     fi
     rm -rf "$bridge_dir"
 }
@@ -109,41 +108,42 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Each connection to the socket gets its own connection to the container's port;
-# either side closing or failing closes the other.
-node -e '
+# either side closing or failing closes the other. The bridge prints `listening`
+# on stdout once its server is listening, which is the only wait here: if it exits
+# first, stdout reaches end-of-file and the read below fails. Its stdin is a pipe
+# this script holds open, so the bridge also exits when the script dies without
+# running its trap (SIGKILL), since the pipe then reaches end-of-file.
+coproc BRIDGE {
+    node -e '
 const net = require("node:net");
 const [socket, port] = process.argv.slice(1);
-net
-  .createServer((client) => {
-    const upstream = net.connect(Number(port), "127.0.0.1");
-    client.pipe(upstream);
-    upstream.pipe(client);
-    client.on("error", () => upstream.destroy());
-    upstream.on("error", (err) => {
-      console.error("error: the bridge to the Playwright container (127.0.0.1:" + port + ") failed: " + err.message);
-      client.destroy();
-    });
-    client.on("close", () => upstream.destroy());
-    upstream.on("close", () => client.destroy());
-  })
-  .listen(socket);
-' "$socket" "$container_port" &
-bridge_pid=$!
-
-for _ in $(seq 1 100); do
-    if [ -S "$socket" ]; then
-        break
-    fi
-    if ! kill -0 "$bridge_pid" 2>/dev/null; then
-        echo "error: the bridge from the loopback-only network to the Playwright container stopped before it was listening." >&2
-        exit 1
-    fi
-    sleep 0.1
-done
-if [ ! -S "$socket" ]; then
-    echo "error: the bridge from the loopback-only network to the Playwright container wasn't listening on $socket after 10 seconds." >&2
+const server = net.createServer((client) => {
+  const upstream = net.connect(Number(port), "127.0.0.1");
+  client.pipe(upstream);
+  upstream.pipe(client);
+  client.on("error", () => upstream.destroy());
+  upstream.on("error", (err) => {
+    console.error("error: the bridge to the Playwright container (127.0.0.1:" + port + ") failed: " + err.message);
+    client.destroy();
+  });
+  client.on("close", () => upstream.destroy());
+  upstream.on("close", () => client.destroy());
+});
+server.on("error", (err) => {
+  console.error("error: the bridge couldn'"'"'t listen on " + socket + ": " + err.message);
+  process.exit(1);
+});
+server.listen(socket, () => console.log("listening"));
+process.stdin.resume();
+process.stdin.on("end", () => process.exit(0));
+' "$socket" "$container_port"
+}
+if ! read -r -u "${BRIDGE[0]}" _; then
+    echo "error: the bridge from the loopback-only network to the Playwright container stopped before it was listening." >&2
     exit 1
 fi
 
-# Not `exec`: the trap has to outlive the command to stop the bridge.
-E2E_CONTAINER_WS="ws+unix://$socket:/" "${enter[@]}" "$@"
+# Not `exec`: the trap has to outlive the command to stop the bridge. The command
+# doesn't get the pipe's write end, so only this script holds the bridge's stdin open.
+bridge_stdin="${BRIDGE[1]}"
+E2E_CONTAINER_WS="ws+unix://$socket:/" "${enter[@]}" "$@" {bridge_stdin}>&-
