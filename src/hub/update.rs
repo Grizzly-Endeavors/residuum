@@ -758,8 +758,9 @@ fn record_verification(version: &str, verification: ReleaseVerification) {
 ///
 /// Written by [`download_and_install`], read and deleted by
 /// `commands::serve::foreground::relaunch` when it hands off to the
-/// rollback-capable watchdog. Reads a marker in either [`PendingRollbackOnDisk`]
-/// shape.
+/// rollback-capable watchdog. Also reads a marker that names only the
+/// preserved binary (`previous_binary`), recovering the install path from
+/// its name.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "PendingRollbackOnDisk")]
 pub struct PendingRollback {
