@@ -19,6 +19,7 @@ use crate::agent::hop::HopCounter;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::MessageEvent;
 use crate::bus::interrupt::Interrupt;
+use crate::bus::origin::A2A_ENDPOINT;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget,
     ConversationTypingEvent, EndpointName, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
@@ -693,20 +694,33 @@ async fn wait_idle(
     }
 }
 
+/// A turn that just finished: how it ended, its final text, and where its
+/// messages start in the run's history.
+struct FinishedTurn<'a> {
+    status: &'a AgentResultStatus,
+    summary: &'a str,
+    /// Index in the run's history of the turn's first message (its kickoff).
+    first_message: usize,
+}
+
 /// Everything that happens after a turn finishes, before the run decides
 /// whether to linger idle: stage observations past threshold, relay the
-/// outcome to a spawned session's spawner, and deliver output to a
-/// conversation session's own conversation. Split out of [`run_session`]
-/// purely to keep that function's line count down.
+/// outcome to a spawned session's spawner, and settle a session's chat
+/// output. Split out of [`run_session`] purely to keep that function's line
+/// count down.
 async fn after_turn(
     info: &SessionInfo,
-    status: &AgentResultStatus,
-    summary: &str,
+    turn: &FinishedTurn<'_>,
     resources: Option<&SubAgentResources>,
     env: &RunEnv,
     memory: &mut SessionMemory,
     history: &mut RunHistory,
 ) {
+    let FinishedTurn {
+        status,
+        summary,
+        first_message,
+    } = *turn;
     // Per-turn threshold check: mirrors the main agent's own rotation, run
     // after every turn (not just once) since a run can now span several.
     // Staged observations are held locally and merged alongside the final
@@ -724,10 +738,15 @@ async fn after_turn(
     // not knowing a turn failed, was cancelled, or produced nothing.
     maybe_relay_result(info, status, summary, resources, env, recent_messages).await;
 
-    // Deliver this turn's output to its own conversation, for a session
-    // started by a conversation message. Every other session category has
-    // `conversation_target: None` and this is a no-op.
-    maybe_output_to_conversation(info, status, summary, env).await;
+    // A no-op for a session with no chat of its own.
+    settle_chat_output(
+        info,
+        status,
+        summary,
+        history.messages.messages_since(first_message),
+        env,
+    )
+    .await;
 }
 
 /// A run's conversation as the model sees it: a fork's carried-over main
@@ -755,10 +774,15 @@ impl RunHistory {
 }
 
 /// Build a run's first-turn kickoff from its `SubAgentConfig`.
-fn initial_kickoff(config: SubAgentConfig) -> TurnKickoff {
+/// `chat_note`, when given, goes ahead of the config's own context.
+fn initial_kickoff(config: SubAgentConfig, chat_note: Option<String>) -> TurnKickoff {
+    let context = match (chat_note, config.context) {
+        (Some(note), Some(context)) => Some(format!("{note}\n\n{context}")),
+        (note, context) => note.or(context),
+    };
     TurnKickoff::Initial {
         prompt: config.prompt,
-        context: config.context,
+        context,
         hop_count: config.hop_count,
         sender: config.sender,
         images: config.images,
@@ -785,7 +809,8 @@ async fn run_session(
 ) {
     let mut history = RunHistory::new(std::mem::take(&mut config.carried_history));
     let mut memory = SessionMemory::new();
-    let mut kickoff = initial_kickoff(config);
+    let chat_note = chat_session_note(&info);
+    let mut kickoff = initial_kickoff(config, chat_note);
     // Assigned on the loop's first iteration, which always runs at least
     // once (the run's initial turn), so both are definitely initialized by
     // the time anything after the loop reads them.
@@ -801,6 +826,7 @@ async fn run_session(
         // looking like it's still forking, or idle with nothing to do)
         // whenever `max_concurrent` is exhausted by other live sessions.
         transition_state(&env.registry, &env.publisher, &info, SessionState::Queued).await;
+        let first_message = history.messages.len();
         (status, summary) = tokio::select! {
             biased;
             () = stop_token.cancelled() => {
@@ -832,8 +858,11 @@ async fn run_session(
 
         after_turn(
             &info,
-            &status,
-            &summary,
+            &FinishedTurn {
+                status: &status,
+                summary: &summary,
+                first_message,
+            },
             resources.as_ref(),
             &env,
             &mut memory,
@@ -1164,18 +1193,63 @@ async fn relay_result_to_spawner(
     )
 }
 
-/// Deliver this turn's output to a conversation session's own conversation.
-/// A no-op for every other session (`info.conversation_target` is `None`).
+/// The outside chat a conversation session answers in: its conversation
+/// target, unless the session isn't a conversation session or its
+/// conversation is an A2A caller's, whose replies reach the caller through
+/// the session's turn responses.
+fn external_chat(info: &SessionInfo) -> Option<&ConversationTarget> {
+    info.conversation_target.as_ref().filter(|target| {
+        info.category == SessionCategory::External && target.endpoint != A2A_ENDPOINT
+    })
+}
+
+/// The note that opens a conversation session's run, telling it how its
+/// chat hears from it. `None` for every other session.
+fn chat_session_note(info: &SessionInfo) -> Option<String> {
+    let target = external_chat(info)?;
+    Some(format!(
+        "[You are handling {label}. Nothing you write is posted there on its own: only a \
+         send_message call with endpoint=\"{endpoint}\" and conversation=\"{conversation}\" \
+         reaches that chat, so send everything its people should read that way. Your other \
+         responses stay in this session's transcript, which the owner can read in the web UI.]",
+        label = info.source_label,
+        endpoint = target.endpoint,
+        conversation = target.conversation_id,
+    ))
+}
+
+/// Whether `messages` (one turn's) call `send_message` to `target`.
+fn sent_to_chat(messages: &[crate::inference::Message], target: &ConversationTarget) -> bool {
+    messages
+        .iter()
+        .filter_map(|message| message.tool_calls.as_deref())
+        .flatten()
+        .any(|call| {
+            let arg = |name: &str| call.arguments.get(name).and_then(serde_json::Value::as_str);
+            call.name == "send_message"
+                && arg("endpoint") == Some(target.endpoint.as_str())
+                && arg("conversation") == Some(target.conversation_id.as_str())
+        })
+}
+
+/// Settle where a finished turn's final text goes outside the session.
 ///
-/// Only a completed turn with real text output is delivered — a cancelled,
-/// failed, or empty-output turn produces nothing to say into the
-/// conversation and is left to the run's other visibility (logs, the
-/// session's transcript) rather than posting an internal status line into a
-/// shared chat.
-async fn maybe_output_to_conversation(
+/// A conversation session's outside chat hears only what the session sends
+/// it with `send_message`; its final text stays in its transcript and the
+/// web UI. A turn that ends with text and sent its chat nothing is logged,
+/// since the people there heard nothing from it. A fork the owner started
+/// from a chat app with `/multitask` posts its final text into the owner's
+/// direct messages, which a session's `send_message` can't reach. Every
+/// other session has no chat and this is a no-op.
+///
+/// Only a completed turn with real text output counts: a cancelled, failed,
+/// or empty-output turn is left to the run's other visibility (logs, the
+/// session's transcript).
+async fn settle_chat_output(
     info: &SessionInfo,
     status: &AgentResultStatus,
     summary: &str,
+    turn_messages: &[crate::inference::Message],
     env: &RunEnv,
 ) {
     let Some(target) = info.conversation_target.as_ref() else {
@@ -1189,18 +1263,24 @@ async fn maybe_output_to_conversation(
         );
         return;
     }
-    // A fork the owner started from a chat app with `/multitask` (the only
-    // spawned session with a conversation) posts into the same direct
-    // messages main answers in, so it names itself to be told apart.
-    let content = if info.category == SessionCategory::Spawned {
-        format!("{}:\n{summary}", info.address)
-    } else {
-        summary.to_string()
-    };
+    if info.category != SessionCategory::Spawned {
+        if external_chat(info).is_some() && !sent_to_chat(turn_messages, target) {
+            tracing::info!(
+                address = %info.address,
+                endpoint = %target.endpoint,
+                conversation = %target.conversation_id,
+                "conversation session turn ended without a send_message to its chat; its reply \
+                 stays in the session transcript and the chat heard nothing"
+            );
+        }
+        return;
+    }
+    // The fork posts into the same direct messages main answers in, so it
+    // names itself to be told apart.
     let event = SessionResponseEvent {
         session_address: info.address.clone(),
         conversation_id: target.conversation_id.clone(),
-        content,
+        content: format!("{}:\n{summary}", info.address),
         attachment: None,
         timestamp: crate::time::now_local(env.tz),
         is_final: true,
@@ -3781,27 +3861,258 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conversation_session_turn_output_is_published_to_its_conversation() {
-        let (runtime, mut session_output) = conversation_output_runtime().await;
-
-        let address = SessionAddress::from("external-discord-output");
+    async fn a_conversation_session_s_turns_post_nothing_to_its_chat_on_their_own() {
+        let log = residuum_core::testing::log::EventLog::default();
+        let _capture = log.capture();
+        let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
+        let mut chat: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+            .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+            .await
+            .unwrap();
+        let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("external-discord-teammate-reply");
         runtime.spawn(
             sample_conversation_request(address.as_ref()),
-            Some(make_resources("the build is green")),
+            Some(make_sequenced_resources(vec![
+                "I'll ask Ivan",
+                "relayed Ivan's answer to the group",
+            ])),
         );
-
-        let event = bus_wait::next_event(
-            "the session's turn output to be published",
-            &mut session_output,
+        next_idle(
+            &mut session_events,
+            &address,
+            "the session to go idle after the group member's turn",
         )
         .await;
-        assert_eq!(event.session_address, address);
-        assert_eq!(event.conversation_id, "chan-1");
-        assert_eq!(event.content, "the build is green");
-        assert!(
-            event.is_final,
-            "a run's completed turn output must be marked final"
+
+        // Exactly what the team router hands this agent's messenger for
+        // `message_agent to="agent:mist/external-discord-teammate-reply"`.
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent {
+                    from: SessionAddress::from("agent:ivan"),
+                    from_category: crate::bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
+                    content: "Here's your answer.".to_string(),
+                    hop_count: 1,
+                }),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered,
         );
+        next_idle(
+            &mut session_events,
+            &address,
+            "the session to go idle after the teammate's turn",
+        )
+        .await;
+        bus_wait::bus_barrier(&bus_handle).await;
+        let posted: Vec<String> = chat.drain().into_iter().map(|e| e.content).collect();
+        assert!(
+            posted.is_empty(),
+            "neither the person's turn nor the teammate's posts its final text: {posted:?}"
+        );
+        let unposted = log
+            .events()
+            .into_iter()
+            .filter(|e| {
+                e.level == tracing::Level::INFO
+                    && e.text.contains("without a send_message to its chat")
+            })
+            .count();
+        assert_eq!(
+            unposted, 2,
+            "each turn that told its chat nothing is logged"
+        );
+        assert!(runtime.registry.stop(&address));
+    }
+
+    /// Calls `send_message` to discord's `chan-1` on its first completion,
+    /// then answers with text.
+    struct SendsToChatProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for SendsToChatProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Ok(InferenceResponse::new(
+                    String::new(),
+                    vec![crate::inference::ToolCall {
+                        id: "tc-1".to_string(),
+                        name: "send_message".to_string(),
+                        arguments: serde_json::json!({
+                            "endpoint": "discord",
+                            "conversation": "chan-1",
+                            "message": "Ivan says the build is green",
+                        }),
+                        server: None,
+                    }],
+                ))
+            } else {
+                Ok(InferenceResponse::new("told the group".to_string(), vec![]))
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "sends-to-chat"
+        }
+    }
+
+    struct BuildsChannel;
+
+    #[async_trait]
+    impl crate::bus::conversations::ConversationSource for BuildsChannel {
+        async fn conversations(
+            &self,
+        ) -> anyhow::Result<Vec<crate::bus::conversations::KnownConversation>> {
+            Ok(vec![crate::bus::conversations::KnownConversation {
+                id: "chan-1".to_string(),
+                kind: crate::bus::origin::ConversationKind::Channel,
+                label: "#builds".to_string(),
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_session_s_send_message_to_its_chat_posts() {
+        let log = residuum_core::testing::log::EventLog::default();
+        let _capture = log.capture();
+        let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
+        let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let mut chat: crate::bus::Subscriber<crate::bus::ResponseEvent> = bus_handle
+            .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+            .await
+            .unwrap();
+        let mut final_text: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+            .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+            .await
+            .unwrap();
+        let endpoints = crate::bus::EndpointRegistry::from_entries([crate::bus::EndpointEntry {
+            id: crate::bus::EndpointId::from("discord"),
+            topic: crate::bus::TopicId::Endpoint(crate::bus::EndpointName::from("discord")),
+            capabilities: crate::bus::EndpointCapabilities::INTERACTIVE,
+            display_name: "Discord".to_string(),
+        }]);
+        let _source = endpoints
+            .conversations()
+            .register("discord", Arc::new(BuildsChannel));
+        let mut resources = make_resources("unused");
+        resources.provider = Box::new(SendsToChatProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        resources
+            .tools
+            .register(Box::new(crate::tools::send_message::SendMessageTool::new(
+                endpoints,
+                bus_handle.publisher(),
+                true,
+            )));
+        let address = SessionAddress::from("external-discord-sends");
+
+        runtime.spawn(
+            sample_conversation_request(address.as_ref()),
+            Some(resources),
+        );
+
+        let posted =
+            bus_wait::next_event("the session's send_message to its chat", &mut chat).await;
+        assert_eq!(posted.conversation.as_deref(), Some("chan-1"));
+        assert_eq!(posted.content, "Ivan says the build is green");
+        next_idle(&mut session_events, &address, "the turn to end").await;
+        bus_wait::bus_barrier(&bus_handle).await;
+        assert!(
+            final_text.drain().is_empty(),
+            "the turn's final text stays in the session"
+        );
+        assert!(
+            !log.events()
+                .iter()
+                .any(|e| e.text.contains("without a send_message to its chat")),
+            "a turn that sent its chat a message is not reported as silent"
+        );
+        assert!(runtime.registry.stop(&address));
+    }
+
+    #[test]
+    fn a_chat_session_is_told_only_send_message_reaches_its_chat() {
+        let mut info = sample_live_info_for_note();
+        let note = chat_session_note(&info).expect("a chat conversation session gets the note");
+        assert!(
+            note.contains(r#"endpoint="discord" and conversation="chan-1""#),
+            "{note}"
+        );
+
+        info.conversation_target = Some(ConversationTarget {
+            endpoint: A2A_ENDPOINT.to_string(),
+            conversation_id: "caller/ctx".to_string(),
+        });
+        assert_eq!(
+            chat_session_note(&info),
+            None,
+            "an A2A caller hears the session's responses, so it gets no note"
+        );
+
+        info.category = SessionCategory::Spawned;
+        info.conversation_target = Some(ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "owner-dm".to_string(),
+        });
+        assert_eq!(
+            chat_session_note(&info),
+            None,
+            "a /multitask fork posts its replies itself"
+        );
+    }
+
+    #[test]
+    fn the_chat_note_goes_ahead_of_the_kickoff_s_own_context() {
+        let config = sample_conversation_request("external-discord-note").subagent_config;
+        let mut with_context = config.clone();
+        with_context.context = Some("earlier chatter".to_string());
+        let TurnKickoff::Initial { context, .. } =
+            initial_kickoff(with_context, Some("[note]".to_string()))
+        else {
+            panic!("the first turn is an initial kickoff");
+        };
+        assert_eq!(context.as_deref(), Some("[note]\n\nearlier chatter"));
+        let TurnKickoff::Initial {
+            context: without_note,
+            ..
+        } = initial_kickoff(config, None)
+        else {
+            panic!("the first turn is an initial kickoff");
+        };
+        assert_eq!(without_note, None);
+    }
+
+    fn sample_live_info_for_note() -> SessionInfo {
+        SessionInfo {
+            address: SessionAddress::from("external-discord-note"),
+            run_id: "run-note".to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state: SessionState::Running,
+            spawner: None,
+            depth: 1,
+            purpose: "chat".to_string(),
+            agent_skill: None,
+            model: crate::config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: Some(ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-1".to_string(),
+            }),
+            started_at: Utc::now(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        }
     }
 
     #[tokio::test]
