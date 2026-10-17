@@ -1,0 +1,2 @@
+fmt	fmt|web/src/probe-format.ts	prettier: web/src/probe-format.ts	web/src/probe-format.ts	1		not formatted; npm run format (in web/) rewrites it
+fmt	fmt|web/src/probe-syntax.ts	prettier: web/src/probe-syntax.ts	web/src/probe-syntax.ts	1		could not parse: SyntaxError: Property assignment expected. (1:23)

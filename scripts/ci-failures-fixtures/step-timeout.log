@@ -1,0 +1,26 @@
+﻿2026-10-17T03:42:24.6940601Z Current runner version: '2.336.0'
+2026-10-17T03:42:24.6952671Z Runner name: 'lab-runners-wide-zvpmj-runner-sbjr4'
+2026-10-17T03:42:24.6954369Z Runner group name: 'default'
+2026-10-17T03:42:24.6956105Z Machine name: 'lab-runners-wide-zvpmj-runner-sbjr4'
+2026-10-17T03:42:24.7059467Z ##[group]GITHUB_TOKEN Permissions
+2026-10-17T03:42:24.7063629Z Contents: read
+2026-10-17T03:42:24.7064570Z Metadata: read
+2026-10-17T03:42:24.7065404Z Packages: read
+2026-10-17T03:42:24.7066433Z ##[endgroup]
+2026-10-17T03:42:24.7070374Z Secret source: Actions
+2026-10-17T03:42:24.7071789Z Cache mode: write
+2026-10-17T03:42:24.7072896Z Prepare workflow directory
+2026-10-17T03:42:24.7687835Z Prepare all required actions
+2026-10-17T03:42:24.7888435Z Complete job name: Probe Step Timeout
+2026-10-17T03:42:24.9167776Z ##[group]Run sleep 300
+2026-10-17T03:42:24.9168842Z [36;1msleep 300[0m
+2026-10-17T03:42:24.9213719Z shell: /usr/bin/bash -e {0}
+2026-10-17T03:42:24.9215403Z ##[endgroup]
+2026-10-17T03:43:37.4268190Z ##[error]The action 'Sleep past the step timeout' has timed out after 1 minutes.
+2026-10-17T03:43:37.4708859Z ##[group]Run echo after
+2026-10-17T03:43:37.4709904Z [36;1mecho after[0m
+2026-10-17T03:43:37.4739691Z shell: /usr/bin/bash -e {0}
+2026-10-17T03:43:37.4740561Z ##[endgroup]
+2026-10-17T03:43:37.4872383Z after
+2026-10-17T03:43:37.5116284Z Cleaning up orphan processes
+2026-10-17T03:43:37.5226860Z Terminate orphan process: pid (143) (sleep)
