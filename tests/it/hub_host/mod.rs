@@ -13,10 +13,6 @@
     clippy::panic,
     reason = "test assertions use panic on unexpected variants"
 )]
-#![expect(
-    clippy::missing_assert_message,
-    reason = "test assertions name the failing condition in the assert itself"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -263,7 +259,11 @@ impl Fixture {
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status().as_u16(), 202);
+        assert_eq!(
+            response.status().as_u16(),
+            202,
+            "the session start was not accepted"
+        );
         let body: Value = response.json().await.unwrap();
         str_at(&body, "address").to_string()
     }
@@ -291,7 +291,11 @@ impl Fixture {
             .send()
             .await
             .unwrap();
-        assert_eq!(rejected.status().as_u16(), 400);
+        assert_eq!(
+            rejected.status().as_u16(),
+            400,
+            "the config patch with an unknown webhook field was not rejected"
+        );
 
         let webhook = self
             .http
@@ -300,7 +304,11 @@ impl Fixture {
             .send()
             .await
             .unwrap();
-        assert_eq!(webhook.status().as_u16(), 401);
+        assert_eq!(
+            webhook.status().as_u16(),
+            401,
+            "the unauthenticated webhook delivery was not refused"
+        );
 
         let message = a2a::SendMessageRequest {
             message: a2a::Message::new(a2a::Role::User, vec![a2a::Part::text("hello over a2a")]),
