@@ -6,4 +6,3 @@ src/interfaces/ residuum-interfaces
 src/hub/ residuum-hub
 src/gateway/ residuum-gateway
 src/gateway/startup/tools.rs residuum-tools
-src/protocol/ residuum-protocol

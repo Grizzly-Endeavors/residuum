@@ -6,11 +6,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::bus::session::{SessionCategory, SessionState};
-use crate::bus::usage::SessionUsageTotals;
-use crate::bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
-use crate::bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
-use crate::inference::{AgentSender, ImageData, MessageSender};
+use residuum_bus::session::{SessionCategory, SessionState};
+use residuum_bus::usage::SessionUsageTotals;
+use residuum_bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
+use residuum_bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
+use residuum_inference::{AgentSender, ImageData, MessageSender};
 
 /// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -178,7 +178,7 @@ pub struct SessionSummary {
     pub error_details: Option<String>,
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. `None` for every other trigger.
-    pub overlap: Option<crate::bus::PulseOverlap>,
+    pub overlap: Option<residuum_bus::PulseOverlap>,
     /// The model the run was asked to use: a tier (`small`, `medium`,
     /// `large`) or an explicit `provider/model` id. `None` for a record
     /// written before this field existed.
@@ -235,8 +235,8 @@ pub struct OutboundA2aTaskSummary {
     pub unreachable_since: Option<DateTime<Utc>>,
 }
 
-impl From<&crate::bus::remote_task::TrackedTask> for OutboundA2aTaskSummary {
-    fn from(task: &crate::bus::remote_task::TrackedTask) -> Self {
+impl From<&residuum_bus::remote_task::TrackedTask> for OutboundA2aTaskSummary {
+    fn from(task: &residuum_bus::remote_task::TrackedTask) -> Self {
         Self {
             task_id: task.task_id.clone(),
             agent: task.agent.clone(),
@@ -306,7 +306,7 @@ pub struct ScheduledCurrentRun {
     pub address: String,
     pub run_id: String,
     /// Set when this run started while its previous run was still going.
-    pub overlap: Option<crate::bus::PulseOverlap>,
+    pub overlap: Option<residuum_bus::PulseOverlap>,
 }
 
 /// One pulse, as listed by `GET /api/agents/{name}/scheduled/pulses`.
@@ -497,7 +497,7 @@ pub enum ServerMessage {
     },
     /// A background post-turn cycle (the automatic observer/reflector, or
     /// the end-of-turn subconscious evaluation — see
-    /// `crate::gateway::post_turn`) started or finished running. Drives a
+    /// the gateway's post-turn module) started or finished running. Drives a
     /// quiet "updating memory…" / "reviewing turn…" indicator; never blocks
     /// anything, since this work no longer runs on the event loop.
     PostTurnActivity {
@@ -537,7 +537,7 @@ pub enum ServerMessage {
         /// Auto Mode's verdict on the call, when Auto Mode checked it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        auto_mode: Option<crate::bus::auto_mode::AutoModeVerdict>,
+        auto_mode: Option<residuum_bus::auto_mode::AutoModeVerdict>,
     },
     /// The agent's text response: the reply that ends a turn, or a message
     /// the agent posted to this endpoint with `send_message` (an empty
@@ -809,7 +809,7 @@ pub enum ServerMessage {
         /// Auto Mode's verdict on the call, when Auto Mode checked it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        auto_mode: Option<crate::bus::auto_mode::AutoModeVerdict>,
+        auto_mode: Option<residuum_bus::auto_mode::AutoModeVerdict>,
     },
     /// Token usage and tool-call progress for a session's turn still
     /// running — the session counterpart of `TurnUsage`.
@@ -1016,7 +1016,7 @@ mod tests {
                     interface: "telegram".to_string(),
                     location: None,
                 }),
-                visibility: crate::memory::types::Visibility::User,
+                visibility: residuum_memory::types::Visibility::User,
             },
         };
         assert_eq!(
@@ -1551,7 +1551,7 @@ mod tests {
         let changed = ServerMessage::WorkspaceChanged {
             changes: vec![WorkspaceChange {
                 path: "wiki/a.md".into(),
-                kind: crate::bus::workspace_change::WorkspaceChangeKind::Created,
+                kind: residuum_bus::workspace_change::WorkspaceChangeKind::Created,
             }],
         };
         assert_eq!(

@@ -26,6 +26,7 @@ residuum-config = { path = "crates/config", version = "0.1.0" }
 residuum-bus = { path = "crates/bus", version = "0.1.0" }
 residuum-agent = { path = "crates/agent", version = "0.1.0" }
 residuum-workspace = { path = "crates/workspace", version = "0.1.0" }
+residuum-protocol = { path = "crates/protocol", version = "0.1.0" }
 residuum-proactivity = { path = "crates/proactivity", version = "0.1.0" }
 residuum-checkpoints = { path = "crates/checkpoints", version = "0.1.0" }
 residuum-skills = { path = "crates/skills", version = "0.1.0" }
@@ -176,6 +177,7 @@ residuum-tracing-service = { workspace = true }
 residuum-bus = { workspace = true }
 residuum-agent = { workspace = true }
 residuum-workspace = { workspace = true }
+residuum-protocol = { workspace = true }
 residuum-proactivity = { workspace = true }
 residuum-checkpoints = { workspace = true }
 tokio = { workspace = true }

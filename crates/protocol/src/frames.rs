@@ -1,16 +1,16 @@
 //! The wire frames sent to clients, built from bus session events, registry
 //! entries and the workspace change feed.
 
-use crate::bus::session::SessionInfo;
-use crate::bus::workspace_change::WorkspaceResyncReason;
-use crate::bus::{AgentResultStatus, SessionEvent, SessionEventKind, WorkspaceEvent};
-use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges};
+use residuum_bus::session::SessionInfo;
+use residuum_bus::workspace_change::WorkspaceResyncReason;
+use residuum_bus::{AgentResultStatus, SessionEvent, SessionEventKind, WorkspaceEvent};
+use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges};
 
 use super::{ServerMessage, SessionRunStatus, SessionSummary};
 
 /// Summarize a live run from its registry entry.
 #[must_use]
-pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
+pub fn summary_from_live(info: &SessionInfo) -> SessionSummary {
     SessionSummary {
         address: info.address.to_string(),
         run_id: info.run_id.clone(),
@@ -38,7 +38,7 @@ pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
 
 /// Translate a bus session event into the WebSocket frame clients receive.
 #[must_use]
-pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
+pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
     let SessionEvent {
         address,
         run_id,
@@ -138,10 +138,8 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
 
 /// The frame a workspace change-feed event becomes for a connection watching
 /// `watch_set`, if any. A connection watching nothing gets nothing.
-pub(crate) fn workspace_frame(
-    watch_set: &WatchSet,
-    event: WorkspaceEvent,
-) -> Option<ServerMessage> {
+#[must_use]
+pub fn workspace_frame(watch_set: &WatchSet, event: WorkspaceEvent) -> Option<ServerMessage> {
     if watch_set.is_empty() {
         return None;
     }
@@ -165,9 +163,9 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
-    use crate::bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
-    use crate::bus::{EventTrigger, SessionAddress, ToolCallEvent};
+    use residuum_bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
+    use residuum_bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
+    use residuum_bus::{EventTrigger, SessionAddress, ToolCallEvent};
 
     fn live_info(address: &str, state: SessionState) -> SessionInfo {
         SessionInfo {
@@ -181,11 +179,11 @@ mod tests {
             depth: 1,
             purpose: "research".to_string(),
             agent_skill: None,
-            model: crate::config::ModelSelector::MEDIUM,
+            model: residuum_config::ModelSelector::MEDIUM,
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -376,7 +374,7 @@ mod tests {
 
     #[test]
     fn too_many_matching_changes_become_an_overflow_resync() {
-        let paths: Vec<String> = (0..=crate::workspace::watch::MAX_CHANGES_PER_FRAME)
+        let paths: Vec<String> = (0..=residuum_workspace::watch::MAX_CHANGES_PER_FRAME)
             .map(|i| format!("wiki/{i}.md"))
             .collect();
         let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
