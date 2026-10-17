@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use super::helpers::{publish_notice, publish_reload_notice};
 use crate::background::spawn_context::SpawnContext;
+use crate::bus::notice::{publish_notice, publish_reload_notice};
 use crate::bus::{ReloadOutcome, ReloadedFiles};
 use crate::config::Config;
-use crate::gateway::{last_known_good, startup};
+use crate::gateway::startup;
+use crate::hub::last_known_good;
 use crate::inference::CompletionOptions;
 use crate::inference::InferenceError;
 use crate::inference::SharedHttpClient;
@@ -520,12 +521,15 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
 /// notification channel and the session runtime, which are shared handles
 /// built once at startup.
 async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
-    rt.agent.set_timezone(
-        new_cfg.timezone,
+    rt.agent.set_timezone(new_cfg.timezone);
+    crate::tools::registration::reload_timezone_tools(
+        rt.agent.tools_mut(),
+        &rt.tool_injections,
         Arc::clone(&rt.action_store),
         Arc::clone(&rt.action_notify),
         Arc::clone(&rt.spawn_context.model_catalog),
         &rt.layout,
+        new_cfg.timezone,
     );
     if new_cfg.discord.is_some() {
         reload_discord_adapter(rt, new_cfg).await;
@@ -621,7 +625,9 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.endpoint_registry.refresh(new_cfg, &rt.channel_configs);
 }
 
-/// Build a new `SpawnContext` from the current runtime and new config.
+/// Build a new `SpawnContext`, with a new session tool factory, from the
+/// current runtime and new config. A session already running keeps the
+/// registry it was built with.
 fn build_spawn_context(
     rt: &AgentRuntime,
     new_cfg: &Config,
@@ -639,6 +645,44 @@ fn build_spawn_context(
             Arc::clone(&rt.spawn_context.observer)
         }
     };
+
+    let session_tools = Arc::new(crate::tools::SessionTools {
+        path_policy: Arc::clone(&rt.path_policy),
+        tools_path: Arc::clone(&rt.tools_path),
+        agent_keys: Arc::clone(&rt.agent_keys),
+        checkpoints: Arc::clone(&rt.checkpoints),
+        publisher: rt.publisher.clone(),
+        endpoint_registry: rt.endpoint_registry.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
+        action_store: Arc::clone(&rt.action_store),
+        action_notify: Arc::clone(&rt.action_notify),
+        hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
+        // Shared `Arc`, same instance `reload_tracing` updates in place —
+        // sessions forked after this reload see the same config, no rebuild
+        // needed here.
+        tracing_service: Arc::clone(&rt.tracing_service),
+        // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
+        // builds for the HTTP tracing API, so a session forked after this
+        // reload reports the currently active model/provider.
+        tracing_client_context: Arc::new(
+            crate::tracing_service::client_context::gather_for_bug_report(rt.build, new_cfg),
+        ),
+        build: rt.build,
+        web_search_backend: new_cfg.web_search.standalone_backend.clone(),
+        // The same live catalog as before the reload, which main's tools hold
+        // too; `reload_model_catalog` has already replaced its contents.
+        model_catalog: Arc::clone(&rt.spawn_context.model_catalog),
+        a2a_hub: Arc::clone(&rt.a2a_hub),
+        a2a_tracker: Arc::clone(&rt.a2a_tracker),
+        lifecycle: rt.lifecycle.clone(),
+        messenger: Arc::clone(&rt.agent_messenger),
+        layout: rt.layout.clone(),
+        config_dir: new_cfg.config_dir.clone(),
+        hub_dir: rt.hub_dir.clone(),
+        tz: rt.tz,
+        depth_cap: new_cfg.background.subagent_depth_cap,
+        auto_mode: Some(Arc::clone(&rt.auto_mode)),
+    });
 
     Arc::new(SpawnContext {
         background_config: new_cfg.background.clone(),
@@ -658,39 +702,16 @@ fn build_spawn_context(
         max_tool_iterations: new_cfg.agent.max_tool_iterations,
         repeat_call_guard: new_cfg.agent.repeat_call_guard,
         layout: rt.layout.clone(),
-        config_dir: new_cfg.config_dir.clone(),
-        hub_dir: rt.hub_dir.clone(),
-        tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
+        session_tools,
         session_runtime: Arc::clone(&rt.session_runtime),
         session_registry: Arc::clone(&rt.session_registry),
-        endpoint_registry: rt.endpoint_registry.clone(),
         publisher: rt.publisher.clone(),
-        action_store: Arc::clone(&rt.action_store),
-        action_notify: Arc::clone(&rt.action_notify),
-        hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
         skill_state: Arc::clone(&rt.skill_state),
         mcp_registry: Arc::clone(&rt.mcp_registry),
         observer,
         merge_writer: Arc::clone(&rt.merge_writer),
         messenger: Arc::clone(&rt.agent_messenger),
-        // Shared `Arc`, same instance `reload_tracing` updates in place —
-        // sessions forked after this reload see the same config, no rebuild
-        // needed here.
-        tracing_service: Arc::clone(&rt.tracing_service),
-        // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
-        // builds for the HTTP tracing API, so a session forked after this
-        // reload reports the currently active model/provider.
-        tracing_client_context: Arc::new(crate::client_context::gather_for_bug_report(new_cfg)),
-        web_search_backend: new_cfg.web_search.standalone_backend.clone(),
-        tools_path: Arc::clone(&rt.tools_path),
-        path_policy: Arc::clone(&rt.path_policy),
-        auto_mode: rt.auto_mode.clone(),
-        agent_keys: Arc::clone(&rt.agent_keys),
-        a2a_hub: Arc::clone(&rt.a2a_hub),
-        a2a_tracker: Arc::clone(&rt.a2a_tracker),
-        checkpoints: Arc::clone(&rt.checkpoints),
-        lifecycle: rt.spawn_context.lifecycle.clone(),
         bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
         ),
     })
@@ -745,7 +766,7 @@ async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: 
 /// Reload main's standalone web search setup from the new config.
 ///
 /// `ollama_web_search` is a native tool, so it reloads in place via
-/// `Agent::reload_ollama_web_search_tool` — called unconditionally, like
+/// `tools::registration::reload_ollama_web_search_tool` — called unconditionally, like
 /// every other cheap component, since removing and re-adding a
 /// not-actually-changed tool is harmless.
 ///
@@ -762,8 +783,10 @@ async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: 
 /// way `reload_providers`'s does: a `warn` log plus an operator-facing
 /// notice, rather than silently leaving the old (or no) server running.
 async fn reload_web_search(rt: &mut AgentRuntime, new_cfg: &Config) {
-    rt.agent
-        .reload_ollama_web_search_tool(new_cfg.web_search.standalone_backend.as_ref());
+    crate::tools::registration::reload_ollama_web_search_tool(
+        rt.agent.tools_mut(),
+        new_cfg.web_search.standalone_backend.as_ref(),
+    );
 
     if rt.cfg.web_search.standalone_backend == new_cfg.web_search.standalone_backend {
         return;
@@ -895,9 +918,7 @@ async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
             &rt.layout,
             &rt.hub_dir,
         ));
-    if let Some(auto_mode) = &rt.auto_mode {
-        auto_mode.set_config(new_cfg.auto_mode.clone());
-    }
+    rt.auto_mode.set_config(new_cfg.auto_mode.clone());
     rt.agent
         .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);
     rt.agent
@@ -913,8 +934,8 @@ async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
 
 /// Senders a reloaded chat adapter needs. Built once per adapter because the
 /// closure that starts it has to own them.
-fn chat_adapter_senders(rt: &AgentRuntime) -> crate::gateway::event_loop::AdapterSenders {
-    crate::gateway::event_loop::AdapterSenders {
+fn chat_adapter_senders(rt: &AgentRuntime) -> crate::interfaces::AdapterSenders {
+    crate::interfaces::AdapterSenders {
         publisher: rt.publisher.clone(),
         bus_handle: rt.bus_handle.clone(),
         reload: rt.reload_tx.clone(),

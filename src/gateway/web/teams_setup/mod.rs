@@ -1,4 +1,4 @@
-//! Microsoft Teams setup wizard protocol types and endpoints.
+//! Microsoft Teams setup wizard endpoints.
 //!
 //! Route handlers and background job runner integration for Microsoft 365 Agents Toolkit.
 
@@ -12,22 +12,7 @@ use serde::Deserialize;
 
 use crate::gateway::web::ConfigApiState;
 use crate::interfaces::teams::setup_job::{SetupJobError, get_or_create_manager};
-
-pub mod types;
-
-pub use types::*;
-
-impl Default for CreatedResources {
-    fn default() -> Self {
-        Self {
-            bot_id: None,
-            teams_app_id: None,
-            tenant_id: None,
-            entra_url: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Overview/appId/".to_string(),
-            dev_portal_url: "https://dev.teams.microsoft.com/apps/".to_string(),
-        }
-    }
-}
+use crate::interfaces::teams::setup_types::{CleanupRequest, TeamsSetupRedirect, TeamsSetupStart};
 
 /// Helper to resolve the root `~/.residuum` directory from `ConfigApiState`.
 fn get_residuum_root(state: &ConfigApiState) -> PathBuf {

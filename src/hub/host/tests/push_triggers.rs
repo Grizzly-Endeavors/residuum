@@ -174,9 +174,9 @@ async fn file_item(hub: &Fixture, agent: &str, id: &str) {
 }
 
 /// A task sent to `laptop` whose unreachable streak is eleven minutes old.
-fn outbound_task(unreachable_notified: bool) -> crate::a2a::TrackedTask {
+fn outbound_task(unreachable_notified: bool) -> crate::bus::remote_task::TrackedTask {
     let now = Utc::now();
-    crate::a2a::TrackedTask {
+    crate::bus::remote_task::TrackedTask {
         sender_address: "main".to_string(),
         agent: "laptop".to_string(),
         task_id: "t1".to_string(),
@@ -193,7 +193,7 @@ fn outbound_task(unreachable_notified: bool) -> crate::a2a::TrackedTask {
     }
 }
 
-async fn announce_outbound(hub: &Fixture, agent: &str, task: crate::a2a::TrackedTask) {
+async fn announce_outbound(hub: &Fixture, agent: &str, task: crate::bus::remote_task::TrackedTask) {
     agent_bus(hub, agent)
         .publisher()
         .publish(
@@ -447,7 +447,7 @@ async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
 
 #[tokio::test]
 async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_background_turn() {
-    use crate::hub::team::{TeamLink, parse_team_address};
+    use crate::background::team::{TeamLink, parse_team_address};
 
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
@@ -485,8 +485,7 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     let mut changes = hub.host.agent_changes().subscribe();
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();

@@ -1,50 +1,23 @@
-//! Web-facing view of agent sessions: turning registry entries, store
-//! records, and bus events into protocol types, and carrying out the
-//! send-message and stop commands the session panel (over the WebSocket)
-//! and workbench artifacts (over HTTP) share.
+//! Web-facing view of agent sessions: summarizing store records as protocol
+//! types, and carrying out the send-message and stop commands the session
+//! panel (over the WebSocket) and workbench artifacts (over HTTP) share.
+//! Live registry entries and bus events become frames in
+//! `crate::protocol::frames`.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
-use crate::background::registry::{
-    ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo,
-    SessionRegistry, SessionState, artifact_sender_address,
-};
+use crate::background::registry::{SessionRegistry, StopSessionError, stop_named_session};
 use crate::background::store::RunRecord;
-use crate::bus::{AgentResultStatus, SessionAddress, SessionEvent, SessionEventKind};
-use crate::gateway::protocol::{
-    ServerMessage, SessionCommandErrorCode, SessionDeliveryOutcome, SessionRunStatus,
-    SessionSummary,
+use crate::bus::SessionAddress;
+use crate::bus::session::{
+    ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionState,
+    artifact_sender_address,
+};
+use crate::protocol::{
+    SessionCommandErrorCode, SessionDeliveryOutcome, SessionRunStatus, SessionSummary,
 };
 
 /// Category label a message from the owner carries as its sender's category.
 const OWNER_CATEGORY: &str = "owner";
-
-/// Summarize a live run from its registry entry.
-#[must_use]
-pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
-    SessionSummary {
-        address: info.address.to_string(),
-        run_id: info.run_id.clone(),
-        category: info.category,
-        source_label: info.source_label.clone(),
-        state: info.state,
-        spawner: info.spawner.as_ref().map(ToString::to_string),
-        depth: info.depth,
-        purpose: info.purpose.clone(),
-        started_at: info.started_at,
-        completed_at: None,
-        episode_id: None,
-        interrupted: false,
-        usage: info.usage,
-        // A live run has no outcome yet; `session_completed` carries it when
-        // the run finishes (see `session_event_to_server_message` below).
-        outcome: None,
-        error: None,
-        error_details: None,
-        overlap: info.overlap.clone(),
-        model: Some(info.model.to_string()),
-        resolved_model: info.resolved_model.clone(),
-    }
-}
 
 /// Summarize a run from its store record. `None` (logged) when the record
 /// names a category or state this build doesn't know, which would mean a
@@ -52,7 +25,7 @@ pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
 ///
 /// A record's state is only as fresh as its last write: a live run's record
 /// says `running` whatever its current state, so callers prefer
-/// [`summary_from_live`] for a run that is still in the registry.
+/// [`crate::protocol::frames::summary_from_live`] for a run that is still in the registry.
 #[must_use]
 pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> {
     let (Some(category), Some(state)) = (
@@ -99,106 +72,6 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         model: record.model.clone(),
         resolved_model: record.resolved_model.clone(),
     })
-}
-
-/// Translate a bus session event into the WebSocket frame clients receive.
-#[must_use]
-pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
-    let SessionEvent {
-        address,
-        run_id,
-        kind,
-    } = event;
-    let address = address.to_string();
-    match kind {
-        SessionEventKind::Started(info) => ServerMessage::SessionStarted {
-            session: summary_from_live(&info),
-        },
-        SessionEventKind::StateChanged(state) => ServerMessage::SessionStateChanged {
-            address,
-            run_id,
-            state,
-        },
-        SessionEventKind::Completed { status, episode_id } => {
-            let (status, error, error_details) = match status {
-                AgentResultStatus::Completed => (SessionRunStatus::Completed, None, None),
-                AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None, None),
-                AgentResultStatus::Failed { error, details } => {
-                    (SessionRunStatus::Failed, Some(error), details)
-                }
-            };
-            ServerMessage::SessionCompleted {
-                address,
-                run_id,
-                status,
-                error,
-                error_details,
-                episode_id,
-            }
-        }
-        SessionEventKind::TurnStarted { turn_id } => ServerMessage::SessionTurnStarted {
-            address,
-            run_id,
-            turn_id,
-        },
-        SessionEventKind::TurnEnded { turn_id } => ServerMessage::SessionTurnEnded {
-            address,
-            run_id,
-            turn_id,
-        },
-        SessionEventKind::ToolCall(call) => ServerMessage::SessionToolCall {
-            address,
-            run_id,
-            id: call.tool_call_id,
-            name: call.name,
-            arguments: call.arguments,
-            server: call.server,
-        },
-        SessionEventKind::ToolResult(result) => ServerMessage::SessionToolResult {
-            address,
-            run_id,
-            tool_call_id: result.tool_call_id,
-            name: result.name,
-            output: result.output,
-            is_error: result.is_error,
-            auto_mode: result.auto_mode,
-        },
-        SessionEventKind::Intermediate { content } => ServerMessage::SessionBroadcastResponse {
-            address,
-            run_id,
-            content,
-        },
-        SessionEventKind::TurnUsage {
-            output_tokens,
-            has_usage,
-            tool_calls,
-            session_totals,
-        } => ServerMessage::SessionTurnUsage {
-            address,
-            run_id,
-            output_tokens,
-            has_usage,
-            tool_calls,
-            session_totals,
-        },
-        SessionEventKind::Response { turn_id, content } => ServerMessage::SessionResponse {
-            address,
-            run_id,
-            turn_id,
-            content,
-        },
-        SessionEventKind::Error { message, details } => ServerMessage::SessionError {
-            address,
-            run_id,
-            message,
-            details,
-        },
-        SessionEventKind::MessageToMain { content } => ServerMessage::SessionMessageToMain {
-            address,
-            run_id,
-            content,
-        },
-    }
 }
 
 /// A session command the web UI sent could not be carried out.
@@ -323,21 +196,13 @@ pub(crate) fn stop_session(
     registry: &SessionRegistry,
     address: &str,
 ) -> Result<(), SessionCommandError> {
-    if address == MAIN_ADDRESS {
-        return Err(SessionCommandError::new(
-            SessionCommandErrorCode::InvalidRequest,
-            "The main agent can't be stopped as a session.",
-        ));
-    }
-    if registry.stop(&SessionAddress::from(address)) {
-        tracing::info!(address, "session stop requested");
-        Ok(())
-    } else {
-        Err(SessionCommandError::new(
-            SessionCommandErrorCode::NotLive,
-            format!("{address} isn't running, so there's nothing to stop."),
-        ))
-    }
+    stop_named_session(registry, address).map_err(|e| {
+        let code = match e {
+            StopSessionError::Main => SessionCommandErrorCode::InvalidRequest,
+            StopSessionError::NotLive { .. } => SessionCommandErrorCode::NotLive,
+        };
+        SessionCommandError::new(code, e.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -348,10 +213,11 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::agent::interrupt::Interrupt;
     use crate::background::registry::ResumePoint;
     use crate::background::store::SessionStore;
-    use crate::bus::{EventTrigger, ToolCallEvent};
+    use crate::bus::EventTrigger;
+    use crate::bus::interrupt::Interrupt;
+    use crate::bus::session::SessionInfo;
 
     fn live_info(address: &str, state: SessionState) -> SessionInfo {
         SessionInfo {
@@ -369,7 +235,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -587,105 +453,6 @@ mod tests {
     }
 
     #[test]
-    fn completed_event_maps_failure_reason_into_its_own_field() {
-        let msg = session_event_to_server_message(SessionEvent {
-            address: SessionAddress::from("spawned-d-0001"),
-            run_id: "run-d".to_string(),
-            kind: SessionEventKind::Completed {
-                status: AgentResultStatus::Failed {
-                    error: "model down".to_string(),
-                    details: None,
-                },
-                episode_id: Some("ep-007".to_string()),
-            },
-        });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "type": "session_completed",
-                "address": "spawned-d-0001",
-                "run_id": "run-d",
-                "status": "failed",
-                "error": "model down",
-                "episode_id": "ep-007",
-            })
-        );
-    }
-
-    #[test]
-    fn completed_event_carries_the_full_cause_chain_when_there_is_one() {
-        let msg = session_event_to_server_message(SessionEvent {
-            address: SessionAddress::from("spawned-d-0002"),
-            run_id: "run-d2".to_string(),
-            kind: SessionEventKind::Completed {
-                status: AgentResultStatus::Failed {
-                    error: "model down".to_string(),
-                    details: Some("connect timeout after 30s".to_string()),
-                },
-                episode_id: None,
-            },
-        });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "type": "session_completed",
-                "address": "spawned-d-0002",
-                "run_id": "run-d2",
-                "status": "failed",
-                "error": "model down",
-                "error_details": "connect timeout after 30s",
-                "episode_id": null,
-            }),
-            "the full cause chain must reach the client alongside the plain message"
-        );
-    }
-
-    #[test]
-    fn started_event_carries_the_full_summary() {
-        let info = live_info("spawned-e-0001", SessionState::Forking);
-        let msg = session_event_to_server_message(SessionEvent {
-            address: info.address.clone(),
-            run_id: info.run_id.clone(),
-            kind: SessionEventKind::Started(Box::new(info.clone())),
-        });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "type": "session_started",
-                "session": {
-                    "address": "spawned-e-0001",
-                    "run_id": info.run_id,
-                    "category": "spawned",
-                    "source_label": "agent:researcher",
-                    "state": "forking",
-                    "spawner": "main",
-                    "depth": 1,
-                    "purpose": "research",
-                    "started_at": serde_json::to_value(info.started_at).unwrap(),
-                    "completed_at": null,
-                    "episode_id": null,
-                    "interrupted": false,
-                    "usage": {
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "context_tokens": null,
-                        "tool_calls": 0,
-                    },
-                    "outcome": null,
-                    "error": null,
-                    "error_details": null,
-                    "overlap": null,
-                    "model": "medium",
-                    "resolved_model": null,
-                },
-            })
-        );
-    }
-
-    #[test]
     fn a_run_record_keeps_the_model_its_run_used() {
         let mut info = live_info("spawned-g-0001", SessionState::Running);
         info.model = crate::config::ModelSelector::SMALL;
@@ -698,33 +465,6 @@ mod tests {
         assert_eq!(
             summary.resolved_model.as_deref(),
             Some("anthropic/claude-haiku-4-5")
-        );
-    }
-
-    #[test]
-    fn tool_call_event_is_tagged_with_address_and_run() {
-        let msg = session_event_to_server_message(SessionEvent {
-            address: SessionAddress::from("spawned-f-0001"),
-            run_id: "run-f".to_string(),
-            kind: SessionEventKind::ToolCall(ToolCallEvent {
-                correlation_id: String::new(),
-                tool_call_id: "tc-1".to_string(),
-                name: "memory_search".to_string(),
-                arguments: serde_json::json!({"q": "x"}),
-                server: None,
-            }),
-        });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "type": "session_tool_call",
-                "address": "spawned-f-0001",
-                "run_id": "run-f",
-                "id": "tc-1",
-                "name": "memory_search",
-                "arguments": {"q": "x"},
-            })
         );
     }
 
@@ -749,7 +489,7 @@ mod tests {
         let summary = summary_from_record(&record).expect("record should summarize");
         assert_eq!(
             summary.outcome,
-            Some(crate::gateway::protocol::SessionRunStatus::Failed),
+            Some(crate::protocol::SessionRunStatus::Failed),
             "a reloaded record must show its real outcome, not just 'completed' state"
         );
         assert_eq!(
@@ -786,7 +526,7 @@ mod tests {
         let summary = summary_from_record(&record).expect("record should summarize");
         assert_eq!(
             summary.outcome,
-            Some(crate::gateway::protocol::SessionRunStatus::Cancelled)
+            Some(crate::protocol::SessionRunStatus::Cancelled)
         );
         assert_eq!(summary.error, None);
     }
@@ -812,14 +552,5 @@ mod tests {
              drop the whole record, unlike an unrecognized category or state",
         );
         assert_eq!(summary.outcome, None);
-    }
-
-    #[test]
-    fn live_summary_has_no_outcome_yet() {
-        let info = live_info("spawned-h-0005", SessionState::Running);
-        let summary = summary_from_live(&info);
-        assert_eq!(summary.outcome, None);
-        assert_eq!(summary.error, None);
-        assert_eq!(summary.error_details, None);
     }
 }

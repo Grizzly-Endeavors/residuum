@@ -13,17 +13,12 @@
 
 use ts_rs::TS;
 
+use residuum::background::team::{
+    A2aVisibility, Actor, AgentErrorKind, AgentLastError, AgentState, AgentSummary,
+    CreateAgentRequest, DeleteOutcome,
+};
 use residuum::checkpoints::{
     CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
-};
-use residuum::gateway::protocol::{
-    ActionInfo, ClientMessage, PulseInfo, ServerMessage, SessionListResponse, WorkbenchInfo,
-};
-use residuum::gateway::teams_setup::types::{
-    AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine, LogStream,
-    SetupError, SetupResult, SignInPrompt, SuggestedEndpointSource, TeamsSetupForm, TeamsSetupJob,
-    TeamsSetupPhase, TeamsSetupPrereqs, TeamsSetupRedirect, TeamsSetupStart, TeamsSetupState,
-    ToolStatus,
 };
 use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
 use residuum::hub::overview::{AgentOverview, OverviewResponse};
@@ -36,18 +31,25 @@ use residuum::hub::team_events::{
     TeamEvent, TeamEventKind, TeamEventLevel, TeamEventPage, TeamEventPlace, TeamEventTarget,
 };
 use residuum::hub::types::{
-    A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentListResponse,
-    AgentPatch, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent,
-    DeletedAgentListResponse, HubClientMessage, HubEvent, HubSocketFrame, NoticeLevel,
-    RestoreAgentRequest,
+    AgentActivity, AgentListResponse, AgentPatch, DeletedAgent, DeletedAgentListResponse,
+    HubClientMessage, HubEvent, HubSocketFrame, NoticeLevel, RestoreAgentRequest,
 };
 use residuum::inbox::InboxAttachment;
 use residuum::inference::ImageData;
+use residuum::interfaces::teams::setup_types::{
+    AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine, LogStream,
+    SetupError, SetupResult, SignInPrompt, SuggestedEndpointSource, TeamsSetupForm, TeamsSetupJob,
+    TeamsSetupPhase, TeamsSetupPrereqs, TeamsSetupRedirect, TeamsSetupStart, TeamsSetupState,
+    ToolStatus,
+};
 use residuum::pairing::types::{
     CreatePairingRequestBody, DeviceInfo, DeviceListResponse, HandoffBody, PairLinkResponse,
     PairedResponse, PairingPollResponse, PairingRequestCreated, PairingRequestStatus,
     PairingStateResponse, PendingPairingInfo, PollPairingBody, RecoveryCodeBody,
     RecoveryCodesResponse, RedeemTokenBody, WorkbenchHandoffResponse,
+};
+use residuum::protocol::{
+    ActionInfo, ClientMessage, PulseInfo, ServerMessage, SessionListResponse, WorkbenchInfo,
 };
 use residuum::remote_access::status::{
     CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,

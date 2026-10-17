@@ -3,12 +3,12 @@
 //! reaching it when the agent stops.
 
 use super::*;
-use crate::background::registry::SessionState;
+use crate::background::team::{TeamLink, parse_team_address};
 use crate::bus::SessionEventKind;
+use crate::bus::session::SessionState;
 use crate::hub::agent_watch::{
     AgentChange, AgentChangeKind, AgentChangeReceiver, MainTurnEnded, WatchedPath,
 };
-use crate::hub::team::{TeamLink, parse_team_address};
 use crate::memory::types::Visibility;
 
 /// Collect changes until one satisfies `found`, returning everything seen up
@@ -92,8 +92,7 @@ async fn a_started_agent_is_resynced_and_each_main_turn_is_reported_once() {
     // and, with no one connected, no client.
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
     link.send(&main, &target, "status check".to_string(), 0)
         .await
         .unwrap();
@@ -221,7 +220,7 @@ async fn outbound_task_changes_on_the_agents_bus_reach_the_feed() {
     hub.host.start("scout").await.unwrap();
 
     let now = chrono::Utc::now();
-    let task = crate::a2a::TrackedTask {
+    let task = crate::bus::remote_task::TrackedTask {
         sender_address: "main".to_string(),
         agent: "laptop".to_string(),
         task_id: "t1".to_string(),

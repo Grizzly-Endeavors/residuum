@@ -603,7 +603,7 @@ async fn saving_the_team_identity_files_signals_a_workspace_reload() {
     assert_eq!(identity.status(), StatusCode::OK);
     assert_eq!(
         rx.recv().await,
-        Some(crate::gateway::types::ReloadSignal::Workspace)
+        Some(crate::bus::control::ReloadSignal::Workspace)
     );
 
     let other = put(&f.state, "team/wiki/other.md", "not identity", None).await;
@@ -841,7 +841,7 @@ async fn agent_only_actions_keep_the_workspace_checkpoint_shape() {
 // ── Restore and undo go through the team write coordinator ──────────
 
 async fn tool_call(
-    tools: &crate::tools::ToolRegistry,
+    tools: &crate::agent::ToolRegistry,
     name: &str,
     args: Value,
 ) -> crate::inference::ToolResult {

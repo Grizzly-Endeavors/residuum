@@ -21,11 +21,11 @@ use std::sync::Arc;
 use teloxide_core::types::ChatId;
 
 use crate::bus::Publisher;
+use crate::bus::conversations::{ConversationSource, KnownConversation};
 use crate::config::TelegramConfig;
-use crate::gateway::event_loop::AdapterSenders;
+use crate::interfaces::AdapterSenders;
 use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
 use crate::interfaces::context_buffer::ContextBuffer;
-use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
 
 /// Endpoint and interface name for Telegram on the bus.
@@ -131,7 +131,7 @@ impl TelegramInterface {
         let (chat_store, chat_state_notice) =
             ChatStateStore::load(layout.telegram_state_json()).await?;
         if let Some(notice) = chat_state_notice {
-            crate::gateway::helpers::publish_notice(&self.senders.publisher, notice).await;
+            crate::bus::notice::publish_notice(&self.senders.publisher, notice).await;
         }
         let state = Arc::new(TelegramState {
             respond_to_others: self.cfg.respond_to_others,

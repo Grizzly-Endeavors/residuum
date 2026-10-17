@@ -6,11 +6,11 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 
-use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::attachment::{
+use crate::bus::origin::{ConversationContext, MessageOrigin};
+use crate::inbox::attachment::{
     AttachmentInfo, finalize_attachment, format_failed_attachment_line, save_attachment_bytes,
 };
-use crate::interfaces::types::{ConversationContext, MessageOrigin};
+use crate::inference::{ImageData, MessageSender};
 
 use super::TeamsRuntime;
 use super::activity::{Activity, Attachment, ChannelAccount, ConversationKind};
@@ -307,7 +307,7 @@ async fn run_command(
         name,
         args,
         &dispatch,
-        super::ENDPOINT,
+        crate::config::TEAMS_ENDPOINT,
         sender_name,
         Some(&conversation),
     )
@@ -351,14 +351,14 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming, is_owner: bool)
         id: correlation_id,
         content,
         origin: MessageOrigin {
-            endpoint: super::ENDPOINT.to_string(),
+            endpoint: crate::config::TEAMS_ENDPOINT.to_string(),
             sender: Some(MessageSender {
                 name: sender_name.clone(),
                 id: from.aad_object_id.unwrap_or(from.id),
-                interface: super::ENDPOINT.to_string(),
+                interface: crate::config::TEAMS_ENDPOINT.to_string(),
                 location: Some(location),
             }),
-            conversation: Some(crate::interfaces::types::ConversationContext {
+            conversation: Some(crate::bus::origin::ConversationContext {
                 id: conversation_id,
                 kind: conversation_kind,
                 is_owner,
@@ -453,7 +453,7 @@ async fn collect_attachments(
         let content_type = if needs_bot_token {
             Some(attachment.content_type.clone())
         } else {
-            Some(crate::interfaces::attachment::detect_mime_type(
+            Some(crate::bus::attachment::detect_mime_type(
                 std::path::Path::new(filename),
             ))
         };
@@ -600,9 +600,8 @@ mod tests {
             reply_targets: crate::interfaces::reply_targets::ReplyTargets::default(),
             inbound_tx,
             publisher: bus.publisher(),
-            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
-            )
-            .0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>()
+                .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(crate::background::registry::SessionRegistry::new()),

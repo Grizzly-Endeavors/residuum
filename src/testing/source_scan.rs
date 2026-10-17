@@ -552,7 +552,7 @@ const EXEC_GRANT_HELPERS: &[&str] = &[
 /// a program.
 const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
     (
-        "src/update.rs",
+        "src/hub/update.rs",
         2,
         "makes a directory read-only (0o555) and restores it (0o755)",
     ),
@@ -1274,6 +1274,38 @@ mod tests {
                 "{other:?} grants nothing"
             );
         }
+    }
+
+    /// The build version and commit are read in one place, `src/lib.rs`, which
+    /// builds the `BuildInfo` value from them. A read anywhere else would
+    /// compile, and a member crate's `option_env!` would quietly return
+    /// `None` for the commit, so the rule covers every crate in the workspace.
+    #[test]
+    fn only_the_root_library_reads_the_build_version() {
+        const READERS: &[&str] = &["src/lib.rs", "src/testing/source_scan.rs"];
+        let pattern = Regex::new(concat!(r"(?:option_)?env!\(", "\"", "RESIDUUM_")).unwrap();
+        let sample = "let commit = option_env!(\"RESIDUUM_GIT_COMMIT\");";
+        assert!(
+            pattern.is_match(sample),
+            "the build-version pattern must match a build-variable read, or this rule passes vacuously"
+        );
+        let mut problems = String::new();
+        for file in crate_sources() {
+            if READERS.contains(&file.path.as_str()) {
+                continue;
+            }
+            for want_test in [false, true] {
+                for (number, code) in file.code_lines(want_test) {
+                    if pattern.is_match(code) {
+                        writeln!(problems, "{}:{number}: {}", file.path, code.trim()).unwrap();
+                    }
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "the build version is read outside src/lib.rs. Pass the `BuildInfo` down from the entry point instead.\n{problems}"
+        );
     }
 
     #[test]

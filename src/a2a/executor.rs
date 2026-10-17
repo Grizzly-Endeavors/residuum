@@ -14,20 +14,17 @@ use a2a_server::{AgentExecutor, ExecutorContext};
 use futures_util::stream::BoxStream;
 
 use crate::background::messaging::{AgentMessenger, ConversationSpawn};
-use crate::background::registry::{SessionRegistry, SessionState, conversation_session_address};
+use crate::background::registry::{SessionRegistry, conversation_session_address};
 use crate::bus::MessageEvent;
+use crate::bus::origin::{A2A_ENDPOINT, ConversationContext, ConversationKind, MessageOrigin};
+use crate::bus::session::SessionState;
 use crate::bus::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, SessionEvent,
     SessionEventKind, topics,
 };
 use crate::config::ModelSelector;
+use crate::inbox::attachment::{self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image};
 use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::attachment::{
-    self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image,
-};
-use crate::interfaces::types::{
-    A2A_ENDPOINT, ConversationContext, ConversationKind, MessageOrigin,
-};
 use crate::skills::SharedSkillState;
 
 use super::auth::CALLER_HEADER;

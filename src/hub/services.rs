@@ -18,12 +18,12 @@ use crate::checkpoints::SharedCheckpointRepos;
 use crate::config::paths::TeamPaths;
 use crate::config::{HubConfig, HubPaths};
 use crate::hub::push::PushService;
+use crate::hub::update::SharedUpdateStatus;
 use crate::inference::EmbeddingProvider;
 use crate::inference::system_one::SystemOneService;
 use crate::memory::team_wiki::TeamWikiIndex;
 use crate::tracing_service::TracingService;
 use crate::tunnel::TunnelStatus;
-use crate::update::SharedUpdateStatus;
 use crate::util::FatalError;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::WatchHealth;
@@ -31,13 +31,33 @@ use crate::workspace::watch::WatchHealth;
 /// The hub-level controls an agent's HTTP routes drive: the update status
 /// and the requests to restart or shut down the whole process.
 #[derive(Clone)]
-pub(crate) struct HubControl {
+pub struct HubControl {
+    /// The running build. Every report of the running version reads it from
+    /// here.
+    pub build: crate::build_info::BuildInfo,
     /// Latest result of the periodic version check.
     pub update_status: SharedUpdateStatus,
     /// Asks the hub to stop every agent and relaunch the binary.
     pub restart_tx: mpsc::Sender<()>,
     /// Asks the hub to stop every agent and exit.
     pub shutdown_tx: mpsc::Sender<()>,
+}
+
+impl HubControl {
+    /// The controls of the running `build`, with a fresh update status for
+    /// its version.
+    pub(crate) fn new(
+        build: crate::build_info::BuildInfo,
+        restart_tx: mpsc::Sender<()>,
+        shutdown_tx: mpsc::Sender<()>,
+    ) -> Self {
+        Self {
+            build,
+            update_status: crate::hub::update::shared_update_status(build.version),
+            restart_tx,
+            shutdown_tx,
+        }
+    }
 }
 
 /// The hub's one change feed over the team directory.
@@ -52,7 +72,7 @@ pub(crate) struct HubControl {
 /// publishes a `WorkbenchEvent` on `topics::Workbench` of the same bus for
 /// every artifact added, changed or removed. The hub WebSocket sends them as
 /// artifact events, which therefore reach clients with no agent running.
-pub(crate) struct TeamChangeFeed {
+pub struct TeamChangeFeed {
     /// The bus the feed publishes on.
     pub bus: BusHandle,
     /// Whether the feed is running, so a client that starts watching can be
@@ -127,7 +147,7 @@ impl Drop for TeamChangeFeed {
 
 /// Shared services handed to every agent's runtime.
 #[derive(Clone)]
-pub(crate) struct HubServices {
+pub struct HubServices {
     /// The residuum root (`~/.residuum`): parent of `hub/`, `team/` and
     /// every agent directory.
     pub root: PathBuf,
@@ -170,10 +190,10 @@ pub(crate) struct HubServices {
     pub sibling_fanout: Arc<crate::a2a::SiblingFanout>,
     /// Carries `agent:` messages between the running agents. Each agent
     /// registers its messenger at start and unregisters at stop.
-    pub team_router: Arc<super::team::TeamRouter>,
+    pub team_router: Arc<crate::background::team::TeamRouter>,
     /// The agent host, for agent tools that create or delete teammates. The
     /// host binds itself when it is built.
-    pub directory: super::directory::DirectoryHandle,
+    pub directory: crate::background::team::DirectoryHandle,
     /// Web Push: registered devices and delivery. Triggers send through it.
     pub push: Arc<PushService>,
     /// The System 1 (decision model) client every agent shares, with its
@@ -225,7 +245,7 @@ impl HubServices {
                 ))
             })?;
         let team_feed = Arc::new(TeamChangeFeed::start(team_paths.root().to_path_buf()).await);
-        let directory = super::directory::DirectoryHandle::unbound();
+        let directory = crate::background::team::DirectoryHandle::unbound();
         let remote_access = crate::remote_access::slot::RemoteAccessSlot::new(&hub_dir);
         let sibling_fanout = crate::a2a::SiblingFanout::new_shared();
         crate::a2a::spawn_sibling_discovery(
@@ -250,7 +270,7 @@ impl HubServices {
             workbench_serving,
             team_feed,
             sibling_fanout,
-            team_router: super::team::TeamRouter::new_shared(directory.clone()),
+            team_router: crate::background::team::TeamRouter::new_shared(directory.clone()),
             directory,
             pairing,
             remote_access,
@@ -268,11 +288,7 @@ impl HubServices {
             root,
             hub,
             tunnel_status_rx,
-            HubControl {
-                update_status: SharedUpdateStatus::default(),
-                restart_tx,
-                shutdown_tx,
-            },
+            HubControl::new(crate::testing::HARNESS_BUILD, restart_tx, shutdown_tx),
             crate::workbench::WorkbenchServing::Unavailable {
                 reason: "not started in tests".to_string(),
             },

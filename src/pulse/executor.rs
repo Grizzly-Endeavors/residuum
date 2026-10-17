@@ -1,6 +1,6 @@
 //! Pulse task builder: converts a pulse definition into a spawn request.
 
-use crate::background::registry::{MAIN_DEPTH, generate_address};
+use crate::bus::session::{MAIN_DEPTH, generate_address};
 use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, PulseOverlap, SpawnRequestEvent};
 
 use super::script::{ScriptRun, prompt_section};

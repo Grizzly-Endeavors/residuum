@@ -6,17 +6,18 @@ use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
 
+use crate::build_info::BuildInfo;
 use crate::bus::BusHandle;
+use crate::bus::control::ReloadSender;
 use crate::checkpoints::CheckpointEngine;
-use crate::gateway::types::ReloadSender;
 use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::TeamOverview;
 use crate::hub::push::PushService;
 use crate::hub::team_events::TeamEventLog;
+use crate::hub::update::SharedUpdateStatus;
 use crate::inference::system_one::SystemOneService;
 use crate::tracing_service::{ClientContext, Subagent, TracingService};
 use crate::tunnel::TunnelStatus;
-use crate::update::SharedUpdateStatus;
 use crate::workbench::WorkbenchServing;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::WatchHealth;
@@ -53,6 +54,8 @@ pub struct HubHttpState {
     pub checkpoints: Arc<CheckpointEngine>,
     /// The relay tunnel's status.
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
+    /// The running build, which the status routes report.
+    pub build: BuildInfo,
     /// The update checker's shared status.
     pub update_status: SharedUpdateStatus,
     /// Asks the process to restart itself (after an update, or on request).

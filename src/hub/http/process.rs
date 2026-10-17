@@ -48,6 +48,7 @@ pub(super) fn cloud_routes(hub: &HubHttpState) -> Router {
 /// remote shutdown leaves no way to bring the hub back.
 pub(super) fn update_routes(hub: &HubHttpState) -> Router {
     let state = web::update::UpdateApiState {
+        build: hub.build,
         update_status: Arc::clone(&hub.update_status),
         restart_tx: hub.restart_tx.clone(),
         gateway_shutdown_tx: hub.shutdown_tx.clone(),
@@ -81,6 +82,7 @@ pub(super) fn tracing_routes(hub: &HubHttpState) -> Router {
 
     let state = api::TracingApiState {
         service: Arc::clone(&hub.tracing_service),
+        build: hub.build,
         client_context: Arc::clone(&hub.client_context),
         active_subagents: Arc::clone(&hub.active_subagents),
     };

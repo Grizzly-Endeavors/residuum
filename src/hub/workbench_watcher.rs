@@ -153,8 +153,10 @@ mod tests {
 
     use super::*;
     use crate::bus::Subscriber;
+    use crate::bus::workspace_change::{
+        WorkspaceChange, WorkspaceChangeKind, WorkspaceResyncReason,
+    };
     use crate::config::paths::TeamPaths;
-    use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind, WorkspaceResyncReason};
 
     fn stamp(secs: u64, len: u64) -> PageStamp {
         (

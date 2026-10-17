@@ -22,12 +22,17 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tower::ServiceExt;
 
 use super::{HubHttpState, agent_repair_router, hub_router};
-use crate::background::registry::SessionInfo;
+use crate::background::team::{
+    A2aVisibility, Actor, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome,
+    LifecycleError, TeamDirectory,
+};
+use crate::bus::control::ReloadSignal;
+use crate::bus::session::SessionInfo;
+use crate::bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
 use crate::config::WorkspaceLayout;
 use crate::config::paths::TeamPaths;
-use crate::gateway::ReloadSignal;
 use crate::gateway::web::{
     AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
     agent_files_api_router as agent_files_router,
@@ -36,13 +41,12 @@ use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::team_events::TeamEventLog;
 use crate::hub::{
-    A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentFiles, AgentPatch, AgentState,
-    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
+    AgentActivity, AgentDirectory, AgentFiles, AgentPatch, DeletedAgent, HubEvent,
     RestoreAgentRequest,
 };
 use crate::tunnel::TunnelStatus;
 use crate::workspace::team_files::TeamWriteCoordinator;
-use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
+use crate::workspace::watch::WatchHealth;
 use residuum_core::testing::wait;
 
 mod artifacts_origin;
@@ -56,6 +60,10 @@ mod session_relay;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
+const TEST_BUILD: crate::build_info::BuildInfo = crate::build_info::BuildInfo {
+    version: "9.8.7",
+    commit: None,
+};
 
 /// How long the harness overview gathers an agent's changes into a frame.
 const OVERVIEW_WINDOW: Duration = Duration::from_millis(200);
@@ -257,7 +265,7 @@ fn running_agent_router(name: &str) -> Router {
 }
 
 #[async_trait]
-impl AgentDirectory for FakeDirectory {
+impl TeamDirectory for FakeDirectory {
     fn list(&self) -> Vec<AgentSummary> {
         self.agents.lock().unwrap().clone()
     }
@@ -266,6 +274,50 @@ impl AgentDirectory for FakeDirectory {
         self.find(name)
     }
 
+    fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
+        Err(LifecycleError::Failed(format!(
+            "{name} has no a2a router in this fake"
+        )))
+    }
+
+    async fn create(
+        &self,
+        request: CreateAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        self.record(format!("create {} by {}", request.name, by.wire()));
+        let display_name = crate::config::canonicalize_display_name(&request.name)
+            .map_err(LifecycleError::InvalidName)?;
+        let slug = if crate::config::validate_agent_name(&display_name).is_ok() {
+            display_name.clone()
+        } else {
+            crate::config::slug_base(&display_name)
+        };
+        if self.find(&slug).is_ok() {
+            return Err(LifecycleError::AlreadyExists(display_name));
+        }
+        let mut created = summary(&slug, AgentState::Running);
+        created.display_name = display_name;
+        if let Some(visibility) = request.a2a_visibility {
+            created.a2a_visibility = visibility;
+        }
+        self.agents.lock().unwrap().push(created.clone());
+        Ok(created)
+    }
+
+    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
+        self.record(format!("delete {name} by {}", by.wire()));
+        self.find(name)?;
+        self.agents.lock().unwrap().retain(|a| a.name != name);
+        Ok(DeleteOutcome {
+            deleted: true,
+            checkpoint_id: Some("cp-1".to_string()),
+        })
+    }
+}
+
+#[async_trait]
+impl AgentDirectory for FakeDirectory {
     fn agent_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let agent = self.find(name)?;
         if agent.state != AgentState::Running {
@@ -318,12 +370,6 @@ impl AgentDirectory for FakeDirectory {
         })
     }
 
-    fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
-        Err(LifecycleError::Failed(format!(
-            "{name} has no a2a router in this fake"
-        )))
-    }
-
     fn activity(&self) -> Vec<(String, AgentActivity)> {
         self.activity.lock().unwrap().clone()
     }
@@ -340,41 +386,6 @@ impl AgentDirectory for FakeDirectory {
 
     fn stopping(&self) -> Vec<String> {
         self.stopping.lock().unwrap().clone()
-    }
-
-    async fn create(
-        &self,
-        request: CreateAgentRequest,
-        by: Actor,
-    ) -> Result<AgentSummary, LifecycleError> {
-        self.record(format!("create {} by {}", request.name, by.wire()));
-        let display_name = crate::config::canonicalize_display_name(&request.name)
-            .map_err(LifecycleError::InvalidName)?;
-        let slug = if crate::config::validate_agent_name(&display_name).is_ok() {
-            display_name.clone()
-        } else {
-            crate::config::slug_base(&display_name)
-        };
-        if self.find(&slug).is_ok() {
-            return Err(LifecycleError::AlreadyExists(display_name));
-        }
-        let mut created = summary(&slug, AgentState::Running);
-        created.display_name = display_name;
-        if let Some(visibility) = request.a2a_visibility {
-            created.a2a_visibility = visibility;
-        }
-        self.agents.lock().unwrap().push(created.clone());
-        Ok(created)
-    }
-
-    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        self.record(format!("delete {name} by {}", by.wire()));
-        self.find(name)?;
-        self.agents.lock().unwrap().retain(|a| a.name != name);
-        Ok(DeleteOutcome {
-            deleted: true,
-            checkpoint_id: Some("cp-1".to_string()),
-        })
     }
 
     async fn list_deleted(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {
@@ -510,7 +521,8 @@ impl Harness {
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
             tunnel_status_rx: tunnel_rx,
-            update_status: crate::update::SharedUpdateStatus::default(),
+            build: TEST_BUILD,
+            update_status: crate::hub::update::shared_update_status(TEST_BUILD.version),
             restart_tx,
             shutdown_tx,
             tracing_service: Arc::new(crate::tracing_service::TracingService::new(
@@ -1055,7 +1067,7 @@ async fn status_reports_version_uptime_tunnel_and_counts() {
         .unwrap()
         .push(summary("broken", AgentState::Failed));
     let hub_status = h.get_expect("/api/hub/status", StatusCode::OK).await;
-    assert_eq!(hub_status["version"], crate::update::CURRENT_VERSION);
+    assert_eq!(hub_status["version"], TEST_BUILD.version);
     assert!(hub_status["uptime_secs"].is_u64());
     assert_eq!(hub_status["tunnel"]["status"], "disconnected");
     assert_eq!(hub_status["tunnel"]["enabled"], false);
@@ -1235,7 +1247,7 @@ async fn seed_history(agent_dir: &Path, name: &str) {
 async fn chat_history_and_usage_are_served_from_disk_in_every_agent_state() {
     let h = Harness::new();
     h.add_failed_agent();
-    let mut totals = crate::agent::usage::SessionUsageTotals::default();
+    let mut totals = crate::bus::usage::SessionUsageTotals::default();
     totals.accumulate(Some(crate::inference::Usage {
         input_tokens: 300,
         output_tokens: 60,
@@ -1305,7 +1317,7 @@ async fn a_stopped_agent_with_no_history_answers_empty_not_an_error() {
         .await;
     assert_eq!(
         usage,
-        serde_json::to_value(crate::agent::usage::SessionUsageTotals::default()).unwrap()
+        serde_json::to_value(crate::bus::usage::SessionUsageTotals::default()).unwrap()
     );
 }
 
@@ -2920,7 +2932,7 @@ async fn a_resync_reaches_a_watching_client() {
         .publisher()
         .publish(
             topics::Workspace,
-            WorkspaceEvent::Resync(crate::workspace::watch::WorkspaceResyncReason::Overflow),
+            WorkspaceEvent::Resync(crate::bus::workspace_change::WorkspaceResyncReason::Overflow),
         )
         .await
         .unwrap();

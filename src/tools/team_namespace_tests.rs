@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::{FileTracker, PathPolicy, ToolRegistry};
-use crate::diagnostics_dispatch::DiagnosticsPaths;
+use super::{FileTracker, PathPolicy};
+use crate::a2a::diagnostics_dispatch::DiagnosticsPaths;
+use crate::agent::ToolRegistry;
 use crate::inference::ToolResult;
 use crate::workspace::team_files::{TeamWriteCoordinator, TeamWriter};
 
@@ -46,7 +47,9 @@ impl Hub {
             self.coordinator.view_for_agent(name, &agent_dir),
         );
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
+        super::registration::register_defaults(
+            &mut registry,
+            &super::registration::RegistryInjections::default(),
             FileTracker::new_shared(),
             policy,
             DiagnosticsPaths {

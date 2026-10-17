@@ -12,14 +12,14 @@
 )]
 #[cfg(test)]
 mod tests {
+    use residuum::agent::Tool;
     use residuum::bus::{
         EndpointCapabilities, EndpointEntry, EndpointId, EndpointName, EndpointRegistry,
         ResponseEvent, TopicId, topics,
     };
     use residuum::gateway::file_server::FileRegistry;
-    use residuum::gateway::protocol::ServerMessage;
-    use residuum::interfaces::websocket::subscriber::WsSubscribers;
-    use residuum::tools::Tool;
+    use residuum::gateway::websocket::subscriber::WsSubscribers;
+    use residuum::protocol::ServerMessage;
     use residuum::tools::send_message::SendMessageTool;
 
     fn make_registry() -> EndpointRegistry {
@@ -95,7 +95,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let att = residuum::interfaces::attachment::FileAttachment {
+        let att = residuum::bus::attachment::FileAttachment {
             path: file_path.clone(),
             filename: "photo.jpg".to_string(),
             mime_type: "image/jpeg".to_string(),

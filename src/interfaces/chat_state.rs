@@ -12,8 +12,8 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::conversations::KnownConversation;
-use super::types::ConversationKind;
+use crate::bus::conversations::KnownConversation;
+use crate::bus::origin::ConversationKind;
 
 /// A conversation reference for interfaces that reach a chat by its ID alone
 /// (Discord channels, Telegram chats); the ID is the store key.

@@ -2,7 +2,6 @@
 
 pub mod access;
 pub mod bootstrap;
-pub mod channel_builder;
 pub mod config;
 pub mod identity;
 pub mod mcp_patch;

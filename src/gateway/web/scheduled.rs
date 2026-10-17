@@ -30,10 +30,11 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::actions::store::ActionStore;
-use crate::background::registry::{SessionCategory, SessionRegistry};
+use crate::background::registry::SessionRegistry;
 use crate::background::store::{RunFilter, SessionStore};
+use crate::bus::session::SessionCategory;
 use crate::config::WorkspaceLayout;
-use crate::gateway::protocol::{
+use crate::protocol::{
     ActionInfo, PulseInfo, ScheduledCurrentRun, ScheduledRunOutcome, SessionRunStatus,
 };
 use crate::pulse::next_run::{load_last_runs, next_run_at};
@@ -337,10 +338,9 @@ async fn api_scheduled_action_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::{
-        MAIN_DEPTH, SessionInfo, SessionRegistry, SessionState, generate_address,
-    };
+    use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
+    use crate::bus::session::{MAIN_DEPTH, SessionInfo, SessionState, generate_address};
     use crate::bus::{AgentResultStatus, EventTrigger, PulseOverlap};
     use crate::pulse::types::ProblemKind;
     use tokio_util::sync::CancellationToken;
@@ -377,7 +377,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap,
         }
     }

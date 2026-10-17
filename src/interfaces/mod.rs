@@ -1,29 +1,25 @@
 //! Communication interfaces between the user and the agent.
 
-pub mod attachment;
 pub(crate) mod boot_retry;
 pub(crate) mod chat_state;
 pub mod chunking;
 pub mod commands;
 pub(crate) mod context_buffer;
-pub(crate) mod conversations;
 pub mod discord;
 mod outbound;
 pub(crate) mod reply_targets;
 pub mod teams;
 pub mod telegram;
-pub mod types;
 pub mod webhook;
-pub mod websocket;
 
 use std::path::Path;
 
 use crate::background::registry::{SessionRegistry, conversation_session_address};
+use crate::bus::origin::{ConversationContext, ConversationKind};
 use crate::bus::{
     BusError, BusHandle, ConversationTypingEvent, EndpointName, ErrorEvent, IntermediateEvent,
     ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
 };
-use crate::interfaces::types::{ConversationContext, ConversationKind};
 
 /// Common subscriber fields shared by Discord, Telegram, and similar interfaces.
 pub(crate) struct BaseSubscribers {
@@ -55,6 +51,21 @@ impl BaseSubscribers {
             turn_error: bus_handle.subscribe(topics::Endpoint(ep)).await?,
         })
     }
+}
+
+/// Bundled senders for spawning a chat adapter (Discord or Telegram).
+#[derive(Clone)]
+pub struct AdapterSenders {
+    pub publisher: crate::bus::Publisher,
+    pub bus_handle: BusHandle,
+    pub reload: crate::bus::control::ReloadSender,
+    pub command: tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
+    pub stop: tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
+    /// Looked up when a `/stop` command targets a conversation session
+    /// rather than main — see `dispatch_stop_request`.
+    pub session_registry: std::sync::Arc<SessionRegistry>,
+    /// Where the adapter registers the conversations it can reach.
+    pub(crate) conversations: crate::bus::conversations::ConversationDirectory,
 }
 
 /// Tell `main` that a conversation session's turn output could not be
@@ -89,11 +100,11 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
 
 /// Channels a chat adapter needs to carry out slash-command side effects.
 pub(crate) struct CommandDispatch<'a> {
-    pub(crate) reload_tx: &'a crate::gateway::types::ReloadSender,
-    pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
-    pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
+    pub(crate) reload_tx: &'a crate::bus::control::ReloadSender,
+    pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
+    pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
     /// Looked up to stop a conversation session's turn — see
-    /// [`dispatch_stop_request`] — never touched by any other command.
+    /// `dispatch_stop_request` — never touched by any other command.
     pub(crate) session_registry: &'a SessionRegistry,
     pub(crate) inbox_dir: &'a Path,
     pub(crate) tz: chrono_tz::Tz,
@@ -126,7 +137,7 @@ pub(crate) async fn run_chat_command(
             tracing::info!(interface, "reload requested via chat command");
             if dispatch
                 .reload_tx
-                .send(crate::gateway::types::ReloadSignal::Agent)
+                .send(crate::bus::control::ReloadSignal::Agent)
                 .is_err()
             {
                 tracing::warn!(command = %name, interface, "reload_tx closed, reload dropped");
@@ -241,13 +252,13 @@ async fn start_multitask(
 
 /// Stop a named session — `/stop <name>` — through the same registry stop
 /// path as the web UI's per-session stop button
-/// ([`crate::gateway::sessions::stop_session`]): a running turn is
+/// ([`crate::background::registry::stop_named_session`]): a running turn is
 /// interrupted and an idle session is ended, so a session listed by
 /// `/sessions` can always be stopped by name.
 fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
-    match crate::gateway::sessions::stop_session(session_registry, name) {
+    match crate::background::registry::stop_named_session(session_registry, name) {
         Ok(()) => format!("stopping session '{name}'."),
-        Err(e) => e.message,
+        Err(e) => e.to_string(),
     }
 }
 
@@ -291,7 +302,7 @@ fn format_elapsed(elapsed: chrono::Duration) -> String {
 
 /// Where a `/stop` command should be aimed, resolved from the conversation
 /// it was typed in — the same routing rule as an ordinary message (see
-/// [`crate::interfaces::types::MessageOrigin::belongs_to_main`]): the
+/// [`crate::bus::origin::MessageOrigin::belongs_to_main`]): the
 /// owner's own DM (or an interface with no conversation concept, i.e. the
 /// web UI) targets main, every other admitted conversation — a group chat,
 /// a channel, or a non-owner DM — targets that conversation's own session
@@ -337,7 +348,7 @@ pub(crate) async fn inbox_add_from_command(
 /// for a response. Falls back to `fallback` on timeout or channel close.
 #[tracing::instrument(skip_all, fields(command = %name, source = %source))]
 pub(crate) async fn dispatch_server_command(
-    command_tx: &tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
+    command_tx: &tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
     name: &'static str,
     args: Option<String>,
     fallback: String,
@@ -346,7 +357,7 @@ pub(crate) async fn dispatch_server_command(
     use std::time::Duration;
     tracing::info!(command = %name, source = %source, "server command dispatched");
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = command_tx.try_send(crate::gateway::types::ServerCommand {
+    if let Err(e) = command_tx.try_send(crate::bus::control::ServerCommand {
         name: name.to_string(),
         args,
         reply_tx: Some(reply_tx),
@@ -389,7 +400,7 @@ pub(crate) async fn dispatch_server_command(
 /// was handled.
 #[tracing::instrument(skip_all, fields(source = %source))]
 pub(crate) async fn dispatch_stop_request(
-    stop_tx: &tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
+    stop_tx: &tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
     session_registry: &SessionRegistry,
     endpoint: &str,
     conversation: Option<&ConversationContext>,
@@ -411,13 +422,13 @@ pub(crate) async fn dispatch_stop_request(
 
 /// Stop the main agent's currently running turn and wait for the outcome.
 async fn dispatch_main_stop_request(
-    stop_tx: &tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
+    stop_tx: &tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
     source: &str,
 ) -> String {
     use std::time::Duration;
     tracing::info!(source = %source, "stop requested for main");
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = stop_tx.try_send(crate::gateway::types::StopRequest {
+    if let Err(e) = stop_tx.try_send(crate::bus::control::StopRequest {
         reply_to: None,
         result_tx: Some(result_tx),
     }) {
@@ -441,12 +452,11 @@ async fn dispatch_main_stop_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::{
-        SessionCategory, SessionInfo, SessionRegistry, SessionState,
-    };
+    use crate::background::registry::SessionRegistry;
+    use crate::bus::control::StopRequest;
+    use crate::bus::session::{SessionCategory, SessionInfo, SessionState};
     use crate::bus::{EventTrigger, MessageEvent, SessionAddress, Subscriber};
     use crate::config::ModelSelector;
-    use crate::gateway::types::StopRequest;
     use tokio_util::sync::CancellationToken;
 
     fn session_info(address: &str, state: SessionState) -> SessionInfo {
@@ -465,7 +475,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -633,8 +643,8 @@ mod tests {
     /// spawn request is published on.
     struct MultitaskFixture {
         bus: crate::bus::BusHandle,
-        reload_tx: crate::gateway::types::ReloadSender,
-        command_tx: tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
+        reload_tx: crate::bus::control::ReloadSender,
+        command_tx: tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
         registry: SessionRegistry,
         publisher: crate::bus::Publisher,

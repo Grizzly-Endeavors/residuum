@@ -15,7 +15,7 @@ use axum::response::Json;
 use axum::routing::{delete, get};
 use serde::Serialize;
 
-use crate::gateway::protocol::{WorkbenchInfo, WorkbenchRelayOrigins};
+use crate::protocol::{WorkbenchInfo, WorkbenchRelayOrigins};
 use crate::tunnel::TunnelStatus;
 use crate::workbench::{self, ArtifactDeleteError, ArtifactSummary, WorkbenchServing};
 

@@ -8,7 +8,7 @@ use teloxide_core::RequestError;
 use teloxide_core::requests::Requester;
 use teloxide_core::types::{ChatAction, ChatId};
 
-use crate::interfaces::attachment::FileAttachment;
+use crate::bus::attachment::FileAttachment;
 use crate::interfaces::chunking::chunk_text;
 use crate::interfaces::outbound::ChatOutbound;
 

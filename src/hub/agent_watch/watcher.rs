@@ -16,12 +16,13 @@ use super::changes::{
     AgentChange, AgentChangeFeed, AgentChangeKind, AgentSessionEvent, WatchedPath,
 };
 use crate::background::registry::SessionRegistry;
+use crate::bus::workspace_change::WorkspaceChange;
 use crate::bus::{
     BusError, BusHandle, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress,
     SessionEvent, SessionEventKind, Subscriber, UserInboxAddedEvent, WorkspaceEvent, topics,
 };
-use crate::gateway::event_loop::{AgentControl, agent_span};
-use crate::workspace::watch::{WatchHealth, WorkspaceChange};
+use crate::hub::launch::{AgentControl, agent_span};
+use crate::workspace::watch::WatchHealth;
 
 /// How often an agent is recomputed while its file watcher is down.
 const RECOMPUTE_WHILE_UNAVAILABLE: Duration = Duration::from_secs(60);
@@ -373,8 +374,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::bus::workspace_change::{WorkspaceChangeKind, WorkspaceResyncReason};
     use crate::bus::{AgentResultStatus, SessionEventKind, ToolCallEvent};
-    use crate::workspace::watch::{WorkspaceChangeKind, WorkspaceResyncReason};
     use residuum_core::testing::{clock, wait};
 
     /// A watcher over a bare agent bus, with a receiver on the hub's feed.
@@ -456,18 +457,14 @@ mod tests {
         )
     }
 
-    fn session_info(
-        address: &str,
-        run_id: &str,
-        label: &str,
-    ) -> crate::background::registry::SessionInfo {
-        crate::background::registry::SessionInfo {
+    fn session_info(address: &str, run_id: &str, label: &str) -> crate::bus::session::SessionInfo {
+        crate::bus::session::SessionInfo {
             address: SessionAddress::from(address),
             run_id: run_id.to_string(),
-            category: crate::background::registry::SessionCategory::Spawned,
+            category: crate::bus::session::SessionCategory::Spawned,
             trigger: crate::bus::EventTrigger::Agent,
             source_label: label.to_string(),
-            state: crate::background::registry::SessionState::Forking,
+            state: crate::bus::session::SessionState::Forking,
             spawner: None,
             depth: 1,
             purpose: "look into it".to_string(),
@@ -476,7 +473,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -574,14 +571,14 @@ mod tests {
             session_event(
                 "spawned-research-1",
                 "run-1",
-                SessionEventKind::StateChanged(crate::background::registry::SessionState::Running),
+                SessionEventKind::StateChanged(crate::bus::session::SessionState::Running),
             ),
         )
         .await;
         assert!(matches!(
             rig.next().await,
             AgentChangeKind::SessionStateChanged { run_id, state, .. }
-                if run_id == "run-1" && state == crate::background::registry::SessionState::Running
+                if run_id == "run-1" && state == crate::bus::session::SessionState::Running
         ));
 
         rig.publish(
@@ -602,7 +599,7 @@ mod tests {
                 if episode == "ep-7"
         ));
 
-        let task = crate::a2a::TrackedTask {
+        let task = crate::bus::remote_task::TrackedTask {
             sender_address: "main".to_string(),
             agent: "laptop".to_string(),
             task_id: "t1".to_string(),
@@ -897,7 +894,7 @@ mod tests {
             session_event(
                 "spawned-x",
                 "run-1",
-                SessionEventKind::StateChanged(crate::background::registry::SessionState::Idle),
+                SessionEventKind::StateChanged(crate::bus::session::SessionState::Idle),
             ),
         )
         .await;

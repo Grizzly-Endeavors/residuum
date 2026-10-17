@@ -6,24 +6,25 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::ToolRegistry;
 use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
-#[cfg(test)]
-use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{
     EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
 };
 use crate::bus::MessageEvent;
+#[cfg(test)]
+use crate::bus::interrupt::Interrupt;
 use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
 use crate::inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::skills::{SharedSkillState, SkillState};
-use crate::tools::{FileTracker, SubagentToolDeps, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
+use super::session_tools::SessionToolScope;
 use super::types::SubAgentBuildConfig;
 
 /// What kicks off one of a session's turns.
@@ -207,9 +208,9 @@ async fn prepare_session_skill_state(
 ///
 /// Clones the skill index so the session starts with the same view of
 /// available skills, but operates on its own independent copy of
-/// `SkillState`. The `McpRegistry`, write `PathPolicy`, tool `PATH`, and
-/// agent key store are shared (ref-counted) with the main agent, so servers
-/// are not duplicated and a session is held to the same write policy.
+/// `SkillState`. The `McpRegistry` is shared (ref-counted) with the main
+/// agent, so servers are not duplicated. The session's tools come from
+/// `config.session_tools`, scoped to this session and its own skill state.
 ///
 /// When `config.skill` is set, that skill is activated on the session's own
 /// skill state so its body arrives as the session's role instructions.
@@ -219,11 +220,6 @@ async fn prepare_session_skill_state(
 /// read — a session without the instructions that define its job is not worth
 /// running, so the spawn fails instead.
 #[tracing::instrument(skip_all)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "a flat field-for-field hand-off from SubAgentBuildConfig into the session's \
-              tool deps and resources; splitting it only moves the field list elsewhere"
-)]
 pub async fn build_subagent_resources(
     provider: Box<dyn InferenceProvider>,
     main_skill_state: &SharedSkillState,
@@ -232,88 +228,36 @@ pub async fn build_subagent_resources(
 ) -> anyhow::Result<SubAgentResources> {
     let SubAgentBuildConfig {
         workspace_layout,
-        config_dir,
-        hub_dir,
         identity,
         options,
         max_tool_iterations,
         repeat_call_guard,
-        tz,
         skill,
         observations,
         recent_context,
-        session_registry,
-        endpoint_registry,
-        publisher,
-        action_store,
-        action_notify,
-        hybrid_searcher,
         observer,
         merge_writer,
         episode_skip_token_floor,
+        session_tools,
         own_address,
         own_depth,
-        subagent_depth_cap,
         session_category,
         trigger,
         conversation_target,
-        messenger,
         hop_counter,
-        tracing_service,
-        tracing_client_context,
-        web_search_backend,
-        tools_path,
-        path_policy,
-        agent_keys,
-        a2a_hub,
-        a2a_tracker,
-        checkpoints,
-        lifecycle,
-        model_catalog,
     } = config;
 
     let (skill_state, skills_index) =
         prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
-    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
-        // Fresh file tracker (tracks reads within this sub-agent turn only)
-        tracker: FileTracker::new_shared(),
-        path_policy,
-        tools_path,
-        agent_keys,
-        skill_state: Arc::clone(&skill_state),
-        tz,
-        hybrid_searcher,
-        workspace_dir: workspace_layout.root().to_path_buf(),
-        config_dir,
-        hub_dir,
-        episodes_dir: workspace_layout.episodes_dir(),
-        sessions_dir: workspace_layout.sessions_dir(),
-        agent_inbox_dir: workspace_layout.agent_inbox_dir(),
-        agent_inbox_archive_dir: workspace_layout.agent_inbox_archive_dir(),
-        user_inbox_dir: workspace_layout.user_inbox_dir(),
-        user_inbox_attachments_dir: workspace_layout.user_inbox_attachments_dir(),
-        session_registry,
-        endpoint_registry,
-        publisher,
-        action_store,
-        action_notify,
+    let tools = session_tools.build(SessionToolScope {
         own_address,
         own_depth,
-        depth_cap: subagent_depth_cap,
-        session_category: session_category.as_str().to_string(),
+        category: session_category,
         trigger,
         conversation_target,
-        messenger,
         hop_counter: hop_counter.clone(),
-        tracing_service,
-        tracing_client_context,
-        web_search_backend,
-        a2a_hub,
-        a2a_tracker,
-        checkpoints,
-        lifecycle,
-        model_catalog,
+        skill_state: Arc::clone(&skill_state),
     });
 
     Ok(SubAgentResources {
@@ -378,7 +322,7 @@ pub(crate) struct TurnExecution<'a> {
     /// boundary. Between turns, the caller drains the same channel itself to
     /// decide whether to wake for another turn (see
     /// `crate::background::runtime`).
-    pub(crate) interrupt_rx: &'a mut dyn crate::agent::interrupt::InterruptSource,
+    pub(crate) interrupt_rx: &'a mut dyn crate::bus::interrupt::InterruptSource,
 }
 
 /// Execute one turn of a session's run.
@@ -525,7 +469,7 @@ pub(crate) fn test_memory_extras() -> (
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::interrupt::dead_interrupt_rx;
+    use crate::bus::testing::dead_interrupt_rx;
     use crate::config::SkillDir;
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
@@ -903,12 +847,12 @@ mod tests {
         let inbound = MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: Some(sample_sender()),
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    kind: crate::bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,
@@ -1006,12 +950,12 @@ mod tests {
         tx.send(Interrupt::UserMessage(MessageEvent {
             id: "m2".to_string(),
             content: "any updates?".to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: Some(sample_sender()),
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    kind: crate::bus::origin::ConversationKind::Channel,
                     is_owner: false,
                 }),
                 agent_sender: None,

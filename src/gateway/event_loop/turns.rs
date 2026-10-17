@@ -6,19 +6,20 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::context::{PromptContext, SkillsContext};
-use crate::agent::interrupt::{Interrupt, InterruptSource};
 use crate::agent::{Agent, LiveOutputEndpoint, TurnOutput};
+use crate::bus::interrupt::{Interrupt, InterruptSource};
 use crate::bus::{
     EndpointName, ErrorEvent, MainConversationEvent, MessageEvent, NotifyName, Publisher,
     ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, TurnOrigin, topics,
 };
 
+use crate::bus::control::StopRequest;
+use crate::bus::origin::{BACKGROUND_ENDPOINT, MessageOrigin, chat_interface_endpoint};
 use crate::config::Config;
 use crate::gateway::queued_messages::{CheckpointTake, QueuedMessages};
-use crate::gateway::types::{AgentRuntime, StopRequest};
+use crate::gateway::types::AgentRuntime;
 use crate::hub::activity::ActivityTracker;
 use crate::inference::ImageData;
-use crate::interfaces::types::{BACKGROUND_ENDPOINT, MessageOrigin, chat_interface_endpoint};
 use crate::memory::types::Visibility;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
@@ -747,7 +748,7 @@ fn spawn_main_turn_end_checkpoint(
 /// delivered to.
 ///
 /// On failure, logs the error, auto-reports the failure through
-/// `tracing_service` (a no-op unless the user has enabled auto error
+/// `failure.tracing_service` (a no-op unless the user has enabled auto error
 /// reporting), and publishes an `ErrorEvent` to the output endpoint, so a chat
 /// interface can answer the conversation that started the turn, and on the
 /// system notification channel regardless of output endpoint, for the web UI.
@@ -758,8 +759,7 @@ async fn publish_turn_outcome(
     output_endpoint: Option<&EndpointName>,
     correlation_id: &str,
     tz: chrono_tz::Tz,
-    tracing_service: &TracingService,
-    cfg: &Config,
+    failure: &TurnFailureReport<'_>,
 ) {
     let output_endpoint = chat_interface_endpoint(output_endpoint);
     match turn_result {
@@ -788,10 +788,14 @@ async fn publish_turn_outcome(
         Err(e) => {
             let described = crate::inference::describe_turn_failure(&e);
             tracing::error!(error = %described.details, "agent processing error");
-            tracing_service
+            failure
+                .tracing_service
                 .on_error(
                     &described.details,
-                    crate::client_context::gather_for_bug_report(cfg),
+                    crate::tracing_service::client_context::gather_for_bug_report(
+                        failure.build,
+                        failure.cfg,
+                    ),
                 )
                 .await;
             let event = ErrorEvent {
@@ -827,6 +831,14 @@ async fn publish_turn_outcome(
         },
     )
     .await;
+}
+
+/// Where a failed turn reports: the tracing service that auto-reports it, the
+/// config its bug report is gathered from, and the running build.
+struct TurnFailureReport<'a> {
+    tracing_service: &'a TracingService,
+    cfg: &'a Config,
+    build: crate::build_info::BuildInfo,
 }
 
 /// The turn's last reply that has text, read before [`publish_turn_outcome`]
@@ -1109,8 +1121,11 @@ pub async fn handle_inbound_message(
         delivered_to.as_ref(),
         &reply_id,
         rt.tz,
-        &rt.tracing_service,
-        &rt.cfg,
+        &TurnFailureReport {
+            tracing_service: &rt.tracing_service,
+            cfg: &rt.cfg,
+            build: rt.build,
+        },
     )
     .await;
 
@@ -1325,8 +1340,11 @@ mod tests {
             after_idle.as_ref(),
             "bg-1",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1378,8 +1396,11 @@ mod tests {
             after_idle.as_ref(),
             "bg-2",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1582,8 +1603,11 @@ mod tests {
             live.get().as_ref(),
             "bg-follow",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
         AgentStartedTurnEnd {
@@ -1799,8 +1823,11 @@ mod tests {
             Some(&endpoint()),
             "corr-1",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1836,8 +1863,11 @@ mod tests {
             Some(&endpoint()),
             "corr-2",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1867,8 +1897,11 @@ mod tests {
             None,
             "corr-3",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -1937,8 +1970,11 @@ mod tests {
                 Some(&ws),
                 "corr-web",
                 TEST_TZ,
-                &test_tracing_service(),
-                &test_config(),
+                &TurnFailureReport {
+                    tracing_service: &test_tracing_service(),
+                    cfg: &test_config(),
+                    build: crate::testing::HARNESS_BUILD,
+                },
             )
             .await;
 
@@ -1979,8 +2015,11 @@ mod tests {
             output_endpoint,
             "corr-5",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2044,8 +2083,11 @@ mod tests {
             Some(&endpoint()),
             "corr-4",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2099,8 +2141,11 @@ mod tests {
             None,
             "corr-5",
             TEST_TZ,
-            &test_tracing_service(),
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &test_tracing_service(),
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2154,8 +2199,11 @@ mod tests {
             None,
             "corr-6",
             TEST_TZ,
-            &tracing_service,
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &tracing_service,
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2206,8 +2254,11 @@ mod tests {
             Some(&endpoint()),
             "corr-7",
             TEST_TZ,
-            &tracing_service,
-            &test_config(),
+            &TurnFailureReport {
+                tracing_service: &tracing_service,
+                cfg: &test_config(),
+                build: crate::testing::HARNESS_BUILD,
+            },
         )
         .await;
 
@@ -2269,7 +2320,7 @@ mod tests {
     fn test_agent(provider: impl crate::inference::InferenceProvider + 'static) -> Agent {
         Agent::new(
             Box::new(provider),
-            crate::tools::ToolRegistry::new(),
+            crate::agent::ToolRegistry::new(),
             crate::mcp::McpRegistry::new_shared(),
             crate::workspace::identity::IdentityFiles::default(),
             crate::agent::AgentConfig {
@@ -2470,12 +2521,12 @@ mod tests {
         crate::bus::MessageEvent {
             id: "group-msg-1".to_string(),
             content: "anyone around?".to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "discord".to_string(),
                 sender: None,
-                conversation: Some(crate::interfaces::types::ConversationContext {
+                conversation: Some(crate::bus::origin::ConversationContext {
                     id: "chan-1".to_string(),
-                    kind: crate::interfaces::types::ConversationKind::GroupChat,
+                    kind: crate::bus::origin::ConversationKind::GroupChat,
                     is_owner: true,
                 }),
                 agent_sender: None,
@@ -2607,7 +2658,7 @@ mod tests {
         crate::bus::MessageEvent {
             id: "leftover-1".to_string(),
             content: content.to_string(),
-            origin: crate::interfaces::types::MessageOrigin {
+            origin: crate::bus::origin::MessageOrigin {
                 endpoint: "background".to_string(),
                 sender: None,
                 conversation: None,
@@ -3428,7 +3479,7 @@ mod tests {
         let recent_path = dir.path().join("recent_messages.json");
 
         let before = agent.message_count();
-        let mut interrupts = crate::agent::interrupt::dead_interrupt_rx();
+        let mut interrupts = crate::bus::testing::dead_interrupt_rx();
         let failed = agent
             .process_message(
                 "are you there?",

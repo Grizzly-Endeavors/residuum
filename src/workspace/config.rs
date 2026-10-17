@@ -7,10 +7,8 @@ use serde::Deserialize;
 
 use anyhow::Context;
 
+use crate::config::{ExternalChannelConfig, ExternalChannelKind};
 use crate::mcp::types::{McpServerEntry, McpTransport};
-use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
-
-pub use super::channel_builder::build_external_channels;
 
 // ── MCP loader ───────────────────────────────────────────────────────────────
 

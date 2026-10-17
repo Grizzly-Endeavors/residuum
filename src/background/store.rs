@@ -26,7 +26,7 @@ use crate::agent::turn::TranscriptSink;
 use crate::bus::{AgentResultStatus, PulseOverlap};
 use crate::inference::Message;
 
-use super::registry::SessionInfo;
+use crate::bus::session::SessionInfo;
 
 /// On-disk record for a single run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ pub struct RunRecord {
     /// this record is written, so a completed run keeps its
     /// final totals.
     #[serde(default)]
-    pub usage: crate::agent::usage::SessionUsageTotals,
+    pub usage: crate::bus::usage::SessionUsageTotals,
     /// How the run ended — `"completed"`, `"cancelled"`, or `"failed"` —
     /// filled in by [`SessionStore::complete_run`]. `None` while the run is
     /// still live (`state` says so already), and `None` for a record written
@@ -142,7 +142,7 @@ impl RunRecord {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunFilter<'a> {
     /// Only runs in this category (a
-    /// [`SessionCategory`](super::registry::SessionCategory) label).
+    /// [`SessionCategory`](crate::bus::session::SessionCategory) label).
     pub category: Option<&'a str>,
     /// Only runs at this session address.
     pub address: Option<&'a str>,
@@ -173,7 +173,7 @@ struct RunRecordHeader {
     #[serde(default)]
     episode_id: Option<String>,
     #[serde(default)]
-    usage: crate::agent::usage::SessionUsageTotals,
+    usage: crate::bus::usage::SessionUsageTotals,
     #[serde(default)]
     outcome: Option<String>,
     #[serde(default)]
@@ -927,8 +927,8 @@ impl TranscriptSink for RunTranscriptSink<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::{SessionCategory, SessionState};
     use crate::background::session_memory::SessionMemoryEnv;
+    use crate::bus::session::{SessionCategory, SessionState};
     use crate::bus::{EventTrigger, SessionAddress};
 
     /// Build a `SessionMemoryEnv` whose observer/reflector never fire, so
@@ -957,7 +957,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
-            usage: crate::agent::usage::SessionUsageTotals::default(),
+            usage: crate::bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -1079,7 +1079,7 @@ mod tests {
         let record = RunRecord::from(header);
         assert_eq!(
             record.usage,
-            crate::agent::usage::SessionUsageTotals::default()
+            crate::bus::usage::SessionUsageTotals::default()
         );
     }
 

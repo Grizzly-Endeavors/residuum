@@ -50,7 +50,7 @@ newtype_string!(SkillName, "Skill identifier.");
 newtype_string!(NotifyName, "Notification channel identifier.");
 newtype_string!(
     SessionAddress,
-    "Stable address identifying an agent session (see `crate::background::registry`)."
+    "Stable address identifying an agent session (see `crate::bus::session`)."
 );
 
 // ---------------------------------------------------------------------------

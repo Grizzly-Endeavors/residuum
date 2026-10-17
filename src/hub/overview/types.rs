@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::background::registry::{SessionCategory, SessionInfo, SessionState};
+use crate::bus::session::{SessionCategory, SessionInfo, SessionState};
 
 /// Who wrote the message an agent's overview shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]

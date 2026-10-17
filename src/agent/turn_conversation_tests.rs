@@ -12,9 +12,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::HopCounter;
 use super::context::{MemoryContext, PromptContext};
-use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
+use super::testing::EchoTool;
 use super::turn::{EventContext, EventTarget, TranscriptSink, TurnResources, execute_turn};
+use crate::agent::ToolRegistry;
+use crate::bus::interrupt::Interrupt;
+use crate::bus::origin::MessageOrigin;
 use crate::bus::{
     AgentMessageEvent, EndpointName, IntermediateEvent, MainConversationEvent, MessageEvent,
     SessionAddress, Subscriber, topics,
@@ -23,9 +26,6 @@ use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     MessageSender, Role, StreamDelta, StreamSink, ThinkingBlock, ToolCall, ToolDefinition,
 };
-use crate::inference::{ToolError, ToolResult};
-use crate::interfaces::types::MessageOrigin;
-use crate::tools::{Tool, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 /// What a scripted provider does while a model call is in flight.
@@ -133,27 +133,6 @@ impl InferenceProvider for ScriptedProvider {
 
     fn model_name(&self) -> &'static str {
         "scripted"
-    }
-}
-
-struct EchoTool;
-
-#[async_trait]
-impl Tool for EchoTool {
-    fn name(&self) -> &'static str {
-        "echo"
-    }
-
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "echo".to_string(),
-            description: String::new(),
-            parameters: serde_json::json!({}),
-        }
-    }
-
-    async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
-        Ok(ToolResult::success("echoed"))
     }
 }
 

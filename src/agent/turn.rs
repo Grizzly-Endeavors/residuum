@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::bus::origin::chat_interface_endpoint;
 use crate::bus::{
     EndpointName, MainConversationEvent, MessageEvent, NoticeEvent, NotifyName, Publisher,
     SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent, ToolCallEvent,
@@ -16,18 +17,21 @@ use crate::inference::{
     ToolDefinition, joined_thinking_text,
 };
 use crate::inference::{ToolError, ToolResult};
-use crate::interfaces::types::chat_interface_endpoint;
 use crate::mcp::SharedMcpRegistry;
-use crate::tools::{CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 
 use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
 use super::hop::HopCounter;
-use super::interrupt::{Interrupt, InterruptSource};
 use super::recent_messages::RecentMessages;
 use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
-use super::usage::{SessionUsageTotals, TurnUsage, UsageSink};
+use super::tool::{
+    CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolRegistry, is_plausible_tool_name,
+    truncate_tool_name_for_display,
+};
+use super::usage::{TurnUsage, UsageSink};
+use crate::bus::interrupt::{Interrupt, InterruptSource};
+use crate::bus::usage::SessionUsageTotals;
 
 /// Told each time one of a main turn's replies reaches the main
 /// conversation on its way to an endpoint. Whoever counts unread replies
@@ -212,13 +216,8 @@ impl EventContext<'_> {
                     ToolActivity::Call(tool_call) => SessionEventKind::ToolCall(tool_call),
                     ToolActivity::Result(result) => SessionEventKind::ToolResult(result),
                 };
-                crate::background::events::publish_session_event(
-                    self.publisher,
-                    address,
-                    run_id,
-                    kind,
-                )
-                .await;
+                crate::bus::session::publish_session_event(self.publisher, address, run_id, kind)
+                    .await;
             }
         }
     }
@@ -261,7 +260,7 @@ impl EventContext<'_> {
                 }
             }
             EventTarget::Session { address, run_id } => {
-                crate::background::events::publish_session_event(
+                crate::bus::session::publish_session_event(
                     self.publisher,
                     address,
                     run_id,
@@ -385,7 +384,7 @@ impl EventContext<'_> {
                     .await;
             }
             EventTarget::Session { address, run_id } => {
-                crate::background::events::publish_session_event(
+                crate::bus::session::publish_session_event(
                     self.publisher,
                     address,
                     run_id,
@@ -1365,11 +1364,11 @@ async fn dispatch_tool_call(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
 ) -> (Result<ToolResult, ToolError>, bool) {
-    if !crate::tools::is_plausible_tool_name(&tool_call.name) {
+    if !is_plausible_tool_name(&tool_call.name) {
         return (
-            Err(ToolError::MalformedName(
-                crate::tools::truncate_tool_name_for_display(&tool_call.name),
-            )),
+            Err(ToolError::MalformedName(truncate_tool_name_for_display(
+                &tool_call.name,
+            ))),
             false,
         );
     }
@@ -1443,7 +1442,7 @@ async fn run_dispatched_tool_call(
             };
             tracing::warn!(
                 error = %e,
-                tool_name = %crate::tools::truncate_tool_name_for_display(&tool_call.name),
+                tool_name = %truncate_tool_name_for_display(&tool_call.name),
                 tool_call_id = %tool_call.id,
                 source,
                 "tool execution failed"
@@ -1492,7 +1491,7 @@ async fn execute_tool(
     };
     let blocked = auto_mode
         .as_ref()
-        .filter(|v| v.decision == crate::agent::auto_mode::AutoModeDecision::Blocked);
+        .filter(|v| v.decision == crate::bus::auto_mode::AutoModeDecision::Blocked);
 
     let (mut output, is_error, images) = if let Some(verdict) = blocked {
         (verdict.blocked_message(), true, vec![])
@@ -1693,9 +1692,10 @@ async fn update_and_publish_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::testing::{BlockingTool, CountingTool, FixedOutputTool};
     use crate::inference::Role;
     use crate::testing::bus_wait;
-    use residuum_core::testing::gate::{Gate, GateEntry};
+    use residuum_core::testing::gate::Gate;
     use residuum_core::testing::wait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
@@ -1873,7 +1873,7 @@ mod tests {
     #[tokio::test]
     async fn drain_injects_user_message_history_through_the_sink() {
         use crate::bus::MessageEvent;
-        use crate::interfaces::types::MessageOrigin;
+        use crate::bus::origin::MessageOrigin;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
@@ -2146,7 +2146,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn execute_tool_redacts_agent_key_values_before_recording() {
         let dir = tempfile::tempdir().unwrap();
@@ -2160,28 +2159,19 @@ mod tests {
         .await
         .unwrap();
 
+        // The tool hands back the raw key value, as a command that printed
+        // an exposed key would; only the registry's redactor stands between
+        // it and history.
         let mut tools = ToolRegistry::new();
         tools.set_agent_keys(keys);
-        tools.register_defaults(
-            crate::tools::FileTracker::new_shared(),
-            crate::tools::PathPolicy::new_shared(),
-            crate::diagnostics_dispatch::DiagnosticsPaths {
-                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
-                // Must exist: this test's tool call actually runs `exec`,
-                // which now starts the spawned command here.
-                workspace_dir: dir.path().to_path_buf(),
-                hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
-            },
-            None,
-        );
+        tools.register(Box::new(FixedOutputTool::new(
+            "Authorization: Bearer sk-live-redactme42",
+        )));
 
         let tool_call = ToolCall {
             id: "call-1".to_string(),
-            name: "exec".to_string(),
-            arguments: serde_json::json!({
-                "command": "echo \"Authorization: Bearer $API_KEY\"",
-                "keys": ["api_key"]
-            }),
+            name: "fixed_output".to_string(),
+            arguments: serde_json::json!({}),
             server: None,
         };
 
@@ -2283,9 +2273,7 @@ mod tests {
 
         let runs = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&runs),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&runs))));
         tools.set_auto_mode(gate);
 
         let tool_call = ToolCall {
@@ -2356,43 +2344,6 @@ mod tests {
         let (runs, output) = run_counting_tool_under_auto_mode(None).await;
         assert_eq!(runs, 1, "an outage degrades to running unchecked");
         assert_eq!(output, "ok");
-    }
-
-    /// A tool whose `execute()` never resolves, so the default
-    /// `execute_cancellable()` can only return via its cancellation branch —
-    /// proving dispatch actually races against the stop token instead of
-    /// waiting for the tool to finish.
-    /// Holds at its gate, so a test can stop the turn while the tool runs.
-    struct BlockingTool {
-        entry: GateEntry,
-    }
-
-    impl BlockingTool {
-        fn new(gate: &Gate) -> Self {
-            Self {
-                entry: gate.entry(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl crate::tools::Tool for BlockingTool {
-        fn name(&self) -> &'static str {
-            "blocking_tool"
-        }
-
-        fn definition(&self) -> crate::inference::ToolDefinition {
-            crate::inference::ToolDefinition {
-                name: self.name().to_string(),
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }
-        }
-
-        async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
-            self.entry.pass().await;
-            std::future::pending().await
-        }
     }
 
     #[tokio::test]
@@ -2467,7 +2418,7 @@ mod tests {
         assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
         assert_eq!(
             msg.content,
-            crate::tools::CANCELLED_WHILE_RUNNING,
+            crate::agent::tool::CANCELLED_WHILE_RUNNING,
             "the transcript should say the tool was cancelled, not that it failed"
         );
     }
@@ -2521,7 +2472,7 @@ mod tests {
             .first()
             .expect("a tool-result message should have been recorded");
         assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
-        assert_eq!(msg.content, crate::tools::CANCELLED_BEFORE_START);
+        assert_eq!(msg.content, crate::agent::tool::CANCELLED_BEFORE_START);
     }
 
     /// Returns a two-tool-call response exactly once; a second call means
@@ -2650,7 +2601,7 @@ mod tests {
                 .first()
                 .expect("checked above: exactly 2 results")
                 .content,
-            crate::tools::CANCELLED_WHILE_RUNNING,
+            crate::agent::tool::CANCELLED_WHILE_RUNNING,
             "the call that was running when the stop landed was interrupted"
         );
         assert_eq!(
@@ -2658,7 +2609,7 @@ mod tests {
                 .get(1)
                 .expect("checked above: exactly 2 results")
                 .content,
-            crate::tools::CANCELLED_BEFORE_START,
+            crate::agent::tool::CANCELLED_BEFORE_START,
             "the second call in the batch must never have started"
         );
         assert!(
@@ -2777,33 +2728,6 @@ mod tests {
             1,
             "a different tool name should reset the streak"
         );
-    }
-
-    /// Records how many times it actually ran, so a test can prove the
-    /// repeat-call guard's stop threshold prevented a call from executing
-    /// rather than merely producing a cancelled-looking result some other way.
-    struct CountingTool {
-        calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl crate::tools::Tool for CountingTool {
-        fn name(&self) -> &'static str {
-            "counting_tool"
-        }
-
-        fn definition(&self) -> crate::inference::ToolDefinition {
-            crate::inference::ToolDefinition {
-                name: self.name().to_string(),
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }
-        }
-
-        async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ToolResult::success("ok"))
-        }
     }
 
     /// Build a `counting_tool` call with the given id, always carrying the
@@ -3238,9 +3162,7 @@ mod tests {
     async fn execute_turn_counts_every_parallel_tool_call_in_a_batch() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
 
         let provider = ToolsThenTextProvider {
             served: AtomicBool::new(false),
@@ -3412,9 +3334,7 @@ mod tests {
     async fn repeat_guard_steers_at_the_configured_threshold_without_blocking_the_call() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
         let batch = vec![
             counting_tool_call("c1"),
             counting_tool_call("c2"),
@@ -3502,9 +3422,7 @@ mod tests {
     async fn repeat_guard_stops_at_the_configured_threshold_without_running_that_call() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
         let batch: Vec<ToolCall> = (0..7)
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
@@ -3580,7 +3498,7 @@ mod tests {
         );
         assert_eq!(
             seventh.as_str(),
-            crate::tools::CANCELLED_BEFORE_START,
+            crate::agent::tool::CANCELLED_BEFORE_START,
             "the 7th call should be skipped outright, not attempted"
         );
     }
@@ -3589,9 +3507,7 @@ mod tests {
     async fn repeat_guard_disabled_never_steers_or_stops() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
         let batch: Vec<ToolCall> = (0..10)
             .map(|i| counting_tool_call(&format!("c{i}")))
             .collect();
@@ -3687,9 +3603,7 @@ mod tests {
     async fn execute_turn_stops_when_the_model_repeats_the_same_call_past_the_stop_threshold() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::clone(&calls),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::clone(&calls))));
 
         let provider = RepeatingCallProvider {
             completions: AtomicUsize::new(0),
@@ -3808,9 +3722,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::new(AtomicUsize::new(0)),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::new(AtomicUsize::new(0)))));
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();
@@ -3939,9 +3851,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountingTool {
-            calls: Arc::new(AtomicUsize::new(0)),
-        }));
+        tools.register(Box::new(CountingTool::new(Arc::new(AtomicUsize::new(0)))));
         let mcp_registry = crate::mcp::McpRegistry::new_shared();
         let identity = IdentityFiles::default();
         let options = CompletionOptions::default();

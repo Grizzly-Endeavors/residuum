@@ -49,7 +49,7 @@ impl Config {
     /// paths.
     ///
     /// Used by [`load_agent_at`](Self::load_agent_at) for the normal path, and by
-    /// the last-known-good fallback (`gateway::last_known_good`) to load a
+    /// the last-known-good fallback (`hub::last_known_good`) to load a
     /// saved copy under different filenames without touching the user's
     /// live `config.toml`/`providers.toml`.
     ///

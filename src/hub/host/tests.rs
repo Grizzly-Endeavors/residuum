@@ -90,7 +90,11 @@ impl Fixture {
         }
         let hub = HubConfig::load_at(&hub_dir).unwrap();
         let services = HubServices::for_tests(root.path(), &hub).await;
-        let host = AgentHost::new(services.clone(), hub);
+        let host = AgentHost::new(
+            services.clone(),
+            hub,
+            Arc::new(crate::gateway::GatewayLauncher::new()),
+        );
         let team_events = TeamEventLog::new("boot-under-test");
         let recorder = TeamEventRecorder::spawn(
             Arc::clone(&team_events),
@@ -1320,14 +1324,25 @@ where
 /// Hub-level code logs about the process as a whole, not on an agent's
 /// behalf; everything else that logs during an agent's life must say whose.
 fn is_hub_level(event: &CapturedEvent) -> bool {
-    [
+    // These hub modules run on an agent's behalf, so their lines must carry its `agent` field.
+    const AGENT_CHECKED_HUB_MODULES: &[&str] = &[
+        "residuum::hub::config_watcher",
+        "residuum::hub::last_known_good",
+        "residuum::hub::features",
+    ];
+    let hub_prefixes = [
         "residuum::hub",
+        "residuum::background::team",
         "residuum_net::tunnel",
-        "residuum::update",
         "residuum::daemon",
-    ]
-    .iter()
-    .any(|prefix| event.target.starts_with(prefix))
+    ];
+    let is_hub_module = hub_prefixes
+        .iter()
+        .any(|prefix| event.target.starts_with(prefix))
+        && !AGENT_CHECKED_HUB_MODULES
+            .iter()
+            .any(|module| event.target.starts_with(module));
+    is_hub_module
         || event.task.as_deref() == Some("a2a-sibling-discovery")
         || event.spans.iter().any(|span| span == "team_feed")
 }
@@ -2770,14 +2785,13 @@ mod team_events;
 
 #[tokio::test]
 async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
-    use crate::hub::team::{TeamLink, TeamSendError, parse_team_address};
+    use crate::background::team::{TeamLink, TeamSendError, parse_team_address};
 
     let hub = Fixture::new(&["alpha", "beta"], "").await;
     start_all(&hub, &["alpha", "beta"]).await;
     let link = TeamLink::new("alpha", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:beta").unwrap().unwrap();
-    let main =
-        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+    let main = crate::bus::SessionAddress::from(crate::bus::session::MAIN_ADDRESS.to_string());
 
     hub.host.stop("beta").await.unwrap();
     let stopped = link
