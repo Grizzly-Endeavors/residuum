@@ -104,12 +104,31 @@ describe("finding the run to show for a session address", () => {
     });
 
     await expect(s.resolveRun("spawned-multitask-a1", null)).resolves.toBeNull();
-    expect(surface).toHaveBeenCalledWith(
+    expect(surface).toHaveBeenCalledExactlyOnceWith(
       "error",
       "The session spawned-multitask-a1 couldn't start: its model has no working provider.",
       "failed to build provider chain for model medium: no API key",
     );
-    expect(fetchMock).not.toHaveBeenCalled();
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe("/api/agents/scout/sessions?limit=1&address=spawned-multitask-a1");
+  });
+
+  it("opens the run the server has at an address whose resume failed, without the failure", async () => {
+    respond(200, {
+      live: [],
+      completed: [summary("run-earlier", "spawned-multitask-a1", { state: "completed" })],
+      next_cursor: null,
+    });
+    const surface = vi.spyOn(notifications, "surface").mockImplementation(() => {});
+    const s = store();
+    s.handleFrame({
+      type: "session_start_failed",
+      address: "spawned-multitask-a1",
+      error: "The session spawned-multitask-a1 couldn't pick up your message.",
+    });
+
+    await expect(s.resolveRun("spawned-multitask-a1", null)).resolves.toBe("run-earlier");
+    expect(surface).not.toHaveBeenCalled();
   });
 
   it("keeps each failed start by its address, and forgets one once a run starts there", async () => {

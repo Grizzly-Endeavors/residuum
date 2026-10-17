@@ -32,7 +32,7 @@ export function isSessionFrame(msg: ServerMessage): msg is SessionFrame {
   return msg.type.startsWith("session_");
 }
 
-/** Why a session the owner started couldn't start, as a `session_start_failed` frame says. */
+/** Why a session the owner started couldn't start or resume, as a `session_start_failed` frame says. */
 export interface SessionStartFailure {
   /** Plain-language explanation, to show as it is. */
   error: string;
@@ -146,13 +146,23 @@ export interface SessionsStoreDeps {
 /**
  * The newest run, live first, of `agent`'s session at `address`, asked of the
  * server. Null, after telling the user, when there is none or the lookup fails.
+ * `noRecord` is what to tell them when there is none, in place of saying the
+ * address has no record.
  */
-export async function lookUpNewestRun(agent: string, address: string): Promise<string | null> {
+export async function lookUpNewestRun(
+  agent: string,
+  address: string,
+  noRecord?: { message: string; details?: string },
+): Promise<string | null> {
   try {
     const page = await fetchSessions(agent, { address, limit: 1 });
     const run = page.live[0] ?? page.completed[0];
     if (run) return run.run_id;
-    notifications.surface("error", `There's no record of the session ${address}.`);
+    if (noRecord) {
+      notifications.surface("error", noRecord.message, noRecord.details);
+    } else {
+      notifications.surface("error", `There's no record of the session ${address}.`);
+    }
   } catch (err) {
     notifications.surface(
       "error",
@@ -180,9 +190,10 @@ export class SessionsStore {
    */
   stopping = new SvelteSet<string>();
   /**
-   * Why each session the owner started that never got a run couldn't start,
-   * by address. Kept by address rather than by the start request, since the
-   * failure can arrive before the request that started it has its answer.
+   * Why each session the owner started couldn't start or resume, by address,
+   * until a run starts there. Kept by address rather than by the start
+   * request, since the failure can arrive before the request that started it
+   * has its answer.
    */
   private readonly startFailures = new SvelteMap<string, SessionStartFailure>();
   /** Open tasks the agent sent to remote agents, newest first. */
@@ -289,7 +300,7 @@ export class SessionsStore {
     );
   }
 
-  /** Why the session at `address` couldn't start, when its start failed and no run has started there since. */
+  /** Why the session at `address` couldn't start or resume, when that failed and no run has started there since. */
   startFailure(address: string): SessionStartFailure | undefined {
     return this.startFailures.get(address);
   }
@@ -298,18 +309,18 @@ export class SessionsStore {
    * The run to show for a session address: `runId` when known, else its newest
    * run (live first), looked up on the server if it isn't loaded. Null, after
    * telling the user, when there is none, saying why it couldn't start when
-   * its start failed.
+   * its start failed. A failed resume leaves the address's earlier runs, so a
+   * recorded failure is shown only when the server has no run there.
    */
   async resolveRun(address: string, runId: string | null): Promise<string | null> {
     if (runId) return runId;
     const known = this.findByAddress(address);
     if (known) return known.run_id;
     const failure = this.startFailures.get(address);
-    if (failure) {
-      notifications.surface("error", failure.error, failure.details ?? undefined);
-      return null;
-    }
-    return lookUpNewestRun(requireAgent(this.deps.agent), address);
+    const noRecord = failure
+      ? { message: failure.error, details: failure.details ?? undefined }
+      : undefined;
+    return lookUpNewestRun(requireAgent(this.deps.agent), address, noRecord);
   }
 
   // ── Commands ─────────────────────────────────────────────────────
