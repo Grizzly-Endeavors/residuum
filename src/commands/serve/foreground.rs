@@ -130,35 +130,17 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     }
 }
 
-/// The path of the running binary, as it now exists on disk.
+/// The command that relaunches this process from its install path with the
+/// same arguments, so `serve --foreground` is preserved.
 ///
-/// On Linux, atomically replacing the binary (via `mv`) unlinks the old inode
-/// while the process is still running. The kernel then appends " (deleted)" to
-/// `/proc/self/exe`. Strip the suffix to get the live path on disk.
-#[cfg(target_os = "linux")]
-fn resolve_exe_path(raw: &std::path::Path) -> std::path::PathBuf {
-    let s = raw.to_string_lossy();
-    if let Some(stripped) = s.strip_suffix(" (deleted)") {
-        std::path::PathBuf::from(stripped)
-    } else {
-        raw.to_path_buf()
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn resolve_exe_path(raw: &std::path::Path) -> std::path::PathBuf {
-    raw.to_path_buf()
-}
-
-/// The command that relaunches this process with the binary now on disk and
-/// the same arguments, so `serve --foreground` is preserved.
+/// The install path, not `current_exe`: after an update renamed the running
+/// binary aside, Linux reports the renamed old file as `current_exe`.
 fn relaunch_command() -> Result<std::process::Command, FatalError> {
-    let raw_exe = std::env::current_exe().map_err(|e| {
+    let exe = residuum::hub::update::install_path().map_err(|e| {
         FatalError::Gateway(format!(
             "failed to determine current executable for restart: {e}"
         ))
     })?;
-    let exe = resolve_exe_path(&raw_exe);
     tracing::info!(exe = %exe.display(), "restarting with updated binary");
 
     let mut cmd = std::process::Command::new(&exe);
@@ -210,30 +192,9 @@ fn relaunch_with_watchdog(
     remove_pid_file(pid_path);
     drop(pid_lock);
 
-    let raw_exe = std::env::current_exe().map_err(|e| {
-        FatalError::Gateway(format!(
-            "failed to determine current executable for restart: {e}"
-        ))
-    })?;
-    let gateway_exe = resolve_exe_path(&raw_exe);
-    let serve_args: Vec<String> = std::env::args().skip(1).collect();
-
-    let mut watchdog_args = vec![
-        "update-watchdog".to_string(),
-        "--gateway-exe".to_string(),
-        gateway_exe.display().to_string(),
-        "--prev-exe".to_string(),
-        pending.previous_binary.display().to_string(),
-        "--previous-version".to_string(),
-        pending.previous_version.clone(),
-        "--target-version".to_string(),
-        pending.target_version.clone(),
-        "--".to_string(),
-    ];
-    watchdog_args.extend(serve_args);
-
+    let watchdog_args = watchdog_args(pending, std::env::args().skip(1));
     let child = residuum::daemon::spawn_gateway_process(
-        &pending.previous_binary,
+        &pending.previous_binary(),
         &watchdog_args,
         config_dir,
     )
@@ -241,10 +202,37 @@ fn relaunch_with_watchdog(
 
     tracing::info!(
         pid = child.id(),
+        gateway_exe = %pending.gateway_binary.display(),
         target_version = %pending.target_version,
         "handed restart off to the update-rollback watchdog"
     );
     Ok(())
+}
+
+/// The `update-watchdog` command line for `pending`, ending with the
+/// arguments the gateway it starts gets.
+///
+/// Both binaries come from the marker, which recorded the install path
+/// before the swap. This process's `current_exe` can't stand in for it:
+/// on Linux it names the renamed old binary once the swap has happened.
+fn watchdog_args(
+    pending: &residuum::hub::update::PendingRollback,
+    serve_args: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut args = vec![
+        "update-watchdog".to_string(),
+        "--gateway-exe".to_string(),
+        pending.gateway_binary.display().to_string(),
+        "--prev-exe".to_string(),
+        pending.previous_binary().display().to_string(),
+        "--previous-version".to_string(),
+        pending.previous_version.clone(),
+        "--target-version".to_string(),
+        pending.target_version.clone(),
+        "--".to_string(),
+    ];
+    args.extend(serve_args);
+    args
 }
 
 /// Relaunch with the current binary in place, for a restart that isn't
@@ -304,26 +292,41 @@ fn relaunch_plain(
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn resolve_exe_path_strips_deleted_suffix() {
-        let raw = std::path::Path::new("/usr/bin/residuum (deleted)");
-        let result = resolve_exe_path(raw);
-        assert_eq!(
-            result,
-            std::path::PathBuf::from("/usr/bin/residuum"),
-            "should strip ' (deleted)' suffix from path"
-        );
+    /// The value that follows `flag` in `args`.
+    fn flag_value<'a>(args: &'a [String], flag: &str) -> &'a str {
+        args.iter().skip_while(|arg| *arg != flag).nth(1).unwrap()
     }
 
     #[test]
-    fn resolve_exe_path_normal_path_unchanged() {
-        let raw = std::path::Path::new("/usr/bin/residuum");
-        let result = resolve_exe_path(raw);
+    fn the_watchdog_starts_the_install_path_and_keeps_the_preserved_binary_apart() {
+        let install = std::env::temp_dir().join("bin").join("residuum");
+        let pending = residuum::hub::update::PendingRollback {
+            gateway_binary: install.clone(),
+            previous_version: "v2026.10.10".to_string(),
+            target_version: "v2026.10.12".to_string(),
+        };
+        let args = watchdog_args(&pending, ["serve".to_string(), "--foreground".to_string()]);
+
+        assert_eq!(args.first().map(String::as_str), Some("update-watchdog"));
         assert_eq!(
-            result,
-            std::path::PathBuf::from("/usr/bin/residuum"),
-            "should return path unchanged when no ' (deleted)' suffix"
+            flag_value(&args, "--gateway-exe"),
+            install.display().to_string()
+        );
+        assert_eq!(
+            flag_value(&args, "--prev-exe"),
+            residuum::hub::update::previous_binary_path(&install)
+                .display()
+                .to_string()
+        );
+        assert_ne!(
+            flag_value(&args, "--gateway-exe"),
+            flag_value(&args, "--prev-exe"),
+            "the watchdog deletes --prev-exe once --gateway-exe is healthy, so they must differ"
+        );
+        assert_eq!(flag_value(&args, "--target-version"), "v2026.10.12");
+        assert!(
+            args.ends_with(&["--", "serve", "--foreground"].map(String::from)),
+            "the gateway's own arguments follow the separator: {args:?}"
         );
     }
 }

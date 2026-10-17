@@ -5,8 +5,8 @@
 //!
 //! A self-update never leaves only a possibly-broken binary on disk: the
 //! previously-running binary is preserved beside the new one
-//! ([`previous_binary_path`]) and a [`PendingRollback`] marker records where
-//! it is. `commands::serve::foreground::relaunch` reads that marker to
+//! ([`previous_binary_path`]) and a [`PendingRollback`] marker records the
+//! install path both are found from ([`install_path`]). `commands::serve::foreground::relaunch` reads that marker to
 //! decide whether the restart needs the rollback-capable watchdog path or
 //! the plain one, and the watchdog deletes the preserved binary once the new
 //! version proves healthy (see `commands::update_watchdog`) or restores it
@@ -18,7 +18,7 @@
 //! still installs, and leaves an [`UnverifiedUpdate`] the Update page shows.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -268,7 +268,7 @@ pub fn rejection_message(err: &anyhow::Error) -> Option<&'static str> {
 #[tracing::instrument(skip_all, fields(current = %current, version = %version))]
 pub async fn download_and_install(current: &str, version: &str) -> anyhow::Result<InstalledUpdate> {
     let asset = release_asset_name(std::env::consts::OS, std::env::consts::ARCH)?;
-    let exe_path = running_exe_path().context("failed to determine current executable path")?;
+    let exe_path = install_path().context("failed to determine current executable path")?;
     check_install_dir_writable(&exe_path)?;
     let bytes = download_release_bytes(version, asset).await?;
     let verification = verify_downloaded_asset(version, asset, &bytes).await;
@@ -280,7 +280,7 @@ pub async fn download_and_install(current: &str, version: &str) -> anyhow::Resul
         verified = matches!(installed.verification, ReleaseVerification::Verified),
         "update binary installed, previous version preserved for rollback"
     );
-    record_pending_rollback(&installed.previous_binary, current, version);
+    record_pending_rollback(&exe_path, current, version);
     record_verification(version, installed.verification);
     Ok(installed)
 }
@@ -532,23 +532,58 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// The currently-running binary's live path on disk.
+/// The path this process's binary is installed at, and the one a restart
+/// runs.
 ///
-/// On Linux, the kernel appends " (deleted)" to `/proc/self/exe` once the
-/// binary has been atomically replaced — this strips that suffix so the
-/// path is the real one to rename, not the stale in-memory one.
-fn running_exe_path() -> std::io::Result<PathBuf> {
-    let current_exe = std::env::current_exe()?;
-    #[cfg(target_os = "linux")]
-    {
-        Ok(current_exe
-            .to_string_lossy()
-            .strip_suffix(" (deleted)")
-            .map(PathBuf::from)
-            .unwrap_or(current_exe))
+/// Read from `std::env::current_exe` once and kept, because a self-update
+/// renames the running binary aside: on Linux `current_exe` follows that
+/// rename, so asking it afterwards names the old binary at
+/// [`previous_binary_path`] rather than the new one at the install path.
+/// [`capture_install_path`] takes the reading at startup, before anything
+/// can rename the file; until then the first successful call takes it.
+///
+/// # Errors
+///
+/// Returns the error `std::env::current_exe` gives when no reading has
+/// been kept yet.
+pub fn install_path() -> std::io::Result<PathBuf> {
+    if let Some(path) = INSTALL_PATH.get() {
+        return Ok(path.clone());
     }
-    #[cfg(not(target_os = "linux"))]
-    Ok(current_exe)
+    let path = live_exe_path(&std::env::current_exe()?);
+    Ok(INSTALL_PATH.get_or_init(|| path).clone())
+}
+
+/// The install path [`install_path`] keeps once it has read it.
+static INSTALL_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Keep the running binary's install path, for every later
+/// [`install_path`] call. Call it first thing in `main`.
+///
+/// A failure is not reported here: tracing isn't set up this early, and the
+/// error comes back from the `install_path` call that needs the path.
+pub fn capture_install_path() {
+    if let Ok(exe) = std::env::current_exe() {
+        INSTALL_PATH.get_or_init(|| live_exe_path(&exe));
+    }
+}
+
+/// `exe`, as `std::env::current_exe` reported it, without the suffix Linux
+/// adds once the file is gone.
+///
+/// The kernel appends " (deleted)" to `/proc/self/exe` when the running
+/// binary's file has been removed. Stripping it gives the path the binary
+/// was at.
+#[cfg(target_os = "linux")]
+fn live_exe_path(exe: &Path) -> PathBuf {
+    exe.to_string_lossy()
+        .strip_suffix(" (deleted)")
+        .map_or_else(|| exe.to_path_buf(), PathBuf::from)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn live_exe_path(exe: &Path) -> PathBuf {
+    exe.to_path_buf()
 }
 
 /// What the user sees when the binary lives in a directory this account
@@ -675,7 +710,7 @@ fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
 /// clear any stale rollback notice from an earlier attempt. Best-effort: if
 /// the config directory can't be found, the update still installed
 /// correctly, it just won't be able to roll back on a failed restart.
-fn record_pending_rollback(prev_path: &Path, previous_version: &str, target_version: &str) {
+fn record_pending_rollback(install_path: &Path, previous_version: &str, target_version: &str) {
     let Ok(config_dir) = crate::config::default_hub_dir() else {
         tracing::warn!(
             "could not determine hub directory; the next restart won't be able to roll back this update on failure"
@@ -685,7 +720,7 @@ fn record_pending_rollback(prev_path: &Path, previous_version: &str, target_vers
     write_pending_rollback(
         &config_dir,
         &PendingRollback {
-            previous_binary: prev_path.to_path_buf(),
+            gateway_binary: install_path.to_path_buf(),
             previous_version: previous_version.to_string(),
             target_version: target_version.to_string(),
         },
@@ -718,7 +753,7 @@ fn record_verification(version: &str, verification: ReleaseVerification) {
 }
 
 /// What a restart needs to know to roll back an update if the new version
-/// doesn't become healthy: where the previous binary was preserved, and
+/// doesn't become healthy: the install path the new binary went to, and
 /// both versions involved (for the notice a rollback leaves behind).
 ///
 /// Written by [`download_and_install`], read and deleted by
@@ -726,9 +761,18 @@ fn record_verification(version: &str, verification: ReleaseVerification) {
 /// rollback-capable watchdog.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingRollback {
-    pub previous_binary: PathBuf,
+    /// The install path, which holds the new binary. The restart runs it.
+    pub gateway_binary: PathBuf,
     pub previous_version: String,
     pub target_version: String,
+}
+
+impl PendingRollback {
+    /// Where the binary that was running before the update was preserved.
+    #[must_use]
+    pub fn previous_binary(&self) -> PathBuf {
+        previous_binary_path(&self.gateway_binary)
+    }
 }
 
 /// Path to the [`PendingRollback`] marker.
@@ -1040,7 +1084,7 @@ mod tests {
         assert!(take_pending_rollback(dir.path()).is_none());
 
         let pending = PendingRollback {
-            previous_binary: dir.path().join("residuum.prev"),
+            gateway_binary: dir.path().join("residuum"),
             previous_version: "v2026.09.01".to_string(),
             target_version: "v2026.09.24".to_string(),
         };
@@ -1301,5 +1345,100 @@ not-a-hash  ignored
             read_unverified_update(dir.path()).is_none(),
             "a rollback should drop the unverified note for the version that is no longer running"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn live_exe_path_strips_the_deleted_suffix() {
+        assert_eq!(
+            live_exe_path(Path::new("/usr/bin/residuum (deleted)")),
+            PathBuf::from("/usr/bin/residuum")
+        );
+    }
+
+    #[test]
+    fn live_exe_path_leaves_a_plain_path_alone() {
+        assert_eq!(
+            live_exe_path(Path::new("/usr/bin/residuum")),
+            PathBuf::from("/usr/bin/residuum")
+        );
+    }
+
+    /// Names the directory the swap scenario's installed test binary runs
+    /// from. The scenario refuses to run without it, since it renames the
+    /// binary it is running in.
+    const SWAP_SCENARIO_DIR: &str = "RESIDUUM_TEST_SWAP_SCENARIO_DIR";
+
+    /// A self-update renames the running binary aside, and on Linux the
+    /// process's own `current_exe` follows the rename to the `.prev` file. A
+    /// restart that asked it would relaunch the old version, and the
+    /// watchdog would then delete the binary it was running. This runs a
+    /// link to this test binary from an install directory of its own, as the
+    /// process being updated, so the swap renames a real running binary.
+    #[test]
+    fn install_path_names_the_new_binary_after_the_running_one_is_swapped_aside() {
+        let test_exe = std::env::current_exe().unwrap();
+        // Beside the test binary, so the hard link stays on one filesystem.
+        let install_dir = tempfile::Builder::new()
+            .prefix(".swap-scenario")
+            .tempdir_in(test_exe.parent().unwrap())
+            .unwrap();
+        let installed = install_dir
+            .path()
+            .join(format!("residuum{}", std::env::consts::EXE_SUFFIX));
+        // A link rather than a copy: running a file this process just wrote
+        // fails with "Text file busy" when another test thread forks while
+        // it is still open for writing.
+        std::fs::hard_link(&test_exe, &installed).unwrap();
+
+        let output = std::process::Command::new(&installed)
+            .args([
+                "--ignored",
+                "--exact",
+                "hub::update::tests::swap_scenario_in_an_installed_test_binary",
+                "--nocapture",
+            ])
+            .env(SWAP_SCENARIO_DIR, install_dir.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "the swap scenario failed or didn't run:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Install a new binary over the one running this test, the way
+    /// [`download_and_install`] does, then check [`install_path`] still
+    /// names the install path. Run by the test above.
+    #[test]
+    #[ignore = "run by install_path_names_the_new_binary_after_the_running_one_is_swapped_aside from a link it can rename"]
+    fn swap_scenario_in_an_installed_test_binary() {
+        let install_dir = std::env::var_os(SWAP_SCENARIO_DIR).expect(
+            "this scenario renames the binary running it, so it runs only from the link its parent test makes",
+        );
+        capture_install_path();
+        let install = install_path().unwrap();
+        assert_eq!(
+            install.parent().unwrap().canonicalize().unwrap(),
+            Path::new(&install_dir).canonicalize().unwrap(),
+            "refusing to swap a binary outside the scenario's install directory"
+        );
+
+        swap_in_new_binary(&install, b"new build").unwrap();
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            live_exe_path(&std::env::current_exe().unwrap()),
+            previous_binary_path(&install),
+            "on Linux the running binary's own path follows the rename"
+        );
+        assert_eq!(
+            install_path().unwrap(),
+            install,
+            "a restart must run the install path, which now holds the new binary"
+        );
+        assert_eq!(std::fs::read(&install).unwrap(), b"new build");
     }
 }
