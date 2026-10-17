@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
+use residuum_bus::PulseFireOutcome;
 use residuum_config::ModelCatalog;
 
 use super::types::{
@@ -45,6 +46,15 @@ pub struct PulseScheduler {
     /// tick that fired it.
     #[serde(default)]
     last_output: HashMap<String, String>,
+    /// The outcome of each pulse's most recent fire that ended without a
+    /// session run: a `script_only` fire (silent ones included), a fire
+    /// stopped during its scripts, or one whose session couldn't start.
+    /// Fires that ran a session are recorded by the session store instead.
+    /// Recorded from the fire's `PulseFireEvent` (see the gateway's
+    /// `handle_pulse_fire_event`); the Schedule place shows the newer of
+    /// this and the session store's last run.
+    #[serde(default)]
+    last_fire: HashMap<String, PulseFireOutcome>,
     #[serde(skip)]
     state_path: Option<PathBuf>,
     /// Most recently logged HEARTBEAT.yml parse-error message, so `due_pulses`
@@ -85,6 +95,7 @@ impl PulseScheduler {
         Self {
             last_run: HashMap::new(),
             last_output: HashMap::new(),
+            last_fire: HashMap::new(),
             state_path: None,
             last_heartbeat_parse_error: None,
             last_heartbeat_problems: Vec::new(),
@@ -304,25 +315,30 @@ impl PulseScheduler {
         self.last_heartbeat_parse_error.as_deref()
     }
 
-    /// Remove `last_run`/`last_output` entries for pulses no longer present
-    /// in `HEARTBEAT.yml` (deleted or renamed), so `pulse_state.json` doesn't
-    /// grow unboundedly with unexplainable stale keys. Returns whether
-    /// anything was removed.
+    /// Remove `last_run`/`last_output`/`last_fire` entries for pulses no
+    /// longer present in `HEARTBEAT.yml` (deleted or renamed), so
+    /// `pulse_state.json` doesn't grow unboundedly with unexplainable stale
+    /// keys. Returns whether anything was removed.
     fn prune_removed_pulses(&mut self, current_pulse_names: &HashSet<String>) -> bool {
         let last_run_before = self.last_run.len();
         let last_output_before = self.last_output.len();
+        let last_fire_before = self.last_fire.len();
 
         self.last_run
             .retain(|name, _| current_pulse_names.contains(name));
         self.last_output
             .retain(|name, _| current_pulse_names.contains(name));
+        self.last_fire
+            .retain(|name, _| current_pulse_names.contains(name));
 
-        let pruned =
-            self.last_run.len() != last_run_before || self.last_output.len() != last_output_before;
+        let pruned = self.last_run.len() != last_run_before
+            || self.last_output.len() != last_output_before
+            || self.last_fire.len() != last_fire_before;
         if pruned {
             tracing::debug!(
                 removed_last_run = last_run_before - self.last_run.len(),
                 removed_last_output = last_output_before - self.last_output.len(),
+                removed_last_fire = last_fire_before - self.last_fire.len(),
                 "pruned pulse state for pulses no longer in HEARTBEAT.yml"
             );
         }
@@ -349,6 +365,27 @@ impl PulseScheduler {
                 pulse = %pulse_name,
                 error = %e,
                 "failed to persist pulse output; context_from may miss it after a restart"
+            );
+        }
+    }
+
+    /// The outcome of the named pulse's most recent fire that ended without
+    /// a session run, if it has had one.
+    #[must_use]
+    pub fn last_fire(&self, pulse_name: &str) -> Option<&PulseFireOutcome> {
+        self.last_fire.get(pulse_name)
+    }
+
+    /// Record the outcome of a pulse fire that ended without a session run
+    /// and persist it immediately, the way [`Self::record_pulse_output`]
+    /// does: it arrives from the bus between scheduler ticks.
+    pub fn record_fire_outcome(&mut self, pulse_name: &str, outcome: PulseFireOutcome) {
+        self.last_fire.insert(pulse_name.to_string(), outcome);
+        if let Err(e) = self.save_state() {
+            tracing::warn!(
+                pulse = %pulse_name,
+                error = %e,
+                "failed to persist a pulse fire's outcome; the Schedule place may not show it"
             );
         }
     }
@@ -420,6 +457,7 @@ mod tests {
         );
     }
     use super::*;
+    use residuum_bus::PulseFireStatus;
     use tempfile::tempdir;
 
     fn write_heartbeat(dir: &std::path::Path, content: &str) -> std::path::PathBuf {
@@ -1030,6 +1068,91 @@ pulses:
             Some("nightly digest"),
             "output recorded before restart should still be there after reloading state"
         );
+    }
+
+    fn fire_outcome(status: PulseFireStatus, error: Option<&str>) -> PulseFireOutcome {
+        PulseFireOutcome {
+            status,
+            at: chrono::DateTime::parse_from_rfc3339("2026-02-19T12:00:05Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            error: error.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_recorded_fire_outcome_survives_a_restart_and_the_newest_one_wins() {
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join("pulse_state.json");
+
+        {
+            let mut sched = PulseScheduler::with_state_path(&state_path);
+            sched.record_fire_outcome("watch", fire_outcome(PulseFireStatus::Ok, None));
+            sched.record_fire_outcome(
+                "watch",
+                fire_outcome(
+                    PulseFireStatus::Failed,
+                    Some("the script exited with code 4"),
+                ),
+            );
+        }
+
+        let sched = PulseScheduler::with_state_path(&state_path);
+        assert_eq!(
+            sched.last_fire("watch"),
+            Some(&fire_outcome(
+                PulseFireStatus::Failed,
+                Some("the script exited with code 4")
+            ))
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(
+            parsed.get("last_fire").and_then(|fires| fires.get("watch")),
+            Some(&serde_json::json!({
+                "status": "failed",
+                "at": "2026-02-19T12:00:05Z",
+                "error": "the script exited with code 4",
+            })),
+            "the on-disk shape is part of pulse_state.json's format"
+        );
+    }
+
+    #[test]
+    fn older_state_file_without_last_fire_still_loads() {
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join("pulse_state.json");
+        std::fs::write(
+            &state_path,
+            r#"{"last_run":{"test_pulse":"2026-02-19T12:00:00"},"last_output":{"test_pulse":"x"}}"#,
+        )
+        .unwrap();
+
+        let sched = PulseScheduler::with_state_path(&state_path);
+        assert_eq!(sched.last_fire("test_pulse"), None);
+        assert_eq!(sched.last_output("test_pulse"), Some("x"));
+        assert!(sched.last_run.contains_key("test_pulse"));
+    }
+
+    #[test]
+    fn due_pulses_prunes_the_last_fire_of_a_pulse_removed_from_heartbeat() {
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT); // only "test_pulse"
+        let state_path = dir.path().join("pulse_state.json");
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        sched.record_fire_outcome("test_pulse", fire_outcome(PulseFireStatus::Ok, None));
+        sched.record_fire_outcome("removed", fire_outcome(PulseFireStatus::Stopped, None));
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let _due = sched.due_pulses(now, &hb_path, &residuum_config::ModelCatalog::default());
+
+        assert!(sched.last_fire("test_pulse").is_some());
+        assert_eq!(sched.last_fire("removed"), None);
+        let reloaded = PulseScheduler::with_state_path(&state_path);
+        assert_eq!(reloaded.last_fire("removed"), None, "the prune is saved");
     }
 
     #[test]

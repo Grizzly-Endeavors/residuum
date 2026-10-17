@@ -41,6 +41,9 @@ pub(crate) struct GatewayCore {
     /// People's messages waiting for the main agent to read them, which the
     /// web UI can withdraw or have sent now.
     pub queued: Arc<crate::queued_messages::QueuedMessages>,
+    /// Pulse fires in flight, which the event loop starts and the Schedule
+    /// place lists and stops.
+    pub pulse_fires: Arc<crate::pulse_fires::PulseFires>,
 }
 
 /// Receiver halves consumed by the event loop.
@@ -72,6 +75,7 @@ impl GatewayCore {
             bus_handle,
             publisher,
             queued: Arc::default(),
+            pulse_fires: Arc::default(),
         };
         let receivers = CoreReceivers {
             reload: reload_rx,
@@ -128,6 +132,9 @@ pub(crate) struct GatewayState {
     /// connection registers itself here so unread counts reset while a client
     /// is watching.
     pub activity: Arc<residuum_hub::activity::ActivityTracker>,
+    /// Pulse fires in flight, for the Schedule place's current runs and its
+    /// per-fire Stop.
+    pub pulse_fires: Arc<crate::pulse_fires::PulseFires>,
 }
 
 /// All state one agent needs to run: its subsystems, its channels, and the
@@ -245,6 +252,11 @@ pub(crate) struct AgentRuntime {
     /// subscriber (rather than sharing the scheduler behind a lock) is what
     /// lets this stay single-owned.
     pub pulse_result_subscriber: Subscriber<residuum_bus::AgentResultEvent>,
+    /// The system channel's pulse fire changes, from which the event loop
+    /// records the outcome of each fire that ended without a session run in
+    /// `pulse_state.json` (see
+    /// `crate::event_loop::pulse::handle_pulse_fire_event`).
+    pub pulse_fire_subscriber: Subscriber<residuum_bus::PulseFireEvent>,
     /// Endpoint that last sent a message (for background turn response routing).
     pub last_output_endpoint: Option<EndpointName>,
     /// Sender for clearing the output endpoint override on user message.
@@ -260,10 +272,10 @@ pub(crate) struct AgentRuntime {
     /// the way a user stop does.
     pub agent_stop_rx: mpsc::Receiver<()>,
     pub pulse_scheduler: PulseScheduler,
-    /// Stops every pulse task script still running when the agent stops:
-    /// each one's process tree is killed and its fire delivers nothing (see
-    /// `residuum_proactivity::pulse::script::run_pulse_scripts`).
-    pub pulse_scripts_stop: tokio_util::sync::CancellationToken,
+    /// Every pulse fire in flight. Stopped as a whole when the agent stops:
+    /// each running script's process tree is killed and no fire delivers
+    /// anything more (see `crate::pulse_fires`).
+    pub pulse_fires: Arc<crate::pulse_fires::PulseFires>,
     /// Path to the agent's own `config/` directory (for backup/rollback during reload).
     pub config_dir: std::path::PathBuf,
     /// Path to the hub's directory (`~/.residuum/hub`).
@@ -325,7 +337,7 @@ impl Drop for AgentRuntime {
     /// rest.
     fn drop(&mut self) {
         self.a2a_tracker.shutdown();
-        self.pulse_scripts_stop.cancel();
+        self.pulse_fires.stop_all();
         for handle in self
             .notify_handles
             .drain(..)

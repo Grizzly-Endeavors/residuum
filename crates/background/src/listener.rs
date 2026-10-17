@@ -21,7 +21,7 @@ use residuum_bus::interrupt::Interrupt;
 use residuum_bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
 use residuum_bus::{
     AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
-    SessionAddress, SpawnRequestEvent, Subscriber, topics,
+    SessionAddress, SessionSpawnFailedEvent, SpawnRequestEvent, Subscriber, topics,
 };
 
 /// Subscribe to the `Background` topic and fork sessions on demand.
@@ -66,9 +66,14 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
                 let trigger = event.source.clone();
+                let requested_address = event.address.clone();
                 let owner_address =
                     super::owner_session::is_owner_start(&event).then(|| event.address.clone());
-                match handle_spawn_request(&ctx, event).await {
+                let outcome = handle_spawn_request(&ctx, event).await;
+                if let Err(e) = &outcome {
+                    publish_spawn_failed(&ctx.publisher, requested_address, &source_label, e).await;
+                }
+                match outcome {
                     Ok(()) => {
                         if spawn_failures.remove(&source_label).is_some() {
                             tracing::info!(
@@ -102,6 +107,24 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
         }
     }
     tracing::info!("spawn listener shutting down");
+}
+
+/// Tell whoever is waiting for the session at `address` to register (a pulse
+/// fire) that it never will.
+async fn publish_spawn_failed(
+    publisher: &Publisher,
+    address: SessionAddress,
+    source_label: &str,
+    error: &anyhow::Error,
+) {
+    let event = SessionSpawnFailedEvent {
+        address,
+        source_label: source_label.to_string(),
+        error: error.to_string(),
+    };
+    if let Err(e) = publisher.publish(topics::Background, event).await {
+        tracing::warn!(source = %source_label, error = %e, "failed to publish a session's spawn failure");
+    }
 }
 
 /// Record a spawn failure, deduplicated for scheduled triggers (pulses and
@@ -232,8 +255,11 @@ fn handle_spawn_request<'a>(
                         // and recurses through this same deferral if so,
                         // instead of blindly clobbering a run that won the
                         // race.
+                        let address = event.address.clone();
+                        let source_label = event.source_label.clone();
                         if let Err(e) = handle_spawn_request(&ctx, event).await {
                             tracing::warn!(error = %e, "failed to fork deferred session resume");
+                            publish_spawn_failed(&ctx.publisher, address, &source_label, &e).await;
                         }
                     });
                     return Ok(());
@@ -718,6 +744,31 @@ mod tests {
             republished.inbound.map(|m| m.content),
             Some("can anyone see this?".to_string()),
             "the republished request must still carry the original user message"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawn_failure_names_the_address_that_will_never_register() {
+        let bus = residuum_bus::spawn_broker();
+        let mut sub: Subscriber<SessionSpawnFailedEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+
+        publish_spawn_failed(
+            &bus.publisher(),
+            SessionAddress::from("scheduled-email-check-0a1b"),
+            "pulse:email_check",
+            &anyhow::anyhow!("skill 'ghost' not found"),
+        )
+        .await;
+
+        let failed = next_event("the spawn failure", &mut sub).await;
+        assert_eq!(
+            failed,
+            SessionSpawnFailedEvent {
+                address: SessionAddress::from("scheduled-email-check-0a1b"),
+                source_label: "pulse:email_check".to_string(),
+                error: "skill 'ghost' not found".to_string(),
+            }
         );
     }
 

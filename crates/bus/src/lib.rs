@@ -17,6 +17,7 @@ mod handle;
 pub mod interrupt;
 pub mod notice;
 pub mod origin;
+mod pulse_fire;
 mod registry;
 pub mod remote_task;
 pub mod session;
@@ -35,11 +36,16 @@ pub use events::{
     HEARTBEAT_URGENT, InlineOutputEvent, IntermediateEvent, MainConversationEvent, MessageEvent,
     NoticeEvent, NotificationEvent, OutboundA2aTaskEvent, PostTurnActivityEvent,
     PostTurnActivityKind, PulseOverlap, ReloadOutcome, ReloadReport, ReloadedFiles, ResponseEvent,
-    ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent, SpawnRequestEvent,
-    ToolCallEvent, ToolResultEvent, TurnLifecycleEvent, TurnOrigin, TurnUsageEvent,
-    UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
+    ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent,
+    SessionSpawnFailedEvent, SpawnRequestEvent, ToolCallEvent, ToolResultEvent, TurnLifecycleEvent,
+    TurnOrigin, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
+    ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
+pub use pulse_fire::{
+    PulseFireChange, PulseFireEvent, PulseFireOutcome, PulseFirePhase, PulseFireRun,
+    PulseFireStatus,
+};
 pub use registry::{EndpointEntry, EndpointRegistry};
 pub use topics::{Carries, Topic};
 pub use types::{

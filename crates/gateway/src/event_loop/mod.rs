@@ -3,6 +3,7 @@
 mod commands;
 mod http;
 mod pulse;
+mod pulse_fire;
 mod run_loop;
 mod subconscious_hook;
 mod turns;

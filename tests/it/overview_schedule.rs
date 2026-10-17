@@ -82,6 +82,7 @@ fn scheduled_endpoint(dir: &Path, tz: chrono_tz::Tz) -> axum::Router {
         ))),
         layout: WorkspaceLayout::new(dir),
         tz,
+        fires: Arc::default(),
     })
 }
 

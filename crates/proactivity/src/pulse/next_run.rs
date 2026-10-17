@@ -13,6 +13,7 @@ use std::path::Path;
 use chrono::{DateTime, Days, DurationRound as _, NaiveDateTime, NaiveTime, TimeDelta, Utc};
 
 use super::types::{PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration};
+use residuum_bus::PulseFireOutcome;
 use residuum_core::time::local_to_instant;
 
 /// When `pulse` next runs, given when it last ran (`None` if it never has)
@@ -93,23 +94,35 @@ fn next_active_moment(
     }
 }
 
-/// The `last_run` map of the `pulse_state.json` at `path`: when each pulse
-/// last ran, in the hub's local time.
-///
-/// Read directly, the way the scheduler's own load does, rather than through
-/// a live scheduler. A missing file is empty; an unreadable one is logged and
-/// treated as empty, as the scheduler treats it, so every pulse reads as
-/// never run.
+/// What a reader outside the scheduler needs from `pulse_state.json`.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct RecordedPulseState {
+    /// When each pulse last ran, in the hub's local time.
+    #[serde(default)]
+    pub last_run: HashMap<String, NaiveDateTime>,
+    /// The outcome of each pulse's most recent fire that ended without a
+    /// session run (see `PulseScheduler::record_fire_outcome`).
+    #[serde(default)]
+    pub last_fire: HashMap<String, PulseFireOutcome>,
+}
+
+/// The `pulse_state.json` at `path`, read directly, the way the scheduler's
+/// own load does, rather than through a live scheduler. A missing file is
+/// empty; an unreadable one is logged and treated as empty, as the scheduler
+/// treats it, so every pulse reads as never run.
+#[must_use]
+pub fn load_recorded_state(path: &Path) -> RecordedPulseState {
+    super::types::read_and_parse(path, |contents| {
+        serde_json::from_str::<RecordedPulseState>(contents)
+    })
+    .unwrap_or_default()
+}
+
+/// The `last_run` map of the `pulse_state.json` at `path` (see
+/// [`load_recorded_state`]).
 #[must_use]
 pub fn load_last_runs(path: &Path) -> HashMap<String, NaiveDateTime> {
-    #[derive(serde::Deserialize, Default)]
-    struct StateFile {
-        #[serde(default)]
-        last_run: HashMap<String, NaiveDateTime>,
-    }
-    super::types::read_and_parse(path, |contents| serde_json::from_str::<StateFile>(contents))
-        .map(|state| state.last_run)
-        .unwrap_or_default()
+    load_recorded_state(path).last_run
 }
 
 #[cfg(test)]
@@ -355,5 +368,30 @@ mod tests {
 
         std::fs::write(&path, "{ not json").unwrap();
         assert!(load_last_runs(&path).is_empty(), "a broken file");
+    }
+
+    #[test]
+    fn last_fires_are_read_from_the_state_file_and_an_older_file_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pulse_state.json");
+        std::fs::write(&path, r#"{"last_run":{"a":"2026-03-01T12:00:00"}}"#).unwrap();
+        let older = load_recorded_state(&path);
+        assert!(older.last_fire.is_empty());
+        assert_eq!(
+            older.last_run.len(),
+            1,
+            "the rest of an older file still loads"
+        );
+
+        std::fs::write(
+            &path,
+            r#"{"last_run":{},"last_fire":{"a":{"status":"stopped","at":"2026-03-01T12:00:05Z"}}}"#,
+        )
+        .unwrap();
+        let state = load_recorded_state(&path);
+        let fire = state.last_fire.get("a").expect("a's last fire");
+        assert_eq!(fire.status, residuum_bus::PulseFireStatus::Stopped);
+        assert_eq!(fire.error, None);
+        assert_eq!(fire.at, Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 5).unwrap());
     }
 }

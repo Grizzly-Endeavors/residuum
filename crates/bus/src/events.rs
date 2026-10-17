@@ -607,16 +607,23 @@ pub struct SpawnRequestEvent {
     pub carried_history: Vec<residuum_inference::Message>,
 }
 
-/// Marks a pulse run that started while its previous run was still going
-/// (still `forking`/`queued`/`running`/`idle`/`completing` in the registry).
-/// The new run is never skipped, blocked, or cancelled for this — it starts
-/// normally — but this flag makes the overlap visible in the Schedule place
-/// and on the run itself in the session panel.
+/// Marks a pulse fire that started while an earlier fire of the same pulse
+/// was still in flight: running its task scripts, waiting for its session,
+/// or with its session still `forking`/`queued`/`running`/`idle`/`completing`
+/// in the registry. The new fire is never skipped, blocked, or cancelled for
+/// this — it starts normally — but this flag makes the overlap visible in
+/// the Schedule place and on the run itself in the session panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct PulseOverlap {
-    /// Run id of the still-live previous run this one overlapped with.
-    pub previous_run_id: String,
+    /// Session run id of the earlier fire, once its session has registered.
+    /// `None` while that fire is still running its scripts or waiting for
+    /// its session to start.
+    pub previous_run_id: Option<String>,
+    /// Id of the earlier fire (see [`crate::PulseFireEvent`]). `None` when
+    /// the earlier run is a session no fire tracks.
+    #[serde(default)]
+    pub previous_fire_id: Option<String>,
     /// When that previous run started, so the overlap can be described as
     /// "still going after N minutes" without a second lookup.
     #[ts(type = "string")]
@@ -743,6 +750,21 @@ pub struct PostTurnActivityEvent {
 #[derive(Debug, Clone)]
 pub struct OutboundA2aTaskEvent {
     pub task: crate::remote_task::TrackedTask,
+}
+
+/// The spawn listener couldn't start the session a [`SpawnRequestEvent`]
+/// asked for: building its resources failed (a skill or model that can't be
+/// resolved, for example). Carried on [`super::topics::Background`], so the
+/// requester can stop waiting for a session that will never register; the
+/// owner is told separately, by a notice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSpawnFailedEvent {
+    /// The address the request asked for.
+    pub address: SessionAddress,
+    /// The request's source label.
+    pub source_label: String,
+    /// Why it couldn't start, as the owner's notice words it.
+    pub error: String,
 }
 
 /// An item was added to the user inbox by the `user_inbox_add` tool.

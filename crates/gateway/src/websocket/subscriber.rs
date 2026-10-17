@@ -3,8 +3,9 @@
 use crate::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
 use residuum_bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, MainConversationEvent, NoticeEvent, NotifyName,
-    OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind, ResponseEvent, SessionEvent,
-    Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
+    OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind, PulseFireEvent,
+    ResponseEvent, SessionEvent, Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
+    topics,
 };
 use residuum_hub::file_server::FileRegistry;
 use residuum_protocol::frames::{session_event_to_server_message, workspace_frame};
@@ -251,6 +252,9 @@ pub struct WsSubscribers {
     pub session: Subscriber<SessionEvent>,
     /// Tasks sent to remote agents, for Activity's Running now.
     pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
+    /// Pulse fires starting, moving to their session, and finishing, for
+    /// the Schedule place.
+    pub pulse_fire: Subscriber<PulseFireEvent>,
     /// Workbench artifact file changes, so an open artifact page reloads live.
     pub workbench: Subscriber<WorkbenchEvent>,
     /// The agent's own workspace change feed, filtered by `watch_set`.
@@ -294,6 +298,7 @@ impl WsSubscribers {
             error: bus_handle.subscribe(system_topic()).await?,
             session: bus_handle.subscribe(topics::Sessions).await?,
             outbound_a2a: bus_handle.subscribe(system_topic()).await?,
+            pulse_fire: bus_handle.subscribe(system_topic()).await?,
             workbench: bus_handle.subscribe(topics::Workbench).await?,
             workspace: bus_handle.subscribe(topics::Workspace).await?,
             team_workspace: team_bus.subscribe(topics::Workspace).await?,
@@ -374,6 +379,7 @@ impl WsSubscribers {
                     }
                     _ => return None,
                 },
+                event = self.pulse_fire.recv() => Some(ServerMessage::from(event.ok().flatten()?)),
                 event = self.workbench.recv() => {
                     match event {
                         Ok(Some(WorkbenchEvent::Updated { name })) => {
@@ -1037,6 +1043,74 @@ mod tests {
         assert_eq!(task.agent, "laptop");
         assert_eq!(task.status_text.as_deref(), Some("halfway"));
         assert!(task.open);
+    }
+
+    #[tokio::test]
+    async fn a_pulse_fire_change_becomes_a_pulse_fire_changed_frame() {
+        let handle = residuum_bus::spawn_broker();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            &handle,
+            EndpointName::from("ws"),
+            residuum_hub::file_server::FileRegistry::new("scout"),
+            no_watch_set(),
+            &TurnJournal::spawn(&handle).await.unwrap(),
+        )
+        .await
+        .unwrap();
+        let at = chrono::DateTime::parse_from_rfc3339("2099-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        handle
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(residuum_bus::SYSTEM_CHANNEL)),
+                PulseFireEvent {
+                    pulse: "watch".into(),
+                    fire_id: "fire-2".into(),
+                    change: residuum_bus::PulseFireChange::Finished {
+                        outcome: residuum_bus::PulseFireOutcome {
+                            status: residuum_bus::PulseFireStatus::Stopped,
+                            at,
+                            error: None,
+                        },
+                        session_run: false,
+                    },
+                    current_run: Some(residuum_bus::PulseFireRun {
+                        fire_id: Some("fire-1".into()),
+                        phase: residuum_bus::PulseFirePhase::Script,
+                        started_at: at,
+                        address: None,
+                        run_id: None,
+                        overlap: None,
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "pulse_fire_changed",
+                "pulse": "watch",
+                "fire_id": "fire-2",
+                "current_run": {
+                    "fire_id": "fire-1",
+                    "phase": "script",
+                    "started_at": "2099-01-01T12:00:00Z",
+                    "address": null,
+                    "run_id": null,
+                    "overlap": null,
+                },
+                "last_outcome": {
+                    "status": "cancelled",
+                    "at": "2099-01-01T12:00:00Z",
+                    "error": null,
+                },
+            })
+        );
     }
 
     fn no_watch_set() -> tokio::sync::watch::Receiver<WatchSet> {
