@@ -97,6 +97,36 @@ pub(crate) fn owner_start_failure_message(
     }
 }
 
+/// The sentence the Schedule place shows, and `pulse_state.json` records,
+/// when a fire of the pulse `pulse` couldn't start its session: what went
+/// wrong and what to do next, from the [`ForkFailure`] anywhere in `error`'s
+/// context chain.
+pub(crate) fn pulse_start_failure_message(pulse: &str, error: &anyhow::Error) -> String {
+    let failed = format!("The pulse \"{pulse}\" couldn't start its session because");
+    match error.downcast_ref::<ForkFailure>() {
+        Some(ForkFailure::UnknownModel { model }) => format!(
+            "{failed} the model {model} isn't available. Give the pulse another model_tier in \
+             HEARTBEAT.yml."
+        ),
+        Some(ForkFailure::ProviderChain { model }) => format!(
+            "{failed} its model ({model}) couldn't be set up, usually because a provider's API \
+             key is missing. Check Settings → Model → Providers."
+        ),
+        Some(ForkFailure::IdentityFiles) => format!(
+            "{failed} the agent's identity files couldn't be read. Check that files such as \
+             SOUL.md exist and can be opened."
+        ),
+        Some(ForkFailure::Skill { name }) => format!(
+            "{failed} the skill \"{name}\" couldn't be loaded. Check that the skill is still \
+             installed."
+        ),
+        None => format!(
+            "{failed} of an unexpected problem. It tries again at its next run; if it keeps \
+             failing, the agent's logs have the details."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Context as _;
@@ -234,6 +264,53 @@ mod tests {
             "The session spawned-session-1a2b couldn't pick up your message because of an \
              unexpected problem. Try sending it again; if it keeps failing, the agent's logs \
              have the details."
+        );
+    }
+
+    #[test]
+    fn a_pulse_whose_model_is_unknown_names_it_and_points_at_heartbeat_yml() {
+        assert_eq!(
+            pulse_start_failure_message("watch", &unknown_model()),
+            "The pulse \"watch\" couldn't start its session because the model lcoal/qwen3:8b \
+             isn't available. Give the pulse another model_tier in HEARTBEAT.yml."
+        );
+    }
+
+    #[test]
+    fn a_pulse_whose_provider_chain_fails_points_at_the_provider_settings() {
+        assert_eq!(
+            pulse_start_failure_message("watch", &provider_chain()),
+            "The pulse \"watch\" couldn't start its session because its model (medium) couldn't \
+             be set up, usually because a provider's API key is missing. Check Settings → Model \
+             → Providers."
+        );
+    }
+
+    #[test]
+    fn a_pulse_with_unreadable_identity_files_says_which_files() {
+        assert_eq!(
+            pulse_start_failure_message("watch", &failed_at(ForkFailure::IdentityFiles)),
+            "The pulse \"watch\" couldn't start its session because the agent's identity files \
+             couldn't be read. Check that files such as SOUL.md exist and can be opened."
+        );
+    }
+
+    #[test]
+    fn a_pulse_whose_skill_wont_activate_names_the_skill() {
+        assert_eq!(
+            pulse_start_failure_message("watch", &skill()),
+            "The pulse \"watch\" couldn't start its session because the skill \"researcher\" \
+             couldn't be loaded. Check that the skill is still installed."
+        );
+    }
+
+    #[test]
+    fn any_other_pulse_failure_never_shows_the_developer_wording() {
+        assert_eq!(
+            pulse_start_failure_message("watch", &unclassified()),
+            "The pulse \"watch\" couldn't start its session because of an unexpected problem. \
+             It tries again at its next run; if it keeps failing, the agent's logs have the \
+             details."
         );
     }
 

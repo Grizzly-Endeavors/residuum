@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use crate::fork_failure::owner_start_failure_message;
+use crate::fork_failure::{owner_start_failure_message, pulse_start_failure_message};
 use crate::registry::{DeliverOutcome, SessionRegistry};
 use crate::runtime::SessionSpawnRequest;
 use crate::spawn_context::{SpawnContext, build_spawn_resources};
@@ -115,15 +115,20 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
 
 /// Tell the pulse fire waiting for its session at `address` to register that
 /// it never will, so the fire ends as failed instead of showing as running.
+/// The event carries a plain-language sentence for the Schedule place and
+/// the full cause chain for the logs.
 async fn publish_pulse_start_failed(
     publisher: &Publisher,
     address: SessionAddress,
     source_label: &str,
     error: &anyhow::Error,
 ) {
+    let pulse = source_label
+        .split_once(':')
+        .map_or(source_label, |(_, name)| name);
     let event = SessionStartFailedEvent {
         address,
-        error: error.to_string(),
+        error: pulse_start_failure_message(pulse, error),
         error_details: Some(format!("{error:#}")),
         owner_start: false,
     };
@@ -798,25 +803,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pulse_start_failure_names_the_address_that_will_never_register() {
+    async fn a_pulse_start_failure_names_the_address_in_plain_words_with_the_chain() {
         let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<SessionStartFailedEvent> =
             bus.subscribe(topics::Sessions).await.unwrap();
 
+        let error = Err::<(), _>(anyhow::anyhow!("not in the skill index"))
+            .context(crate::fork_failure::ForkFailure::Skill {
+                name: "ghost".to_string(),
+            })
+            .unwrap_err();
         publish_pulse_start_failed(
             &bus.publisher(),
             SessionAddress::from("scheduled-email-check-0a1b"),
             "pulse:email_check",
-            &anyhow::anyhow!("skill 'ghost' not found"),
+            &error,
         )
         .await;
 
         let failed = next_event("the start failure", &mut sub).await;
         assert_eq!(
-            failed.address,
-            SessionAddress::from("scheduled-email-check-0a1b")
+            failed,
+            SessionStartFailedEvent {
+                address: SessionAddress::from("scheduled-email-check-0a1b"),
+                error: "The pulse \"email_check\" couldn't start its session because the skill \
+                        \"ghost\" couldn't be loaded. Check that the skill is still installed."
+                    .to_string(),
+                error_details: Some(
+                    "failed to activate skill 'ghost' for sub-agent: not in the skill index"
+                        .to_string()
+                ),
+                owner_start: false,
+            },
+            "a plain sentence for the Schedule place, the chain for the logs, and never the \
+             web UI's start map"
         );
-        assert!(!failed.owner_start, "the web UI's start map never sees it");
     }
 
     // ── handle_spawn_failure dedup ───────────────────────────────────────

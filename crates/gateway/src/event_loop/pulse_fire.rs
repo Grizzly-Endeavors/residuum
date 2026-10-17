@@ -287,11 +287,17 @@ async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &Fir
             },
             failed = failures.recv() => match failed {
                 Ok(Some(failed)) if failed.address == address => {
+                    tracing::warn!(
+                        pulse = %pulse,
+                        fire = %fire.id(),
+                        error = failed.error_details.as_deref().unwrap_or(&failed.error),
+                        "a pulse fire's session couldn't start"
+                    );
                     fire.finish(
                         PulseFireOutcome {
                             status: PulseFireStatus::Failed,
                             at: Utc::now(),
-                            error: Some(format!("the session couldn't start: {}", failed.error)),
+                            error: Some(failed.error),
                         },
                         false,
                     )
@@ -797,8 +803,12 @@ mod tests {
                 topics::Sessions,
                 SessionStartFailedEvent {
                     address: spawn.address,
-                    error: "skill 'ghost' not found".to_string(),
-                    error_details: None,
+                    error: "The pulse \"watch\" couldn't start its session because the skill \
+                            \"ghost\" couldn't be loaded. Check that the skill is still installed."
+                        .to_string(),
+                    error_details: Some(
+                        "failed to activate skill 'ghost' for sub-agent: not found".to_string(),
+                    ),
                     owner_start: false,
                 },
             )
@@ -809,7 +819,11 @@ mod tests {
         assert_eq!(outcome.status, PulseFireStatus::Failed);
         assert_eq!(
             outcome.error.as_deref(),
-            Some("the session couldn't start: skill 'ghost' not found")
+            Some(
+                "The pulse \"watch\" couldn't start its session because the skill \"ghost\" \
+                 couldn't be loaded. Check that the skill is still installed."
+            ),
+            "the plain sentence, as the listener words it"
         );
         assert!(
             !session_run,
