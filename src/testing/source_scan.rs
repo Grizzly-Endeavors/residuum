@@ -557,7 +557,7 @@ const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
         "makes a directory read-only (0o555) and restores it (0o755)",
     ),
     (
-        "src/checkpoints/engine.rs",
+        "crates/checkpoints/src/engine.rs",
         2,
         "makes an object directory unwritable (0o500) and restores it (0o700)",
     ),

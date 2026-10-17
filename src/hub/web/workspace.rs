@@ -1619,7 +1619,7 @@ mod tests {
             memory_dir: None,
             reload_tx: None,
             scope: crate::hub::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
         }
     }
 
@@ -2069,7 +2069,7 @@ mod tests {
             memory_dir: None,
             reload_tx: Some(tx),
             scope: crate::hub::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
         };
 
         api_workspace_file_write(
@@ -2710,7 +2710,7 @@ mod tests {
             memory_dir: None,
             reload_tx: Some(tx),
             scope: crate::hub::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
         };
 
         api_workspace_delete(
@@ -3306,7 +3306,7 @@ mod tests {
             memory_dir: None,
             reload_tx: Some(tx),
             scope: crate::hub::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
         };
 
         api_workspace_move(

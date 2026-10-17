@@ -179,6 +179,7 @@ A `residuum logs` run without `--watch` that was given `--module`, `--level` or 
 - `residuum_core`: `util`, `time` and `diagnostics`, so `RUST_LOG=residuum_core::util::fs=trace`.
 - `residuum_config`: `config` and `agent_keys`, so `RUST_LOG=residuum_config=trace` for config loading and `RUST_LOG=residuum_config::agent_keys=trace` for the agent-key store.
 - `residuum_bus`: `bus`, so `RUST_LOG=residuum_bus=trace` for the broker and its routing.
+- `residuum_checkpoints`: `checkpoints`, so `RUST_LOG=residuum_checkpoints=trace` for the checkpoint engine and its repositories.
 - `residuum_inference`: `inference`, so `RUST_LOG=residuum_inference=trace`, or `RUST_LOG=residuum_inference::providers::anthropic=trace` for one provider.
 - `residuum_memory`: `memory`, so `RUST_LOG=residuum_memory=trace`, or `RUST_LOG=residuum_memory::search=trace` for the search index.
 - `residuum_net`: `tunnel`, `remote_access`, `pairing`, `workbench`, `browser_landing`, `cross_site` and `remote_control_guard`, so `RUST_LOG=residuum_net::tunnel=trace` for the relay tunnel and `RUST_LOG=residuum_net::remote_access=trace` for the secure tunnel's certificates and pins.

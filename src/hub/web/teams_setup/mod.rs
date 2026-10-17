@@ -312,7 +312,7 @@ mod tests {
             workspace_dir: root.join(agent),
             memory_dir: None,
             reload_tx: None,
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
             team: None,
             scope: WorkspaceScope::Agent,
         }

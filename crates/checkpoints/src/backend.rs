@@ -5,7 +5,7 @@
 //!
 //! Each checkpoint repository is a bare git directory (no work tree of its
 //! own — the association between a git directory and the directory it
-//! snapshots is data [`crate::checkpoints::engine`] carries, not something
+//! snapshots is data [`crate::engine`] carries, not something
 //! `gix` is asked to understand). A single branch, `refs/heads/checkpoints`,
 //! is the linear history of checkpoints; every commit's tree is rebuilt from
 //! scratch from the currently-included files rather than patched onto the

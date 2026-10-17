@@ -371,7 +371,7 @@ async fn a_workbench_delete_takes_the_path_locks_and_records_the_user() {
         dir: workbench.clone(),
         serving: WorkbenchServing::Running { port: 7702 },
         tunnel_status_rx: rx,
-        checkpoints: crate::checkpoints::test_engine(),
+        checkpoints: crate::checkpoints::testing::test_engine(),
         team: Some(hub.coordinator.view_for_user(hub.agent_dir("scout"))),
     });
 

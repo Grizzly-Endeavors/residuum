@@ -195,7 +195,7 @@ impl FakeDirectory {
             workspace_dir: agent_dir.clone(),
             memory_dir: Some(WorkspaceLayout::new(&agent_dir).memory_dir()),
             reload_tx: live.then(|| tokio::sync::mpsc::unbounded_channel().0),
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
             team: Some(team.view_for_user(agent_dir)),
             scope: WorkspaceScope::Agent,
         }
@@ -355,7 +355,7 @@ impl AgentDirectory for FakeDirectory {
                         "the repository is corrupt".to_string(),
                     ))
                 } else {
-                    Ok(crate::checkpoints::test_engine())
+                    Ok(crate::checkpoints::testing::test_engine())
                 }
             }),
             ..AgentFilesState::running(&config, self.file_registry(name))
@@ -520,7 +520,7 @@ impl Harness {
             reload_tx,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
             tunnel_status_rx: tunnel_rx,
             build: TEST_BUILD,
             update_status: crate::hub::update::shared_update_status(TEST_BUILD.version),

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::Utc;
 
-use crate::bus::Publisher;
+use residuum_bus::Publisher;
 
 use super::backend::{GitRepo, SnapshotCommit, SnapshotFile};
 use super::types::{
@@ -20,8 +20,8 @@ use super::types::{
     CheckpointSummary, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
 use super::{exclude, notice};
-use crate::config::paths::TeamPaths;
-use crate::workspace::team_files::{TeamPathGuard, TeamWriteCoordinator, TeamWriter};
+use residuum_config::paths::TeamPaths;
+use residuum_workspace::team_files::{TeamPathGuard, TeamWriteCoordinator, TeamWriter};
 
 /// Hub `config.toml` and encrypted key stores tracked by the hub config
 /// repository. `secrets.key`/`agent-keys.key` (the machine keys the `.enc`
@@ -280,14 +280,14 @@ impl CheckpointEngine {
     /// when the engine drops.
     ///
     /// Commits from this instance and the running hub (or another CLI
-    /// invocation) are safe to interleave — see [`Self::checkpoint_config_now`].
+    /// invocation) are safe to interleave — see [`Self::checkpoint_config_kind_now`].
     ///
     /// Returns `None` (logged) if the repositories can't be opened: a CLI
     /// command's own operation must never fail just because checkpointing
     /// couldn't be set up.
     #[must_use]
     pub fn open_for_cli(hub_dir: &Path) -> Option<Self> {
-        let checkpoints_dir = crate::config::HubPaths::new(hub_dir).checkpoints_dir();
+        let checkpoints_dir = residuum_config::HubPaths::new(hub_dir).checkpoints_dir();
         let placeholder_team = TeamPaths::new(hub_dir.join("_unused-team"));
         let opened = SharedCheckpointRepos::open(hub_dir, &placeholder_team, &checkpoints_dir)
             .and_then(|shared| Self::hub_scoped(shared, hub_dir));
@@ -335,8 +335,9 @@ impl CheckpointEngine {
     }
 
     /// Follow [`Self::pending_checkpoints`] as it changes.
+    #[cfg(test)]
     #[must_use]
-    pub fn subscribe_pending(&self) -> tokio::sync::watch::Receiver<usize> {
+    pub(crate) fn subscribe_pending(&self) -> tokio::sync::watch::Receiver<usize> {
         self.pending.subscribe()
     }
 
@@ -375,11 +376,11 @@ impl CheckpointEngine {
         let root = self.dest_root(kind);
         let publisher = self.publisher.clone();
         let in_flight = PendingCheckpoint::start(&self.pending);
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             // Dropped when the task ends, however it ends.
             let _in_flight = in_flight;
             let task_ctx = ctx.clone();
-            let result = crate::util::spawn_blocking_in_span(move || {
+            let result = residuum_core::util::spawn_blocking_in_span(move || {
                 commit_tree(kind, &repo, &root, &task_ctx).map(|commit| commit.recorded_id())
             })
             .await
@@ -448,14 +449,15 @@ impl CheckpointEngine {
         let repo = self.repo(kind);
         let root = self.dest_root(kind);
         let task_ctx = ctx.clone();
-        let outcome =
-            crate::util::spawn_blocking_in_span(move || commit_tree(kind, &repo, &root, &task_ctx))
-                .await
-                .unwrap_or_else(|e| {
-                    Err(CheckpointError::Git(format!(
-                        "checkpoint task panicked: {e}"
-                    )))
-                });
+        let outcome = residuum_core::util::spawn_blocking_in_span(move || {
+            commit_tree(kind, &repo, &root, &task_ctx)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            Err(CheckpointError::Git(format!(
+                "checkpoint task panicked: {e}"
+            )))
+        });
         let (report, id) = id_and_report(outcome);
         report_outcome(self.publisher.as_ref(), kind.dir_name(), &ctx, &report).await;
         id
@@ -472,16 +474,17 @@ impl CheckpointEngine {
     /// Returns [`CheckpointError`] on failure. Callers on the hot path
     /// should not propagate it — see [`Self::checkpoint_config_before_write`]
     /// for the "never fail the caller" wrapping.
-    pub fn checkpoint_config_now(
+    #[cfg(test)]
+    pub(crate) fn checkpoint_config_now(
         &self,
         ctx: &CheckpointContext,
     ) -> Result<Option<String>, CheckpointError> {
         self.checkpoint_config_kind_now(RepoKind::Hub, ctx)
     }
 
-    /// [`Self::checkpoint_config_now`], generalized to either the hub config
-    /// repository or the agent's own config repository (`config.toml` and
-    /// `providers.toml` in the agent's `config/` directory).
+    /// Checkpoint either the hub config repository or the agent's own config
+    /// repository (`config.toml` and `providers.toml` in the agent's `config/`
+    /// directory), synchronously.
     ///
     /// # Errors
     /// Returns [`CheckpointError`] on failure.
@@ -566,7 +569,7 @@ impl CheckpointEngine {
     ) -> Result<CheckpointPage, CheckpointError> {
         let repo = self.repo(kind);
         let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT).max(1);
-        crate::util::spawn_blocking_in_span(move || {
+        residuum_core::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let before_id = before
                 .map(|id| guard.resolve_commit(&id))
@@ -614,7 +617,7 @@ impl CheckpointEngine {
         id: String,
     ) -> Result<CheckpointDetail, CheckpointError> {
         let repo = self.repo(kind);
-        crate::util::spawn_blocking_in_span(move || {
+        residuum_core::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             let fields = guard.commit_fields(oid)?;
@@ -650,7 +653,7 @@ impl CheckpointEngine {
         path: String,
     ) -> Result<Option<String>, CheckpointError> {
         let repo = self.repo(kind);
-        crate::util::spawn_blocking_in_span(move || {
+        residuum_core::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             guard.file_diff(oid, &path)
@@ -672,7 +675,7 @@ impl CheckpointEngine {
         path: String,
     ) -> Result<Option<Vec<u8>>, CheckpointError> {
         let repo = self.repo(kind);
-        crate::util::spawn_blocking_in_span(move || {
+        residuum_core::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             guard.file_content_at(oid, &path)
@@ -688,7 +691,7 @@ impl CheckpointEngine {
     pub async fn stats(&self, kind: RepoKind) -> Result<RepoStats, CheckpointError> {
         let repo = self.repo(kind);
         let git_dir = self.git_dir(kind);
-        crate::util::spawn_blocking_in_span(move || {
+        residuum_core::util::spawn_blocking_in_span(move || {
             let (checkpoint_count, oldest) = {
                 let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
                 guard.stats()?
@@ -735,7 +738,7 @@ impl CheckpointEngine {
             let repo = Arc::clone(&repo);
             let id = id.clone();
             let path = path.clone();
-            crate::util::spawn_blocking_in_span(move || {
+            residuum_core::util::spawn_blocking_in_span(move || {
                 let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
                 let oid = guard.resolve_commit(&id)?;
                 guard.restore_paths(oid, &path, &dest_root)
@@ -787,7 +790,7 @@ impl CheckpointEngine {
             let top_level = {
                 let repo = Arc::clone(&repo);
                 let id = id.clone();
-                crate::util::spawn_blocking_in_span(move || {
+                residuum_core::util::spawn_blocking_in_span(move || {
                     let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
                     let oid = guard.resolve_commit(&id)?;
                     guard.root_entry_names(oid)
@@ -804,7 +807,7 @@ impl CheckpointEngine {
         let restored_paths = {
             let repo = Arc::clone(&repo);
             let id = id.clone();
-            crate::util::spawn_blocking_in_span(move || {
+            residuum_core::util::spawn_blocking_in_span(move || {
                 let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
                 let oid = guard.resolve_commit(&id)?;
                 guard.restore_root(oid, &dest_root)
@@ -856,7 +859,7 @@ impl CheckpointEngine {
         let (reverted_paths, skipped_paths) = {
             let repo = Arc::clone(&repo);
             let id = id.clone();
-            crate::util::spawn_blocking_in_span(move || {
+            residuum_core::util::spawn_blocking_in_span(move || {
                 undo_checkpoint_paths(&repo, &id, &dest_root)
             })
             .await
@@ -933,7 +936,7 @@ impl CheckpointEngine {
         };
         let repo = self.repo(kind);
         let id = id.to_string();
-        let changed: BTreeSet<String> = crate::util::spawn_blocking_in_span(move || {
+        let changed: BTreeSet<String> = residuum_core::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             Ok::<_, CheckpointError>(
@@ -980,7 +983,7 @@ impl CheckpointEngine {
         let dest_root = self.dest_root(kind);
         let id = id.to_string();
         let paths = paths.to_vec();
-        crate::util::spawn_blocking_in_span(move || {
+        residuum_core::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             let mut files = BTreeSet::new();
@@ -1007,7 +1010,7 @@ impl CheckpointEngine {
                 let repo = self.repo(kind);
                 let root = self.dest_root(kind);
                 let task_ctx = ctx.clone();
-                crate::util::spawn_blocking_in_span(move || {
+                residuum_core::util::spawn_blocking_in_span(move || {
                     commit_tree(kind, &repo, &root, &task_ctx).map(|commit| commit.recorded_id())
                 })
                 .await
@@ -1393,7 +1396,7 @@ mod tests {
         CheckpointEngine::new(
             "test-agent",
             dir.join("workspace"),
-            &crate::config::paths::TeamPaths::new(dir.join("team")),
+            &residuum_config::paths::TeamPaths::new(dir.join("team")),
             dir.join("agent-config"),
             dir.join("hub"),
             &dir.join("checkpoints"),
@@ -1572,7 +1575,7 @@ mod tests {
         let engine = CheckpointEngine::new(
             "test-agent",
             workspace.clone(),
-            &crate::config::paths::TeamPaths::new(dir.path().join("team")),
+            &residuum_config::paths::TeamPaths::new(dir.path().join("team")),
             dir.path().join("agent-config"),
             dir.path().join("hub"),
             &checkpoints_dir,
@@ -1635,7 +1638,7 @@ mod tests {
                 RepoKind::Workspace,
                 second_id,
                 ctx(CheckpointTrigger::Undo, "undo second"),
-                &crate::workspace::team_files::TeamWriter::User,
+                &residuum_workspace::team_files::TeamWriter::User,
             )
             .await
             .unwrap();
@@ -1682,7 +1685,7 @@ mod tests {
                 RepoKind::Workspace,
                 second_id,
                 ctx(CheckpointTrigger::Undo, "undo second"),
-                &crate::workspace::team_files::TeamWriter::User,
+                &residuum_workspace::team_files::TeamWriter::User,
             )
             .await
             .unwrap();
@@ -1697,7 +1700,7 @@ mod tests {
                 RepoKind::Workspace,
                 undo_outcome.checkpoint_id,
                 ctx(CheckpointTrigger::Undo, "undo the undo"),
-                &crate::workspace::team_files::TeamWriter::User,
+                &residuum_workspace::team_files::TeamWriter::User,
             )
             .await
             .unwrap();
@@ -1890,7 +1893,7 @@ mod tests {
                 id,
                 "notes.md".to_string(),
                 ctx(CheckpointTrigger::Restore, "restore notes.md"),
-                &crate::workspace::team_files::TeamWriter::User,
+                &residuum_workspace::team_files::TeamWriter::User,
             )
             .await
             .unwrap();
@@ -2166,7 +2169,7 @@ mod tests {
                 id,
                 "wiki/log.md".to_string(),
                 ctx(CheckpointTrigger::Restore, "restore log"),
-                &crate::workspace::team_files::TeamWriter::User,
+                &residuum_workspace::team_files::TeamWriter::User,
             )
             .await
             .unwrap();
@@ -2219,8 +2222,8 @@ mod tests {
 
     #[tokio::test]
     async fn engine_and_coordinator_locate_team_through_the_layout() {
-        use crate::config::WorkspaceLayout;
-        use crate::workspace::team_files::TeamWriteCoordinator;
+        use residuum_config::WorkspaceLayout;
+        use residuum_workspace::team_files::TeamWriteCoordinator;
 
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("scout"));
@@ -2266,10 +2269,10 @@ mod tests {
 
     #[tokio::test]
     async fn team_restore_tree_records_the_writer_of_each_restored_file() {
-        use crate::workspace::team_files::{CheckError, TeamWriteCoordinator, TeamWriter};
+        use residuum_workspace::team_files::{CheckError, TeamWriteCoordinator, TeamWriter};
 
         let dir = tempfile::tempdir().unwrap();
-        let team = crate::config::paths::TeamPaths::new(dir.path().join("team"));
+        let team = residuum_config::paths::TeamPaths::new(dir.path().join("team"));
         write_team_file(team.root(), "wiki/agents/scout.md", "role");
         let coordinator = TeamWriteCoordinator::new(&team);
         let engine = new_engine(dir.path()).with_team_coordinator(coordinator.clone());

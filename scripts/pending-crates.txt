@@ -1,4 +1,3 @@
-src/checkpoints/ residuum-checkpoints
 src/notify/ residuum-notify
 src/background/ residuum-background
 src/a2a/ residuum-a2a

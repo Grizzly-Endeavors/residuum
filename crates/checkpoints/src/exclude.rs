@@ -5,12 +5,12 @@
 //! One function, [`is_excluded`], is used both to decide whether to descend
 //! into a directory while walking the workspace, and to decide whether to
 //! include a single file — matched by path segment rather than substring,
-//! same convention as [`crate::workspace::access`].
+//! same convention as [`residuum_workspace::access`].
 
 use std::path::Path;
 
 /// The agent's own config file and providers file, tracked instead by the
-/// `AgentConfig` checkpoint repository (see `crate::checkpoints::RepoKind`)
+/// `AgentConfig` checkpoint repository (see `crate::RepoKind`)
 /// so plaintext provider keys never land in the workspace-style repo, which
 /// is designed to allow a user-configured remote later.
 const AGENT_CONFIG_TRACKED_PATHS: &[&str] = &["config/config.toml", "config/providers.toml"];
@@ -23,7 +23,7 @@ const AGENT_CONFIG_TRACKED_PATHS: &[&str] = &["config/config.toml", "config/prov
 /// path before snapshotting it.
 #[must_use]
 pub(super) fn is_excluded(relative: &str) -> bool {
-    if crate::workspace::access::is_blocked_path(relative) {
+    if residuum_workspace::access::is_blocked_path(relative) {
         return true;
     }
     if AGENT_CONFIG_TRACKED_PATHS.contains(&relative) {
@@ -69,7 +69,7 @@ pub(super) fn is_team_excluded(relative: &str) -> bool {
     };
     let is_root_vector_store = path.components().count() == 1 && VECTOR_STORE_FILES.contains(&name);
     is_root_vector_store
-        || crate::util::fs::is_atomic_write_temp(name)
+        || residuum_core::util::fs::is_atomic_write_temp(name)
         || is_excluded_file_name(name)
 }
 

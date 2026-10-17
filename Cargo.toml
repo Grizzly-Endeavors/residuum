@@ -27,6 +27,7 @@ residuum-bus = { path = "crates/bus", version = "0.1.0" }
 residuum-agent = { path = "crates/agent", version = "0.1.0" }
 residuum-workspace = { path = "crates/workspace", version = "0.1.0" }
 residuum-proactivity = { path = "crates/proactivity", version = "0.1.0" }
+residuum-checkpoints = { path = "crates/checkpoints", version = "0.1.0" }
 residuum-skills = { path = "crates/skills", version = "0.1.0" }
 residuum-tracing-service = { path = "crates/tracing-service", version = "0.1.0" }
 residuum-inference = { path = "crates/inference", version = "0.1.0" }
@@ -176,6 +177,7 @@ residuum-bus = { workspace = true }
 residuum-agent = { workspace = true }
 residuum-workspace = { workspace = true }
 residuum-proactivity = { workspace = true }
+residuum-checkpoints = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -225,8 +227,6 @@ iana-time-zone = { workspace = true }
 serenity = { workspace = true }
 teloxide-core = { workspace = true }
 ts-rs = { workspace = true }
-gix = { workspace = true }
-similar = { workspace = true }
 
 # macOS native notifications (Apple Silicon only)
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -254,6 +254,7 @@ residuum-bus = { workspace = true, features = ["test-support"] }
 residuum-agent = { workspace = true, features = ["test-support"] }
 residuum-workspace = { workspace = true, features = ["test-support"] }
 residuum-proactivity = { workspace = true, features = ["test-support"] }
+residuum-checkpoints = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
