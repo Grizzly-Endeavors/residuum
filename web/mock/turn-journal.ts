@@ -105,6 +105,7 @@ function turnOf(frame: ServerMessage): string | null {
     case "session_response":
     case "session_error":
     case "session_message_to_main":
+    case "session_user_message":
     case "session_message_delivered":
     case "session_stop_requested":
     case "session_command_failed":

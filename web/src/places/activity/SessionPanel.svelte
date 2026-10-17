@@ -18,14 +18,17 @@
   import type { SessionRun } from "../../lib/session-run.svelte";
   import { Banner, Button, Disclosure, Skeleton } from "../../lib/ui";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
+  import WaitingMessages from "../chat/WaitingMessages.svelte";
   import RunStatus from "./RunStatus.svelte";
   import SessionMessageBox from "./SessionMessageBox.svelte";
 
   // A session run in the context panel: what it is and how it's doing, its
   // transcript with live output, Stop, and, floating over the transcript's
   // foot, a message box that reaches the run, or starts the session again
-  // once it has finished, with the session's own actions under `/`. The run's state
-  // lives in `run`, which the panel host keeps while the frame redraws.
+  // once it has finished, with the session's own actions under `/`. A message
+  // sent from it waits at the transcript's foot until the session reads it.
+  // The run's state lives in `run`, which the panel host keeps while the
+  // frame redraws.
 
   let { run }: { run: SessionRun } = $props();
 
@@ -216,6 +219,7 @@
           <RunStatus status={{ tone: "working", text: "Working" }} />
         </p>
       {/if}
+      <WaitingMessages messages={run.waiting} reader="this session" />
     {/snippet}
   </Feed>
 </div>

@@ -18,7 +18,7 @@ function show(
   const onsendnow = vi.fn();
   const onmultitask = vi.fn();
   render(WaitingMessages, {
-    props: { messages, agentName: "atlas", offline, onsendnow, onmultitask },
+    props: { messages, reader: "atlas", actions: { offline, onsendnow, onmultitask } },
   });
   return { onsendnow, onmultitask };
 }
