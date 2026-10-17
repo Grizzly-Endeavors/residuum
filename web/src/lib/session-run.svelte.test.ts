@@ -486,6 +486,17 @@ describe("a message waiting for the session to read it", () => {
     expect(run.items.at(-1)).not.toHaveProperty("midTurn");
   });
 
+  it("forgets a dismissed message, and still places it if the session reads it", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    run.dismissWaiting(id);
+    expect(run.waiting).toEqual([]);
+
+    read(relay, { id, content: "Also check the logs.", turnId: "t1" });
+    expect(sentItem(run, "Also check the logs.")).toMatchObject({ turnId: "t1", messageId: id });
+  });
+
   it("stays on a run that ends with nothing of its waiting", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
     completed(relay);

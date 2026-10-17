@@ -59,6 +59,19 @@ describe("messages waiting for the agent", () => {
     expect(screen.getByRole("button", { name: "Multitask" })).toBeDisabled();
   });
 
+  it("offers only Dismiss for a session's message", async () => {
+    const ondismiss = vi.fn();
+    render(WaitingMessages, {
+      props: { messages: [LOGS], reader: "this session", actions: { ondismiss } },
+    });
+    expect(screen.queryByRole("button", { name: "Send now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Multitask" })).toBeNull();
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    expect(dismiss).toHaveAccessibleDescription("also check the logs");
+    await userEvent.click(dismiss);
+    expect(ondismiss).toHaveBeenCalledWith(LOGS);
+  });
+
   it("shows which ask is under way, and holds the other back", () => {
     show([{ ...LOGS, asked: "withdraw" }]);
     expect(screen.getByRole("button", { name: "Multitask" })).toHaveAttribute("aria-busy", "true");

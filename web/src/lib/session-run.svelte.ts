@@ -252,6 +252,15 @@ export class SessionRun {
     }
   }
 
+  /**
+   * Stop showing a message as waiting, for one the session will never read
+   * (its run ended and the panel lost the run that took it up). Only this
+   * page forgets it: a read that does arrive still places it.
+   */
+  dismissWaiting(id: string): void {
+    this.dropWaiting(id);
+  }
+
   /** Stop the run. Its frames show it finishing. */
   async stop(): Promise<void> {
     const address = this.address;

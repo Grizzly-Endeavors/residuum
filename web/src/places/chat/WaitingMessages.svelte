@@ -14,6 +14,12 @@
     onsendnow: (message: M) => void;
     onmultitask: (message: M) => void;
   }
+
+  /** What can be asked of a message waiting for a session to read it. */
+  export interface SessionWaitingActions<M extends WaitingBubble> {
+    /** Stop showing it as waiting, for one nothing will read. */
+    ondismiss: (message: M) => void;
+  }
 </script>
 
 <script lang="ts" generics="M extends WaitingBubble">
@@ -25,14 +31,15 @@
   // read. In the main conversation, beside it, Send now stops the turn in
   // flight so the message starts the next one, and Multitask sends it to a
   // session forked from the conversation instead. While one of them is under
-  // way, both wait.
+  // way, both wait. In a session panel, Dismiss stops showing it as waiting,
+  // for one the session will never read.
 
   interface Props {
     messages: M[];
     /** Who reads them, as shown: the agent's name, or "this session". */
     reader: string;
-    /** Send now and Multitask, for the main conversation's messages. */
-    actions?: WaitingActions<M>;
+    /** Send now and Multitask for the main conversation's messages, Dismiss for a session's. */
+    actions?: WaitingActions<M> | SessionWaitingActions<M>;
   }
 
   let { messages, reader, actions }: Props = $props();
@@ -58,7 +65,20 @@
             <p class="waiting-sender">{sender}</p>
           {/if}
           <div class="waiting-row">
-            {#if actions}
+            {#if actions && "ondismiss" in actions}
+              <span class="waiting-actions">
+                <IconButton
+                  size="sm"
+                  icon="close"
+                  label="Dismiss"
+                  tooltip="Dismiss: stop waiting for this to be read"
+                  aria-describedby={bubbleId}
+                  onclick={() => {
+                    actions.ondismiss(message);
+                  }}
+                />
+              </span>
+            {:else if actions}
               <span class="waiting-actions">
                 <IconButton
                   size="sm"
@@ -143,7 +163,7 @@
     font-size: var(--font-size-xs);
   }
 
-  /* Send now and Multitask left of the bubble, on its last line, the way a sent message keeps its time. */
+  /* The actions (Send now and Multitask, or Dismiss) left of the bubble, on its last line, the way a sent message keeps its time. */
   .waiting-row {
     display: flex;
     align-items: flex-end;

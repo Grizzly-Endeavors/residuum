@@ -219,7 +219,15 @@
           <RunStatus status={{ tone: "working", text: "Working" }} />
         </p>
       {/if}
-      <WaitingMessages messages={run.waiting} reader="this session" />
+      <WaitingMessages
+        messages={run.waiting}
+        reader="this session"
+        actions={{
+          ondismiss: (message) => {
+            run.dismissWaiting(message.id);
+          },
+        }}
+      />
     {/snippet}
   </Feed>
 </div>
