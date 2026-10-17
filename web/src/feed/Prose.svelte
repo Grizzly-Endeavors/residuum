@@ -21,9 +21,16 @@
   let { content, agent, size = "message", streaming = false }: Props = $props();
 
   // The sanitizer builds the nodes; they replace what was shown whenever the
-  // text or its agent changes.
+  // text or its agent changes, and only then. A prop is read through what the
+  // parent passes (`item.content`), which is dirtied whenever the feed regroups
+  // its turns, on every change to its items, though the text is the same.
+  // Rebuilding every message then drops a text selection in it, and was seen
+  // in WebKit to move the feed's scroll position 1500px up under the reader.
+  const source = $derived(content);
+  const owner = $derived(agent);
+
   function render(node: HTMLElement): void {
-    node.replaceChildren(renderMarkdown(content, { pathHref: (path) => pathHref(agent, path) }));
+    node.replaceChildren(renderMarkdown(source, { pathHref: (path) => pathHref(owner, path) }));
   }
 
   const COPY_FEEDBACK_MS = 2000;
