@@ -32,6 +32,14 @@ export function isSessionFrame(msg: ServerMessage): msg is SessionFrame {
   return msg.type.startsWith("session_");
 }
 
+/** Why a session the owner started couldn't start or resume, as a `session_start_failed` frame says. */
+export interface SessionStartFailure {
+  /** Plain-language explanation, to show as it is. */
+  error: string;
+  /** The full technical cause, for a details toggle, when there is one. */
+  details: string | null;
+}
+
 /** What the Finished list shows: one kind of run, or every kind. */
 export type FinishedKind = SessionCategory | "all";
 
@@ -131,20 +139,28 @@ export class CompletedRuns {
 export interface SessionsStoreDeps {
   /** The agent these sessions belong to, `null` before one is bound. */
   agent: string | null;
-  /** Show a session's message to the main agent in the main chat. */
-  pushToMain: (from: string, runId: string, content: string, category: string | null) => void;
 }
 
 /**
  * The newest run, live first, of `agent`'s session at `address`, asked of the
  * server. Null, after telling the user, when there is none or the lookup fails.
+ * `noRecord` is what to tell them when there is none, in place of saying the
+ * address has no record.
  */
-export async function lookUpNewestRun(agent: string, address: string): Promise<string | null> {
+export async function lookUpNewestRun(
+  agent: string,
+  address: string,
+  noRecord?: { message: string; details?: string },
+): Promise<string | null> {
   try {
     const page = await fetchSessions(agent, { address, limit: 1 });
     const run = page.live[0] ?? page.completed[0];
     if (run) return run.run_id;
-    notifications.surface("error", `There's no record of the session ${address}.`);
+    if (noRecord) {
+      notifications.surface("error", noRecord.message, noRecord.details);
+    } else {
+      notifications.surface("error", `There's no record of the session ${address}.`);
+    }
   } catch (err) {
     notifications.surface(
       "error",
@@ -171,6 +187,13 @@ export class SessionsStore {
    * button in Activity to show it.
    */
   stopping = new SvelteSet<string>();
+  /**
+   * Why each session the owner started couldn't start or resume, by address,
+   * until a run starts there. Kept by address rather than by the start
+   * request, since the failure can arrive before the request that started it
+   * has its answer.
+   */
+  private readonly startFailures = new SvelteMap<string, SessionStartFailure>();
   /** Open tasks the agent sent to remote agents, newest first. */
   outbound = $state<OutboundA2aTaskSummary[]>([]);
   /** Why the outbound task list couldn't load, if it couldn't. */
@@ -275,16 +298,27 @@ export class SessionsStore {
     );
   }
 
+  /** Why the session at `address` couldn't start or resume, when that failed and no run has started there since. */
+  startFailure(address: string): SessionStartFailure | undefined {
+    return this.startFailures.get(address);
+  }
+
   /**
    * The run to show for a session address: `runId` when known, else its newest
    * run (live first), looked up on the server if it isn't loaded. Null, after
-   * telling the user, when there is none.
+   * telling the user, when there is none, saying why it couldn't start when
+   * its start failed. A failed resume leaves the address's earlier runs, so a
+   * recorded failure is shown only when the server has no run there.
    */
   async resolveRun(address: string, runId: string | null): Promise<string | null> {
     if (runId) return runId;
     const known = this.findByAddress(address);
     if (known) return known.run_id;
-    return lookUpNewestRun(requireAgent(this.deps.agent), address);
+    const failure = this.startFailures.get(address);
+    const noRecord = failure
+      ? { message: failure.error, details: failure.details ?? undefined }
+      : undefined;
+    return lookUpNewestRun(requireAgent(this.deps.agent), address, noRecord);
   }
 
   // ── Commands ─────────────────────────────────────────────────────
@@ -327,7 +361,14 @@ export class SessionsStore {
         this.applyOutbound(frame.task);
         return;
       case "session_started":
+        this.startFailures.delete(frame.session.address);
         this.live = [frame.session, ...this.live.filter((s) => s.run_id !== frame.session.run_id)];
+        return;
+      case "session_start_failed":
+        this.startFailures.set(frame.address, {
+          error: frame.error,
+          details: frame.error_details ?? null,
+        });
         return;
       case "session_message_delivered":
       case "session_stop_requested":
@@ -344,10 +385,12 @@ export class SessionsStore {
       case "session_broadcast_response":
       case "session_response":
       case "session_error":
-      case "session_message_to_main":
       case "session_user_message":
         this.handleRunFrame(frame);
         return;
+      default:
+        // A frame type with no case above fails to compile here.
+        frame satisfies never;
     }
   }
 
@@ -367,14 +410,6 @@ export class SessionsStore {
         break;
       case "session_turn_usage":
         if (live && frame.session_totals) live.usage = frame.session_totals;
-        break;
-      case "session_message_to_main":
-        this.deps.pushToMain(
-          frame.address,
-          frame.run_id,
-          frame.content,
-          (live ?? this.findByAddress(frame.address))?.category ?? null,
-        );
         break;
       case "session_turn_started":
       case "session_turn_ended":
@@ -403,7 +438,7 @@ export class SessionsStore {
       episode_id: frame.episode_id,
       outcome: frame.status,
       error: frame.error,
-      error_details: frame.error_details,
+      error_details: frame.error_details ?? null,
     };
     this.finished.all.prepend(finished);
     const kind = this.finished[finished.category];

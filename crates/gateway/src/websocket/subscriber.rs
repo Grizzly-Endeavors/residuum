@@ -4,10 +4,12 @@ use crate::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
 use residuum_bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, MainConversationEvent, NoticeEvent, NotifyName,
     OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind, ResponseEvent, SessionEvent,
-    Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
+    SessionStartFailedEvent, Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
 };
 use residuum_hub::file_server::FileRegistry;
-use residuum_protocol::frames::{session_event_to_server_message, workspace_frame};
+use residuum_protocol::frames::{
+    session_event_to_server_message, session_start_failed_frame, workspace_frame,
+};
 use residuum_protocol::{QueuedMessage, ServerMessage, SnapshotFrame, TurnInProgress};
 use tokio::sync::mpsc;
 
@@ -249,6 +251,9 @@ pub struct WsSubscribers {
     /// Agent session lifecycle and turn events, forwarded as the
     /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
+    /// Owner-started sessions that couldn't be forked, forwarded as
+    /// `session_start_failed` frames.
+    pub session_start_failed: Subscriber<SessionStartFailedEvent>,
     /// Tasks sent to remote agents, for Activity's Running now.
     pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
     /// Workbench artifact file changes, so an open artifact page reloads live.
@@ -293,6 +298,7 @@ impl WsSubscribers {
             inline_output: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
             session: bus_handle.subscribe(topics::Sessions).await?,
+            session_start_failed: bus_handle.subscribe(topics::Sessions).await?,
             outbound_a2a: bus_handle.subscribe(system_topic()).await?,
             workbench: bus_handle.subscribe(topics::Workbench).await?,
             workspace: bus_handle.subscribe(topics::Workspace).await?,
@@ -363,9 +369,11 @@ impl WsSubscribers {
                     _ => return None,
                 },
                 event = self.session.recv() => match event {
-                    Ok(Some(session_event)) => Some(
-                        session_event_to_server_message(session_event),
-                    ),
+                    Ok(Some(session_event)) => Some(session_event_to_server_message(session_event)),
+                    _ => return None,
+                },
+                event = self.session_start_failed.recv() => match event {
+                    Ok(Some(failed)) => Some(session_start_failed_frame(failed)),
                     _ => return None,
                 },
                 event = self.outbound_a2a.recv() => match event {
@@ -527,22 +535,23 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn a_teammates_message_reaches_the_socket_with_its_sender_live_and_in_a_snapshot() {
+    /// Publish `agent`'s message opening a turn, and check the socket gets it
+    /// with its sender both live and in the snapshot a page opening now
+    /// asks for.
+    async fn assert_agent_message_reaches_the_socket(
+        agent: residuum_inference::AgentSender,
+        content: &str,
+    ) {
         let (handle, mut subs) = subscribed().await;
-        let teammate = residuum_inference::AgentSender {
-            address: "agent:atlas".into(),
-            category: "teammate".into(),
-        };
         publish_main(
             &handle,
             MainConversationEvent::UserMessage {
                 id: "bg-1".into(),
                 turn_id: "bg-1".into(),
-                content: "[Message from teammate agent:atlas, not the user.]\nstatus?".into(),
+                content: content.into(),
                 images: Vec::new(),
                 sender: None,
-                agent_sender: Some(teammate.clone()),
+                agent_sender: Some(agent.clone()),
                 endpoint: "background".into(),
             },
         )
@@ -561,7 +570,7 @@ mod tests {
             matches!(
                 &live,
                 ServerMessage::UserMessage { id, agent_sender: Some(sender), .. }
-                    if id == "bg-1" && *sender == teammate
+                    if id == "bg-1" && *sender == agent
             ),
             "the message goes out live with its sender, got {live:?}"
         );
@@ -583,10 +592,36 @@ mod tests {
             matches!(
                 opening,
                 Some(ServerMessage::UserMessage { id, agent_sender: Some(sender), .. })
-                    if id == "bg-1" && *sender == teammate
+                    if id == "bg-1" && *sender == agent
             ),
-            "the snapshot opens with the teammate's message and its sender, got {opening:?}"
+            "the snapshot opens with the agent's message and its sender, got {opening:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_teammates_message_reaches_the_socket_with_its_sender_live_and_in_a_snapshot() {
+        assert_agent_message_reaches_the_socket(
+            residuum_inference::AgentSender {
+                address: "agent:atlas".into(),
+                category: "teammate".into(),
+                run_id: None,
+            },
+            "[Message from teammate agent:atlas, not the user.]\nstatus?",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_sessions_message_reaches_the_socket_with_its_run_live_and_in_a_snapshot() {
+        assert_agent_message_reaches_the_socket(
+            residuum_inference::AgentSender {
+                address: "spawned-research-1a2b".into(),
+                category: "spawned".into(),
+                run_id: Some("run-1".into()),
+            },
+            "[Agent Message from spawned-research-1a2b (spawned)]\nfound it",
+        )
+        .await;
     }
 
     async fn publish_main(handle: &residuum_bus::BusHandle, event: MainConversationEvent) {
@@ -1037,6 +1072,49 @@ mod tests {
         assert_eq!(task.agent, "laptop");
         assert_eq!(task.status_text.as_deref(), Some("halfway"));
         assert!(task.open);
+    }
+
+    #[tokio::test]
+    async fn session_start_failed_event_maps_to_session_frame() {
+        let handle = residuum_bus::spawn_broker();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            &handle,
+            EndpointName::from("ws"),
+            residuum_hub::file_server::FileRegistry::new("scout"),
+            no_watch_set(),
+            &TurnJournal::spawn(&handle).await.unwrap(),
+        )
+        .await
+        .unwrap();
+        handle
+            .publisher()
+            .publish(
+                topics::Sessions,
+                SessionStartFailedEvent {
+                    address: "spawned-session-1a2b".into(),
+                    error: "The session spawned-session-1a2b couldn't start.".into(),
+                    error_details: Some("failed to build provider chain: no key".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        let ServerMessage::SessionStartFailed {
+            address,
+            error,
+            error_details,
+        } = msg
+        else {
+            panic!("expected a session_start_failed frame, got {msg:?}");
+        };
+        assert_eq!(address, "spawned-session-1a2b");
+        assert_eq!(error, "The session spawned-session-1a2b couldn't start.");
+        assert_eq!(
+            error_details.as_deref(),
+            Some("failed to build provider chain: no key")
+        );
     }
 
     fn no_watch_set() -> tokio::sync::watch::Receiver<WatchSet> {

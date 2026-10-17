@@ -386,3 +386,43 @@ async fn a_background_turn_with_no_endpoint_to_follow_still_reaches_the_web() {
         "the reply went to no endpoint, and the frame says so"
     );
 }
+
+#[tokio::test]
+async fn a_sessions_message_to_main_is_announced_with_its_run_ahead_of_the_turn_it_starts() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+
+    let mut message = MessageEvent::from_agent(&residuum::bus::AgentMessageEvent::new(
+        residuum::bus::SessionAddress::from("spawned-research-1a2b"),
+        "spawned",
+        "found the answer",
+        0,
+    ));
+    message.origin.agent_sender = Some(Box::new(residuum::inference::AgentSender {
+        address: "spawned-research-1a2b".to_string(),
+        category: "spawned".to_string(),
+        run_id: Some("run-1".to_string()),
+    }));
+    let id = message.id.clone();
+    deliver(&hub, "scout", message).await;
+    let frames = frames_until_turn_ends(&mut ws, Some(&id)).await;
+
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the session's message is announced ahead of the turn it starts",
+    );
+    let announced = frame_of(&frames, "user_message");
+    assert_eq!(str_at(announced, "id"), id);
+    assert_eq!(str_at(announced, "turn_id"), id);
+    assert_eq!(
+        announced["agent_sender"],
+        json!({ "address": "spawned-research-1a2b", "category": "spawned", "run_id": "run-1" }),
+        "the frame names the session and the run that sent it: {announced}"
+    );
+    assert!(
+        str_at(announced, "content").ends_with("found the answer"),
+        "{announced}"
+    );
+}

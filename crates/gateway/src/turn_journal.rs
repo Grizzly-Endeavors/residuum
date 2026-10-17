@@ -531,20 +531,17 @@ mod tests {
         assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
-    #[test]
-    fn a_teammates_opening_message_is_kept_with_its_sender() {
+    /// Observe `agent`'s message opening a turn, and check the snapshot keeps
+    /// it as the turn's first entry with its sender.
+    fn assert_opening_message_is_kept_with_its_sender(agent: &residuum_inference::AgentSender) {
         let journal = TurnJournal::default();
-        let teammate = residuum_inference::AgentSender {
-            address: "agent:atlas".into(),
-            category: "teammate".into(),
-        };
         journal.observe(&MainConversationEvent::UserMessage {
             id: "bg-1".into(),
             turn_id: "bg-1".into(),
             content: "status?".into(),
             images: vec![],
             sender: None,
-            agent_sender: Some(teammate.clone()),
+            agent_sender: Some(agent.clone()),
             endpoint: "background".into(),
         });
         journal.observe(&started("bg-1"));
@@ -560,14 +557,29 @@ mod tests {
             matches!(
                 opening,
                 Some(MainConversationEvent::UserMessage { agent_sender: Some(sender), .. })
-                    if *sender == teammate
+                    if sender == agent
             ),
             "{opening:?}"
         );
-        assert!(
-            snapshot.queued.is_empty(),
-            "a teammate's message never waits"
-        );
+        assert!(snapshot.queued.is_empty(), "an agent's message never waits");
+    }
+
+    #[test]
+    fn a_teammates_opening_message_is_kept_with_its_sender() {
+        assert_opening_message_is_kept_with_its_sender(&residuum_inference::AgentSender {
+            address: "agent:atlas".into(),
+            category: "teammate".into(),
+            run_id: None,
+        });
+    }
+
+    #[test]
+    fn a_sessions_opening_message_is_kept_with_its_sender_and_run() {
+        assert_opening_message_is_kept_with_its_sender(&residuum_inference::AgentSender {
+            address: "spawned-research-1a2b".into(),
+            category: "spawned".into(),
+            run_id: Some("run-1".into()),
+        });
     }
 
     #[test]

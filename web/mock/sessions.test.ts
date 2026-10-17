@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  AgentSender,
   ServerMessage,
   SessionListResponse,
   SessionSummary,
 } from "../src/lib/generated/protocol";
 import type { SessionTranscriptResponse } from "../src/lib/types";
+import { controlRoutes } from "./controls";
+import { createMockEnv } from "./env";
 import { sendSessionMessage, sessionRoutes, spawnSession, stopSession } from "./sessions";
 import { createState, type MockState } from "./state";
 import {
@@ -376,10 +379,55 @@ describe("sessions endpoints", () => {
   });
 });
 
+describe("an owner start that fails after it is accepted", () => {
+  let harness: RouteHarness;
+  let env: ReturnType<typeof createMockEnv>;
+
+  beforeEach(async () => {
+    env = createMockEnv({ deterministic: true });
+    env.setTimeMode("manual");
+    harness = await startRouteHarness([...sessionRoutes, ...controlRoutes], env);
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it("answers 202, lists no run, then says why it couldn't start; the next start succeeds", async () => {
+    expect((await post(harness, "/api/mock/fail-next-session-start", {})).status).toBe(200);
+    const failed = await post(harness, "/api/sessions", { prompt: "plan the garden" });
+    expect(failed).toEqual({ status: 202, body: { address: "spawned-session-a001" } });
+    expect(harness.state.sessions.live.map((s) => s.address)).not.toContain("spawned-session-a001");
+    expect(harness.frames).toEqual([]);
+
+    await env.advance(400);
+    expect(harness.frames).toEqual([
+      {
+        type: "session_start_failed",
+        address: "spawned-session-a001",
+        error: expect.stringContaining("couldn't start") as unknown,
+        error_details: expect.stringContaining("failed to build provider chain") as unknown,
+      },
+    ]);
+
+    const retried = await post(harness, "/api/sessions", { prompt: "plan the garden" });
+    expect(retried).toEqual({ status: 202, body: { address: "spawned-session-a002" } });
+    expect(harness.frames.map((f) => f.type)).toContain("session_started");
+  });
+
+  it("leaves an artifact's start alone", async () => {
+    await post(harness, "/api/mock/fail-next-session-start", {});
+    await post(harness, "/api/sessions", { prompt: "split the tip" }, ARTIFACT_HEADER);
+    expect(harness.frames.map((f) => f.type)).toEqual(["session_started"]);
+  });
+});
+
 describe("session commands and lifecycle", () => {
   let state: MockState;
   let frames: ServerMessage[];
   let replies: ServerMessage[];
+  /** What the sessions sent the main conversation, in order. */
+  let toMain: Array<{ content: string; sender: AgentSender }>;
   const reply = (frame: ServerMessage): void => {
     replies.push(frame);
   };
@@ -393,6 +441,10 @@ describe("session commands and lifecycle", () => {
     state = createState("atlas");
     frames = captureFrames(state);
     replies = [];
+    toMain = [];
+    state.messageMain = (content, sender) => {
+      toMain.push({ content, sender });
+    };
   });
 
   afterEach(() => {
@@ -447,10 +499,21 @@ describe("session commands and lifecycle", () => {
     expect(reply2?.content).toBe('Understood: "status?". Adjusting course.');
   });
 
-  it("relays a spawned session's reply to main", () => {
+  it("relays a spawned session's reply to main, naming the run that sent it", () => {
     sendSessionMessage(state, reply, "c3", RESEARCH, "keep going");
     vi.advanceTimersByTime(2400);
-    expect(frames.at(-1)).toMatchObject({ type: "session_message_to_main", address: RESEARCH });
+    expect(toMain).toEqual([
+      {
+        content: `[Agent Message from ${RESEARCH} (spawned)]\nUnderstood: "keep going". Adjusting course.`,
+        sender: { address: RESEARCH, category: "spawned", run_id: "run-live-research" },
+      },
+    ]);
+  });
+
+  it("sends main nothing for a session main didn't spawn", () => {
+    sendSessionMessage(state, reply, "c3b", DISCORD, "status?");
+    vi.advanceTimersByTime(2400);
+    expect(toMain).toEqual([]);
   });
 
   it("refuses a chosen message id the backend would refuse", () => {
@@ -521,9 +584,10 @@ describe("session commands and lifecycle", () => {
       run_id: "run-live-discord",
       status: "cancelled",
       error: null,
-      error_details: null,
       episode_id: null,
     });
+    // As on the wire, a finish with no details leaves the key out.
+    expect(frames.at(-1)).not.toHaveProperty("error_details");
   });
 
   it("refuses to stop a session that is winding down, finished, or unknown", () => {
@@ -578,11 +642,13 @@ describe("session commands and lifecycle", () => {
     expect(frames[0]).toMatchObject({ type: "session_started" });
 
     vi.advanceTimersByTime(400 + 2400);
-    expect(frames.at(-1)).toEqual({
-      type: "session_message_to_main",
-      address: "spawned-subagent-a001",
-      run_id: "run-new-1",
-      content: "Finished: Look into otters. Two items need a look; details are in the transcript.",
-    });
+    expect(toMain).toEqual([
+      {
+        content:
+          "[Agent Message from spawned-subagent-a001 (spawned)]\n" +
+          "Finished: Look into otters. Two items need a look; details are in the transcript.",
+        sender: { address: "spawned-subagent-a001", category: "spawned", run_id: "run-new-1" },
+      },
+    ]);
   });
 });

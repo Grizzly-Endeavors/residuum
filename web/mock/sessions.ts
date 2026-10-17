@@ -94,7 +94,7 @@ function completeSession(
       run_id: session.run_id,
       status,
       error,
-      error_details: errorDetails,
+      ...(errorDetails === null ? {} : { error_details: errorDetails }),
       episode_id: session.episode_id,
     });
     if (unread.length > 0)
@@ -229,16 +229,21 @@ function runSessionTurn(
       turn_id: turnId,
     });
     setSessionState(state, session, "idle");
-    if (session.spawner === "main") {
-      state.broadcast({
-        type: "session_message_to_main",
-        address: session.address,
-        run_id: session.run_id,
-        content: answer,
-      });
-    }
+    if (session.spawner === "main") messageMainFrom(state, session, answer);
     const left = turn.unread.splice(0);
     if (left.length > 0) runSessionTurn(state, session, answer, left);
+  });
+}
+
+/**
+ * `session` sends main `body`, as the backend relays a session's result: with
+ * the header that names the sender, and the sender, run included, alongside.
+ */
+export function messageMainFrom(state: MockState, session: SessionSummary, body: string): void {
+  state.messageMain(`[Agent Message from ${session.address} (${session.category})]\n${body}`, {
+    address: session.address,
+    category: session.category,
+    run_id: session.run_id,
   });
 }
 
@@ -545,6 +550,12 @@ async function startSession(ctx: RouteContext): Promise<void> {
   sessions.runCounter++;
   const { framing, ...identity } =
     artifactName === null ? ownerSession(state, fork) : artifactSession(state, artifactName);
+  if (artifactName === null && sessions.failNextOwnerStart) {
+    sessions.failNextOwnerStart = false;
+    failOwnerStart(state, identity.address);
+    json(res, 202, { address: identity.address });
+    return;
+  }
   const session: SessionSummary = {
     ...identity,
     state: "forking",
@@ -564,6 +575,23 @@ async function startSession(ctx: RouteContext): Promise<void> {
     runSessionTurn(state, session, `Working on it: ${prompt.slice(0, 80)}.`);
   });
   json(res, 202, { address: session.address });
+}
+
+/**
+ * An owner's start the agent took but couldn't fork: no run is listed, and a
+ * moment later every page is sent `session_start_failed` for its address, as
+ * the backend sends it when the session's model has no working provider.
+ */
+function failOwnerStart(state: MockState, address: string): void {
+  state.env.after(400, () => {
+    state.broadcast({
+      type: "session_start_failed",
+      address,
+      error: `The session ${address} couldn't start because its model (medium) couldn't be set up, usually because a provider's API key is missing. Check Settings → Model → Providers, then start the session again.`,
+      error_details:
+        "failed to build provider chain for model medium: no API key configured for provider anthropic",
+    });
+  });
 }
 
 // POST /api/sessions/:address/stop — stop any live session.

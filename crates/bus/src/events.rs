@@ -540,6 +540,7 @@ impl AgentMessageEvent {
         from_an_agent.then(|| residuum_inference::AgentSender {
             address: self.from.to_string(),
             category: self.from_category.clone(),
+            run_id: None,
         })
     }
 
@@ -931,14 +932,26 @@ pub enum SessionEventKind {
         /// `message` (e.g. classified from a failed model call).
         details: Option<String>,
     },
-    /// The session's message reached the main agent: a turn-result relay to
-    /// its spawner or a `message_agent` call addressed to `main`. Lets the
-    /// web UI show the message in the main chat as it arrives, attributed to
-    /// this run.
-    MessageToMain {
-        /// The message body as main received it (without the sender header).
-        content: String,
-    },
+}
+
+/// A start or a resume of a session the owner started by hand (from the web
+/// UI's New session panel, `POST /api/sessions` without the
+/// `X-Residuum-Artifact` header, or `/multitask`) was accepted but couldn't
+/// be forked, so no run was registered for it. For a first start no run
+/// exists at the address; a failed resume leaves the address's earlier runs.
+///
+/// Carried on [`super::topics::Sessions`] beside [`SessionEvent`], which needs
+/// a run id a failed fork never has. The web UI matches it to the start it is
+/// waiting on by `address`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStartFailedEvent {
+    /// Address the start was given, the one its caller was told.
+    pub address: SessionAddress,
+    /// Plain-language sentence for the owner: what went wrong and what to do
+    /// next.
+    pub error: String,
+    /// Full technical cause chain, for a Details disclosure or the logs.
+    pub error_details: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,11 +1051,11 @@ pub enum MainConversationEvent {
         /// The turn.
         turn_id: String,
     },
-    /// A person's or a teammate's message entered the conversation: as the
+    /// A person's or an agent's message entered the conversation: as the
     /// message that started a turn, or injected into a turn already running.
-    /// Not sent for a background origin, nor for a message one of this
-    /// agent's own sessions sent it, which that session's stream shows
-    /// instead (`SessionEventKind::MessageToMain`).
+    /// The agent is a teammate (another agent on the hub) or one of this
+    /// agent's own sessions. Not sent for other background input, such as a
+    /// delivery notice or a pulse result.
     UserMessage {
         /// The message's id: the id its sender gave it, so a client that sent
         /// it can recognize the echo.
@@ -1055,8 +1068,8 @@ pub enum MainConversationEvent {
         images: Vec<ImageData>,
         /// The person who sent it, for interfaces that identify one.
         sender: Option<MessageSender>,
-        /// The teammate (another agent on the hub) that sent it, for a
-        /// teammate's message.
+        /// The agent that sent it, for a teammate's or a session's message;
+        /// a session's carries its run id.
         agent_sender: Option<residuum_inference::AgentSender>,
         /// Endpoint it arrived on.
         endpoint: String,
@@ -1156,18 +1169,18 @@ pub enum MainConversationEvent {
 
 impl MainConversationEvent {
     /// The event announcing `message` entering the conversation in turn
-    /// `turn_id`, or `None` when neither a person nor a teammate sent it (a
-    /// background origin, or a message from one of this agent's own sessions).
+    /// `turn_id`, or `None` when neither a person nor an agent sent it (other
+    /// background input).
     #[must_use]
     pub fn user_message(message: &MessageEvent, turn_id: &str) -> Option<Self> {
-        let teammate = message.origin.teammate_sender();
-        (message.origin.is_from_person() || teammate.is_some()).then(|| Self::UserMessage {
+        let agent_sender = message.origin.agent_sender.as_deref();
+        (message.origin.is_from_person() || agent_sender.is_some()).then(|| Self::UserMessage {
             id: message.id.clone(),
             turn_id: turn_id.to_owned(),
             content: message.content.clone(),
             images: message.images.clone(),
             sender: message.origin.sender.clone(),
-            agent_sender: teammate.cloned(),
+            agent_sender: agent_sender.cloned(),
             endpoint: message.origin.endpoint.clone(),
         })
     }
@@ -1396,6 +1409,7 @@ mod tests {
             Some(residuum_inference::AgentSender {
                 address: "spawned-researcher-3f9a".to_string(),
                 category: "spawned".to_string(),
+                run_id: None,
             })
         );
         assert_eq!(entry.id.as_deref(), Some(msg.id.as_str()));
@@ -1474,6 +1488,7 @@ mod tests {
             Some(residuum_inference::AgentSender {
                 address: "agent:writer/spawned-draft-3f9a".to_string(),
                 category: "teammate".to_string(),
+                run_id: None,
             }),
             "the history entry carries the structured sender"
         );
@@ -1504,6 +1519,50 @@ mod tests {
         assert_eq!(event.content, msg.format_for_agent());
         assert!(event.origin.belongs_to_main());
         assert_eq!(event.origin.agent_sender.map(|a| *a), msg.agent_sender());
+    }
+
+    #[test]
+    fn user_message_announces_a_person_or_an_agent_but_not_other_background_input() {
+        let session = residuum_inference::AgentSender {
+            address: "spawned-researcher-3f9a".to_string(),
+            category: "spawned".to_string(),
+            run_id: Some("run-1".to_string()),
+        };
+        let mut from_session = MessageEvent::from_background("found the answer".to_string());
+        from_session.origin.agent_sender = Some(Box::new(session.clone()));
+        let Some(MainConversationEvent::UserMessage {
+            id,
+            turn_id,
+            agent_sender,
+            endpoint,
+            ..
+        }) = MainConversationEvent::user_message(&from_session, "turn-1")
+        else {
+            panic!("a session's message to main is announced");
+        };
+        assert_eq!(id, from_session.id);
+        assert_eq!(turn_id, "turn-1");
+        assert_eq!(
+            agent_sender,
+            Some(session),
+            "it names the session and its run"
+        );
+        assert_eq!(endpoint, crate::origin::BACKGROUND_ENDPOINT);
+
+        let Some(MainConversationEvent::UserMessage {
+            agent_sender: person_agent_sender,
+            ..
+        }) = MainConversationEvent::user_message(&inbound(None), "turn-1")
+        else {
+            panic!("a person's message is announced");
+        };
+        assert_eq!(person_agent_sender, None);
+
+        let notice = MessageEvent::from_background("[Session Result] done".to_string());
+        assert!(
+            MainConversationEvent::user_message(&notice, "turn-1").is_none(),
+            "background input no agent sent is not announced"
+        );
     }
 
     #[test]
@@ -1561,6 +1620,7 @@ mod tests {
         message.origin.agent_sender = Some(Box::new(residuum_inference::AgentSender {
             address: "spawned-a".to_string(),
             category: "spawned".to_string(),
+            run_id: Some("run-a".to_string()),
         }));
         let messages = message.into_history_messages();
         let [user] = messages.as_slice() else {

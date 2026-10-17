@@ -102,7 +102,8 @@ describe("agent socket", () => {
     ])("answers %s with an error frame", async (raw, message) => {
       socket.sendRaw(raw);
       const frame = await socket.nextOfType("error");
-      expect(frame).toMatchObject({ reply_to: null, details: null });
+      expect(frame).toMatchObject({ reply_to: null });
+      expect(frame).not.toHaveProperty("details");
       expect(String(frame.message)).toContain(message);
     });
 
@@ -154,8 +155,8 @@ describe("agent socket", () => {
         reply_to: null,
         message:
           'Couldn\'t watch the workspace: can\'t watch "../secrets": watch paths must stay inside the workspace (no "..").',
-        details: null,
       });
+      expect(frames[0]).not.toHaveProperty("details");
     });
 
     it("starts a session when the message begins with spawn", async () => {

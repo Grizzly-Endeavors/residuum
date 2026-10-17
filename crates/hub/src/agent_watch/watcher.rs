@@ -268,8 +268,7 @@ impl WatchState {
             | SessionEventKind::Intermediate { .. }
             | SessionEventKind::TurnUsage { .. }
             | SessionEventKind::Response { .. }
-            | SessionEventKind::Error { .. }
-            | SessionEventKind::MessageToMain { .. } => None,
+            | SessionEventKind::Error { .. } => None,
         };
         if let Some(change) = change {
             self.publish(change);

@@ -34,6 +34,12 @@ export interface MockSessions {
   turns: Map<string, MockSessionTurn>;
   /** How many runs the mock has started or resumed, for naming them. */
   runCounter: number;
+  /**
+   * The next session the owner starts is accepted and then fails to fork,
+   * as one on a model with no working provider does (see the
+   * `/api/mock/fail-next-session-start` control).
+   */
+  failNextOwnerStart: boolean;
 }
 
 /**
@@ -242,5 +248,12 @@ export function createSessions(clock: MockClock): MockSessions {
       },
     ]);
   }
-  return { live, completed, transcripts, turns: new Map(), runCounter: 0 };
+  return {
+    live,
+    completed,
+    transcripts,
+    turns: new Map(),
+    runCounter: 0,
+    failNextOwnerStart: false,
+  };
 }

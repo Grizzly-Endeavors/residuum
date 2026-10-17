@@ -256,6 +256,12 @@ pub struct AgentSender {
     /// Sender's category label (`"main"`, `"scheduled"`, `"external"`,
     /// `"spawned"`, or `"teammate"`).
     pub category: String,
+    /// The sending session's run, for a message one of this agent's own
+    /// sessions sent main. `None` for a teammate, and on a history entry
+    /// that does not record one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 impl std::fmt::Display for MessageSender {
@@ -780,6 +786,36 @@ mod tests {
         assert_eq!(without_id.id, None);
         let plain = serde_json::to_value(Message::user("hi")).unwrap();
         assert!(plain.get("id").is_none(), "absent id is not serialized");
+    }
+
+    #[test]
+    fn agent_sender_run_id_round_trips_and_is_optional_on_disk() {
+        let session = AgentSender {
+            address: "spawned-research".to_string(),
+            category: "spawned".to_string(),
+            run_id: Some("run-1".to_string()),
+        };
+        let msg = Message::user("found it").with_agent_sender(Some(session.clone()));
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.agent_sender, Some(session));
+
+        let saved = r#"{"role":"user","content":"status?","agent_sender":{"address":"agent:scout","category":"teammate"}}"#;
+        let without_run: Message = serde_json::from_str(saved).unwrap();
+        assert_eq!(
+            without_run.agent_sender,
+            Some(AgentSender {
+                address: "agent:scout".to_string(),
+                category: "teammate".to_string(),
+                run_id: None,
+            }),
+            "an agent sender saved without a run id still loads"
+        );
+        let teammate = serde_json::to_string(&without_run).unwrap();
+        assert!(
+            !teammate.contains("run_id"),
+            "an absent run id is not serialized"
+        );
     }
 
     #[test]

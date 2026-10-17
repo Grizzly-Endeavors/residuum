@@ -467,7 +467,6 @@ async fn handle_session_event(
         | SessionEventKind::ToolResult(_)
         | SessionEventKind::Intermediate { .. }
         | SessionEventKind::Error { .. }
-        | SessionEventKind::MessageToMain { .. }
         // A2A has no notion of token usage/elapsed time in its task
         // protocol, and this must never reach the agent either way — see
         // `docs/systems-usage/turn-control.md`.

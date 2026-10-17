@@ -701,8 +701,10 @@ export interface LocalSystemFeedItem extends FeedItemBase {
 /**
  * A message one agent sent another: a session's result relayed to the main
  * agent (or any `message_agent` call to it), a teammate's message to the main
- * agent, or, inside a session's transcript, a message from another agent.
- * Rendered as a compact item that links to the sending session.
+ * agent, or, inside a session's transcript, a message from another agent. In
+ * the main feed it comes from the message's `user_message` frame (live or in a
+ * `turn_snapshot`) or from history. Rendered as a compact item that links to
+ * the sending session.
  */
 export interface AgentMessageFeedItem extends FeedItemBase {
   kind: "agent-message";
@@ -711,9 +713,13 @@ export interface AgentMessageFeedItem extends FeedItemBase {
   /** Sender's category label, when known. */
   category: string | null;
   content: string;
-  /** Sending run, when known (a session's live frames carry it; history doesn't). */
+  /**
+   * Sending run, when the message's `agent_sender` names one (a message from
+   * one of this agent's own sessions). `null` when it names none, such as a
+   * teammate's message; Open session then opens the newest run at `from`.
+   */
   runId: string | null;
-  /** The message's id, for a teammate's message its live `user_message` frame announced. */
+  /** The message's id, for a message its `user_message` frame announced. */
   messageId?: string;
 }
 

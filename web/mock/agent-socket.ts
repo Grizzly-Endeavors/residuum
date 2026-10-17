@@ -139,6 +139,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
     }
   };
   agent.receiveMessage = chat.receive;
+  state.messageMain = chat.receiveFromSession;
   agent.connectedClients = () =>
     [...wss.clients].filter((client) => !throughArtifactsOrigin.has(client)).length;
   agent.dispose = () => {
@@ -204,7 +205,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
             type: "error",
             reply_to: null,
             message: `Couldn't watch the workspace: ${problem}.`,
-            details: null,
           });
         }
         break;
@@ -256,7 +256,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
           type: "error",
           reply_to: null,
           message: `malformed message: ${err instanceof Error ? err.message : String(err)}`,
-          details: null,
         } satisfies ServerMessage);
         return;
       }

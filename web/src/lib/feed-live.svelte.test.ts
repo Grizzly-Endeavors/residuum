@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { groupTurns } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
 import { localTimestamp } from "./time";
-import type { FeedItem, MessageSender, RecentMessage, ServerMessage } from "./types";
+import type { AgentSender, FeedItem, MessageSender, RecentMessage, ServerMessage } from "./types";
 
 // What the main chat's feed shows of turns as the agent's socket carries them:
 // the people behind messages from any channel, text and reasoning streaming
@@ -237,7 +237,7 @@ describe("when live messages were sent", () => {
     ]);
   });
 
-  it("stamps a streamed reply when it is whole, and a message from a session", () => {
+  it("stamps a streamed reply when it is whole, and a message from a session it read", () => {
     const { store, frame } = setup();
     store.handleMessage(started("t1"));
     store.handleMessage({ type: "text_delta", reply_to: "t1", call: 0, text: "Do" });
@@ -250,7 +250,7 @@ describe("when live messages were sent", () => {
       endpoint: "ws",
       content: "Done.",
     });
-    store.pushAgentMessage("spawned-1", "run-1", "Result", null);
+    store.handleMessage(fromSession("bg-1", "Result", "t1"));
 
     expect(store.feed.filter((item) => item.kind !== "divider")).toMatchObject([
       { kind: "assistant", content: "Done.", timestamp: at(10, 7) },
@@ -308,6 +308,78 @@ function fromTeammate(id: string, body: string, turnId = id): ServerMessage {
     endpoint: "background",
   };
 }
+
+const RESEARCH = { address: "spawned-research", category: "spawned", run_id: "run-7" };
+
+/**
+ * A message one of the agent's own sessions sent main, as the backend
+ * announces it when main reads it: header first, with the session and the run
+ * that sent it.
+ */
+function fromSession(
+  id: string,
+  body: string,
+  turnId = id,
+  sender: AgentSender = RESEARCH,
+): ServerMessage {
+  return {
+    type: "user_message",
+    id,
+    turn_id: turnId,
+    content: `[Agent Message from spawned-research (spawned)]\n${body}`,
+    agent_sender: sender,
+    endpoint: "background",
+  };
+}
+
+describe("a session's message to main", () => {
+  it("shows as the session's card, naming the run that sent it", () => {
+    const { store } = setup();
+    store.handleMessage(fromSession("bg-1", "Found three fallbacks."));
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "bg-1",
+      origin: { endpoint: "background", visibility: "background" },
+    });
+
+    expect(store.feed).toMatchObject([
+      {
+        kind: "agent-message",
+        from: "spawned-research",
+        category: "spawned",
+        content: "Found three fallbacks.",
+        runId: "run-7",
+        messageId: "bg-1",
+        turnId: "bg-1",
+      },
+    ]);
+    expect(store.feed[0]).not.toHaveProperty("midTurn");
+  });
+
+  it("joins the turn that reads it partway", () => {
+    const { store } = setup();
+    store.handleMessage(echo("web-1", "Draft the post"));
+    store.handleMessage(started("web-1"));
+    store.handleMessage(fromSession("bg-2", "Interim note", "web-1"));
+
+    expect(store.feed.at(-1)).toMatchObject({
+      kind: "agent-message",
+      content: "Interim note",
+      runId: "run-7",
+      turnId: "web-1",
+      midTurn: true,
+    });
+  });
+
+  it("names no run when its sender names none", () => {
+    const { store } = setup();
+    store.handleMessage(
+      fromSession("bg-3", "Done", "bg-3", { address: "spawned-research", category: "spawned" }),
+    );
+
+    expect(store.feed[0]).toMatchObject({ kind: "agent-message", runId: null });
+  });
+});
 
 describe("a teammate's message", () => {
   it("shows as the teammate's card, opening the turn it starts", () => {
@@ -522,7 +594,7 @@ describe("text streaming in", () => {
     const { store } = setup();
     store.handleMessage(started("t1"));
     store.handleMessage(delta(0, "The port"));
-    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope.", details: null });
+    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope." });
     expect(store.feed.find((item) => item.kind === "assistant")).toMatchObject({
       cut: "interrupted",
     });
@@ -869,6 +941,49 @@ describe("a snapshot of the turn in flight", () => {
     },
     delta("Found it, here", 1),
   ] satisfies ServerMessage[];
+
+  it("shows a session's message the turn read before the page opened, once, with its run", () => {
+    const { store } = setup();
+    const frames = [
+      echo("t1", "Find the report"),
+      started("t1"),
+      fromSession("bg-1", "Found it", "t1"),
+    ];
+    store.handleMessage(snapshot(frames));
+    // Reconnecting partway through the same turn draws it again rather than adding it twice.
+    store.handleMessage(snapshot(frames));
+
+    const cards = store.feed.filter((item) => item.kind === "agent-message");
+    expect(cards).toMatchObject([
+      {
+        from: "spawned-research",
+        content: "Found it",
+        runId: "run-7",
+        messageId: "bg-1",
+        turnId: "t1",
+        midTurn: true,
+      },
+    ]);
+  });
+
+  it("draws a session's message it saw live again from a snapshot, not twice", () => {
+    const { store } = setup();
+    store.pushUserMessage("Find the report", undefined, "t1");
+    store.handleMessage(started("t1"));
+    store.handleMessage(fromSession("bg-1", "Found it", "t1"));
+    store.markReconnectGap();
+
+    store.handleMessage(
+      snapshot([
+        echo("t1", "Find the report"),
+        started("t1"),
+        fromSession("bg-1", "Found it", "t1"),
+      ]),
+    );
+
+    expect(kinds(store.feed)).toEqual(["user", "agent-message"]);
+    expect(store.feed[1]).toMatchObject({ runId: "run-7", messageId: "bg-1" });
+  });
 
   it("shows what the turn did before the page opened, and the stream continues from it", () => {
     const { store, frame } = setup();

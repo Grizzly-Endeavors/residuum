@@ -329,6 +329,20 @@ describe("following a run through the hub's session relay", () => {
     });
   });
 
+  it("keeps no failure details when the finish frame carries none", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    relay.relay("atlas", {
+      type: "session_completed",
+      address: ADDRESS,
+      run_id: "run-1",
+      status: "completed",
+      error: null,
+      episode_id: null,
+    });
+    expect(run.summary?.outcome).toBe("completed");
+    expect(run.summary?.error_details).toBeNull();
+  });
+
   it("tags the message that started a turn, so it can offer Undo this turn", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
     const id = await sendMessage(run, "Check outages too.");
@@ -457,7 +471,6 @@ describe("a message waiting for the session to read it", () => {
       run_id: runId,
       status: "cancelled",
       error: null,
-      error_details: null,
       episode_id: null,
     });
   };

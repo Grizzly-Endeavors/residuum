@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::Context as _;
 
+use crate::fork_failure::ForkFailure;
 use crate::registry::SessionRegistry;
 use crate::runtime::SessionRuntime;
 use residuum_agent::context::loading::{load_observations, load_recent_context_narrative};
@@ -193,9 +194,9 @@ fn resolve_model_chain(
             }),
         }),
         ModelSelector::Explicit(id) => {
-            let spec = catalog
-                .resolve(id)
-                .map_err(|e| anyhow::anyhow!("model '{id}' can't be used: {e}"))?;
+            let spec = catalog.resolve(id).map_err(|e| {
+                anyhow::Error::msg(e).context(ForkFailure::UnknownModel { model: id.clone() })
+            })?;
             Ok(SessionModelChain {
                 specs: vec![spec],
                 label: format!("background session ({id})"),
@@ -229,7 +230,7 @@ async fn load_fork_identity_and_memory(
 ) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
     let identity = IdentityFiles::load(layout)
         .await
-        .context("failed to load identity files for session fork")?
+        .context(ForkFailure::IdentityFiles)?
         .with_team_roster(team.prompt_block());
 
     let observations = match load_observations(&layout.observations_json()).await {
@@ -307,7 +308,9 @@ pub(crate) async fn build_spawn_resources(
         chain.label,
         chain.active_index,
     )
-    .with_context(|| format!("failed to build provider chain for model {model}"))?;
+    .with_context(|| ForkFailure::ProviderChain {
+        model: model.to_string(),
+    })?;
     log_dropped_fallbacks(model, &dropped);
 
     // Apply the tier's overrides over global options
@@ -443,6 +446,13 @@ mod tests {
         };
         let message = err.to_string();
         assert!(message.contains("nowhere/x"), "{message}");
+        assert_eq!(
+            err.downcast_ref::<ForkFailure>(),
+            Some(&ForkFailure::UnknownModel {
+                model: "nowhere/x".to_string()
+            }),
+            "the owner is told the model isn't available"
+        );
     }
 
     #[tokio::test]
