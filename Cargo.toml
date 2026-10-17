@@ -25,6 +25,7 @@ residuum-core = { path = "crates/core", version = "0.1.0" }
 residuum-config = { path = "crates/config", version = "0.1.0" }
 residuum-bus = { path = "crates/bus", version = "0.1.0" }
 residuum-workspace = { path = "crates/workspace", version = "0.1.0" }
+residuum-proactivity = { path = "crates/proactivity", version = "0.1.0" }
 residuum-skills = { path = "crates/skills", version = "0.1.0" }
 residuum-tracing-service = { path = "crates/tracing-service", version = "0.1.0" }
 residuum-inference = { path = "crates/inference", version = "0.1.0" }
@@ -172,6 +173,7 @@ residuum-skills = { workspace = true }
 residuum-tracing-service = { workspace = true }
 residuum-bus = { workspace = true }
 residuum-workspace = { workspace = true }
+residuum-proactivity = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -248,6 +250,7 @@ residuum-memory = { workspace = true, features = ["test-support"] }
 residuum-net = { workspace = true, features = ["test-support"] }
 residuum-bus = { workspace = true, features = ["test-support"] }
 residuum-workspace = { workspace = true, features = ["test-support"] }
+residuum-proactivity = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

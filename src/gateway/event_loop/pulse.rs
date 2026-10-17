@@ -515,7 +515,7 @@ mod tests {
     fn scripted_deps(bus: &BusHandle, dir: &std::path::Path) -> ScriptedPulseDeps {
         ScriptedPulseDeps {
             publisher: bus.publisher(),
-            env: crate::pulse::script::tests::env(dir),
+            env: crate::pulse::testing::script_env(dir),
             tz: chrono_tz::UTC,
             stop: CancellationToken::new(),
         }
