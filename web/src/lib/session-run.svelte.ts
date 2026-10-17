@@ -44,9 +44,9 @@ const hubRelay: SessionRelayLink = {
 };
 
 /**
- * A message this page sent the session that it hasn't read yet: sent while a
- * turn ran, the session takes it in at the turn's next checkpoint, or starts
- * its next turn with it. It joins the transcript where the session read it.
+ * A message this page sent the session that it hasn't read yet. The turn in
+ * flight takes it in at its next checkpoint; otherwise it starts a turn, which
+ * reads it as it begins. It joins the transcript where the session read it.
  */
 export interface SessionWaitingMessage {
   /** The message's id, which the session's `session_user_message` frame names once it reads it. */
