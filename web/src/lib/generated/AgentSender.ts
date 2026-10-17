@@ -13,4 +13,10 @@ address: string,
  * Sender's category label (`"main"`, `"scheduled"`, `"external"`,
  * `"spawned"`, or `"teammate"`).
  */
-category: string, };
+category: string, 
+/**
+ * The sending session's run, for a message one of this agent's own
+ * sessions sent main. `None` for a teammate, and on a history entry
+ * that does not record one.
+ */
+run_id?: string, };
