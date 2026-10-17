@@ -334,13 +334,6 @@ impl CheckpointEngine {
         *self.pending.borrow()
     }
 
-    /// Follow [`Self::pending_checkpoints`] as it changes.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn subscribe_pending(&self) -> tokio::sync::watch::Receiver<usize> {
-        self.pending.subscribe()
-    }
-
     /// Wait until no automatic checkpoint is being written. A checkpoint
     /// spawned while this waits is waited for too.
     pub async fn settled(&self) {
@@ -463,28 +456,14 @@ impl CheckpointEngine {
         id
     }
 
-    /// Checkpoint the hub config repository now (`hub/config.toml` and the
-    /// encrypted key stores). Synchronous — this does no `.await`ing of its
-    /// own, so it's safe to call from a blocking context too. Serializes
-    /// against every other process committing to this same repository (the
-    /// gateway, or a concurrent `residuum` CLI invocation); see
-    /// `super::backend::GitRepo::commit_snapshot`.
-    ///
-    /// # Errors
-    /// Returns [`CheckpointError`] on failure. Callers on the hot path
-    /// should not propagate it — see [`Self::checkpoint_config_before_write`]
-    /// for the "never fail the caller" wrapping.
-    #[cfg(test)]
-    pub(crate) fn checkpoint_config_now(
-        &self,
-        ctx: &CheckpointContext,
-    ) -> Result<Option<String>, CheckpointError> {
-        self.checkpoint_config_kind_now(RepoKind::Hub, ctx)
-    }
-
     /// Checkpoint either the hub config repository or the agent's own config
     /// repository (`config.toml` and `providers.toml` in the agent's `config/`
-    /// directory), synchronously.
+    /// directory), synchronously. This does no `.await`ing of its own, so it's
+    /// safe to call from a blocking context too. It serializes against every
+    /// other process committing to the chosen repository (the gateway, or a
+    /// concurrent `residuum` CLI invocation); see
+    /// `super::backend::GitRepo::commit_snapshot`. Hot-path callers should use
+    /// [`Self::checkpoint_config_before_write`], which never fails its caller.
     ///
     /// # Errors
     /// Returns [`CheckpointError`] on failure.
@@ -1435,7 +1414,7 @@ mod tests {
         let workspace = dir.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let engine = new_engine(dir.path());
-        let mut pending = engine.subscribe_pending();
+        let mut pending = engine.pending.subscribe();
         assert_eq!(engine.pending_checkpoints(), 0);
         std::fs::write(workspace.join("a.txt"), "one").unwrap();
 
@@ -1750,7 +1729,10 @@ mod tests {
         let engine = new_engine(dir.path());
 
         let id = engine
-            .checkpoint_config_now(&ctx(CheckpointTrigger::PreConfigWrite, "test"))
+            .checkpoint_config_kind_now(
+                RepoKind::Hub,
+                &ctx(CheckpointTrigger::PreConfigWrite, "test"),
+            )
             .unwrap()
             .unwrap();
         let detail = engine.show_checkpoint(RepoKind::Hub, id).await.unwrap();
@@ -1780,7 +1762,10 @@ mod tests {
         let engine = new_engine(dir.path());
 
         let id = engine
-            .checkpoint_config_now(&ctx(CheckpointTrigger::PreConfigWrite, "test"))
+            .checkpoint_config_kind_now(
+                RepoKind::Hub,
+                &ctx(CheckpointTrigger::PreConfigWrite, "test"),
+            )
             .unwrap()
             .unwrap();
         let detail = engine.show_checkpoint(RepoKind::Hub, id).await.unwrap();
