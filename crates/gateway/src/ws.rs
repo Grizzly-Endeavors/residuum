@@ -564,15 +564,16 @@ async fn handle_session_command(
             match crate::sessions::send_session_message(
                 &state.agent_messenger,
                 &address,
+                Some(id.clone()),
                 content,
                 &crate::sessions::SessionMessageAuthor::Owner,
             )
             .await
             {
-                Ok(outcome) => ServerMessage::SessionMessageDelivered {
+                Ok(sent) => ServerMessage::SessionMessageDelivered {
                     id,
                     address,
-                    outcome,
+                    outcome: sent.outcome,
                 },
                 Err(e) => ServerMessage::SessionCommandFailed {
                     id,

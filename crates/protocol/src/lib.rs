@@ -67,7 +67,9 @@ pub enum ClientMessage {
     /// run if it has completed. Answered with `SessionMessageDelivered` or
     /// `SessionCommandFailed`, both carrying `id`.
     SessionSendMessage {
-        /// Client-generated correlation ID for the reply.
+        /// Client-generated id: correlates the reply, and is the message's
+        /// id, which the session's `SessionUserMessage` carries when it reads
+        /// the message.
         id: String,
         /// Address of the target session (not `main`).
         address: String,
@@ -774,6 +776,28 @@ pub enum ServerMessage {
         run_id: String,
         /// Identifies the turn within the run.
         turn_id: String,
+    },
+    /// A session read a message sent to it (the owner's, an artifact's, a
+    /// teammate's or another agent's): mid-turn, at a tool-call checkpoint of
+    /// the turn `turn_id`, or as the input that started the turn `turn_id`,
+    /// in which case it follows that turn's `SessionTurnStarted`.
+    SessionUserMessage {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// The message's id: the one its sender chose, or the one it was
+        /// given when it sent none.
+        id: String,
+        /// The turn that read it.
+        turn_id: String,
+        /// The message as sent, without the sender header the session sees.
+        content: String,
+        /// The sender's address (`owner` for the owner).
+        from: String,
+        /// The sender's category label (`owner`, `artifact`, `teammate`,
+        /// `main`, `spawned`, ...).
+        from_category: String,
     },
     /// A session invoked a tool (verbose only).
     SessionToolCall {

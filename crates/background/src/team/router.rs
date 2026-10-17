@@ -247,10 +247,12 @@ impl TeamRouter {
         let outcome = messenger
             .send(
                 target.local_address(),
-                SessionAddress::from(qualified),
-                TEAMMATE_SENDER_CATEGORY.to_string(),
-                content,
-                hop_count,
+                residuum_bus::AgentMessageEvent::new(
+                    SessionAddress::from(qualified),
+                    TEAMMATE_SENDER_CATEGORY,
+                    content,
+                    hop_count,
+                ),
             )
             .await;
         match outcome {

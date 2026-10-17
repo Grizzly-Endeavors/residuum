@@ -462,6 +462,7 @@ async fn handle_session_event(
         SessionEventKind::StateChanged(_)
         | SessionEventKind::Started(_)
         | SessionEventKind::TurnEnded { .. }
+        | SessionEventKind::MessageRead { .. }
         | SessionEventKind::ToolCall(_)
         | SessionEventKind::ToolResult(_)
         | SessionEventKind::Intermediate { .. }

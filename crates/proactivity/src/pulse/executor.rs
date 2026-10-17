@@ -82,6 +82,7 @@ pub fn build_pulse_execution(
         images: Vec::new(),
         overlap,
         carried_history: Vec::new(),
+        delivered_messages: Vec::new(),
     }
 }
 

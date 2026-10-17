@@ -55,21 +55,7 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
             state,
         },
         SessionEventKind::Completed { status, episode_id } => {
-            let (status, error, error_details) = match status {
-                AgentResultStatus::Completed => (SessionRunStatus::Completed, None, None),
-                AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None, None),
-                AgentResultStatus::Failed { error, details } => {
-                    (SessionRunStatus::Failed, Some(error), details)
-                }
-            };
-            ServerMessage::SessionCompleted {
-                address,
-                run_id,
-                status,
-                error,
-                error_details,
-                episode_id,
-            }
+            completed_frame(address, run_id, status, episode_id)
         }
         SessionEventKind::TurnStarted { turn_id } => ServerMessage::SessionTurnStarted {
             address,
@@ -80,6 +66,21 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
             address,
             run_id,
             turn_id,
+        },
+        SessionEventKind::MessageRead {
+            id,
+            turn_id,
+            content,
+            from,
+            from_category,
+        } => ServerMessage::SessionUserMessage {
+            address,
+            run_id,
+            id,
+            turn_id,
+            content,
+            from,
+            from_category,
         },
         SessionEventKind::ToolCall(call) => ServerMessage::SessionToolCall {
             address,
@@ -133,6 +134,30 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
             run_id,
             content,
         },
+    }
+}
+
+/// The `SessionCompleted` frame for a run that finished with `status`.
+fn completed_frame(
+    address: String,
+    run_id: String,
+    status: AgentResultStatus,
+    episode_id: Option<String>,
+) -> ServerMessage {
+    let (status, error, error_details) = match status {
+        AgentResultStatus::Completed => (SessionRunStatus::Completed, None, None),
+        AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None, None),
+        AgentResultStatus::Failed { error, details } => {
+            (SessionRunStatus::Failed, Some(error), details)
+        }
+    };
+    ServerMessage::SessionCompleted {
+        address,
+        run_id,
+        status,
+        error,
+        error_details,
+        episode_id,
     }
 }
 
@@ -212,6 +237,37 @@ mod tests {
                 "error": "model down",
                 "episode_id": "ep-007",
             })
+        );
+    }
+
+    #[test]
+    fn message_read_event_becomes_a_session_user_message_frame() {
+        let message = residuum_bus::AgentMessageEvent::new(
+            SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+            "owner",
+            "check the logs too",
+            0,
+        )
+        .with_id("m-42");
+        let msg = session_event_to_server_message(SessionEvent {
+            address: SessionAddress::from("spawned-d-0003"),
+            run_id: "run-d3".to_string(),
+            kind: message.read_event("run-d3-t2"),
+        });
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "session_user_message",
+                "address": "spawned-d-0003",
+                "run_id": "run-d3",
+                "id": "m-42",
+                "turn_id": "run-d3-t2",
+                "content": "check the logs too",
+                "from": "owner",
+                "from_category": "owner",
+            }),
+            "the frame carries the message as sent, without the header the session sees"
         );
     }
 

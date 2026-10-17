@@ -432,6 +432,7 @@ fn deliver_losing_spawn_input(
                 images: config.images.clone(),
                 overlap: None,
                 carried_history: Vec::new(),
+                delivered_messages: Vec::new(),
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
@@ -794,6 +795,7 @@ fn initial_kickoff(config: SubAgentConfig, chat_note: Option<String>) -> TurnKic
         hop_count: config.hop_count,
         sender: config.sender,
         images: config.images,
+        delivered: config.delivered_messages,
     }
 }
 
@@ -1154,10 +1156,12 @@ async fn relay_result_to_spawner(
         .messenger
         .send(
             spawner.as_ref(),
-            info.address.clone(),
-            info.category.as_str().to_string(),
-            content.to_string(),
-            hop_count,
+            residuum_bus::AgentMessageEvent::new(
+                info.address.clone(),
+                info.category.as_str(),
+                content,
+                hop_count,
+            ),
         )
         .await;
 
@@ -1430,7 +1434,7 @@ async fn run_turn(
             "outside edit before turn start".to_string(),
         ));
 
-    let result = execute_turn_outcome(ctx, recent_messages, kickoff, interrupt_rx).await;
+    let result = execute_turn_outcome(ctx, turn_id, recent_messages, kickoff, interrupt_rx).await;
 
     match &result {
         (AgentResultStatus::Completed, summary) if !summary.is_empty() => {
@@ -1497,6 +1501,7 @@ fn turn_end_summary(result: &(AgentResultStatus, String)) -> String {
 /// [`run_turn`] so the event bracketing there stays readable.
 async fn execute_turn_outcome(
     ctx: &TurnCtx<'_>,
+    turn_id: &str,
     recent_messages: &mut RecentMessages,
     kickoff: TurnKickoff,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
@@ -1526,6 +1531,7 @@ async fn execute_turn_outcome(
             publisher: ctx.publisher,
             address: &ctx.info.address,
             run_id: &ctx.info.run_id,
+            turn_id,
         };
         execute_subagent(
             &identity,
@@ -1850,6 +1856,7 @@ mod tests {
                 inbound: None,
                 images: Vec::new(),
                 carried_history: Vec::new(),
+                delivered_messages: Vec::new(),
             },
             conversation_target: None,
             overlap: None,
@@ -1926,6 +1933,7 @@ mod tests {
             inbound: Some(losing_inbound),
             images: Vec::new(),
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -2016,6 +2024,7 @@ mod tests {
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -2076,6 +2085,7 @@ mod tests {
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -2837,12 +2847,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from(MAIN_ADDRESS),
-                    from_category: "main".to_string(),
-                    content: "don't forget this".to_string(),
-                    hop_count: 0,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "don't forget this",
+                    0,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered
         );
@@ -3428,12 +3438,12 @@ mod tests {
         // even with a message already sitting in the channel — exactly the
         // race `wait_idle`'s post-timeout `try_recv` exists to catch.
         let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent {
-            from: SessionAddress::from(MAIN_ADDRESS),
-            from_category: "main".to_string(),
-            content: "just in time".to_string(),
-            hop_count: 0,
-        }))
+        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent::new(
+            SessionAddress::from(MAIN_ADDRESS),
+            "main",
+            "just in time",
+            0,
+        )))
         .unwrap();
 
         let stop_token = CancellationToken::new();
@@ -3503,12 +3513,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from(MAIN_ADDRESS),
-                    from_category: "main".to_string(),
-                    content: "any updates?".to_string(),
-                    hop_count: 0,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "any updates?",
+                    0,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered,
             "the idle session should still be live in the registry"
@@ -3699,12 +3709,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from("agent:ivan"),
-                    from_category: residuum_bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
-                    content: "Here's your answer.".to_string(),
-                    hop_count: 1,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from("agent:ivan"),
+                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
+                    "Here's your answer.",
+                    1,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered,
         );
@@ -3966,12 +3976,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from(MAIN_ADDRESS),
-                    from_category: "main".to_string(),
-                    content: "keep going".to_string(),
-                    hop_count: 0,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "keep going",
+                    0,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered
         );
@@ -4066,6 +4076,7 @@ mod tests {
             SessionEventKind::Completed { status, .. } => format!("completed:{status}"),
             SessionEventKind::TurnStarted { .. } => "turn_started".to_string(),
             SessionEventKind::TurnEnded { .. } => "turn_ended".to_string(),
+            SessionEventKind::MessageRead { content, .. } => format!("message_read:{content}"),
             SessionEventKind::ToolCall(call) => format!("tool_call:{}", call.name),
             SessionEventKind::ToolResult(result) => {
                 format!("tool_result:{}:{}", result.name, result.is_error)
@@ -4146,6 +4157,7 @@ mod tests {
             .filter_map(|e| match &e.kind {
                 SessionEventKind::TurnStarted { turn_id }
                 | SessionEventKind::TurnEnded { turn_id }
+                | SessionEventKind::MessageRead { turn_id, .. }
                 | SessionEventKind::Response { turn_id, .. } => Some(turn_id.as_str()),
                 SessionEventKind::Started(_)
                 | SessionEventKind::StateChanged(_)
@@ -4162,6 +4174,240 @@ mod tests {
         assert!(
             turn_ids.iter().all(|id| *id == expected_turn_id),
             "turn events should share the turn's id, got {turn_ids:?}"
+        );
+    }
+
+    /// Session resources answering through `provider`.
+    fn resources_with_provider(
+        provider: Box<dyn residuum_inference::InferenceProvider>,
+    ) -> SubAgentResources {
+        let (layout, observer, merge_writer) = test_memory_extras();
+        SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            provider,
+            tools: residuum_agent::ToolRegistry::new(),
+            mcp_registry: McpRegistry::new_shared(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+            hop_counter: residuum_agent::HopCounter::new(0),
+        }
+    }
+
+    /// Like [`ToolThenAnswerProvider`], but its first completion waits at a
+    /// gate, so a test can deliver a message while the turn is running.
+    struct GatedToolThenAnswerProvider {
+        entry: residuum_core::testing::gate::GateEntry,
+        inner: ToolThenAnswerProvider,
+    }
+
+    #[async_trait]
+    impl residuum_inference::InferenceProvider for GatedToolThenAnswerProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            tools: &[ToolDefinition],
+            options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            if self.inner.calls.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                self.entry.pass().await;
+            }
+            self.inner.complete(messages, tools, options).await
+        }
+
+        fn model_name(&self) -> &'static str {
+            "gated-tool-then-answer"
+        }
+    }
+
+    fn owner_message(id: &str, content: &str) -> AgentMessageEvent {
+        AgentMessageEvent::new(
+            SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+            "owner",
+            content,
+            0,
+        )
+        .with_id(id)
+    }
+
+    /// The id and turn id of a `MessageRead`, or `None` for any other event.
+    fn read_of(kind: &SessionEventKind) -> Option<(&str, &str)> {
+        if let SessionEventKind::MessageRead { id, turn_id, .. } = kind {
+            Some((id.as_str(), turn_id.as_str()))
+        } else {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_read_mid_turn_is_reported_with_the_running_turn_s_id() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-mid-read");
+        let mut request = sample_request(address.as_ref());
+        request.spawner = None;
+        let gate = Gate::closed("the turn's first model call");
+        runtime.spawn(
+            request,
+            Some(resources_with_provider(Box::new(
+                GatedToolThenAnswerProvider {
+                    entry: gate.entry(),
+                    inner: ToolThenAnswerProvider {
+                        calls: std::sync::atomic::AtomicUsize::new(0),
+                    },
+                },
+            ))),
+        );
+
+        gate.until_held(1).await;
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(owner_message("m-mid", "also check the logs")),
+            ),
+            crate::registry::DeliverOutcome::Delivered,
+        );
+        gate.release(1);
+
+        let collected = collect_until_completed(&mut events).await;
+        let run_id = &collected.first().unwrap().run_id;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        let read_at = labels
+            .iter()
+            .position(|l| l == "message_read:also check the logs")
+            .unwrap_or_else(|| panic!("the read should be reported: {labels:?}"));
+        let position = |label: &str| labels.iter().position(|l| l == label);
+        assert!(
+            position("tool_result:no_such_tool:true") < Some(read_at)
+                && Some(read_at) < position("response:all done"),
+            "the message is read at the checkpoint after the tool call: {labels:?}"
+        );
+        let (id, turn_id) = collected
+            .get(read_at)
+            .and_then(|e| read_of(&e.kind))
+            .unwrap();
+        assert_eq!(id, "m-mid");
+        assert_eq!(
+            turn_id,
+            format!("{run_id}-t1"),
+            "the turn in flight read it"
+        );
+        assert_eq!(
+            labels.iter().filter(|l| *l == "turn_started").count(),
+            1,
+            "the message joined the running turn rather than starting another: {labels:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_that_wakes_an_idle_session_is_read_right_after_its_turn_starts() {
+        let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
+        let mut events = bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-wake-read");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(make_sequenced_resources(vec!["first done", "second done"])),
+        );
+        next_idle(&mut events, &address, "the session to go idle").await;
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(owner_message("m-wake", "one more thing")),
+            ),
+            crate::registry::DeliverOutcome::Delivered,
+        );
+
+        let started = loop {
+            let event = next_event("the woken turn to start", &mut events).await;
+            if let SessionEventKind::TurnStarted { turn_id } = event.kind {
+                break turn_id;
+            }
+        };
+        let event = next_event("the woken turn's read of its message", &mut events).await;
+        assert_eq!(
+            read_of(&event.kind),
+            Some(("m-wake", started.as_str())),
+            "the read follows the TurnStarted of the turn the message started: {:?}",
+            event.kind
+        );
+        assert_eq!(started, format!("{}-t2", event.run_id));
+
+        next_idle(&mut events, &address, "the woken turn to go idle").await;
+        assert!(runtime.registry.stop(&address));
+    }
+
+    #[tokio::test]
+    async fn a_resumed_run_reads_the_messages_that_resumed_it_on_its_first_turn() {
+        let (runtime, mut results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-resumed-read");
+        let mut request = sample_request(address.as_ref());
+        request.spawner = None;
+        // What a resume by two messages left at teardown hands the new run.
+        let first = owner_message("m-first", "are you there?");
+        let second = AgentMessageEvent::new(
+            SessionAddress::from("agent:ivan"),
+            residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+            "here's the file",
+            1,
+        )
+        .with_id("m-second");
+        request.subagent_config.prompt = format!(
+            "{}\n\n{}",
+            first.format_for_agent(),
+            second.format_for_agent()
+        );
+        request.subagent_config.delivered_messages = vec![first, second];
+        runtime.spawn(request, Some(make_resources("resumed")));
+
+        let collected = collect_until_completed(&mut events).await;
+        let run_id = &collected.first().unwrap().run_id;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        let started_at = labels
+            .iter()
+            .position(|l| l == "turn_started")
+            .unwrap_or_else(|| panic!("the run should start a turn: {labels:?}"));
+        let reads: Vec<(&str, &str)> = collected
+            .iter()
+            .skip(started_at + 1)
+            .take(2)
+            .filter_map(|e| read_of(&e.kind))
+            .collect();
+        let turn_id = format!("{run_id}-t1");
+        assert_eq!(
+            reads,
+            vec![
+                ("m-first", turn_id.as_str()),
+                ("m-second", turn_id.as_str())
+            ],
+            "both reads follow the first turn's TurnStarted: {labels:?}"
+        );
+
+        let result = next_event("the run's result", &mut results).await;
+        let transcript_path = result.transcript_path.expect("a transcript is written");
+        let contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let opening = record
+            .get("transcript")
+            .and_then(|t| t.as_array())
+            .and_then(|t| t.first())
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            opening.get("id"),
+            Some(&serde_json::json!("m-first")),
+            "the opening message records the first message's id: {opening}"
         );
     }
 

@@ -262,6 +262,7 @@ impl WatchState {
             }
             SessionEventKind::TurnStarted { .. }
             | SessionEventKind::TurnEnded { .. }
+            | SessionEventKind::MessageRead { .. }
             | SessionEventKind::ToolCall(_)
             | SessionEventKind::ToolResult(_)
             | SessionEventKind::Intermediate { .. }

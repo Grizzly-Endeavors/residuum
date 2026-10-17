@@ -54,6 +54,9 @@ pub struct SubAgentConfig {
     /// Main's saved conversation, for a fork of it. See
     /// [`residuum_bus::SpawnRequestEvent::carried_history`].
     pub carried_history: Vec<residuum_inference::Message>,
+    /// The agent messages a resume delivers as this run's opening input. See
+    /// [`residuum_bus::SpawnRequestEvent::delivered_messages`].
+    pub delivered_messages: Vec<residuum_bus::AgentMessageEvent>,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display
