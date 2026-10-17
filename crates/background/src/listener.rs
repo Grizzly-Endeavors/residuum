@@ -78,7 +78,7 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                     publish_pulse_start_failed(&ctx.publisher, address, &source_label, e).await;
                 }
                 match outcome {
-                    Ok(()) => {
+                    Ok(SpawnOutcome::Accepted) => {
                         if spawn_failures.remove(&source_label).is_some() {
                             tracing::info!(
                                 source = %source_label,
@@ -86,6 +86,9 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                             );
                         }
                     }
+                    // A stop is not a recovery: a fork failure on record for
+                    // this pulse stays deduplicated.
+                    Ok(SpawnOutcome::FireStopped) => {}
                     Err(e) => match owner_start {
                         Some((address, resume)) => {
                             notify_owner_start_failed(&ctx.publisher, &address, resume, &e).await;
@@ -242,6 +245,17 @@ async fn notify_owner_start_failed(
     }
 }
 
+/// What became of a spawn request that didn't fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnOutcome {
+    /// Forked, delivered into the run already live at its address, or
+    /// deferred until the run completing there clears.
+    Accepted,
+    /// A pulse fire's request whose fire was stopped, or had ended, before
+    /// its session was forked: nothing forked.
+    FireStopped,
+}
+
 /// Handle a single spawn request: guard against a live or tearing-down
 /// address, then build resources and fork the session.
 ///
@@ -260,7 +274,7 @@ async fn notify_owner_start_failed(
 fn handle_spawn_request<'a>(
     ctx: &'a Arc<SpawnContext>,
     event: SpawnRequestEvent,
-) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<SpawnOutcome, anyhow::Error>> + Send + 'a>> {
     // Written as a plain fn returning a boxed future, rather than `async
     // fn`, because the `Completing` branch below recurses into this same
     // function (via a detached task) — an `async fn` calling itself, even
@@ -316,7 +330,7 @@ fn handle_spawn_request<'a>(
                             }
                         }
                     });
-                    return Ok(());
+                    return Ok(SpawnOutcome::Accepted);
                 }
                 SessionState::Forking
                 | SessionState::Queued
@@ -341,7 +355,8 @@ fn handle_spawn_request<'a>(
                         &ctx.session_registry,
                         &ctx.publisher,
                         event,
-                    );
+                    )
+                    .map(|()| SpawnOutcome::Accepted);
                 }
                 SessionState::Completed => {}
             }
@@ -468,21 +483,22 @@ pub(crate) fn race_guard_interrupt(
 /// A pulse fire's request forks only while the fire is still going: its
 /// session's stop token is claimed from the fire (see
 /// [`crate::fire_stops`]), and a fire that was stopped or has ended forks
-/// nothing, which the fire already knows from withdrawing its offer.
+/// nothing and returns [`SpawnOutcome::FireStopped`]. The fire already
+/// knows from withdrawing its offer, so that is logged at `debug` only.
 async fn fork_and_spawn(
     ctx: &Arc<SpawnContext>,
     event: SpawnRequestEvent,
-) -> Result<(), anyhow::Error> {
+) -> Result<SpawnOutcome, anyhow::Error> {
     let stop = match &event.fire_id {
         Some(fire_id) => {
             let Some(stop) = ctx.session_registry.fire_stops().claim(fire_id) else {
-                tracing::info!(
+                tracing::debug!(
                     address = %event.address,
                     source = %event.source_label,
                     fire = %fire_id,
-                    "the pulse fire was stopped before its session was forked; not forking it"
+                    "pulse fire stopped before its session was forked; not forking it"
                 );
-                return Ok(());
+                return Ok(SpawnOutcome::FireStopped);
             };
             Some(stop)
         }
@@ -539,7 +555,7 @@ async fn fork_and_spawn(
         source = %log_source_label,
         "forked session"
     );
-    Ok(())
+    Ok(SpawnOutcome::Accepted)
 }
 
 #[cfg(test)]
@@ -1074,15 +1090,95 @@ mod tests {
         let request = pulse_fire_request();
         let address = request.address.clone();
         // With no working provider, a fork that went ahead would fail here.
-        handle_spawn_request(&ctx, request)
+        let outcome = handle_spawn_request(&ctx, request)
             .await
             .expect("a stopped fire's request is dropped, not failed");
+
+        assert_eq!(outcome, SpawnOutcome::FireStopped);
 
         assert!(ctx.session_registry.get(&address).is_none());
         assert!(
             !ctx.session_registry.fire_stops().withdraw("fire-1"),
             "no session claimed the fire's stop token"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stopped_pulse_fire_is_no_recovery_from_the_pulse_s_fork_failure() {
+        let log = residuum_core::testing::log::EventLog::default();
+        let _capture = log.capture();
+        let bus = residuum_bus::spawn_broker();
+        let mut notices: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
+        // A fire of `watch` with no fire to claim from, whose fork fails on
+        // its provider.
+        let failing = || SpawnRequestEvent {
+            fire_id: None,
+            ..pulse_fire_request()
+        };
+        let stopped_fire = CancellationToken::new();
+        ctx.session_registry
+            .fire_stops()
+            .offer("fire-2", stopped_fire.clone());
+        stopped_fire.cancel();
+        let publisher = bus.publisher();
+
+        publisher
+            .publish(topics::Background, failing())
+            .await
+            .unwrap();
+        let first = next_event("the pulse's first fork failure notice", &mut notices).await;
+        assert!(first.message.contains("\"watch\""), "{}", first.message);
+
+        publisher
+            .publish(
+                topics::Background,
+                SpawnRequestEvent {
+                    fire_id: Some("fire-2".to_string()),
+                    ..pulse_fire_request()
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(topics::Background, failing())
+            .await
+            .unwrap();
+        // A different pulse failing after them: its notice is the next one
+        // only when the repeat of `watch`'s failure published none.
+        publisher
+            .publish(
+                topics::Background,
+                SpawnRequestEvent {
+                    address: SessionAddress::from("scheduled-other-0a1b"),
+                    source_label: "pulse:other".to_string(),
+                    fire_id: None,
+                    ..pulse_fire_request()
+                },
+            )
+            .await
+            .unwrap();
+        let next = next_event("the other pulse's fork failure notice", &mut notices).await;
+        assert!(
+            next.message.contains("\"other\""),
+            "the stopped fire cleared watch's failure, so its repeat noticed again: {}",
+            next.message
+        );
+
+        assert!(
+            log.matching("recovered after previously failing")
+                .is_empty()
+        );
+        let stopped: Vec<_> = log
+            .matching("pulse fire stopped before its session was forked")
+            .into_iter()
+            .map(|event| event.level)
+            .collect();
+        assert_eq!(stopped, vec![tracing::Level::DEBUG]);
     }
 
     #[tokio::test]
