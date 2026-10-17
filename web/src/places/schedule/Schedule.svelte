@@ -80,10 +80,24 @@
   }
 </script>
 
-{#snippet running(run: ScheduledCurrentRun)}
+<!-- `pulse` names the pulse whose run this is, `null` for an action's run. -->
+{#snippet running(run: ScheduledCurrentRun, pulse: string | null, title: string)}
   {@const note = overlapNote(run, now)}
+  {@const earlier = run.overlap?.previous_fire_id ?? null}
   <Badge tone="accent" dot>{runPhase(run)}</Badge>
   {#if note}<span class="overlap">{note}</span>{/if}
+  {#if pulse !== null && earlier !== null}
+    <Button
+      variant="quiet"
+      size="sm"
+      icon="stop"
+      aria-label="Stop the earlier run of {title}"
+      loading={scheduled.stopping.has(earlier)}
+      disabled={agentState !== "running"}
+      onclick={() => void scheduled.stopRun("pulse", pulse, { ...run, fire_id: earlier })}
+      >Stop earlier run</Button
+    >
+  {/if}
 {/snippet}
 
 {#snippet runLine(run: ScheduledCurrentRun)}
@@ -193,7 +207,9 @@
                   <div class="row-text">
                     <p class="row-title">
                       {title}
-                      {#if pulse.current_run}{@render running(pulse.current_run)}{/if}
+                      {#if pulse.current_run}
+                        {@render running(pulse.current_run, pulse.name, title)}
+                      {/if}
                     </p>
                     {#if pulse.current_run}{@render runLine(pulse.current_run)}{/if}
                     {#if cadence || pulse.agent || model}
@@ -254,7 +270,9 @@
                   <div class="row-text">
                     <p class="row-title">
                       {title}
-                      {#if action.current_run}{@render running(action.current_run)}{/if}
+                      {#if action.current_run}
+                        {@render running(action.current_run, null, title)}
+                      {/if}
                     </p>
                     {#if action.current_run}{@render runLine(action.current_run)}{/if}
                     {#if action.agent || model}

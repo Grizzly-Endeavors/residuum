@@ -294,6 +294,42 @@ describe("Schedule", () => {
     expect(screen.getByText("Last run was stopped just now")).toBeTruthy();
   });
 
+  it("stops the earlier fire a run overlaps, leaving the newer one running", async () => {
+    const user = userEvent.setup();
+    scheduled.reset("atlas");
+    const overlapping = (previousFireId: string | null): ScheduledCurrentRun => ({
+      ...scriptRun("fire-2"),
+      overlap: {
+        previous_run_id: null,
+        previous_fire_id: previousFireId,
+        previous_started_at: soon(-12),
+      },
+    });
+    const requests = serveSchedule(
+      [
+        pulse("disk_watch", { current_run: overlapping("fire-1") }),
+        // An earlier run no fire tracks has no fire to stop.
+        pulse("inbox_check", { current_run: overlapping(null) }),
+      ],
+      [],
+    );
+    render(Schedule, { agent: "atlas" });
+    const earlier = await screen.findByRole("button", {
+      name: "Stop the earlier run of Disk watch",
+    });
+    expect(earlier.textContent.trim()).toBe("Stop earlier run");
+    expect(within(rowOf("Inbox check")).queryByRole("button", { name: /earlier run/ })).toBeNull();
+
+    await user.click(earlier);
+    expect(requests).toContain("/api/agents/atlas/scheduled/pulses/disk_watch/fires/fire-1/stop");
+    expect(requests.filter((url) => url.endsWith("/stop"))).toHaveLength(1);
+    expect(earlier).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Stop Disk watch" })).not.toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+  });
+
   it("says when the fire had already finished, and lets Stop be pressed again", async () => {
     const user = userEvent.setup();
     scheduled.reset("atlas");
