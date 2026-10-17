@@ -857,6 +857,7 @@ fn initial_kickoff(config: SubAgentConfig, chat_note: Option<String>) -> TurnKic
         sender: config.sender,
         images: config.images,
         delivered: config.delivered_messages,
+        resumed_by_chat: !config.delivered_chat_messages.is_empty(),
     }
 }
 
@@ -4699,6 +4700,63 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("[Resumed session] previous run"),
             "the session reads the pointer as it always has"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_resumed_by_chat_messages_alone_opens_with_its_pointer_as_its_own_entry() {
+        let (runtime, mut results, _bus_handle) = test_runtime_with_bus(3).await;
+        let address = SessionAddress::from("external-discord-resumed-by-chat");
+        let mut request = sample_conversation_request(address.as_ref());
+        // What a teardown that drained only a chat message hands the new run.
+        request.subagent_config.sender = None;
+        request.subagent_config.prompt = "[From: Jane via discord (#builds)] any news?".to_string();
+        request.subagent_config.context = Some("[Resumed session] previous run".to_string());
+        request.subagent_config.delivered_chat_messages =
+            vec![jane_chat_message("m-chat", "any news?")];
+        runtime.spawn(request, Some(make_resources("resumed")));
+
+        let result = next_event("the run's result", &mut results).await;
+        let transcript_path = result.transcript_path.expect("a transcript is written");
+        let contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let transcript = record
+            .get("transcript")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap();
+        let opening: Vec<(Option<&str>, Option<&str>, Option<bool>)> = transcript
+            .iter()
+            .take(2)
+            .map(|entry| {
+                (
+                    entry.get("role").and_then(serde_json::Value::as_str),
+                    entry.get("content").and_then(serde_json::Value::as_str),
+                    entry.get("context").and_then(serde_json::Value::as_bool),
+                )
+            })
+            .collect();
+        let [(_, pointer, pointer_mark), chat] = opening.as_slice() else {
+            panic!("the run opens with two entries: {transcript:?}");
+        };
+        assert!(
+            pointer.is_some_and(|text| text.ends_with("[Resumed session] previous run")),
+            "the session reads the pointer, after any chat note, in an entry of its own: \
+             {transcript:?}"
+        );
+        assert_eq!(
+            *pointer_mark,
+            Some(true),
+            "the pointer is marked as context"
+        );
+        assert_eq!(
+            *chat,
+            (
+                Some("user"),
+                Some("[From: Jane via discord (#builds)] any news?"),
+                None
+            ),
+            "the chat messages follow as an ordinary entry: {transcript:?}"
         );
     }
 
