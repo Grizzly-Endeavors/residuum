@@ -1,10 +1,9 @@
-//! In-crate end-to-end tests for the A2A server: a real [`SessionRuntime`],
-//! a scripted `InferenceProvider`, the real [`super::listener::A2aListener`]
-//! bound to a loopback port, and the official `a2a-client-lf` client driving
-//! it over HTTP. See `docs/systems-usage/a2a.md`.
+//! End-to-end tests for the A2A server: a real [`SessionRuntime`] with the
+//! tools' session tools, a scripted `InferenceProvider`, the real
+//! [`A2aListener`] bound to a loopback port, and the official `a2a-client-lf`
+//! client driving it over HTTP. See `docs/systems-usage/a2a.md`.
 //!
-//! Declared as `#[cfg(test)] mod server_e2e_tests;` from `mod.rs`, so this
-//! whole file (harness and tests alike) only exists in test builds.
+//! covers: residuum-a2a, residuum-background, residuum-tools
 
 use residuum_core::testing::gate::{Gate, GateEntry};
 use residuum_core::testing::ports::{ReservedPort, reserve_port};

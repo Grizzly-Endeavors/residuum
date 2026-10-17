@@ -28,7 +28,7 @@ pub mod launch;
 pub mod overview;
 pub mod provision;
 pub mod push;
-mod relay_agents;
+pub(crate) mod relay_agents;
 pub mod runtime;
 pub mod services;
 #[cfg(test)]

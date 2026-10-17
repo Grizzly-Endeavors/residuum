@@ -21,7 +21,7 @@ mod triggers;
 pub mod types;
 
 #[cfg(test)]
-pub(in crate::hub) use encrypt::browser::Browser;
+pub(crate) use encrypt::browser::Browser;
 pub use error::PushError;
 pub use presence::{Presence, PresenceConnection};
 pub use service::{
@@ -29,7 +29,7 @@ pub use service::{
 };
 pub(crate) use triggers::{PushTriggers, TriggerInputs};
 #[cfg(test)]
-pub(in crate::hub) use triggers::{Trigger, TriggerDecision, TriggerInput};
+pub(crate) use triggers::{Trigger, TriggerDecision, TriggerInput};
 pub use types::{
     MAX_BODY_CHARS, PatchPushDeviceRequest, PushDevice, PushDeviceList, PushDeviceResponse,
     PushEvent, PushFailure, PushKeyResponse, PushMessage, PushPayload, PushPreferences,
