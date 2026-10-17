@@ -385,6 +385,7 @@ export class SessionsStore {
       case "session_broadcast_response":
       case "session_response":
       case "session_error":
+      case "session_user_message":
         this.handleRunFrame(frame);
         return;
       default:
@@ -416,6 +417,7 @@ export class SessionsStore {
       case "session_tool_result":
       case "session_broadcast_response":
       case "session_response":
+      case "session_user_message":
         // A run's output is the session panel's, through the hub's relay.
         break;
     }

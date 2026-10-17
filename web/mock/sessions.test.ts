@@ -11,6 +11,7 @@ import { createMockEnv } from "./env";
 import { sendSessionMessage, sessionRoutes, spawnSession, stopSession } from "./sessions";
 import { createState, type MockState } from "./state";
 import {
+  advanceMockTime,
   captureFrames,
   fetchJson,
   fetchText,
@@ -22,6 +23,12 @@ const ARTIFACT_HEADER = { "X-Residuum-Artifact": "tip-splitter" };
 const DISCORD = "external-discord-4f1c9a2e7b3d0856";
 const TELEGRAM = "external-telegram-a07d3e5519c2b4f8";
 const RESEARCH = "spawned-research-3f9a";
+
+type ReadFrame = Extract<ServerMessage, { type: "session_user_message" }>;
+
+function isRead(frame: ServerMessage): frame is ReadFrame {
+  return frame.type === "session_user_message";
+}
 
 const UNTRACKED = {
   usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
@@ -270,22 +277,89 @@ describe("sessions endpoints", () => {
       const unknown = await post(harness, "/api/sessions/nope/messages", { content: "hi" });
       expect(unknown.status).toBe(404);
       expect(unknown.body.code).toBe("unknown_address");
+      const badId = await post(harness, `/api/sessions/${DISCORD}/messages`, {
+        content: "hi",
+        id: "has space",
+      });
+      expect(badId.status).toBe(400);
+      expect(badId.body).toEqual({
+        error:
+          "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.",
+        code: "invalid_request",
+      });
     });
 
-    it("delivers to a live session, attributed to the artifact or the owner", async () => {
+    it("delivers to a live session, attributed to the artifact or the owner, and reads it as a turn begins", async () => {
       const fromArtifact = await post(
         harness,
         `/api/sessions/${DISCORD}/messages`,
         { content: "status?" },
         ARTIFACT_HEADER,
       );
-      expect(fromArtifact).toEqual({ status: 200, body: { outcome: "live" } });
-      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "and now?" });
-
+      expect(fromArtifact).toEqual({ status: 200, body: { outcome: "live", id: "msg-s-1" } });
+      const started = harness.frames.find((f) => f.type === "session_turn_started");
+      expect(harness.frames.find((f) => f.type === "session_user_message")).toEqual({
+        type: "session_user_message",
+        address: DISCORD,
+        run_id: "run-live-discord",
+        id: "msg-s-1",
+        turn_id: started && "turn_id" in started ? started.turn_id : "",
+        content: "status?",
+        from: "artifact:tip-splitter",
+        from_category: "artifact",
+      });
       const transcript = harness.state.sessions.transcripts.get("run-live-discord") ?? [];
-      const last = transcript.slice(-2).map((m) => m.content);
-      expect(last[0]).toMatch(/^\[Message from the workbench artifact "tip-splitter"/);
-      expect(last[1]).toMatch(/^\[Message from the owner via the web UI/);
+      expect(transcript.at(-1)).toMatchObject({ role: "user", id: "msg-s-1" });
+      expect(transcript.at(-1)?.content).toMatch(
+        /^\[Message from the workbench artifact "tip-splitter".*\]\nstatus\?$/,
+      );
+    });
+
+    it("reads a message sent during a turn after the turn's tool batch, under the id the client chose", async () => {
+      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "status?" });
+      const during = await post(harness, `/api/sessions/${DISCORD}/messages`, {
+        content: "and now?",
+        id: "web-7",
+      });
+      expect(during.body).toEqual({ outcome: "live", id: "web-7" });
+      const reads = (): ReadFrame[] => harness.frames.filter(isRead);
+      expect(reads().map((f) => f.id)).toEqual(["msg-s-1"]);
+
+      await advanceMockTime(harness.state.env, 1200);
+      expect(reads().at(-1)).toMatchObject({
+        id: "web-7",
+        turn_id: reads()[0]?.turn_id,
+        from: "owner",
+        from_category: "owner",
+        content: "and now?",
+      });
+      // The tool result came first: it was read at the checkpoint after it.
+      expect(harness.frames.map((f) => f.type).slice(-2)).toEqual([
+        "session_tool_result",
+        "session_user_message",
+      ]);
+      const transcript = harness.state.sessions.transcripts.get("run-live-discord") ?? [];
+      expect(transcript.at(-1)).toMatchObject({ id: "web-7" });
+
+      await advanceMockTime(harness.state.env, 1200);
+      expect(transcript.at(-1)?.content).toBe('Understood: "and now?".');
+      // Only the one turn ran.
+      expect(harness.frames.filter((f) => f.type === "session_turn_started")).toHaveLength(1);
+    });
+
+    it("starts the next turn with a message sent after the tool batch", async () => {
+      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "status?" });
+      await advanceMockTime(harness.state.env, 1500);
+      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "late", id: "web-8" });
+      await advanceMockTime(harness.state.env, 900);
+      const starts = harness.frames.filter((f) => f.type === "session_turn_started");
+      expect(starts).toHaveLength(2);
+      const second = starts[1];
+      expect(harness.frames.at(-1)).toMatchObject({
+        type: "session_user_message",
+        id: "web-8",
+        turn_id: second && "turn_id" in second ? second.turn_id : "",
+      });
     });
 
     it("resumes a finished session as a new run", async () => {
@@ -293,7 +367,7 @@ describe("sessions endpoints", () => {
         content: "hello again",
       });
       expect(status).toBe(200);
-      expect(body).toEqual({ outcome: "resumed" });
+      expect(body).toEqual({ outcome: "resumed", id: "msg-s-1" });
       const live = (await list()).body.live;
       expect(live[0]).toMatchObject({
         address: TELEGRAM,
@@ -394,14 +468,25 @@ describe("session commands and lifecycle", () => {
   it("delivers to a live session and runs a turn: running, tool call, reply, idle", () => {
     sendSessionMessage(state, reply, "c2", DISCORD, "status?");
     expect(replies).toEqual([
-      { type: "session_message_delivered", id: "c2", address: DISCORD, outcome: "live" },
+      {
+        type: "session_message_delivered",
+        id: "c2",
+        address: DISCORD,
+        message_id: expect.stringMatching(/^msg-s-/) as string,
+        outcome: "live",
+      },
     ]);
-    expect(types(frames)).toEqual(["session_state_changed", "session_turn_started"]);
+    expect(types(frames)).toEqual([
+      "session_state_changed",
+      "session_turn_started",
+      "session_user_message",
+    ]);
 
     vi.advanceTimersByTime(2400);
     expect(types(frames)).toEqual([
       "session_state_changed",
       "session_turn_started",
+      "session_user_message",
       "session_broadcast_response",
       "session_tool_call",
       "session_tool_result",
@@ -431,15 +516,36 @@ describe("session commands and lifecycle", () => {
     expect(toMain).toEqual([]);
   });
 
+  it("refuses a chosen message id the backend would refuse", () => {
+    sendSessionMessage(state, reply, "c16", DISCORD, "hi", "x".repeat(129));
+    expect(replies).toEqual([
+      {
+        type: "session_command_failed",
+        id: "c16",
+        address: DISCORD,
+        code: "invalid_request",
+        message:
+          "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.",
+      },
+    ]);
+    expect(frames).toEqual([]);
+  });
+
   it("rejects an address it has never seen", () => {
     sendSessionMessage(state, reply, "c4", "nope", "hi");
     expect(replies[0]).toMatchObject({ type: "session_command_failed", code: "unknown_address" });
   });
 
   it("resumes a finished session after a short wait, as a new forking run", () => {
-    sendSessionMessage(state, reply, "c5", TELEGRAM, "resume me");
+    sendSessionMessage(state, reply, "c5", TELEGRAM, "resume me", "web-c5");
     expect(replies).toEqual([
-      { type: "session_message_delivered", id: "c5", address: TELEGRAM, outcome: "resumed" },
+      {
+        type: "session_message_delivered",
+        id: "c5",
+        address: TELEGRAM,
+        message_id: "web-c5",
+        outcome: "resumed",
+      },
     ]);
     expect(frames).toEqual([]);
 
@@ -451,6 +557,14 @@ describe("session commands and lifecycle", () => {
     expect(summaryOf("run-resumed-1")?.state).toBe("forking");
     vi.advanceTimersByTime(400);
     expect(summaryOf("run-resumed-1")?.state).toBe("running");
+    // The new run's first turn reads the message, under the id it was sent with.
+    expect(frames.at(-1)).toMatchObject({
+      type: "session_user_message",
+      id: "web-c5",
+      run_id: "run-resumed-1",
+      content: "resume me",
+      from: "owner",
+    });
   });
 
   it("stops a live session, then moves it to the finished list", () => {
@@ -487,6 +601,21 @@ describe("session commands and lifecycle", () => {
       "not_live",
       "not_live",
       "not_live",
+    ]);
+  });
+
+  it("resumes a stopped run with what its turn hadn't read, as the backend does", () => {
+    sendSessionMessage(state, reply, "c13", DISCORD, "status?");
+    sendSessionMessage(state, reply, "c14", DISCORD, "and this?");
+    stopSession(state, reply, "c15", DISCORD);
+    vi.advanceTimersByTime(5000);
+    const resumed = frames.find((frame) => frame.type === "session_started");
+    expect(resumed).toMatchObject({ session: { address: DISCORD } });
+    const resumedRun = resumed?.type === "session_started" ? resumed.session.run_id : null;
+    expect(resumedRun).not.toBe("run-live-discord");
+    expect(frames.filter(isRead).map((frame) => [frame.run_id, frame.content])).toEqual([
+      ["run-live-discord", "status?"],
+      [resumedRun, "and this?"],
     ]);
   });
 

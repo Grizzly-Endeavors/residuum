@@ -598,6 +598,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                     inbound: event.inbound,
                     images: event.images,
                     carried_history: event.carried_history,
+                    delivered_messages: event.delivered_messages,
                 },
                 conversation_target: event.conversation,
                 overlap: event.overlap,
@@ -1380,10 +1381,7 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         .messenger
         .send(
             address.as_ref(),
-            child_address,
-            "spawned".to_string(),
-            "child finished".to_string(),
-            0,
+            residuum::bus::AgentMessageEvent::new(child_address, "spawned", "child finished", 0),
         )
         .await
         .unwrap();

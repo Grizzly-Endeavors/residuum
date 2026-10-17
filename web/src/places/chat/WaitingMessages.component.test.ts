@@ -18,7 +18,7 @@ function show(
   const onsendnow = vi.fn();
   const onmultitask = vi.fn();
   render(WaitingMessages, {
-    props: { messages, agentName: "atlas", offline, onsendnow, onmultitask },
+    props: { messages, reader: "atlas", actions: { offline, onsendnow, onmultitask } },
   });
   return { onsendnow, onmultitask };
 }
@@ -57,6 +57,19 @@ describe("messages waiting for the agent", () => {
     show([LOGS], true);
     expect(screen.getByRole("button", { name: "Send now" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Multitask" })).toBeDisabled();
+  });
+
+  it("offers only Dismiss for a session's message", async () => {
+    const ondismiss = vi.fn();
+    render(WaitingMessages, {
+      props: { messages: [LOGS], reader: "this session", actions: { ondismiss } },
+    });
+    expect(screen.queryByRole("button", { name: "Send now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Multitask" })).toBeNull();
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    expect(dismiss).toHaveAccessibleDescription("also check the logs");
+    await userEvent.click(dismiss);
+    expect(ondismiss).toHaveBeenCalledWith(LOGS);
   });
 
   it("shows which ask is under way, and holds the other back", () => {

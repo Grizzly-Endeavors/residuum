@@ -100,6 +100,39 @@ test("a live run is messaged and stopped from the panel", async ({ page, isMobil
   }
 });
 
+test("a message sent while the run works waits until the session reads it", async ({
+  page,
+  isMobile,
+  mock,
+}) => {
+  await page.goto(`/agent/atlas/activity?panel=session:atlas:run-live-research`);
+  const panel = sessionPanel(page, isMobile, RESEARCH);
+  const transcript = panel.getByRole("region", { name: "Transcript" });
+  await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
+
+  await mock.manualTime();
+  await messageBox(panel).fill("Check the archive too");
+  await sendFromComposer(messageBox(panel), SEND);
+  // The turn it starts reads it as it begins.
+  await expect(transcript.getByText("Check the archive too")).toBeVisible();
+
+  await messageBox(panel).fill("And the old notes");
+  await sendFromComposer(messageBox(panel), SEND);
+  const waiting = panel.getByRole("region", { name: "Waiting for this session to read" });
+  await expect(waiting.getByText("And the old notes")).toBeVisible();
+  // Dismiss is the only thing to ask of it.
+  await expect(waiting.getByRole("button")).toHaveCount(1);
+  await expect(waiting.getByRole("button", { name: "Dismiss" })).toBeVisible();
+  await scanPanel(page, isMobile);
+
+  // The turn reads it after its tool batch, at 1.2s, and answers it at 2.4s.
+  await mock.advance(1_200);
+  await expect(waiting).toHaveCount(0);
+  await expect(transcript.getByText("And the old notes")).toBeVisible();
+  await mock.advance(1_200);
+  await expect(panel.getByText('Understood: "And the old notes".')).toBeVisible();
+});
+
 test("the message box floats over the transcript, and its / menu stops the run", async ({
   page,
   isMobile,

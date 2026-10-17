@@ -317,10 +317,12 @@ impl Tool for MessageAgentTool {
             .messenger
             .send(
                 to,
-                self.self_address.clone(),
-                self.self_category.clone(),
-                message.to_string(),
-                self.hop_counter.outgoing(),
+                residuum_bus::AgentMessageEvent::new(
+                    self.self_address.clone(),
+                    self.self_category.clone(),
+                    message,
+                    self.hop_counter.outgoing(),
+                ),
             )
             .await;
 

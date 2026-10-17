@@ -167,10 +167,26 @@ describe("the session panel", () => {
     const box = screen.getByRole("combobox", { name: "Message this session" });
     await userEvent.type(box, "Weigh safety{Shift>}{Enter}{/Shift}over speed{Enter}");
     await settle();
-    expect(run.items.find((item) => item.kind === "user")).toMatchObject({
-      content: "Weigh safety\nover speed",
-    });
+    expect(run.waiting).toMatchObject([{ content: "Weigh safety\nover speed" }]);
     expect(run.draft).toBe("");
+  });
+
+  it("shows a sent message waiting for the session to read it, with Dismiss for it", async () => {
+    const run = await show(summary());
+    run.draft = "Check the archive too";
+    await run.send();
+    await settle();
+    const waiting = screen.getByRole("region", { name: "Waiting for this session to read" });
+    expect(waiting).toHaveTextContent("Check the archive too");
+    expect(screen.queryByRole("button", { name: "Send now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Multitask" })).toBeNull();
+
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    expect(dismiss).toHaveAccessibleDescription("Check the archive too");
+    await userEvent.click(dismiss);
+    await settle();
+    expect(run.waiting).toEqual([]);
+    expect(screen.queryByRole("region", { name: "Waiting for this session to read" })).toBeNull();
   });
 
   it("asks for the agent to be started before it can be messaged or stopped", async () => {

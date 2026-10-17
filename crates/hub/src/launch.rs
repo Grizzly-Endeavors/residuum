@@ -112,13 +112,15 @@ impl MainDelivery {
         self.messenger
             .send(
                 residuum_bus::session::MAIN_ADDRESS,
-                residuum_bus::SessionAddress::from(format!(
-                    "{}{creator}",
-                    residuum_bus::session::TEAMMATE_SENDER_PREFIX
-                )),
-                residuum_bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
-                content,
-                hop_count,
+                residuum_bus::AgentMessageEvent::new(
+                    residuum_bus::SessionAddress::from(format!(
+                        "{}{creator}",
+                        residuum_bus::session::TEAMMATE_SENDER_PREFIX
+                    )),
+                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+                    content,
+                    hop_count,
+                ),
             )
             .await
             .map(|_| ())

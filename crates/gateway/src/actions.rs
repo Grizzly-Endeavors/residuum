@@ -158,6 +158,7 @@ async fn publish_action_spawn(
         images: Vec::new(),
         overlap: None,
         carried_history: Vec::new(),
+        delivered_messages: Vec::new(),
     };
 
     match publisher.publish(topics::Background, spawn_event).await {

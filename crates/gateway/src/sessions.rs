@@ -7,11 +7,11 @@
 use residuum_background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use residuum_background::registry::{SessionRegistry, StopSessionError, stop_named_session};
 use residuum_background::store::RunRecord;
-use residuum_bus::SessionAddress;
 use residuum_bus::session::{
     ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionState,
     artifact_sender_address,
 };
+use residuum_bus::{AgentMessageEvent, SessionAddress};
 use residuum_protocol::{
     SessionCommandErrorCode, SessionDeliveryOutcome, SessionRunStatus, SessionSummary,
 };
@@ -118,25 +118,54 @@ impl SessionMessageAuthor {
     }
 }
 
+/// The longest message id a sender may choose. An id is written into the
+/// session's transcript and every frame that names the message.
+const MAX_MESSAGE_ID_LEN: usize = 128;
+
+/// Whether `id` is usable as a sender-chosen message id: not empty, at most
+/// [`MAX_MESSAGE_ID_LEN`] bytes, and only ASCII letters, digits, `-` and `_`.
+fn is_valid_message_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_MESSAGE_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A message [`send_session_message`] handed to a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionMessageSent {
+    /// The message's id: the one the sender chose, or a fresh one.
+    pub(crate) id: String,
+    /// Where the message landed.
+    pub(crate) outcome: SessionDeliveryOutcome,
+}
+
 /// Deliver a message from the owner or a workbench artifact to the session
 /// at `address`.
 ///
 /// Goes through the same messenger every agent message does, as hop count 0
 /// (the input originates outside the agent system), so the normal delivery
 /// rules apply: an interrupt while running, a new turn while idle, a new run
-/// once completed. The session sees the message attributed to `author`.
+/// once completed. The session sees the message attributed to `author`. The
+/// message carries `id` when the sender chose one, otherwise a fresh id; the
+/// session's `session_user_message` frame carries the same id when it reads
+/// the message.
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when the request is unusable (empty
-/// content, or `main`, which is messaged through the normal chat), when no
+/// content, a chosen id that is empty, longer than 128 bytes or holds
+/// anything but letters, digits, `-` and `_`, or `main`, which is messaged
+/// through the normal chat), when no
 /// session has ever run at `address`, when the session is too busy to take
 /// another message, or when delivery fails.
 pub(crate) async fn send_session_message(
     messenger: &AgentMessenger,
     address: &str,
+    id: Option<String>,
     content: String,
     author: &SessionMessageAuthor,
-) -> Result<SessionDeliveryOutcome, SessionCommandError> {
+) -> Result<SessionMessageSent, SessionCommandError> {
     if content.trim().is_empty() {
         return Err(SessionCommandError::new(
             SessionCommandErrorCode::InvalidRequest,
@@ -150,15 +179,35 @@ pub(crate) async fn send_session_message(
         ));
     }
 
-    let (from, from_category) = author.sender();
-    let outcome = messenger
-        .send(address, from, from_category, content, 0)
-        .await;
+    if let Some(chosen) = id.as_deref()
+        && !is_valid_message_id(chosen)
+    {
+        return Err(SessionCommandError::new(
+            SessionCommandErrorCode::InvalidRequest,
+            format!(
+                "The message id must be 1 to {MAX_MESSAGE_ID_LEN} characters of letters, \
+                 digits, dashes and underscores."
+            ),
+        ));
+    }
 
-    match outcome {
-        Ok(DeliveryOutcome::Live(_)) => Ok(SessionDeliveryOutcome::Live),
-        Ok(DeliveryOutcome::Resumed(_)) => Ok(SessionDeliveryOutcome::Resumed),
-        Ok(DeliveryOutcome::Queued(_)) => Ok(SessionDeliveryOutcome::Queued),
+    let (from, from_category) = author.sender();
+    let mut message = AgentMessageEvent::new(from, from_category, content, 0);
+    if let Some(chosen) = id {
+        message = message.with_id(chosen);
+    }
+    let sent_id = message.id.clone();
+    let sent = |outcome| {
+        Ok(SessionMessageSent {
+            id: sent_id,
+            outcome,
+        })
+    };
+
+    match messenger.send(address, message).await {
+        Ok(DeliveryOutcome::Live(_)) => sent(SessionDeliveryOutcome::Live),
+        Ok(DeliveryOutcome::Resumed(_)) => sent(SessionDeliveryOutcome::Resumed),
+        Ok(DeliveryOutcome::Queued(_)) => sent(SessionDeliveryOutcome::Queued),
         Ok(DeliveryOutcome::Unknown) => Err(SessionCommandError::new(
             SessionCommandErrorCode::UnknownAddress,
             format!("There's no session called {address}. It may have been from before a restart."),
@@ -265,19 +314,22 @@ mod tests {
             .unwrap();
         let (messenger, _bus, _dir) = messenger(&registry);
 
-        let outcome = send_session_message(
+        let sent = send_session_message(
             &messenger,
             "spawned-a-0001",
+            Some("m-chosen".to_string()),
             "status?".to_string(),
             &SessionMessageAuthor::Owner,
         )
         .await
         .unwrap();
-        assert_eq!(outcome, SessionDeliveryOutcome::Live);
+        assert_eq!(sent.outcome, SessionDeliveryOutcome::Live);
+        assert_eq!(sent.id, "m-chosen", "the sender's id is echoed");
 
         let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
             panic!("the session should have received an agent message");
         };
+        assert_eq!(msg.id, "m-chosen", "the message carries the sender's id");
         assert_eq!(msg.hop_count, 0, "owner input is hop count 0");
         assert_eq!(msg.from.as_ref(), OWNER_ADDRESS);
         assert!(
@@ -298,19 +350,22 @@ mod tests {
             .unwrap();
         let (messenger, _bus, _dir) = messenger(&registry);
 
-        let outcome = send_session_message(
+        let sent = send_session_message(
             &messenger,
             "artifact-wiki-0001",
+            None,
             "refresh".to_string(),
             &SessionMessageAuthor::Artifact("wiki".to_string()),
         )
         .await
         .unwrap();
-        assert_eq!(outcome, SessionDeliveryOutcome::Live);
+        assert_eq!(sent.outcome, SessionDeliveryOutcome::Live);
 
         let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
             panic!("the session should have received a message");
         };
+        assert_ne!(sent.id, "", "a message sent without an id gets one");
+        assert_eq!(msg.id, sent.id, "the generated id is the one echoed");
         assert_eq!(msg.hop_count, 0, "artifact input is hop count 0");
         assert_eq!(msg.from.as_ref(), "artifact:wiki");
         assert_eq!(msg.from_category, "artifact");
@@ -351,11 +406,13 @@ mod tests {
         let outcome = send_session_message(
             &messenger,
             "spawned-b-0001",
+            None,
             "one more".to_string(),
             &SessionMessageAuthor::Owner,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .outcome;
         assert_eq!(outcome, SessionDeliveryOutcome::Resumed);
         let spawn = spawns.recv().await.unwrap().unwrap();
         assert_eq!(spawn.address.as_ref(), "spawned-b-0001");
@@ -370,6 +427,7 @@ mod tests {
         let unknown = send_session_message(
             &messenger,
             "spawned-nope-0000",
+            None,
             "hi".to_string(),
             &SessionMessageAuthor::Owner,
         )
@@ -380,6 +438,7 @@ mod tests {
         let empty = send_session_message(
             &messenger,
             "spawned-nope-0000",
+            None,
             "   ".to_string(),
             &SessionMessageAuthor::Owner,
         )
@@ -390,12 +449,49 @@ mod tests {
         let main = send_session_message(
             &messenger,
             MAIN_ADDRESS,
+            None,
             "hi".to_string(),
             &SessionMessageAuthor::Owner,
         )
         .await
         .unwrap_err();
         assert_eq!(main.code, SessionCommandErrorCode::InvalidRequest);
+
+        for bad in [String::new(), "has space".to_string(), "x".repeat(129)] {
+            let refused = send_session_message(
+                &messenger,
+                "spawned-nope-0000",
+                Some(bad.clone()),
+                "hi".to_string(),
+                &SessionMessageAuthor::Owner,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                refused.code,
+                SessionCommandErrorCode::InvalidRequest,
+                "id {bad:?} is refused"
+            );
+            assert!(
+                refused.message.contains("message id"),
+                "{}",
+                refused.message
+            );
+        }
+        let longest = send_session_message(
+            &messenger,
+            "spawned-nope-0000",
+            Some(format!("web-{}", "a".repeat(124))),
+            "hi".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            longest.code,
+            SessionCommandErrorCode::UnknownAddress,
+            "a 128-byte id of the allowed characters is accepted"
+        );
     }
 
     #[tokio::test]
@@ -412,6 +508,7 @@ mod tests {
             send_session_message(
                 &messenger,
                 "spawned-full-0001",
+                None,
                 "fill".to_string(),
                 &SessionMessageAuthor::Owner,
             )
@@ -422,6 +519,7 @@ mod tests {
         let busy = send_session_message(
             &messenger,
             "spawned-full-0001",
+            None,
             "one too many".to_string(),
             &SessionMessageAuthor::Owner,
         )

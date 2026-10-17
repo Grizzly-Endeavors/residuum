@@ -453,6 +453,7 @@ pub(crate) async fn api_session_start(
         images: Vec::new(),
         overlap: None,
         carried_history: Vec::new(),
+        delivered_messages: Vec::new(),
     };
     if let Err(e) = state.publisher.publish(topics::Background, event).await {
         tracing::warn!(artifact = %artifact, address = %address, error = %e, "failed to publish an artifact's session start");
@@ -614,6 +615,11 @@ pub(crate) async fn api_session_stop(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionMessageRequest {
+    /// The message's id, when the client chose one. The session's
+    /// `session_user_message` frame carries it when the session reads the
+    /// message.
+    #[serde(default)]
+    id: Option<String>,
     /// The message text.
     content: String,
 }
@@ -621,6 +627,8 @@ pub(crate) struct SessionMessageRequest {
 /// `POST /api/agents/{name}/sessions/{address}/messages` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionMessageResponse {
+    /// The message's id: the client's, or a fresh one when it sent none.
+    id: String,
     /// Where the message landed.
     outcome: SessionDeliveryOutcome,
 }
@@ -661,8 +669,15 @@ pub(crate) async fn api_session_message(
             ));
         }
     };
-    match send_session_message(&state.messenger, &address, body.content, &author).await {
-        Ok(outcome) => (StatusCode::OK, Json(SessionMessageResponse { outcome })).into_response(),
+    match send_session_message(&state.messenger, &address, body.id, body.content, &author).await {
+        Ok(sent) => (
+            StatusCode::OK,
+            Json(SessionMessageResponse {
+                id: sent.id,
+                outcome: sent.outcome,
+            }),
+        )
+            .into_response(),
         Err(e) => command_error_response(e),
     }
 }
@@ -955,6 +970,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transcript_carries_the_id_of_a_message_sent_to_the_session() {
+        let (state, _dir) = state();
+        let run = info("spawned-i-0001", "run-i", EventTrigger::Agent, 0);
+        state.store.begin_run(&run).await;
+        state
+            .store
+            .complete_run(
+                &run,
+                "completed",
+                &residuum_bus::AgentResultStatus::Completed,
+                vec![
+                    Message::user("go"),
+                    residuum_bus::AgentMessageEvent::new(
+                        SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+                        "owner",
+                        "also check the logs",
+                        0,
+                    )
+                    .with_id("m-owner-7")
+                    .to_history_message(),
+                ],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let Json(body) = api_session_transcript(State(state.clone()), Path("run-i".to_string()))
+            .await
+            .unwrap();
+
+        let wire = serde_json::to_value(&body.messages).unwrap();
+        assert!(
+            wire.get(0).and_then(|m| m.get("id")).is_none(),
+            "a message nobody sent carries no id: {wire}"
+        );
+        assert_eq!(
+            wire.get(1).and_then(|m| m.get("id")),
+            Some(&serde_json::json!("m-owner-7")),
+            "{wire}"
+        );
+    }
+
+    #[tokio::test]
     async fn transcript_shows_readable_thinking_and_hides_what_only_the_provider_needs() {
         let (state, _dir) = state();
         let run = info("spawned-r-0001", "run-r", EventTrigger::Agent, 0);
@@ -1113,6 +1171,7 @@ mod tests {
                 Path(address.to_string()),
                 headers,
                 Ok(Json(SessionMessageRequest {
+                    id: None,
                     content: content.to_string(),
                 })),
             )
@@ -1440,6 +1499,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn message_echoes_the_id_the_client_chose_or_the_one_it_was_given() {
+        let (state, _fx) = state();
+        let mut rx = state
+            .registry
+            .register(
+                artifact_info("artifact-wiki-0001", "run-w", "wiki", 0),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let send = |body: serde_json::Value| {
+            let request = serde_json::from_value::<SessionMessageRequest>(body).unwrap();
+            let state = state.clone();
+            async move {
+                answer(
+                    api_session_message(
+                        State(state),
+                        Path("artifact-wiki-0001".to_string()),
+                        HeaderMap::new(),
+                        Ok(Json(request)),
+                    )
+                    .await,
+                )
+                .await
+            }
+        };
+
+        let chosen = send(serde_json::json!({ "id": "m-client-1", "content": "hi" })).await;
+        assert_eq!(chosen.status, StatusCode::OK);
+        assert_eq!(chosen.text("id"), "m-client-1");
+        let Some(Interrupt::AgentMessage(first)) = rx.try_recv().ok() else {
+            panic!("the session should have received the message");
+        };
+        assert_eq!(first.id, "m-client-1", "the session gets the client's id");
+
+        let generated = send(serde_json::json!({ "content": "again" })).await;
+        assert_eq!(generated.status, StatusCode::OK);
+        let Some(Interrupt::AgentMessage(second)) = rx.try_recv().ok() else {
+            panic!("the session should have received the second message");
+        };
+        assert_ne!(second.id, "", "a message sent without an id gets one");
+        assert_eq!(
+            generated.text("id"),
+            second.id,
+            "the response names that id"
+        );
+        assert_ne!(second.id, first.id);
+    }
+
+    #[tokio::test]
     async fn message_resumes_a_completed_session() {
         let (state, fx) = state();
         let mut spawns = subscribe_spawns(&fx).await;
@@ -1476,7 +1584,15 @@ mod tests {
             matches!(&spawn.source, EventTrigger::Artifact(name) if name == "wiki"),
             "a resumed artifact session stays an artifact session"
         );
-        assert!(spawn.prompt.contains("workbench artifact \"wiki\""));
+        let delivered: Vec<String> = spawn
+            .delivered_messages
+            .iter()
+            .map(residuum_bus::AgentMessageEvent::format_for_agent)
+            .collect();
+        assert!(
+            matches!(delivered.as_slice(), [text] if text.contains("workbench artifact \"wiki\"")),
+            "the resumed run opens with the artifact's message: {delivered:?}"
+        );
     }
 
     #[tokio::test]

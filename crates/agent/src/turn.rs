@@ -9,9 +9,9 @@ use tokio_util::sync::CancellationToken;
 use anyhow::Context;
 use residuum_bus::origin::chat_interface_endpoint;
 use residuum_bus::{
-    EndpointName, MainConversationEvent, MessageEvent, NoticeEvent, NotifyName, Publisher,
-    SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent, ToolCallEvent,
-    ToolResultEvent, TurnUsageEvent, topics,
+    AgentMessageEvent, EndpointName, MainConversationEvent, MessageEvent, NoticeEvent, NotifyName,
+    Publisher, SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent,
+    ToolCallEvent, ToolResultEvent, TurnUsageEvent, topics,
 };
 use residuum_inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, StreamSink, ToolCall,
@@ -146,10 +146,12 @@ pub enum EventTarget<'a> {
         correlation_id: &'a str,
     },
     /// An agent session: the sessions topic, tagged with the session's
-    /// address and run id.
+    /// address and run id. `turn_id` is the id the turn's `TurnStarted`
+    /// carried.
     Session {
         address: &'a SessionAddress,
         run_id: &'a str,
+        turn_id: &'a str,
     },
 }
 
@@ -211,7 +213,9 @@ impl EventContext<'_> {
                 })
                 .await;
             }
-            EventTarget::Session { address, run_id } => {
+            EventTarget::Session {
+                address, run_id, ..
+            } => {
                 let kind = match event {
                     ToolActivity::Call(tool_call) => SessionEventKind::ToolCall(tool_call),
                     ToolActivity::Result(result) => SessionEventKind::ToolResult(result),
@@ -259,7 +263,9 @@ impl EventContext<'_> {
                     tracing::debug!(error = %e, "failed to publish intermediate text event");
                 }
             }
-            EventTarget::Session { address, run_id } => {
+            EventTarget::Session {
+                address, run_id, ..
+            } => {
                 residuum_bus::session::publish_session_event(
                     self.publisher,
                     address,
@@ -365,6 +371,28 @@ impl EventContext<'_> {
         self.publish_main(|_| event).await;
     }
 
+    /// Announce that a session's turn read `message`, another agent's, the
+    /// owner's or an artifact's message to it, either mid-turn or as the
+    /// input that started the turn. Not for a main-agent turn, whose
+    /// messages arrive as [`MessageEvent`]s.
+    pub async fn publish_message_read(&self, message: &AgentMessageEvent) {
+        let EventTarget::Session {
+            address,
+            run_id,
+            turn_id,
+        } = self.target
+        else {
+            return;
+        };
+        residuum_bus::session::publish_session_event(
+            self.publisher,
+            address,
+            run_id,
+            message.read_event(turn_id),
+        )
+        .await;
+    }
+
     /// Publish this turn's live usage progress after a model call: this
     /// turn's own output tokens so far (for the activity line)
     /// and, when the caller tracks cumulative session totals, the updated
@@ -383,7 +411,9 @@ impl EventContext<'_> {
                 self.publish_main(|_| MainConversationEvent::TurnUsage(event))
                     .await;
             }
-            EventTarget::Session { address, run_id } => {
+            EventTarget::Session {
+                address, run_id, ..
+            } => {
                 residuum_bus::session::publish_session_event(
                     self.publisher,
                     address,
@@ -1165,7 +1195,8 @@ async fn check_interrupts_and_stop(
 ///
 /// A person's or an agent's message is announced to the main conversation
 /// at the moment it is folded in, so a client sees it at the position the
-/// model does.
+/// model does. A message to a session is announced on the session's stream
+/// the same way (see [`EventContext::publish_message_read`]).
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
@@ -1190,6 +1221,9 @@ async fn drain_interrupts(
                 );
                 hop_counter.bump(msg.hop_count);
                 push_and_record(recent_messages, sink, msg.to_history_message()).await;
+                // After the transcript records it, so a client reading the
+                // transcript on this event finds the message there.
+                events.publish_message_read(&msg).await;
             }
             Interrupt::Subconscious(content) => {
                 tracing::info!("injecting subconscious correction mid-turn");
@@ -1916,6 +1950,105 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn drain_announces_an_agent_message_a_session_reads_mid_turn() {
+        let bus = residuum_bus::spawn_broker();
+        let publisher = bus.publisher();
+        let mut sessions: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+        let sink = MockSink::default();
+        let address = SessionAddress::from("spawned-x-0001");
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Session {
+                address: &address,
+                run_id: "run-1",
+                turn_id: "run-1-t2",
+            },
+            session_conversation: None,
+        };
+
+        let owner_message = AgentMessageEvent::new(
+            SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+            "owner",
+            "check the logs too",
+            0,
+        )
+        .with_id("m-owner-1");
+        tx.send(Interrupt::AgentMessage(owner_message)).ok();
+        let stopped = drain_interrupts(
+            &mut rx,
+            &mut recent,
+            Some(&sink),
+            &HopCounter::new(0),
+            &events,
+        )
+        .await;
+        assert!(!stopped);
+
+        let recorded = sink.recorded.lock().unwrap().clone();
+        assert_eq!(
+            recorded.first().and_then(|m| m.id.as_deref()),
+            Some("m-owner-1"),
+            "the transcript entry carries the message's id"
+        );
+
+        let event = next_event("the session's read of the message", &mut sessions).await;
+        assert_eq!(event.address, address);
+        assert_eq!(event.run_id, "run-1");
+        let SessionEventKind::MessageRead {
+            id,
+            turn_id,
+            content,
+            from,
+            from_category,
+        } = event.kind
+        else {
+            panic!("expected a MessageRead, got {:?}", event.kind);
+        };
+        assert_eq!(id, "m-owner-1");
+        assert_eq!(turn_id, "run-1-t2", "the read names the turn in flight");
+        assert_eq!(content, "check the logs too", "the body as sent, no header");
+        assert_eq!(from, residuum_bus::session::OWNER_ADDRESS);
+        assert_eq!(from_category, "owner");
+    }
+
+    #[tokio::test]
+    async fn drain_announces_no_read_for_a_main_turn() {
+        let bus = residuum_bus::spawn_broker();
+        let publisher = bus.publisher();
+        let mut sessions: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+
+        tx.send(Interrupt::AgentMessage(AgentMessageEvent::new(
+            SessionAddress::from("spawned-y-0001"),
+            "spawned",
+            "status?",
+            0,
+        )))
+        .ok();
+        drain_interrupts(
+            &mut rx,
+            &mut recent,
+            None,
+            &HopCounter::new(0),
+            &silent_events(&publisher),
+        )
+        .await;
+
+        assert_eq!(recent.len(), 1, "the message still joins the turn");
+        bus_barrier(&bus).await;
+        assert!(
+            sessions.drain().is_empty(),
+            "a main turn has no session stream to announce a read on"
+        );
+    }
+
     /// Text content of each message, for comparing two message lists without
     /// requiring `Message: PartialEq`.
     fn contents(messages: &[Message]) -> Vec<&str> {
@@ -1946,6 +2079,7 @@ mod tests {
             target: EventTarget::Session {
                 address: &address,
                 run_id: "run-1",
+                turn_id: "run-1-t1",
             },
             session_conversation: Some(SessionConversationTarget {
                 session_address: &address,
@@ -2843,6 +2977,7 @@ mod tests {
             target: EventTarget::Session {
                 address: &address,
                 run_id: "run-1",
+                turn_id: "run-1-t1",
             },
             session_conversation: None,
         };

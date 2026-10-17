@@ -98,6 +98,7 @@ function turnOf(frame: ServerMessage): string | null {
     case "session_completed":
     case "session_turn_started":
     case "session_turn_ended":
+    case "session_user_message":
     case "session_tool_call":
     case "session_tool_result":
     case "session_turn_usage":

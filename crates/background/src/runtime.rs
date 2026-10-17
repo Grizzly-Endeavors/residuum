@@ -205,7 +205,7 @@ impl SessionRuntime {
     pub fn spawn(&self, req: SessionSpawnRequest, resources: Option<SubAgentResources>) {
         let run_id = generate_run_id();
         let category = SessionCategory::from_trigger(&req.trigger);
-        let purpose = truncate_prompt_preview(&req.subagent_config.prompt);
+        let purpose = truncate_prompt_preview(&req.subagent_config.opening_text());
         let idle_timeout = self.idle_timeouts.for_trigger(&req.trigger);
         let model = req.subagent_config.model.clone();
         let resolved_model = req.subagent_config.resolved_model.clone();
@@ -355,6 +355,12 @@ impl SessionRuntime {
 /// floor, deliver it into the run that won, the same way a `message_agent`
 /// call would.
 ///
+/// A resume that carries agent messages delivers each of them unchanged, as
+/// its own interrupt (see
+/// [`listener::losing_resume_messages`](super::listener::losing_resume_messages)),
+/// so each keeps its id and sender; one that cannot be delivered is logged
+/// with its id and dropped.
+///
 /// A chat user's message (a `Conversation`-triggered request carrying its
 /// original inbound message) is never dropped here: a saturated or
 /// torn-down channel hands off to the same detached retry task
@@ -376,6 +382,27 @@ fn deliver_losing_spawn_input(
         "refusing to register a session run: address is already live; falling back to \
          delivering its input into the run that won the race"
     );
+    if !config.delivered_messages.is_empty() {
+        let messages = super::listener::losing_resume_messages(
+            config.delivered_messages.clone(),
+            &config.prompt,
+            info.spawner.clone(),
+            info.category,
+            config.hop_count,
+        );
+        for (id, outcome) in
+            super::listener::deliver_each_message(registry, &info.address, messages)
+        {
+            tracing::error!(
+                address = %info.address,
+                message_id = %id,
+                outcome = ?outcome,
+                "failed to deliver a resume's message into the run that won the race; message \
+                 dropped"
+            );
+        }
+        return;
+    }
     // Mirrors `SpawnRequestEvent::kickoff_text` — `config` is already the
     // internal `SubAgentConfig`, not the bus event, so it's built here
     // directly from the same fields.
@@ -432,6 +459,7 @@ fn deliver_losing_spawn_input(
                 images: config.images.clone(),
                 overlap: None,
                 carried_history: Vec::new(),
+                delivered_messages: Vec::new(),
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
@@ -794,6 +822,7 @@ fn initial_kickoff(config: SubAgentConfig, chat_note: Option<String>) -> TurnKic
         hop_count: config.hop_count,
         sender: config.sender,
         images: config.images,
+        delivered: config.delivered_messages,
     }
 }
 
@@ -1154,10 +1183,12 @@ async fn relay_result_to_spawner(
         .messenger
         .send(
             spawner.as_ref(),
-            info.address.clone(),
-            info.category.as_str().to_string(),
-            content.to_string(),
-            hop_count,
+            residuum_bus::AgentMessageEvent::new(
+                info.address.clone(),
+                info.category.as_str(),
+                content,
+                hop_count,
+            ),
         )
         .await;
 
@@ -1430,7 +1461,7 @@ async fn run_turn(
             "outside edit before turn start".to_string(),
         ));
 
-    let result = execute_turn_outcome(ctx, recent_messages, kickoff, interrupt_rx).await;
+    let result = execute_turn_outcome(ctx, turn_id, recent_messages, kickoff, interrupt_rx).await;
 
     match &result {
         (AgentResultStatus::Completed, summary) if !summary.is_empty() => {
@@ -1497,6 +1528,7 @@ fn turn_end_summary(result: &(AgentResultStatus, String)) -> String {
 /// [`run_turn`] so the event bracketing there stays readable.
 async fn execute_turn_outcome(
     ctx: &TurnCtx<'_>,
+    turn_id: &str,
     recent_messages: &mut RecentMessages,
     kickoff: TurnKickoff,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
@@ -1526,6 +1558,7 @@ async fn execute_turn_outcome(
             publisher: ctx.publisher,
             address: &ctx.info.address,
             run_id: &ctx.info.run_id,
+            turn_id,
         };
         execute_subagent(
             &identity,
@@ -1850,6 +1883,7 @@ mod tests {
                 inbound: None,
                 images: Vec::new(),
                 carried_history: Vec::new(),
+                delivered_messages: Vec::new(),
             },
             conversation_target: None,
             overlap: None,
@@ -1926,6 +1960,7 @@ mod tests {
             inbound: Some(losing_inbound),
             images: Vec::new(),
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -1951,6 +1986,100 @@ mod tests {
                 )
             }
         }
+    }
+
+    #[test]
+    fn deliver_losing_spawn_input_for_a_resume_delivers_each_message_under_its_own_id() {
+        use residuum_bus::session::{OWNER_ADDRESS as OWNER, TEAMMATE_SENDER_CATEGORY as TEAMMATE};
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
+        let address = SessionAddress::from("spawned-researcher-race-resume");
+        let spawner = SessionAddress::from("spawned-lead-7c1d");
+        let winner = SessionInfo {
+            category: SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            spawner: Some(spawner.clone()),
+            conversation_target: None,
+            ..conversation_winner_info(&address, "run-winner")
+        };
+        let mut rx = registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let context = "[Resumed session] Your previous run was merged as episode ep-1.";
+        let config = SubAgentConfig {
+            prompt: "[From: Jane via discord (#builds)] any news?".to_string(),
+            context: Some(context.to_string()),
+            model: residuum_config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            hop_count: 2,
+            sender: None,
+            inbound: None,
+            images: Vec::new(),
+            carried_history: Vec::new(),
+            delivered_messages: vec![
+                residuum_bus::AgentMessageEvent::new(OWNER.into(), "owner", "are you there?", 0)
+                    .with_id("m-owner"),
+                residuum_bus::AgentMessageEvent::new(
+                    "agent:ivan".into(),
+                    TEAMMATE,
+                    "the logs are in /tmp",
+                    1,
+                )
+                .with_id("m-teammate"),
+            ],
+        };
+        let register_error = crate::registry::RegisterError {
+            address: address.clone(),
+        };
+
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
+
+        let mut delivered = Vec::new();
+        while let Ok(interrupt) = rx.try_recv() {
+            match interrupt {
+                Interrupt::AgentMessage(m) => delivered.push(m),
+                Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                    panic!("a losing resume delivers agent messages only")
+                }
+            }
+        }
+        let summary: Vec<(&str, &str, &str, u32)> = delivered
+            .iter()
+            .map(|m| {
+                (
+                    m.from.as_ref(),
+                    m.from_category.as_str(),
+                    m.content.as_str(),
+                    m.hop_count,
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (OWNER, "owner", "are you there?", 0),
+                ("agent:ivan", TEAMMATE, "the logs are in /tmp", 1),
+                (spawner.as_ref(), "spawned", config.prompt.as_str(), 2),
+            ]
+        );
+        let ids: Vec<&str> = delivered.iter().take(2).map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["m-owner", "m-teammate"], "each keeps its own id");
+        assert!(
+            delivered.iter().all(|m| !m.content.contains(context)),
+            "the resume context stays out of the delivered messages"
+        );
     }
 
     fn conversation_winner_info(address: &SessionAddress, run_id: &str) -> SessionInfo {
@@ -2016,6 +2145,7 @@ mod tests {
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -2076,6 +2206,7 @@ mod tests {
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         };
         let register_error = crate::registry::RegisterError {
             address: address.clone(),
@@ -2846,12 +2977,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from(MAIN_ADDRESS),
-                    from_category: "main".to_string(),
-                    content: "don't forget this".to_string(),
-                    hop_count: 0,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "don't forget this",
+                    0,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered
         );
@@ -2864,7 +2995,14 @@ mod tests {
         let spawn_event =
             next_event("the pending message's resume as a new run", &mut spawn_sub).await;
         assert_eq!(spawn_event.address, address);
-        assert!(spawn_event.prompt.contains("don't forget this"));
+        assert_eq!(
+            spawn_event
+                .delivered_messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["don't forget this"]
+        );
     }
 
     struct PanickingProvider;
@@ -3446,12 +3584,12 @@ mod tests {
         // even with a message already sitting in the channel — exactly the
         // race `wait_idle`'s post-timeout `try_recv` exists to catch.
         let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent {
-            from: SessionAddress::from(MAIN_ADDRESS),
-            from_category: "main".to_string(),
-            content: "just in time".to_string(),
-            hop_count: 0,
-        }))
+        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent::new(
+            SessionAddress::from(MAIN_ADDRESS),
+            "main",
+            "just in time",
+            0,
+        )))
         .unwrap();
 
         let stop_token = CancellationToken::new();
@@ -3521,12 +3659,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from(MAIN_ADDRESS),
-                    from_category: "main".to_string(),
-                    content: "any updates?".to_string(),
-                    hop_count: 0,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "any updates?",
+                    0,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered,
             "the idle session should still be live in the registry"
@@ -3717,12 +3855,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from("agent:ivan"),
-                    from_category: residuum_bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
-                    content: "Here's your answer.".to_string(),
-                    hop_count: 1,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from("agent:ivan"),
+                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
+                    "Here's your answer.",
+                    1,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered,
         );
@@ -3984,12 +4122,12 @@ mod tests {
         assert_eq!(
             runtime.registry.deliver(
                 &address,
-                Interrupt::AgentMessage(AgentMessageEvent {
-                    from: SessionAddress::from(MAIN_ADDRESS),
-                    from_category: "main".to_string(),
-                    content: "keep going".to_string(),
-                    hop_count: 0,
-                }),
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "keep going",
+                    0,
+                )),
             ),
             crate::registry::DeliverOutcome::Delivered
         );
@@ -4084,6 +4222,7 @@ mod tests {
             SessionEventKind::Completed { status, .. } => format!("completed:{status}"),
             SessionEventKind::TurnStarted { .. } => "turn_started".to_string(),
             SessionEventKind::TurnEnded { .. } => "turn_ended".to_string(),
+            SessionEventKind::MessageRead { content, .. } => format!("message_read:{content}"),
             SessionEventKind::ToolCall(call) => format!("tool_call:{}", call.name),
             SessionEventKind::ToolResult(result) => {
                 format!("tool_result:{}:{}", result.name, result.is_error)
@@ -4163,6 +4302,7 @@ mod tests {
             .filter_map(|e| match &e.kind {
                 SessionEventKind::TurnStarted { turn_id }
                 | SessionEventKind::TurnEnded { turn_id }
+                | SessionEventKind::MessageRead { turn_id, .. }
                 | SessionEventKind::Response { turn_id, .. } => Some(turn_id.as_str()),
                 SessionEventKind::Started(_)
                 | SessionEventKind::StateChanged(_)
@@ -4178,6 +4318,361 @@ mod tests {
         assert!(
             turn_ids.iter().all(|id| *id == expected_turn_id),
             "turn events should share the turn's id, got {turn_ids:?}"
+        );
+    }
+
+    /// Session resources answering through `provider`.
+    fn resources_with_provider(
+        provider: Box<dyn residuum_inference::InferenceProvider>,
+    ) -> SubAgentResources {
+        let (layout, observer, merge_writer) = test_memory_extras();
+        SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            provider,
+            tools: residuum_agent::ToolRegistry::new(),
+            mcp_registry: McpRegistry::new_shared(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+            hop_counter: residuum_agent::HopCounter::new(0),
+        }
+    }
+
+    /// Like [`ToolThenAnswerProvider`], but its first completion waits at a
+    /// gate, so a test can deliver a message while the turn is running.
+    struct GatedToolThenAnswerProvider {
+        entry: residuum_core::testing::gate::GateEntry,
+        inner: ToolThenAnswerProvider,
+    }
+
+    #[async_trait]
+    impl residuum_inference::InferenceProvider for GatedToolThenAnswerProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            tools: &[ToolDefinition],
+            options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            if self.inner.calls.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                self.entry.pass().await;
+            }
+            self.inner.complete(messages, tools, options).await
+        }
+
+        fn model_name(&self) -> &'static str {
+            "gated-tool-then-answer"
+        }
+    }
+
+    fn owner_message(id: &str, content: &str) -> AgentMessageEvent {
+        AgentMessageEvent::new(
+            SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+            "owner",
+            content,
+            0,
+        )
+        .with_id(id)
+    }
+
+    /// The id and turn id of a `MessageRead`, or `None` for any other event.
+    fn read_of(kind: &SessionEventKind) -> Option<(&str, &str)> {
+        if let SessionEventKind::MessageRead { id, turn_id, .. } = kind {
+            Some((id.as_str(), turn_id.as_str()))
+        } else {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_read_mid_turn_is_reported_with_the_running_turn_s_id() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-mid-read");
+        let mut request = sample_request(address.as_ref());
+        request.spawner = None;
+        let gate = Gate::closed("the turn's first model call");
+        runtime.spawn(
+            request,
+            Some(resources_with_provider(Box::new(
+                GatedToolThenAnswerProvider {
+                    entry: gate.entry(),
+                    inner: ToolThenAnswerProvider {
+                        calls: std::sync::atomic::AtomicUsize::new(0),
+                    },
+                },
+            ))),
+        );
+
+        gate.until_held(1).await;
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(owner_message("m-mid", "also check the logs")),
+            ),
+            crate::registry::DeliverOutcome::Delivered,
+        );
+        gate.release(1);
+
+        let collected = collect_until_completed(&mut events).await;
+        let run_id = &collected.first().unwrap().run_id;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        let read_at = labels
+            .iter()
+            .position(|l| l == "message_read:also check the logs")
+            .unwrap_or_else(|| panic!("the read should be reported: {labels:?}"));
+        let position = |label: &str| labels.iter().position(|l| l == label);
+        assert!(
+            position("tool_result:no_such_tool:true") < Some(read_at)
+                && Some(read_at) < position("response:all done"),
+            "the message is read at the checkpoint after the tool call: {labels:?}"
+        );
+        let (id, turn_id) = collected
+            .get(read_at)
+            .and_then(|e| read_of(&e.kind))
+            .unwrap();
+        assert_eq!(id, "m-mid");
+        assert_eq!(
+            turn_id,
+            format!("{run_id}-t1"),
+            "the turn in flight read it"
+        );
+        assert_eq!(
+            labels.iter().filter(|l| *l == "turn_started").count(),
+            1,
+            "the message joined the running turn rather than starting another: {labels:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_that_wakes_an_idle_session_is_read_right_after_its_turn_starts() {
+        let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
+        let mut events = bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-wake-read");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(make_sequenced_resources(vec!["first done", "second done"])),
+        );
+        next_idle(&mut events, &address, "the session to go idle").await;
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(owner_message("m-wake", "one more thing")),
+            ),
+            crate::registry::DeliverOutcome::Delivered,
+        );
+
+        let started = loop {
+            let event = next_event("the woken turn to start", &mut events).await;
+            if let SessionEventKind::TurnStarted { turn_id } = event.kind {
+                break turn_id;
+            }
+        };
+        let event = next_event("the woken turn's read of its message", &mut events).await;
+        assert_eq!(
+            read_of(&event.kind),
+            Some(("m-wake", started.as_str())),
+            "the read follows the TurnStarted of the turn the message started: {:?}",
+            event.kind
+        );
+        assert_eq!(started, format!("{}-t2", event.run_id));
+
+        next_idle(&mut events, &address, "the woken turn to go idle").await;
+        assert!(runtime.registry.stop(&address));
+    }
+
+    #[tokio::test]
+    async fn a_resumed_run_reads_the_messages_that_resumed_it_on_its_first_turn() {
+        let (runtime, mut results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-resumed-read");
+        let mut request = sample_request(address.as_ref());
+        request.spawner = None;
+        // What a resume by two messages left at teardown hands the new run.
+        let first = owner_message("m-first", "are you there?");
+        let second = AgentMessageEvent::new(
+            SessionAddress::from("agent:ivan"),
+            residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+            "here's the file",
+            1,
+        )
+        .with_id("m-second");
+        request.subagent_config.prompt = String::new();
+        request.subagent_config.context = Some("[Resumed session] previous run".to_string());
+        request.subagent_config.delivered_messages = vec![first, second];
+        runtime.spawn(request, Some(make_resources("resumed")));
+
+        let collected = collect_until_completed(&mut events).await;
+        let run_id = &collected.first().unwrap().run_id;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        let started_at = labels
+            .iter()
+            .position(|l| l == "turn_started")
+            .unwrap_or_else(|| panic!("the run should start a turn: {labels:?}"));
+        let reads: Vec<(&str, &str)> = collected
+            .iter()
+            .skip(started_at + 1)
+            .take(2)
+            .filter_map(|e| read_of(&e.kind))
+            .collect();
+        let turn_id = format!("{run_id}-t1");
+        assert_eq!(
+            reads,
+            vec![
+                ("m-first", turn_id.as_str()),
+                ("m-second", turn_id.as_str())
+            ],
+            "both reads follow the first turn's TurnStarted: {labels:?}"
+        );
+
+        let result = next_event("the run's result", &mut results).await;
+        let transcript_path = result.transcript_path.expect("a transcript is written");
+        let contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let transcript = record
+            .get("transcript")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap();
+        let opening: Vec<(Option<&str>, Option<&str>)> = transcript
+            .iter()
+            .take(3)
+            .map(|entry| {
+                (
+                    entry.get("id").and_then(|id| id.as_str()),
+                    entry
+                        .pointer("/agent_sender/address")
+                        .and_then(|a| a.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            opening,
+            vec![
+                (None, None),
+                (Some("m-first"), None),
+                (Some("m-second"), Some("agent:ivan"))
+            ],
+            "the run opens with its context, then an entry per message with its own id and \
+             sender: {transcript:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_owner_messages_to_a_completing_session_are_each_read_under_their_own_id() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut spawns: residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-two-sends");
+        let completing = SessionInfo {
+            address: address.clone(),
+            run_id: "run-old".to_string(),
+            category: SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: SessionState::Completing,
+            spawner: None,
+            depth: MAIN_DEPTH + 1,
+            purpose: "research".to_string(),
+            agent_skill: None,
+            model: residuum_config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: None,
+            started_at: Utc::now(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        };
+        let _old_rx = runtime
+            .registry
+            .register(completing, CancellationToken::new())
+            .unwrap();
+        runtime
+            .registry
+            .record_resume_point(
+                &address,
+                ResumePoint {
+                    previous_run_id: "run-old".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Agent,
+                    source_label: "agent:researcher".to_string(),
+                    agent_skill: None,
+                    model: residuum_config::ModelSelector::MEDIUM,
+                    spawner: None,
+                    depth: MAIN_DEPTH + 1,
+                    conversation_target: None,
+                    recorded_at: Utc::now(),
+                },
+            )
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let messenger = AgentMessenger::new(
+            Arc::clone(&runtime.registry),
+            bus_handle.publisher(),
+            Arc::new(SessionStore::new(dir.path().to_path_buf())),
+            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+        );
+
+        for (id, content) in [("m-one", "first thing"), ("m-two", "second thing")] {
+            let outcome = messenger
+                .send(address.as_ref(), owner_message(id, content))
+                .await
+                .unwrap();
+            assert!(matches!(outcome, DeliveryOutcome::Queued(_)), "{outcome:?}");
+        }
+        // The old run leaves the registry: both deferred sends find the
+        // address free, so each publishes a resume of its own.
+        runtime.registry.remove(&address, "run-old");
+        let winner = next_event("the first send's resume", &mut spawns).await;
+        let loser = next_event("the second send's resume", &mut spawns).await;
+
+        // What the spawn listener does with them: the first forks a run, and
+        // the second finds that run live and is delivered into it.
+        let gate = Gate::closed("the resumed run's first model call");
+        runtime.spawn(
+            crate::listener::session_spawn_request(winner, None),
+            Some(make_gated_resources("done", &gate)),
+        );
+        gate.until_held(1).await;
+        crate::listener::deliver_race_guard_content(
+            &runtime.registry,
+            &bus_handle.publisher(),
+            loser,
+        )
+        .unwrap();
+        gate.open_all();
+
+        let collected = collect_until_completed(&mut events).await;
+        let mut reads: Vec<(String, String)> = collected
+            .iter()
+            .filter_map(|event| {
+                if let SessionEventKind::MessageRead { id, from, .. } = &event.kind {
+                    Some((id.clone(), from.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        reads.sort();
+        let owner = residuum_bus::session::OWNER_ADDRESS.to_string();
+        assert_eq!(
+            reads,
+            vec![
+                ("m-one".to_string(), owner.clone()),
+                ("m-two".to_string(), owner)
+            ],
+            "each send is read under its own id, from the owner"
         );
     }
 

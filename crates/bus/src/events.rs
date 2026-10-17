@@ -397,6 +397,12 @@ impl AgentResultEvent {
 /// the same interrupt-if-running/new-turn-if-idle behavior.
 #[derive(Debug, Clone)]
 pub struct AgentMessageEvent {
+    /// Identifies this message: the id the owner's or an artifact's client
+    /// chose when it sent one, otherwise a fresh one minted by
+    /// [`Self::new`]. Carried onto the recipient's history entry and on the
+    /// [`SessionEventKind::MessageRead`] the session publishes when it reads
+    /// the message.
+    pub id: String,
     /// Address of the sender: `"main"` or a session address for an agent,
     /// [`crate::session::OWNER_ADDRESS`] for the owner,
     /// `artifact:<name>` for a workbench artifact, or `agent:<name>` /
@@ -415,6 +421,43 @@ pub struct AgentMessageEvent {
 }
 
 impl AgentMessageEvent {
+    /// A message from `from` with a fresh unique id.
+    #[must_use]
+    pub fn new(
+        from: SessionAddress,
+        from_category: impl Into<String>,
+        content: impl Into<String>,
+        hop_count: u32,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            from,
+            from_category: from_category.into(),
+            content: content.into(),
+            hop_count,
+        }
+    }
+
+    /// This message with the id its sender chose in place of the fresh one.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    /// The session event announcing that the turn `turn_id` read this
+    /// message.
+    #[must_use]
+    pub fn read_event(&self, turn_id: &str) -> SessionEventKind {
+        SessionEventKind::MessageRead {
+            id: self.id.clone(),
+            turn_id: turn_id.to_string(),
+            content: self.content.clone(),
+            from: self.from.to_string(),
+            from_category: self.from_category.clone(),
+        }
+    }
+
     /// Format this message for injection into the recipient's conversation,
     /// naming the sender's address and category so the recipient can reply.
     ///
@@ -502,11 +545,12 @@ impl AgentMessageEvent {
     }
 
     /// This message as the recipient's history records it: the formatted
-    /// text, tagged with its structured sender.
+    /// text, tagged with its structured sender and its id.
     #[must_use]
     pub fn to_history_message(&self) -> residuum_inference::Message {
         residuum_inference::Message::user(self.format_for_agent())
             .with_agent_sender(self.agent_sender())
+            .with_id(Some(self.id.clone()))
     }
 }
 
@@ -606,6 +650,13 @@ pub struct SpawnRequestEvent {
     /// on every turn, but keeps them out of its own transcript and memory.
     /// Empty for every other request, including a resume of such a fork.
     pub carried_history: Vec<residuum_inference::Message>,
+    /// The agent messages a resume delivers as the new run's opening input.
+    /// The run opens with each as its own history entry, carrying its id and
+    /// sender, after `context` and ahead of `prompt`, which holds only the
+    /// resume's other input (empty when there is none). Its first turn
+    /// publishes a [`SessionEventKind::MessageRead`] for each. Empty for
+    /// every other request.
+    pub delivered_messages: Vec<AgentMessageEvent>,
 }
 
 /// Marks a pulse run that started while its previous run was still going
@@ -823,6 +874,24 @@ pub enum SessionEventKind {
     TurnEnded {
         /// Identifies this turn within the run.
         turn_id: String,
+    },
+    /// The session read a message sent to it (the owner's, an artifact's, a
+    /// teammate's or another agent's): either mid-turn, at a tool-call
+    /// checkpoint of the turn `turn_id`, or as the input that started the
+    /// turn `turn_id`, in which case it follows that turn's
+    /// [`Self::TurnStarted`].
+    MessageRead {
+        /// The message's id (see [`AgentMessageEvent::id`]).
+        id: String,
+        /// The turn that read it.
+        turn_id: String,
+        /// The message body as sent, without the sender header the session
+        /// sees.
+        content: String,
+        /// The sender's address.
+        from: String,
+        /// The sender's category label.
+        from_category: String,
     },
     /// The session invoked a tool.
     ToolCall(ToolCallEvent),
@@ -1297,12 +1366,12 @@ mod tests {
 
     #[test]
     fn agent_message_event_format_for_agent_names_sender_and_category() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from("spawned-researcher-3f9a"),
-            from_category: "spawned".to_string(),
-            content: "found the answer".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from("spawned-researcher-3f9a"),
+            "spawned",
+            "found the answer",
+            0,
+        );
         assert_eq!(
             msg.format_for_agent(),
             "[Agent Message from spawned-researcher-3f9a (spawned)]\nfound the answer"
@@ -1311,12 +1380,12 @@ mod tests {
 
     #[test]
     fn agent_message_event_from_owner_is_labelled_as_the_owner() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from(crate::session::OWNER_ADDRESS),
-            from_category: "owner".to_string(),
-            content: "how's it going?".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from(crate::session::OWNER_ADDRESS),
+            "owner",
+            "how's it going?",
+            0,
+        );
         let text = msg.format_for_agent();
         assert!(
             text.starts_with("[Message from the owner via the web UI"),
@@ -1327,12 +1396,12 @@ mod tests {
 
     #[test]
     fn agent_message_history_entry_carries_its_structured_sender() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from("spawned-researcher-3f9a"),
-            from_category: "spawned".to_string(),
-            content: "found the answer".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from("spawned-researcher-3f9a"),
+            "spawned",
+            "found the answer",
+            0,
+        );
         let entry = msg.to_history_message();
         assert_eq!(entry.content, msg.format_for_agent());
         assert_eq!(
@@ -1343,27 +1412,41 @@ mod tests {
                 run_id: None,
             })
         );
+        assert_eq!(entry.id.as_deref(), Some(msg.id.as_str()));
+    }
+
+    #[test]
+    fn each_new_message_gets_its_own_id_unless_its_sender_chose_one() {
+        let from = || SessionAddress::from("spawned-researcher-3f9a");
+        let first = AgentMessageEvent::new(from(), "spawned", "a", 0);
+        let second = AgentMessageEvent::new(from(), "spawned", "b", 0);
+        assert_ne!(first.id, "");
+        assert_ne!(first.id, second.id, "fresh ids are unique");
+
+        let chosen = AgentMessageEvent::new(from(), "owner", "c", 0).with_id("m-client");
+        assert_eq!(chosen.id, "m-client");
+        assert_eq!(chosen.to_history_message().id.as_deref(), Some("m-client"));
     }
 
     #[test]
     fn owner_message_history_entry_has_no_agent_sender() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from(crate::session::OWNER_ADDRESS),
-            from_category: "owner".to_string(),
-            content: "how's it going?".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from(crate::session::OWNER_ADDRESS),
+            "owner",
+            "how's it going?",
+            0,
+        );
         assert_eq!(msg.to_history_message().agent_sender, None);
     }
 
     #[test]
     fn artifact_message_is_labelled_as_the_artifact_not_the_owner_or_an_agent() {
-        let msg = AgentMessageEvent {
-            from: crate::session::artifact_sender_address("wiki-graph"),
-            from_category: crate::session::ARTIFACT_SENDER_CATEGORY.to_string(),
-            content: "refresh the index".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(
+            crate::session::artifact_sender_address("wiki-graph"),
+            crate::session::ARTIFACT_SENDER_CATEGORY.to_string(),
+            "refresh the index",
+            0,
+        );
         assert_eq!(msg.artifact_sender(), Some("wiki-graph"));
         let text = msg.format_for_agent();
         assert!(
@@ -1377,12 +1460,12 @@ mod tests {
 
     #[test]
     fn teammate_message_is_labelled_as_a_teammate_with_its_reply_address() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from("agent:writer/spawned-draft-3f9a"),
-            from_category: crate::session::TEAMMATE_SENDER_CATEGORY.to_string(),
-            content: "chapter two is ready".to_string(),
-            hop_count: 2,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from("agent:writer/spawned-draft-3f9a"),
+            crate::session::TEAMMATE_SENDER_CATEGORY.to_string(),
+            "chapter two is ready",
+            2,
+        );
         assert_eq!(
             msg.teammate_sender(),
             Some("agent:writer/spawned-draft-3f9a")
@@ -1413,35 +1496,25 @@ mod tests {
 
     #[test]
     fn teammate_prefix_without_the_teammate_category_is_not_a_teammate_sender() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from("agent:writer"),
-            from_category: "spawned".to_string(),
-            content: "hi".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(SessionAddress::from("agent:writer"), "spawned", "hi", 0);
         assert_eq!(msg.teammate_sender(), None);
         assert!(msg.format_for_agent().starts_with("[Agent Message from"));
     }
 
     #[test]
     fn artifact_prefix_without_the_artifact_category_is_not_an_artifact_sender() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from("artifact:wiki"),
-            from_category: "spawned".to_string(),
-            content: "hi".to_string(),
-            hop_count: 0,
-        };
+        let msg = AgentMessageEvent::new(SessionAddress::from("artifact:wiki"), "spawned", "hi", 0);
         assert_eq!(msg.artifact_sender(), None);
     }
 
     #[test]
     fn message_event_from_agent_attributes_main_history_entry() {
-        let msg = AgentMessageEvent {
-            from: SessionAddress::from("spawned-researcher-3f9a"),
-            from_category: "spawned".to_string(),
-            content: "found the answer".to_string(),
-            hop_count: 1,
-        };
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from("spawned-researcher-3f9a"),
+            "spawned",
+            "found the answer",
+            1,
+        );
         let event = MessageEvent::from_agent(&msg);
         assert_eq!(event.content, msg.format_for_agent());
         assert!(event.origin.belongs_to_main());
