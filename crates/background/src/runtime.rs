@@ -205,7 +205,7 @@ impl SessionRuntime {
     pub fn spawn(&self, req: SessionSpawnRequest, resources: Option<SubAgentResources>) {
         let run_id = generate_run_id();
         let category = SessionCategory::from_trigger(&req.trigger);
-        let purpose = truncate_prompt_preview(&req.subagent_config.prompt);
+        let purpose = truncate_prompt_preview(&req.subagent_config.opening_text());
         let idle_timeout = self.idle_timeouts.for_trigger(&req.trigger);
         let model = req.subagent_config.model.clone();
         let resolved_model = req.subagent_config.resolved_model.clone();
@@ -355,6 +355,12 @@ impl SessionRuntime {
 /// floor, deliver it into the run that won, the same way a `message_agent`
 /// call would.
 ///
+/// A resume that carries agent messages delivers each of them unchanged, as
+/// its own interrupt (see
+/// [`listener::losing_resume_messages`](super::listener::losing_resume_messages)),
+/// so each keeps its id and sender; one that cannot be delivered is logged
+/// with its id and dropped.
+///
 /// A chat user's message (a `Conversation`-triggered request carrying its
 /// original inbound message) is never dropped here: a saturated or
 /// torn-down channel hands off to the same detached retry task
@@ -376,6 +382,27 @@ fn deliver_losing_spawn_input(
         "refusing to register a session run: address is already live; falling back to \
          delivering its input into the run that won the race"
     );
+    if !config.delivered_messages.is_empty() {
+        let messages = super::listener::losing_resume_messages(
+            config.delivered_messages.clone(),
+            &config.prompt,
+            info.spawner.clone(),
+            info.category,
+            config.hop_count,
+        );
+        for (id, outcome) in
+            super::listener::deliver_each_message(registry, &info.address, messages)
+        {
+            tracing::error!(
+                address = %info.address,
+                message_id = %id,
+                outcome = ?outcome,
+                "failed to deliver a resume's message into the run that won the race; message \
+                 dropped"
+            );
+        }
+        return;
+    }
     // Mirrors `SpawnRequestEvent::kickoff_text` — `config` is already the
     // internal `SubAgentConfig`, not the bus event, so it's built here
     // directly from the same fields.
@@ -2865,7 +2892,14 @@ mod tests {
         let spawn_event =
             next_event("the pending message's resume as a new run", &mut spawn_sub).await;
         assert_eq!(spawn_event.address, address);
-        assert!(spawn_event.prompt.contains("don't forget this"));
+        assert_eq!(
+            spawn_event
+                .delivered_messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["don't forget this"]
+        );
     }
 
     struct PanickingProvider;
@@ -4363,11 +4397,8 @@ mod tests {
             1,
         )
         .with_id("m-second");
-        request.subagent_config.prompt = format!(
-            "{}\n\n{}",
-            first.format_for_agent(),
-            second.format_for_agent()
-        );
+        request.subagent_config.prompt = String::new();
+        request.subagent_config.context = Some("[Resumed session] previous run".to_string());
         request.subagent_config.delivered_messages = vec![first, second];
         runtime.spawn(request, Some(make_resources("resumed")));
 
@@ -4398,16 +4429,140 @@ mod tests {
         let transcript_path = result.transcript_path.expect("a transcript is written");
         let contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
         let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        let opening = record
+        let transcript = record
             .get("transcript")
             .and_then(|t| t.as_array())
-            .and_then(|t| t.first())
             .cloned()
             .unwrap();
+        let opening: Vec<(Option<&str>, Option<&str>)> = transcript
+            .iter()
+            .take(3)
+            .map(|entry| {
+                (
+                    entry.get("id").and_then(|id| id.as_str()),
+                    entry
+                        .pointer("/agent_sender/address")
+                        .and_then(|a| a.as_str()),
+                )
+            })
+            .collect();
         assert_eq!(
-            opening.get("id"),
-            Some(&serde_json::json!("m-first")),
-            "the opening message records the first message's id: {opening}"
+            opening,
+            vec![
+                (None, None),
+                (Some("m-first"), None),
+                (Some("m-second"), Some("agent:ivan"))
+            ],
+            "the run opens with its context, then an entry per message with its own id and \
+             sender: {transcript:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_owner_messages_to_a_completing_session_are_each_read_under_their_own_id() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut spawns: residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-two-sends");
+        let completing = SessionInfo {
+            address: address.clone(),
+            run_id: "run-old".to_string(),
+            category: SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: SessionState::Completing,
+            spawner: None,
+            depth: MAIN_DEPTH + 1,
+            purpose: "research".to_string(),
+            agent_skill: None,
+            model: residuum_config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: None,
+            started_at: Utc::now(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        };
+        let _old_rx = runtime
+            .registry
+            .register(completing, CancellationToken::new())
+            .unwrap();
+        runtime
+            .registry
+            .record_resume_point(
+                &address,
+                ResumePoint {
+                    previous_run_id: "run-old".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Agent,
+                    source_label: "agent:researcher".to_string(),
+                    agent_skill: None,
+                    model: residuum_config::ModelSelector::MEDIUM,
+                    spawner: None,
+                    depth: MAIN_DEPTH + 1,
+                    conversation_target: None,
+                    recorded_at: Utc::now(),
+                },
+            )
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let messenger = AgentMessenger::new(
+            Arc::clone(&runtime.registry),
+            bus_handle.publisher(),
+            Arc::new(SessionStore::new(dir.path().to_path_buf())),
+            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+        );
+
+        for (id, content) in [("m-one", "first thing"), ("m-two", "second thing")] {
+            let outcome = messenger
+                .send(address.as_ref(), owner_message(id, content))
+                .await
+                .unwrap();
+            assert!(matches!(outcome, DeliveryOutcome::Queued(_)), "{outcome:?}");
+        }
+        // The old run leaves the registry: both deferred sends find the
+        // address free, so each publishes a resume of its own.
+        runtime.registry.remove(&address, "run-old");
+        let winner = next_event("the first send's resume", &mut spawns).await;
+        let loser = next_event("the second send's resume", &mut spawns).await;
+
+        // What the spawn listener does with them: the first forks a run, and
+        // the second finds that run live and is delivered into it.
+        let gate = Gate::closed("the resumed run's first model call");
+        runtime.spawn(
+            crate::listener::session_spawn_request(winner, None),
+            Some(make_gated_resources("done", &gate)),
+        );
+        gate.until_held(1).await;
+        crate::listener::deliver_race_guard_content(
+            &runtime.registry,
+            &bus_handle.publisher(),
+            loser,
+        )
+        .unwrap();
+        gate.open_all();
+
+        let collected = collect_until_completed(&mut events).await;
+        let mut reads: Vec<(String, String)> = collected
+            .iter()
+            .filter_map(|event| {
+                if let SessionEventKind::MessageRead { id, from, .. } = &event.kind {
+                    Some((id.clone(), from.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        reads.sort();
+        let owner = residuum_bus::session::OWNER_ADDRESS.to_string();
+        assert_eq!(
+            reads,
+            vec![
+                ("m-one".to_string(), owner.clone()),
+                ("m-two".to_string(), owner)
+            ],
+            "each send is read under its own id, from the owner"
         );
     }
 

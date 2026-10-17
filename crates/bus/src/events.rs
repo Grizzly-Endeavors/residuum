@@ -649,10 +649,12 @@ pub struct SpawnRequestEvent {
     /// on every turn, but keeps them out of its own transcript and memory.
     /// Empty for every other request, including a resume of such a fork.
     pub carried_history: Vec<residuum_inference::Message>,
-    /// The agent messages a resume delivers as the new run's opening input
-    /// (`prompt` is their text). The run's first turn publishes a
-    /// [`SessionEventKind::MessageRead`] for each, and its opening history
-    /// entry carries the first one's id. Empty for every other request.
+    /// The agent messages a resume delivers as the new run's opening input.
+    /// The run opens with each as its own history entry, carrying its id and
+    /// sender, after `context` and ahead of `prompt`, which holds only the
+    /// resume's other input (empty when there is none). Its first turn
+    /// publishes a [`SessionEventKind::MessageRead`] for each. Empty for
+    /// every other request.
     pub delivered_messages: Vec<AgentMessageEvent>,
 }
 

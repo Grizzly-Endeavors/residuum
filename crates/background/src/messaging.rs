@@ -454,12 +454,12 @@ impl AgentMessenger {
 
     /// Resume a completed session as a new run at the same address, by
     /// publishing a fresh `SpawnRequestEvent` for the spawn listener to pick
-    /// up — the same path any other session fork takes. The new run's
-    /// prompt is the delivered message; its context carries a pointer back
-    /// to the previous run's episode (or its run id, if it produced none),
-    /// so the resumed session can retrieve it with `memory_get`. The new
-    /// run's hop count is the delivered message's hop count directly (that
-    /// message *is* the run's kickoff input).
+    /// up — the same path any other session fork takes. The new run opens
+    /// with the delivered message as its own entry; its context carries a
+    /// pointer back to the previous run's episode (or its run id, if it
+    /// produced none), so the resumed session can retrieve it with
+    /// `memory_get`. The new run's hop count is the delivered message's hop
+    /// count directly (that message *is* the run's kickoff input).
     async fn resume(
         &self,
         address: &SessionAddress,
@@ -471,7 +471,7 @@ impl AgentMessenger {
             &self.publisher,
             address,
             point,
-            msg.format_for_agent(),
+            String::new(),
             hop_count,
             Vec::new(),
             vec![msg],
@@ -479,12 +479,13 @@ impl AgentMessenger {
         .await
     }
 
-    /// Resume a session as a new run, combining several buffered messages
-    /// (agent messages, conversation messages, or a mix — anything that can
-    /// land in a session's interrupt channel) into a single kickoff prompt.
+    /// Resume a session as a new run with several buffered messages (agent
+    /// messages, conversation messages, or a mix — anything that can land in
+    /// a session's interrupt channel) as its opening input. Each agent
+    /// message opens the run as its own entry, with its own id and sender;
+    /// the conversation messages are combined into one prompt after them.
     /// The resumed run's hop count is the highest hop count among the
-    /// combined messages — together they're the inputs driving its first
-    /// turn.
+    /// messages — together they're the inputs driving its first turn.
     ///
     /// Used when a run's own interrupt channel still holds messages at the
     /// moment its teardown drains it (see
@@ -504,7 +505,7 @@ impl AgentMessenger {
     ) -> Result<(), SendError> {
         let combined = pending
             .iter()
-            .map(PendingInput::render_for_resume)
+            .filter_map(PendingInput::conversation_text_for_resume)
             .collect::<Vec<_>>()
             .join("\n\n");
         let hop_count = pending
@@ -606,8 +607,8 @@ impl AgentMessenger {
 }
 
 /// A message that can arrive in a session's interrupt channel, held together
-/// only for [`AgentMessenger::resume_with_pending`]'s combined-kickoff
-/// rendering when a run's teardown drains a mix of both kinds.
+/// only for [`AgentMessenger::resume_with_pending`]'s kickoff when a run's
+/// teardown drains a mix of both kinds.
 #[derive(Debug, Clone)]
 pub(crate) enum PendingInput {
     /// Another agent addressed this session (`message_agent`).
@@ -635,26 +636,26 @@ impl PendingInput {
         }
     }
 
-    /// Render this input as it would read in a resumed run's opening prompt.
-    fn render_for_resume(&self) -> String {
-        match self {
-            Self::Agent(m) => m.format_for_agent(),
-            Self::External(m) => {
-                let mut parts = Vec::new();
-                if let Some(ctx) = &m.context {
-                    parts.push(ctx.clone());
-                }
-                // Reuses `Message::attributed_content`'s formatting rather
-                // than hand-rolling the `[From: …]` prefix a second time, so
-                // the two stay in sync if that format ever changes.
-                let attributed = Message::user(m.content.clone())
-                    .with_sender(m.origin.sender.clone())
-                    .attributed_content()
-                    .into_owned();
-                parts.push(attributed);
-                parts.join("\n\n")
-            }
+    /// A conversation message as it reads in a resumed run's opening
+    /// prompt, or `None` for an agent message, which opens the run as its
+    /// own entry instead.
+    fn conversation_text_for_resume(&self) -> Option<String> {
+        let Self::External(m) = self else {
+            return None;
+        };
+        let mut parts = Vec::new();
+        if let Some(ctx) = &m.context {
+            parts.push(ctx.clone());
         }
+        // Reuses `Message::attributed_content`'s formatting rather than
+        // hand-rolling the `[From: …]` prefix a second time, so the two stay
+        // in sync if that format ever changes.
+        let attributed = Message::user(m.content.clone())
+            .with_sender(m.origin.sender.clone())
+            .attributed_content()
+            .into_owned();
+        parts.push(attributed);
+        Some(parts.join("\n\n"))
     }
 }
 
@@ -1086,7 +1087,7 @@ async fn resume_or_deliver_after_clear(
                 publisher,
                 address,
                 &point,
-                msg.format_for_agent(),
+                String::new(),
                 hop_count,
                 Vec::new(),
                 vec![msg.clone()],
@@ -1114,11 +1115,13 @@ async fn resume_or_deliver_after_clear(
 }
 
 /// Build and publish the `SpawnRequestEvent` that resumes `address` from
-/// `point`, with `prompt` as the new run's opening input and `hop_count` as
-/// its first turn's hop count. `delivered` are the agent messages `prompt`
-/// carries, which the new run's first turn reports as read. Free function (not a method) so it can be
-/// shared between [`AgentMessenger`]'s own resume paths and [`deferred_resume`],
-/// which runs on a detached task with no `&AgentMessenger` to call through.
+/// `point`, with `delivered` (the agent messages the new run opens with, each
+/// as its own entry, and reports as read) and `prompt` (its other opening
+/// input, empty when there is none) as the new run's opening input, and
+/// `hop_count` as its first turn's hop count. Free function (not a method)
+/// so it can be shared between [`AgentMessenger`]'s own resume paths and
+/// [`deferred_resume`], which runs on a detached task with no
+/// `&AgentMessenger` to call through.
 async fn publish_resume(
     publisher: &Publisher,
     address: &SessionAddress,
@@ -1519,7 +1522,15 @@ mod tests {
         )
         .await;
         assert_eq!(event.address, address);
-        assert!(event.prompt.contains("any updates?"));
+        assert_eq!(
+            event
+                .delivered_messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["any updates?"]
+        );
+        assert_eq!(event.prompt, "", "the message is the whole opening input");
         assert_eq!(event.model, residuum_config::ModelSelector::LARGE);
     }
 
@@ -1608,7 +1619,7 @@ mod tests {
 
         let event = next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
         assert_eq!(event.address, address);
-        assert!(event.prompt.contains("still there?"));
+        assert_eq!(event.prompt, "", "the message is the whole opening input");
         assert_eq!(
             event
                 .delivered_messages
@@ -1662,7 +1673,7 @@ mod tests {
             "the resumed run is handed the message, id and all, to report it read"
         );
         assert_eq!(event.skill.as_ref().map(AsRef::as_ref), Some("researcher"));
-        assert!(event.prompt.contains("any updates?"));
+        assert_eq!(event.prompt, "", "the message is the whole opening input");
         assert_eq!(
             event.model,
             residuum_config::ModelSelector::LARGE,
@@ -1726,7 +1737,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_with_pending_combines_all_drained_agent_messages_into_one_prompt() {
+    async fn resume_with_pending_hands_over_every_drained_agent_message() {
         let (messenger, registry, bus_handle) = messenger();
         let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
@@ -1756,10 +1767,17 @@ mod tests {
             .unwrap();
 
         let event = sub.recv().await.unwrap().unwrap();
-        assert!(event.prompt.contains("first"));
-        assert!(event.prompt.contains("second"));
-        assert!(event.prompt.contains("main"));
-        assert!(event.prompt.contains("spawned-other-0001"));
+        let delivered: Vec<(&str, &str)> = event
+            .delivered_messages
+            .iter()
+            .map(|m| (m.from.as_ref(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            delivered,
+            vec![(MAIN_ADDRESS, "first"), ("spawned-other-0001", "second")],
+            "each message opens the resumed run with its own sender"
+        );
+        assert_eq!(event.prompt, "", "there is no other opening input");
         assert_eq!(
             event.hop_count, 5,
             "the resumed run's hop count must be the highest among the combined messages"
@@ -1825,7 +1843,11 @@ mod tests {
             .unwrap();
 
         let event = sub.recv().await.unwrap().unwrap();
-        assert!(event.prompt.contains("checking in"));
+        assert!(
+            !event.prompt.contains("checking in"),
+            "the agent message opens the run as its own entry: {}",
+            event.prompt
+        );
         assert!(event.prompt.contains("any updates?"));
         assert!(event.prompt.contains("Jane"), "{}", event.prompt);
         assert_eq!(

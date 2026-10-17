@@ -52,9 +52,10 @@ pub(crate) enum TurnKickoff {
         /// conversation-triggered spawn or resume. Empty for every other
         /// trigger.
         images: Vec<ImageData>,
-        /// The agent messages `prompt` carries, for a resume by a message:
-        /// the turn reports each as read, and its opening message carries
-        /// the first one's id. Empty for every other trigger.
+        /// The agent messages a resume delivers: the turn opens with each
+        /// as its own entry, after `context` and ahead of `prompt` (which
+        /// then holds only the resume's other input), and reports each as
+        /// read. Empty for every other trigger.
         delivered: Vec<AgentMessageEvent>,
     },
     /// A later turn, started because another agent's message reached this
@@ -96,9 +97,31 @@ impl TurnKickoff {
             Self::Initial {
                 prompt,
                 context,
-                sender: None,
+                sender,
                 images,
                 delivered,
+                ..
+            } if !delivered.is_empty() => {
+                // A resume by messages: the pointer to the previous run, then
+                // each message as its own entry with its own id and sender,
+                // then whatever conversation input came with them.
+                let mut msgs: Vec<Message> = context.into_iter().map(Message::user).collect();
+                msgs.extend(delivered.iter().map(AgentMessageEvent::to_history_message));
+                if !prompt.is_empty() || !images.is_empty() {
+                    let user = if images.is_empty() {
+                        Message::user(prompt)
+                    } else {
+                        Message::user_with_images(prompt, images)
+                    };
+                    msgs.push(user.with_sender(sender));
+                }
+                msgs
+            }
+            Self::Initial {
+                prompt,
+                context,
+                sender: None,
+                images,
                 ..
             } => {
                 // No sender: preserve the original single-message rendering
@@ -115,14 +138,13 @@ impl TurnKickoff {
                 } else {
                     Message::user_with_images(text, images)
                 };
-                vec![user.with_id(first_id(&delivered))]
+                vec![user]
             }
             Self::Initial {
                 prompt,
                 context,
                 sender: Some(sender),
                 images,
-                delivered,
                 ..
             } => {
                 let mut msgs = Vec::new();
@@ -134,21 +156,13 @@ impl TurnKickoff {
                 } else {
                     Message::user_with_images(prompt, images)
                 };
-                msgs.push(user.with_sender(Some(sender)).with_id(first_id(&delivered)));
+                msgs.push(user.with_sender(Some(sender)));
                 msgs
             }
             Self::AgentMessage(msg) => vec![msg.to_history_message()],
             Self::External(inbound) => inbound.into_history_messages(),
         }
     }
-}
-
-/// The id an opening message carrying `delivered` records: the first
-/// message's. One history entry holds one id, so when a resume combines
-/// several messages into one opening message, the others are matched by
-/// their read events alone.
-fn first_id(delivered: &[AgentMessageEvent]) -> Option<String> {
-    delivered.first().map(|msg| msg.id.clone())
 }
 
 /// Everything needed to run a session turn, gathered at fork time.
@@ -849,6 +863,67 @@ mod tests {
         assert_eq!(first.content, "what's in this screenshot?");
         assert_eq!(first.images.len(), 1);
         assert_eq!(first.images.first().unwrap().data, image.data);
+    }
+
+    #[tokio::test]
+    async fn a_resume_by_several_messages_opens_with_an_entry_for_each() {
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+        let owner = AgentMessageEvent::new(
+            SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+            "owner",
+            "are you there?",
+            0,
+        )
+        .with_id("m-owner");
+        let teammate = AgentMessageEvent::new(
+            SessionAddress::from("agent:ivan"),
+            residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+            "here's the file",
+            1,
+        )
+        .with_id("m-teammate");
+
+        execute_subagent(
+            &test_identity("run-resume-several"),
+            TurnKickoff::Initial {
+                prompt: "[From: Jane via discord (#builds)] any news?".to_string(),
+                context: Some("[Resumed session] previous run".to_string()),
+                hop_count: 1,
+                sender: None,
+                images: Vec::new(),
+                delivered: vec![owner.clone(), teammate.clone()],
+            },
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                usage_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let messages = recent_messages.messages();
+        let [context, first, second, rest, ..] = messages else {
+            panic!("expected context, two messages and the rest, got {messages:?}");
+        };
+        assert_eq!(context.content, "[Resumed session] previous run");
+        assert_eq!(context.id, None);
+        assert_eq!(first.id.as_deref(), Some("m-owner"));
+        assert_eq!(first.content, owner.format_for_agent());
+        assert_eq!(first.agent_sender, None, "the owner is not an agent");
+        assert_eq!(second.id.as_deref(), Some("m-teammate"));
+        assert_eq!(
+            second.agent_sender.as_ref().map(|s| s.address.as_str()),
+            Some("agent:ivan")
+        );
+        assert_eq!(rest.content, "[From: Jane via discord (#builds)] any news?");
+        assert_eq!(rest.id, None);
     }
 
     #[tokio::test]

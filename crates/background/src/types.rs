@@ -59,6 +59,19 @@ pub struct SubAgentConfig {
     pub delivered_messages: Vec<residuum_bus::AgentMessageEvent>,
 }
 
+impl SubAgentConfig {
+    /// This run's opening input as one text: each delivered message as the
+    /// session reads it, then the prompt. A run's `purpose` previews it.
+    pub(crate) fn opening_text(&self) -> String {
+        self.delivered_messages
+            .iter()
+            .map(residuum_bus::AgentMessageEvent::format_for_agent)
+            .chain((!self.prompt.is_empty()).then(|| self.prompt.clone()))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+}
+
 /// Extract a truncated (120-char) preview from a prompt string, for display
 /// as a session's `purpose`.
 #[must_use]
