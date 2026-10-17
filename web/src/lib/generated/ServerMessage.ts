@@ -249,7 +249,7 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details: string | null, } | { "type": "pong" } | { "type": "turn_snapshot", 
+details?: string, } | { "type": "pong" } | { "type": "turn_snapshot", 
 /**
  * The turn, or `null` when none is running.
  */
@@ -324,11 +324,23 @@ error: string | null,
  * expandable "details" toggle as a live `SessionError`. `None` when
  * there's nothing richer to show.
  */
-error_details: string | null, 
+error_details?: string, 
 /**
  * Episode the run was merged into, if it produced one.
  */
-episode_id: string | null, } | { "type": "session_turn_started", 
+episode_id: string | null, } | { "type": "session_start_failed", 
+/**
+ * Address the start was given.
+ */
+address: string, 
+/**
+ * Plain-language explanation for the owner, with what to do next.
+ */
+error: string, 
+/**
+ * Full technical cause chain, shown behind a details toggle.
+ */
+error_details?: string, } | { "type": "session_turn_started", 
 /**
  * Session address.
  */
@@ -473,7 +485,7 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details: string | null, } | { "type": "session_message_to_main", 
+details?: string, } | { "type": "session_message_to_main", 
 /**
  * Sending session's address.
  */

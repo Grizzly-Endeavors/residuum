@@ -103,7 +103,7 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
         run: |
           set -euo pipefail
-          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z0-9]+)*( -p residuum(-[a-z0-9]+)*)*)$' <<<"$PACKAGES"; then
             echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
             exit 1
           fi
@@ -231,7 +231,7 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
         run: |
           set -euo pipefail
-          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z0-9]+)*( -p residuum(-[a-z0-9]+)*)*)$' <<<"$PACKAGES"; then
             echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
             exit 1
           fi
@@ -275,7 +275,7 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
         run: |
           set -euo pipefail
-          if ! grep -qE '^(--workspace|-p residuum(-[a-z]+)*( -p residuum(-[a-z]+)*)*)$' <<<"$PACKAGES"; then
+          if ! grep -qE '^(--workspace|-p residuum(-[a-z0-9]+)*( -p residuum(-[a-z0-9]+)*)*)$' <<<"$PACKAGES"; then
             echo "::error::packages must be --workspace or -p residuum-<crate> arguments, got: $PACKAGES"
             exit 1
           fi
