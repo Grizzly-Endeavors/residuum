@@ -623,12 +623,20 @@ export class FeedScroller {
     }
     this.stopGlide();
     const from = el.scrollTop;
+    // The glide starts from wherever the position is; a move not yet taken in is overtaken by it.
+    this.know(from);
     const duration = glideDuration(Math.abs(destination() - from));
     let start: number | null = null;
     // The frame's own time, not the page's clock: the end-to-end tests stop that clock.
     const step = (now: number): void => {
       this.glideFrame = 0;
       if (this.el !== el || isHidden(el)) return;
+      // Moved since the last frame by someone else, whose scroll event hasn't come
+      // yet (a script in the glide's own scroll event, find in page): theirs wins.
+      if (this.knownTop !== null && Math.abs(el.scrollTop - this.knownTop) >= 1) {
+        this.takeInScroll();
+        return;
+      }
       start ??= now;
       const progress = Math.min(1, (now - start) / duration);
       const to = destination();

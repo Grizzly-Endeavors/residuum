@@ -852,6 +852,23 @@ describe("FeedScroller", () => {
       expect(feed.geometry.scrollTop).toBe(0);
     });
 
+    it("leaves a reader moved between two of its frames where they went, before that move's event", () => {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.jumpToLatest();
+      feed.frames(4);
+      // A script in the glide's own scroll event moves the reader back to the top.
+      feed.geometry.scrollTop = 0;
+      feed.frames(1);
+      expect(feed.geometry.scrollTop).toBe(0);
+      expect(scroller.isFollowing).toBe(false);
+      expect(scroller.scrolledUp).toBe(true);
+      feed.finishGlide();
+      feed.geometry.scrollHeight = 2100;
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(0);
+    });
+
     it("stops when the feed is hidden, and doesn't move it while it is", () => {
       const { feed, scroller } = attached();
       feed.scrollBy(100);
