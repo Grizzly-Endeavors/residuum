@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::config::ModelSelector;
+use residuum_config::ModelSelector;
 
 /// A one-off scheduled action that fires at a specific time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

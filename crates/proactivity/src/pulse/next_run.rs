@@ -13,7 +13,7 @@ use std::path::Path;
 use chrono::{DateTime, Days, DurationRound as _, NaiveDateTime, NaiveTime, TimeDelta, Utc};
 
 use super::types::{PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration};
-use crate::time::local_to_instant;
+use residuum_core::time::local_to_instant;
 
 /// When `pulse` next runs, given when it last ran (`None` if it never has)
 /// and the instant `now`.
@@ -100,7 +100,8 @@ fn next_active_moment(
 /// a live scheduler. A missing file is empty; an unreadable one is logged and
 /// treated as empty, as the scheduler treats it, so every pulse reads as
 /// never run.
-pub(crate) fn load_last_runs(path: &Path) -> HashMap<String, NaiveDateTime> {
+#[must_use]
+pub fn load_last_runs(path: &Path) -> HashMap<String, NaiveDateTime> {
     #[derive(serde::Deserialize, Default)]
     struct StateFile {
         #[serde(default)]

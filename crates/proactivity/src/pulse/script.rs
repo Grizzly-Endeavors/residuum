@@ -13,14 +13,14 @@ use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
 use super::types::{PulseDef, PulseTask};
-use crate::agent_keys::SharedAgentKeys;
-use crate::bus::session::{generate_address, generate_run_id};
-use crate::bus::{
+use residuum_bus::session::{generate_address, generate_run_id};
+use residuum_bus::{
     AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     ResultDisposition, ends_with_sentinel,
 };
-use crate::config::SharedToolsPath;
-use crate::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
+use residuum_config::SharedToolsPath;
+use residuum_config::agent_keys::SharedAgentKeys;
+use residuum_core::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// How much of a failed script's stderr is kept: its last 2 KiB, where the
 /// error that ended it usually is.
@@ -29,7 +29,7 @@ const STDERR_TAIL_BYTES: usize = 2 * 1024;
 /// Where a pulse's scripts run and what they run with: the agent's
 /// workspace root and tools `PATH`, the same as its `exec` tool.
 #[derive(Clone)]
-pub(crate) struct ScriptEnv {
+pub struct ScriptEnv {
     /// Every script starts here.
     pub workspace_root: PathBuf,
     /// The agent's tools `PATH`, read live at spawn time.
@@ -120,7 +120,7 @@ impl ScriptFailure {
 /// Returns `None` when `cancel` fires (the agent is stopping): the running
 /// script's process tree has been killed and nothing should be delivered
 /// for this fire.
-pub(crate) async fn run_pulse_scripts(
+pub async fn run_pulse_scripts(
     pulse: &PulseDef,
     env: &ScriptEnv,
     cancel: &CancellationToken,
@@ -150,7 +150,7 @@ async fn run_task_script(
 
     let mut cmd = shell_command(script);
     cmd.current_dir(&env.workspace_root);
-    crate::config::apply_tools_path(&mut cmd, &env.tools_path).await;
+    residuum_config::apply_tools_path(&mut cmd, &env.tools_path).await;
 
     tracing::info!(
         pulse = %pulse_name,
@@ -298,7 +298,7 @@ pub(crate) fn prompt_section(run: &ScriptRun) -> String {
 /// (never `Silent`), naming each failure in plain language, with what the
 /// script printed and the tail of its stderr in the summary.
 #[must_use]
-pub(crate) fn script_only_result(
+pub fn script_only_result(
     pulse: &PulseDef,
     runs: &[Option<ScriptRun>],
     tz: chrono_tz::Tz,
@@ -395,22 +395,15 @@ pub(crate) fn script_only_result(
         status,
         summary: sections.join("\n\n"),
         transcript_path: None,
-        timestamp: crate::time::now_local(tz),
+        timestamp: residuum_core::time::now_local(tz),
     }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
+    use crate::pulse::testing::script_env;
     use residuum_core::testing::wait;
-
-    pub(crate) fn env(dir: &std::path::Path) -> ScriptEnv {
-        ScriptEnv {
-            workspace_root: dir.to_path_buf(),
-            tools_path: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
-            agent_keys: crate::agent_keys::AgentKeys::new_shared(dir.join("no-agent-keys")),
-        }
-    }
 
     fn task(name: &str, script: &str) -> PulseTask {
         PulseTask {
@@ -437,7 +430,7 @@ pub(crate) mod tests {
 
     async fn run_one(dir: &std::path::Path, task: PulseTask) -> ScriptRun {
         let pulse = pulse(vec![task]);
-        let runs = run_pulse_scripts(&pulse, &env(dir), &CancellationToken::new())
+        let runs = run_pulse_scripts(&pulse, &script_env(dir), &CancellationToken::new())
             .await
             .unwrap();
         runs.into_iter().next().flatten().unwrap()
@@ -562,9 +555,9 @@ pub(crate) mod tests {
         let mut t = task("t", &command);
         t.script_timeout_secs = Some(30);
         let pulse = pulse(vec![t]);
-        let script_env = env(dir.path());
+        let run_env = script_env(dir.path());
         let cancel = CancellationToken::new();
-        let mut run = std::pin::pin!(run_pulse_scripts(&pulse, &script_env, &cancel));
+        let mut run = std::pin::pin!(run_pulse_scripts(&pulse, &run_env, &cancel));
         tokio::select! {
             biased;
             () = wait::until_true("the script to start", || started.exists()) => {}
@@ -623,9 +616,9 @@ pub(crate) mod tests {
         );
         t.script_timeout_secs = Some(600);
         let pulse = pulse(vec![t]);
-        let script_env = env(dir.path());
+        let run_env = script_env(dir.path());
         let cancel = CancellationToken::new();
-        let mut run = std::pin::pin!(run_pulse_scripts(&pulse, &script_env, &cancel));
+        let mut run = std::pin::pin!(run_pulse_scripts(&pulse, &run_env, &cancel));
         let reaped = async {
             let pid: u32 = wait::until("the shell's pid", || async {
                 tokio::fs::read_to_string(&shell_pid)
@@ -673,8 +666,8 @@ pub(crate) mod tests {
         };
         let pulse = pulse(vec![task("t", &command)]);
         let cancel = CancellationToken::new();
-        let script_env = env(dir.path());
-        let run = run_pulse_scripts(&pulse, &script_env, &cancel);
+        let run_env = script_env(dir.path());
+        let run = run_pulse_scripts(&pulse, &run_env, &cancel);
         let stop = async {
             wait::until_true("the script to start", || started.exists()).await;
             cancel.cancel();
@@ -692,7 +685,7 @@ pub(crate) mod tests {
             prompt: "think".to_string(),
             ..PulseTask::default()
         });
-        let runs = run_pulse_scripts(&pulse, &env(dir.path()), &CancellationToken::new())
+        let runs = run_pulse_scripts(&pulse, &script_env(dir.path()), &CancellationToken::new())
             .await
             .unwrap();
         let [scripted, unscripted] = runs.as_slice() else {

@@ -5013,6 +5013,7 @@ dependencies = [
  "residuum-mcp",
  "residuum-memory",
  "residuum-net",
+ "residuum-proactivity",
  "residuum-skills",
  "residuum-tracing-service",
  "residuum-workspace",
@@ -5230,6 +5231,27 @@ dependencies = [
  "url",
  "uuid",
  "x509-parser",
+]
+
+[[package]]
+name = "residuum-proactivity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "rand 0.8.6",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-workspace",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

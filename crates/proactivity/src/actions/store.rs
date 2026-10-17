@@ -153,7 +153,7 @@ impl ActionStore {
             )
         })?;
 
-        crate::util::fs::atomic_write(&self.path, &json).await?;
+        residuum_core::util::fs::atomic_write(&self.path, &json).await?;
 
         debug!(path = %self.path.display(), count = self.actions.len(), "saved scheduled actions");
         Ok(())

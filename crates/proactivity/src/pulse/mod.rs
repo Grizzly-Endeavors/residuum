@@ -1,7 +1,7 @@
 //! Pulse system: ambient monitoring via HEARTBEAT.yml.
 //!
 //! The pulse system runs scheduled checks on a configurable interval. Each
-//! pulse fires a `scheduled` session (see `crate::background`) — its result
+//! pulse fires a `scheduled` session (see the background module) — its result
 //! flows through that session's normal completion pipeline into memory, the
 //! same as any other session run. A task can run a script first, whose
 //! output joins its prompt or, for a `script_only` pulse, is the result
@@ -13,6 +13,9 @@ pub mod next_run;
 pub mod scheduler;
 pub mod script;
 pub mod types;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 /// Guide linked from owner notices about `HEARTBEAT.yml` pulses or scheduled
 /// actions rejected at load for using an option removed by the agent
