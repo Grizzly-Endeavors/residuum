@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::config::{ExternalChannelConfig, ExternalChannelKind};
-use crate::notify::channels::NotificationChannel;
-use crate::notify::external::{NtfyChannel, WebhookChannel};
+use crate::channels::NotificationChannel;
+use crate::external::{NtfyChannel, WebhookChannel};
+use residuum_config::{ExternalChannelConfig, ExternalChannelKind};
 
 /// Build external channel implementations from configs.
 #[tracing::instrument(skip_all, fields(count = configs.len()))]
@@ -71,8 +71,8 @@ async fn build_macos_channel(
     name: &str,
     kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
-    use crate::notify::macos::MacosChannelConfig;
-    use crate::notify::macos::categories::MacosInterruptionLevel;
+    use crate::macos::MacosChannelConfig;
+    use crate::macos::categories::MacosInterruptionLevel;
 
     let ExternalChannelKind::Macos {
         default_priority,
@@ -108,7 +108,7 @@ async fn build_macos_channel(
     }
     config.web_url = web_url.clone();
 
-    match crate::notify::macos::MacosNativeChannel::new(name, &config).await {
+    match crate::macos::MacosNativeChannel::new(name, &config).await {
         Ok((channel, _handle)) => {
             tracing::debug!(channel = %name, "macOS notification channel initialized");
             Some(Box::new(channel))
@@ -144,7 +144,7 @@ fn build_windows_channel(
     name: &str,
     kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
-    use crate::notify::windows::WindowsChannelConfig;
+    use crate::windows::WindowsChannelConfig;
 
     let ExternalChannelKind::Windows {
         throttle_window_secs,
@@ -171,7 +171,7 @@ fn build_windows_channel(
         config.app_id.clone_from(id);
     }
 
-    match crate::notify::windows::WindowsNativeChannel::new(name, &config) {
+    match crate::windows::WindowsNativeChannel::new(name, &config) {
         Ok((channel, _handle)) => {
             tracing::debug!(channel = %name, "Windows notification channel initialized");
             Some(Box::new(channel))

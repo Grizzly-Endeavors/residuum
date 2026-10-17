@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
-use crate::bus::NotificationEvent;
+use residuum_bus::NotificationEvent;
 
 use super::channels::NotificationChannel;
 
@@ -177,7 +177,7 @@ impl NotificationChannel for WebhookChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::EventTrigger;
+    use residuum_bus::EventTrigger;
 
     fn make_notification() -> NotificationEvent {
         NotificationEvent {

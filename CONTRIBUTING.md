@@ -192,12 +192,14 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-checkpoints` | `crates/checkpoints` | `checkpoints`: the workspace checkpoint history (the engine, the repository backend, notices and types), and `testing` behind `test-support` | core, config, bus, workspace |
 | `residuum-protocol` | `crates/protocol` | `protocol`: the WebSocket client and server frames and the payloads they carry (the ts-exported wire types), and `frames`, the conversions from bus session events and workspace changes to frames | bus, inference, workspace (dev: config, memory) |
 | `residuum-proactivity` | `crates/proactivity` | `pulse` (the heartbeat pulses: scheduling, scripts, the edit and next-run helpers, and `testing` behind `test-support`) and `actions` (scheduled actions and their store) | core, config, bus (dev: workspace) |
-| `residuum` | `.` | everything else: gateway, hub, interfaces, tools, background, a2a, notify, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
+| `residuum-notify` | `crates/notify` | `notify`: the notification channels (ntfy, webhook, the inbox, and the native macOS and Windows channels), the router and the subscriber, and `channel_builder`, whose `build_external_channels` is re-exported at the crate root | core, config, bus, workspace |
+| `residuum` | `.` | everything else: gateway, hub, interfaces, tools, background, a2a, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
 
 ```
-residuum-checkpoints
-        │
-residuum-workspace
+residuum-checkpoints    residuum-notify
+        │                     │
+        └──────────┬──────────┘
+             residuum-workspace
         │
 residuum-bus
         │

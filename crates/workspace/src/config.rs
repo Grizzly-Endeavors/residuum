@@ -277,7 +277,7 @@ fn resolve_channel_kind(name: &str, raw: &ChannelEntryRaw) -> Result<ExternalCha
         }),
         "webhook" => {
             // Keep in sync with the methods `WebhookChannel::deliver` actually
-            // supports (src/notify/external.rs) — validate here, at config load,
+            // supports (crates/notify/src/external.rs) — validate here, at config load,
             // so a typo surfaces at startup instead of at first delivery attempt.
             const SUPPORTED_METHODS: [&str; 2] = ["POST", "PUT"];
 

@@ -2,7 +2,7 @@
 
 #[tracing::instrument(skip_all)]
 pub async fn check_and_request() {
-    let result = crate::util::spawn_blocking_in_span(|| {
+    let result = residuum_core::util::spawn_blocking_in_span(|| {
         check_permissions_sync();
     })
     .await;

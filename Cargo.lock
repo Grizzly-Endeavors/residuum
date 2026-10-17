@@ -4982,7 +4982,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "block2",
  "chrono",
  "chrono-tz",
  "clap",
@@ -4997,9 +4996,6 @@ dependencies = [
  "jsonschema",
  "mime_guess",
  "nix 0.29.0",
- "objc2",
- "objc2-foundation",
- "objc2-user-notifications",
  "owo-colors",
  "pulldown-cmark",
  "rand 0.8.6",
@@ -5014,6 +5010,7 @@ dependencies = [
  "residuum-mcp",
  "residuum-memory",
  "residuum-net",
+ "residuum-notify",
  "residuum-proactivity",
  "residuum-protocol",
  "residuum-skills",
@@ -5027,7 +5024,6 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "serenity",
- "tauri-winrt-notification",
  "teloxide-core",
  "tempfile",
  "thiserror 2.0.18",
@@ -5278,6 +5274,34 @@ dependencies = [
  "url",
  "uuid",
  "x509-parser",
+]
+
+[[package]]
+name = "residuum-notify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "block2",
+ "chrono",
+ "chrono-tz",
+ "ctor",
+ "objc2",
+ "objc2-foundation",
+ "objc2-user-notifications",
+ "reqwest 0.13.3",
+ "residuum-bus",
+ "residuum-config",
+ "residuum-core",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tauri-winrt-notification",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
