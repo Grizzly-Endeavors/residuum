@@ -201,6 +201,35 @@ describe("loading the schedule", () => {
     expect(scheduled.pulses.map((p) => p.name)).toEqual(["inbox_check"]);
   });
 
+  it("keeps a newer load's answer over an older load's that answers after it", async () => {
+    const run: ScheduledCurrentRun = {
+      fire_id: null,
+      phase: "session",
+      started_at: "2026-03-14T12:00:00Z",
+      address: "scheduled-1",
+      run_id: "run-1",
+      overlap: null,
+    };
+    const older = hold();
+    const newer = hold();
+    server.pulsesHolds.push(older.promise, newer.promise);
+    server.actions = [{ ...action("act-1", "weekly_digest"), current_run: run }];
+    const olderLoad = scheduled.load();
+    await expect.poll(() => loads()).toBe(1);
+
+    // The action's run ends before the newer load asks.
+    server.actions = [action("act-1", "weekly_digest")];
+    const newerLoad = scheduled.load();
+    await expect.poll(() => loads()).toBe(2);
+
+    newer.release();
+    await newerLoad;
+    expect(scheduled.actions[0]?.current_run).toBeNull();
+    older.release();
+    await olderLoad;
+    expect(scheduled.actions[0]?.current_run).toBeNull();
+  });
+
   it("forgets an earlier agent's failure on a switch", async () => {
     server.failing = true;
     await scheduled.load();

@@ -97,6 +97,13 @@ class ScheduledStore {
    * answer can predate them, so they are merged again on top of it.
    */
   private readonly framesDuringLoads = new Set<PulseFireFrame[]>();
+  /** Numbers each load in the order it began. */
+  private loadSeq = 0;
+  /**
+   * The number of the newest load whose answer was applied. Loads answer in
+   * any order, so an older load's answer is dropped once a newer one landed.
+   */
+  private appliedSeq = 0;
 
   /**
    * Start watching for refetch signals. Call once per mounted view; pairs
@@ -164,6 +171,7 @@ class ScheduledStore {
 
   async load(): Promise<void> {
     const generation = this.generation;
+    const seq = ++this.loadSeq;
     const framesSince: PulseFireFrame[] = [];
     this.framesDuringLoads.add(framesSince);
     this.loading = true;
@@ -173,14 +181,15 @@ class ScheduledStore {
         fetchScheduledPulses(agent),
         fetchScheduledActions(agent),
       ]);
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || seq < this.appliedSeq) return;
+      this.appliedSeq = seq;
       this.pulses = framesSince.reduce(mergeFireFrame, pulses);
       this.actions = actions;
       this.forgetFinishedStops();
       this.loaded = true;
       this.loadError = null;
     } catch (err) {
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || seq < this.appliedSeq) return;
       this.loadError = userErrorMessage(err, { action: "Couldn't load the schedule." });
     } finally {
       this.framesDuringLoads.delete(framesSince);
