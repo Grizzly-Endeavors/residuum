@@ -156,4 +156,4 @@ The `residuum teams` subcommands provide terminal access to toolkit management a
 
 ## Code
 
-`src/interfaces/teams/`: `mod.rs` (listener, worker, reply routing), `atk_runner.rs` (CLI execution, log streaming, prereqs, sign-in), `setup_job.rs` (job lifecycle manager), `setup_types.rs` (contract types), `auth.rs` (token validation), `handler.rs` (activity handling), `connector.rs` (outbound calls), `store.rs`, `subscriber.rs`, `activity.rs` (wire types). The unmentioned-message buffer is `src/interfaces/context_buffer.rs`, shared with Discord and Telegram.
+`crates/interfaces/src/teams/`: `mod.rs` (listener, worker, reply routing), `atk_runner.rs` (CLI execution, log streaming, prereqs, sign-in), `setup_job.rs` (job lifecycle manager), `setup_types.rs` (contract types), `auth.rs` (token validation), `handler.rs` (activity handling), `connector.rs` (outbound calls), `store.rs`, `subscriber.rs`, `activity.rs` (wire types). The unmentioned-message buffer is `crates/interfaces/src/context_buffer.rs`, shared with Discord and Telegram.

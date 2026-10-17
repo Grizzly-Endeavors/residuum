@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::bus::attachment::FileAttachment;
-use crate::interfaces::outbound::ChatOutbound;
+use crate::outbound::ChatOutbound;
+use residuum_bus::attachment::FileAttachment;
 
 use super::TeamsRuntime;
 use super::connector::typing_activity;
@@ -18,11 +18,8 @@ pub(super) const MAX_MESSAGE_BYTES: usize = 20_000;
 /// Teams shows a typing indicator for roughly three seconds.
 const TYPING_INTERVAL: Duration = Duration::from_secs(3);
 
-pub(super) async fn run_teams_subscriber(
-    rt: Arc<TeamsRuntime>,
-    subs: crate::interfaces::BaseSubscribers,
-) {
-    crate::interfaces::outbound::run(subs, rt).await;
+pub(super) async fn run_teams_subscriber(rt: Arc<TeamsRuntime>, subs: crate::BaseSubscribers) {
+    crate::outbound::run(subs, rt).await;
 }
 
 #[async_trait]
@@ -49,7 +46,7 @@ impl ChatOutbound for Arc<TeamsRuntime> {
         "the bot no longer knows that conversation"
     }
 
-    fn publisher(&self) -> &crate::bus::Publisher {
+    fn publisher(&self) -> &residuum_bus::Publisher {
         &self.publisher
     }
 
@@ -76,7 +73,7 @@ impl ChatOutbound for Arc<TeamsRuntime> {
     fn start_typing(&self, target: ConversationRef) -> tokio::sync::watch::Sender<()> {
         let rt = Arc::clone(self);
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             loop {
                 if let Err(e) = rt
                     .connector

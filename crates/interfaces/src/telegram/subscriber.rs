@@ -8,9 +8,9 @@ use teloxide_core::RequestError;
 use teloxide_core::requests::Requester;
 use teloxide_core::types::{ChatAction, ChatId};
 
-use crate::bus::attachment::FileAttachment;
-use crate::interfaces::chunking::chunk_text;
-use crate::interfaces::outbound::ChatOutbound;
+use crate::chunking::chunk_text;
+use crate::outbound::ChatOutbound;
+use residuum_bus::attachment::FileAttachment;
 
 use super::TelegramState;
 
@@ -31,11 +31,11 @@ struct TelegramOutbound {
 
 /// Receives events from the bus and delivers them to Telegram chats.
 pub(super) async fn run_telegram_subscriber(
-    subs: crate::interfaces::BaseSubscribers,
+    subs: crate::BaseSubscribers,
     bot: Bot,
     state: Arc<TelegramState>,
 ) {
-    crate::interfaces::outbound::run(subs, TelegramOutbound { bot, state }).await;
+    crate::outbound::run(subs, TelegramOutbound { bot, state }).await;
 }
 
 #[async_trait]
@@ -58,7 +58,7 @@ impl ChatOutbound for TelegramOutbound {
         "that is not a Telegram chat ID"
     }
 
-    fn publisher(&self) -> &crate::bus::Publisher {
+    fn publisher(&self) -> &residuum_bus::Publisher {
         &self.state.publisher
     }
 
@@ -89,7 +89,7 @@ impl ChatOutbound for TelegramOutbound {
     fn start_typing(&self, chat_id: ChatId) -> tokio::sync::watch::Sender<()> {
         let bot = self.bot.clone();
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             loop {
                 if let Err(e) = bot.send_chat_action(chat_id, ChatAction::Typing).await {
                     tracing::trace!(error = %e, "telegram typing indicator failed");

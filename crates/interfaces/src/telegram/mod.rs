@@ -20,13 +20,13 @@ use std::sync::Arc;
 
 use teloxide_core::types::ChatId;
 
-use crate::bus::Publisher;
-use crate::bus::conversations::{ConversationSource, KnownConversation};
-use crate::config::TelegramConfig;
-use crate::interfaces::AdapterSenders;
-use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
-use crate::interfaces::context_buffer::ContextBuffer;
-use crate::interfaces::reply_targets::ReplyTargets;
+use crate::AdapterSenders;
+use crate::chat_state::{ChatRef, ChatStateStore};
+use crate::context_buffer::ContextBuffer;
+use crate::reply_targets::ReplyTargets;
+use residuum_bus::Publisher;
+use residuum_bus::conversations::{ConversationSource, KnownConversation};
+use residuum_config::TelegramConfig;
 
 /// Endpoint and interface name for Telegram on the bus.
 const ENDPOINT: &str = "telegram";
@@ -97,7 +97,7 @@ pub struct TelegramInterface {
 impl TelegramInterface {
     /// Create a new Telegram interface adapter.
     #[must_use]
-    pub(crate) fn new(
+    pub fn new(
         cfg: TelegramConfig,
         senders: AdapterSenders,
         workspace_dir: PathBuf,
@@ -118,20 +118,20 @@ impl TelegramInterface {
     /// This blocks until a shutdown signal is received, an error occurs, or the
     /// task is cancelled. A corrupt saved Telegram state file is moved aside
     /// and started fresh rather than treated as an error (see
-    /// [`ChatStateStore::load`]). Verifying the bot token retries with
+    /// `ChatStateStore::load`). Verifying the bot token retries with
     /// backoff on a transient failure instead of failing immediately — see
-    /// [`crate::interfaces::boot_retry`].
+    /// `boot_retry`.
     ///
     /// # Errors
     /// Returns an error if the saved Telegram state cannot be read (a
     /// permissions problem, not corrupt content), the bot still can't
     /// connect after retrying, or the bus subscription fails.
-    pub(crate) async fn start(self) -> anyhow::Result<()> {
-        let layout = crate::config::WorkspaceLayout::new(&self.workspace_dir);
+    pub async fn start(self) -> anyhow::Result<()> {
+        let layout = residuum_config::WorkspaceLayout::new(&self.workspace_dir);
         let (chat_store, chat_state_notice) =
             ChatStateStore::load(layout.telegram_state_json()).await?;
         if let Some(notice) = chat_state_notice {
-            crate::bus::notice::publish_notice(&self.senders.publisher, notice).await;
+            residuum_bus::notice::publish_notice(&self.senders.publisher, notice).await;
         }
         let state = Arc::new(TelegramState {
             respond_to_others: self.cfg.respond_to_others,

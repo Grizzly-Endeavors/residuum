@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub(super) use crate::bus::origin::ConversationKind;
+pub(super) use residuum_bus::origin::ConversationKind;
 
 /// An inbound activity the Bot Connector sends to the messaging endpoint.
 #[derive(Debug, Clone, Deserialize)]

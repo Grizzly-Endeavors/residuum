@@ -12,19 +12,19 @@ use std::time::Duration;
 use tokio::io::AsyncBufReadExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::paths::{agent_dir, hub_dir};
-use crate::interfaces::teams::atk::{
+use crate::teams::atk::{
     ATK_CLI_VERSION, derive_cloud_teams_endpoint, forward_redirect, resolve_atk_paths,
 };
-use crate::interfaces::teams::setup_types::{
+use crate::teams::setup_types::{
     AtkStatus, LogLine, LogStream, SetupError, SuggestedEndpointSource, TeamsSetupPhase,
     TeamsSetupPrereqs, ToolStatus,
 };
-use crate::process::{
+use residuum_config::paths::{agent_dir, hub_dir};
+use residuum_core::process::{
     ProcessTreeGuard, create_argv_command, is_process_running, kill_process_tree,
     kill_process_tree_sync,
 };
-use crate::util::FatalError;
+use residuum_core::util::FatalError;
 
 /// Default capacity for bounded execution log (1000 lines).
 pub const DEFAULT_LOG_CAPACITY: usize = 1000;
@@ -110,18 +110,6 @@ impl BoundedLog {
     #[must_use]
     pub fn last_seq(&self) -> u64 {
         self.next_seq.load(Ordering::SeqCst).saturating_sub(1)
-    }
-
-    /// Return all lines formatted as plain text separated by newlines.
-    #[must_use]
-    pub fn full_text(&self) -> String {
-        let Ok(lock) = self.entries.lock() else {
-            return String::new();
-        };
-        lock.iter()
-            .map(|l| l.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
 
@@ -343,7 +331,7 @@ pub async fn run_command_streaming(
     let stderr_pipe = child.stderr.take();
 
     let log_stdout = log.clone();
-    let stdout_task = crate::util::spawn_in_span(async move {
+    let stdout_task = residuum_core::util::spawn_in_span(async move {
         let mut full = String::new();
         if let Some(pipe) = stdout_pipe {
             let mut reader = tokio::io::BufReader::new(pipe).lines();
@@ -357,7 +345,7 @@ pub async fn run_command_streaming(
     });
 
     let log_stderr = log.clone();
-    let stderr_task = crate::util::spawn_in_span(async move {
+    let stderr_task = residuum_core::util::spawn_in_span(async move {
         let mut full = String::new();
         if let Some(pipe) = stderr_pipe {
             let mut reader = tokio::io::BufReader::new(pipe).lines();

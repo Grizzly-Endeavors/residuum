@@ -14,15 +14,15 @@ use teloxide_core::types::{
     Voice,
 };
 
-use crate::background::registry::SessionRegistry;
-use crate::bus::control::{ServerCommand, StopRequest};
-use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
-use crate::bus::{EndpointName, Publisher};
-use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::AdapterSenders;
-use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
-use crate::interfaces::commands::all_commands;
-use crate::interfaces::context_buffer::{BufferedMessage, render_context};
+use crate::AdapterSenders;
+use crate::chat_state::{ChatRef, Owner, Standing};
+use crate::commands::all_commands;
+use crate::context_buffer::{BufferedMessage, render_context};
+use residuum_background::registry::SessionRegistry;
+use residuum_bus::control::{ServerCommand, StopRequest};
+use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
+use residuum_bus::{EndpointName, Publisher};
+use residuum_inference::{ImageData, MessageSender};
 
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
@@ -45,7 +45,7 @@ struct TelegramContext<'a> {
     inbox_dir: &'a Path,
     /// Main's saved conversation, which `/multitask` forks.
     main_conversation: &'a Path,
-    reload_tx: &'a crate::bus::control::ReloadSender,
+    reload_tx: &'a residuum_bus::control::ReloadSender,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: &'a SessionRegistry,
@@ -94,7 +94,7 @@ pub(super) async fn run_telegram_polling(
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
     let bot = Bot::with_client(token, http_client);
-    let layout = crate::config::WorkspaceLayout::new(&workspace_dir);
+    let layout = residuum_config::WorkspaceLayout::new(&workspace_dir);
     let inbox_dir = layout.agent_inbox_dir();
     let main_conversation = layout.recent_messages_json();
 
@@ -103,7 +103,7 @@ pub(super) async fn run_telegram_polling(
     // retry with backoff instead, and let a shutdown signal cut retries
     // short.
     let me = tokio::select! {
-        result = crate::interfaces::boot_retry::retry_connect(&publisher, "Telegram", || bot.get_me()) => {
+        result = crate::boot_retry::retry_connect(&publisher, "Telegram", || bot.get_me()) => {
             match result {
                 Some(me) => me,
                 None => anyhow::bail!("telegram bot token could not be verified after repeated retries"),
@@ -124,10 +124,10 @@ pub(super) async fn run_telegram_polling(
         tracing::warn!(error = %e, "failed to register telegram bot commands");
     }
 
-    let subs = crate::interfaces::BaseSubscribers::new(&bus_handle, EndpointName::from(ENDPOINT))
+    let subs = crate::BaseSubscribers::new(&bus_handle, EndpointName::from(ENDPOINT))
         .await
         .context("failed to subscribe to telegram bus topics")?;
-    let _outbound = OutboundTask(crate::util::spawn_in_span(
+    let _outbound = OutboundTask(residuum_core::util::spawn_in_span(
         super::subscriber::run_telegram_subscriber(subs, bot.clone(), Arc::clone(&state)),
     ));
 
@@ -376,18 +376,18 @@ async fn dispatch_message(
     // Telegram message IDs are only unique within a chat.
     let correlation_id = format!("telegram-{chat_id}-{}", msg.id);
     ctx.state.reply_targets.track(&correlation_id, chat_id);
-    let msg_event = crate::bus::MessageEvent {
+    let msg_event = residuum_bus::MessageEvent {
         id: correlation_id,
         content,
         origin,
-        timestamp: crate::time::now_local(ctx.tz),
+        timestamp: residuum_core::time::now_local(ctx.tz),
         images,
         context,
     };
 
     if let Err(e) = ctx
         .publisher
-        .publish(crate::bus::topics::UserMessage, msg_event)
+        .publish(residuum_bus::topics::UserMessage, msg_event)
         .await
     {
         tracing::error!(sender = %sender_name, chat_id = %chat_id, error = %e, "failed to publish telegram message to bus");
@@ -484,7 +484,7 @@ fn buffer_unmentioned(
         BufferedMessage {
             sender: build_sender_name(from),
             text: text.to_string(),
-            at: crate::time::now_local(ctx.tz),
+            at: residuum_core::time::now_local(ctx.tz),
         },
     );
 }
@@ -559,7 +559,7 @@ async fn handle_command(
     conversation: &ConversationContext,
 ) {
     tracing::debug!(command = %cmd_name, "telegram command received");
-    let dispatch = crate::interfaces::CommandDispatch {
+    let dispatch = crate::CommandDispatch {
         reload_tx: ctx.reload_tx,
         command_tx: ctx.command_tx,
         stop_tx: ctx.stop_tx,
@@ -569,7 +569,7 @@ async fn handle_command(
         publisher: ctx.publisher,
         main_conversation: ctx.main_conversation,
     };
-    let response_text = crate::interfaces::run_chat_command(
+    let response_text = crate::run_chat_command(
         cmd_name,
         cmd_args,
         &dispatch,
@@ -712,7 +712,7 @@ async fn handle_attachment(
     from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
 ) {
-    use crate::inbox::attachment::{
+    use residuum_workspace::inbox::attachment::{
         AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
     };
     use teloxide_core::net::Download;
@@ -782,10 +782,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::bus::{MessageEvent, Subscriber, topics};
-    use crate::interfaces::chat_state::ChatStateStore;
-    use crate::interfaces::context_buffer::ContextBuffer;
-    use crate::interfaces::reply_targets::ReplyTargets;
+    use crate::chat_state::ChatStateStore;
+    use crate::context_buffer::ContextBuffer;
+    use crate::reply_targets::ReplyTargets;
+    use residuum_bus::{MessageEvent, Subscriber, topics};
     use residuum_core::testing::wait;
 
     const BOT_USERNAME: &str = "resibot";
@@ -837,7 +837,7 @@ mod tests {
         publisher: Publisher,
         inbox_dir: PathBuf,
         main_conversation: PathBuf,
-        reload_tx: crate::bus::control::ReloadSender,
+        reload_tx: residuum_bus::control::ReloadSender,
         command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
         session_registry: Arc<SessionRegistry>,
@@ -846,7 +846,7 @@ mod tests {
 
     async fn harness(respond_to_others: bool, context_messages: usize) -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
         let state = Arc::new(TelegramState {
             respond_to_others,
@@ -866,8 +866,9 @@ mod tests {
             publisher: bus.publisher(),
             inbox_dir: dir.path().to_path_buf(),
             main_conversation: dir.path().join("recent_messages.json"),
-            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>()
-                .0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),

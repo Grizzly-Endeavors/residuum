@@ -13,22 +13,22 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::paths::{agent_dir, hub_dir};
-use crate::interfaces::teams::atk::{
+use crate::teams::atk::{
     ATK_CLI_VERSION, AtkScaffoldOptions, ScaffoldAtkResult, import_atk_project, resolve_atk_paths,
     scaffold_atk_project, validate_png_dimensions,
 };
-use crate::interfaces::teams::atk_runner::{
+use crate::teams::atk_runner::{
     AtkRunnerOverrides, BoundedLog, SIGN_IN_CHECK_TIMEOUT, check_signed_in, detect_prereqs,
     forward_redirect_with_port_check, install_cli, map_install_app_error, map_provision_error,
     parse_login_url_and_port, run_command_streaming,
 };
-use crate::interfaces::teams::setup_types::{
+use crate::teams::setup_types::{
     CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogStream, SetupError,
     SetupResult, SignInPrompt, TeamsSetupForm, TeamsSetupJob, TeamsSetupPhase, TeamsSetupPrereqs,
     TeamsSetupStart, TeamsSetupState,
 };
-use crate::process::{create_argv_command, kill_process_tree_sync};
+use residuum_config::paths::{agent_dir, hub_dir};
+use residuum_core::process::{create_argv_command, kill_process_tree_sync};
 
 /// Errors encountered when managing Teams setup jobs.
 #[derive(Debug, thiserror::Error)]
@@ -608,7 +608,7 @@ impl TeamsSetupJobManager {
     ) {
         let manager_clone = self.clone();
         let agent_name = agent.to_string();
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             manager_clone
                 .drive_job(&agent_name, Arc::clone(&session), cancel)
                 .await;
@@ -1201,7 +1201,7 @@ async fn spawn_login_process(atk_bin: &Path, log: &BoundedLog) -> Result<LoginSp
         .lines();
 
     let log_err = log.clone();
-    let stderr_task = crate::util::spawn_in_span(async move {
+    let stderr_task = residuum_core::util::spawn_in_span(async move {
         let mut buf = String::new();
         while let Ok(Some(line)) = stderr_reader.next_line().await {
             log_err.push(LogStream::Stderr, line.clone());
@@ -1230,7 +1230,7 @@ async fn spawn_login_process(atk_bin: &Path, log: &BoundedLog) -> Result<LoginSp
     })?;
 
     let log_out = log.clone();
-    let stdout_task = crate::util::spawn_in_span(async move {
+    let stdout_task = residuum_core::util::spawn_in_span(async move {
         let mut buf = String::new();
         while let Ok(Some(line)) = stdout_reader.next_line().await {
             log_out.push(LogStream::Stdout, line.clone());
@@ -1853,7 +1853,7 @@ exit 0
 
         let pid =
             wait_for_provisioning_grandchild(&mgr, &root, "the grandchild to write its pid").await;
-        assert!(crate::process::is_process_running(pid));
+        assert!(residuum_core::process::is_process_running(pid));
 
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
@@ -1870,11 +1870,11 @@ exit 0
 
         // Verify that the grandchild process tree is actually gone
         wait::until_true("the grandchild process tree to terminate", || {
-            !crate::process::is_process_running(pid)
+            !residuum_core::process::is_process_running(pid)
         })
         .await;
         assert!(
-            !crate::process::is_process_running(pid),
+            !residuum_core::process::is_process_running(pid),
             "grandchild process tree should be terminated after cancel"
         );
     }
@@ -2124,7 +2124,7 @@ exit 0
 
         mgr.cancel_job("agent-1").await.unwrap();
         wait::until_true("the provisioning process tree to terminate", || {
-            !crate::process::is_process_running(pid)
+            !residuum_core::process::is_process_running(pid)
         })
         .await;
     }

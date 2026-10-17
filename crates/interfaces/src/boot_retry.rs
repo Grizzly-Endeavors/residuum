@@ -5,8 +5,8 @@
 
 use std::time::Duration;
 
-use crate::bus::Publisher;
-use crate::bus::notice::publish_notice;
+use residuum_bus::Publisher;
+use residuum_bus::notice::publish_notice;
 
 /// Backoff between connect retries, doubling from this on each attempt.
 const BASE_BACKOFF: Duration = Duration::from_secs(2);
@@ -106,8 +106,8 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    fn test_publisher() -> (Publisher, crate::bus::BusHandle) {
-        let bus = crate::bus::spawn_broker();
+    fn test_publisher() -> (Publisher, residuum_bus::BusHandle) {
+        let bus = residuum_bus::spawn_broker();
         (bus.publisher(), bus)
     }
 

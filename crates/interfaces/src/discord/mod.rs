@@ -27,12 +27,12 @@ use anyhow::Context as _;
 use serenity::model::id::{ChannelId, UserId};
 use serenity::prelude::*;
 
-use crate::bus::{EndpointName, Publisher};
-use crate::config::DiscordConfig;
-use crate::interfaces::AdapterSenders;
-use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
-use crate::interfaces::context_buffer::ContextBuffer;
-use crate::interfaces::reply_targets::ReplyTargets;
+use crate::AdapterSenders;
+use crate::chat_state::{ChatRef, ChatStateStore};
+use crate::context_buffer::ContextBuffer;
+use crate::reply_targets::ReplyTargets;
+use residuum_bus::{EndpointName, Publisher};
+use residuum_config::DiscordConfig;
 
 use self::handler::DiscordHandler;
 
@@ -111,7 +111,7 @@ pub struct DiscordInterface {
 impl DiscordInterface {
     /// Create a new Discord interface adapter.
     #[must_use]
-    pub(crate) fn new(
+    pub fn new(
         cfg: DiscordConfig,
         senders: AdapterSenders,
         workspace_dir: PathBuf,
@@ -132,27 +132,27 @@ impl DiscordInterface {
     /// This blocks until the connection is closed, a shutdown signal is
     /// received, or an error occurs. A corrupt saved Discord state file is
     /// moved aside and started fresh rather than treated as an error (see
-    /// [`ChatStateStore::load`]). Building the client retries with backoff
+    /// `ChatStateStore::load`). Building the client retries with backoff
     /// on a transient failure (network not up yet, a momentary API error)
     /// instead of failing immediately — see
-    /// [`crate::interfaces::boot_retry`].
+    /// `boot_retry`.
     ///
     /// # Errors
     /// Returns an error if the saved Discord state cannot be read (a
     /// permissions problem, not corrupt content), the bus subscription
     /// fails, the serenity client still can't be built after retrying, or
     /// the connection fails.
-    pub(crate) async fn start(self) -> anyhow::Result<()> {
+    pub async fn start(self) -> anyhow::Result<()> {
         let intents = GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::GUILDS
             | GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
-        let layout = crate::config::WorkspaceLayout::new(&self.workspace_dir);
+        let layout = residuum_config::WorkspaceLayout::new(&self.workspace_dir);
 
         let (chat_store, chat_state_notice) =
             ChatStateStore::load(layout.discord_state_json()).await?;
         if let Some(notice) = chat_state_notice {
-            crate::bus::notice::publish_notice(&self.senders.publisher, notice).await;
+            residuum_bus::notice::publish_notice(&self.senders.publisher, notice).await;
         }
         let state = Arc::new(DiscordState {
             respond_to_others: self.cfg.respond_to_others,
@@ -164,12 +164,10 @@ impl DiscordInterface {
             context_buffer: ContextBuffer::new(self.cfg.context_messages),
             publisher: self.senders.publisher.clone(),
         });
-        let subs = crate::interfaces::BaseSubscribers::new(
-            &self.senders.bus_handle,
-            EndpointName::from(ENDPOINT),
-        )
-        .await
-        .context("failed to subscribe to discord bus topics")?;
+        let subs =
+            crate::BaseSubscribers::new(&self.senders.bus_handle, EndpointName::from(ENDPOINT))
+                .await
+                .context("failed to subscribe to discord bus topics")?;
 
         let handler = DiscordHandler {
             state: Arc::clone(&state),
@@ -189,7 +187,7 @@ impl DiscordInterface {
         // instead, and let a shutdown signal cut retries short.
         let mut connect_shutdown_rx = self.shutdown_rx.clone();
         let mut client = tokio::select! {
-            result = crate::interfaces::boot_retry::retry_connect(&self.senders.publisher, "Discord", || {
+            result = crate::boot_retry::retry_connect(&self.senders.publisher, "Discord", || {
                 Client::builder(&self.cfg.token, intents).event_handler(handler.clone())
             }) => {
                 match result {
@@ -212,7 +210,7 @@ impl DiscordInterface {
                 http: Arc::clone(&client.http),
             }),
         );
-        let outbound = crate::util::spawn_in_span(subscriber::run_discord_subscriber(
+        let outbound = residuum_core::util::spawn_in_span(subscriber::run_discord_subscriber(
             subs,
             Arc::clone(&client.http),
             state,
@@ -221,7 +219,7 @@ impl DiscordInterface {
         // Monitor shutdown signal and cleanly disconnect shards
         let shard_manager = Arc::clone(&client.shard_manager);
         let mut shutdown_rx = self.shutdown_rx;
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             if shutdown_rx.wait_for(|v| *v).await.is_ok() {
                 tracing::info!("discord adapter received shutdown signal");
                 shard_manager.shutdown_all().await;

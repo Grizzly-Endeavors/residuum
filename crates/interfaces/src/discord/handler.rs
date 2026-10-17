@@ -15,17 +15,17 @@ use serenity::model::id::ChannelId;
 use serenity::model::user::User;
 use serenity::prelude::*;
 
-use crate::background::registry::SessionRegistry;
-use crate::bus::Publisher;
-use crate::bus::control::{ServerCommand, StopRequest};
-use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
-use crate::inbox::attachment::{
+use crate::chat_state::{ChatRef, Owner, Standing};
+use crate::commands::all_commands;
+use crate::context_buffer::{BufferedMessage, render_context};
+use residuum_background::registry::SessionRegistry;
+use residuum_bus::Publisher;
+use residuum_bus::control::{ServerCommand, StopRequest};
+use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
+use residuum_inference::{ImageData, MessageSender};
+use residuum_workspace::inbox::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
-use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
-use crate::interfaces::commands::all_commands;
-use crate::interfaces::context_buffer::{BufferedMessage, render_context};
 
 use super::DiscordState;
 use super::channels::{guild_channel_label, strip_bot_mention};
@@ -43,7 +43,7 @@ pub(super) struct DiscordHandler {
     pub(super) inbox_dir: PathBuf,
     /// Main's saved conversation, which `/multitask` forks.
     pub(super) main_conversation: PathBuf,
-    pub(super) reload_tx: crate::bus::control::ReloadSender,
+    pub(super) reload_tx: residuum_bus::control::ReloadSender,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     pub(super) session_registry: Arc<SessionRegistry>,
@@ -111,7 +111,7 @@ impl EventHandler for DiscordHandler {
         self.state
             .reply_targets
             .track(&correlation_id, msg.channel_id);
-        let msg_event = crate::bus::MessageEvent {
+        let msg_event = residuum_bus::MessageEvent {
             id: correlation_id,
             content,
             origin: MessageOrigin {
@@ -129,14 +129,14 @@ impl EventHandler for DiscordHandler {
                 }),
                 agent_sender: None,
             },
-            timestamp: crate::time::now_local(self.tz),
+            timestamp: residuum_core::time::now_local(self.tz),
             images,
             context: addressed.context,
         };
 
         if let Err(e) = self
             .publisher
-            .publish(crate::bus::topics::UserMessage, msg_event)
+            .publish(residuum_bus::topics::UserMessage, msg_event)
             .await
         {
             tracing::error!(error = %e, "failed to publish discord message to bus");
@@ -194,7 +194,7 @@ impl EventHandler for DiscordHandler {
             },
             is_owner: matches!(standing, Standing::Owner),
         };
-        let dispatch = crate::interfaces::CommandDispatch {
+        let dispatch = crate::CommandDispatch {
             reload_tx: &self.reload_tx,
             command_tx: &self.command_tx,
             stop_tx: &self.stop_tx,
@@ -204,7 +204,7 @@ impl EventHandler for DiscordHandler {
             publisher: &self.publisher,
             main_conversation: &self.main_conversation,
         };
-        let response_text = crate::interfaces::run_chat_command(
+        let response_text = crate::run_chat_command(
             cmd.data.name.as_str(),
             cmd_args.as_deref(),
             &dispatch,
@@ -298,7 +298,7 @@ fn buffer_unmentioned(state: &DiscordState, channel_key: &str, msg: &Message, tz
         BufferedMessage {
             sender: msg.author.name.clone(),
             text: msg.content.clone(),
-            at: crate::time::now_local(tz),
+            at: residuum_core::time::now_local(tz),
         },
     );
 }
@@ -408,9 +408,9 @@ mod tests {
     use serenity::model::id::{ChannelId, UserId};
 
     use super::*;
-    use crate::interfaces::chat_state::ChatStateStore;
-    use crate::interfaces::context_buffer::ContextBuffer;
-    use crate::interfaces::reply_targets::ReplyTargets;
+    use crate::chat_state::ChatStateStore;
+    use crate::context_buffer::ContextBuffer;
+    use crate::reply_targets::ReplyTargets;
 
     async fn state(context_messages: usize) -> (Arc<DiscordState>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -425,7 +425,7 @@ mod tests {
             bot_id: OnceLock::new(),
             channel_labels: Mutex::new(HashMap::new()),
             context_buffer: ContextBuffer::new(context_messages),
-            publisher: crate::bus::spawn_broker().publisher(),
+            publisher: residuum_bus::spawn_broker().publisher(),
         });
         (state, dir)
     }
@@ -433,11 +433,12 @@ mod tests {
     fn handler(state: Arc<DiscordState>) -> DiscordHandler {
         DiscordHandler {
             state,
-            publisher: crate::bus::spawn_broker().publisher(),
+            publisher: residuum_bus::spawn_broker().publisher(),
             inbox_dir: std::env::temp_dir(),
             main_conversation: std::env::temp_dir().join("recent_messages.json"),
-            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>()
-                .0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),

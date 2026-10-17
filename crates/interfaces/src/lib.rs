@@ -1,5 +1,9 @@
 //! Communication interfaces between the user and the agent.
 
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;
+
 pub(crate) mod boot_retry;
 pub(crate) mod chat_state;
 pub mod chunking;
@@ -14,9 +18,9 @@ pub mod webhook;
 
 use std::path::Path;
 
-use crate::background::registry::{SessionRegistry, conversation_session_address};
-use crate::bus::origin::{ConversationContext, ConversationKind};
-use crate::bus::{
+use residuum_background::registry::{SessionRegistry, conversation_session_address};
+use residuum_bus::origin::{ConversationContext, ConversationKind};
+use residuum_bus::{
     BusError, BusHandle, ConversationTypingEvent, EndpointName, ErrorEvent, IntermediateEvent,
     ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
 };
@@ -26,7 +30,7 @@ pub(crate) struct BaseSubscribers {
     pub(crate) response: Subscriber<ResponseEvent>,
     /// Conversation sessions' turn output for this endpoint (distinct from
     /// `response`, which carries the main agent's replies and `send_message`
-    /// posts — see [`crate::bus::SessionResponseEvent`]).
+    /// posts — see [`residuum_bus::SessionResponseEvent`]).
     pub(crate) session_response: Subscriber<SessionResponseEvent>,
     pub(crate) turn_lifecycle: Subscriber<TurnLifecycleEvent>,
     /// A conversation session's own turn start/end, for a typing indicator
@@ -56,16 +60,16 @@ impl BaseSubscribers {
 /// Bundled senders for spawning a chat adapter (Discord or Telegram).
 #[derive(Clone)]
 pub struct AdapterSenders {
-    pub publisher: crate::bus::Publisher,
+    pub publisher: residuum_bus::Publisher,
     pub bus_handle: BusHandle,
-    pub reload: crate::bus::control::ReloadSender,
-    pub command: tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
-    pub stop: tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
+    pub reload: residuum_bus::control::ReloadSender,
+    pub command: tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
+    pub stop: tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
     /// Looked up when a `/stop` command targets a conversation session
     /// rather than main — see `dispatch_stop_request`.
     pub session_registry: std::sync::Arc<SessionRegistry>,
     /// Where the adapter registers the conversations it can reach.
-    pub(crate) conversations: crate::bus::conversations::ConversationDirectory,
+    pub conversations: residuum_bus::conversations::ConversationDirectory,
 }
 
 /// Tell `main` that a conversation session's turn output could not be
@@ -78,8 +82,8 @@ pub struct AdapterSenders {
 /// needs to hear about it. Logged at `error` regardless of whether the
 /// notice itself reaches main.
 pub(crate) async fn notify_main_of_undeliverable_session_output(
-    publisher: &crate::bus::Publisher,
-    session_address: &crate::bus::SessionAddress,
+    publisher: &residuum_bus::Publisher,
+    session_address: &residuum_bus::SessionAddress,
     conversation_id: &str,
     reason: &str,
 ) {
@@ -89,7 +93,7 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
         reason,
         "conversation session's output could not be delivered; notifying main"
     );
-    let event = crate::bus::MessageEvent::from_background(format!(
+    let event = residuum_bus::MessageEvent::from_background(format!(
         "[Delivery Failed] session {session_address}'s reply to conversation {conversation_id} \
          could not be delivered: {reason}"
     ));
@@ -100,16 +104,16 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
 
 /// Channels a chat adapter needs to carry out slash-command side effects.
 pub(crate) struct CommandDispatch<'a> {
-    pub(crate) reload_tx: &'a crate::bus::control::ReloadSender,
-    pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
-    pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
+    pub(crate) reload_tx: &'a residuum_bus::control::ReloadSender,
+    pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
+    pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
     /// Looked up to stop a conversation session's turn — see
     /// `dispatch_stop_request` — never touched by any other command.
     pub(crate) session_registry: &'a SessionRegistry,
     pub(crate) inbox_dir: &'a Path,
     pub(crate) tz: chrono_tz::Tz,
     /// Publishes the spawn request `/multitask` starts its fork with.
-    pub(crate) publisher: &'a crate::bus::Publisher,
+    pub(crate) publisher: &'a residuum_bus::Publisher,
     /// Main's saved conversation (`recent_messages.json`), which `/multitask`
     /// forks.
     pub(crate) main_conversation: &'a Path,
@@ -137,7 +141,7 @@ pub(crate) async fn run_chat_command(
             tracing::info!(interface, "reload requested via chat command");
             if dispatch
                 .reload_tx
-                .send(crate::bus::control::ReloadSignal::Agent)
+                .send(residuum_bus::control::ReloadSignal::Agent)
                 .is_err()
             {
                 tracing::warn!(command = %name, interface, "reload_tx closed, reload dropped");
@@ -209,25 +213,25 @@ async fn start_multitask(
                 so it only works there."
             .to_string();
     }
-    let history = match crate::background::load_main_conversation(dispatch.main_conversation).await
-    {
-        Ok(history) => history,
-        Err(e) => {
-            tracing::error!(
-                error = format!("{e:#}"),
-                interface,
-                "couldn't read main's conversation for /multitask"
-            );
-            return "Couldn't read our conversation to fork it, so nothing was started. \
+    let history =
+        match residuum_background::load_main_conversation(dispatch.main_conversation).await {
+            Ok(history) => history,
+            Err(e) => {
+                tracing::error!(
+                    error = format!("{e:#}"),
+                    interface,
+                    "couldn't read main's conversation for /multitask"
+                );
+                return "Couldn't read our conversation to fork it, so nothing was started. \
                     The logs have the details."
-                .to_string();
-        }
-    };
-    let event = crate::background::OwnerSessionStart {
+                    .to_string();
+            }
+        };
+    let event = residuum_background::OwnerSessionStart {
         prompt: task,
-        model: crate::config::ModelSelector::MEDIUM,
+        model: residuum_config::ModelSelector::MEDIUM,
         fork_of: Some(history),
-        conversation: conversation.map(|ctx| crate::bus::ConversationTarget {
+        conversation: conversation.map(|ctx| residuum_bus::ConversationTarget {
             endpoint: interface.to_string(),
             conversation_id: ctx.id.clone(),
         }),
@@ -250,11 +254,11 @@ async fn start_multitask(
 
 /// Stop a named session — `/stop <name>` — through the same registry stop
 /// path as the web UI's per-session stop button
-/// ([`crate::background::registry::stop_named_session`]): a running turn is
+/// ([`residuum_background::registry::stop_named_session`]): a running turn is
 /// interrupted and an idle session is ended, so a session listed by
 /// `/sessions` can always be stopped by name.
 fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
-    match crate::background::registry::stop_named_session(session_registry, name) {
+    match residuum_background::registry::stop_named_session(session_registry, name) {
         Ok(()) => format!("stopping session '{name}'."),
         Err(e) => e.to_string(),
     }
@@ -300,7 +304,7 @@ fn format_elapsed(elapsed: chrono::Duration) -> String {
 
 /// Where a `/stop` command should be aimed, resolved from the conversation
 /// it was typed in — the same routing rule as an ordinary message (see
-/// [`crate::bus::origin::MessageOrigin::belongs_to_main`]): the
+/// [`residuum_bus::origin::MessageOrigin::belongs_to_main`]): the
 /// owner's own DM (or an interface with no conversation concept, i.e. the
 /// web UI) targets main, every other admitted conversation — a group chat,
 /// a channel, or a non-owner DM — targets that conversation's own session
@@ -312,8 +316,8 @@ enum StopTarget {
     /// Stop the main agent's current turn.
     Main,
     /// Stop this conversation's own session, addressed the same way
-    /// [`crate::background::ConversationRouter`] addresses it.
-    Conversation(crate::bus::SessionAddress),
+    /// [`residuum_background::ConversationRouter`] addresses it.
+    Conversation(residuum_bus::SessionAddress),
 }
 
 fn resolve_stop_target(endpoint: &str, conversation: Option<&ConversationContext>) -> StopTarget {
@@ -333,8 +337,8 @@ pub(crate) async fn inbox_add_from_command(
     tz: chrono_tz::Tz,
     ok_response: String,
 ) -> String {
-    let title = crate::inbox::derive_title(body);
-    match crate::inbox::quick_add(inbox_dir, &title, body, source, tz).await {
+    let title = residuum_workspace::inbox::derive_title(body);
+    match residuum_workspace::inbox::quick_add(inbox_dir, &title, body, source, tz).await {
         Ok(_) => ok_response,
         Err(e) => format!("failed to add inbox item: {e}"),
     }
@@ -346,7 +350,7 @@ pub(crate) async fn inbox_add_from_command(
 /// for a response. Falls back to `fallback` on timeout or channel close.
 #[tracing::instrument(skip_all, fields(command = %name, source = %source))]
 pub(crate) async fn dispatch_server_command(
-    command_tx: &tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
+    command_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
     name: &'static str,
     args: Option<String>,
     fallback: String,
@@ -355,7 +359,7 @@ pub(crate) async fn dispatch_server_command(
     use std::time::Duration;
     tracing::info!(command = %name, source = %source, "server command dispatched");
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = command_tx.try_send(crate::bus::control::ServerCommand {
+    if let Err(e) = command_tx.try_send(residuum_bus::control::ServerCommand {
         name: name.to_string(),
         args,
         reply_tx: Some(reply_tx),
@@ -383,7 +387,7 @@ pub(crate) async fn dispatch_server_command(
 /// A conversation session is stopped through the session registry
 /// directly (the same synchronous, atomic check-and-cancel the web UI's
 /// per-session stop uses via
-/// [`crate::background::registry::SessionRegistry::stop_if_running`]), so
+/// [`residuum_background::registry::SessionRegistry::stop_if_running`]), so
 /// there is no channel for a stale request to sit in — the reply always
 /// reflects the session's actual state at the moment this call happens.
 ///
@@ -398,7 +402,7 @@ pub(crate) async fn dispatch_server_command(
 /// was handled.
 #[tracing::instrument(skip_all, fields(source = %source))]
 pub(crate) async fn dispatch_stop_request(
-    stop_tx: &tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
+    stop_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
     session_registry: &SessionRegistry,
     endpoint: &str,
     conversation: Option<&ConversationContext>,
@@ -420,13 +424,13 @@ pub(crate) async fn dispatch_stop_request(
 
 /// Stop the main agent's currently running turn and wait for the outcome.
 async fn dispatch_main_stop_request(
-    stop_tx: &tokio::sync::mpsc::Sender<crate::bus::control::StopRequest>,
+    stop_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
     source: &str,
 ) -> String {
     use std::time::Duration;
     tracing::info!(source = %source, "stop requested for main");
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = stop_tx.try_send(crate::bus::control::StopRequest {
+    if let Err(e) = stop_tx.try_send(residuum_bus::control::StopRequest {
         reply_to: None,
         result_tx: Some(result_tx),
     }) {
@@ -450,11 +454,11 @@ async fn dispatch_main_stop_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::background::registry::SessionRegistry;
-    use crate::bus::control::StopRequest;
-    use crate::bus::session::{SessionCategory, SessionInfo, SessionState};
-    use crate::bus::{EventTrigger, MessageEvent, SessionAddress, Subscriber};
-    use crate::config::ModelSelector;
+    use residuum_background::registry::SessionRegistry;
+    use residuum_bus::control::StopRequest;
+    use residuum_bus::session::{SessionCategory, SessionInfo, SessionState};
+    use residuum_bus::{EventTrigger, MessageEvent, SessionAddress, Subscriber};
+    use residuum_config::ModelSelector;
     use tokio_util::sync::CancellationToken;
 
     fn session_info(address: &str, state: SessionState) -> SessionInfo {
@@ -473,7 +477,7 @@ mod tests {
             resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
-            usage: crate::bus::usage::SessionUsageTotals::default(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
     }
@@ -541,7 +545,7 @@ mod tests {
             )
             .unwrap();
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             let req = stop_rx.recv().await.unwrap();
             req.result_tx.unwrap().send(true).ok();
         });
@@ -566,7 +570,7 @@ mod tests {
     async fn web_ui_stop_with_no_conversation_reaches_main() {
         let registry = SessionRegistry::new();
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
-        crate::util::spawn_in_span(async move {
+        residuum_core::util::spawn_in_span(async move {
             let req = stop_rx.recv().await.unwrap();
             req.result_tx.unwrap().send(true).ok();
         });
@@ -613,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn undeliverable_session_output_reaches_main_as_background_input() {
-        let bus_handle = crate::bus::spawn_broker();
+        let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut sub: Subscriber<MessageEvent> =
             bus_handle.subscribe(topics::UserMessage).await.unwrap();
@@ -640,30 +644,30 @@ mod tests {
     /// dispatch borrows, a saved main conversation, and the bus its fork's
     /// spawn request is published on.
     struct MultitaskFixture {
-        bus: crate::bus::BusHandle,
-        reload_tx: crate::bus::control::ReloadSender,
-        command_tx: tokio::sync::mpsc::Sender<crate::bus::control::ServerCommand>,
+        bus: residuum_bus::BusHandle,
+        reload_tx: residuum_bus::control::ReloadSender,
+        command_tx: tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
         registry: SessionRegistry,
-        publisher: crate::bus::Publisher,
+        publisher: residuum_bus::Publisher,
         dir: tempfile::TempDir,
     }
 
     impl MultitaskFixture {
         async fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            crate::memory::recent_messages::append_recent_messages(
+            residuum_memory::recent_messages::append_recent_messages(
                 &dir.path().join("recent_messages.json"),
-                &[crate::inference::Message::user(
+                &[residuum_inference::Message::user(
                     "should we repaint the shed?",
                 )],
-                crate::memory::types::Visibility::User,
+                residuum_memory::types::Visibility::User,
                 chrono_tz::UTC,
                 Some("turn-1"),
             )
             .await
             .unwrap();
-            let bus = crate::bus::spawn_broker();
+            let bus = residuum_bus::spawn_broker();
             Self {
                 publisher: bus.publisher(),
                 bus,
@@ -706,7 +710,7 @@ mod tests {
     #[tokio::test]
     async fn multitask_in_the_owner_s_dm_forks_main_and_replies_into_that_dm() {
         let fx = MultitaskFixture::new().await;
-        let mut spawns: Subscriber<crate::bus::SpawnRequestEvent> =
+        let mut spawns: Subscriber<residuum_bus::SpawnRequestEvent> =
             fx.bus.subscribe(topics::Background).await.unwrap();
 
         let reply = fx.multitask(&owner_dm("dm-1"), "price out the paint").await;

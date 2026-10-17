@@ -6,18 +6,18 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 
-use crate::bus::origin::{ConversationContext, MessageOrigin};
-use crate::inbox::attachment::{
+use residuum_bus::origin::{ConversationContext, MessageOrigin};
+use residuum_inference::{ImageData, MessageSender};
+use residuum_workspace::inbox::attachment::{
     AttachmentInfo, finalize_attachment, format_failed_attachment_line, save_attachment_bytes,
 };
-use crate::inference::{ImageData, MessageSender};
 
 use super::TeamsRuntime;
 use super::activity::{Activity, Attachment, ChannelAccount, ConversationKind};
 use super::auth::AuthError;
 use super::store::ConversationRef;
-use crate::interfaces::chat_state::{Owner, Standing, direct_message_label};
-use crate::interfaces::context_buffer::{BufferedMessage, render_context};
+use crate::chat_state::{Owner, Standing, direct_message_label};
+use crate::context_buffer::{BufferedMessage, render_context};
 
 /// Attachment content type Teams uses for files shared in a chat.
 const FILE_DOWNLOAD_INFO: &str = "application/vnd.microsoft.teams.file.download.info";
@@ -244,7 +244,7 @@ fn buffer_for_context(rt: &TeamsRuntime, incoming: &Incoming) {
         BufferedMessage {
             sender: incoming.sender_name.clone(),
             text: body,
-            at: crate::time::now_local(rt.tz),
+            at: residuum_core::time::now_local(rt.tz),
         },
     );
 }
@@ -288,7 +288,7 @@ async fn run_command(
         Some((name, args)) => (name, Some(args.trim())),
         None => (command, None),
     };
-    let dispatch = crate::interfaces::CommandDispatch {
+    let dispatch = crate::CommandDispatch {
         reload_tx: &rt.reload_tx,
         command_tx: &rt.command_tx,
         stop_tx: &rt.stop_tx,
@@ -303,11 +303,11 @@ async fn run_command(
         kind,
         is_owner: true,
     };
-    crate::interfaces::run_chat_command(
+    crate::run_chat_command(
         name,
         args,
         &dispatch,
-        crate::config::TEAMS_ENDPOINT,
+        residuum_config::TEAMS_ENDPOINT,
         sender_name,
         Some(&conversation),
     )
@@ -347,31 +347,31 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming, is_owner: bool)
     );
     rt.reply_targets.track(&correlation_id, reference.clone());
 
-    let event = crate::bus::MessageEvent {
+    let event = residuum_bus::MessageEvent {
         id: correlation_id,
         content,
         origin: MessageOrigin {
-            endpoint: crate::config::TEAMS_ENDPOINT.to_string(),
+            endpoint: residuum_config::TEAMS_ENDPOINT.to_string(),
             sender: Some(MessageSender {
                 name: sender_name.clone(),
                 id: from.aad_object_id.unwrap_or(from.id),
-                interface: crate::config::TEAMS_ENDPOINT.to_string(),
+                interface: residuum_config::TEAMS_ENDPOINT.to_string(),
                 location: Some(location),
             }),
-            conversation: Some(crate::bus::origin::ConversationContext {
+            conversation: Some(residuum_bus::origin::ConversationContext {
                 id: conversation_id,
                 kind: conversation_kind,
                 is_owner,
             }),
             agent_sender: None,
         },
-        timestamp: crate::time::now_local(rt.tz),
+        timestamp: residuum_core::time::now_local(rt.tz),
         images,
         context: background,
     };
     if let Err(e) = rt
         .publisher
-        .publish(crate::bus::topics::UserMessage, event)
+        .publish(residuum_bus::topics::UserMessage, event)
         .await
     {
         tracing::error!(error = %e, sender = %sender_name, "failed to publish teams message to the agent");
@@ -453,7 +453,7 @@ async fn collect_attachments(
         let content_type = if needs_bot_token {
             Some(attachment.content_type.clone())
         } else {
-            Some(crate::bus::attachment::detect_mime_type(
+            Some(residuum_bus::attachment::detect_mime_type(
                 std::path::Path::new(filename),
             ))
         };
@@ -548,14 +548,14 @@ mod tests {
 
     // ── Endpoint + worker, end to end (no network) ───────────────────────
 
-    use crate::bus::{MessageEvent, Subscriber, topics};
+    use residuum_bus::{MessageEvent, Subscriber, topics};
     use residuum_core::testing::wait;
 
     use super::super::auth::TokenValidator;
     use super::super::auth::test_support::valid_token;
     use super::super::connector::ConnectorClient;
     use super::super::store::TeamsStore;
-    use crate::interfaces::context_buffer::ContextBuffer;
+    use crate::context_buffer::ContextBuffer;
 
     const APP_ID: &str = "app-id";
     const TENANT: &str = "tenant-1";
@@ -570,12 +570,12 @@ mod tests {
 
     async fn harness(respond_to_others: bool) -> Harness {
         let dir = tempfile::tempdir().unwrap();
-        let bus = crate::bus::spawn_broker();
+        let bus = residuum_bus::spawn_broker();
         let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
         let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(8);
         let http = reqwest::Client::new();
         let rt = Arc::new(TeamsRuntime {
-            cfg: crate::config::TeamsConfig {
+            cfg: residuum_config::TeamsConfig {
                 app_id: APP_ID.to_string(),
                 app_password: "unused".to_string(),
                 tenant_id: TENANT.to_string(),
@@ -597,14 +597,15 @@ mod tests {
                 .unwrap()
                 .0,
             buffer: ContextBuffer::new(10),
-            reply_targets: crate::interfaces::reply_targets::ReplyTargets::default(),
+            reply_targets: crate::reply_targets::ReplyTargets::default(),
             inbound_tx,
             publisher: bus.publisher(),
-            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::bus::control::ReloadSignal>()
-                .0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
-            session_registry: Arc::new(crate::background::registry::SessionRegistry::new()),
+            session_registry: Arc::new(residuum_background::registry::SessionRegistry::new()),
             inbox_dir: dir.path().to_path_buf(),
             main_conversation: dir.path().join("recent_messages.json"),
             tz: chrono_tz::UTC,
