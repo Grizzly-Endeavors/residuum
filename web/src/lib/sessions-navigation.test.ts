@@ -34,7 +34,7 @@ function summary(
 }
 
 function store(agent: string | null = "scout"): SessionsStore {
-  return new SessionsStore({ agent, pushToMain: () => {} });
+  return new SessionsStore({ agent });
 }
 
 function respond(status: number, body: unknown): ReturnType<typeof vi.fn> {

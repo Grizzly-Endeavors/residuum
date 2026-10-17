@@ -343,8 +343,6 @@ export class SessionRun {
         this.joinTurn();
         if (summary && frame.session_totals) summary.usage = frame.session_totals;
         break;
-      case "session_message_to_main":
-        break;
     }
   }
 

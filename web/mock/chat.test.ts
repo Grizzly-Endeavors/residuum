@@ -688,6 +688,59 @@ describe("chat turns", () => {
     });
   });
 
+  describe("a message from one of the agent's sessions", () => {
+    const research = { address: "spawned-research", category: "spawned", run_id: "run-7" };
+    const content = "[Agent Message from spawned-research (spawned)]\nFound three fallbacks.";
+
+    it("starts a turn of its own when none runs, announced with the session and its run", () => {
+      chat.receiveFromSession(content, research);
+      expect(frames[0]).toEqual({
+        type: "user_message",
+        id: "background-1",
+        turn_id: "background-1",
+        content,
+        agent_sender: research,
+        endpoint: "background",
+      });
+      expect(frames[1]).toEqual({
+        type: "turn_started",
+        reply_to: "background-1",
+        origin: { endpoint: "background", visibility: "background" },
+      });
+
+      vi.advanceTimersByTime(TURN_MS);
+      expect(frames.at(-1)).toEqual({ type: "turn_ended", reply_to: "background-1" });
+      expect(recorded()[0]).toMatchObject({
+        role: "user",
+        content,
+        visibility: "background",
+        agent_sender: research,
+        turn_id: "background-1",
+      });
+    });
+
+    it("joins the turn in flight without waiting, and is recorded with it before its reply", () => {
+      chat.send(message("hello there"));
+      vi.advanceTimersByTime(700);
+      chat.receiveFromSession(content, research);
+      expect(frames.at(-1)).toEqual({
+        type: "user_message",
+        id: expect.stringMatching(/^background-/) as string,
+        turn_id: "m1",
+        content,
+        agent_sender: research,
+        endpoint: "background",
+      });
+      expect(types()).not.toContain("message_queued");
+
+      vi.advanceTimersByTime(TURN_MS);
+      expect(types().filter((t) => t === "turn_started")).toHaveLength(1);
+      const turn = recorded();
+      expect(turn.at(-2)).toMatchObject({ content, agent_sender: research, turn_id: "m1" });
+      expect(turn.at(-1)).toMatchObject({ role: "assistant", turn_id: "m1" });
+    });
+  });
+
   describe("images sent with a message", () => {
     it("are in the message every page is told of", () => {
       const images = [{ media_type: "image/png", data: "AAAA" }];

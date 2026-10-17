@@ -48,7 +48,7 @@ class WsCoordinator {
   /** Why the main chat's history couldn't be loaded, in plain words, until a load succeeds. */
   historyError = $state<string | null>(null);
   /** The bound agent's sessions. Replaced on an agent switch. */
-  sessions = $state<SessionsStore>(this.createSessions(null, this.store));
+  sessions = $state<SessionsStore>(this.createSessions(null));
   private hasConnected = false;
   /** The agent started while bound, so its chat may be behind once the connection opens. */
   private catchUpOnConnect = false;
@@ -245,17 +245,12 @@ class WsCoordinator {
   }
 
   /**
-   * Build the sessions store for one agent's feed. A store never outlives its
+   * Build the sessions store for one agent. A store never outlives its
    * agent: anything still in flight for the old one (a fetch, a stop) lands
    * on a store nobody reads.
    */
-  private createSessions(agent: string | null, store: FeedStore): SessionsStore {
-    return new SessionsStore({
-      agent,
-      pushToMain: (from, runId, content, category) => {
-        store.pushAgentMessage(from, runId, content, category);
-      },
-    });
+  private createSessions(agent: string | null): SessionsStore {
+    return new SessionsStore({ agent });
   }
 
   /**
@@ -270,7 +265,7 @@ class WsCoordinator {
     const store = this.createFeed(name);
     this.store = store;
     this.historyError = null;
-    this.sessions = this.createSessions(name, store);
+    this.sessions = this.createSessions(name);
     this.hasConnected = false;
     this.catchUpOnConnect = false;
     this.liveUpdatesOffShown = false;

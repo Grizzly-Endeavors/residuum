@@ -131,8 +131,6 @@ export class CompletedRuns {
 export interface SessionsStoreDeps {
   /** The agent these sessions belong to, `null` before one is bound. */
   agent: string | null;
-  /** Show a session's message to the main agent in the main chat. */
-  pushToMain: (from: string, runId: string, content: string, category: string | null) => void;
 }
 
 /**
@@ -344,7 +342,6 @@ export class SessionsStore {
       case "session_broadcast_response":
       case "session_response":
       case "session_error":
-      case "session_message_to_main":
         this.handleRunFrame(frame);
         return;
     }
@@ -366,14 +363,6 @@ export class SessionsStore {
         break;
       case "session_turn_usage":
         if (live && frame.session_totals) live.usage = frame.session_totals;
-        break;
-      case "session_message_to_main":
-        this.deps.pushToMain(
-          frame.address,
-          frame.run_id,
-          frame.content,
-          (live ?? this.findByAddress(frame.address))?.category ?? null,
-        );
         break;
       case "session_turn_started":
       case "session_turn_ended":

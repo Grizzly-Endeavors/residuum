@@ -473,19 +473,7 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details: string | null, } | { "type": "session_message_to_main", 
-/**
- * Sending session's address.
- */
-address: string, 
-/**
- * Sending run's id.
- */
-run_id: string, 
-/**
- * The message body as main received it.
- */
-content: string, } | { "type": "session_message_delivered", 
+details: string | null, } | { "type": "session_message_delivered", 
 /**
  * The `id` from the `SessionSendMessage`.
  */

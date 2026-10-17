@@ -17,7 +17,7 @@ function task(overrides: Partial<OutboundA2aTaskSummary> = {}): OutboundA2aTaskS
 }
 
 function store(): SessionsStore {
-  return new SessionsStore({ agent: "scout", pushToMain: () => {} });
+  return new SessionsStore({ agent: "scout" });
 }
 
 function respond(status: number, body: unknown): void {
