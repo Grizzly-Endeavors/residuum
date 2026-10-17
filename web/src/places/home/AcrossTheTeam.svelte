@@ -79,7 +79,7 @@
     gap: var(--space-8);
     padding: var(--space-6) 0;
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .event-time {

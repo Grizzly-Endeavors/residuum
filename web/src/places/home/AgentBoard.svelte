@@ -267,7 +267,7 @@
   .col-next {
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   /* Positioned after the name's link, so the menu sits over the row's link and takes its own presses. */

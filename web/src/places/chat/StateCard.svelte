@@ -165,7 +165,7 @@
   .state-title {
     font-size: var(--font-size-heading);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
 
     &:focus {
       outline: none;
@@ -174,7 +174,7 @@
 
   .state-line {
     color: var(--color-text-2);
-    line-height: var(--line-height-message);
+    --leading: var(--line-height-message);
   }
 
   .state-again {

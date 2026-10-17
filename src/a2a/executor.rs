@@ -16,7 +16,7 @@ use futures_util::stream::BoxStream;
 use crate::background::messaging::{AgentMessenger, ConversationSpawn};
 use crate::background::registry::{SessionRegistry, conversation_session_address};
 use crate::bus::MessageEvent;
-use crate::bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
+use crate::bus::origin::{A2A_ENDPOINT, ConversationContext, ConversationKind, MessageOrigin};
 use crate::bus::session::SessionState;
 use crate::bus::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, SessionEvent,
@@ -29,10 +29,6 @@ use crate::skills::SharedSkillState;
 
 use super::auth::CALLER_HEADER;
 use super::card::SharedCardState;
-
-/// Bounds the `a2a` endpoint name used for the conversation-turn stream and
-/// the endpoint registry entry.
-const A2A_ENDPOINT: &str = "a2a";
 
 type ExecutorSender = tokio::sync::mpsc::Sender<Result<StreamResponse, A2AError>>;
 

@@ -148,7 +148,7 @@
 
   .user-text {
     font-size: var(--font-size-message);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
@@ -173,7 +173,7 @@
     padding: 0;
     border-radius: var(--corner-md);
     cursor: zoom-in;
-    line-height: 0;
+    --leading: 0;
   }
 
   /* Undo and the time line up left of the bubble, on its last line. */

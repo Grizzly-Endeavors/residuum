@@ -465,7 +465,7 @@
     font-family: var(--font-ui);
     font-size: var(--font-size-ui);
     font-weight: var(--font-weight-regular);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   /* A container, so a message can tell whether the margin beside the column has room for its details. */

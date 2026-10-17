@@ -12,4 +12,5 @@ mod hub_agent_tools;
 mod hub_host;
 mod hub_runtime;
 mod overview_schedule;
+mod session_send_message;
 mod team_files;

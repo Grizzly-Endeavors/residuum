@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 import type { E2EOptions } from "./e2e/support/fixtures";
-import { workerCount, workerServers } from "./e2e/support/servers";
+import { launchOf, workerCount } from "./e2e/support/servers";
 
 /**
  * End-to-end, accessibility and visual tests against the mock server.
@@ -194,30 +194,37 @@ export default defineConfig<E2EOptions>({
     },
   ],
 
-  // Playwright starts these one after another, in this order, so the first preview server's build is in place before the others serve it.
+  // Playwright starts these one after another, in this order, so the first preview server's build is in place before the others serve it, and each dev server looks for its port once the one before has taken its own.
+  // Each counts as started when the mock prints its ports, which Playwright then stores for the worker processes (`e2e/support/servers.ts`).
   webServer: [
-    ...workerServers.map(({ dev }) => ({
-      command: `npm run dev:mock -- --port ${dev.port} --strictPort`,
-      url: dev.url,
-      env: {
-        MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(dev.artifactsPort),
-        VITE_CACHE_DIR: `node_modules/.vite-e2e/${String(dev.port)}`,
-      },
-      // A server left over from another run would carry its state and its code into this one.
-      reuseExistingServer: false,
-      timeout: 60_000,
-    })),
-    ...workerServers.map(({ preview }, index) => ({
-      // The build is what the preview servers serve, so it is rebuilt every run, once.
-      command: `${index === 0 ? "npm run build && " : ""}npm run preview:mock -- --port ${preview.port} --strictPort`,
-      url: preview.url,
-      env: {
-        MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(preview.artifactsPort),
-      },
-      reuseExistingServer: false,
-      timeout: index === 0 ? 180_000 : 60_000,
-    })),
+    ...Array.from({ length: workerCount }, (_, index) => {
+      const launch = launchOf("dev", index);
+      return {
+        name: launch.name,
+        command: `npm run dev:mock -- ${launch.listenArgs}`,
+        wait: { stdout: launch.listening },
+        env: {
+          MOCK_DETERMINISTIC: "1",
+          MOCK_ARTIFACTS_PORT: String(launch.artifactsPort),
+          // A dependency cache for each dev server (see `cacheDir` in `vite.config.ts`).
+          VITE_CACHE_DIR: `node_modules/.vite-e2e/${String(index)}`,
+        },
+        timeout: 60_000,
+      };
+    }),
+    ...Array.from({ length: workerCount }, (_, index) => {
+      const launch = launchOf("preview", index);
+      return {
+        name: launch.name,
+        // The build is what the preview servers serve, so it is rebuilt every run, once.
+        command: `${index === 0 ? "npm run build && " : ""}npm run preview:mock -- ${launch.listenArgs}`,
+        wait: { stdout: launch.listening },
+        env: {
+          MOCK_DETERMINISTIC: "1",
+          MOCK_ARTIFACTS_PORT: String(launch.artifactsPort),
+        },
+        timeout: index === 0 ? 180_000 : 60_000,
+      };
+    }),
   ],
 });

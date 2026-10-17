@@ -449,7 +449,9 @@ impl AgentMessageEvent {
         if let Some(teammate) = self.teammate_sender() {
             return format!(
                 "[Message from teammate {teammate}, not the user. Your response in this turn is \
-                 not shown to them; to reply, call message_agent with to=\"{teammate}\".]\n{}",
+                 not shown to them; to reply, call message_agent with to=\"{teammate}\". In a \
+                 session for an outside chat it is not posted there either: only send_message \
+                 reaches that chat.]\n{}",
                 self.content
             );
         }

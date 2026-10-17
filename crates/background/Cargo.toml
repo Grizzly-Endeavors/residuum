@@ -9,7 +9,7 @@ publish.workspace = true
 workspace = true
 
 [features]
-test-support = ["residuum-config/test-support", "dep:tempfile"]
+test-support = ["residuum-config/test-support", "residuum-bus/test-support", "dep:tempfile"]
 
 [dependencies]
 residuum-core = { workspace = true }

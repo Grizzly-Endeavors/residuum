@@ -134,7 +134,7 @@
 
   .size-lead {
     font-size: var(--font-size-message);
-    line-height: var(--line-height-message);
+    --leading: var(--line-height-message);
 
     & strong {
       font-weight: var(--font-weight-semibold);

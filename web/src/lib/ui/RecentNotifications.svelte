@@ -161,7 +161,7 @@
 
   .ui-notification-message {
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
   }
 

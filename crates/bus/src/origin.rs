@@ -10,6 +10,10 @@ use residuum_inference::{AgentSender, MessageSender};
 /// to the main agent, another agent's message, a delivery-failure notice.
 pub const BACKGROUND_ENDPOINT: &str = "background";
 
+/// The endpoint name of an A2A caller's conversation. Its session's replies
+/// reach the caller through the session's turn responses, not a chat.
+pub const A2A_ENDPOINT: &str = "a2a";
+
 /// The endpoint whose topic carries a turn's events for the chat interface
 /// behind it: `delivered_to` itself, unless it is the web UI, which takes a
 /// turn's lifecycle, intermediate text, reply and failure from the main
