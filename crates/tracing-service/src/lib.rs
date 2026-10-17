@@ -384,13 +384,19 @@ impl TracingService {
             name: None,
             headers: std::collections::HashMap::new(),
         };
-        let exporter = otel::build_exporter(&endpoint)
+        let otlp = otel::build_exporter(&endpoint)
             .map_err(|e| anyhow::anyhow!("failed to build exporter for {url}: {e}"))?;
         // Send an empty batch to test connectivity
-        exporter
-            .export(Vec::new())
-            .await
-            .map_err(|e| anyhow::anyhow!("connectivity test failed for {url}: {e}"))?;
+        if let Err(e) = otlp.exporter.export(Vec::new()).await {
+            let error = otlp.transport.describe_failure(&e);
+            tracing::warn!(
+                url,
+                attempts = otlp.transport.attempts(),
+                error = %error,
+                "OTEL connectivity test failed"
+            );
+            anyhow::bail!("connectivity test failed for {url}: {error}");
+        }
         tracing::info!(url, "OTEL connectivity test passed");
         Ok(())
     }
@@ -491,15 +497,9 @@ impl TracingService {
                         redact_with(agent_keys.as_ref(), &mut spans).await;
 
                         let otel_spans = otel::convert_spans(&spans);
+                        // export_to_endpoint logs a failure itself.
                         for ep in &endpoints {
-                            let result = export_to_endpoint(ep, otel_spans.clone()).await;
-                            if !result.success {
-                                tracing::warn!(
-                                    url = %result.url,
-                                    error = ?result.error,
-                                    "streaming export failed"
-                                );
-                            }
+                            export_to_endpoint(ep, otel_spans.clone()).await;
                         }
                     }
                 }
@@ -627,7 +627,7 @@ async fn export_to_endpoint(
 ) -> EndpointExportResult {
     let exporter = otel::build_exporter(endpoint);
     match exporter {
-        Ok(exp) => match exp.export(spans).await {
+        Ok(otlp) => match otlp.exporter.export(spans).await {
             Ok(()) => {
                 tracing::debug!(url = %endpoint.url, "trace export succeeded");
                 EndpointExportResult {
@@ -637,11 +637,17 @@ async fn export_to_endpoint(
                 }
             }
             Err(e) => {
-                tracing::warn!(url = %endpoint.url, error = %e, "trace export failed");
+                let error = otlp.transport.describe_failure(&e);
+                tracing::warn!(
+                    url = %endpoint.url,
+                    attempts = otlp.transport.attempts(),
+                    error = %error,
+                    "trace export failed"
+                );
                 EndpointExportResult {
                     url: endpoint.url.clone(),
                     success: false,
-                    error: Some(format!("{e}")),
+                    error: Some(error),
                 }
             }
         },

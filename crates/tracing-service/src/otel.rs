@@ -1,15 +1,18 @@
 //! OTEL span conversion and exporter construction.
 //!
 //! Converts in-memory `CompletedSpan` structs from the span buffer into
-//! OpenTelemetry `SpanData` for export via OTLP HTTP/protobuf.
+//! OpenTelemetry `SpanData` for export via OTLP HTTP/protobuf, and builds the
+//! exporter that sends them.
 
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
 use opentelemetry::trace::{
     SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
 };
 use opentelemetry::{InstrumentationScope, KeyValue};
+use opentelemetry_http::{Bytes, HttpClient, HttpError, Request, Response};
 use opentelemetry_sdk::trace::{SpanData, SpanEvents, SpanLinks};
 
 use residuum_config::OtelEndpoint;
@@ -18,13 +21,22 @@ use residuum_core::util::telemetry::CompletedSpan;
 /// Service name reported in OTEL traces.
 const SERVICE_NAME: &str = "residuum";
 
+/// An OTLP span exporter together with the transport log of its HTTP client.
+pub(super) struct OtlpExporter {
+    pub(super) exporter: opentelemetry_otlp::SpanExporter,
+    pub(super) transport: TransportLog,
+}
+
 /// Build an OTLP HTTP/protobuf span exporter for the given endpoint.
 ///
+/// The exporter sends through [`DiagnosedClient`], so a failed export can
+/// name the transport error behind it (see [`TransportLog::describe_failure`]).
+///
 /// # Errors
-/// Returns an error if the exporter cannot be constructed.
+/// Returns an error if the HTTP client or the exporter cannot be constructed.
 pub(super) fn build_exporter(
     endpoint: &OtelEndpoint,
-) -> Result<opentelemetry_otlp::SpanExporter, opentelemetry_otlp::ExporterBuildError> {
+) -> Result<OtlpExporter, opentelemetry_otlp::ExporterBuildError> {
     use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 
     let mut headers = std::collections::HashMap::new();
@@ -32,12 +44,113 @@ pub(super) fn build_exporter(
         headers.insert(k.clone(), v.clone());
     }
 
-    opentelemetry_otlp::SpanExporter::builder()
+    // The exporter applies its timeout only to its own built-in client, so a
+    // supplied client carries the same default itself.
+    let inner = reqwest::Client::builder()
+        .timeout(opentelemetry_otlp::OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT)
+        .build()
+        .map_err(|e| {
+            opentelemetry_otlp::ExporterBuildError::InternalFailure(format!(
+                "failed to build the HTTP client for {}: {e}",
+                endpoint.url
+            ))
+        })?;
+    let transport = TransportLog::default();
+    let client = DiagnosedClient {
+        inner,
+        transport: transport.clone(),
+    };
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        .with_http_client(client)
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint(&endpoint.url)
         .with_headers(headers)
-        .build()
+        .build()?;
+    Ok(OtlpExporter {
+        exporter,
+        transport,
+    })
+}
+
+/// What an exporter's HTTP client saw: how many requests it sent and the
+/// transport error of the last one, if it failed.
+///
+/// The OTLP exporter reports a transport failure only as "network error", and
+/// logs the cause at debug level under its own target, which the log filter
+/// drops. Keeping the cause here lets the caller show it to the user and log it.
+#[derive(Debug, Clone, Default)]
+pub(super) struct TransportLog(Arc<Mutex<TransportRecord>>);
+
+#[derive(Debug, Default)]
+struct TransportRecord {
+    attempts: usize,
+    last_error: Option<String>,
+}
+
+impl TransportLog {
+    fn record(&self, url: &str, error: Option<&HttpError>) {
+        let cause = error.map(|e| error_chain(e.as_ref()));
+        if let Some(cause) = &cause {
+            tracing::debug!(url, error = %cause, "otlp export request failed");
+        }
+        let mut record = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        record.attempts += 1;
+        record.last_error = cause;
+    }
+
+    /// Number of HTTP requests the exporter has sent, retries included.
+    pub(super) fn attempts(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .attempts
+    }
+
+    /// The exporter's error, followed by the transport error of the last
+    /// request when that request failed before getting a response.
+    pub(super) fn describe_failure(&self, error: &impl std::fmt::Display) -> String {
+        let record = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match &record.last_error {
+            Some(cause) => format!("{error} ({cause})"),
+            None => error.to_string(),
+        }
+    }
+}
+
+/// An error's message followed by the messages of its sources, skipping a
+/// source whose message the chain already contains.
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(inner) = source {
+        let text = inner.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = inner.source();
+    }
+    message
+}
+
+/// The OTLP exporter's HTTP client: reqwest, recording each request's outcome
+/// in a [`TransportLog`].
+#[derive(Debug)]
+struct DiagnosedClient {
+    inner: reqwest::Client,
+    transport: TransportLog,
+}
+
+#[async_trait::async_trait]
+impl HttpClient for DiagnosedClient {
+    async fn send_bytes(&self, request: Request<Bytes>) -> Result<Response<Bytes>, HttpError> {
+        let url = request.uri().to_string();
+        let result = self.inner.send_bytes(request).await;
+        self.transport.record(&url, result.as_ref().err());
+        result
+    }
 }
 
 /// Encode a batch of OTEL `SpanData` into the OTLP protobuf wire format
@@ -169,6 +282,7 @@ fn rand_trace_id() -> [u8; 16] {
 )]
 mod tests {
     use super::*;
+    use opentelemetry_sdk::trace::SpanExporter as _;
     use std::time::Duration;
 
     fn make_test_span() -> CompletedSpan {
@@ -246,5 +360,123 @@ mod tests {
     fn rand_trace_id_is_nonzero() {
         let id = rand_trace_id();
         assert_ne!(id, [0_u8; 16]);
+    }
+
+    fn endpoint(port: u16) -> OtelEndpoint {
+        OtelEndpoint {
+            url: format!("http://127.0.0.1:{port}/v1/traces"),
+            name: None,
+            headers: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Answer every request on `listener` with `401 Unauthorized`, reading
+    /// each request in full first so the client sees the response, not a reset.
+    async fn serve_unauthorized(listener: tokio::net::TcpListener) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 4096];
+            while let Ok(n) = stream.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                let Some(head_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&request[..head_end]).to_lowercase();
+                let body_len = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if request.len() >= head_end + 4 + body_len {
+                    break;
+                }
+            }
+            let response =
+                b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+            drop(stream.write_all(response).await);
+            drop(stream.shutdown().await);
+        }
+    }
+
+    #[tokio::test]
+    async fn refused_connection_names_the_transport_cause_after_retrying() {
+        // Bound but not listening, so every connection is refused.
+        let port = residuum_core::testing::ports::reserve_port();
+        let otlp = build_exporter(&endpoint(port.port())).unwrap();
+
+        let err = otlp.exporter.export(Vec::new()).await.unwrap_err();
+        let described = otlp.transport.describe_failure(&err);
+
+        assert!(
+            described.starts_with(&err.to_string()) && described.contains("error sending request"),
+            "expected the exporter's error followed by the transport cause, got {described:?}"
+        );
+        assert!(
+            otlp.transport.attempts() > 1,
+            "a refused connection is retried, got {} attempt(s)",
+            otlp.transport.attempts()
+        );
+    }
+
+    #[tokio::test]
+    async fn status_error_has_no_transport_cause_and_is_not_retried() {
+        let listener = residuum_core::testing::ports::reserve_port().into_tokio_listener();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(serve_unauthorized(listener));
+        let otlp = build_exporter(&endpoint(port)).unwrap();
+
+        let err = otlp.exporter.export(Vec::new()).await.unwrap_err();
+        let described = otlp.transport.describe_failure(&err);
+        server.abort();
+
+        assert_eq!(described, err.to_string());
+        assert!(described.contains("401"), "got {described:?}");
+        assert_eq!(otlp.transport.attempts(), 1);
+    }
+
+    #[test]
+    fn error_chain_joins_sources_without_repeating_them() {
+        #[derive(Debug)]
+        struct Outer {
+            message: &'static str,
+            source: std::io::Error,
+        }
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.message)
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.source)
+            }
+        }
+        let refused = || std::io::Error::other("connection refused");
+
+        let err = Outer {
+            message: "error sending request",
+            source: refused(),
+        };
+        assert_eq!(
+            error_chain(&err),
+            "error sending request: connection refused"
+        );
+
+        let repeated = Outer {
+            message: "tcp connect error: connection refused",
+            source: refused(),
+        };
+        assert_eq!(
+            error_chain(&repeated),
+            "tcp connect error: connection refused"
+        );
     }
 }
