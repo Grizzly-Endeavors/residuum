@@ -6,9 +6,10 @@
 #
 # The tree: crates/a with no workspace dependency, crates/b depending on a,
 # crates/net holding src/browser_landing.rs and depending on a in its dev
-# dependencies, and a root manifest depending on all three. It also holds the
-# integration modules that --covering reads, set up below with the cases that use
-# them.
+# dependencies, crates/hub with no workspace dependency and no dependents (the
+# package the two paths it reads belong to), and a root manifest depending on
+# a, b and net. It also holds the integration modules that --covering reads, set
+# up below with the cases that use them.
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +17,7 @@ script="$dir/affected-packages.sh"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
-mkdir -p "$scratch/crates/a/src" "$scratch/crates/b/src" "$scratch/crates/net/src"
+mkdir -p "$scratch/crates/a/src" "$scratch/crates/b/src" "$scratch/crates/net/src" "$scratch/crates/hub/src"
 cd "$scratch"
 cat > Cargo.toml <<'EOF'
 [package]
@@ -27,6 +28,11 @@ version.workspace = true
 residuum-a = { workspace = true }
 residuum-b = { workspace = true }
 residuum-net = { workspace = true }
+EOF
+cat > crates/hub/Cargo.toml <<'EOF'
+[package]
+name = "residuum-hub"
+version.workspace = true
 EOF
 cat > crates/a/Cargo.toml <<'EOF'
 [package]
@@ -53,8 +59,8 @@ touch crates/net/src/browser_landing.rs
 
 # The integration modules, as tests/it holds them, with the covers line each
 # carries. one covers residuum-a, two residuum-b and the root, three/ (a directory
-# module) residuum-a, and four residuum-b. The container files and support are
-# not modules.
+# module) residuum-a, four residuum-b, and five residuum-hub. The container files
+# and support are not modules.
 mkdir -p tests/it/three tests/it/support tests/fixtures
 printf 'mod one;\n' >tests/it/main.rs
 printf '//! covers: residuum-a\n' >tests/it/one.rs
@@ -63,6 +69,7 @@ printf '//! covers: residuum-a\n' >tests/it/three/mod.rs
 touch tests/it/three/x.rs
 touch tests/it/support/mod.rs tests/fixtures/x
 printf '//! covers: residuum-b\n' >tests/it/four.rs
+printf '//! covers: residuum-hub\n' >tests/it/five.rs
 
 status=0
 
@@ -116,10 +123,10 @@ src/main.rs|-p residuum
 tests/it/gateway.rs|-p residuum
 build.rs|-p residuum
 web/src/lib/generated/types.ts|-p residuum
-web/app-shell-csp.txt|-p residuum
+web/app-shell-csp.txt|-p residuum-hub
 scripts/check-generated-types.sh|-p residuum
 scripts/export-generated-types.sh|-p residuum
-.github/workflows/release.yml|-p residuum
+.github/workflows/release.yml|-p residuum-hub
 web/src/styles/tokens.css|-p residuum -p residuum-net
 Cargo.toml|--workspace
 Cargo.lock|--workspace
@@ -143,6 +150,7 @@ CASES
 expected_graph="residuum: residuum-a residuum-b residuum-net
 residuum-a:
 residuum-b: residuum-a
+residuum-hub:
 residuum-net: residuum-a"
 actual_graph="$("$script" --graph)"
 if [ "$actual_graph" != "$expected_graph" ]; then
@@ -166,8 +174,8 @@ crates/net/src/lib.rs|residuum-net|
 crates/net/src/browser_landing.rs|residuum-net|
 crates/net||
 web/src/styles/tokens.css|residuum-net|
-web/app-shell-csp.txt||it:two
-.github/workflows/release.yml||it:two
+web/app-shell-csp.txt|residuum-hub|it:five
+.github/workflows/release.yml|residuum-hub|it:five
 src/lib.rs||it:two
 src/main.rs||it:two
 src/daemon.rs||it:two
@@ -222,44 +230,6 @@ elif printf '%s\n' crates/a/src/lib.rs | "$script" --covering >/dev/null 2>&1; t
     status=1
 fi
 chmod 644 tests/it/one.rs
-
-# The hub reads two of the paths by path: web/app-shell-csp.txt from
-# crates/hub/src/web/assets.rs and .github/workflows/release.yml from
-# crates/hub/src/update.rs. Each goes to residuum-hub only while the hub's
-# manifest and the file that reads it exist, and to the root otherwise. The
-# hub is added here, after the cases above, which run without it.
-
-# readers <state> <csp --affected> <csp --touched> <release --affected> <release --touched>
-readers() {
-    check "web/app-shell-csp.txt, $1" --affected web/app-shell-csp.txt "$2"
-    check_words "web/app-shell-csp.txt, $1" --touched web/app-shell-csp.txt "$3"
-    check ".github/workflows/release.yml, $1" --affected .github/workflows/release.yml "$4"
-    check_words ".github/workflows/release.yml, $1" --touched .github/workflows/release.yml "$5"
-}
-
-mkdir -p crates/hub/src/web
-cat > crates/hub/Cargo.toml <<'EOF'
-[package]
-name = "residuum-hub"
-version.workspace = true
-EOF
-touch crates/hub/src/web/assets.rs crates/hub/src/update.rs
-readers "hub member with both readers" "-p residuum-hub" "residuum-hub" "-p residuum-hub" "residuum-hub"
-
-rm crates/hub/src/web/assets.rs
-readers "hub member without the CSP reader" "-p residuum" "" "-p residuum-hub" "residuum-hub"
-
-touch crates/hub/src/web/assets.rs
-rm crates/hub/src/update.rs
-readers "hub member without the workflow reader" "-p residuum-hub" "residuum-hub" "-p residuum" ""
-
-rm crates/hub/src/web/assets.rs
-readers "hub member without either reader" "-p residuum" "" "-p residuum" ""
-
-touch crates/hub/src/web/assets.rs crates/hub/src/update.rs
-rm crates/hub/Cargo.toml
-readers "readers without the hub manifest" "-p residuum" "" "-p residuum" ""
-rm -rf crates/hub
 
 if [ "$status" -eq 0 ]; then
     echo "affected-packages: every path class, mode, fallback and the graph match"

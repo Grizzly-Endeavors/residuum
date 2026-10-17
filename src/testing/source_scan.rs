@@ -609,21 +609,12 @@ fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>>
     found
 }
 
-/// Where the integration tests live, and the file that declares them. Each
-/// top-level module of `dir` (a file, or a directory with a `mod.rs`) carries
-/// one `//! covers:` line naming the packages it tests, except the `exempt`
-/// modules.
-struct ModuleDir {
-    dir: &'static str,
-    container: &'static str,
-    exempt: &'static [&'static str],
-}
-
-const MODULE_DIRS: [ModuleDir; 1] = [ModuleDir {
-    dir: "tests/it",
-    container: "main.rs",
-    exempt: &["support"],
-}];
+/// Where the integration tests live: each top-level module of `IT_DIR` (a file,
+/// or a directory with a `mod.rs`) carries one `//! covers:` line naming the
+/// packages it tests, except the `IT_EXEMPT` modules. `IT_CONTAINER` declares them.
+const IT_DIR: &str = "tests/it";
+const IT_CONTAINER: &str = "main.rs";
+const IT_EXEMPT: &[&str] = &["support"];
 
 /// The `name` of each member package under `root`, read from its manifest.
 fn member_packages(root: &Path) -> Result<BTreeSet<String>, String> {
@@ -780,7 +771,7 @@ fn top_level_modules(
 }
 
 /// Problems with the covers lines and the `mod` lines that declare the modules
-/// under `MODULE_DIRS`. An empty result is a pass.
+/// of `IT_DIR`. An empty result is a pass.
 fn covers_problems(root: &Path) -> Vec<String> {
     let mut problems = Vec::new();
     let mut valid_packages = BTreeSet::from(["residuum".to_string()]);
@@ -789,67 +780,60 @@ fn covers_problems(root: &Path) -> Vec<String> {
         Err(err) => problems.push(err),
     }
     let mod_decl = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+)\s*;").unwrap();
-    for module_dir in &MODULE_DIRS {
-        let dir = root.join(module_dir.dir);
-        if !dir.is_dir() {
-            problems.push(format!("{} does not exist", module_dir.dir));
-            continue;
+    let dir = root.join(IT_DIR);
+    if !dir.is_dir() {
+        problems.push(format!("{IT_DIR} does not exist"));
+        return problems;
+    }
+    let container_path = dir.join(IT_CONTAINER);
+    let Ok(container_text) = std::fs::read_to_string(&container_path) else {
+        problems.push(format!(
+            "{IT_DIR} has no {IT_CONTAINER}, which declares its modules"
+        ));
+        return problems;
+    };
+    let declared: BTreeSet<String> = container_text
+        .lines()
+        .filter_map(|line| mod_decl.captures(line).map(|caps| caps[1].to_string()))
+        .collect();
+    let modules = top_level_modules(&dir, IT_CONTAINER, &mut problems);
+    let module_names: BTreeSet<String> = modules.iter().map(|(name, _)| name.clone()).collect();
+    for name in &module_names {
+        if !declared.contains(name) {
+            problems.push(format!("{IT_DIR}/{IT_CONTAINER} has no `mod {name};` line"));
         }
-        let container_path = dir.join(module_dir.container);
-        let Ok(container_text) = std::fs::read_to_string(&container_path) else {
-            problems.push(format!(
-                "{} has no {}, which declares its modules",
-                module_dir.dir, module_dir.container
-            ));
-            continue;
-        };
-        let declared: BTreeSet<String> = container_text
-            .lines()
-            .filter_map(|line| mod_decl.captures(line).map(|caps| caps[1].to_string()))
-            .collect();
-        let modules = top_level_modules(&dir, module_dir.container, &mut problems);
-        let module_names: BTreeSet<String> = modules.iter().map(|(name, _)| name.clone()).collect();
-        for name in &module_names {
-            if !declared.contains(name) {
-                problems.push(format!(
-                    "{}/{} has no `mod {name};` line",
-                    module_dir.dir, module_dir.container
-                ));
-            }
-        }
-        for name in declared.difference(&module_names) {
-            problems.push(format!(
-                "{}/{} declares `mod {name};` with no file",
-                module_dir.dir, module_dir.container
-            ));
-        }
-        for (name, file) in &modules {
-            let rel = format!("{}/{name}", module_dir.dir);
-            let module_dir_path = dir.join(name);
-            if module_dir_path.is_dir() {
-                // Only the module's mod.rs carries its covers line; every other
-                // file below the directory belongs to the module.
-                for inner in files_below_module(&module_dir_path, &mut problems) {
-                    if inner == *file {
-                        continue;
-                    }
-                    let inner_rel = inner.strip_prefix(root).unwrap_or(&inner).display();
-                    match covers_lines(&inner) {
-                        Ok(scan) if scan.lines.is_empty() && scan.malformed.is_empty() => {}
-                        Ok(_) => problems.push(format!(
-                            "{inner_rel} has a `//! covers:` line; only the mod.rs of its module carries one"
-                        )),
-                        Err(err) => problems.push(err),
-                    }
+    }
+    for name in declared.difference(&module_names) {
+        problems.push(format!(
+            "{IT_DIR}/{IT_CONTAINER} declares `mod {name};` with no file"
+        ));
+    }
+    for (name, file) in &modules {
+        let rel = format!("{IT_DIR}/{name}");
+        let module_dir_path = dir.join(name);
+        if module_dir_path.is_dir() {
+            // Only the module's mod.rs carries its covers line; every other
+            // file below the directory belongs to the module.
+            for inner in files_below_module(&module_dir_path, &mut problems) {
+                if inner == *file {
+                    continue;
+                }
+                let inner_rel = inner.strip_prefix(root).unwrap_or(&inner).display();
+                match covers_lines(&inner) {
+                    Ok(scan) if scan.lines.is_empty() && scan.malformed.is_empty() => {}
+                    Ok(_) => problems.push(format!(
+                        "{inner_rel} has a `//! covers:` line; only the mod.rs of its module carries one"
+                    )),
+                    Err(err) => problems.push(err),
                 }
             }
-            if module_dir.exempt.contains(&name.as_str()) {
-                continue;
-            }
-            match covers_lines(file) {
-                Ok(scan) => check_covers_lines(&rel, &scan, &valid_packages, &mut problems),
-                Err(err) => problems.push(err),
-            }
+        }
+        if IT_EXEMPT.contains(&name.as_str()) {
+            continue;
+        }
+        match covers_lines(file) {
+            Ok(scan) => check_covers_lines(&rel, &scan, &valid_packages, &mut problems),
+            Err(err) => problems.push(err),
         }
     }
     problems

@@ -342,12 +342,6 @@ is_member() {
     [ -f "$1/crates/$2/Cargo.toml" ]
 }
 
-# Whether the tree $1 has the hub as a member crate that holds the source file $2,
-# the file whose tests read a path (scripts/affected-packages.sh, reader_package).
-hub_reads() {
-    is_member "$1" hub && [ -f "$1/crates/hub/$2" ]
-}
-
 # The root unit-test filters of the push being planned, space-separated. The
 # source scans are always among them.
 UNIT_FILTERS=""
@@ -407,11 +401,9 @@ pick_packages() {
 #   web/src/styles/tokens.css      the member tests of residuum-net, which
 #                                  embeds it (crates/net/src/browser_landing.rs)
 #   web/app-shell-csp.txt          the member tests of residuum-hub, which reads it
-#                                  (crates/hub/src/web/assets.rs), or every root
-#                                  unit test while the hub is not a member crate
+#                                  (crates/hub/src/web/assets.rs)
 #   .github/workflows/release.yml  the member tests of residuum-hub, which reads it
-#                                  (crates/hub/src/update.rs), or every root unit
-#                                  test while the hub is not a member crate
+#                                  (crates/hub/src/update.rs)
 # Clippy checks the packages scripts/affected-packages.sh --affected picks for
 # all the changed paths, and every package when there is no list of them. The
 # member tests are the packages --touched picks: the member a path is in, without
@@ -509,17 +501,8 @@ plan_rust_tests() {
         web/src/styles/tokens.css)
             # The member tests come from --touched, below.
             ;;
-        web/app-shell-csp.txt)
-            if ! hub_reads "$dir" src/web/assets.rs; then
-                unit_all=1
-                unit_reason="$path is read by unit tests"
-            fi
-            ;;
-        .github/workflows/release.yml)
-            if ! hub_reads "$dir" src/update.rs; then
-                unit_all=1
-                unit_reason="$path is read by unit tests"
-            fi
+        web/app-shell-csp.txt | .github/workflows/release.yml)
+            # The member tests come from --touched, below.
             ;;
         *)
             # Only paths the Rust checks cover count: a docs or web file that no

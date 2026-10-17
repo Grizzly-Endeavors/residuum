@@ -11,10 +11,6 @@
     clippy::panic,
     reason = "test assertions use panic on unexpected variants"
 )]
-#![expect(
-    clippy::missing_assert_message,
-    reason = "test assertions name the failing condition in the assert itself"
-)]
 
 use super::agent_watch::agent_bus;
 use super::*;
@@ -35,7 +31,11 @@ async fn connect(hub: &Fixture, name: &str) -> AgentSocket {
     send(&mut ws, json!({ "type": "set_verbose", "enabled": true })).await;
     send(&mut ws, json!({ "type": "ping" })).await;
     let pong = next_frame(&mut ws).await;
-    assert_eq!(str_at(&pong, "type"), "pong");
+    assert_eq!(
+        str_at(&pong, "type"),
+        "pong",
+        "the server did not answer the ping with a pong"
+    );
     ws
 }
 

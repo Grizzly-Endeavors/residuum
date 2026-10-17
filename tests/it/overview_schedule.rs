@@ -15,10 +15,6 @@
     clippy::panic,
     reason = "test assertions use panic on unexpected variants"
 )]
-#![expect(
-    clippy::missing_assert_message,
-    reason = "test assertions name the failing condition in the assert itself"
-)]
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -99,7 +95,11 @@ async fn pulses_listed(endpoint: &axum::Router) -> Value {
     )
     .await
     .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the overview request did not succeed"
+    );
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
