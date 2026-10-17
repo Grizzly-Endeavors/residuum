@@ -357,6 +357,58 @@ describe("following", () => {
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
     expect(geometry.scrollTop).toBe(2860);
   });
+
+  it("keeps the reader at the end when the browser moves them as the turn in flight starts", async () => {
+    const items: FeedItem[] = [
+      { id: 1, kind: "assistant", content: "Earlier reply" },
+      { id: 2, kind: "user", content: "Back to the routing doc.", turnId: "t1" },
+    ];
+    const { rerender } = render(Feed, {
+      agent: "atlas",
+      items,
+      label: "Conversation with atlas",
+      live: true,
+    });
+    const region = screen.getByRole("region", { name: "Conversation with atlas" });
+    const geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500 };
+    sizeRegion(region, geometry);
+    await settle();
+    scrollReader(region, geometry, 1500);
+    await settle();
+
+    // Seen in WebKit: the turn started and its block appeared, with the items
+    // as they were, and the position went 1575px up with no scroll by the page,
+    // before that move's scroll event.
+    const started = rerender({ liveTurnId: "t1" });
+    geometry.scrollHeight = 2062;
+    geometry.scrollTop = 0;
+    await started;
+    await settle();
+    region.dispatchEvent(new Event("scroll"));
+    await settle();
+
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+    expect(geometry.scrollTop).toBe(2062);
+  });
+
+  it("leaves a message's rendered text in place as the feed changes around it", async () => {
+    const items: FeedItem[] = [
+      { id: 1, kind: "user", content: "Plan the week", turnId: "t1" },
+      { id: 2, kind: "assistant", content: "Here is the plan.", turnId: "t1" },
+    ];
+    const { rerender } = render(Feed, { agent: "atlas", items, label: "Conversation with atlas" });
+    const paragraph = screen.getByText("Here is the plan.");
+
+    await rerender({
+      items: [...items, { id: 3, kind: "user", content: "And next week?", turnId: "t2" }],
+    });
+    await settle();
+
+    // Rebuilding the text would drop a selection in it.
+    expect(screen.getByText("And next week?")).toBeInTheDocument();
+    expect(paragraph.isConnected).toBe(true);
+    expect(screen.getByText("Here is the plan.")).toBe(paragraph);
+  });
 });
 
 describe("a dock over the foot of the feed", () => {

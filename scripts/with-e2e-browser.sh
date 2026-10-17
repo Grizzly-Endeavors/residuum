@@ -5,6 +5,13 @@
 #   scripts/with-e2e-browser.sh npm --prefix web run e2e:fast
 #   scripts/with-e2e-browser.sh --visual npm --prefix web run e2e
 #
+# With this machine's Chromium the command runs under
+# scripts/with-loopback-network.sh, in a network namespace that has only
+# loopback, so a host network change (Docker starting or stopping a container)
+# can't abort its page loads with ERR_NETWORK_CHANGED. That script says on stderr
+# when it can't make the namespace and the run uses the host's network instead.
+# The container's browser has a network of its own and needs neither.
+#
 # `npx playwright install chromium` is a no-op once the browser is installed. On
 # a machine whose route to cdn.playwright.dev stalls it never finishes, so it runs
 # under a time limit (E2E_BROWSER_INSTALL_TIMEOUT, in seconds, default 240). When
@@ -24,8 +31,10 @@
 #
 # --visual marks a command that needs the container even when Chromium installs
 # (the visual comparisons render there): the script then starts the container
-# itself, with E2E_ALL_IN_CONTAINER=1 only when the install failed. Without it the
-# command runs directly when Chromium installs, and inside the container when not.
+# itself, with E2E_ALL_IN_CONTAINER=1 only when the install failed, and when
+# Chromium installed the loopback-only network runs inside it. Without --visual the
+# command runs in the loopback-only network when Chromium installs, and inside the
+# container when not.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -41,6 +50,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 wrapper=scripts/with-playwright-container.sh
+loopback=scripts/with-loopback-network.sh
 limit="${E2E_BROWSER_INSTALL_TIMEOUT:-240}"
 if ! [[ "$limit" =~ ^[1-9][0-9]*$ ]]; then
     echo "error: E2E_BROWSER_INSTALL_TIMEOUT must be a whole number of seconds, got \"$limit\"." >&2
@@ -90,9 +100,9 @@ fi
 trap - INT TERM
 if [ "$install_status" -eq 0 ]; then
     if [ "$visual" -eq 1 ]; then
-        exec "$wrapper" "$@"
+        exec "$wrapper" "$loopback" "$@"
     fi
-    exec "$@"
+    exec "$loopback" "$@"
 fi
 
 if [ "$install_status" -eq 124 ] || [ "$install_status" -eq 137 ]; then

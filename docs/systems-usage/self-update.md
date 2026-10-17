@@ -15,7 +15,7 @@ If a last-known-good config fallback is in play elsewhere in the startup path, i
 
 ## Preserving the Previous Binary
 
-`update::download_and_install` never leaves only a possibly-broken binary on disk. Before installing the new one, it renames the currently-running binary to `update::previous_binary_path(exe)` — the same path with `.prev` appended (`residuum` → `residuum.prev`, `residuum.exe` → `residuum.exe.prev`) — clearing any stale backup from an earlier update that was never confirmed healthy first. Only after that succeeds does the new binary take the original path. If the final swap fails, the preserved binary is restored immediately so the install failure never leaves nothing executable at all.
+`update::download_and_install` never leaves only a possibly-broken binary on disk. It installs over `update::install_path()`, the path the running binary was started from, which `main` reads once at startup and keeps: on Linux the process's own `current_exe` follows the rename below, so asking it after the swap would name the old binary. Before installing the new one, it renames the currently-running binary to `update::previous_binary_path(exe)` — the same path with `.prev` appended (`residuum` → `residuum.prev`, `residuum.exe` → `residuum.exe.prev`) — clearing any stale backup from an earlier update that was never confirmed healthy first. Only after that succeeds does the new binary take the original path. If the final swap fails, the preserved binary is restored immediately so the install failure never leaves nothing executable at all.
 
 ## Checking the Download
 
@@ -27,7 +27,7 @@ The release workflow (`.github/workflows/release.yml`) publishes a `SHA256SUMS` 
 
 A verified install clears `unverified_update`. A rollback clears it too, since the version it described is no longer the one running. An unverified install still leaves a `PendingRollback` marker, so the watchdog below restores the previous binary if the new one doesn't become healthy.
 
-A successful install leaves a `PendingRollback` marker (`residuum.update-pending.json`) recording where the previous binary went and which versions are involved. `commands::serve::foreground::relaunch` reads and deletes this marker the next time a restart happens, and that presence is what decides which of the two restart paths below runs.
+A successful install leaves a `PendingRollback` marker (`residuum.update-pending.json`) recording the install path (the preserved binary is that path's `previous_binary_path`) and which versions are involved. The watchdog below starts the install path and runs from the preserved binary, so the two always differ. A marker that names only the preserved binary (a `previous_binary` field) is read as well, with the install path recovered by dropping the `.prev` suffix; one whose preserved binary lacks that suffix is ignored like a malformed marker. `commands::serve::foreground::relaunch` reads and deletes this marker the next time a restart happens, and that presence is what decides which of the two restart paths below runs.
 
 ## Two Restart Paths
 
