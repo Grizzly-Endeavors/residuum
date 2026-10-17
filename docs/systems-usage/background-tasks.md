@@ -86,7 +86,7 @@ An `artifact` session cannot message `main`: its `message_agent` call to `main` 
 
 Every delivered message names the sender's address and category, so the recipient knows who to reply to. If delivery requires publishing an event (a resume, or handoff to main) and that publish fails, the tool returns an error rather than reporting success — the sender should not assume the message arrived.
 
-Every message to a session carries an id: the one the owner's or an artifact's client chose (the `id` of `session_send_message`, or of the message endpoint's body), otherwise one the messenger gives it. The session's transcript records the id on the message's entry. When the session reads the message, at a tool-call boundary of its running turn or as the input of the turn it starts (a resumed run's first turn included), it publishes `session_user_message` with that id and the id of the turn that read it (see [Live events](#live-events-server--client)). A resumed run whose opening prompt combines several messages publishes one `session_user_message` for each, and its opening transcript entry records the first one's id.
+Every message to a session carries an id: the one the owner's or an artifact's client chose (the `message_id` of `session_send_message`, or the `id` of the message endpoint's body), otherwise one the messenger gives it. The session's transcript records the id on the message's entry. When the session reads the message, at a tool-call boundary of its running turn or as the input of the turn it starts (a resumed run's first turn included), it publishes `session_user_message` with that id and the id of the turn that read it (see [Live events](#live-events-server--client)). A resumed run whose opening prompt combines several messages publishes one `session_user_message` for each, and its opening transcript entry records the first one's id.
 
 ### Addresses
 
@@ -335,7 +335,7 @@ Tool call and result frames follow the connection's verbose setting (`set_verbos
 
 | Message | Fields | Reply (to this connection only) |
 |---------|--------|---------------------------------|
-| `session_send_message` | `id`, `address`, `content` | `session_message_delivered` (`id`, `address`, `outcome`: `live` \| `resumed` \| `queued`) or `session_command_failed`. `id` is also the message's id, which its `session_user_message` carries. |
+| `session_send_message` | `id`, `address`, `content`, `message_id?` | `session_message_delivered` (`id`, `address`, `outcome`: `live` \| `resumed` \| `queued`) or `session_command_failed`. `message_id` is the message's id, which its `session_user_message` carries; without one the message is given one. |
 | `session_stop` | `id`, `address` | `session_stop_requested` (`id`, `address`) or `session_command_failed`. The run's `completing` state change and `session_completed` follow. |
 
 `session_command_failed` carries `id`, `address`, `code`, and a plain-language `message`. Codes: `invalid_request` (empty message, or `main` as the target — main is messaged from the main chat), `unknown_address` (no session has ever run there in this process), `busy` (the session is live but its message queue is full — retry shortly), `not_live` (nothing to stop: the session is already finishing or has completed), `delivery_failed` (the message couldn't be handed over).

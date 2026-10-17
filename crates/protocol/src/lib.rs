@@ -67,14 +67,18 @@ pub enum ClientMessage {
     /// run if it has completed. Answered with `SessionMessageDelivered` or
     /// `SessionCommandFailed`, both carrying `id`.
     SessionSendMessage {
-        /// Client-generated id: correlates the reply, and is the message's
-        /// id, which the session's `SessionUserMessage` carries when it reads
-        /// the message.
+        /// Client-generated correlation ID for the reply.
         id: String,
         /// Address of the target session (not `main`).
         address: String,
         /// The message content.
         content: String,
+        /// The message's id, which the session's `SessionUserMessage`
+        /// carries when it reads the message. Without one the message is
+        /// given one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        message_id: Option<String>,
     },
     /// Stop a live agent session: cancels any in-flight turn and moves it
     /// straight to `completing`. Answered with `SessionStopRequested` or
@@ -1498,8 +1502,17 @@ mod tests {
         .unwrap();
         assert!(matches!(
             &send,
-            ClientMessage::SessionSendMessage { id, address, content }
+            ClientMessage::SessionSendMessage { id, address, content, message_id: None }
                 if id == "c1" && address == "spawned-a-0001" && content == "hi"
+        ));
+        let with_message_id: ClientMessage = serde_json::from_str(
+            r#"{"type":"session_send_message","id":"c3","address":"spawned-a-0001","content":"hi","message_id":"m-1"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &with_message_id,
+            ClientMessage::SessionSendMessage { id, message_id: Some(message_id), .. }
+                if id == "c3" && message_id == "m-1"
         ));
 
         let stop: ClientMessage =

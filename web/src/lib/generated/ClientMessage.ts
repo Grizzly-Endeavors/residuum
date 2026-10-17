@@ -41,9 +41,7 @@ body: string, } | { "type": "cancel",
  */
 reply_to: string, } | { "type": "session_send_message", 
 /**
- * Client-generated id: correlates the reply, and is the message's
- * id, which the session's `SessionUserMessage` carries when it reads
- * the message.
+ * Client-generated correlation ID for the reply.
  */
 id: string, 
 /**
@@ -53,7 +51,13 @@ address: string,
 /**
  * The message content.
  */
-content: string, } | { "type": "session_stop", 
+content: string, 
+/**
+ * The message's id, which the session's `SessionUserMessage`
+ * carries when it reads the message. Without one the message is
+ * given one.
+ */
+message_id?: string, } | { "type": "session_stop", 
 /**
  * Client-generated correlation ID for the reply.
  */
