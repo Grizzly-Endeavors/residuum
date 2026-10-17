@@ -41,7 +41,9 @@ body: string, } | { "type": "cancel",
  */
 reply_to: string, } | { "type": "session_send_message", 
 /**
- * Client-generated correlation ID for the reply.
+ * Client-generated id: correlates the reply, and is the message's
+ * id, which the session's `SessionUserMessage` carries when it reads
+ * the message.
  */
 id: string, 
 /**
