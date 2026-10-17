@@ -27,7 +27,7 @@ The release workflow (`.github/workflows/release.yml`) publishes a `SHA256SUMS` 
 
 A verified install clears `unverified_update`. A rollback clears it too, since the version it described is no longer the one running. An unverified install still leaves a `PendingRollback` marker, so the watchdog below restores the previous binary if the new one doesn't become healthy.
 
-A successful install leaves a `PendingRollback` marker (`residuum.update-pending.json`) recording the install path (the preserved binary is that path's `previous_binary_path`) and which versions are involved. The watchdog below starts the install path and runs from the preserved binary, so the two always differ. `commands::serve::foreground::relaunch` reads and deletes this marker the next time a restart happens, and that presence is what decides which of the two restart paths below runs.
+A successful install leaves a `PendingRollback` marker (`residuum.update-pending.json`) recording the install path (the preserved binary is that path's `previous_binary_path`) and which versions are involved. The watchdog below starts the install path and runs from the preserved binary, so the two always differ. A marker that names only the preserved binary (a `previous_binary` field) is read as well, with the install path recovered by dropping the `.prev` suffix; one whose preserved binary lacks that suffix is ignored like a malformed marker. `commands::serve::foreground::relaunch` reads and deletes this marker the next time a restart happens, and that presence is what decides which of the two restart paths below runs.
 
 ## Two Restart Paths
 

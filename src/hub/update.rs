@@ -758,8 +758,10 @@ fn record_verification(version: &str, verification: ReleaseVerification) {
 ///
 /// Written by [`download_and_install`], read and deleted by
 /// `commands::serve::foreground::relaunch` when it hands off to the
-/// rollback-capable watchdog.
+/// rollback-capable watchdog. Reads a marker in either [`PendingRollbackOnDisk`]
+/// shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "PendingRollbackOnDisk")]
 pub struct PendingRollback {
     /// The install path, which holds the new binary. The restart runs it.
     pub gateway_binary: PathBuf,
@@ -773,6 +775,68 @@ impl PendingRollback {
     pub fn previous_binary(&self) -> PathBuf {
         previous_binary_path(&self.gateway_binary)
     }
+}
+
+/// The shapes a [`PendingRollback`] marker is found in on disk.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PendingRollbackOnDisk {
+    /// What [`write_pending_rollback`] writes.
+    InstallPath {
+        gateway_binary: PathBuf,
+        previous_version: String,
+        target_version: String,
+    },
+    /// What releases before the install path was recorded write: the
+    /// preserved binary, from which the install path is recovered.
+    PreservedBinary {
+        previous_binary: PathBuf,
+        previous_version: String,
+        target_version: String,
+    },
+}
+
+impl TryFrom<PendingRollbackOnDisk> for PendingRollback {
+    type Error = String;
+
+    fn try_from(on_disk: PendingRollbackOnDisk) -> Result<Self, Self::Error> {
+        match on_disk {
+            PendingRollbackOnDisk::InstallPath {
+                gateway_binary,
+                previous_version,
+                target_version,
+            } => Ok(Self {
+                gateway_binary,
+                previous_version,
+                target_version,
+            }),
+            PendingRollbackOnDisk::PreservedBinary {
+                previous_binary,
+                previous_version,
+                target_version,
+            } => {
+                let gateway_binary =
+                    install_path_of_previous_binary(&previous_binary).ok_or_else(|| {
+                        format!(
+                            "preserved binary {} is not named like a previous_binary_path",
+                            previous_binary.display()
+                        )
+                    })?;
+                Ok(Self {
+                    gateway_binary,
+                    previous_version,
+                    target_version,
+                })
+            }
+        }
+    }
+}
+
+/// The install path whose [`previous_binary_path`] is `previous`, if
+/// `previous` is named like one.
+fn install_path_of_previous_binary(previous: &Path) -> Option<PathBuf> {
+    let installed_name = previous.file_name()?.to_str()?.strip_suffix(".prev")?;
+    (!installed_name.is_empty()).then(|| previous.with_file_name(installed_name))
 }
 
 /// Path to the [`PendingRollback`] marker.
@@ -1105,6 +1169,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(pending_rollback_path(dir.path()), "not json").unwrap();
         assert!(take_pending_rollback(dir.path()).is_none());
+    }
+
+    /// A marker that names only the preserved binary, as releases before
+    /// the install path was recorded write it, still rolls back: the
+    /// install path comes back from the preserved binary's name.
+    #[test]
+    fn pending_rollback_reads_a_marker_naming_the_preserved_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("residuum");
+        let marker = serde_json::json!({
+            "previous_binary": previous_binary_path(&install),
+            "previous_version": "v2026.10.10",
+            "target_version": "v2026.10.12",
+        });
+        std::fs::write(pending_rollback_path(dir.path()), marker.to_string()).unwrap();
+
+        let pending = take_pending_rollback(dir.path()).unwrap();
+        assert_eq!(pending.gateway_binary, install);
+        assert_eq!(pending.previous_binary(), previous_binary_path(&install));
+        assert_eq!(pending.previous_version, "v2026.10.10");
+        assert_eq!(pending.target_version, "v2026.10.12");
+    }
+
+    #[test]
+    fn pending_rollback_ignores_a_preserved_binary_without_the_prev_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = serde_json::json!({
+            "previous_binary": dir.path().join("residuum"),
+            "previous_version": "v2026.10.10",
+            "target_version": "v2026.10.12",
+        });
+        std::fs::write(pending_rollback_path(dir.path()), marker.to_string()).unwrap();
+        assert!(take_pending_rollback(dir.path()).is_none());
+    }
+
+    #[test]
+    fn install_path_of_previous_binary_undoes_previous_binary_path() {
+        for install in [
+            Path::new("/opt/residuum/residuum"),
+            Path::new(r"C:\residuum\residuum.exe"),
+        ] {
+            assert_eq!(
+                install_path_of_previous_binary(&previous_binary_path(install)).as_deref(),
+                Some(install)
+            );
+        }
+        assert_eq!(
+            install_path_of_previous_binary(Path::new("/opt/.prev")),
+            None
+        );
     }
 
     #[test]
