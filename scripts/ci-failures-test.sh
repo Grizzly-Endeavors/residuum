@@ -162,6 +162,32 @@ CASES
 }
 check_module_covers
 
+# it_module_file maps an integration test to the file whose covers line is read.
+check_it_module_file() {
+    local fn name expected actual
+    local -A repo_files=()
+    fn="$(awk '/^it_module_file\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
+    eval "$fn"
+    for name in src/integration/four.rs src/integration/five/mod.rs tests/it/six.rs; do
+        repo_files["$name"]=1
+    done
+    while IFS='|' read -r name expected; do
+        actual="$(it_module_file "$name")"
+        if [[ "$actual" != "$expected" ]]; then
+            echo "ci-failures it_module_file: $name gave '$actual', expected '$expected'" >&2
+            status=1
+        fi
+    done <<'CASES'
+integration::four::t|src/integration/four.rs
+integration::five::tests::x|src/integration/five/mod.rs
+integration::nine::x|
+integration::four|
+six::x|tests/it/six.rs
+residuum_core::x|
+CASES
+}
+check_it_module_file
+
 if (( status == 0 )); then
     echo "ci-failures parser and queue selection: every fixture matches its .records file"
 fi
