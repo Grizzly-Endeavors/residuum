@@ -50,35 +50,50 @@ impl fmt::Display for ForkFailure {
 }
 
 /// The sentence that tells the owner the session they started at `address`
-/// couldn't start: what went wrong and what to do next, from the
+/// couldn't start, or, when `resume` is set, couldn't pick up the message
+/// that resumed it: what went wrong and what to do next, from the
 /// [`ForkFailure`] anywhere in `error`'s context chain.
 pub(crate) fn owner_start_failure_message(
     address: &SessionAddress,
+    resume: bool,
     error: &anyhow::Error,
 ) -> String {
+    let (failed, again) = if resume {
+        ("couldn't pick up your message", "send your message again")
+    } else {
+        ("couldn't start", "start the session again")
+    };
     match error.downcast_ref::<ForkFailure>() {
-        Some(ForkFailure::UnknownModel { model }) => format!(
-            "The session {address} couldn't start because the model {model} isn't available. \
-             Choose another model and start the session again."
-        ),
+        Some(ForkFailure::UnknownModel { model }) => {
+            let next = if resume {
+                "Start a new session on another model and send your message there."
+            } else {
+                "Choose another model and start the session again."
+            };
+            format!(
+                "The session {address} {failed} because the model {model} isn't available. {next}"
+            )
+        }
         Some(ForkFailure::ProviderChain { model }) => format!(
-            "The session {address} couldn't start because its model ({model}) couldn't be set \
-             up, usually because a provider's API key is missing or wrong. Check Settings → \
-             Model → Providers, then start the session again."
+            "The session {address} {failed} because its model ({model}) couldn't be set up, \
+             usually because a provider's API key is missing. Check Settings → Model → \
+             Providers, then {again}."
         ),
         Some(ForkFailure::IdentityFiles) => format!(
-            "The session {address} couldn't start because the agent's identity files couldn't \
-             be read. Check that files such as SOUL.md exist and can be opened, then start the \
-             session again."
+            "The session {address} {failed} because the agent's identity files couldn't be \
+             read. Check that files such as SOUL.md exist and can be opened, then {again}."
         ),
         Some(ForkFailure::Skill { name }) => format!(
-            "The session {address} couldn't start because the skill \"{name}\" couldn't be \
-             loaded. Check that the skill is still installed, then start the session again."
+            "The session {address} {failed} because the skill \"{name}\" couldn't be loaded. \
+             Check that the skill is still installed, then {again}."
         ),
-        None => format!(
-            "The session {address} couldn't start because of an unexpected problem. Try \
-             starting it again; if it keeps failing, the agent's logs have the details."
-        ),
+        None => {
+            let retry = if resume { "sending it" } else { "starting it" };
+            format!(
+                "The session {address} {failed} because of an unexpected problem. Try {retry} \
+                 again; if it keeps failing, the agent's logs have the details."
+            )
+        }
     }
 }
 
@@ -101,43 +116,72 @@ mod tests {
             .unwrap_err()
     }
 
+    fn unknown_model() -> anyhow::Error {
+        failed_at(ForkFailure::UnknownModel {
+            model: "lcoal/qwen3:8b".to_string(),
+        })
+    }
+
+    fn provider_chain() -> anyhow::Error {
+        failed_at(ForkFailure::ProviderChain {
+            model: "medium".to_string(),
+        })
+    }
+
+    fn skill() -> anyhow::Error {
+        failed_at(ForkFailure::Skill {
+            name: "researcher".to_string(),
+        })
+    }
+
+    fn unclassified() -> anyhow::Error {
+        anyhow::anyhow!("session address is already live; input dropped")
+            .context("failed to deliver into the live run")
+    }
+
     #[test]
     fn an_unknown_model_names_it_and_suggests_another() {
-        let message = owner_start_failure_message(
-            &address(),
-            &failed_at(ForkFailure::UnknownModel {
-                model: "lcoal/qwen3:8b".to_string(),
-            }),
-        );
         assert_eq!(
-            message,
+            owner_start_failure_message(&address(), false, &unknown_model()),
             "The session spawned-session-1a2b couldn't start because the model lcoal/qwen3:8b \
              isn't available. Choose another model and start the session again."
         );
     }
 
     #[test]
-    fn a_provider_chain_failure_points_at_the_provider_settings() {
-        let message = owner_start_failure_message(
-            &address(),
-            &failed_at(ForkFailure::ProviderChain {
-                model: "medium".to_string(),
-            }),
-        );
+    fn a_resume_on_an_unknown_model_suggests_a_new_session() {
         assert_eq!(
-            message,
+            owner_start_failure_message(&address(), true, &unknown_model()),
+            "The session spawned-session-1a2b couldn't pick up your message because the model \
+             lcoal/qwen3:8b isn't available. Start a new session on another model and send your \
+             message there."
+        );
+    }
+
+    #[test]
+    fn a_provider_chain_failure_points_at_the_provider_settings() {
+        assert_eq!(
+            owner_start_failure_message(&address(), false, &provider_chain()),
             "The session spawned-session-1a2b couldn't start because its model (medium) \
-             couldn't be set up, usually because a provider's API key is missing or wrong. \
-             Check Settings → Model → Providers, then start the session again."
+             couldn't be set up, usually because a provider's API key is missing. Check \
+             Settings → Model → Providers, then start the session again."
+        );
+    }
+
+    #[test]
+    fn a_resume_whose_provider_chain_fails_asks_to_send_the_message_again() {
+        assert_eq!(
+            owner_start_failure_message(&address(), true, &provider_chain()),
+            "The session spawned-session-1a2b couldn't pick up your message because its model \
+             (medium) couldn't be set up, usually because a provider's API key is missing. Check \
+             Settings → Model → Providers, then send your message again."
         );
     }
 
     #[test]
     fn unreadable_identity_files_say_which_files() {
-        let message =
-            owner_start_failure_message(&address(), &failed_at(ForkFailure::IdentityFiles));
         assert_eq!(
-            message,
+            owner_start_failure_message(&address(), false, &failed_at(ForkFailure::IdentityFiles)),
             "The session spawned-session-1a2b couldn't start because the agent's identity files \
              couldn't be read. Check that files such as SOUL.md exist and can be opened, then \
              start the session again."
@@ -145,15 +189,19 @@ mod tests {
     }
 
     #[test]
-    fn a_skill_that_wont_activate_names_the_skill() {
-        let message = owner_start_failure_message(
-            &address(),
-            &failed_at(ForkFailure::Skill {
-                name: "researcher".to_string(),
-            }),
-        );
+    fn a_resume_with_unreadable_identity_files_asks_to_send_the_message_again() {
         assert_eq!(
-            message,
+            owner_start_failure_message(&address(), true, &failed_at(ForkFailure::IdentityFiles)),
+            "The session spawned-session-1a2b couldn't pick up your message because the agent's \
+             identity files couldn't be read. Check that files such as SOUL.md exist and can be \
+             opened, then send your message again."
+        );
+    }
+
+    #[test]
+    fn a_skill_that_wont_activate_names_the_skill() {
+        assert_eq!(
+            owner_start_failure_message(&address(), false, &skill()),
             "The session spawned-session-1a2b couldn't start because the skill \"researcher\" \
              couldn't be loaded. Check that the skill is still installed, then start the session \
              again."
@@ -161,14 +209,31 @@ mod tests {
     }
 
     #[test]
-    fn any_other_failure_says_to_retry_and_never_shows_the_developer_wording() {
-        let error = anyhow::anyhow!("session address is already live; input dropped")
-            .context("failed to deliver into the live run");
-        let message = owner_start_failure_message(&address(), &error);
+    fn a_resume_whose_skill_wont_activate_asks_to_send_the_message_again() {
         assert_eq!(
-            message,
+            owner_start_failure_message(&address(), true, &skill()),
+            "The session spawned-session-1a2b couldn't pick up your message because the skill \
+             \"researcher\" couldn't be loaded. Check that the skill is still installed, then send \
+             your message again."
+        );
+    }
+
+    #[test]
+    fn any_other_failure_says_to_retry_and_never_shows_the_developer_wording() {
+        assert_eq!(
+            owner_start_failure_message(&address(), false, &unclassified()),
             "The session spawned-session-1a2b couldn't start because of an unexpected problem. \
              Try starting it again; if it keeps failing, the agent's logs have the details."
+        );
+    }
+
+    #[test]
+    fn any_other_resume_failure_says_to_send_the_message_again() {
+        assert_eq!(
+            owner_start_failure_message(&address(), true, &unclassified()),
+            "The session spawned-session-1a2b couldn't pick up your message because of an \
+             unexpected problem. Try sending it again; if it keeps failing, the agent's logs \
+             have the details."
         );
     }
 

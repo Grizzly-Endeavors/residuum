@@ -758,10 +758,12 @@ pub enum ServerMessage {
         /// Episode the run was merged into, if it produced one.
         episode_id: Option<String>,
     },
-    /// A session the owner started was accepted but couldn't be forked, so
-    /// it never got a run: no `SessionStarted` or `SessionCompleted` follows
-    /// for it. Matched to the start by `address`, which the start's reply
-    /// named.
+    /// A start or a resume of a session the owner started was accepted but
+    /// couldn't be forked, so no run was registered for it: no
+    /// `SessionStarted` or `SessionCompleted` follows for it. For a first
+    /// start no run exists at the address; a failed resume leaves the
+    /// address's earlier runs. Matched to the start by `address`, which the
+    /// start's reply named.
     SessionStartFailed {
         /// Address the start was given.
         address: String,

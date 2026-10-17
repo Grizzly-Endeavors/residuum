@@ -872,12 +872,14 @@ pub enum SessionEventKind {
     },
 }
 
-/// A session the owner started by hand (from the web UI's New session panel,
-/// `POST /api/sessions`, or `/multitask`) was accepted but couldn't be forked,
-/// so it never got a run.
+/// A start or a resume of a session the owner started by hand (from the web
+/// UI's New session panel, `POST /api/sessions` without the
+/// `X-Residuum-Artifact` header, or `/multitask`) was accepted but couldn't
+/// be forked, so no run was registered for it. For a first start no run
+/// exists at the address; a failed resume leaves the address's earlier runs.
 ///
 /// Carried on [`super::topics::Sessions`] beside [`SessionEvent`], which needs
-/// a run id a failed start never has. The web UI matches it to the start it is
+/// a run id a failed fork never has. The web UI matches it to the start it is
 /// waiting on by `address`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStartFailedEvent {

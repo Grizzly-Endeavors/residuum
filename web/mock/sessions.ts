@@ -468,7 +468,7 @@ function failOwnerStart(state: MockState, address: string): void {
     state.broadcast({
       type: "session_start_failed",
       address,
-      error: `The session ${address} couldn't start: its model has no working provider. Check the provider's API key in Settings, then try again.`,
+      error: `The session ${address} couldn't start because its model (medium) couldn't be set up, usually because a provider's API key is missing. Check Settings → Model → Providers, then start the session again.`,
       error_details:
         "failed to build provider chain for model medium: no API key configured for provider anthropic",
     });

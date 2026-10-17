@@ -67,8 +67,10 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
                 let trigger = event.source.clone();
-                let owner_address =
-                    super::owner_session::is_owner_start(&event).then(|| event.address.clone());
+                let owner_start = super::owner_session::is_owner_start(&event).then(|| {
+                    let resume = ctx.session_registry.resume_point(&event.address).is_some();
+                    (event.address.clone(), resume)
+                });
                 match handle_spawn_request(&ctx, event).await {
                     Ok(()) => {
                         if spawn_failures.remove(&source_label).is_some() {
@@ -78,9 +80,9 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                             );
                         }
                     }
-                    Err(e) => match owner_address {
-                        Some(address) => {
-                            notify_owner_start_failed(&ctx.publisher, &address, &e).await;
+                    Err(e) => match owner_start {
+                        Some((address, resume)) => {
+                            notify_owner_start_failed(&ctx.publisher, &address, resume, &e).await;
                         }
                         None => {
                             handle_spawn_failure(
@@ -119,7 +121,7 @@ async fn handle_spawn_failure(
     source_label: &str,
     error: &anyhow::Error,
 ) {
-    let message = error.to_string();
+    let message = format!("{error:#}");
 
     if !matches!(trigger, EventTrigger::Pulse | EventTrigger::Action) {
         tracing::warn!(source = %source_label, error = %message, "failed to fork session");
@@ -164,20 +166,27 @@ async fn handle_spawn_failure(
     }
 }
 
-/// Tell the owner a session they started by hand couldn't start. Their start
-/// was already accepted (the web UI is waiting for the run to appear, or a
-/// chat command already named its address), so the failure has to reach them
-/// on its own: as a `SessionStartFailedEvent` the web UI matches to the start
-/// by address, and as a notice. Both carry the same plain-language sentence;
-/// the event also carries the full cause chain.
+/// Tell the owner a session they started by hand couldn't start, or, when
+/// `resume` is set, couldn't resume for the message sent to it. The start or
+/// the message was already accepted (the web UI is waiting for the run to
+/// appear, or a chat command already named its address), so the failure has
+/// to reach them on its own: as a `SessionStartFailedEvent` the web UI
+/// matches to the start by address, and as a notice. Both carry the same
+/// plain-language sentence; the event also carries the full cause chain.
 async fn notify_owner_start_failed(
     publisher: &Publisher,
     address: &SessionAddress,
+    resume: bool,
     error: &anyhow::Error,
 ) {
     let details = format!("{error:#}");
-    tracing::warn!(address = %address, error = %details, "failed to fork a session the owner started");
-    let message = owner_start_failure_message(address, error);
+    tracing::warn!(
+        address = %address,
+        resume,
+        error = %details,
+        "failed to fork a session the owner started"
+    );
+    let message = owner_start_failure_message(address, resume, error);
     if let Err(e) = publisher
         .publish(
             topics::Sessions,
@@ -251,9 +260,11 @@ fn handle_spawn_request<'a>(
                         // and recurses through this same deferral if so,
                         // instead of blindly clobbering a run that won the
                         // race.
+                        let resume = ctx.session_registry.resume_point(&event.address).is_some();
                         if let Err(e) = handle_spawn_request(&ctx, event).await {
                             if let Some(address) = owner_address {
-                                notify_owner_start_failed(&ctx.publisher, &address, &e).await;
+                                notify_owner_start_failed(&ctx.publisher, &address, resume, &e)
+                                    .await;
                             } else {
                                 tracing::warn!(
                                     error = format!("{e:#}"),
@@ -774,6 +785,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pulse_spawn_failure_notice_says_why_under_the_failed_step() {
+        let bus = residuum_bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+        let error = Err::<(), _>(anyhow::anyhow!("provider 'lcoal' is not configured"))
+            .context(crate::fork_failure::ForkFailure::UnknownModel {
+                model: "lcoal/qwen3:8b".to_string(),
+            })
+            .unwrap_err();
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &error,
+        )
+        .await;
+
+        let notice = next_event("the failure's notice", &mut sub).await;
+        assert_eq!(
+            notice.message,
+            "Your pulse \"email_check\" couldn't start: model 'lcoal/qwen3:8b' can't be used: \
+             provider 'lcoal' is not configured"
+        );
+    }
+
+    #[tokio::test]
     async fn an_owner_session_that_fails_to_start_tells_the_owner_which_one() {
         let bus = residuum_bus::spawn_broker();
         let mut notices: Subscriber<NoticeEvent> = bus
@@ -791,6 +833,7 @@ mod tests {
         notify_owner_start_failed(
             &bus.publisher(),
             &SessionAddress::from("spawned-multitask-1a2b"),
+            false,
             &error,
         )
         .await;
@@ -802,7 +845,7 @@ mod tests {
         );
         assert_eq!(
             failure.error,
-            crate::fork_failure::owner_start_failure_message(&failure.address, &error)
+            crate::fork_failure::owner_start_failure_message(&failure.address, false, &error)
         );
         assert_eq!(
             failure.error_details.as_deref(),
@@ -903,11 +946,40 @@ mod tests {
         .into_spawn_event()
     }
 
-    fn assert_is_the_provider_failure(failure: &SessionStartFailedEvent, address: &SessionAddress) {
+    /// A resume point at `address`, as a finished run of an owner session
+    /// leaves.
+    async fn record_finished_owner_run(registry: &SessionRegistry, address: &SessionAddress) {
+        registry
+            .record_resume_point(
+                address,
+                crate::registry::ResumePoint {
+                    previous_run_id: "run-previous".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Agent,
+                    source_label: "owner:session".to_string(),
+                    agent_skill: None,
+                    model: ModelSelector::MEDIUM,
+                    spawner: None,
+                    depth: 1,
+                    conversation_target: None,
+                    recorded_at: chrono::Utc::now(),
+                },
+            )
+            .await;
+    }
+
+    const FIRST_START: &str = "couldn't start";
+    const RESUME: &str = "couldn't pick up your message";
+
+    fn assert_is_the_provider_failure(
+        failure: &SessionStartFailedEvent,
+        address: &SessionAddress,
+        failed: &str,
+    ) {
         assert_eq!(&failure.address, address);
         assert!(
             failure.error.starts_with(&format!(
-                "The session {address} couldn't start because its model (medium) couldn't be set up"
+                "The session {address} {failed} because its model (medium) couldn't be set up"
             )),
             "{}",
             failure.error
@@ -940,9 +1012,29 @@ mod tests {
             .unwrap();
 
         let failure = next_event("the owner start's failure", &mut failures).await;
-        assert_is_the_provider_failure(&failure, &address);
+        assert_is_the_provider_failure(&failure, &address, FIRST_START);
         let notice = next_event("the owner start's failure notice", &mut notices).await;
         assert_eq!(notice.message, failure.error);
+    }
+
+    #[tokio::test]
+    async fn an_owner_session_resume_that_fails_to_fork_says_the_message_wasnt_picked_up() {
+        let bus = residuum_bus::spawn_broker();
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let resume = owner_start();
+        let address = resume.address.clone();
+        record_finished_owner_run(&ctx.session_registry, &address).await;
+        let _listener = spawn_listener(ctx, &bus).await.unwrap();
+
+        bus.publisher()
+            .publish(topics::Background, resume)
+            .await
+            .unwrap();
+
+        let failure = next_event("the owner resume's failure", &mut failures).await;
+        assert_is_the_provider_failure(&failure, &address, RESUME);
     }
 
     #[tokio::test]
@@ -968,7 +1060,36 @@ mod tests {
         ctx.session_registry.remove(&address, "run-previous");
 
         let failure = next_event("the deferred owner start's failure", &mut failures).await;
-        assert_is_the_provider_failure(&failure, &address);
+        assert_is_the_provider_failure(&failure, &address, FIRST_START);
+    }
+
+    #[tokio::test]
+    async fn a_deferred_owner_session_resume_that_fails_to_fork_says_the_message_wasnt_picked_up() {
+        let bus = residuum_bus::spawn_broker();
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let resume = owner_start();
+        let address = resume.address.clone();
+        let mut previous = sample_live_conversation_info(address.as_ref());
+        previous.run_id = "run-previous".to_string();
+        let _interrupts = ctx
+            .session_registry
+            .register(previous, CancellationToken::new())
+            .unwrap();
+        ctx.session_registry
+            .set_state(&address, SessionState::Completing);
+
+        handle_spawn_request(&ctx, resume)
+            .await
+            .expect("a resume at a completing address is deferred, not refused");
+        // The run finishing records its resume point before it leaves the
+        // registry.
+        record_finished_owner_run(&ctx.session_registry, &address).await;
+        ctx.session_registry.remove(&address, "run-previous");
+
+        let failure = next_event("the deferred owner resume's failure", &mut failures).await;
+        assert_is_the_provider_failure(&failure, &address, RESUME);
     }
 
     #[tokio::test]
