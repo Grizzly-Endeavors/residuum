@@ -254,6 +254,7 @@ pub fn sample_conversation_request(address: &str) -> SessionSpawnRequest {
             conversation_id: "chan-1".to_string(),
         }),
         overlap: None,
+        stop: None,
     }
 }
 

@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { notifications } from "./notifications.svelte";
 import { scheduled, type ScheduledSources } from "./scheduled.svelte";
-import type { ActionInfo, PulseInfo, ServerMessage } from "./types";
+import type {
+  ActionInfo,
+  PulseInfo,
+  ScheduledCurrentRun,
+  ScheduledRunOutcome,
+  ServerMessage,
+} from "./types";
 import { WatchRegistry } from "./watch-registry";
 import { normalizeWatchPrefix } from "./workspace-watch";
 
@@ -48,6 +54,10 @@ interface Server {
   failing: boolean;
   /** Each request as `METHOD path`. */
   requests: string[];
+  /** The status a stop answers with. */
+  stopStatus: number;
+  /** Holds for the next pulses loads, in order: each waits for its hold to settle before it answers. */
+  pulsesHolds: Promise<void>[];
 }
 
 let server: Server;
@@ -72,14 +82,23 @@ beforeEach(() => {
     actions: [action("act-1", "weekly_digest")],
     failing: false,
     requests: [],
+    stopStatus: 202,
+    pulsesHolds: [],
   };
-  vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     server.requests.push(`${method} ${input}`);
-    if (server.failing) return Promise.resolve(json({ error: "boom" }, 500));
-    if (input.endsWith("/scheduled/pulses")) return Promise.resolve(json(server.pulses));
-    if (input.endsWith("/scheduled/actions")) return Promise.resolve(json(server.actions));
-    return Promise.resolve(json({}));
+    if (server.failing) return json({ error: "boom" }, 500);
+    if (input.endsWith("/stop")) return json({ error: "atlas is stopped" }, server.stopStatus);
+    if (input.endsWith("/scheduled/pulses")) {
+      // Answer with the pulses as they were when asked, however long the hold.
+      const answer = json(server.pulses);
+      const waitFor = server.pulsesHolds.shift();
+      if (waitFor) await waitFor;
+      return answer;
+    }
+    if (input.endsWith("/scheduled/actions")) return json(server.actions);
+    return json({});
   });
   sent = [];
   registry = new WatchRegistry({
@@ -182,6 +201,35 @@ describe("loading the schedule", () => {
     expect(scheduled.pulses.map((p) => p.name)).toEqual(["inbox_check"]);
   });
 
+  it("keeps a newer load's answer over an older load's that answers after it", async () => {
+    const run: ScheduledCurrentRun = {
+      fire_id: null,
+      phase: "session",
+      started_at: "2026-03-14T12:00:00Z",
+      address: "scheduled-1",
+      run_id: "run-1",
+      overlap: null,
+    };
+    const older = hold();
+    const newer = hold();
+    server.pulsesHolds.push(older.promise, newer.promise);
+    server.actions = [{ ...action("act-1", "weekly_digest"), current_run: run }];
+    const olderLoad = scheduled.load();
+    await expect.poll(() => loads()).toBe(1);
+
+    // The action's run ends before the newer load asks.
+    server.actions = [action("act-1", "weekly_digest")];
+    const newerLoad = scheduled.load();
+    await expect.poll(() => loads()).toBe(2);
+
+    newer.release();
+    await newerLoad;
+    expect(scheduled.actions[0]?.current_run).toBeNull();
+    older.release();
+    await olderLoad;
+    expect(scheduled.actions[0]?.current_run).toBeNull();
+  });
+
   it("forgets an earlier agent's failure on a switch", async () => {
     server.failing = true;
     await scheduled.load();
@@ -227,5 +275,171 @@ describe("changing the schedule", () => {
     await scheduled.cancelAction(scheduled.actions[0] ?? action("missing", "missing"));
     expect(scheduled.actions).toEqual([]);
     expect(server.requests).toContain("DELETE /api/agents/atlas/scheduled/actions/act-1");
+  });
+});
+
+/** A fire of a pulse in flight, running its task scripts. */
+function scriptRun(fireId: string): ScheduledCurrentRun {
+  return {
+    fire_id: fireId,
+    phase: "script",
+    started_at: "2026-03-14T12:00:00Z",
+    address: null,
+    run_id: null,
+    overlap: null,
+  };
+}
+
+function fireFrame(
+  fireId: string,
+  currentRun: ScheduledCurrentRun | null,
+  lastOutcome: ScheduledRunOutcome | null = null,
+): ServerMessage {
+  return {
+    type: "pulse_fire_changed",
+    pulse: "inbox_check",
+    fire_id: fireId,
+    current_run: currentRun,
+    last_outcome: lastOutcome,
+  };
+}
+
+/** A hold for a pulses load, and the function that lets it answer. */
+function hold(): { promise: Promise<void>; release: () => void } {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+const earlier: ScheduledRunOutcome = {
+  status: "completed",
+  at: "2026-03-14T10:00:00Z",
+  error: null,
+};
+const failed: ScheduledRunOutcome = {
+  status: "failed",
+  at: "2026-03-14T12:01:00Z",
+  error: "check_disk.sh exited with status 1",
+};
+const stopped: ScheduledRunOutcome = {
+  status: "cancelled",
+  at: "2026-03-14T12:01:00Z",
+  error: null,
+};
+
+describe("pulse fire frames", () => {
+  it("take the frame's run in flight at once, and its outcome only when it has one", async () => {
+    server.pulses = [pulse("inbox_check", { last_outcome: earlier }), pulse("nightly_review")];
+    await scheduled.load();
+    scheduled.startWatching(sources);
+
+    emit(fireFrame("fire-1", scriptRun("fire-1")));
+    expect(scheduled.pulses[0]).toMatchObject({
+      current_run: scriptRun("fire-1"),
+      last_outcome: earlier,
+    });
+    expect(scheduled.pulses[1]?.current_run).toBeNull();
+    // The fire moved the pulse's next run, so the schedule is read again.
+    server.pulses = [
+      pulse("inbox_check", { last_outcome: earlier, current_run: scriptRun("fire-1") }),
+    ];
+    await expect.poll(() => loads()).toBe(2);
+
+    emit(fireFrame("fire-1", null, failed));
+    expect(scheduled.pulses[0]).toMatchObject({ current_run: null, last_outcome: failed });
+  });
+
+  it("keep a frame that lands during a load over that load's older answer", async () => {
+    await scheduled.load();
+    scheduled.startWatching(sources);
+    const stale = hold();
+    const fresh = hold();
+    server.pulsesHolds.push(stale.promise, fresh.promise);
+    const staleLoad = scheduled.load();
+    await expect.poll(() => loads()).toBe(2);
+
+    // The fire starts after the server answered that load.
+    server.pulses = [pulse("inbox_check", { current_run: scriptRun("fire-1") })];
+    emit(fireFrame("fire-1", scriptRun("fire-1")));
+    await expect.poll(() => loads()).toBe(3);
+
+    stale.release();
+    await staleLoad;
+    expect(scheduled.pulses[0]?.current_run).toEqual(scriptRun("fire-1"));
+    fresh.release();
+  });
+});
+
+describe("stopping a run", () => {
+  it("stops a fire through its pulse, and shows it stopping until the fire is gone", async () => {
+    server.pulses = [pulse("inbox_check", { current_run: scriptRun("fire-1") })];
+    await scheduled.load();
+    scheduled.startWatching(sources);
+
+    await scheduled.stopRun("pulse", "inbox_check", scriptRun("fire-1"));
+    expect(server.requests).toContain(
+      "POST /api/agents/atlas/scheduled/pulses/inbox_check/fires/fire-1/stop",
+    );
+    expect(scheduled.stopping.has("fire-1")).toBe(true);
+
+    server.pulses = [pulse("inbox_check", { last_outcome: stopped })];
+    emit(fireFrame("fire-1", null, stopped));
+    expect(scheduled.stopping.has("fire-1")).toBe(false);
+    expect(scheduled.pulses[0]?.last_outcome).toEqual(stopped);
+  });
+
+  it("says a fire had already finished, and reads where its pulse stands", async () => {
+    server.pulses = [pulse("inbox_check", { current_run: scriptRun("fire-1") })];
+    await scheduled.load();
+    const surface = vi.spyOn(notifications, "surface");
+    server.stopStatus = 404;
+    server.pulses = [pulse("inbox_check", { last_outcome: failed })];
+
+    await scheduled.stopRun("pulse", "inbox_check", scriptRun("fire-1"));
+    expect(surface).toHaveBeenCalledWith(
+      "error",
+      'Couldn\'t stop pulse "inbox_check". It had already finished.',
+    );
+    expect(scheduled.stopping.size).toBe(0);
+    await expect.poll(() => scheduled.pulses[0]?.last_outcome).toEqual(failed);
+    expect(scheduled.pulses[0]?.current_run).toBeNull();
+  });
+
+  it("says why when the agent can't stop it", async () => {
+    server.pulses = [pulse("inbox_check", { current_run: scriptRun("fire-1") })];
+    await scheduled.load();
+    const surface = vi.spyOn(notifications, "surface");
+    server.stopStatus = 409;
+
+    await scheduled.stopRun("pulse", "inbox_check", scriptRun("fire-1"));
+    expect(surface).toHaveBeenCalledWith(
+      "error",
+      'Couldn\'t stop pulse "inbox_check". Atlas is stopped.',
+    );
+    expect(scheduled.stopping.size).toBe(0);
+  });
+
+  it("stops a run no fire tracks through its session", async () => {
+    const run: ScheduledCurrentRun = {
+      fire_id: null,
+      phase: "session",
+      started_at: "2026-03-14T12:00:00Z",
+      address: "scheduled-1",
+      run_id: "run-1",
+      overlap: null,
+    };
+    server.actions = [{ ...action("act-1", "weekly_digest"), current_run: run }];
+    await scheduled.load();
+
+    await scheduled.stopRun("action", "weekly_digest", run);
+    expect(server.requests).toContain("POST /api/agents/atlas/sessions/scheduled-1/stop");
+    expect(scheduled.stopping.has("scheduled-1")).toBe(true);
+
+    // The session's frames read the schedule again, which no longer shows the run.
+    server.actions = [action("act-1", "weekly_digest")];
+    await scheduled.load();
+    expect(scheduled.stopping.size).toBe(0);
   });
 });

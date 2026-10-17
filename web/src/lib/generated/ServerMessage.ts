@@ -8,6 +8,8 @@ import type { PostTurnActivityKind } from "./PostTurnActivityKind";
 import type { QueuedMessage } from "./QueuedMessage";
 import type { ReloadOutcome } from "./ReloadOutcome";
 import type { ReloadedFiles } from "./ReloadedFiles";
+import type { ScheduledCurrentRun } from "./ScheduledCurrentRun";
+import type { ScheduledRunOutcome } from "./ScheduledRunOutcome";
 import type { SessionCommandErrorCode } from "./SessionCommandErrorCode";
 import type { SessionDeliveryOutcome } from "./SessionDeliveryOutcome";
 import type { SessionRunStatus } from "./SessionRunStatus";
@@ -557,7 +559,29 @@ code: SessionCommandErrorCode,
 /**
  * Human-readable explanation, suitable to show the user.
  */
-message: string, } | { "type": "session_outbound_a2a_task", task: OutboundA2aTaskSummary, } | { "type": "artifact_updated", 
+message: string, } | { "type": "session_outbound_a2a_task", task: OutboundA2aTaskSummary, } | { "type": "pulse_fire_changed", 
+/**
+ * The pulse's name (`PulseInfo.name`).
+ */
+pulse: string, 
+/**
+ * The fire that changed.
+ */
+fire_id: string, 
+/**
+ * The pulse's run in flight after the change, as
+ * `PulseInfo.current_run`: the newest fire of the pulse still in
+ * flight, which can be another fire than `fire_id`. `null` when
+ * nothing of the pulse is running.
+ */
+current_run: ScheduledCurrentRun | null, 
+/**
+ * The pulse's new `PulseInfo.last_outcome`, when the fire finished
+ * with one. `null` leaves the last outcome as it was: the fire
+ * started or moved on, or ended without an outcome to show (the
+ * agent is stopping).
+ */
+last_outcome: ScheduledRunOutcome | null, } | { "type": "artifact_updated", 
 /**
  * Artifact name, as used in `/workbench/{name}`.
  */

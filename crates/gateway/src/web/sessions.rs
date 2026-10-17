@@ -453,6 +453,7 @@ pub(crate) async fn api_session_start(
         images: Vec::new(),
         overlap: None,
         carried_history: Vec::new(),
+        fire_id: None,
         delivered_messages: Vec::new(),
     };
     if let Err(e) = state.publisher.publish(topics::Background, event).await {

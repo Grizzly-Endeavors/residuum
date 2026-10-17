@@ -18,7 +18,7 @@ use crate::agent_watch::{AgentChange, AgentChangeKind, AgentChangeReceiver};
 use crate::types::{HubEvent, NoticeLevel};
 use residuum_background::team::{Actor, AgentErrorKind, AgentState, AgentSummary};
 use residuum_bus::session::{SessionCategory, SessionInfo};
-use residuum_bus::{AgentResultStatus, EventTrigger};
+use residuum_bus::{AgentResultStatus, EventTrigger, PulseFireOutcome, PulseFireStatus};
 use residuum_memory::types::Visibility;
 
 /// A running recorder. It stops when dropped.
@@ -314,6 +314,20 @@ impl Recorder {
                 status,
                 episode_id: _,
             } => self.on_session_completed(&agent, address.as_ref(), &run_id, &status),
+            AgentChangeKind::PulseFireFinished { pulse, outcome } => {
+                let (level, summary) = pulse_fire_finished(&agent, &pulse, &outcome);
+                self.record(
+                    outcome.at,
+                    Some(&agent),
+                    TeamEventKind::ScheduledRunFinished,
+                    level,
+                    summary,
+                    Some(TeamEventTarget::AgentPlace {
+                        agent: agent.clone(),
+                        place: TeamEventPlace::Schedule,
+                    }),
+                );
+            }
             AgentChangeKind::Resync
             | AgentChangeKind::SessionStateChanged { .. }
             | AgentChangeKind::OutboundTaskChanged(_)
@@ -477,6 +491,30 @@ fn scheduled_run_finished(
         AgentResultStatus::Failed { error, .. } => (
             TeamEventLevel::Error,
             with_detail(format!("{agent}'s {what} failed"), &plain(error)),
+        ),
+    }
+}
+
+/// The level and summary of a pulse fire that finished without a session
+/// run, worded as [`scheduled_run_finished`] words a scheduled session.
+fn pulse_fire_finished(
+    agent: &str,
+    pulse: &str,
+    outcome: &PulseFireOutcome,
+) -> (TeamEventLevel, String) {
+    let what = format!("pulse \"{pulse}\"");
+    match outcome.status {
+        PulseFireStatus::Ok => (TeamEventLevel::Info, format!("{agent} finished the {what}")),
+        PulseFireStatus::Stopped => (
+            TeamEventLevel::Info,
+            format!("{agent}'s {what} was stopped"),
+        ),
+        PulseFireStatus::Failed => (
+            TeamEventLevel::Error,
+            with_detail(
+                format!("{agent}'s {what} failed"),
+                &plain(outcome.error.as_deref().unwrap_or_default()),
+            ),
         ),
     }
 }

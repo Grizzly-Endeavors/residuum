@@ -915,6 +915,7 @@ mod tests {
 
         let state = GatewayState {
             turn_journal: crate::turn_journal::TurnJournal::default(),
+            pulse_fires: std::sync::Arc::default(),
             queued: std::sync::Arc::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,

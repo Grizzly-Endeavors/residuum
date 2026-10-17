@@ -70,6 +70,7 @@ impl OwnerSessionStart {
             images: Vec::new(),
             overlap: None,
             carried_history: self.fork_of.unwrap_or_default(),
+            fire_id: None,
             delivered_messages: Vec::new(),
         }
     }

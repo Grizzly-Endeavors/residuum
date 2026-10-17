@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ActionInfo, PulseInfo, SessionSummary } from "../src/lib/generated/protocol";
+import type {
+  ActionInfo,
+  PulseInfo,
+  ServerMessage,
+  SessionSummary,
+} from "../src/lib/generated/protocol";
 import { untrackedRunFields } from "./data/sessions";
 import { createMockEnv } from "./env";
 import { scheduledRoutes } from "./scheduled";
-import { fetchJson, startRouteHarness, type RouteHarness } from "./test-support";
+import { advanceMockTime, fetchJson, startRouteHarness, type RouteHarness } from "./test-support";
 
 describe("the Scheduled view routes", () => {
   let harness: RouteHarness;
@@ -63,6 +68,7 @@ describe("the Scheduled view routes", () => {
       expect(check?.next_fire_at).toBe(harness.state.env.clock.isoIn(3_600_000));
       // The newest finished `pulse:inbox_check` run in the sample sessions.
       expect(check?.last_outcome).toMatchObject({ status: "completed", error: null });
+      expect(check?.last_outcome?.run_id).toEqual(expect.any(String));
     });
 
     it("gives a disabled pulse no next fire, and a pulse that failed to load its problems", async () => {
@@ -80,6 +86,9 @@ describe("the Scheduled view routes", () => {
       const run = startRun("pulse:inbox_check");
       const [check] = await pulses();
       expect(check?.current_run).toEqual({
+        fire_id: null,
+        phase: "session",
+        started_at: run.started_at,
         address: run.address,
         run_id: run.run_id,
         overlap: null,
@@ -105,6 +114,132 @@ describe("the Scheduled view routes", () => {
       const refused = await put("/pulses/inbox_check/enabled", { enabled: "yes" });
       expect(refused.status).toBe(400);
       expect((refused.body as { error: string }).error).toContain("invalid request body");
+    });
+  });
+
+  describe("pulse fires", () => {
+    const post = (path: string, body?: unknown): Promise<{ status: number; body: unknown }> =>
+      fetchJson(`${harness.baseUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+
+    async function fire(pulse = "inbox_check"): Promise<string> {
+      const { status, body } = await post("/api/mock/pulse-fire", { pulse });
+      expect(status, JSON.stringify(body)).toBe(200);
+      return (body as { fire_id: string }).fire_id;
+    }
+
+    const fireFrames = (): ServerMessage[] =>
+      harness.frames.filter((frame) => frame.type === "pulse_fire_changed");
+
+    it("shows a fire in its scripts as the pulse's current run, and announces it", async () => {
+      const fireId = await fire();
+      const startedAt = harness.state.env.clock.iso();
+      const [check] = await pulses();
+      const run = {
+        fire_id: fireId,
+        phase: "script",
+        started_at: startedAt,
+        address: null,
+        run_id: null,
+        overlap: null,
+      };
+      expect(check?.current_run).toEqual(run);
+      // The pulse ran now, so its next run is one schedule away.
+      expect(check?.next_fire_at).toBe(harness.state.env.clock.isoIn(2 * 3_600_000));
+      expect(fireFrames()).toEqual([
+        {
+          type: "pulse_fire_changed",
+          pulse: "inbox_check",
+          fire_id: fireId,
+          current_run: run,
+          last_outcome: null,
+        },
+      ]);
+    });
+
+    it("points a second fire's overlap at the first, still in its scripts", async () => {
+      const first = await fire();
+      const second = await fire();
+      const [check] = await pulses();
+      expect(check?.current_run).toMatchObject({
+        fire_id: second,
+        overlap: {
+          previous_fire_id: first,
+          previous_run_id: null,
+          previous_started_at: harness.state.env.clock.iso(),
+        },
+      });
+    });
+
+    it("makes a fire's outcome the pulse's last outcome, newer than its last session", async () => {
+      const fireId = await fire();
+      const finish = await post("/api/mock/pulse-fire/finish", {
+        fire_id: fireId,
+        status: "failed",
+        error: "check_inbox.sh exited with status 2",
+      });
+      expect(finish.status).toBe(200);
+      const outcome = {
+        status: "failed",
+        at: harness.state.env.clock.iso(),
+        error: "check_inbox.sh exited with status 2",
+      };
+      const [check] = await pulses();
+      expect(check).toMatchObject({ current_run: null, last_outcome: outcome });
+      expect(check?.last_outcome).not.toHaveProperty("run_id");
+      expect(fireFrames().at(-1)).toMatchObject({ current_run: null, last_outcome: outcome });
+    });
+
+    it("stops a fire a moment after answering, and answers 404 once it has gone", async () => {
+      // Simulated time moves only when the test moves it, so the stop waits.
+      harness.state.env.setTimeMode("manual");
+      const fireId = await fire();
+      const stop = (): Promise<{ status: number; body: unknown }> =>
+        post(`/api/scheduled/pulses/inbox_check/fires/${fireId}/stop`);
+      expect(await stop()).toEqual({
+        status: 202,
+        body: { pulse: "inbox_check", fire_id: fireId },
+      });
+      // Asked again while it finishes, it answers the same.
+      expect((await stop()).status).toBe(202);
+      expect((await pulses())[0]?.current_run).toMatchObject({ fire_id: fireId });
+
+      await advanceMockTime(harness.state.env, 300);
+      const [check] = await pulses();
+      expect(check).toMatchObject({
+        current_run: null,
+        last_outcome: { status: "cancelled", error: null },
+      });
+      expect(fireFrames()).toMatchObject([
+        { last_outcome: null },
+        { current_run: null, last_outcome: { status: "cancelled" } },
+      ]);
+      expect(await stop()).toEqual({
+        status: 404,
+        body: { error: 'This run of the pulse "inbox_check" isn\'t running any more.' },
+      });
+    });
+
+    it("answers 404 for a fire of another pulse", async () => {
+      const fireId = await fire();
+      const { status } = await post(`/api/scheduled/pulses/nightly_review/fires/${fireId}/stop`);
+      expect(status).toBe(404);
+      expect((await pulses())[0]?.current_run).toMatchObject({ fire_id: fireId });
+    });
+
+    it("refuses a control for a pulse, fire or status it doesn't know", async () => {
+      expect((await post("/api/mock/pulse-fire", { pulse: "ghost" })).status).toBe(404);
+      expect(
+        (await post("/api/mock/pulse-fire/finish", { fire_id: "fire-x", status: "completed" }))
+          .status,
+      ).toBe(404);
+      const fireId = await fire();
+      expect(
+        (await post("/api/mock/pulse-fire/finish", { fire_id: fireId, status: "done" })).status,
+      ).toBe(422);
     });
   });
 

@@ -1,168 +1,17 @@
-//! Pulse execution handling and scheduling in the event loop.
+//! Pulse scheduling in the event loop: the minute tick that starts each due
+//! pulse's fire (see [`super::pulse_fire`]), and the bus results that feed
+//! pulse state back into the scheduler.
 
-use tokio_util::sync::CancellationToken;
-
+use super::pulse_fire::{FireDeps, start_pulse_fire};
 use crate::types::AgentRuntime;
-use residuum_background::registry::SessionRegistry;
 use residuum_bus::notice::publish_notice;
-use residuum_bus::session::SessionCategory;
 use residuum_bus::{
-    AgentResultEvent, AgentResultStatus, BusError, EventTrigger, NotificationEvent, Publisher,
-    PulseOverlap, ResultDisposition, SpawnRequestEvent, topics,
+    AgentResultEvent, AgentResultStatus, BusError, PulseFireChange, PulseFireEvent,
+    ResultDisposition,
 };
-use residuum_proactivity::pulse::executor::{PulseContext, build_pulse_execution};
+use residuum_proactivity::pulse::executor::PulseContext;
 use residuum_proactivity::pulse::scheduler::PulseScheduler;
-use residuum_proactivity::pulse::script::{
-    ScriptEnv, ScriptRun, run_pulse_scripts, script_only_result,
-};
 use residuum_proactivity::pulse::types::PulseDef;
-
-/// Publish a due pulse's spawn request, which forks its session.
-async fn publish_pulse_spawn(publisher: &Publisher, spawn_event: SpawnRequestEvent) {
-    let source_label = spawn_event.source_label.clone();
-    if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
-        tracing::warn!(pulse = %source_label, error = %e, "failed to publish pulse spawn request");
-    }
-}
-
-/// What a pulse with task scripts needs to run them and deliver what they
-/// produced, away from the event loop.
-#[derive(Clone)]
-struct ScriptedPulseDeps {
-    publisher: Publisher,
-    env: ScriptEnv,
-    tz: chrono_tz::Tz,
-    /// Cancelled when the agent stops (`AgentRuntime::pulse_scripts_stop`).
-    stop: CancellationToken,
-}
-
-impl ScriptedPulseDeps {
-    fn from_runtime(rt: &AgentRuntime) -> Self {
-        Self {
-            publisher: rt.publisher.clone(),
-            env: ScriptEnv {
-                workspace_root: rt.layout.root().to_path_buf(),
-                tools_path: std::sync::Arc::clone(&rt.tools_path),
-                agent_keys: std::sync::Arc::clone(&rt.agent_keys),
-            },
-            tz: rt.tz,
-            stop: rt.pulse_scripts_stop.clone(),
-        }
-    }
-}
-
-/// Fire a pulse whose tasks run scripts: run them in task order, then
-/// either deliver a `script_only` pulse's result straight to the
-/// notification router, or start the pulse's session with each script's
-/// output in its task's prompt.
-///
-/// Runs on its own task (see [`handle_pulse_tick`]) so a slow script never
-/// holds up the agent's event loop. In a pulse that runs a session, a
-/// failed script is reported to the owner here (see
-/// [`report_script_failures`]) and the session still runs, told the script
-/// failed; a `script_only` pulse's failures travel in its result instead.
-/// Delivers nothing when the agent stops mid-script.
-async fn run_scripted_pulse(
-    pulse: PulseDef,
-    overlap: Option<PulseOverlap>,
-    context: Option<PulseContext>,
-    deps: ScriptedPulseDeps,
-) {
-    let Some(runs) = run_pulse_scripts(&pulse, &deps.env, &deps.stop).await else {
-        return;
-    };
-    deliver_scripted_pulse(&pulse, &runs, overlap, context.as_ref(), &deps).await;
-}
-
-/// Deliver what a scripted pulse's finished scripts produced: a
-/// `script_only` pulse's result, or the session spawn (after reporting any
-/// failed script). Delivers nothing once the agent has begun stopping, so a
-/// script that finished during shutdown never starts a session or files a
-/// result into an agent that is going away.
-async fn deliver_scripted_pulse(
-    pulse: &PulseDef,
-    runs: &[Option<ScriptRun>],
-    overlap: Option<PulseOverlap>,
-    context: Option<&PulseContext>,
-    deps: &ScriptedPulseDeps,
-) {
-    if deps.stop.is_cancelled() {
-        tracing::info!(
-            pulse = %pulse.name,
-            "pulse scripts finished while the agent is stopping; delivering nothing for this fire"
-        );
-        return;
-    }
-    if pulse.is_script_only() {
-        let event = script_only_result(pulse, runs, deps.tz);
-        tracing::debug!(
-            pulse = %pulse.name,
-            disposition = ?event.disposition,
-            status = %event.status,
-            "script-only pulse finished"
-        );
-        if let Err(e) = deps.publisher.publish(topics::Background, event).await {
-            tracing::warn!(pulse = %pulse.name, error = %e, "failed to publish script-only pulse result");
-        }
-        return;
-    }
-    report_script_failures(pulse, runs, deps).await;
-    let spawn_event = build_pulse_execution(pulse, overlap, context, runs);
-    publish_pulse_spawn(&deps.publisher, spawn_event).await;
-}
-
-/// Tell the owner about each failed script in a pulse that still runs its
-/// session, on the same two surfaces the notification router uses for a
-/// failed pulse: an inbox item carrying the command, how it ended and the
-/// tail of its stderr, and an owner notice naming the pulse, the task and
-/// the reason.
-async fn report_script_failures(
-    pulse: &PulseDef,
-    runs: &[Option<ScriptRun>],
-    deps: &ScriptedPulseDeps,
-) {
-    for (task, run) in pulse.tasks.iter().zip(runs) {
-        let Some(ScriptRun::Failed(failure)) = run else {
-            continue;
-        };
-        let message = format!(
-            "The script for task '{}' in pulse '{}' {}. The pulse still ran its check, without \
-             that script's output.",
-            task.name,
-            pulse.name,
-            failure.reason()
-        );
-        let content = format!("{message}\n\n{}", failure.details());
-        let item = NotificationEvent {
-            title: format!("pulse:{}", pulse.name),
-            content,
-            source: EventTrigger::Pulse,
-            urgent: false,
-            timestamp: residuum_core::time::now_local(deps.tz),
-        };
-        if let Err(e) = deps.publisher.publish(topics::Inbox, item).await {
-            tracing::warn!(pulse = %pulse.name, task = %task.name, error = %e, "failed to file pulse script failure to the inbox");
-        }
-        publish_notice(&deps.publisher, message).await;
-    }
-}
-
-/// Look for a still-live session from an earlier fire of this pulse. Never
-/// used to block or skip the new fire — only to flag it, since the owner
-/// decided pulses that overlap their own previous run should start anyway.
-fn detect_pulse_overlap(registry: &SessionRegistry, pulse_name: &str) -> Option<PulseOverlap> {
-    let source_label = format!("pulse:{pulse_name}");
-    registry
-        .list_live()
-        .into_iter()
-        .find(|info| {
-            info.category == SessionCategory::Scheduled && info.source_label == source_label
-        })
-        .map(|info| PulseOverlap {
-            previous_run_id: info.run_id,
-            previous_started_at: info.started_at,
-        })
-}
 
 /// Build the plain-language outcome of this tick's `HEARTBEAT.yml` reload,
 /// for delivery to the agent whose own write caused it (see
@@ -241,11 +90,50 @@ pub fn handle_pulse_result_event(
     }
 }
 
+/// The outcome a pulse fire's change leaves for `pulse_state.json`: a
+/// finished fire's, when no session run ended it (the session store records
+/// those). Split out so the rule is testable without a full `AgentRuntime`.
+fn unsessioned_fire_outcome(
+    event: &PulseFireEvent,
+) -> Option<(&str, &residuum_bus::PulseFireOutcome)> {
+    match &event.change {
+        PulseFireChange::Finished {
+            outcome,
+            session_run_id: None,
+        } => Some((event.pulse.as_str(), outcome)),
+        PulseFireChange::Finished {
+            session_run_id: Some(_),
+            ..
+        }
+        | PulseFireChange::Started
+        | PulseFireChange::SessionRequested
+        | PulseFireChange::SessionStarted
+        | PulseFireChange::Ended => None,
+    }
+}
+
+/// Record the outcome of a pulse fire that ended without a session run (a
+/// `script_only` fire, silent ones included; one stopped during its
+/// scripts; one whose session couldn't start) in `pulse_state.json`, where
+/// the Schedule place reads it as the pulse's last run. A closed or
+/// mismatched subscription is dropped like [`handle_pulse_result_event`]'s.
+pub fn handle_pulse_fire_event(
+    event: Result<Option<PulseFireEvent>, BusError>,
+    rt: &mut AgentRuntime,
+) {
+    let Ok(Some(event)) = event else {
+        return;
+    };
+    if let Some((pulse_name, outcome)) = unsessioned_fire_outcome(&event) {
+        rt.pulse_scheduler
+            .record_fire_outcome(pulse_name, outcome.clone());
+    }
+}
+
 /// Process all due pulses.
 ///
-/// A pulse whose tasks run scripts fires on its own task (see
-/// [`run_scripted_pulse`]), so the loop never waits on a script; every
-/// other pulse starts its session straight away.
+/// Each due pulse fires on its own task (see [`start_pulse_fire`]), so the
+/// loop never waits on a script or a session.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
     use residuum_core::time;
@@ -275,33 +163,9 @@ pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
     if !due.is_empty() {
         tracing::debug!(count = due.len(), "processing due pulses");
     }
-    for pulse in &due {
-        let overlap = detect_pulse_overlap(&rt.session_registry, &pulse.name);
-        if let Some(ov) = &overlap {
-            let still_going_secs = (chrono::Utc::now() - ov.previous_started_at)
-                .num_seconds()
-                .max(0);
-            tracing::info!(
-                pulse = %pulse.name,
-                previous_run_id = %ov.previous_run_id,
-                previous_running_for_secs = still_going_secs,
-                "pulse fired again while its previous run is still going; starting the new run \
-                 anyway and flagging the overlap"
-            );
-        }
-        let context = resolve_pulse_context(pulse, &rt.pulse_scheduler);
-        if pulse.has_scripts() {
-            let deps = ScriptedPulseDeps::from_runtime(rt);
-            residuum_core::util::spawn_in_span(run_scripted_pulse(
-                pulse.clone(),
-                overlap,
-                context,
-                deps,
-            ));
-        } else {
-            let spawn_event = build_pulse_execution(pulse, overlap, context.as_ref(), &[]);
-            publish_pulse_spawn(&rt.publisher, spawn_event).await;
-        }
+    for pulse in due {
+        let context = resolve_pulse_context(&pulse, &rt.pulse_scheduler);
+        start_pulse_fire(pulse, context, FireDeps::from_runtime(rt));
     }
 }
 
@@ -507,6 +371,80 @@ mod tests {
         assert_eq!(delivered_pulse_output(&event), None);
     }
 
+    // ── recorded fire outcomes ───────────────────────────────────────────
+
+    fn fire_event(change: PulseFireChange) -> PulseFireEvent {
+        PulseFireEvent {
+            pulse: "watch".to_string(),
+            fire_id: "fire-1".to_string(),
+            change,
+            current_run: None,
+        }
+    }
+
+    #[test]
+    fn only_a_fire_that_ended_without_a_session_run_is_recorded_in_pulse_state() {
+        let outcome = residuum_bus::PulseFireOutcome {
+            status: residuum_bus::PulseFireStatus::Ok,
+            at: chrono::Utc::now(),
+            error: None,
+        };
+        let unsessioned = fire_event(PulseFireChange::Finished {
+            outcome: outcome.clone(),
+            session_run_id: None,
+        });
+        assert_eq!(
+            unsessioned_fire_outcome(&unsessioned),
+            Some(("watch", &outcome))
+        );
+
+        let sessioned = fire_event(PulseFireChange::Finished {
+            outcome,
+            session_run_id: Some("run-1".to_string()),
+        });
+        assert_eq!(
+            unsessioned_fire_outcome(&sessioned),
+            None,
+            "the session store records it"
+        );
+        for change in [
+            PulseFireChange::Started,
+            PulseFireChange::SessionRequested,
+            PulseFireChange::SessionStarted,
+            PulseFireChange::Ended,
+        ] {
+            assert_eq!(unsessioned_fire_outcome(&fire_event(change)), None);
+        }
+    }
+
+    #[test]
+    fn a_recorded_fire_outcome_reaches_pulse_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pulse_state.json");
+        let mut scheduler = PulseScheduler::with_state_path(&path);
+        let event = fire_event(PulseFireChange::Finished {
+            outcome: residuum_bus::PulseFireOutcome {
+                status: residuum_bus::PulseFireStatus::Failed,
+                at: chrono::Utc::now(),
+                error: Some("the script for task 'check' exited with code 4".to_string()),
+            },
+            session_run_id: None,
+        });
+
+        if let Some((pulse, outcome)) = unsessioned_fire_outcome(&event) {
+            scheduler.record_fire_outcome(pulse, outcome.clone());
+        }
+
+        let recorded = residuum_proactivity::pulse::next_run::load_recorded_state(&path);
+        assert_eq!(
+            recorded
+                .last_fire
+                .get("watch")
+                .and_then(|o| o.error.as_deref()),
+            Some("the script for task 'check' exited with code 4")
+        );
+    }
+
     #[test]
     fn delivered_pulse_output_ignores_non_pulse_source_labels() {
         let event = sample_result_event(
@@ -516,256 +454,5 @@ mod tests {
             "deployed",
         );
         assert_eq!(delivered_pulse_output(&event), None);
-    }
-
-    // ── scripted pulses ──────────────────────────────────────────────────
-
-    use residuum_bus::testing::{bus_barrier, next_event};
-    use residuum_bus::{BusHandle, NotifyName, SYSTEM_CHANNEL, Subscriber};
-    use residuum_proactivity::pulse::types::PulseTask;
-
-    fn scripted_deps(bus: &BusHandle, dir: &std::path::Path) -> ScriptedPulseDeps {
-        ScriptedPulseDeps {
-            publisher: bus.publisher(),
-            env: residuum_proactivity::pulse::testing::script_env(dir),
-            tz: chrono_tz::UTC,
-            stop: CancellationToken::new(),
-        }
-    }
-
-    fn scripted_pulse(script: &str, script_only: bool) -> PulseDef {
-        let mut pulse = sample_pulse_def("watch", None);
-        pulse.tasks = vec![PulseTask {
-            name: "check".to_string(),
-            prompt: if script_only {
-                String::new()
-            } else {
-                "Say whether anything changed.".to_string()
-            },
-            script: Some(script.to_string()),
-            script_only,
-            ..PulseTask::default()
-        }];
-        pulse
-    }
-
-    /// A broker with the notification router running on it, as in a live
-    /// agent, so a script-only result is followed all the way to the inbox.
-    async fn bus_with_router() -> BusHandle {
-        let bus = residuum_bus::spawn_broker();
-        let router = residuum_notify::router::spawn_notification_router(
-            &bus,
-            residuum_bus::EndpointRegistry::from_entries([]),
-            bus.publisher(),
-        )
-        .await;
-        assert!(router.is_some(), "the router should subscribe");
-        bus
-    }
-
-    // `exit 0` with no output works the same under `sh -c` and `cmd /C`.
-    const SILENT_SCRIPT: &str = "exit 0";
-
-    #[tokio::test]
-    async fn script_only_pulse_with_empty_output_is_silent() {
-        let dir = tempfile::tempdir().unwrap();
-        let bus = residuum_bus::spawn_broker();
-        let mut results: Subscriber<AgentResultEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-        let mut spawns: Subscriber<SpawnRequestEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-
-        run_scripted_pulse(
-            scripted_pulse(SILENT_SCRIPT, true),
-            None,
-            None,
-            scripted_deps(&bus, dir.path()),
-        )
-        .await;
-
-        let result = next_event("the script-only result", &mut results).await;
-        assert_eq!(result.disposition, ResultDisposition::Silent);
-        assert!(matches!(result.status, AgentResultStatus::Completed));
-        assert_eq!(result.source_label, "pulse:watch");
-        bus_barrier(&bus).await;
-        assert!(
-            spawns.drain().is_empty(),
-            "a script-only pulse never starts a session"
-        );
-    }
-
-    #[tokio::test]
-    async fn script_only_pulse_output_is_routed_to_the_inbox_as_printed() {
-        let dir = tempfile::tempdir().unwrap();
-        let bus = bus_with_router().await;
-        let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
-
-        run_scripted_pulse(
-            scripted_pulse("echo site changed", true),
-            None,
-            None,
-            scripted_deps(&bus, dir.path()),
-        )
-        .await;
-
-        let item = next_event("the inbox item", &mut inbox).await;
-        assert_eq!(item.title, "pulse:watch");
-        assert_eq!(item.content.trim(), "site changed");
-        assert!(!item.urgent, "no urgency unless the output asks for it");
-    }
-
-    #[tokio::test]
-    async fn script_only_pulse_failure_reaches_the_inbox_and_the_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        let bus = bus_with_router().await;
-        let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
-        let mut notices: Subscriber<residuum_bus::NoticeEvent> = bus
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
-
-        run_scripted_pulse(
-            scripted_pulse("echo feed unreachable 1>&2 && exit 4", true),
-            None,
-            None,
-            scripted_deps(&bus, dir.path()),
-        )
-        .await;
-
-        let item = next_event("the inbox item", &mut inbox).await;
-        assert!(
-            item.content.contains("exited with code 4"),
-            "{}",
-            item.content
-        );
-        assert!(
-            item.content.contains("feed unreachable"),
-            "{}",
-            item.content
-        );
-        let notice = next_event("the failed-pulse notice", &mut notices).await;
-        assert!(notice.message.contains("watch"), "{}", notice.message);
-        assert!(
-            notice.message.contains("exited with code 4"),
-            "{}",
-            notice.message
-        );
-    }
-
-    #[tokio::test]
-    async fn prompt_mode_appends_script_output_to_the_session_prompt() {
-        let dir = tempfile::tempdir().unwrap();
-        let bus = residuum_bus::spawn_broker();
-        let mut spawns: Subscriber<SpawnRequestEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-
-        run_scripted_pulse(
-            scripted_pulse("echo 3 new posts", false),
-            None,
-            None,
-            scripted_deps(&bus, dir.path()),
-        )
-        .await;
-
-        let spawn = next_event("the pulse's spawn request", &mut spawns).await;
-        assert_eq!(spawn.source_label, "pulse:watch");
-        assert!(spawn.prompt.contains("Say whether anything changed."));
-        assert!(spawn.prompt.contains("3 new posts"), "{}", spawn.prompt);
-    }
-
-    #[tokio::test]
-    async fn prompt_mode_failure_is_reported_and_the_session_still_runs() {
-        let dir = tempfile::tempdir().unwrap();
-        let bus = residuum_bus::spawn_broker();
-        let mut spawns: Subscriber<SpawnRequestEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-        let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
-        let mut notices: Subscriber<residuum_bus::NoticeEvent> = bus
-            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
-            .await
-            .unwrap();
-
-        run_scripted_pulse(
-            scripted_pulse("echo token expired 1>&2 && exit 2", false),
-            None,
-            None,
-            scripted_deps(&bus, dir.path()),
-        )
-        .await;
-
-        let item = next_event("the inbox item", &mut inbox).await;
-        assert!(item.content.contains("'check'"), "{}", item.content);
-        assert!(
-            item.content.contains("exited with code 2"),
-            "{}",
-            item.content
-        );
-        assert!(item.content.contains("exit code: 2"), "{}", item.content);
-        assert!(item.content.contains("token expired"), "{}", item.content);
-        let notice = next_event("the owner notice", &mut notices).await;
-        assert!(notice.message.contains("'watch'"), "{}", notice.message);
-        assert!(
-            notice.message.contains("exited with code 2"),
-            "{}",
-            notice.message
-        );
-        let spawn = next_event("the pulse's spawn request", &mut spawns).await;
-        assert!(spawn.prompt.contains("script failed"), "{}", spawn.prompt);
-    }
-
-    #[tokio::test]
-    async fn a_stopped_agent_delivers_nothing_for_a_scripted_pulse() {
-        let dir = tempfile::tempdir().unwrap();
-        let bus = residuum_bus::spawn_broker();
-        let mut results: Subscriber<AgentResultEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-        let mut spawns: Subscriber<SpawnRequestEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-        let deps = scripted_deps(&bus, dir.path());
-        deps.stop.cancel();
-
-        run_scripted_pulse(scripted_pulse("echo hi", true), None, None, deps.clone()).await;
-        run_scripted_pulse(scripted_pulse("echo hi", false), None, None, deps).await;
-
-        bus_barrier(&bus).await;
-        assert!(results.drain().is_empty());
-        assert!(spawns.drain().is_empty());
-    }
-
-    #[tokio::test]
-    async fn scripts_that_finish_after_the_agent_starts_stopping_deliver_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let bus = residuum_bus::spawn_broker();
-        let mut results: Subscriber<AgentResultEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-        let mut spawns: Subscriber<SpawnRequestEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
-        let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
-        let deps = scripted_deps(&bus, dir.path());
-        // The scripts have already run; the stop lands before delivery.
-        let output = Some(ScriptRun::Succeeded {
-            stdout: "changed".to_string(),
-        });
-        let failed = Some(ScriptRun::Failed(
-            residuum_proactivity::pulse::script::ScriptFailure {
-                script: "check".to_string(),
-                cause: residuum_proactivity::pulse::script::ScriptFailureCause::Exited {
-                    code: Some(1),
-                },
-                stdout: String::new(),
-                stderr_tail: String::new(),
-            },
-        ));
-        deps.stop.cancel();
-
-        let script_only = scripted_pulse("check", true);
-        deliver_scripted_pulse(&script_only, &[output], None, None, &deps).await;
-        let with_session = scripted_pulse("check", false);
-        deliver_scripted_pulse(&with_session, &[failed], None, None, &deps).await;
-
-        bus_barrier(&bus).await;
-        assert!(results.drain().is_empty(), "no result is filed");
-        assert!(spawns.drain().is_empty(), "no session is started");
-        assert!(inbox.drain().is_empty(), "no failure is filed");
     }
 }

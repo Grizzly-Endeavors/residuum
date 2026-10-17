@@ -38,19 +38,23 @@ pub fn summary_from_live(info: &SessionInfo) -> SessionSummary {
     }
 }
 
-/// The frame for an owner-started session that couldn't be forked.
+/// The frame for an owner-started session that couldn't be forked; `None`
+/// for any other session's failure (a pulse fire's), because the web UI keeps
+/// a failure per address until a run starts there, and a pulse fire's
+/// address never gets one.
 #[must_use]
-pub fn session_start_failed_frame(event: SessionStartFailedEvent) -> ServerMessage {
+pub fn session_start_failed_frame(event: SessionStartFailedEvent) -> Option<ServerMessage> {
     let SessionStartFailedEvent {
         address,
         error,
         error_details,
+        owner_start,
     } = event;
-    ServerMessage::SessionStartFailed {
+    owner_start.then(|| ServerMessage::SessionStartFailed {
         address: address.to_string(),
         error,
         error_details,
-    }
+    })
 }
 
 /// Translate a bus session event into the WebSocket frame clients receive.

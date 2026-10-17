@@ -38,6 +38,7 @@ fn turns(changes: &[AgentChange]) -> Vec<&MainTurnEnded> {
             | AgentChangeKind::SessionCompleted { .. }
             | AgentChangeKind::OutboundTaskChanged(_)
             | AgentChangeKind::UserInboxAdded { .. }
+            | AgentChangeKind::PulseFireFinished { .. }
             | AgentChangeKind::WatchedPathChanged(_) => None,
         })
         .collect()

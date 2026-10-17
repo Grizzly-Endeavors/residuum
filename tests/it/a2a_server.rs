@@ -602,6 +602,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                 },
                 conversation_target: event.conversation,
                 overlap: event.overlap,
+                stop: None,
             };
             deps.runtime.spawn(request, Some(resources));
         }

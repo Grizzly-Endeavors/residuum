@@ -3,38 +3,43 @@
 //!
 //! - `GET /api/agents/{name}/scheduled/pulses` — every pulse in HEARTBEAT.yml, its next
 //!   fire time (the calculation the hub's team overview uses, see
-//!   `residuum_proactivity::pulse::next_run`), last outcome, current run (with any overlap
-//!   flag), and any per-pulse loading problems (see
-//!   `residuum_proactivity::pulse::types::load_heartbeat`).
+//!   `residuum_proactivity::pulse::next_run`), last outcome, current run (a fire in its
+//!   script or session phase, with any overlap flag), and any per-pulse loading problems
+//!   (see `residuum_proactivity::pulse::types::load_heartbeat`).
 //! - `PUT /api/agents/{name}/scheduled/pulses/{pulse}/enabled` — flip a pulse's `enabled`
 //!   field in HEARTBEAT.yml in place, preserving everything else in the
 //!   file (see `residuum_proactivity::pulse::edit::set_pulse_enabled`).
+//! - `POST /api/agents/{name}/scheduled/pulses/{pulse}/fires/{fire_id}/stop` — stop one
+//!   fire of a pulse (see `crate::pulse_fires`).
 //! - `GET /api/agents/{name}/scheduled/actions` — every pending scheduled action, its due
 //!   time, and its current run if it has already fired.
 //! - `DELETE /api/agents/{name}/scheduled/actions/{id}` — cancel a pending action.
 //!
-//! Pulse/action run state (current run, last outcome) changes are already
-//! visible live over the WebSocket as `session_*` frames for the
-//! `scheduled` category; a HEARTBEAT.yml or `scheduled_actions.json` edit
-//! is visible as a `workspace_changed` frame naming that path. The web UI
-//! refetches this API on either signal rather than polling it.
+//! A pulse fire's start, its move to its session, and its finish reach the
+//! WebSocket as `pulse_fire_changed` frames carrying the pulse's new
+//! current run and last outcome; a scheduled session's own changes are the
+//! `session_*` frames for the `scheduled` category; a HEARTBEAT.yml or
+//! `scheduled_actions.json` edit is a `workspace_changed` frame naming that
+//! path. The web UI merges the first and refetches this API on the others
+//! rather than polling it.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::pulse_fires::PulseFires;
 use residuum_background::registry::SessionRegistry;
 use residuum_background::store::{RunFilter, SessionStore};
+use residuum_bus::PulseFireOutcome;
 use residuum_bus::session::SessionCategory;
 use residuum_config::WorkspaceLayout;
 use residuum_proactivity::actions::store::ActionStore;
-use residuum_proactivity::pulse::next_run::{load_last_runs, next_run_at};
+use residuum_proactivity::pulse::next_run::{RecordedPulseState, load_recorded_state, next_run_at};
 use residuum_proactivity::pulse::types::{HeartbeatProblem, PulseDef, load_heartbeat};
 use residuum_protocol::{
     ActionInfo, PulseInfo, ScheduledCurrentRun, ScheduledRunOutcome, SessionRunStatus,
@@ -48,6 +53,8 @@ pub struct ScheduledApiState {
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
+    /// Pulse fires in flight, for each pulse's current run and its Stop.
+    pub fires: Arc<PulseFires>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,12 +74,16 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
 
 /// Build the Schedule place API router.
 pub fn scheduled_api_router(state: ScheduledApiState) -> axum::Router {
-    use axum::routing::{delete, get, put};
+    use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/api/scheduled/pulses", get(api_scheduled_pulses))
         .route(
             "/api/scheduled/pulses/{name}/enabled",
             put(api_scheduled_pulse_set_enabled),
+        )
+        .route(
+            "/api/scheduled/pulses/{name}/fires/{fire_id}/stop",
+            post(api_scheduled_pulse_fire_stop),
         )
         .route("/api/scheduled/actions", get(api_scheduled_actions))
         .route(
@@ -92,13 +103,13 @@ async fn api_scheduled_pulses(State(state): State<ScheduledApiState>) -> Respons
     // Read from the files rather than through a live `PulseScheduler` (this
     // API has none), the same as the gateway's own hot-reload does for
     // HEARTBEAT.yml.
-    let last_run = load_last_runs(&state.layout.pulse_state_json());
+    let recorded = load_recorded_state(&state.layout.pulse_state_json());
     let pulse_enabled = pulse_system_enabled(&state.layout);
 
     let infos = build_pulse_infos(
         &pulses,
         &problems,
-        &last_run,
+        &recorded,
         (Utc::now(), pulse_enabled),
         &state,
     )
@@ -127,7 +138,7 @@ fn pulse_system_enabled(layout: &WorkspaceLayout) -> bool {
 async fn build_pulse_infos(
     pulses: &[PulseDef],
     problems: &[HeartbeatProblem],
-    last_run: &HashMap<String, NaiveDateTime>,
+    recorded: &RecordedPulseState,
     (now, pulse_enabled): (DateTime<Utc>, bool),
     state: &ScheduledApiState,
 ) -> Vec<PulseInfo> {
@@ -150,10 +161,23 @@ async fn build_pulse_infos(
             agent: pulse.agent.clone(),
             model_tier: pulse.model_tier.as_ref().map(ToString::to_string),
             next_fire_at: pulse_enabled
-                .then(|| next_run_at(pulse, last_run.get(&pulse.name).copied(), now, state.tz))
+                .then(|| {
+                    next_run_at(
+                        pulse,
+                        recorded.last_run.get(&pulse.name).copied(),
+                        now,
+                        state.tz,
+                    )
+                })
                 .flatten(),
-            last_outcome: last_outcome(&state.store, &source_label).await,
-            current_run: current_run(&state.registry, &source_label),
+            last_outcome: newer_outcome(
+                last_outcome(&state.store, &source_label).await,
+                recorded.last_fire.get(&pulse.name),
+            ),
+            current_run: state
+                .fires
+                .current_run(&pulse.name, &state.registry)
+                .map(Into::into),
             problems: pulse_problems,
         });
     }
@@ -213,22 +237,71 @@ async fn last_outcome(store: &SessionStore, source_label: &str) -> Option<Schedu
         status,
         at: record.completed_at.unwrap_or(record.started_at),
         error: record.outcome_error,
+        run_id: Some(record.run_id),
     })
 }
 
-/// The currently live run for a given source label, if it's running right now.
-fn current_run(registry: &SessionRegistry, source_label: &str) -> Option<ScheduledCurrentRun> {
+/// A pulse's last run: the newer of the session store's last completed run
+/// and the pulse's last fire that ended without a session run.
+fn newer_outcome(
+    session: Option<ScheduledRunOutcome>,
+    fire: Option<&PulseFireOutcome>,
+) -> Option<ScheduledRunOutcome> {
+    match (session, fire) {
+        (Some(session), Some(fire)) if fire.at <= session.at => Some(session),
+        (_, Some(fire)) => Some(fire.into()),
+        (session, None) => session,
+    }
+}
+
+/// A scheduled action's live run, if it's running right now.
+fn action_current_run(
+    registry: &SessionRegistry,
+    source_label: &str,
+) -> Option<ScheduledCurrentRun> {
     registry
         .list_live()
-        .into_iter()
+        .iter()
         .find(|info| {
             info.category == SessionCategory::Scheduled && info.source_label == source_label
         })
-        .map(|info| ScheduledCurrentRun {
-            address: info.address.to_string(),
-            run_id: info.run_id,
-            overlap: info.overlap,
-        })
+        .map(Into::into)
+}
+
+/// `POST /api/agents/{name}/scheduled/pulses/{pulse}/fires/{fire_id}/stop` response.
+#[derive(Debug, Serialize)]
+struct PulseFireStopResponse {
+    pulse: String,
+    fire_id: String,
+}
+
+/// `POST /api/agents/{name}/scheduled/pulses/{pulse}/fires/{fire_id}/stop` — stop one
+/// fire of a pulse: kill its running script, keep it from starting its
+/// session, or stop its session. Answers `202` once the stop is asked for;
+/// the fire's `pulse_fire_changed` frame reports it stopped.
+///
+/// # Errors
+/// `404` when no fire `fire_id` of `pulse` is in flight: it already
+/// finished, or never existed.
+async fn api_scheduled_pulse_fire_stop(
+    State(state): State<ScheduledApiState>,
+    Path((name, fire_id)): Path<(String, String)>,
+) -> Response {
+    if !state.fires.stop(&name, &fire_id) {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            format!("This run of the pulse \"{name}\" isn't running any more."),
+        );
+    }
+    tracing::info!(pulse = %name, fire = %fire_id, "pulse fire stop requested from the Schedule place");
+    (
+        StatusCode::ACCEPTED,
+        Json(PulseFireStopResponse {
+            pulse: name,
+            fire_id,
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,7 +381,7 @@ async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Respon
             agent: action.agent,
             model_tier: action.model_tier,
             problem,
-            current_run: current_run(&state.registry, &source_label),
+            current_run: action_current_run(&state.registry, &source_label),
         });
     }
     Json(infos).into_response()
@@ -340,11 +413,15 @@ async fn api_scheduled_action_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDateTime;
     use residuum_background::registry::SessionRegistry;
     use residuum_background::store::SessionStore;
     use residuum_bus::session::{MAIN_DEPTH, SessionInfo, SessionState, generate_address};
-    use residuum_bus::{AgentResultStatus, EventTrigger, PulseOverlap};
+    use residuum_bus::{
+        AgentResultStatus, EventTrigger, PulseFirePhase, PulseFireStatus, PulseOverlap,
+    };
     use residuum_proactivity::pulse::types::ProblemKind;
+    use std::collections::HashMap;
     use tokio_util::sync::CancellationToken;
 
     fn sample_pulse(name: &str) -> PulseDef {
@@ -393,6 +470,14 @@ mod tests {
             ))),
             layout: WorkspaceLayout::new(dir),
             tz: chrono_tz::UTC,
+            fires: Arc::new(PulseFires::default()),
+        }
+    }
+
+    fn recorded_runs(last_run: HashMap<String, NaiveDateTime>) -> RecordedPulseState {
+        RecordedPulseState {
+            last_run,
+            ..RecordedPulseState::default()
         }
     }
 
@@ -409,7 +494,8 @@ mod tests {
             .and_hms_opt(12, 20, 40)
             .unwrap()
             .and_utc();
-        build_pulse_infos(pulses, &[], last_run, (now, pulse_enabled), &state).await
+        let recorded = recorded_runs(last_run.clone());
+        build_pulse_infos(pulses, &[], &recorded, (now, pulse_enabled), &state).await
     }
 
     fn day_2099(hour: u32, minute: u32) -> NaiveDateTime {
@@ -499,7 +585,8 @@ mod tests {
         let info = scheduled_info(
             "pulse:email_check",
             Some(PulseOverlap {
-                previous_run_id: "run-old".to_string(),
+                previous_run_id: Some("run-old".to_string()),
+                previous_fire_id: None,
                 previous_started_at: Utc::now(),
             }),
         );
@@ -509,16 +596,203 @@ mod tests {
             .unwrap();
 
         let pulses = vec![sample_pulse("email_check")];
-        let infos =
-            build_pulse_infos(&pulses, &[], &HashMap::new(), (Utc::now(), true), &state).await;
+        let infos = build_pulse_infos(
+            &pulses,
+            &[],
+            &RecordedPulseState::default(),
+            (Utc::now(), true),
+            &state,
+        )
+        .await;
         assert_eq!(infos.len(), 1);
         let pulse_info = infos.first().expect("one pulse info");
         let current = pulse_info
             .current_run
             .as_ref()
             .expect("should have a current run");
-        assert_eq!(current.run_id, "run-1");
+        assert_eq!(current.run_id.as_deref(), Some("run-1"));
+        assert_eq!(current.fire_id, None, "a session no fire tracks");
+        assert_eq!(current.phase, PulseFirePhase::Session);
         assert!(current.overlap.is_some(), "overlap flag should surface");
+    }
+
+    #[tokio::test]
+    async fn a_fire_in_its_scripts_is_the_pulses_current_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let bus = residuum_bus::spawn_broker();
+        let first = state.fires.begin(
+            "watch",
+            PulseFirePhase::Script,
+            None,
+            bus.publisher(),
+            Arc::clone(&state.registry),
+        );
+        let found = state.fires.overlap("watch", &state.registry);
+        let second = state.fires.begin(
+            "watch",
+            PulseFirePhase::Script,
+            found,
+            bus.publisher(),
+            Arc::clone(&state.registry),
+        );
+
+        let infos = build_pulse_infos(
+            &[sample_pulse("watch")],
+            &[],
+            &RecordedPulseState::default(),
+            (Utc::now(), true),
+            &state,
+        )
+        .await;
+        let current = infos
+            .first()
+            .and_then(|info| info.current_run.clone())
+            .expect("a run in flight");
+        assert_eq!(current.fire_id.as_deref(), Some(second.id()));
+        assert_eq!(current.phase, PulseFirePhase::Script);
+        assert_eq!((current.address, current.run_id), (None, None));
+        let overlap = current.overlap.expect("two fires overlap in their scripts");
+        assert_eq!(overlap.previous_fire_id.as_deref(), Some(first.id()));
+    }
+
+    fn fire_outcome(status: PulseFireStatus, at: DateTime<Utc>) -> PulseFireOutcome {
+        PulseFireOutcome {
+            status,
+            at,
+            error: (status == PulseFireStatus::Failed)
+                .then(|| "the script for task 'check' exited with code 4".to_string()),
+        }
+    }
+
+    #[test]
+    fn the_last_outcome_is_the_newer_of_the_session_store_and_the_last_fire() {
+        let earlier = DateTime::parse_from_rfc3339("2099-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let later = earlier + chrono::Duration::minutes(5);
+        let session = |at| ScheduledRunOutcome {
+            status: SessionRunStatus::Completed,
+            at,
+            error: None,
+            run_id: Some("run-1".to_string()),
+        };
+
+        assert_eq!(newer_outcome(None, None), None);
+        assert_eq!(
+            newer_outcome(Some(session(earlier)), None),
+            Some(session(earlier))
+        );
+        assert_eq!(
+            newer_outcome(
+                Some(session(earlier)),
+                Some(&fire_outcome(PulseFireStatus::Failed, later))
+            ),
+            Some(ScheduledRunOutcome {
+                status: SessionRunStatus::Failed,
+                at: later,
+                error: Some("the script for task 'check' exited with code 4".to_string()),
+                run_id: None,
+            })
+        );
+        assert_eq!(
+            newer_outcome(
+                Some(session(later)),
+                Some(&fire_outcome(PulseFireStatus::Stopped, earlier))
+            ),
+            Some(session(later))
+        );
+        assert_eq!(
+            newer_outcome(None, Some(&fire_outcome(PulseFireStatus::Stopped, earlier))),
+            Some(ScheduledRunOutcome {
+                status: SessionRunStatus::Cancelled,
+                at: earlier,
+                error: None,
+                run_id: None,
+            }),
+            "a stopped fire reads as a cancelled run"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_pulse_list_reports_a_script_only_fire_recorded_in_pulse_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("HEARTBEAT.yml"),
+            "pulses:\n  - name: watch\n    schedule: \"1h\"\n    tasks:\n      - name: check\n        script: \"exit 0\"\n        script_only: true\n",
+        )
+        .unwrap();
+        let mut scheduler = residuum_proactivity::pulse::scheduler::PulseScheduler::with_state_path(
+            &dir.path().join("pulse_state.json"),
+        );
+        let at = DateTime::parse_from_rfc3339("2099-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        scheduler.record_fire_outcome("watch", fire_outcome(PulseFireStatus::Ok, at));
+
+        let response = tower::ServiceExt::oneshot(
+            scheduled_api_router(test_state(dir.path())),
+            axum::http::Request::get("/api/scheduled/pulses")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let pulses: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        let [watch] = pulses.as_slice() else {
+            panic!("expected one pulse, got {pulses:?}");
+        };
+        assert_eq!(
+            watch.get("last_outcome"),
+            Some(
+                &serde_json::json!({ "status": "completed", "at": "2099-01-01T12:00:00Z", "error": null })
+            )
+        );
+        assert_eq!(watch.get("current_run"), Some(&serde_json::Value::Null));
+    }
+
+    async fn stop_fire(state: &ScheduledApiState, pulse: &str, fire_id: &str) -> StatusCode {
+        tower::ServiceExt::oneshot(
+            scheduled_api_router(state.clone()),
+            axum::http::Request::post(format!(
+                "/api/scheduled/pulses/{pulse}/fires/{fire_id}/stop"
+            ))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
+    #[tokio::test]
+    async fn the_stop_endpoint_stops_a_fire_in_flight_and_404s_once_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let bus = residuum_bus::spawn_broker();
+        let fire = state.fires.begin(
+            "watch",
+            PulseFirePhase::Script,
+            None,
+            bus.publisher(),
+            Arc::clone(&state.registry),
+        );
+        let id = fire.id().to_string();
+
+        assert_eq!(stop_fire(&state, "other", &id).await, StatusCode::NOT_FOUND);
+        assert_eq!(
+            stop_fire(&state, "watch", "fire-unknown").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(stop_fire(&state, "watch", &id).await, StatusCode::ACCEPTED);
+        assert!(fire.stop_token().is_cancelled());
+
+        drop(fire);
+        assert_eq!(stop_fire(&state, "watch", &id).await, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -542,8 +816,14 @@ mod tests {
             .await;
 
         let pulses = vec![sample_pulse("email_check")];
-        let infos =
-            build_pulse_infos(&pulses, &[], &HashMap::new(), (Utc::now(), true), &state).await;
+        let infos = build_pulse_infos(
+            &pulses,
+            &[],
+            &RecordedPulseState::default(),
+            (Utc::now(), true),
+            &state,
+        )
+        .await;
         let pulse_info = infos.first().expect("one pulse info");
         let outcome = pulse_info
             .last_outcome
@@ -551,6 +831,11 @@ mod tests {
             .expect("should have an outcome");
         assert_eq!(outcome.status, SessionRunStatus::Failed);
         assert_eq!(outcome.error.as_deref(), Some("the model call timed out"));
+        assert_eq!(
+            outcome.run_id.as_deref(),
+            Some(info.run_id.as_str()),
+            "a session run's outcome names its run"
+        );
     }
 
     #[tokio::test]
@@ -563,8 +848,14 @@ mod tests {
                 .to_string(),
             kind: ProblemKind::RemovedOption,
         }];
-        let infos =
-            build_pulse_infos(&[], &problems, &HashMap::new(), (Utc::now(), true), &state).await;
+        let infos = build_pulse_infos(
+            &[],
+            &problems,
+            &RecordedPulseState::default(),
+            (Utc::now(), true),
+            &state,
+        )
+        .await;
         assert_eq!(infos.len(), 1);
         let info = infos.first().expect("one pulse info");
         assert_eq!(info.name, "wake_main");

@@ -4,8 +4,8 @@
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
-  import { formatLocation, locationAt, type Place } from "../../lib/routes";
-  import { scheduled } from "../../lib/scheduled.svelte";
+  import { formatLocation, locationAt, type AppLocation, type Place } from "../../lib/routes";
+  import { scheduled, stopTarget } from "../../lib/scheduled.svelte";
   import type { ScheduledCurrentRun } from "../../lib/types";
   import { Badge, Banner, Button, EmptyState, IconButton, Skeleton, Toggle } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
@@ -23,12 +23,15 @@
     pulseIcon,
     pulseNext,
     pulsesHeld,
+    runPhase,
+    runStarted,
   } from "./schedule-model";
 
   // An agent's pulses and scheduled actions: when each runs next and how it
-  // last went, a switch to pause a pulse, and Cancel for an action. The agent
-  // sets these up itself, so changing one means asking it in chat. Only a
-  // running agent answers for its schedule, so a stopped one offers Start.
+  // last went, what a run in flight is doing with Stop for it, a switch to
+  // pause a pulse, and Cancel for an action. The agent sets these up itself,
+  // so changing one means asking it in chat. Only a running agent answers for
+  // its schedule, so a stopped one offers Start.
 
   let { agent }: { agent: string } = $props();
   const label = $derived(hub.shownName(agent));
@@ -39,6 +42,15 @@
   const agentState = $derived(hub.displayStateOf(agent));
   const live = $derived(agentState === "running" || agentState === "stopping");
   const chat = $derived<Place>({ kind: "chat", agent });
+
+  /** A run's session in the context panel, over this place. */
+  function sessionLocation(runId: string): AppLocation {
+    return {
+      place: { kind: "schedule", agent },
+      panel: { kind: "session", agent, runId },
+      settings: null,
+    };
+  }
 
   let now = $state(Date.now());
   $effect(() => {
@@ -68,10 +80,51 @@
   }
 </script>
 
-{#snippet running(run: ScheduledCurrentRun)}
+<!-- `pulse` names the pulse whose run this is, `null` for an action's run. -->
+{#snippet running(run: ScheduledCurrentRun, pulse: string | null, title: string)}
   {@const note = overlapNote(run, now)}
-  <Badge tone="accent" dot>Running</Badge>
+  {@const earlier = run.overlap?.previous_fire_id ?? null}
+  <Badge tone="accent" dot>{runPhase(run)}</Badge>
   {#if note}<span class="overlap">{note}</span>{/if}
+  {#if pulse !== null && earlier !== null}
+    <Button
+      variant="quiet"
+      size="sm"
+      icon="stop"
+      aria-label="Stop the earlier run of {title}"
+      loading={scheduled.stopping.has(earlier)}
+      disabled={agentState !== "running"}
+      onclick={() => void scheduled.stopRun("pulse", pulse, { ...run, fire_id: earlier })}
+      >Stop earlier run</Button
+    >
+  {/if}
+{/snippet}
+
+{#snippet runLine(run: ScheduledCurrentRun)}
+  <p class="row-sub">
+    <span>{runStarted(run, now)}</span>
+    {#if run.run_id !== null}
+      {@const session = sessionLocation(run.run_id)}
+      <a href={formatLocation(session)} onclick={(event) => followLink(event, session)}
+        >Open session</a
+      >
+    {/if}
+  </p>
+{/snippet}
+
+{#snippet stop(kind: "pulse" | "action", name: string, title: string, run: ScheduledCurrentRun)}
+  {@const target = stopTarget(run)}
+  {#if target !== null}
+    <Button
+      variant="quiet"
+      size="sm"
+      icon="stop"
+      aria-label="Stop {title}"
+      loading={scheduled.stopping.has(target)}
+      disabled={agentState !== "running"}
+      onclick={() => void scheduled.stopRun(kind, name, run)}>Stop</Button
+    >
+  {/if}
 {/snippet}
 
 <PlaceHeader title={label} {agent} sub={agentPlaceLabel("schedule")}>
@@ -154,8 +207,11 @@
                   <div class="row-text">
                     <p class="row-title">
                       {title}
-                      {#if pulse.current_run}{@render running(pulse.current_run)}{/if}
+                      {#if pulse.current_run}
+                        {@render running(pulse.current_run, pulse.name, title)}
+                      {/if}
                     </p>
+                    {#if pulse.current_run}{@render runLine(pulse.current_run)}{/if}
                     {#if cadence || pulse.agent || model}
                       <p class="row-sub">
                         {#if cadence}<span>{cadence}</span>{/if}
@@ -164,11 +220,21 @@
                       </p>
                     {/if}
                     {#if pulse.last_outcome}
-                      <p
-                        class="row-sub"
-                        data-failed={pulse.last_outcome.status === "failed" || undefined}
-                      >
-                        {lastRun(pulse.last_outcome, now)}
+                      {@const last = pulse.last_outcome}
+                      <p class="row-sub">
+                        <span data-failed={last.status === "failed" || undefined}
+                          >{lastRun(last, now)}</span
+                        >
+                        {#if last.run_id === undefined}
+                          <span>No session ran</span>
+                        {:else}
+                          {@const session = sessionLocation(last.run_id)}
+                          <a
+                            href={formatLocation(session)}
+                            aria-label="Open session of the last run"
+                            onclick={(event) => followLink(event, session)}>Open session</a
+                          >
+                        {/if}
                       </p>
                     {/if}
                     {#each pulse.problems as problem (problem)}
@@ -177,6 +243,9 @@
                   </div>
                   <div class="row-end">
                     <span class="when">{pulseNext(pulse, agentState ?? "running", now)}</span>
+                    {#if pulse.current_run}
+                      {@render stop("pulse", pulse.name, title, pulse.current_run)}
+                    {/if}
                     <Toggle
                       label={title}
                       labelHidden
@@ -211,8 +280,11 @@
                   <div class="row-text">
                     <p class="row-title">
                       {title}
-                      {#if action.current_run}{@render running(action.current_run)}{/if}
+                      {#if action.current_run}
+                        {@render running(action.current_run, null, title)}
+                      {/if}
                     </p>
+                    {#if action.current_run}{@render runLine(action.current_run)}{/if}
                     {#if action.agent || model}
                       <p class="row-sub">
                         {#if action.agent}<span>Skill: {action.agent}</span>{/if}
@@ -225,6 +297,9 @@
                     <time class="when" datetime={action.run_at}
                       >{actionWhen(action, agentState ?? "running", now)}</time
                     >
+                    {#if action.current_run}
+                      {@render stop("action", action.name, title, action.current_run)}
+                    {/if}
                     <Button
                       variant="quiet"
                       size="sm"
@@ -338,7 +413,7 @@
     color: var(--color-text-3);
     font-size: var(--font-size-sm);
 
-    &[data-failed] {
+    [data-failed] {
       color: var(--color-err-text);
     }
   }
@@ -368,7 +443,8 @@
     font-size: var(--font-size-sm);
   }
 
-  /* Narrow: the next run and the control go under the text. */
+  /* Narrow: the next run and the controls go under the text, the next run at
+     the start and the controls at the end. */
   @container (max-width: 520px) {
     .row {
       grid-template-columns: 30px minmax(0, 1fr);
@@ -377,7 +453,10 @@
 
     .row-end {
       grid-column: 2;
-      justify-content: space-between;
+    }
+
+    .when {
+      margin-inline-end: auto;
     }
   }
 </style>

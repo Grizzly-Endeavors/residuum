@@ -1530,6 +1530,7 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
             (Method::GET, "status"),
             (Method::GET, "sessions"),
             (Method::GET, "scheduled/actions"),
+            (Method::POST, "scheduled/pulses/watch/fires/fire-1/stop"),
             (Method::POST, "agent-inbox"),
             (Method::GET, "a2a/agents"),
             (Method::GET, "a2a/status"),

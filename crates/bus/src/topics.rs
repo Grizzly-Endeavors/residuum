@@ -11,6 +11,7 @@ use super::events::{
     SessionStartFailedEvent, SpawnRequestEvent, TurnLifecycleEvent, UserInboxAddedEvent,
     WorkbenchEvent, WorkspaceEvent,
 };
+use super::pulse_fire::PulseFireEvent;
 use super::types::{EndpointName, NotifyName, TopicId};
 
 // ---------------------------------------------------------------------------
@@ -170,7 +171,8 @@ impl Carries<SessionEvent> for Sessions {
 }
 impl Carries<SessionStartFailedEvent> for Sessions {
     // The only word the owner gets that a start they are waiting on failed:
-    // a dropped one leaves the web UI's New session panel showing Starting.
+    // a dropped one leaves the web UI's New session panel showing Starting,
+    // and a pulse fire waiting on its session showing as running.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
@@ -222,6 +224,12 @@ impl Carries<ErrorEvent> for Notification {
 impl Carries<OutboundA2aTaskEvent> for Notification {
     // A dropped update would leave Activity's Running now showing a task
     // that already finished, with a Stop button that no longer applies.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+impl Carries<PulseFireEvent> for Notification {
+    // A dropped finish would leave the Schedule place showing a pulse as
+    // running, with a Stop control for a fire that already ended, and the
+    // event loop would never record the fire's outcome.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<PostTurnActivityEvent> for Notification {
@@ -448,6 +456,10 @@ mod tests {
         );
         assert_eq!(
             <Notification as Carries<OutboundA2aTaskEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+        assert_eq!(
+            <Notification as Carries<PulseFireEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
         assert_eq!(

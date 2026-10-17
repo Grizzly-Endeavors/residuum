@@ -158,6 +158,7 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   ],
   fetchScheduledPulses: [(a) => a.fetchScheduledPulses(AGENT)],
   setPulseEnabled: [(a) => a.setPulseEnabled(AGENT, "inbox_check", false)],
+  stopPulseFire: [(a) => a.stopPulseFire(AGENT, "inbox_check", "fire-1")],
   fetchScheduledActions: [(a) => a.fetchScheduledActions(AGENT)],
   cancelScheduledAction: [(a) => a.cancelScheduledAction(AGENT, "act-1")],
   fetchWorkbenchArtifacts: [(a) => a.fetchWorkbenchArtifacts()],

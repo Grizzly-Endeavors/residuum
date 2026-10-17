@@ -221,6 +221,7 @@ async fn route_webhook_content(
                 images: Vec::new(),
                 overlap: None,
                 carried_history: Vec::new(),
+                fire_id: None,
                 delivered_messages: Vec::new(),
             };
             if let Err(e) = state

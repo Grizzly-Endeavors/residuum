@@ -27,7 +27,7 @@ use residuum_proactivity::pulse::scheduler::PulseScheduler;
 
 use super::commands::handle_server_command;
 use super::http::{A2aServingDeps, build_agent_a2a, build_gateway_app, spawn_adapters};
-use super::pulse::{handle_pulse_result_event, handle_pulse_tick};
+use super::pulse::{handle_pulse_fire_event, handle_pulse_result_event, handle_pulse_tick};
 use super::turns::handle_inbound_message;
 
 use crate::{actions, idle, reload, web};
@@ -319,6 +319,7 @@ fn build_gateway_state(
         action_store: Arc::clone(&parts.action_store),
         layout: parts.layout.clone(),
         activity: Arc::clone(activity),
+        pulse_fires: Arc::clone(&core.pulse_fires),
     }
 }
 
@@ -527,6 +528,8 @@ struct BusInfrastructure {
     /// why this is a second, independent subscription rather than sharing
     /// one with `background::listener`.
     pulse_result_subscriber: residuum_bus::Subscriber<residuum_bus::AgentResultEvent>,
+    /// See `AgentRuntime::pulse_fire_subscriber`.
+    pulse_fire_subscriber: residuum_bus::Subscriber<residuum_bus::PulseFireEvent>,
     notify_handles: Vec<tokio::task::JoinHandle<()>>,
     bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -558,6 +561,13 @@ async fn spawn_bus_infrastructure(
         .subscribe(residuum_bus::topics::Background)
         .await
         .map_err(|e| FatalError::Gateway(format!("failed to subscribe to background: {e}")))?;
+    let pulse_fire_subscriber = core
+        .bus_handle
+        .subscribe(residuum_bus::topics::Notification(
+            residuum_bus::NotifyName::from(residuum_bus::SYSTEM_CHANNEL),
+        ))
+        .await
+        .map_err(|e| FatalError::Gateway(format!("failed to subscribe to pulse fires: {e}")))?;
 
     let notify_handles = crate::startup::spawn_notify_subscribers(
         &core.bus_handle,
@@ -589,6 +599,7 @@ async fn spawn_bus_infrastructure(
         agent_subscriber,
         error_subscriber,
         pulse_result_subscriber,
+        pulse_fire_subscriber,
         notify_handles,
         bus_infra_handles,
     })
@@ -667,6 +678,7 @@ async fn build_runtime(
         endpoint_registry: parts.endpoint_registry,
         error_subscriber: infra.error_subscriber,
         pulse_result_subscriber: infra.pulse_result_subscriber,
+        pulse_fire_subscriber: infra.pulse_fire_subscriber,
         last_output_endpoint: None,
         output_topic_override_tx: parts.output_topic_override_tx,
         reload_rx: receivers.reload,
@@ -674,7 +686,7 @@ async fn build_runtime(
         stop_rx: receivers.stop,
         agent_stop_rx: channels.agent_stop_rx,
         pulse_scheduler: PulseScheduler::with_state_path(&pulse_state_path),
-        pulse_scripts_stop: tokio_util::sync::CancellationToken::new(),
+        pulse_fires: Arc::clone(&core.pulse_fires),
         config_dir: core.config_dir.clone(),
         hub_dir: core.hub_dir.clone(),
         last_user_message_instant: None,
@@ -973,7 +985,7 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
         .await;
     // Before the sessions drain: a pulse script finishing during that wait
     // would otherwise start a new session in an agent that is stopping.
-    rt.pulse_scripts_stop.cancel();
+    rt.pulse_fires.stop_all();
     // Stop live sessions first, while the bus and its subscribers (notify
     // router included) are still running, so their results are recorded and
     // delivered rather than left for startup recovery on the next boot.
@@ -1331,6 +1343,8 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
             }
 
             result = rt.pulse_result_subscriber.recv() => handle_pulse_result_event(result, &mut rt),
+
+            fire = rt.pulse_fire_subscriber.recv() => handle_pulse_fire_event(fire, &mut rt),
 
             _ = action_tick.tick() => check_and_run_due_actions(&mut rt).await,
 

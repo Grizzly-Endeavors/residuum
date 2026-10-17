@@ -39,6 +39,7 @@ export type { RepoStats } from "./RepoStats";
 export type { RestoreOutcome } from "./RestoreOutcome";
 export type { UndoOutcome } from "./UndoOutcome";
 export type { CheckpointTrigger } from "./CheckpointTrigger";
+export type { PulseFirePhase } from "./PulseFirePhase";
 export type { PulseOverlap } from "./PulseOverlap";
 export type { PulseInfo } from "./PulseInfo";
 export type { ActionInfo } from "./ActionInfo";

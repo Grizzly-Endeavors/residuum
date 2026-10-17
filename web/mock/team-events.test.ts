@@ -396,6 +396,32 @@ describe("the team event routes", () => {
     ]);
   });
 
+  it("tells a pulse fire that ran no session when it ends, pointing at the Schedule", async () => {
+    const fire = await post("/api/mock/pulse-fire?agent=atlas", { pulse: "inbox_check" });
+    expect(fire.status, JSON.stringify(fire.body)).toBe(200);
+    const { fire_id: fireId } = fire.body as { fire_id: string };
+    expect(
+      (
+        await post("/api/mock/pulse-fire/finish?agent=atlas", {
+          fire_id: fireId,
+          status: "failed",
+          error: "check_inbox.sh exited with status 2",
+        })
+      ).status,
+    ).toBe(200);
+
+    const runs = (await fetchPage()).events.filter(
+      (event) => event.kind === "scheduled_run_finished",
+    );
+    expect(runs.map((event) => [event.level, event.summary, event.target])).toEqual([
+      [
+        "error",
+        'atlas\'s pulse "inbox_check" failed: check_inbox.sh exited with status 2',
+        { kind: "agent_place", agent: "atlas", place: "schedule" },
+      ],
+    ]);
+  });
+
   it("sends each new entry to the hub socket under the boot id hub_boot announced", async () => {
     const socket = await mock.openSocket("/api/hub/ws");
     const boot = await socket.nextOfType("hub_boot");

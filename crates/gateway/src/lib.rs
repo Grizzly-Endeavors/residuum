@@ -7,6 +7,7 @@ mod idle;
 mod launcher;
 mod memory;
 pub(crate) mod post_turn;
+pub mod pulse_fires;
 pub(crate) mod queued_messages;
 mod reload;
 pub(crate) mod sessions;

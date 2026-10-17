@@ -141,9 +141,18 @@ pub struct SessionRegistry {
     /// own address after waking, so a notification meant for a different
     /// address just costs a cheap recheck.
     cleared: Notify,
+    /// Stop tokens pulse fires offer the sessions they ask for, before those
+    /// sessions register here.
+    fire_stops: crate::fire_stops::FireStops,
 }
 
 impl SessionRegistry {
+    /// The stop tokens pulse fires offer the sessions they ask for.
+    #[must_use]
+    pub fn fire_stops(&self) -> &crate::fire_stops::FireStops {
+        &self.fire_stops
+    }
+
     /// Create an empty registry with no persistence: resume points live only
     /// in memory and are lost on restart. Used by every unit test, and by
     /// any caller that doesn't need resume points to survive a process exit.

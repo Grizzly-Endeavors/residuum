@@ -73,6 +73,7 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
         action_store: Arc::clone(&state.action_store),
         layout: state.layout.clone(),
         tz: state.tz,
+        fires: Arc::clone(&state.pulse_fires),
     });
 
     FeatureRouters {

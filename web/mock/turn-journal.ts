@@ -110,6 +110,7 @@ function turnOf(frame: ServerMessage): string | null {
     case "session_command_failed":
     case "session_outbound_a2a_task":
     case "session_start_failed":
+    case "pulse_fire_changed":
     case "artifact_updated":
     case "artifact_removed":
     case "workspace_changed":

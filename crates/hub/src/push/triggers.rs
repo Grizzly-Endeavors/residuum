@@ -299,6 +299,7 @@ impl Rules {
             | AgentChangeKind::SessionStarted(_)
             | AgentChangeKind::SessionStateChanged { .. }
             | AgentChangeKind::SessionCompleted { .. }
+            | AgentChangeKind::PulseFireFinished { .. }
             | AgentChangeKind::WatchedPathChanged(_) => None,
         }
     }

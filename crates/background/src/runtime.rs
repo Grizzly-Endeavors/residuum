@@ -104,9 +104,15 @@ pub struct SessionSpawnRequest {
     /// The conversation this session replies to, for a conversation-triggered
     /// session. `None` for every other trigger.
     pub conversation_target: Option<ConversationTarget>,
-    /// Set when this is a pulse fire that started while its previous run was
-    /// still live. `None` for every other trigger. See [`PulseOverlap`].
+    /// Set when this is a pulse fire that started while an earlier fire of
+    /// the same pulse was still in flight. `None` for every other session.
+    /// See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,
+    /// The token the pulse fire that asked for this session offered (see
+    /// [`crate::fire_stops`]), which becomes the parent of the session's own
+    /// stop token, so stopping the fire stops the session. `None` for every
+    /// other session, which gets a fresh token.
+    pub stop: Option<CancellationToken>,
 }
 
 /// Shared handles [`SessionRuntime::new`] stores as-is, grouped to keep its
@@ -229,7 +235,7 @@ impl SessionRuntime {
             overlap: req.overlap,
         };
 
-        let stop_token = CancellationToken::new();
+        let stop_token = req.stop.unwrap_or_default();
         let interrupt_rx = match self.registry.register(info.clone(), stop_token.clone()) {
             Ok(rx) => rx,
             Err(e) => {
@@ -459,6 +465,7 @@ fn deliver_losing_spawn_input(
                 images: config.images.clone(),
                 overlap: None,
                 carried_history: Vec::new(),
+                fire_id: None,
                 delivered_messages: Vec::new(),
             };
             let registry = Arc::clone(registry);
@@ -1887,6 +1894,7 @@ mod tests {
             },
             conversation_target: None,
             overlap: None,
+            stop: None,
         }
     }
 
@@ -4235,6 +4243,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_whose_fire_was_stopped_ends_before_its_first_turn() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let fire_stop = CancellationToken::new();
+        let mut request = sample_request("scheduled-watch-stopped");
+        request.spawner = None;
+        request.stop = Some(fire_stop.child_token());
+        fire_stop.cancel();
+
+        runtime.spawn(request, Some(make_resources("never asked")));
+
+        let collected = collect_until_completed(&mut events).await;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        assert!(
+            !labels.iter().any(|label| label == "turn_started"),
+            "no turn starts, so no model is called: {labels:?}"
+        );
+        assert_eq!(
+            labels.last().map(String::as_str),
+            Some("completed:cancelled"),
+            "{labels:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_run_publishes_lifecycle_and_turn_events_in_order() {
         let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
         let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
@@ -4641,7 +4675,7 @@ mod tests {
         // the second finds that run live and is delivered into it.
         let gate = Gate::closed("the resumed run's first model call");
         runtime.spawn(
-            crate::listener::session_spawn_request(winner, None),
+            crate::listener::session_spawn_request(winner, None, None),
             Some(make_gated_resources("done", &gate)),
         );
         gate.until_held(1).await;

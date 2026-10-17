@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use crate::fork_failure::owner_start_failure_message;
+use crate::fork_failure::{owner_start_failure_message, pulse_start_failure_message};
 use crate::registry::{DeliverOutcome, SessionRegistry};
 use crate::runtime::SessionSpawnRequest;
 use crate::spawn_context::{SpawnContext, build_spawn_resources};
@@ -67,12 +67,18 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
                 let trigger = event.source.clone();
+                let pulse_address =
+                    matches!(event.source, EventTrigger::Pulse).then(|| event.address.clone());
                 let owner_start = super::owner_session::is_owner_start(&event).then(|| {
                     let resume = ctx.session_registry.resume_point(&event.address).is_some();
                     (event.address.clone(), resume)
                 });
-                match handle_spawn_request(&ctx, event).await {
-                    Ok(()) => {
+                let outcome = handle_spawn_request(&ctx, event).await;
+                if let (Err(e), Some(address)) = (&outcome, pulse_address) {
+                    publish_pulse_start_failed(&ctx.publisher, address, &source_label, e).await;
+                }
+                match outcome {
+                    Ok(SpawnOutcome::Accepted) => {
                         if spawn_failures.remove(&source_label).is_some() {
                             tracing::info!(
                                 source = %source_label,
@@ -80,6 +86,9 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                             );
                         }
                     }
+                    // A stop is not a recovery: a fork failure on record for
+                    // this pulse stays deduplicated.
+                    Ok(SpawnOutcome::FireStopped) => {}
                     Err(e) => match owner_start {
                         Some((address, resume)) => {
                             notify_owner_start_failed(&ctx.publisher, &address, resume, &e).await;
@@ -105,6 +114,30 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
         }
     }
     tracing::info!("spawn listener shutting down");
+}
+
+/// Tell the pulse fire waiting for its session at `address` to register that
+/// it never will, so the fire ends as failed instead of showing as running.
+/// The event carries a plain-language sentence for the Schedule place and
+/// the full cause chain for the logs.
+async fn publish_pulse_start_failed(
+    publisher: &Publisher,
+    address: SessionAddress,
+    source_label: &str,
+    error: &anyhow::Error,
+) {
+    let pulse = source_label
+        .split_once(':')
+        .map_or(source_label, |(_, name)| name);
+    let event = SessionStartFailedEvent {
+        address,
+        error: pulse_start_failure_message(pulse, error),
+        error_details: Some(format!("{error:#}")),
+        owner_start: false,
+    };
+    if let Err(e) = publisher.publish(topics::Sessions, event).await {
+        tracing::warn!(source = %source_label, error = %e, "failed to publish a pulse session's start failure");
+    }
 }
 
 /// Record a spawn failure, deduplicated for scheduled triggers (pulses and
@@ -194,6 +227,7 @@ async fn notify_owner_start_failed(
                 address: address.clone(),
                 error: message.clone(),
                 error_details: Some(details),
+                owner_start: true,
             },
         )
         .await
@@ -209,6 +243,17 @@ async fn notify_owner_start_failed(
     {
         tracing::warn!(address = %address, error = %e, "failed to publish an owner session's start-failure notice");
     }
+}
+
+/// What became of a spawn request that didn't fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnOutcome {
+    /// Forked, delivered into the run already live at its address, or
+    /// deferred until the run completing there clears.
+    Accepted,
+    /// A pulse fire's request whose fire was stopped, or had ended, before
+    /// its session was forked: nothing forked.
+    FireStopped,
 }
 
 /// Handle a single spawn request: guard against a live or tearing-down
@@ -229,7 +274,7 @@ async fn notify_owner_start_failed(
 fn handle_spawn_request<'a>(
     ctx: &'a Arc<SpawnContext>,
     event: SpawnRequestEvent,
-) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<SpawnOutcome, anyhow::Error>> + Send + 'a>> {
     // Written as a plain fn returning a boxed future, rather than `async
     // fn`, because the `Completing` branch below recurses into this same
     // function (via a detached task) — an `async fn` calling itself, even
@@ -260,8 +305,20 @@ fn handle_spawn_request<'a>(
                         // and recurses through this same deferral if so,
                         // instead of blindly clobbering a run that won the
                         // race.
+                        let pulse_address = matches!(event.source, EventTrigger::Pulse)
+                            .then(|| event.address.clone());
+                        let source_label = event.source_label.clone();
                         let resume = ctx.session_registry.resume_point(&event.address).is_some();
                         if let Err(e) = handle_spawn_request(&ctx, event).await {
+                            if let Some(address) = pulse_address {
+                                publish_pulse_start_failed(
+                                    &ctx.publisher,
+                                    address,
+                                    &source_label,
+                                    &e,
+                                )
+                                .await;
+                            }
                             if let Some(address) = owner_address {
                                 notify_owner_start_failed(&ctx.publisher, &address, resume, &e)
                                     .await;
@@ -273,7 +330,7 @@ fn handle_spawn_request<'a>(
                             }
                         }
                     });
-                    return Ok(());
+                    return Ok(SpawnOutcome::Accepted);
                 }
                 SessionState::Forking
                 | SessionState::Queued
@@ -298,7 +355,8 @@ fn handle_spawn_request<'a>(
                         &ctx.session_registry,
                         &ctx.publisher,
                         event,
-                    );
+                    )
+                    .map(|()| SpawnOutcome::Accepted);
                 }
                 SessionState::Completed => {}
             }
@@ -498,10 +556,31 @@ pub(crate) fn deliver_each_message(
 
 /// Build resources and hand the run to `SessionRuntime`, once
 /// `handle_spawn_request` has confirmed the address is free to take it.
+///
+/// A pulse fire's request forks only while the fire is still going: its
+/// session's stop token is claimed from the fire (see
+/// [`crate::fire_stops`]), and a fire that was stopped or has ended forks
+/// nothing and returns [`SpawnOutcome::FireStopped`]. The fire already
+/// knows from withdrawing its offer, so that is logged at `debug` only.
 async fn fork_and_spawn(
     ctx: &Arc<SpawnContext>,
     event: SpawnRequestEvent,
-) -> Result<(), anyhow::Error> {
+) -> Result<SpawnOutcome, anyhow::Error> {
+    let stop = match &event.fire_id {
+        Some(fire_id) => {
+            let Some(stop) = ctx.session_registry.fire_stops().claim(fire_id) else {
+                tracing::debug!(
+                    address = %event.address,
+                    source = %event.source_label,
+                    fire = %fire_id,
+                    "pulse fire stopped before its session was forked; not forking it"
+                );
+                return Ok(SpawnOutcome::FireStopped);
+            };
+            Some(stop)
+        }
+        None => None,
+    };
     let skill = event.skill.as_ref().map(|s| s.as_ref().to_string());
     let category = SessionCategory::from_trigger(&event.source);
 
@@ -520,7 +599,7 @@ async fn fork_and_spawn(
     )
     .await?;
 
-    let request = session_spawn_request(event, Some(spawned.resolved_model.clone()));
+    let request = session_spawn_request(event, Some(spawned.resolved_model.clone()), stop);
 
     let log_address = request.address.clone();
     let log_source_label = request.source_label.clone();
@@ -532,14 +611,16 @@ async fn fork_and_spawn(
         source = %log_source_label,
         "forked session"
     );
-    Ok(())
+    Ok(SpawnOutcome::Accepted)
 }
 
 /// The run `event` asks the runtime for, on `resolved_model` (the
-/// `provider/model` id its resources were built for).
+/// `provider/model` id its resources were built for), stopped by `stop`
+/// when it belongs to a pulse fire.
 pub(crate) fn session_spawn_request(
     event: SpawnRequestEvent,
     resolved_model: Option<String>,
+    stop: Option<tokio_util::sync::CancellationToken>,
 ) -> SessionSpawnRequest {
     SessionSpawnRequest {
         address: event.address,
@@ -562,6 +643,7 @@ pub(crate) fn session_spawn_request(
         },
         conversation_target: event.conversation,
         overlap: event.overlap,
+        stop,
     }
 }
 
@@ -624,6 +706,7 @@ mod tests {
             inbound: Some(inbound),
             overlap: None,
             carried_history: Vec::new(),
+            fire_id: None,
             delivered_messages: Vec::new(),
         }
     }
@@ -847,6 +930,44 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_pulse_start_failure_names_the_address_in_plain_words_with_the_chain() {
+        let bus = residuum_bus::spawn_broker();
+        let mut sub: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+
+        let error = Err::<(), _>(anyhow::anyhow!("not in the skill index"))
+            .context(crate::fork_failure::ForkFailure::Skill {
+                name: "ghost".to_string(),
+            })
+            .unwrap_err();
+        publish_pulse_start_failed(
+            &bus.publisher(),
+            SessionAddress::from("scheduled-email-check-0a1b"),
+            "pulse:email_check",
+            &error,
+        )
+        .await;
+
+        let failed = next_event("the start failure", &mut sub).await;
+        assert_eq!(
+            failed,
+            SessionStartFailedEvent {
+                address: SessionAddress::from("scheduled-email-check-0a1b"),
+                error: "The pulse \"email_check\" couldn't start its session because the skill \
+                        \"ghost\" couldn't be loaded. Check that the skill is still installed."
+                    .to_string(),
+                error_details: Some(
+                    "failed to activate skill 'ghost' for sub-agent: not in the skill index"
+                        .to_string()
+                ),
+                owner_start: false,
+            },
+            "a plain sentence for the Schedule place, the chain for the logs, and never the \
+             web UI's start map"
+        );
+    }
+
     /// A resume of `address` by `delivered`, as `publish_resume` builds it.
     fn resume_event(address: &str, delivered: Vec<AgentMessageEvent>) -> SpawnRequestEvent {
         SpawnRequestEvent {
@@ -866,6 +987,7 @@ mod tests {
             images: Vec::new(),
             overlap: None,
             carried_history: Vec::new(),
+            fire_id: None,
             delivered_messages: delivered,
         }
     }
@@ -1144,6 +1266,142 @@ mod tests {
             conversation: None,
         }
         .into_spawn_event()
+    }
+
+    /// A fire of the pulse `watch` asking for its session, as fire `fire-1`.
+    fn pulse_fire_request() -> SpawnRequestEvent {
+        SpawnRequestEvent {
+            address: SessionAddress::from("scheduled-watch-0a1b"),
+            source_label: "pulse:watch".to_string(),
+            source: EventTrigger::Pulse,
+            spawner: None,
+            fire_id: Some("fire-1".to_string()),
+            ..owner_start()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pulse_fire_stopped_before_the_fork_forks_nothing() {
+        let bus = residuum_bus::spawn_broker();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let fire_stop = CancellationToken::new();
+        ctx.session_registry
+            .fire_stops()
+            .offer("fire-1", fire_stop.clone());
+        fire_stop.cancel();
+
+        let request = pulse_fire_request();
+        let address = request.address.clone();
+        // With no working provider, a fork that went ahead would fail here.
+        let outcome = handle_spawn_request(&ctx, request)
+            .await
+            .expect("a stopped fire's request is dropped, not failed");
+
+        assert_eq!(outcome, SpawnOutcome::FireStopped);
+
+        assert!(ctx.session_registry.get(&address).is_none());
+        assert!(
+            !ctx.session_registry.fire_stops().withdraw("fire-1"),
+            "no session claimed the fire's stop token"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stopped_pulse_fire_is_no_recovery_from_the_pulse_s_fork_failure() {
+        let log = residuum_core::testing::log::EventLog::default();
+        let _capture = log.capture();
+        let bus = residuum_bus::spawn_broker();
+        let mut notices: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
+        // A fire of `watch` with no fire to claim from, whose fork fails on
+        // its provider.
+        let failing = || SpawnRequestEvent {
+            fire_id: None,
+            ..pulse_fire_request()
+        };
+        let stopped_fire = CancellationToken::new();
+        ctx.session_registry
+            .fire_stops()
+            .offer("fire-2", stopped_fire.clone());
+        stopped_fire.cancel();
+        let publisher = bus.publisher();
+
+        publisher
+            .publish(topics::Background, failing())
+            .await
+            .unwrap();
+        let first = next_event("the pulse's first fork failure notice", &mut notices).await;
+        assert!(first.message.contains("\"watch\""), "{}", first.message);
+
+        publisher
+            .publish(
+                topics::Background,
+                SpawnRequestEvent {
+                    fire_id: Some("fire-2".to_string()),
+                    ..pulse_fire_request()
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(topics::Background, failing())
+            .await
+            .unwrap();
+        // A different pulse failing after them: its notice is the next one
+        // only when the repeat of `watch`'s failure published none.
+        publisher
+            .publish(
+                topics::Background,
+                SpawnRequestEvent {
+                    address: SessionAddress::from("scheduled-other-0a1b"),
+                    source_label: "pulse:other".to_string(),
+                    fire_id: None,
+                    ..pulse_fire_request()
+                },
+            )
+            .await
+            .unwrap();
+        let next = next_event("the other pulse's fork failure notice", &mut notices).await;
+        assert!(
+            next.message.contains("\"other\""),
+            "the stopped fire cleared watch's failure, so its repeat noticed again: {}",
+            next.message
+        );
+
+        assert!(
+            log.matching("recovered after previously failing")
+                .is_empty()
+        );
+        let stopped: Vec<_> = log
+            .matching("pulse fire stopped before its session was forked")
+            .into_iter()
+            .map(|event| event.level)
+            .collect();
+        assert_eq!(stopped, vec![tracing::Level::DEBUG]);
+    }
+
+    #[tokio::test]
+    async fn a_pulse_fire_still_going_hands_its_stop_token_to_the_fork() {
+        let bus = residuum_bus::spawn_broker();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        ctx.session_registry
+            .fire_stops()
+            .offer("fire-1", CancellationToken::new());
+
+        let outcome = handle_spawn_request(&ctx, pulse_fire_request()).await;
+
+        assert!(
+            outcome.is_err(),
+            "the fork went ahead, and failed on its provider"
+        );
+        assert!(
+            ctx.session_registry.fire_stops().withdraw("fire-1"),
+            "the fork claimed the fire's stop token before building the session"
+        );
     }
 
     /// A resume point at `address`, as a finished run of an owner session

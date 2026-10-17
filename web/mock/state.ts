@@ -371,7 +371,7 @@ export function createState(
     inboxItems: [],
     inboxArchive: [],
     agentInbox: [],
-    scheduled: { pulses: [], actions: [] },
+    scheduled: { pulses: [], actions: [], fires: [], lastFires: {} },
     update: { latest: null, lastChecked: null },
     cloud: { tunnel: null, viaTunnel: false, signIns: [], signInsStarted: 0 },
     pushDevices: [],

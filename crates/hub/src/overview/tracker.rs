@@ -129,7 +129,9 @@ fn parts_changed_by(kind: &AgentChangeKind) -> &'static [Part] {
         // threshold itself, for the moment before the tracker announces it.
         AgentChangeKind::OutboundTaskChanged(_) => &[Part::OutboundProblems],
         // A turn changes the last message, which `turn_ended` records. No
-        // other part of the overview reads the rest.
-        AgentChangeKind::TurnEnded(_) => &[],
+        // other part of the overview reads the rest. A finished pulse fire
+        // is recorded in `pulse_state.json`, which arrives as a
+        // `WatchedPathChanged` of its own.
+        AgentChangeKind::TurnEnded(_) | AgentChangeKind::PulseFireFinished { .. } => &[],
     }
 }

@@ -6,10 +6,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use residuum_bus::session::{SessionCategory, SessionState};
+use residuum_bus::session::{SessionCategory, SessionInfo, SessionState};
 use residuum_bus::usage::SessionUsageTotals;
 use residuum_bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
-use residuum_bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
+use residuum_bus::{
+    PulseFireChange, PulseFireEvent, PulseFireOutcome, PulseFirePhase, PulseFireRun,
+    PulseFireStatus, PulseOverlap, ReloadOutcome, ReloadedFiles, TurnOrigin,
+};
 use residuum_inference::{AgentSender, ImageData, MessageSender};
 
 /// Messages sent from a WebSocket client to the server.
@@ -241,6 +244,30 @@ pub struct OutboundA2aTaskSummary {
     pub unreachable_since: Option<DateTime<Utc>>,
 }
 
+impl From<PulseFireEvent> for ServerMessage {
+    fn from(event: PulseFireEvent) -> Self {
+        let last_outcome = match &event.change {
+            PulseFireChange::Finished {
+                outcome,
+                session_run_id,
+            } => Some(ScheduledRunOutcome {
+                run_id: session_run_id.clone(),
+                ..outcome.into()
+            }),
+            PulseFireChange::Started
+            | PulseFireChange::SessionRequested
+            | PulseFireChange::SessionStarted
+            | PulseFireChange::Ended => None,
+        };
+        Self::PulseFireChanged {
+            pulse: event.pulse,
+            fire_id: event.fire_id,
+            current_run: event.current_run.map(Into::into),
+            last_outcome,
+        }
+    }
+}
+
 impl From<&residuum_bus::remote_task::TrackedTask> for OutboundA2aTaskSummary {
     fn from(task: &residuum_bus::remote_task::TrackedTask) -> Self {
         Self {
@@ -293,26 +320,101 @@ impl SessionRunStatus {
     }
 }
 
+impl From<PulseFireStatus> for SessionRunStatus {
+    /// A pulse fire's status in a session run's terms: a stopped fire reads
+    /// as `cancelled`, like a stopped session.
+    fn from(status: PulseFireStatus) -> Self {
+        match status {
+            PulseFireStatus::Ok => Self::Completed,
+            PulseFireStatus::Failed => Self::Failed,
+            PulseFireStatus::Stopped => Self::Cancelled,
+        }
+    }
+}
+
 /// One run's outcome, for a pulse's or action's "last outcome" in the
-/// Schedule place.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// Schedule place: the session store's last completed run, or, for a pulse,
+/// a newer fire that ended without a session run (a `script_only` fire, one
+/// stopped during its scripts, or one whose session couldn't start).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledRunOutcome {
     pub status: SessionRunStatus,
+    /// When the run finished.
     #[ts(type = "string")]
     pub at: DateTime<Utc>,
     pub error: Option<String>,
+    /// The session run this was, which the session panel opens. Absent for
+    /// a pulse fire that ran no session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
-/// A pulse's or action's currently live run, if it has one, in the
-/// Schedule place.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// A pulse fire's outcome, with no session run: the fire's session run id,
+/// when it had one, is the event's to add.
+impl From<&PulseFireOutcome> for ScheduledRunOutcome {
+    fn from(outcome: &PulseFireOutcome) -> Self {
+        Self {
+            status: outcome.status.into(),
+            at: outcome.at,
+            error: outcome.error.clone(),
+            run_id: None,
+        }
+    }
+}
+
+/// A pulse's or action's run in flight, if it has one, in the Schedule
+/// place: a pulse fire running its task scripts or its session, or a live
+/// scheduled session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledCurrentRun {
-    pub address: String,
-    pub run_id: String,
-    /// Set when this run started while its previous run was still going.
-    pub overlap: Option<residuum_bus::PulseOverlap>,
+    /// The pulse fire's id, which `POST
+    /// /api/agents/{name}/scheduled/pulses/{pulse}/fires/{fire_id}/stop`
+    /// takes. `None` for a scheduled action's run and for a pulse session no
+    /// fire tracks (one resumed by a message to its address): stop those
+    /// through their session.
+    pub fire_id: Option<String>,
+    pub phase: PulseFirePhase,
+    /// When the fire (or the session) started.
+    #[ts(type = "string")]
+    pub started_at: DateTime<Utc>,
+    /// The session's address, once the fire has asked for its session.
+    pub address: Option<String>,
+    /// The session's run id, once the session has registered.
+    pub run_id: Option<String>,
+    /// Set when this run started while an earlier run of the same pulse was
+    /// still going.
+    pub overlap: Option<PulseOverlap>,
+}
+
+impl From<PulseFireRun> for ScheduledCurrentRun {
+    fn from(run: PulseFireRun) -> Self {
+        Self {
+            fire_id: run.fire_id,
+            phase: run.phase,
+            started_at: run.started_at,
+            address: run.address.map(|address| address.to_string()),
+            run_id: run.run_id,
+            overlap: run.overlap,
+        }
+    }
+}
+
+impl From<&SessionInfo> for ScheduledCurrentRun {
+    /// A live scheduled session no pulse fire tracks: a scheduled action's
+    /// run, or a resumed pulse session.
+    fn from(info: &SessionInfo) -> Self {
+        Self {
+            fire_id: None,
+            phase: PulseFirePhase::Session,
+            started_at: info.started_at,
+            address: Some(info.address.to_string()),
+            run_id: Some(info.run_id.clone()),
+            overlap: info.overlap.clone(),
+        }
+    }
 }
 
 /// One pulse, as listed by `GET /api/agents/{name}/scheduled/pulses`.
@@ -944,6 +1046,26 @@ pub enum ServerMessage {
     /// A task sent to a remote agent was recorded, changed state, or was
     /// stopped. A task no longer `open` leaves Activity's list.
     SessionOutboundA2aTask { task: OutboundA2aTaskSummary },
+    /// A pulse fire started, moved from its scripts to its session, or
+    /// finished. Carries the pulse's run state as `GET
+    /// /api/agents/{name}/scheduled/pulses` would now report it, for the
+    /// Schedule place to merge into its row for `pulse`.
+    PulseFireChanged {
+        /// The pulse's name (`PulseInfo.name`).
+        pulse: String,
+        /// The fire that changed.
+        fire_id: String,
+        /// The pulse's run in flight after the change, as
+        /// `PulseInfo.current_run`: the newest fire of the pulse still in
+        /// flight, which can be another fire than `fire_id`. `null` when
+        /// nothing of the pulse is running.
+        current_run: Option<ScheduledCurrentRun>,
+        /// The pulse's new `PulseInfo.last_outcome`, when the fire finished
+        /// with one. `null` leaves the last outcome as it was: the fire
+        /// started or moved on, or ended without an outcome to show (the
+        /// agent is stopping).
+        last_outcome: Option<ScheduledRunOutcome>,
+    },
     /// A workbench artifact's page was created or modified.
     ArtifactUpdated {
         /// Artifact name, as used in `/workbench/{name}`.
@@ -976,6 +1098,53 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finished_fire(session_run_id: Option<&str>) -> PulseFireEvent {
+        PulseFireEvent {
+            pulse: "watch".to_string(),
+            fire_id: "fire-1".to_string(),
+            change: PulseFireChange::Finished {
+                outcome: PulseFireOutcome {
+                    status: PulseFireStatus::Ok,
+                    at: DateTime::parse_from_rfc3339("2099-01-01T12:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    error: None,
+                },
+                session_run_id: session_run_id.map(str::to_string),
+            },
+            current_run: None,
+        }
+    }
+
+    #[test]
+    fn a_finished_fire_s_frame_names_its_session_run_only_when_it_had_one() {
+        let last_outcome = |id| {
+            serde_json::to_value(ServerMessage::from(finished_fire(id)))
+                .unwrap()
+                .get("last_outcome")
+                .cloned()
+        };
+
+        assert_eq!(
+            last_outcome(Some("run-1")),
+            Some(serde_json::json!({
+                "status": "completed",
+                "at": "2099-01-01T12:00:00Z",
+                "error": null,
+                "run_id": "run-1",
+            }))
+        );
+        assert_eq!(
+            last_outcome(None),
+            Some(serde_json::json!({
+                "status": "completed",
+                "at": "2099-01-01T12:00:00Z",
+                "error": null,
+            })),
+            "a fire that ran no session has no run_id"
+        );
+    }
 
     #[test]
     fn client_message_deserialize_send_message() {

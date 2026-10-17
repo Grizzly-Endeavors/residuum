@@ -641,10 +641,16 @@ pub struct SpawnRequestEvent {
     /// buffered message's images); empty for every other trigger, which have
     /// no images of their own.
     pub images: Vec<ImageData>,
-    /// Set when this is a pulse fire that started while its previous run was
-    /// still live in the registry. `None` for every other trigger, and for a
-    /// pulse fire that found no live previous run. See [`PulseOverlap`].
+    /// Set when this is a pulse fire that started while an earlier fire of
+    /// the same pulse was still in flight (see [`PulseOverlap`]). `None` for
+    /// every other request.
     pub overlap: Option<PulseOverlap>,
+    /// The pulse fire asking for this session, whose stop token the spawn
+    /// listener claims from the session registry as the parent of the
+    /// session's own: a fire stopped before the fork forks nothing, and one
+    /// stopped after it ends the run before its first turn. `None` for every
+    /// other request.
+    pub fire_id: Option<String>,
     /// Main's saved conversation, for a fork of it (the owner's
     /// `/multitask`): the new run sends these to the model ahead of its task
     /// on every turn, but keeps them out of its own transcript and memory.
@@ -659,16 +665,23 @@ pub struct SpawnRequestEvent {
     pub delivered_messages: Vec<AgentMessageEvent>,
 }
 
-/// Marks a pulse run that started while its previous run was still going
-/// (still `forking`/`queued`/`running`/`idle`/`completing` in the registry).
-/// The new run is never skipped, blocked, or cancelled for this — it starts
-/// normally — but this flag makes the overlap visible in the Schedule place
-/// and on the run itself in the session panel.
+/// Marks a pulse fire that started while an earlier fire of the same pulse
+/// was still in flight: running its task scripts, waiting for its session,
+/// or with its session still `forking`/`queued`/`running`/`idle`/`completing`
+/// in the registry. The new fire is never skipped, blocked, or cancelled for
+/// this — it starts normally — but this flag makes the overlap visible in
+/// the Schedule place and on the run itself in the session panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct PulseOverlap {
-    /// Run id of the still-live previous run this one overlapped with.
-    pub previous_run_id: String,
+    /// Session run id of the earlier fire as of when this fire began: a
+    /// snapshot, never filled in later. `None` when that fire had not started
+    /// its session by then (`previous_fire_id` finds it).
+    pub previous_run_id: Option<String>,
+    /// Id of the earlier fire, which its Stop endpoint takes. `None` when
+    /// the earlier run is a session no fire tracks.
+    #[serde(default)]
+    pub previous_fire_id: Option<String>,
     /// When that previous run started, so the overlap can be described as
     /// "still going after N minutes" without a second lookup.
     #[ts(type = "string")]
@@ -934,15 +947,21 @@ pub enum SessionEventKind {
     },
 }
 
-/// A start or a resume of a session the owner started by hand (from the web
-/// UI's New session panel, `POST /api/sessions` without the
-/// `X-Residuum-Artifact` header, or `/multitask`) was accepted but couldn't
-/// be forked, so no run was registered for it. For a first start no run
-/// exists at the address; a failed resume leaves the address's earlier runs.
+/// The spawn listener couldn't fork the session a [`SpawnRequestEvent`]
+/// asked for, so no run was registered for it. Published for two
+/// requesters that wait on the session and would otherwise wait forever:
+///
+/// - a start or a resume of a session the owner started by hand (from the
+///   web UI's New session panel, `POST /api/sessions` without the
+///   `X-Residuum-Artifact` header, or `/multitask`), with `owner_start` set.
+///   For a first start no run exists at the address; a failed resume leaves
+///   the address's earlier runs. The web UI matches it to the start it is
+///   waiting on by `address`, and only these reach it.
+/// - a pulse fire's session, which the fire follows to show the pulse as
+///   running in the Schedule place.
 ///
 /// Carried on [`super::topics::Sessions`] beside [`SessionEvent`], which needs
-/// a run id a failed fork never has. The web UI matches it to the start it is
-/// waiting on by `address`.
+/// a run id a failed fork never has.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStartFailedEvent {
     /// Address the start was given, the one its caller was told.
@@ -952,6 +971,9 @@ pub struct SessionStartFailedEvent {
     pub error: String,
     /// Full technical cause chain, for a Details disclosure or the logs.
     pub error_details: Option<String>,
+    /// Whether the owner started (or resumed) this session by hand, so the
+    /// web UI's socket forwards it as a `session_start_failed` frame.
+    pub owner_start: bool,
 }
 
 // ---------------------------------------------------------------------------

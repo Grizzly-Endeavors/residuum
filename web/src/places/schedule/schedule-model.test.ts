@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ActionInfo, PulseInfo } from "../../lib/types";
+import type { ActionInfo, PulseInfo, ScheduledCurrentRun } from "../../lib/types";
 import {
   actionWhen,
   lastRun,
@@ -10,6 +10,8 @@ import {
   pulseIcon,
   pulseNext,
   pulsesHeld,
+  runPhase,
+  runStarted,
 } from "./schedule-model";
 
 const NOW = Date.parse("2026-03-14T12:00:00Z");
@@ -108,14 +110,53 @@ describe("lastRun", () => {
 
 describe("overlapNote", () => {
   it("names when the run it overlapped started, and is null for a run that didn't", () => {
-    const run = { address: "scheduled-1", run_id: "run-2", overlap: null };
+    const run: ScheduledCurrentRun = {
+      fire_id: "fire-2",
+      phase: "session",
+      started_at: iso(-MINUTE),
+      address: "scheduled-1",
+      run_id: "run-2",
+      overlap: null,
+    };
     expect(overlapNote(run, NOW)).toBeNull();
     expect(
       overlapNote(
-        { ...run, overlap: { previous_run_id: "run-1", previous_started_at: iso(-12 * MINUTE) } },
+        {
+          ...run,
+          overlap: {
+            previous_run_id: "run-1",
+            previous_fire_id: "fire-1",
+            previous_started_at: iso(-12 * MINUTE),
+          },
+        },
         NOW,
       ),
     ).toBe("Started while the run from 12m ago was still going");
+  });
+});
+
+describe("runPhase and runStarted", () => {
+  const script: ScheduledCurrentRun = {
+    fire_id: "fire-1",
+    phase: "script",
+    started_at: iso(-3 * MINUTE),
+    address: null,
+    run_id: null,
+    overlap: null,
+  };
+
+  it("says whether a run is in its scripts, starting its session, or in its session", () => {
+    expect(runPhase(script)).toBe("Running scripts");
+    expect(runPhase({ ...script, phase: "session", address: "scheduled-1" })).toBe(
+      "Starting session",
+    );
+    expect(runPhase({ ...script, phase: "session", address: "scheduled-1", run_id: "run-1" })).toBe(
+      "Running session",
+    );
+  });
+
+  it("says when a run started", () => {
+    expect(runStarted(script, NOW)).toBe("Started 3m ago");
   });
 });
 
