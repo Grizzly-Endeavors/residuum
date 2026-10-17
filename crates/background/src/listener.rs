@@ -22,8 +22,7 @@ use residuum_bus::interrupt::Interrupt;
 use residuum_bus::session::{MAIN_ADDRESS, SessionCategory, SessionState};
 use residuum_bus::{
     AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
-    SessionAddress, SessionSpawnFailedEvent, SessionStartFailedEvent, SpawnRequestEvent,
-    Subscriber, topics,
+    SessionAddress, SessionStartFailedEvent, SpawnRequestEvent, Subscriber, topics,
 };
 
 /// Subscribe to the `Background` topic and fork sessions on demand.
@@ -68,14 +67,15 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
                 let trigger = event.source.clone();
-                let requested_address = event.address.clone();
+                let pulse_address =
+                    matches!(event.source, EventTrigger::Pulse).then(|| event.address.clone());
                 let owner_start = super::owner_session::is_owner_start(&event).then(|| {
                     let resume = ctx.session_registry.resume_point(&event.address).is_some();
                     (event.address.clone(), resume)
                 });
                 let outcome = handle_spawn_request(&ctx, event).await;
-                if let Err(e) = &outcome {
-                    publish_spawn_failed(&ctx.publisher, requested_address, &source_label, e).await;
+                if let (Err(e), Some(address)) = (&outcome, pulse_address) {
+                    publish_pulse_start_failed(&ctx.publisher, address, &source_label, e).await;
                 }
                 match outcome {
                     Ok(()) => {
@@ -113,21 +113,22 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
     tracing::info!("spawn listener shutting down");
 }
 
-/// Tell whoever is waiting for the session at `address` to register (a pulse
-/// fire) that it never will.
-async fn publish_spawn_failed(
+/// Tell the pulse fire waiting for its session at `address` to register that
+/// it never will, so the fire ends as failed instead of showing as running.
+async fn publish_pulse_start_failed(
     publisher: &Publisher,
     address: SessionAddress,
     source_label: &str,
     error: &anyhow::Error,
 ) {
-    let event = SessionSpawnFailedEvent {
+    let event = SessionStartFailedEvent {
         address,
-        source_label: source_label.to_string(),
         error: error.to_string(),
+        error_details: Some(format!("{error:#}")),
+        owner_start: false,
     };
-    if let Err(e) = publisher.publish(topics::Background, event).await {
-        tracing::warn!(source = %source_label, error = %e, "failed to publish a session's spawn failure");
+    if let Err(e) = publisher.publish(topics::Sessions, event).await {
+        tracing::warn!(source = %source_label, error = %e, "failed to publish a pulse session's start failure");
     }
 }
 
@@ -218,6 +219,7 @@ async fn notify_owner_start_failed(
                 address: address.clone(),
                 error: message.clone(),
                 error_details: Some(details),
+                owner_start: true,
             },
         )
         .await
@@ -284,17 +286,20 @@ fn handle_spawn_request<'a>(
                         // and recurses through this same deferral if so,
                         // instead of blindly clobbering a run that won the
                         // race.
-                        let requested_address = event.address.clone();
+                        let pulse_address = matches!(event.source, EventTrigger::Pulse)
+                            .then(|| event.address.clone());
                         let source_label = event.source_label.clone();
                         let resume = ctx.session_registry.resume_point(&event.address).is_some();
                         if let Err(e) = handle_spawn_request(&ctx, event).await {
-                            publish_spawn_failed(
-                                &ctx.publisher,
-                                requested_address,
-                                &source_label,
-                                &e,
-                            )
-                            .await;
+                            if let Some(address) = pulse_address {
+                                publish_pulse_start_failed(
+                                    &ctx.publisher,
+                                    address,
+                                    &source_label,
+                                    &e,
+                                )
+                                .await;
+                            }
                             if let Some(address) = owner_address {
                                 notify_owner_start_failed(&ctx.publisher, &address, resume, &e)
                                     .await;
@@ -793,12 +798,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_spawn_failure_names_the_address_that_will_never_register() {
+    async fn a_pulse_start_failure_names_the_address_that_will_never_register() {
         let bus = residuum_bus::spawn_broker();
-        let mut sub: Subscriber<SessionSpawnFailedEvent> =
-            bus.subscribe(topics::Background).await.unwrap();
+        let mut sub: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
 
-        publish_spawn_failed(
+        publish_pulse_start_failed(
             &bus.publisher(),
             SessionAddress::from("scheduled-email-check-0a1b"),
             "pulse:email_check",
@@ -806,15 +811,12 @@ mod tests {
         )
         .await;
 
-        let failed = next_event("the spawn failure", &mut sub).await;
+        let failed = next_event("the start failure", &mut sub).await;
         assert_eq!(
-            failed,
-            SessionSpawnFailedEvent {
-                address: SessionAddress::from("scheduled-email-check-0a1b"),
-                source_label: "pulse:email_check".to_string(),
-                error: "skill 'ghost' not found".to_string(),
-            }
+            failed.address,
+            SessionAddress::from("scheduled-email-check-0a1b")
         );
+        assert!(!failed.owner_start, "the web UI's start map never sees it");
     }
 
     // ── handle_spawn_failure dedup ───────────────────────────────────────

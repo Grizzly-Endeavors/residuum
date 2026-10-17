@@ -8,8 +8,8 @@ use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
     IntermediateEvent, MainConversationEvent, MessageEvent, NoticeEvent, NotificationEvent,
     OutboundA2aTaskEvent, PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent,
-    SessionSpawnFailedEvent, SessionStartFailedEvent, SpawnRequestEvent, TurnLifecycleEvent,
-    UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
+    SessionStartFailedEvent, SpawnRequestEvent, TurnLifecycleEvent, UserInboxAddedEvent,
+    WorkbenchEvent, WorkspaceEvent,
 };
 use super::pulse_fire::PulseFireEvent;
 use super::types::{EndpointName, NotifyName, TopicId};
@@ -148,11 +148,6 @@ impl Carries<SpawnRequestEvent> for Background {
     // Losing a spawn request means the requested session never runs at all.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
-impl Carries<SessionSpawnFailedEvent> for Background {
-    // A requester waiting for the session to register (a pulse fire) would
-    // wait forever, and keep showing as running, if it missed this.
-    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
-}
 
 /// Agent session activity: lifecycle transitions and session-tagged turn
 /// events, for surfaces that follow sessions live (the web UI).
@@ -176,7 +171,8 @@ impl Carries<SessionEvent> for Sessions {
 }
 impl Carries<SessionStartFailedEvent> for Sessions {
     // The only word the owner gets that a start they are waiting on failed:
-    // a dropped one leaves the web UI's New session panel showing Starting.
+    // a dropped one leaves the web UI's New session panel showing Starting,
+    // and a pulse fire waiting on its session showing as running.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
@@ -425,10 +421,6 @@ mod tests {
         );
         assert_eq!(
             <Background as Carries<SpawnRequestEvent>>::DELIVERY_MODE,
-            DeliveryMode::Lossless
-        );
-        assert_eq!(
-            <Background as Carries<SessionSpawnFailedEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
 

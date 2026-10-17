@@ -252,8 +252,8 @@ pub struct WsSubscribers {
     /// Agent session lifecycle and turn events, forwarded as the
     /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
-    /// Owner-started sessions that couldn't be forked, forwarded as
-    /// `session_start_failed` frames.
+    /// Sessions that couldn't be forked; the owner-started ones are
+    /// forwarded as `session_start_failed` frames.
     pub session_start_failed: Subscriber<SessionStartFailedEvent>,
     /// Tasks sent to remote agents, for Activity's Running now.
     pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
@@ -378,7 +378,7 @@ impl WsSubscribers {
                     _ => return None,
                 },
                 event = self.session_start_failed.recv() => match event {
-                    Ok(Some(failed)) => Some(session_start_failed_frame(failed)),
+                    Ok(Some(failed)) => session_start_failed_frame(failed),
                     _ => return None,
                 },
                 event = self.outbound_a2a.recv() => match event {
@@ -1122,7 +1122,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_failed_event_maps_to_session_frame() {
+    async fn only_an_owner_start_failure_becomes_a_session_start_failed_frame() {
         let handle = residuum_bus::spawn_broker();
         let mut subs = WsSubscribers::new(
             &handle,
@@ -1139,9 +1139,23 @@ mod tests {
             .publish(
                 topics::Sessions,
                 SessionStartFailedEvent {
+                    address: "scheduled-watch-0001".into(),
+                    error: "The pulse \"watch\" couldn't start its session.".into(),
+                    error_details: None,
+                    owner_start: false,
+                },
+            )
+            .await
+            .unwrap();
+        handle
+            .publisher()
+            .publish(
+                topics::Sessions,
+                SessionStartFailedEvent {
                     address: "spawned-session-1a2b".into(),
                     error: "The session spawned-session-1a2b couldn't start.".into(),
                     error_details: Some("failed to build provider chain: no key".into()),
+                    owner_start: true,
                 },
             )
             .await

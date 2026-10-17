@@ -752,21 +752,6 @@ pub struct OutboundA2aTaskEvent {
     pub task: crate::remote_task::TrackedTask,
 }
 
-/// The spawn listener couldn't start the session a [`SpawnRequestEvent`]
-/// asked for: building its resources failed (a skill or model that can't be
-/// resolved, for example). Carried on [`super::topics::Background`], so the
-/// requester can stop waiting for a session that will never register; the
-/// owner is told separately, by a notice.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionSpawnFailedEvent {
-    /// The address the request asked for.
-    pub address: SessionAddress,
-    /// The request's source label.
-    pub source_label: String,
-    /// Why it couldn't start, as the owner's notice words it.
-    pub error: String,
-}
-
 /// An item was added to the user inbox by the `user_inbox_add` tool.
 ///
 /// Published after the item is saved, so the hub can tell the user about it
@@ -894,15 +879,21 @@ pub enum SessionEventKind {
     },
 }
 
-/// A start or a resume of a session the owner started by hand (from the web
-/// UI's New session panel, `POST /api/sessions` without the
-/// `X-Residuum-Artifact` header, or `/multitask`) was accepted but couldn't
-/// be forked, so no run was registered for it. For a first start no run
-/// exists at the address; a failed resume leaves the address's earlier runs.
+/// The spawn listener couldn't fork the session a [`SpawnRequestEvent`]
+/// asked for, so no run was registered for it. Published for two
+/// requesters that wait on the session and would otherwise wait forever:
+///
+/// - a start or a resume of a session the owner started by hand (from the
+///   web UI's New session panel, `POST /api/sessions` without the
+///   `X-Residuum-Artifact` header, or `/multitask`), with `owner_start` set.
+///   For a first start no run exists at the address; a failed resume leaves
+///   the address's earlier runs. The web UI matches it to the start it is
+///   waiting on by `address`, and only these reach it.
+/// - a pulse fire's session, which the fire follows to show the pulse as
+///   running in the Schedule place.
 ///
 /// Carried on [`super::topics::Sessions`] beside [`SessionEvent`], which needs
-/// a run id a failed fork never has. The web UI matches it to the start it is
-/// waiting on by `address`.
+/// a run id a failed fork never has.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStartFailedEvent {
     /// Address the start was given, the one its caller was told.
@@ -912,6 +903,9 @@ pub struct SessionStartFailedEvent {
     pub error: String,
     /// Full technical cause chain, for a Details disclosure or the logs.
     pub error_details: Option<String>,
+    /// Whether the owner started (or resumed) this session by hand, so the
+    /// web UI's socket forwards it as a `session_start_failed` frame.
+    pub owner_start: bool,
 }
 
 // ---------------------------------------------------------------------------

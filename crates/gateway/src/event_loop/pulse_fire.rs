@@ -14,7 +14,7 @@ use residuum_bus::notice::publish_notice;
 use residuum_bus::{
     AgentResultStatus, BusHandle, EventTrigger, NotificationEvent, Publisher, PulseFireChange,
     PulseFireOutcome, PulseFirePhase, PulseFireStatus, SessionEvent, SessionEventKind,
-    SessionSpawnFailedEvent, SpawnRequestEvent, Subscriber, topics,
+    SessionStartFailedEvent, SpawnRequestEvent, Subscriber, topics,
 };
 use residuum_proactivity::pulse::executor::{PulseContext, build_pulse_execution};
 use residuum_proactivity::pulse::script::{
@@ -220,8 +220,8 @@ async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &Fir
     // start nor its end can be missed.
     let subscriptions = async {
         let sessions: Subscriber<SessionEvent> = deps.bus.subscribe(topics::Sessions).await?;
-        let failures: Subscriber<SessionSpawnFailedEvent> =
-            deps.bus.subscribe(topics::Background).await?;
+        let failures: Subscriber<SessionStartFailedEvent> =
+            deps.bus.subscribe(topics::Sessions).await?;
         Ok::<_, residuum_bus::BusError>((sessions, failures))
     }
     .await;
@@ -794,11 +794,12 @@ mod tests {
         let spawn = next_event("the pulse's spawn request", &mut spawns).await;
         deps.publisher
             .publish(
-                topics::Background,
-                SessionSpawnFailedEvent {
+                topics::Sessions,
+                SessionStartFailedEvent {
                     address: spawn.address,
-                    source_label: spawn.source_label,
                     error: "skill 'ghost' not found".to_string(),
+                    error_details: None,
+                    owner_start: false,
                 },
             )
             .await
