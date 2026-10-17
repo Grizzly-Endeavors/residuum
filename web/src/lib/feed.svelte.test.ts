@@ -585,20 +585,44 @@ describe("FeedStore flagging messages that reach a running turn", () => {
     expect(users[1]).toMatchObject({ content: "Keep it short", turnId: "web-a", midTurn: true });
   });
 
-  it("flags a session's message that arrives mid-turn", () => {
+  it("flags a session's message the running turn read, and not one that starts a turn", () => {
     const store = storeWithSettledHistory();
-    store.pushAgentMessage("spawned-1", "run-1", "Done early", null);
+    // As the backend announces a session's message: header first, with the session and its run.
+    const fromSession = (id: string, turnId: string, body: string): ServerMessage => ({
+      type: "user_message",
+      id,
+      turn_id: turnId,
+      content: `[Agent Message from spawned-1 (spawned)]\n${body}`,
+      agent_sender: { address: "spawned-1", category: "spawned", run_id: "run-1" },
+      endpoint: "background",
+    });
+    store.handleMessage(fromSession("bg-1", "bg-1", "Done early"));
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "bg-1",
+      origin: { endpoint: "background", visibility: "background" },
+    });
+    store.handleMessage({ type: "turn_ended", reply_to: "bg-1" });
     store.pushUserMessage("Go", undefined, "web-a");
     store.handleMessage({
       type: "turn_started",
       reply_to: "web-a",
       origin: { endpoint: "ws", visibility: "user" },
     });
-    store.pushAgentMessage("spawned-1", "run-1", "Result", null);
+    store.handleMessage(fromSession("bg-2", "web-a", "Result"));
 
     const messages = store.feed.filter((item) => item.kind === "agent-message");
+    expect(messages[0]).toMatchObject({ content: "Done early", turnId: "bg-1" });
     expect(messages[0]).not.toHaveProperty("midTurn");
-    expect(messages[1]).toMatchObject({ content: "Result", turnId: "web-a", midTurn: true });
+    expect(messages[1]).toMatchObject({
+      from: "spawned-1",
+      category: "spawned",
+      content: "Result",
+      runId: "run-1",
+      messageId: "bg-2",
+      turnId: "web-a",
+      midTurn: true,
+    });
   });
 });
 

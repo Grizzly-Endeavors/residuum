@@ -117,8 +117,8 @@ export function deltaFrames(
 /**
  * The frames of a turn no person started, such as the one a teammate's message
  * starts, from its start to its end: the reply written in pieces, then
- * complete, and the turn's usage. The message that started it has no frame,
- * as the backend announces only what a person sent, and the reply went
+ * complete, and the turn's usage. The message that started it is announced
+ * on its own, as a `user_message` naming its sender, and the reply went
  * nowhere, so its endpoint is empty.
  */
 export function backgroundTurnFrames(replyTo: string, reply: string): ServerMessage[] {
@@ -442,6 +442,28 @@ export function externalTurn(replyTo: string, nextId: NextId): Scenario {
     replyCall: 1,
     failure: null,
     recorded: [...recordCall(note, [search], [thought]), { role: "assistant", content: reply }],
+  };
+}
+
+/**
+ * The turn a message from one of the agent's own sessions starts when no turn
+ * is running: main takes in what the session at `address` reported, in one
+ * model call and no tools.
+ */
+export function sessionMessageTurn(replyTo: string, nextId: NextId, address: string): Scenario {
+  const reply = `${address} has reported back. Nothing in it needs you right now.`;
+  const finale = new Timeline({ replyTo, nextId });
+  const replyEnds = finale.stream("text", 0, reply, 0);
+  return {
+    steps: [],
+    endAt: 20,
+    finale: finale.steps,
+    finaleMs: replyEnds + 40,
+    toolCalls: 0,
+    reply,
+    replyCall: 0,
+    failure: null,
+    recorded: [{ role: "assistant", content: reply }],
   };
 }
 
