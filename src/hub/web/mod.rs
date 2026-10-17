@@ -125,7 +125,7 @@ impl HubApiState {
             reload_tx,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
+            checkpoints: crate::checkpoints::testing::test_engine(),
             team: crate::workspace::team_files::TeamWriteCoordinator::new(
                 &crate::config::paths::TeamPaths::new(hub_dir.join("team-for-test")),
             ),

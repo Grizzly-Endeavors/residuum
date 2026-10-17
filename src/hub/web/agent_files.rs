@@ -97,7 +97,7 @@ impl AgentFilesState {
             workspace_dir,
             memory_dir,
             reload_tx: None,
-            checkpoints: CheckpointAccess::Open(crate::checkpoints::test_engine()),
+            checkpoints: CheckpointAccess::Open(crate::checkpoints::testing::test_engine()),
         }
     }
 

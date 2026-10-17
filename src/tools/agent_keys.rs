@@ -243,7 +243,7 @@ mod tests {
             .unwrap();
         let tool = AgentKeyDeleteTool::new(
             std::sync::Arc::clone(&keys),
-            crate::checkpoints::test_engine(),
+            crate::checkpoints::testing::test_engine(),
         );
 
         let deleted_user_key = tool
@@ -283,7 +283,7 @@ mod tests {
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
-        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::test_engine())
+        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::testing::test_engine())
             .with_publisher(bus_handle.publisher());
 
         let result = tool
@@ -318,7 +318,7 @@ mod tests {
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
-        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::test_engine())
+        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::testing::test_engine())
             .with_publisher(bus_handle.publisher());
 
         let result = tool
