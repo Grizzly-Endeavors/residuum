@@ -352,7 +352,7 @@ impl EventContext<'_> {
         .await;
     }
 
-    /// Announce a person's or a teammate's message joining this main-agent
+    /// Announce a person's or an agent's message joining this main-agent
     /// turn mid-turn (see [`MainConversationEvent::user_message`]). Not for a
     /// session's turn.
     async fn publish_user_message(&self, message: &MessageEvent) {
@@ -1163,7 +1163,7 @@ async fn check_interrupts_and_stop(
 /// continues to the end of the buffered batch even after a stop is seen, so
 /// any interrupts queued just before it are still folded into history.
 ///
-/// A person's or a teammate's message is announced to the main conversation
+/// A person's or an agent's message is announced to the main conversation
 /// at the moment it is folded in, so a client sees it at the position the
 /// model does.
 async fn drain_interrupts(

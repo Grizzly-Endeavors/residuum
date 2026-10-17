@@ -390,9 +390,9 @@ impl AgentMessenger {
     /// event's id (see [`Self::take_main_hop`]) rather than carried on
     /// `MessageEvent` itself.
     ///
-    /// Once delivered, the message is also published on the sending run's
-    /// session stream, so the web UI can show it in the main chat as it
-    /// arrives.
+    /// A message from one of this agent's own sessions names the sending run
+    /// on its origin's `agent_sender`, so main's conversation stream and
+    /// history can point at that run rather than only at its address.
     async fn deliver_to_main(
         &self,
         from: SessionAddress,
@@ -400,16 +400,17 @@ impl AgentMessenger {
         content: String,
         hop_count: u32,
     ) -> Result<(), SendError> {
-        let sender = from.clone();
         let sender_is_teammate = from_category == TEAMMATE_SENDER_CATEGORY;
-        let body = content.clone();
         let msg = AgentMessageEvent {
             from,
             from_category,
             content,
             hop_count,
         };
-        let event = MessageEvent::from_agent(&msg);
+        let mut event = MessageEvent::from_agent(&msg);
+        if !sender_is_teammate && let Some(sender) = event.origin.agent_sender.as_deref_mut() {
+            sender.run_id = self.sending_run_id(&msg.from);
+        }
         let message_id = event.id.clone();
         self.pending_main_hops
             .lock()
@@ -429,33 +430,24 @@ impl AgentMessenger {
                 "failed to deliver message to main".to_string(),
             ));
         }
-        // A teammate's message has no run in this agent's registry to show it
-        // on; main's own history already carries it.
-        if !sender_is_teammate {
-            self.publish_message_to_main(&sender, body).await;
-        }
         Ok(())
     }
 
-    /// Publish a message just delivered to main on its sender's session
-    /// stream. The sender is always a live run (sessions only send during a
-    /// turn); if it has somehow left the registry the UI event is skipped and
-    /// logged — main already has the message, so delivery is unaffected.
-    async fn publish_message_to_main(&self, sender: &SessionAddress, content: String) {
-        let Some(info) = self.registry.get(sender) else {
+    /// The run of this agent's session at `sender`, for a message it sends
+    /// main. A session only sends during a turn (a `message_agent` call or
+    /// its turn's result relay, both before the run leaves the registry), so
+    /// the run is live. If it has somehow left the registry, the message is
+    /// still delivered without a run id, and the web UI's Open session falls
+    /// back to the newest run at the address.
+    fn sending_run_id(&self, sender: &SessionAddress) -> Option<String> {
+        let run_id = self.registry.get(sender).map(|info| info.run_id);
+        if run_id.is_none() {
             tracing::warn!(
                 sender = %sender,
-                "message to main came from an address with no live run; not showing it in the web UI"
+                "message to main came from an address with no live run; delivering it without a run id"
             );
-            return;
-        };
-        publish_session_event(
-            &self.publisher,
-            sender,
-            &info.run_id,
-            SessionEventKind::MessageToMain { content },
-        )
-        .await;
+        }
+        run_id
     }
 
     /// Resume a completed session as a new run at the same address, by
@@ -1270,10 +1262,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_to_main_publishes_the_message_on_the_senders_session_stream() {
+    async fn send_to_main_names_the_sending_sessions_run_on_the_origin() {
         let (messenger, registry, bus_handle) = messenger();
-        let mut events: Subscriber<residuum_bus::SessionEvent> =
-            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
         let sender = sample_live_info(
             "spawned-researcher-3f9c",
             residuum_bus::session::SessionState::Running,
@@ -1292,14 +1284,49 @@ mod tests {
             .await
             .unwrap();
 
-        let event = events.recv().await.unwrap().unwrap();
-        assert_eq!(event.address.as_ref(), "spawned-researcher-3f9c");
-        assert_eq!(event.run_id, run_id);
-        assert!(
-            matches!(&event.kind, SessionEventKind::MessageToMain { content } if content == "found the answer"),
-            "the UI event should carry the message body without the sender header, got {:?}",
-            event.kind
+        let event = next_event("the message to main", &mut sub).await;
+        let expected = residuum_inference::AgentSender {
+            address: "spawned-researcher-3f9c".to_string(),
+            category: "spawned".to_string(),
+            run_id: Some(run_id),
+        };
+        assert_eq!(event.origin.agent_sender.as_deref(), Some(&expected));
+        let history = event.into_history_messages();
+        assert_eq!(
+            history.last().and_then(|m| m.agent_sender.as_ref()),
+            Some(&expected),
+            "main's history entry keeps the run too"
         );
+    }
+
+    #[tokio::test]
+    async fn send_to_main_gives_a_teammate_or_a_sender_with_no_live_run_no_run_id() {
+        let (messenger, _registry, bus_handle) = messenger();
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        for (from, category) in [
+            ("agent:scout", TEAMMATE_SENDER_CATEGORY),
+            ("spawned-gone-3f9d", "spawned"),
+        ] {
+            messenger
+                .send(
+                    MAIN_ADDRESS,
+                    SessionAddress::from(from),
+                    category.to_string(),
+                    "status?".to_string(),
+                    0,
+                )
+                .await
+                .unwrap();
+            let event = next_event("the message to main", &mut sub).await;
+            let sender = event.origin.agent_sender.as_deref().unwrap();
+            assert_eq!(sender.address, from);
+            assert_eq!(
+                sender.run_id, None,
+                "{from} has no run in this agent's registry"
+            );
+        }
     }
 
     #[tokio::test]
