@@ -148,6 +148,9 @@ export function convertHistory(
   const stamped = opts.timestamps ?? opts.mode === "main";
 
   for (const msg of messages) {
+    // Context the agent reads with the message after it, which nobody sent and
+    // the live feed never shows. That message follows what came before it.
+    if (msg.context === true) continue;
     const midTurn = reachedAgentMidTurn(msg, before, opts.mode);
     if (msg.role !== "system" || opts.mode === "session") before = { msg, midTurn };
     const agentMessage = historyAgentMessage(msg, opts.mode);

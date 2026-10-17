@@ -215,6 +215,13 @@ test("a finished run is resumed by a message, and the panel follows it", async (
   await expect(panel.getByText("Picking this back up.")).toBeVisible();
   await expect.poll(() => address(page)).toMatch(/\?panel=session:atlas:run-resumed-http-\d+$/);
   await expect(panel.getByRole("separator", { name: "New run" })).toBeAttached();
+
+  // A reload draws the run from its transcript, which opens with the pointer to
+  // the previous run: the panel leaves it out, as the live view did.
+  await page.reload();
+  const reloaded = sessionPanel(page, isMobile, FAMILY);
+  await expect(reloaded.getByText("Any news?")).toBeVisible();
+  await expect(reloaded.getByText(/Resumed session/)).toHaveCount(0);
 });
 
 test("a chat card's Open session opens its run in the panel", async ({ page, isMobile }) => {

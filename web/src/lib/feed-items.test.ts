@@ -151,3 +151,53 @@ describe("a session's message to main in history", () => {
     ]);
   });
 });
+
+describe("context a session reads in its transcript", () => {
+  const pointer =
+    "[Resumed session] Your previous run (run-1) was merged as episode ep-1 — retrieve it with memory_get if useful.";
+
+  it("is left out, while the messages it opens are drawn", () => {
+    const { items } = convertHistory(
+      [
+        message("user", pointer, { context: true }),
+        message(
+          "user",
+          "[Message from the owner via the web UI — your response in this turn is shown to them directly]\nPick it back up",
+          { id: "m-1" },
+        ),
+        message("assistant", "On it."),
+      ],
+      { mode: "session" },
+    );
+
+    expect(items).toMatchObject([
+      { kind: "user", content: "Pick it back up" },
+      { kind: "assistant", content: "On it." },
+    ]);
+    expect(items).toHaveLength(2);
+  });
+
+  it("is drawn when the transcript doesn't mark it, as an ordinary user entry", () => {
+    const { items } = convertHistory([message("user", pointer)], { mode: "session" });
+    expect(items).toMatchObject([{ kind: "user", content: pointer }]);
+  });
+
+  it("leaves a chat message read mid-turn where the session read it", () => {
+    const { items } = convertHistory(
+      [
+        message("assistant", "Checking.", {
+          tool_calls: [{ id: "a", name: "read_file", arguments: {} }],
+        }),
+        message("tool", "done", { tool_call_id: "a" }),
+        message("system", "[14:00] Sam: build is red", { context: true }),
+        message("user", "is it green yet?", {
+          sender: { name: "Jane", id: "j1", interface: "discord" },
+        }),
+      ],
+      { mode: "session" },
+    );
+
+    const chat = items.find((item) => item.kind === "user");
+    expect(chat).toMatchObject({ content: "is it green yet?", midTurn: true });
+  });
+});

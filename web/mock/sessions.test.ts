@@ -565,6 +565,16 @@ describe("session commands and lifecycle", () => {
       content: "resume me",
       from: "owner",
     });
+    // Its transcript opens with the pointer to the previous run, marked as
+    // context, then the message.
+    const transcript = state.sessions.transcripts.get("run-resumed-1") ?? [];
+    const [pointer, read] = transcript;
+    expect(pointer).toMatchObject({ role: "user", context: true });
+    expect(pointer?.content).toMatch(
+      /^\[Resumed session\] Your previous run \(run-done-telegram\)/,
+    );
+    expect(read).toMatchObject({ role: "user", id: "web-c5" });
+    expect(read).not.toHaveProperty("context");
   });
 
   it("stops a live session, then moves it to the finished list", () => {

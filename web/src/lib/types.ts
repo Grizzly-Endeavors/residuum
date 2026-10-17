@@ -119,6 +119,12 @@ export interface RecentMessage {
    * which its `session_user_message` frame names too.
    */
   id?: string;
+  /**
+   * Context the agent reads with a turn's opening messages rather than a
+   * message anyone sent (a resumed session's pointer to its previous run, a
+   * conversation session's note on its chat). Never drawn.
+   */
+  context?: boolean;
 }
 
 // ── Agent sessions ───────────────────────────────────────────────────
