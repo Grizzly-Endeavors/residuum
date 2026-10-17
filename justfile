@@ -194,7 +194,7 @@ cross-check: (cross-clippy "aarch64-unknown-linux-gnu") (cross-clippy "x86_64-pc
 
 # Install web dependencies from the lockfile
 [group('web')]
-web-install:
+web-install: _web-unlink
     cd web && npm ci
 
 # Vite dev server against the mock API; no Rust backend needed. Extra args go to vite, e.g. `just web-mock --port 5199`
@@ -387,9 +387,16 @@ clean:
     cargo clean
     rm -rf web/dist
 
+# A web/node_modules that is a symlink borrows another checkout's copy, as a worktree's link to the main
+# checkout does. npm ci follows the link and empties that copy, so the link is removed, never its target,
+# and the install that follows is local. unlink fails on a real directory, so a local install is left alone.
+[private]
+_web-unlink:
+    @{ [ ! -L web/node_modules ] || { echo "web/node_modules is a symlink to another checkout's copy: replacing it with a local install"; unlink web/node_modules; }; }
+
 # Reinstall when package-lock.json is newer than the one npm ci leaves in node_modules (or that is missing)
 [private]
-_web-deps:
+_web-deps: _web-unlink
     @[ web/node_modules/.package-lock.json -nt web/package-lock.json ] || (cd web && npm ci)
 
 # build.rs panics without web/dist, and the gateway's asset tests read dist/sw.js. Rebuilds a dist that is

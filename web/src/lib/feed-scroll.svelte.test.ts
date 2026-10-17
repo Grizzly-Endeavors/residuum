@@ -35,17 +35,21 @@ interface FakeScroller {
   scrollTo: ReturnType<typeof vi.fn>;
   /** Move the scroll position the way the reader does, and tell the scroller. */
   scrollBy: (top: number) => void;
-  /** Press a key in the feed. */
-  press: (init: KeyboardEventInit) => void;
+  /** Press a key in the feed, which has focus; returns the event's `preventDefault`. */
+  press: (init: KeyboardEventInit & { defaultPrevented?: boolean }) => ReturnType<typeof vi.fn>;
   /** Send the feed an event, as the browser does for the reader's input. */
   fire: (type: string, init?: Record<string, unknown>) => void;
+  /** From now on a smooth scroll starts and moves nothing: the test moves the glide on with `scrollBy`. */
+  holdGlides: () => void;
   geometry: Geometry;
 }
 
 function fakeScroller(): FakeScroller {
   const geometry: Geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500, padding: 0 };
   const listeners = new Map<string, (event?: Event) => void>();
-  const scrollTo = vi.fn((options: { top: number }) => {
+  let glidesHeld = false;
+  const scrollTo = vi.fn((options: { top: number; behavior?: string }) => {
+    if (glidesHeld && options.behavior === "smooth") return;
     geometry.scrollTop = options.top;
   });
   const el = {
@@ -74,10 +78,21 @@ function fakeScroller(): FakeScroller {
       listeners.get("scroll")?.();
     },
     press: (init) => {
-      listeners.get("keydown")?.({ type: "keydown", ...init } as unknown as Event);
+      const preventDefault = vi.fn();
+      listeners.get("keydown")?.({
+        type: "keydown",
+        target: el,
+        defaultPrevented: false,
+        preventDefault,
+        ...init,
+      } as unknown as Event);
+      return preventDefault;
     },
     fire: (type, init = {}) => {
       listeners.get(type)?.({ type, ...init } as unknown as Event);
+    },
+    holdGlides: () => {
+      glidesHeld = true;
     },
   };
 }
@@ -102,13 +117,27 @@ describe("FeedScroller", () => {
     return { feed, observer, scroller };
   }
 
+  it("takes End over and glides to the newest content, as Jump to latest does", () => {
+    const { feed, scroller } = attached();
+    feed.scrollBy(100);
+    expect(scroller.scrolledUp).toBe(true);
+
+    const preventDefault = feed.press({ key: "End" });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "smooth" });
+    expect(scroller.isFollowing).toBe(true);
+    expect(scroller.scrolledUp).toBe(false);
+  });
+
   it("follows the newest content from End, though content lands at the top on the way", () => {
     const { feed, observer } = attached();
     // The reader went to the top, so the feed no longer follows.
     feed.scrollBy(0);
 
+    feed.holdGlides();
     feed.press({ key: "End" });
-    // The browser's glide is partway down when an older episode is prepended.
+    // The glide is partway down when an older episode is prepended.
     feed.scrollBy(600);
     feed.geometry.scrollHeight = 3000;
     observer.notify();
@@ -116,38 +145,115 @@ describe("FeedScroller", () => {
     expect(feed.geometry.scrollTop).toBe(3000);
   });
 
-  it("follows from End though the browser's glide first carries on up from Home", () => {
+  it("stops Home's glide where it is at End, so that glide's last move isn't the reader leaving", () => {
     const { feed, observer, scroller } = attached();
+    feed.holdGlides();
     feed.press({ key: "Home" });
-    feed.scrollBy(900);
-    // End, while the scroll for Home is still under way: it carries on up a little.
+    feed.scrollBy(300);
+    // Home's glide moves on to 56, and End comes before that move's scroll event.
+    feed.geometry.scrollTop = 56;
     feed.press({ key: "End" });
-    feed.scrollBy(860);
+
+    expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
+    feed.scrollBy(56);
     expect(scroller.isFollowing).toBe(true);
-    expect(scroller.scrolledUp).toBe(false);
-    feed.scrollBy(1200);
-    feed.geometry.scrollHeight = 2800;
+    // An older episode lands at the top on the way: the reader is pinned to the bottom.
+    feed.geometry.scrollHeight = 2300;
     observer.notify();
-    expect(feed.geometry.scrollTop).toBe(2800);
+    expect(feed.geometry.scrollTop).toBe(2300);
   });
 
-  it("starts no glide from End at the bottom, so a later move up is the reader's", () => {
+  it("takes Home over: it glides to the top, and the feed stops following", () => {
+    const { feed, observer, scroller } = attached();
+
+    const preventDefault = feed.press({ key: "Home" });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(feed.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+    expect(scroller.isFollowing).toBe(false);
+    // A reply landing as the reader reads from the top leaves them there.
+    feed.geometry.scrollHeight = 2100;
+    observer.notify();
+    expect(feed.geometry.scrollTop).toBe(0);
+  });
+
+  it("goes to the top and the bottom at once from Home and End under reduced motion", () => {
+    vi.stubGlobal("window", {
+      matchMedia: (query: string) => ({ matches: query === "(prefers-reduced-motion: reduce)" }),
+    });
+    const { feed } = attached();
+    feed.press({ key: "Home" });
+    expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: "instant" });
+    feed.press({ key: "End" });
+    expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "instant" });
+  });
+
+  it("shows the pill after Home from the bottom under reduced motion, where the jump is at once", () => {
+    vi.stubGlobal("window", {
+      matchMedia: (query: string) => ({ matches: query === "(prefers-reduced-motion: reduce)" }),
+    });
+    const { feed, scroller } = attached();
+    expect(scroller.scrolledUp).toBe(false);
+
+    feed.press({ key: "Home" });
+    // The browser's scroll event for the jump arrives after the position is already at the top.
+    feed.scrollBy(0);
+
+    expect(scroller.isFollowing).toBe(false);
+    expect(scroller.scrolledUp).toBe(true);
+  });
+
+  it("keeps following at Home with nowhere above to go", () => {
+    const { feed, scroller } = attached();
+    feed.geometry.scrollHeight = 500;
+    feed.geometry.scrollTop = 0;
+    feed.press({ key: "Home" });
+    expect(feed.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.isFollowing).toBe(true);
+  });
+
+  it("counts a move up after End at the bottom as the reader's", () => {
     const { feed, scroller } = attached();
     feed.press({ key: "End" });
     feed.scrollBy(1300);
     expect(scroller.isFollowing).toBe(false);
   });
 
-  it("leaves End with a modifier, and other keys, to the browser alone", () => {
-    const { feed, observer } = attached();
+  it("leaves Home and End with a modifier, and other keys, to the browser", () => {
+    const { feed, observer, scroller } = attached();
     feed.scrollBy(0);
 
-    feed.press({ key: "End", shiftKey: true });
-    feed.press({ key: "PageDown" });
+    const pressed = [
+      feed.press({ key: "End", shiftKey: true }),
+      feed.press({ key: "End", ctrlKey: true }),
+      feed.press({ key: "End", metaKey: true }),
+      feed.press({ key: "End", altKey: true }),
+      feed.press({ key: "PageDown" }),
+    ];
     feed.geometry.scrollHeight = 3000;
     observer.notify();
 
+    for (const preventDefault of pressed) expect(preventDefault).not.toHaveBeenCalled();
+    expect(feed.scrollTo).not.toHaveBeenCalled();
     expect(feed.geometry.scrollTop).toBe(0);
+    expect(scroller.isFollowing).toBe(false);
+  });
+
+  it("still stops following at Home with a modifier, which the browser scrolls up", () => {
+    const { feed, scroller } = attached();
+    const preventDefault = feed.press({ key: "Home", ctrlKey: true });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(feed.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.isFollowing).toBe(false);
+  });
+
+  it("leaves Home and End that something in the feed handled to it", () => {
+    const { feed, scroller } = attached();
+    feed.scrollBy(100);
+    feed.press({ key: "End", defaultPrevented: true });
+    feed.press({ key: "Home", defaultPrevented: true });
+    expect(feed.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.isFollowing).toBe(false);
   });
 
   it("watches the feed's content and its viewport", () => {
@@ -479,7 +585,7 @@ describe("FeedScroller", () => {
       const { feed, scroller } = attached();
       feed.press({ key: "PageDown" });
       expect(scroller.isFollowing).toBe(true);
-      feed.fire("keydown", { key: "ArrowUp", defaultPrevented: true });
+      feed.press({ key: "ArrowUp", defaultPrevented: true });
       expect(scroller.isFollowing).toBe(true);
       feed.press({ key: "PageUp" });
       expect(scroller.isFollowing).toBe(false);
@@ -577,7 +683,6 @@ describe("FeedScroller", () => {
       feed.scrollBy(1320);
       feed.geometry.scrollHeight = 2050;
       observer.notify();
-      feed.fire("scrollend");
 
       expect(feed.scrollTo).not.toHaveBeenCalled();
       expect(feed.geometry.scrollTop).toBe(1320);
@@ -602,7 +707,7 @@ describe("FeedScroller", () => {
     it("doesn't count its own scroll events as the reader's", () => {
       const { feed, observer, scroller } = attached();
       feed.scrollBy(100);
-      feed.scrollTo.mockImplementationOnce(() => {});
+      feed.holdGlides();
       scroller.jumpToLatest();
       // The glide passes through on its way down.
       feed.scrollBy(600);
@@ -621,7 +726,7 @@ describe("FeedScroller", () => {
       expect(scroller.scrolledUp).toBe(true);
 
       // They press Jump to latest; the browser's smooth glide hasn't moved yet.
-      feed.scrollTo.mockImplementationOnce(() => {});
+      feed.holdGlides();
       scroller.jumpToLatest();
       // A streamed reply grows the feed before the glide's first frame: the feed pins
       // the reader to the bottom at once, which ends the glide, and the pin's own
@@ -646,7 +751,7 @@ describe("FeedScroller", () => {
     it("counts a move up while it runs as the reader's", () => {
       const { feed, observer, scroller } = attached();
       feed.scrollBy(100);
-      feed.scrollTo.mockImplementationOnce(() => {});
+      feed.holdGlides();
       scroller.jumpToLatest();
       feed.scrollBy(700);
       // The page scrolls back to the top mid-glide, with no input in the feed.
@@ -656,31 +761,6 @@ describe("FeedScroller", () => {
       feed.geometry.scrollHeight = 2100;
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(0);
-    });
-
-    it("ends at scrollend, after which a move up is the reader's", () => {
-      const { feed, scroller } = attached();
-      feed.scrollBy(100);
-      feed.scrollTo.mockImplementationOnce(() => {});
-      scroller.jumpToLatest();
-      feed.scrollBy(700);
-      // Cut short somewhere on the way.
-      feed.fire("scrollend");
-      feed.scrollBy(650);
-      expect(scroller.isFollowing).toBe(false);
-      expect(scroller.scrolledUp).toBe(true);
-    });
-
-    it("ends at the reader's own input", () => {
-      const { feed, scroller } = attached();
-      feed.scrollBy(100);
-      feed.scrollTo.mockImplementationOnce(() => {});
-      scroller.jumpToLatest();
-      feed.scrollBy(700);
-      feed.fire("touchstart");
-      feed.fire("touchend", { touches: [] });
-      feed.scrollBy(650);
-      expect(scroller.isFollowing).toBe(false);
     });
   });
 });
