@@ -722,7 +722,9 @@ impl ToolRegistry {
         workspace_dir: PathBuf,
         policy: SharedPathPolicy,
     ) {
-        if conversation_target.is_some_and(|target| target.endpoint == "a2a") {
+        if conversation_target
+            .is_some_and(|target| target.endpoint == crate::interfaces::types::A2A_ENDPOINT)
+        {
             self.register(Box::new(
                 a2a_task_update::A2aTaskUpdateTool::new(own_address, publisher, workspace_dir)
                     .with_policy(policy),

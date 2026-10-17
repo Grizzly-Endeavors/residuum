@@ -25,15 +25,13 @@ use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image,
 };
-use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
+use crate::interfaces::types::{
+    A2A_ENDPOINT, ConversationContext, ConversationKind, MessageOrigin,
+};
 use crate::skills::SharedSkillState;
 
 use super::auth::CALLER_HEADER;
 use super::card::SharedCardState;
-
-/// Bounds the `a2a` endpoint name used for the conversation-turn stream and
-/// the endpoint registry entry.
-const A2A_ENDPOINT: &str = "a2a";
 
 type ExecutorSender = tokio::sync::mpsc::Sender<Result<StreamResponse, A2AError>>;
 
