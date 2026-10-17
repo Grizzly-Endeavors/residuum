@@ -199,9 +199,9 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum` | `.` | everything else: `daemon`, `gateway`, `hub`, `tools`, `update`, `features`, `wiring`, `logging`, `setup_wizard`, the `commands` of the binary, and the facade over the member crates | every member |
 
 ```
-residuum-interfaces
-        │
-residuum-background
+residuum-interfaces    residuum-a2a
+        │                     │
+residuum-background ──────────┘
         │
 residuum-agent    residuum-checkpoints    residuum-protocol    residuum-notify
         │                  │                      │                   │
@@ -220,7 +220,7 @@ residuum-memory     residuum-mcp
                               residuum-core
 ```
 
-The diagram draws the chain of dependencies that sets the layers; each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw (`residuum-background` also depends on most of the crates below it, `residuum-agent` also depends on `residuum-bus`, `residuum-memory`, `residuum-mcp` and `residuum-skills`, `residuum-interfaces` also depends on `residuum-net`, `residuum-bus` and `residuum-inference`, `residuum-workspace` on `residuum-mcp` and `residuum-inference`, `residuum-protocol` on `residuum-bus` and `residuum-inference`, `residuum-proactivity` on `residuum-bus` alone, and `residuum-bus` on `residuum-inference`).
+The diagram draws the chain of dependencies that sets the layers; each crate's row in the table above lists every crate it depends on, including the ones the diagram does not draw (`residuum-background` also depends on most of the crates below it, `residuum-agent` also depends on `residuum-bus`, `residuum-memory`, `residuum-mcp` and `residuum-skills`, `residuum-interfaces` also depends on `residuum-net`, `residuum-bus` and `residuum-inference`, `residuum-workspace` on `residuum-mcp` and `residuum-inference`, `residuum-protocol` on `residuum-bus` and `residuum-inference`, `residuum-proactivity` on `residuum-bus` alone, `residuum-a2a` also on `residuum-agent`, `residuum-bus`, `residuum-workspace`, `residuum-skills`, `residuum-proactivity`, `residuum-net`, `residuum-inference` and `residuum-config`, and `residuum-bus` on `residuum-inference`).
 
 Only the root has a build script and embeds `web/dist`, so every member crate builds and tests without a web build. The root alone reads the build variables (`RESIDUUM_VERSION` and `RESIDUUM_GIT_COMMIT`, set by `build.rs`), and only into `residuum::BUILD_INFO`; everything else takes a `BuildInfo` (or its `version`) as a parameter, and `testing::source_scan` enforces this. `include_str!` and `CARGO_MANIFEST_DIR` paths in a member reach the repository's `assets/` and `web/` from the crate's directory (`../../../assets/…` from `crates/config/src/`). A file a member embeds from outside its own directory and outside `assets/` is not covered by that: `crates/net/src/browser_landing.rs` embeds `web/src/styles/tokens.css`, and such a path must appear in `RUST_PATHS_RE` in both `.github/workflows/ci.yml` and `.githooks/pre-push`, be classified to its crate in `classify_path` in `scripts/affected-packages.sh`, and have an arm in the pre-push hook's `plan_rust_tests` (for `tokens.css`, `residuum-net`). A file a test reads by path follows the same rule: `web/app-shell-csp.txt` and `.github/workflows/release.yml` belong to `residuum-hub` when it is a member crate with the file that reads each (`crates/hub/src/web/assets.rs`, `crates/hub/src/update.rs`), and to the root otherwise. Without the `RUST_PATHS_RE` entry, CI runs no Rust checks for a change to that file alone, so a breakage can reach `main`.
 
