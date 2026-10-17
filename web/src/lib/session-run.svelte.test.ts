@@ -486,6 +486,32 @@ describe("a message waiting for the session to read it", () => {
     expect(run.items.at(-1)).not.toHaveProperty("midTurn");
   });
 
+  it("follows the new run when the stopped run's end and that run's start race a reload", async () => {
+    transcripts["run-2"] = { session: summary("run-2"), messages: [] };
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    let release = (): void => {};
+    holdTranscripts = new Promise((resolve) => {
+      release = resolve;
+    });
+    relay.emit({ type: "subscribed", kind: "session", agent: "atlas", address: ADDRESS });
+    await waitFor(() => {
+      expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
+    });
+    // Both arrive while the reload is in flight.
+    completed(relay);
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    release();
+
+    turn(relay, "session_turn_started", "run-2-t1", "run-2");
+    read(relay, { id, content: "Also check the logs.", turnId: "run-2-t1", runId: "run-2" });
+    await waitFor(() => {
+      expect(run.waiting).toEqual([]);
+    });
+    expect(run.runId).toBe("run-2");
+  });
+
   it("forgets a dismissed message, and still places it if the session reads it", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
     turn(relay, "session_turn_started", "t1");

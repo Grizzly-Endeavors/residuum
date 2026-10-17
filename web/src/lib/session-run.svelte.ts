@@ -316,7 +316,13 @@ export class SessionRun {
       if (this.followNextRun && frame.session.run_id !== this.runId) this.follow(frame.session);
       return;
     }
-    if ("run_id" in frame && frame.run_id === this.runId) this.applyFrame(frame);
+    if (!("run_id" in frame) || frame.run_id !== this.runId) return;
+    // The backend resumes a run's unread messages as a new run once it ends
+    // (`finish_run`); the panel follows that run, whose reads resolve them.
+    // Set on arrival, not when applied: mid-load the completion waits in the
+    // buffer, while the new run's start is handled at once.
+    if (frame.type === "session_completed" && this.waiting.length > 0) this.followNextRun = true;
+    this.applyFrame(frame);
   }
 
   /**
@@ -382,10 +388,6 @@ export class SessionRun {
           this.closeTurn(this.activeTurnId, asked ? "stopped" : "interrupted");
         }
         this.stopping = false;
-        // The backend resumes a run's unread messages as a new run once it
-        // ends (`finish_run`); the panel follows that run, whose reads
-        // resolve them.
-        if (this.waiting.length > 0) this.followNextRun = true;
         this.pushStatus(
           frame.status === "failed" ? "error" : "info",
           runOutcomeText(frame.status, frame.error),
