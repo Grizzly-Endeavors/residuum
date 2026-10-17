@@ -1,14 +1,14 @@
 //! Pulse task builder: converts a pulse definition into a spawn request.
 
-use crate::bus::session::{MAIN_DEPTH, generate_address};
-use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, PulseOverlap, SpawnRequestEvent};
+use residuum_bus::session::{MAIN_DEPTH, generate_address};
+use residuum_bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, PulseOverlap, SpawnRequestEvent};
 
 use super::script::{ScriptRun, prompt_section};
 use super::types::PulseDef;
 
 /// A pulse's `context_from` target resolved to its stored output, for
 /// injection into the firing pulse's prompt. Built by the caller (see
-/// `crate::gateway::event_loop::pulse::handle_pulse_tick`) from
+/// the gateway's `handle_pulse_tick`) from
 /// `PulseScheduler`'s persisted `last_output` map — single-hop only, so
 /// `output` is always that pulse's own stored output, never resolved
 /// through a `context_from` chain.
@@ -34,7 +34,7 @@ pub struct PulseContext {
 /// `overlap` is `Some` when the caller found this pulse's previous run still
 /// live in the session registry — the new run still starts normally, this
 /// only tags it so the overlap is visible in the Schedule place and on the
-/// run itself in the session panel (see `crate::gateway::event_loop::pulse`).
+/// run itself in the session panel (see the gateway's pulse event loop).
 ///
 /// `context` is `Some` when `pulse.context_from` names another pulse — see
 /// [`PulseContext`] — and is folded into the prompt by `build_pulse_prompt`.
@@ -60,14 +60,14 @@ pub fn build_pulse_execution(
     let model = pulse
         .model_tier
         .clone()
-        .unwrap_or(crate::config::ModelSelector::SMALL);
+        .unwrap_or(residuum_config::ModelSelector::SMALL);
 
     let trigger = EventTrigger::Pulse;
     let address = generate_address(&trigger, &pulse.name);
 
     SpawnRequestEvent {
         address,
-        skill: skill.map(crate::bus::SkillName::from),
+        skill: skill.map(residuum_bus::SkillName::from),
         source_label: format!("pulse:{}", pulse.name),
         prompt,
         context: None,
@@ -203,7 +203,7 @@ mod tests {
         assert!(spawn_event.prompt.contains("email_check"));
         assert!(spawn_event.prompt.contains(HEARTBEAT_OK));
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
-        assert_eq!(spawn_event.model, crate::config::ModelSelector::SMALL);
+        assert_eq!(spawn_event.model, residuum_config::ModelSelector::SMALL);
         assert!(
             spawn_event
                 .address
@@ -225,19 +225,19 @@ mod tests {
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
         // A pulse that names no tier runs small, whether or not it
         // names a skill — the tier is the pulse's own setting.
-        assert_eq!(spawn_event.model, crate::config::ModelSelector::SMALL);
+        assert_eq!(spawn_event.model, residuum_config::ModelSelector::SMALL);
     }
 
     #[test]
     fn execution_runs_the_pulse_model_tier_or_explicit_model() {
         let mut pulse = sample_pulse();
-        pulse.model_tier = Some(crate::config::ModelSelector::LARGE);
+        pulse.model_tier = Some(residuum_config::ModelSelector::LARGE);
         assert_eq!(
             build_pulse_execution(&pulse, None, None, &[]).model,
-            crate::config::ModelSelector::LARGE
+            residuum_config::ModelSelector::LARGE
         );
 
-        let explicit = crate::config::ModelSelector::Explicit("local/qwen3:8b".to_string());
+        let explicit = residuum_config::ModelSelector::Explicit("local/qwen3:8b".to_string());
         pulse.model_tier = Some(explicit.clone());
         assert_eq!(
             build_pulse_execution(&pulse, None, None, &[]).model,

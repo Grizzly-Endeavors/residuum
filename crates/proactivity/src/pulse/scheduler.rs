@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::config::ModelCatalog;
+use residuum_config::ModelCatalog;
 
 use super::types::{
     HeartbeatProblem, ProblemKind, PulseDef, heartbeat_problems_notice, is_within_active_hours,
@@ -40,7 +40,7 @@ pub struct PulseScheduler {
     /// summary isn't `HEARTBEAT_OK` (a failed or cancelled run never
     /// updates this) — keyed by pulse name, for `context_from` injection.
     /// Recorded from the pulse's own `AgentResultEvent` as it completes (see
-    /// `crate::gateway::event_loop::pulse::handle_pulse_result_event`), not
+    /// the gateway's `handle_pulse_result_event`), not
     /// from `due_pulses`, since the result arrives on the bus well after the
     /// tick that fired it.
     #[serde(default)]
@@ -292,7 +292,7 @@ impl PulseScheduler {
     /// agent whose own edit that tick is reloading — where "nothing new
     /// since last time" isn't the question being asked.
     #[must_use]
-    pub(crate) fn current_problems(&self) -> &[HeartbeatProblem] {
+    pub fn current_problems(&self) -> &[HeartbeatProblem] {
         &self.last_heartbeat_problems
     }
 
@@ -300,7 +300,7 @@ impl PulseScheduler {
     /// `HEARTBEAT.yml`, if the file is currently unparseable. `None` once a
     /// later tick parses successfully.
     #[must_use]
-    pub(crate) fn last_parse_error(&self) -> Option<&str> {
+    pub fn last_parse_error(&self) -> Option<&str> {
         self.last_heartbeat_parse_error.as_deref()
     }
 
@@ -332,17 +332,17 @@ impl PulseScheduler {
     /// The named pulse's most recently delivered output, if it has ever
     /// produced one — for resolving another pulse's `context_from`.
     #[must_use]
-    pub(crate) fn last_output(&self, pulse_name: &str) -> Option<&str> {
+    pub fn last_output(&self, pulse_name: &str) -> Option<&str> {
         self.last_output.get(pulse_name).map(String::as_str)
     }
 
     /// Record a pulse's newly delivered output (a completed run whose
     /// summary isn't `HEARTBEAT_OK`) and persist it immediately — this
     /// arrives from the bus between scheduler ticks (see
-    /// `crate::gateway::event_loop::pulse::handle_pulse_result_event`), so
+    /// the gateway's `handle_pulse_result_event`), so
     /// unlike `last_run` it can't simply ride along with `due_pulses`'s own
     /// save at the next tick.
-    pub(crate) fn record_pulse_output(&mut self, pulse_name: &str, output: String) {
+    pub fn record_pulse_output(&mut self, pulse_name: &str, output: String) {
         self.last_output.insert(pulse_name.to_string(), output);
         if let Err(e) = self.save_state() {
             tracing::warn!(
@@ -389,7 +389,7 @@ mod tests {
              - name: hosted\n    schedule: \"1m\"\n    model_tier: openai/gpt-4o\n    tasks: []\n",
         )
         .unwrap();
-        let models = crate::config::ModelCatalog::default();
+        let models = residuum_config::ModelCatalog::default();
         let mut scheduler = PulseScheduler::new();
         let start = chrono::Local::now().naive_local();
         let _first = scheduler.due_pulses(start, &path, &models);
@@ -447,13 +447,13 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let first = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let first = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(first.is_empty(), "a first-seen pulse should not fire");
 
         let almost = now + chrono::Duration::minutes(59);
         assert!(
             scheduler
-                .due_pulses(almost, &path, &crate::config::ModelCatalog::default())
+                .due_pulses(almost, &path, &residuum_config::ModelCatalog::default())
                 .is_empty(),
             "should not fire before one schedule duration has passed"
         );
@@ -461,7 +461,7 @@ pulses:
         let due = scheduler.due_pulses(
             now + chrono::Duration::hours(1),
             &path,
-            &crate::config::ModelCatalog::default(),
+            &residuum_config::ModelCatalog::default(),
         );
         assert_eq!(due.len(), 1, "should fire once first_seen + 1h is reached");
         assert_eq!(due.first().unwrap().name, "test_pulse", "name should match");
@@ -485,7 +485,7 @@ pulses:
             .unwrap();
         assert!(
             scheduler
-                .due_pulses(now, &path, &crate::config::ModelCatalog::default())
+                .due_pulses(now, &path, &residuum_config::ModelCatalog::default())
                 .is_empty(),
             "a new install must not fire a 7d pulse on the first tick"
         );
@@ -494,7 +494,7 @@ pulses:
                 .due_pulses(
                     now + chrono::Duration::days(6),
                     &path,
-                    &crate::config::ModelCatalog::default()
+                    &residuum_config::ModelCatalog::default()
                 )
                 .is_empty(),
             "still not due after 6 days"
@@ -504,7 +504,7 @@ pulses:
                 .due_pulses(
                     now + chrono::Duration::days(7),
                     &path,
-                    &crate::config::ModelCatalog::default()
+                    &residuum_config::ModelCatalog::default()
                 )
                 .len(),
             1,
@@ -521,7 +521,8 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let initial_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let initial_due =
+            scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             initial_due.is_empty(),
             "test_pulse is deferred on first tick"
@@ -542,7 +543,7 @@ pulses:
 
         let added_at = now + chrono::Duration::minutes(90);
         let due_at_add =
-            scheduler.due_pulses(added_at, &path, &crate::config::ModelCatalog::default());
+            scheduler.due_pulses(added_at, &path, &residuum_config::ModelCatalog::default());
         let names_at_add: Vec<_> = due_at_add.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names_at_add,
@@ -551,8 +552,11 @@ pulses:
         );
 
         let before_late = added_at + chrono::Duration::minutes(119);
-        let due_before_late =
-            scheduler.due_pulses(before_late, &path, &crate::config::ModelCatalog::default());
+        let due_before_late = scheduler.due_pulses(
+            before_late,
+            &path,
+            &residuum_config::ModelCatalog::default(),
+        );
         assert!(
             due_before_late.iter().all(|p| p.name != "late_pulse"),
             "late_pulse should not fire before its own schedule duration"
@@ -561,7 +565,7 @@ pulses:
         let due_at_late = scheduler.due_pulses(
             added_at + chrono::Duration::hours(2),
             &path,
-            &crate::config::ModelCatalog::default(),
+            &residuum_config::ModelCatalog::default(),
         );
         assert!(
             due_at_late.iter().any(|p| p.name == "late_pulse"),
@@ -582,7 +586,7 @@ pulses:
         // First tick only records the pulse as seen.
         assert!(
             scheduler
-                .due_pulses(now, &path, &crate::config::ModelCatalog::default())
+                .due_pulses(now, &path, &residuum_config::ModelCatalog::default())
                 .is_empty()
         );
 
@@ -590,7 +594,7 @@ pulses:
         let first_fire = now + chrono::Duration::hours(1);
         assert_eq!(
             scheduler
-                .due_pulses(first_fire, &path, &crate::config::ModelCatalog::default())
+                .due_pulses(first_fire, &path, &residuum_config::ModelCatalog::default())
                 .len(),
             1,
             "should fire after the schedule duration"
@@ -598,7 +602,7 @@ pulses:
 
         // 30 minutes after that — not yet due (schedule is 1h)
         let later = first_fire + chrono::Duration::minutes(30);
-        let due = scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "should not refire within schedule period");
     }
 
@@ -618,7 +622,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "disabled pulse should not fire");
     }
 
@@ -640,7 +644,7 @@ pulses:
             .unwrap()
             .and_hms_opt(22, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(night, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(night, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "pulse should not fire outside active hours");
     }
 
@@ -664,7 +668,7 @@ pulses:
             .unwrap();
         assert!(
             scheduler
-                .due_pulses(night, &path, &crate::config::ModelCatalog::default())
+                .due_pulses(night, &path, &residuum_config::ModelCatalog::default())
                 .is_empty()
         );
         assert!(
@@ -683,7 +687,7 @@ pulses:
             .unwrap();
         assert!(
             scheduler
-                .due_pulses(morning, &path, &crate::config::ModelCatalog::default())
+                .due_pulses(morning, &path, &residuum_config::ModelCatalog::default())
                 .is_empty()
         );
         assert_eq!(
@@ -695,7 +699,7 @@ pulses:
         let due = scheduler.due_pulses(
             morning + chrono::Duration::hours(1),
             &path,
-            &crate::config::ModelCatalog::default(),
+            &residuum_config::ModelCatalog::default(),
         );
         assert_eq!(due.len(), 1, "fires one schedule duration after first seen");
     }
@@ -720,14 +724,14 @@ pulses:
             .unwrap();
         assert!(
             scheduler
-                .due_pulses(day, &path, &crate::config::ModelCatalog::default())
+                .due_pulses(day, &path, &residuum_config::ModelCatalog::default())
                 .is_empty(),
             "first-seen pulse is deferred even inside active hours"
         );
         let due = scheduler.due_pulses(
             day + chrono::Duration::hours(1),
             &path,
-            &crate::config::ModelCatalog::default(),
+            &residuum_config::ModelCatalog::default(),
         );
         assert_eq!(due.len(), 1, "pulse should fire inside active hours");
     }
@@ -741,7 +745,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "missing HEARTBEAT.yml should return empty");
     }
 
@@ -761,7 +765,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "pulse with invalid schedule should be skipped"
@@ -785,7 +789,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "pulse with invalid active_hours should be skipped"
@@ -810,13 +814,13 @@ pulses:
             let mut sched = PulseScheduler::with_state_path(&state_path);
             assert!(
                 sched
-                    .due_pulses(now, &hb_path, &crate::config::ModelCatalog::default())
+                    .due_pulses(now, &hb_path, &residuum_config::ModelCatalog::default())
                     .is_empty()
             );
             let due = sched.due_pulses(
                 now + chrono::Duration::hours(1),
                 &hb_path,
-                &crate::config::ModelCatalog::default(),
+                &residuum_config::ModelCatalog::default(),
             );
             assert_eq!(due.len(), 1, "should fire after the schedule duration");
         }
@@ -828,7 +832,7 @@ pulses:
             let due = sched.due_pulses(
                 ninety_min_later,
                 &hb_path,
-                &crate::config::ModelCatalog::default(),
+                &residuum_config::ModelCatalog::default(),
             );
             assert!(due.is_empty(), "should not re-fire from persisted state");
         }
@@ -851,7 +855,7 @@ pulses:
                     .due_pulses(
                         first_seen,
                         &hb_path,
-                        &crate::config::ModelCatalog::default()
+                        &residuum_config::ModelCatalog::default()
                     )
                     .is_empty(),
                 "nothing fires on the first tick"
@@ -865,7 +869,7 @@ pulses:
                 .due_pulses(
                     first_seen + chrono::Duration::minutes(59),
                     &hb_path,
-                    &crate::config::ModelCatalog::default()
+                    &residuum_config::ModelCatalog::default()
                 )
                 .is_empty(),
             "a restart must not push the first run back or pull it forward"
@@ -873,7 +877,7 @@ pulses:
         let due = sched.due_pulses(
             first_seen + chrono::Duration::hours(1),
             &hb_path,
-            &crate::config::ModelCatalog::default(),
+            &residuum_config::ModelCatalog::default(),
         );
         assert_eq!(
             due.len(),
@@ -893,7 +897,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = sched.due_pulses(now, &hb_path, &crate::config::ModelCatalog::default());
+        let due = sched.due_pulses(now, &hb_path, &residuum_config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "missing state file means empty state, pulse is first-seen and deferred"
@@ -916,7 +920,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = sched.due_pulses(now, &hb_path, &crate::config::ModelCatalog::default());
+        let due = sched.due_pulses(now, &hb_path, &residuum_config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "corrupt state file should recover to empty state, pulse is first-seen and deferred"
@@ -949,7 +953,7 @@ pulses:
         let due = sched.due_pulses(
             thirty_min_later,
             &hb_path,
-            &crate::config::ModelCatalog::default(),
+            &residuum_config::ModelCatalog::default(),
         );
         assert!(
             due.is_empty(),
@@ -969,7 +973,7 @@ pulses:
             .unwrap();
 
         let mut sched = PulseScheduler::with_state_path(&state_path);
-        let _due = sched.due_pulses(now, &hb_path, &crate::config::ModelCatalog::default());
+        let _due = sched.due_pulses(now, &hb_path, &residuum_config::ModelCatalog::default());
 
         let contents = std::fs::read_to_string(&state_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
@@ -1068,7 +1072,11 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let _due = sched.due_pulses(tick_time, &hb_path, &crate::config::ModelCatalog::default());
+        let _due = sched.due_pulses(
+            tick_time,
+            &hb_path,
+            &residuum_config::ModelCatalog::default(),
+        );
 
         assert_eq!(
             sched.last_output("removed_pulse"),
@@ -1100,7 +1108,11 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let _due = sched.due_pulses(tick_time, &hb_path, &crate::config::ModelCatalog::default());
+        let _due = sched.due_pulses(
+            tick_time,
+            &hb_path,
+            &residuum_config::ModelCatalog::default(),
+        );
 
         let contents = std::fs::read_to_string(&state_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
@@ -1143,7 +1155,11 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = sched.due_pulses(tick_time, &hb_path, &crate::config::ModelCatalog::default());
+        let due = sched.due_pulses(
+            tick_time,
+            &hb_path,
+            &residuum_config::ModelCatalog::default(),
+        );
         assert_eq!(
             due.len(),
             1,
@@ -1193,7 +1209,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "a rejected pulse should never become due");
         let notice = scheduler.take_problem_notice();
         assert!(
@@ -1216,7 +1232,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let first_due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1232,7 +1248,7 @@ pulses:
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
             let later_due =
-                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+                scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
             assert!(
                 later_due.is_empty(),
                 "a rejected pulse should never become due"
@@ -1254,7 +1270,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let first_due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1263,7 +1279,7 @@ pulses:
 
         let later = now + chrono::Duration::minutes(1);
         let second_due =
-            scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+            scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
         assert!(
             second_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1290,7 +1306,7 @@ pulses:
         std::fs::write(&path, edited).unwrap();
         let even_later = now + chrono::Duration::minutes(2);
         let third_due =
-            scheduler.due_pulses(even_later, &path, &crate::config::ModelCatalog::default());
+            scheduler.due_pulses(even_later, &path, &residuum_config::ModelCatalog::default());
         assert!(
             third_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1314,7 +1330,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "a first-seen valid pulse is deferred");
         assert!(
             scheduler.take_problem_notice().is_none(),
@@ -1344,7 +1360,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "the surviving 'dup' pulse is first-seen, so deferred"
@@ -1374,7 +1390,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let first_due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "the surviving 'dup' pulse is deferred"
@@ -1390,7 +1406,7 @@ pulses:
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
             let later_due =
-                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+                scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
             assert!(later_due.is_empty(), "not due within the 1h schedule");
             assert!(
                 scheduler.take_problem_notice().is_none(),
@@ -1409,7 +1425,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let first_due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "the surviving 'dup' pulse is deferred"
@@ -1418,7 +1434,7 @@ pulses:
 
         let later = now + chrono::Duration::minutes(1);
         let second_due =
-            scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+            scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
         assert!(
             second_due.is_empty(),
             "not due again within the 1h schedule"
@@ -1448,7 +1464,7 @@ pulses:
         std::fs::write(&path, edited).unwrap();
         let even_later = now + chrono::Duration::minutes(2);
         let third_due =
-            scheduler.due_pulses(even_later, &path, &crate::config::ModelCatalog::default());
+            scheduler.due_pulses(even_later, &path, &residuum_config::ModelCatalog::default());
         assert!(
             third_due.is_empty(),
             "the new 'also-dup' survivor is first-seen, so deferred"
@@ -1487,7 +1503,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "a pulse with a bad schedule never fires");
         let notice = scheduler.take_problem_notice();
         assert!(notice.is_some(), "first tick should queue a notice");
@@ -1496,7 +1512,7 @@ pulses:
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
             let later_due =
-                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+                scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
             assert!(later_due.is_empty(), "a bad schedule never becomes due");
             assert!(
                 scheduler.take_problem_notice().is_none(),
@@ -1524,7 +1540,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(due.is_empty(), "a pulse with bad active_hours never fires");
         let notice = scheduler.take_problem_notice();
         assert!(notice.is_some(), "first tick should queue a notice");
@@ -1533,7 +1549,7 @@ pulses:
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
             let later_due =
-                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+                scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
             assert!(later_due.is_empty(), "bad active_hours never becomes due");
             assert!(
                 scheduler.take_problem_notice().is_none(),
@@ -1555,7 +1571,7 @@ pulses:
             .unwrap();
 
         // First tick loads the valid file and records the pulse as seen.
-        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let first_due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(first_due.is_empty(), "test_pulse is deferred on first tick");
         assert!(
             scheduler.take_problem_notice().is_none(),
@@ -1567,7 +1583,7 @@ pulses:
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         let later = now + chrono::Duration::hours(2);
         let due_while_broken =
-            scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
+            scheduler.due_pulses(later, &path, &residuum_config::ModelCatalog::default());
         assert_eq!(
             due_while_broken.len(),
             1,
@@ -1586,7 +1602,7 @@ pulses:
         for minute in 1..=5 {
             let even_later = later + chrono::Duration::minutes(minute);
             let repeat_due =
-                scheduler.due_pulses(even_later, &path, &crate::config::ModelCatalog::default());
+                scheduler.due_pulses(even_later, &path, &residuum_config::ModelCatalog::default());
             assert!(
                 repeat_due.is_empty(),
                 "not due again within the 1h schedule from its last (fallback) run"
@@ -1609,7 +1625,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
+        let due = scheduler.due_pulses(now, &path, &residuum_config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "with nothing known-good yet, a syntax error fires nothing"

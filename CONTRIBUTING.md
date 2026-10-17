@@ -189,7 +189,8 @@ The repository is one Cargo workspace. The root `Cargo.toml` is both the workspa
 | `residuum-bus` | `crates/bus` | `bus`: the topic broker and the payloads it carries (the session vocabulary, message origins, attachments, usage, workspace changes, interrupts), and `testing` behind `test-support` | core, config, inference, memory |
 | `residuum-workspace` | `crates/workspace` | `workspace`: identity files, bootstrapping, team files, the config, MCP patching, and the change feed (`watch`); `inbox`, the user and agent inboxes and the inbound attachment code; and `testing` behind `test-support` | core, config, bus, inference, mcp |
 | `residuum-agent` | `crates/agent` | `agent`: the turn loop, context assembly, the auto mode gate, usage, the `Tool` trait and the `ToolRegistry` container, the `TeamRoster` trait, and `testing` (the test tools) behind `test-support`; `subconscious`, the mid-turn and end-of-turn watch | core, config, bus, inference, memory, mcp, skills, workspace |
-| `residuum` | `.` | everything else: gateway, hub, interfaces, tools, background, a2a, notify, checkpoints, pulse, actions, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
+| `residuum-proactivity` | `crates/proactivity` | `pulse` (the heartbeat pulses: scheduling, scripts, the edit and next-run helpers, and `testing` behind `test-support`) and `actions` (scheduled actions and their store) | core, config, bus (dev: workspace) |
+| `residuum` | `.` | everything else: gateway, hub, interfaces, tools, background, a2a, notify, checkpoints, daemon, update, features, commands, and `logging`, `setup_wizard` | every member |
 
 ```
 residuum-memory     residuum-mcp

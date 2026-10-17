@@ -31,7 +31,7 @@ pub struct PulseDef {
     /// configured is reported by `PulseScheduler::due_pulses`, which skips
     /// the pulse until it resolves.
     #[serde(default)]
-    pub model_tier: Option<crate::config::ModelSelector>,
+    pub model_tier: Option<residuum_config::ModelSelector>,
     /// Name of another pulse whose most recent delivered output (a
     /// completed run that isn't `HEARTBEAT_OK`; a failed run doesn't count)
     /// should be injected into this pulse's prompt at fire time. Single-hop
@@ -139,7 +139,7 @@ fn default_enabled() -> bool {
 /// What kind of problem a `HeartbeatProblem` represents, which decides both
 /// the log level and which doc a notice about it points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProblemKind {
+pub enum ProblemKind {
     /// A pulse used an option removed by the agent sessions overhaul
     /// (`agent: "main"` or `include_identity`). Logged at `error!`; the
     /// owner notice links the migration guide.
@@ -150,7 +150,7 @@ pub(crate) enum ProblemKind {
     /// Logged at `warn!`; the owner notice links the heartbeats reference
     /// doc instead.
     Malformed,
-    /// A setting the pulse has no use for (see [`ignored_settings`]). The
+    /// A setting the pulse has no use for (see `ignored_settings`). The
     /// pulse still loads and runs. Logged at `warn!`; the owner notice
     /// lists it apart from the problems that stop a pulse, and links the
     /// heartbeats reference doc.
@@ -165,7 +165,7 @@ pub(crate) enum ProblemKind {
 /// Carries the already-formatted message so the log line and the owner
 /// notice built from it stay in sync with the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HeartbeatProblem {
+pub struct HeartbeatProblem {
     pub name: String,
     pub message: String,
     pub kind: ProblemKind,
@@ -182,7 +182,7 @@ pub(crate) struct HeartbeatProblem {
 /// notice fires once per distinct problem rather than on every reload of an
 /// unchanged file.
 #[must_use]
-pub(crate) fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String {
+pub fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String {
     let listed = |listing: &[&HeartbeatProblem]| {
         listing
             .iter()
@@ -520,7 +520,7 @@ fn yaml_kind(value: &serde_yaml_ng::Value) -> &'static str {
 /// degrades instead of stopping every pulse:
 ///
 /// - A single pulse entry that fails to deserialize (see
-///   [`deserialize_pulse_entry`]) is dropped; every other pulse in the file
+///   `deserialize_pulse_entry`) is dropped; every other pulse in the file
 ///   still loads.
 /// - A whole-document YAML syntax error, or a top-level `pulses` key that
 ///   isn't a list, keeps `last_good_pulses` — the last set that loaded
@@ -547,7 +547,7 @@ fn yaml_kind(value: &serde_yaml_ng::Value) -> &'static str {
 /// responsible for comparing against the previous call's result and only
 /// logging/notifying when it actually changed.
 #[must_use]
-pub(crate) fn load_heartbeat(
+pub fn load_heartbeat(
     path: &Path,
     last_parse_error: &mut Option<String>,
     problems: &mut Vec<HeartbeatProblem>,
@@ -646,7 +646,7 @@ pub(crate) fn load_heartbeat(
 
 /// Diagnostics for `content` as `HEARTBEAT.yml`.
 ///
-/// Reuses the same per-pulse deserialization ([`deserialize_pulse_entry`])
+/// Reuses the same per-pulse deserialization (`deserialize_pulse_entry`)
 /// and checks (`dedupe_pulse_names`, `reject_invalid_pulses`) that
 /// [`load_heartbeat`] applies, so a diagnostic can never disagree with what
 /// loading rejects or drops: a whole-document YAML syntax error carries
@@ -665,8 +665,8 @@ pub(crate) fn load_heartbeat(
 /// pulse is due to fire), so this doesn't flag them either — doing so would
 /// report a problem loading doesn't actually catch.
 #[must_use]
-pub(crate) fn diagnose_heartbeat(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
-    use crate::diagnostics::{Diagnostic, Location};
+pub fn diagnose_heartbeat(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
+    use residuum_core::diagnostics::{Diagnostic, Location};
 
     let root: serde_yaml_ng::Value = match serde_yaml_ng::from_str(content) {
         Ok(v) => v,
@@ -725,10 +725,10 @@ pub(crate) fn diagnose_heartbeat(content: &str) -> Vec<crate::diagnostics::Diagn
     diagnostics
 }
 
-/// Turn a [`HeartbeatProblem`] into a [`crate::diagnostics::Diagnostic`] located at the pulse it
+/// Turn a [`HeartbeatProblem`] into a [`residuum_core::diagnostics::Diagnostic`] located at the pulse it
 /// names: a warning for a setting with no effect, an error otherwise.
-fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> crate::diagnostics::Diagnostic {
-    use crate::diagnostics::{Diagnostic, Location};
+fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> residuum_core::diagnostics::Diagnostic {
+    use residuum_core::diagnostics::{Diagnostic, Location};
 
     let location = Location::Path {
         path: format!("pulses.{}", problem.name),
@@ -1125,7 +1125,7 @@ pulses:
     #[test]
     fn bundled_heartbeat_asset_parses_with_builtin_pulses() {
         let cfg: HeartbeatConfig =
-            serde_yaml_ng::from_str(crate::workspace::team::first_agent_heartbeat()).unwrap();
+            serde_yaml_ng::from_str(residuum_workspace::team::first_agent_heartbeat()).unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["reflection", "memory_tending", "wiki_lint"]);
         let agents: Vec<Option<&str>> = cfg.pulses.iter().map(|p| p.agent.as_deref()).collect();
@@ -1305,10 +1305,10 @@ pulses:
         assert_eq!(
             models,
             vec![
-                ("tiered", Some(crate::config::ModelSelector::LARGE)),
+                ("tiered", Some(residuum_config::ModelSelector::LARGE)),
                 (
                     "explicit",
-                    Some(crate::config::ModelSelector::Explicit(
+                    Some(residuum_config::ModelSelector::Explicit(
                         "local/qwen3:8b".to_string()
                     ))
                 ),
@@ -1572,7 +1572,7 @@ pulses:
 
     #[test]
     fn diagnose_heartbeat_reports_syntax_error_with_line_column() {
-        use crate::diagnostics::Location;
+        use residuum_core::diagnostics::Location;
 
         let diagnostics = diagnose_heartbeat(": not valid yaml [[");
         assert_eq!(diagnostics.len(), 1);
@@ -1921,7 +1921,10 @@ pulses:
 
         let diagnostics = diagnose_heartbeat(yaml);
         let diagnostic = diagnostics.first().unwrap();
-        assert_eq!(diagnostic.severity, crate::diagnostics::Severity::Warning);
+        assert_eq!(
+            diagnostic.severity,
+            residuum_core::diagnostics::Severity::Warning
+        );
     }
 
     #[test]
@@ -1939,14 +1942,14 @@ pulses:
     #[test]
     fn first_agent_heartbeat_includes_wiki_lint() {
         assert_eq!(
-            pulse_names(crate::workspace::team::first_agent_heartbeat()),
+            pulse_names(residuum_workspace::team::first_agent_heartbeat()),
             ["reflection", "memory_tending", "wiki_lint"]
         );
     }
 
     #[test]
     fn created_agent_heartbeat_keeps_memory_tending_without_wiki_lint() {
-        let template = crate::workspace::team::created_agent_heartbeat();
+        let template = residuum_workspace::team::created_agent_heartbeat();
         assert_eq!(pulse_names(template), ["reflection", "memory_tending"]);
         assert!(!template.contains("wiki_lint"));
         assert!(template.contains("# ── Starter pulses"));

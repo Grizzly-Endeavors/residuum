@@ -11,6 +11,7 @@ pub(crate) use residuum_net::{
     browser_landing, cross_site, remote_control_guard, tunnel, workbench,
 };
 pub use residuum_net::{pairing, remote_access};
+pub use residuum_proactivity::{actions, pulse};
 pub use residuum_skills as skills;
 pub use residuum_tracing_service as tracing_service;
 pub use residuum_workspace as workspace;
@@ -24,7 +25,6 @@ pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
 };
 
 pub mod a2a;
-pub mod actions;
 pub mod background;
 pub mod checkpoints;
 pub mod daemon;
@@ -36,7 +36,6 @@ pub mod interfaces;
 pub mod logging;
 pub mod notify;
 pub mod protocol;
-pub mod pulse;
 pub mod setup_wizard;
 #[cfg(test)]
 pub(crate) mod testing;
