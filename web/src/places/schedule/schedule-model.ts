@@ -89,6 +89,20 @@ export function lastRun(outcome: ScheduledRunOutcome, now: number): string {
   }
 }
 
+/**
+ * What a run in flight is doing, for its badge: running its task scripts,
+ * waiting for its session to start, or running its session.
+ */
+export function runPhase(run: ScheduledCurrentRun): string {
+  if (run.phase === "script") return "Running scripts";
+  return run.run_id === null ? "Starting session" : "Running session";
+}
+
+/** When a run in flight started: "Started 3m ago". */
+export function runStarted(run: ScheduledCurrentRun, now: number): string {
+  return `Started ${relativeTime(run.started_at, now)}`;
+}
+
 /** A note on a run that started before the one before it had finished, or `null`. */
 export function overlapNote(run: ScheduledCurrentRun, now: number): string | null {
   if (run.overlap === null) return null;
