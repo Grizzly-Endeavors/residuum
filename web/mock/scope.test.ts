@@ -9,7 +9,7 @@ import {
 } from "./test-support";
 
 describe("isFileDataRoute", () => {
-  // The same paths the backend's dispatch tests check (`src/hub/http/dispatch.rs`).
+  // The same paths the backend's dispatch tests check (`crates/hub/src/http/dispatch.rs`).
   it.each([
     "/chat/history",
     "/usage",

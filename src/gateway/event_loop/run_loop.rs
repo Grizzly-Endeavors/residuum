@@ -479,7 +479,7 @@ async fn spawn_change_feed_tasks(
 ) -> ChangeFeeds {
     let (health_tx, health) =
         tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
-    let workbench_watcher = match crate::hub::workbench_watcher::spawn_workbench_watcher(
+    let workbench_watcher = match crate::hub::spawn_workbench_watcher(
         layout.team().workbench_dir(),
         &team_feed.bus,
         core.publisher.clone(),

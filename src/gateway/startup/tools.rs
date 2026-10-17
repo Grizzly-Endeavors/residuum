@@ -106,7 +106,7 @@ mod tests {
     /// belongs to, so a session can create a teammate.
     #[tokio::test]
     async fn a_session_fork_can_create_a_teammate() {
-        use crate::hub::test_support::{mount_reply, write_agent};
+        use crate::hub::testing::{mount_reply, write_agent};
 
         let hub_root = tempfile::tempdir().expect("tempdir");
         let hub_dir = hub_root.path().join("hub");

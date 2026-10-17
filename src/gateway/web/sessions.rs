@@ -37,7 +37,7 @@ use crate::gateway::sessions::{
     summary_from_record,
 };
 use crate::gateway::web::artifact_identity::artifact_identity;
-use crate::hub::web::chat::HistoryMessage;
+use crate::hub::web::HistoryMessage;
 use crate::inference::Message;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;

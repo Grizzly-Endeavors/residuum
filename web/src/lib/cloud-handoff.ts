@@ -4,7 +4,7 @@
 // gateway's `/cloud/callback`, which saves the token when the sign-in's
 // `state` is one Connect started here, and redirects into the
 // app at Settings → Residuum Cloud with `cloud=<outcome>`
-// (`CallbackOutcome` in `src/hub/web/cloud.rs`). The router rewrites the
+// (`CallbackOutcome` in `crates/hub/src/web/cloud.rs`). The router rewrites the
 // address to its own form as it starts, which drops the parameter, so the
 // outcome is read from the address before the app mounts and handed to the
 // section once.

@@ -1,0 +1,3399 @@
+//! Workspace file browser API endpoints.
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use axum::body::Bytes;
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Json, Response};
+use serde::{Deserialize, Serialize};
+
+use residuum_bus::control::ReloadSignal;
+use residuum_workspace::access::{dir_holds_internal_data, is_blocked_path};
+use residuum_workspace::team_files::{TeamFiles, TeamPathGuard};
+use residuum_workspace::version::{modified_unix_ms, version_token};
+
+use super::ConfigApiState;
+
+/// Maximum size for a workspace text or raw read or write, in bytes (8 MiB).
+/// The `PUT /api/agents/{name}/workspace/file` and `PUT /api/agents/{name}/workspace/raw` routes' request
+/// body limits are raised to match, so an over-limit write is refused before
+/// the handler even runs.
+pub(crate) const TEXT_FILE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+
+/// A single entry in a workspace directory listing.
+#[derive(Serialize)]
+pub(super) struct WorkspaceEntry {
+    pub name: String,
+    pub entry_type: String,
+    pub size: Option<u64>,
+    pub modified: u64,
+    pub version: String,
+}
+
+/// Query parameters for `GET /api/agents/{name}/workspace/files` (directory listing).
+#[derive(Deserialize)]
+pub(super) struct FilesQuery {
+    pub path: Option<String>,
+}
+
+/// Query parameters for `GET /api/agents/{name}/workspace/file` (single file read).
+#[derive(Deserialize)]
+pub(super) struct FileQuery {
+    pub path: String,
+}
+
+/// Request body for `PUT /api/agents/{name}/workspace/file`.
+#[derive(Deserialize)]
+pub(super) struct WriteFileRequest {
+    pub path: String,
+    pub content: String,
+}
+
+/// Request body for `POST /api/agents/{name}/workspace/validate`.
+#[derive(Deserialize)]
+pub(super) struct ValidateFileRequest {
+    pub path: String,
+    pub content: String,
+}
+
+/// Response from `POST /api/agents/{name}/workspace/validate`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct ValidateFileResponse {
+    pub diagnostics: Vec<residuum_core::diagnostics::Diagnostic>,
+}
+
+/// Response from `PUT /api/agents/{name}/workspace/file`.
+///
+/// `diagnostics` is always populated when `path` is one of the
+/// strictly-parsed files `residuum_core::diagnostics` understands, whether or not
+/// `content` had a problem — empty means clean. The save always succeeds
+/// (`saved` is always `true` here; a validation problem is reported, not
+/// rejected), matching `write_file`/`edit_file`'s "write, then report" shape.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct WriteResponse {
+    pub saved: bool,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<residuum_core::diagnostics::Diagnostic>,
+    /// The checkpoint taken before a raw overwrite. Absent for a text write,
+    /// which takes none.
+    #[serde(default, flatten, skip_serializing_if = "UndoRefs::is_empty")]
+    pub undo: UndoRefs,
+}
+
+/// One checkpoint taken before a destructive action, and the repository
+/// that holds it. Workspace paths live in `workspace`; `team/...` paths in
+/// `team`. Restoring a path from the wrong repository finds nothing.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct CheckpointRef {
+    pub checkpoint_id: String,
+    pub checkpoint_repo: residuum_checkpoints::RepoKind,
+}
+
+/// The checkpoints a destructive action recorded, flattened into its
+/// response. One checkpoint (the common case, including every agent-only
+/// path) is `checkpoint_id` + `checkpoint_repo`. An action that touched both
+/// the agent directory and the team directory (a move between them) lists
+/// both under `checkpoints` instead. `checkpoint_id` is `null` when none
+/// could be recorded; the action still ran and the UI should not offer Undo.
+#[derive(Debug, Default, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct UndoRefs {
+    pub checkpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_repo: Option<residuum_checkpoints::RepoKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<CheckpointRef>,
+}
+
+impl UndoRefs {
+    fn from_recorded(mut recorded: Vec<CheckpointRef>) -> Self {
+        if recorded.len() == 1
+            && let Some(only) = recorded.pop()
+        {
+            return Self {
+                checkpoint_id: Some(only.checkpoint_id),
+                checkpoint_repo: Some(only.checkpoint_repo),
+                checkpoints: Vec::new(),
+            };
+        }
+        Self {
+            checkpoint_id: None,
+            checkpoint_repo: None,
+            checkpoints: recorded,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.checkpoint_id.is_none() && self.checkpoints.is_empty()
+    }
+}
+
+/// Body for a `412 Precondition Failed` response from a conditional write.
+#[derive(Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+struct ConditionalWriteError {
+    error: String,
+    current_version: Option<String>,
+}
+
+/// Query parameters for `DELETE /api/agents/{name}/workspace/file`.
+#[derive(Deserialize)]
+pub(super) struct DeleteFileQuery {
+    pub path: String,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+/// Response from `DELETE /api/agents/{name}/workspace/file`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct DeleteResponse {
+    pub deleted: bool,
+    /// The checkpoint holding the deleted path as it was, and the repository
+    /// it belongs to. `checkpoint_id` is `None` when it could not be
+    /// recorded; the delete still succeeded, and the UI should not offer Undo.
+    #[serde(flatten)]
+    pub undo: UndoRefs,
+}
+
+/// Request body for `POST /api/agents/{name}/workspace/dir`.
+#[derive(Deserialize)]
+pub(super) struct MkdirRequest {
+    pub path: String,
+}
+
+/// Response from `POST /api/agents/{name}/workspace/dir`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct MkdirResponse {
+    pub created: bool,
+}
+
+/// Request body for `POST /api/agents/{name}/workspace/move`.
+#[derive(Deserialize)]
+pub(super) struct MoveRequest {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Response from `POST /api/agents/{name}/workspace/move`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct MoveResponse {
+    pub moved: bool,
+    /// The moved file's new version. `None` for a moved directory, since
+    /// version tokens are file-specific.
+    pub version: Option<String>,
+    /// Diagnostics for the moved file's content at its new name, if `to` is
+    /// one of the strictly-parsed files `residuum_core::diagnostics` understands
+    /// (most relevantly, a move that lands on `HEARTBEAT.yml`). Empty for a
+    /// directory or an unrecognized file — the move always succeeds either way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<residuum_core::diagnostics::Diagnostic>,
+    /// The checkpoint(s) taken before the move: one per repository the move
+    /// touched (the source's and the destination's, when they differ).
+    #[serde(default, flatten, skip_serializing_if = "UndoRefs::is_empty")]
+    pub undo: UndoRefs,
+}
+
+/// Canonicalize the workspace root directory.
+pub(super) async fn canonicalize_workspace_root(
+    workspace_dir: &Path,
+) -> Result<PathBuf, (StatusCode, String)> {
+    tokio::fs::canonicalize(workspace_dir).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to resolve workspace directory: {e}"),
+        )
+    })
+}
+
+/// Resolve and validate a path relative to the workspace directory for
+/// reading.
+///
+/// Canonicalizes both the workspace root and the joined path, then verifies
+/// the result is still inside the workspace. Returns 403 if the path
+/// escapes the workspace boundary, 404 if it doesn't exist.
+///
+/// `label` is the path as the client addressed it, which differs from
+/// `relative` for a `team/...` path (relative to the team directory), so
+/// errors name what the client sent.
+pub(super) async fn validate_workspace_path(
+    workspace_dir: &Path,
+    relative: &str,
+    label: &str,
+) -> Result<PathBuf, (StatusCode, String)> {
+    let canonical_root = canonicalize_workspace_root(workspace_dir).await?;
+
+    let target = workspace_dir.join(relative);
+    let canonical_target = tokio::fs::canonicalize(&target).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            (StatusCode::NOT_FOUND, format!("path not found: {label}"))
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to resolve path: {e}"),
+            )
+        }
+    })?;
+
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("path traversal rejected: {label}"),
+        ));
+    }
+
+    Ok(canonical_target)
+}
+
+/// A namespace path placed on disk: the directory it is relative to, the
+/// remainder, and, for a path in the team directory, the team view its
+/// writes go through.
+pub(super) struct Located {
+    /// The workspace directory, or the team directory for a `team/...` path.
+    pub base: PathBuf,
+    /// The path relative to `base`, `/`-separated. Empty for `base` itself.
+    pub rel: String,
+    /// The path as the client addressed it (`team/...` for team files).
+    pub label: String,
+    /// `Some` when the path is in the team directory.
+    pub team: Option<TeamFiles>,
+}
+
+impl Located {
+    /// Resolve the path for reading: it must exist and stay inside its base.
+    pub(super) async fn existing(&self) -> Result<PathBuf, (StatusCode, String)> {
+        validate_workspace_path(&self.base, &self.rel, &self.label).await
+    }
+
+    /// Resolve the path for writing (it need not exist yet). Refuses the team
+    /// directory itself, and any spot inside a `team` entry of the workspace
+    /// directory, which the namespace reserves for the team prefix.
+    async fn for_write(&self, state: &ConfigApiState) -> Result<PathBuf, (StatusCode, String)> {
+        self.refuse_team_root()?;
+        let resolved = resolve_labeled_path_for_write(&self.base, &self.rel, &self.label).await?;
+        if self.team.is_none()
+            && let Some(team) = &state.team
+        {
+            team.check_no_agent_team_entry(&resolved)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        }
+        Ok(resolved)
+    }
+
+    /// The team directory itself can't be written, moved, or deleted through
+    /// the file API.
+    fn refuse_team_root(&self) -> Result<(), (StatusCode, String)> {
+        if self.team.is_some() && self.rel.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "team is the shared team folder; it can't be replaced, moved, or deleted"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Take the team write lock for `path` when it is a team path.
+    async fn lock(&self, path: &Path) -> Option<(TeamFiles, TeamPathGuard)> {
+        let team = self.team.as_ref()?;
+        Some((team.clone(), team.coordinator().lock(path).await))
+    }
+}
+
+/// Resolve a path relative to the workspace directory for writing.
+///
+/// Unlike `validate_workspace_path`, the target need not exist yet, and
+/// neither do its parent directories: this walks up from the target's
+/// parent to the nearest ancestor that does exist, canonicalizes *that*,
+/// and re-appends the missing segments. That keeps the escape check intact
+/// — canonicalization always happens on a path segment that is actually on
+/// disk, so a symlink planted inside the workspace can't walk a
+/// still-nonexistent path outside it — while letting the caller create the
+/// missing parent directories afterward.
+///
+/// `label` is the path as the client addressed it, used in errors (see
+/// [`validate_workspace_path`]).
+async fn resolve_labeled_path_for_write(
+    workspace_dir: &Path,
+    relative: &str,
+    label: &str,
+) -> Result<PathBuf, (StatusCode, String)> {
+    let canonical_root = canonicalize_workspace_root(workspace_dir).await?;
+
+    let target = workspace_dir.join(relative);
+    let file_name = target.file_name().map(OsString::from).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("path has no file name: {label}"),
+        )
+    })?;
+    let parent = target.parent().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("path has no parent directory: {label}"),
+        )
+    })?;
+
+    let (canonical_existing, missing_segments) = nearest_existing_ancestor(parent, label).await?;
+
+    if !canonical_existing.starts_with(&canonical_root) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("path traversal rejected: {label}"),
+        ));
+    }
+
+    let mut resolved = canonical_existing;
+    for segment in missing_segments.into_iter().rev() {
+        resolved.push(segment);
+    }
+    resolved.push(file_name);
+
+    Ok(resolved)
+}
+
+/// Walk up from `start` until an existing directory is found, returning its
+/// canonical path and the segment names that don't exist yet (nearest
+/// first).
+async fn nearest_existing_ancestor(
+    start: &Path,
+    relative: &str,
+) -> Result<(PathBuf, Vec<OsString>), (StatusCode, String)> {
+    let mut existing = start.to_path_buf();
+    let mut missing = Vec::new();
+
+    loop {
+        match tokio::fs::metadata(&existing).await {
+            Ok(meta) if meta.is_dir() => break,
+            Ok(_) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("a parent of {relative} exists but is not a directory"),
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name().map(OsString::from) else {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        format!("path traversal rejected: {relative}"),
+                    ));
+                };
+                missing.push(name);
+                if !existing.pop() {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        format!("path traversal rejected: {relative}"),
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to resolve path: {e}"),
+                ));
+            }
+        }
+    }
+
+    let canonical = tokio::fs::canonicalize(&existing).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to resolve path: {e}"),
+        )
+    })?;
+
+    Ok((canonical, missing))
+}
+
+/// Returns true if the path names one of the agent's own identity files.
+///
+/// Checks the file name only (ignores any leading directory components) so that
+/// identity files nested inside subdirectories are also recognised. The team
+/// layer's `AGENTS.md` and `USER.md` are identified by resolved path instead,
+/// see [`is_identity_target`].
+fn is_identity_file(relative: &str) -> bool {
+    const IDENTITY_FILES: &[&str] = &["SOUL.md", "HEARTBEAT.yml"];
+
+    let file_name = Path::new(relative)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    IDENTITY_FILES.contains(&file_name)
+}
+
+/// Returns true if `resolved` (an absolute path a write, delete or move
+/// touched) is an identity file: one of the agent's own, or the team's
+/// `AGENTS.md` / `USER.md`, whatever path they were reached through.
+async fn is_identity_target(state: &ConfigApiState, relative: &str, resolved: &Path) -> bool {
+    if is_identity_file(relative) {
+        return true;
+    }
+    let layout = residuum_config::WorkspaceLayout::new(&state.workspace_dir);
+    let team = layout.team();
+    let Some(team_root) = tokio::fs::canonicalize(team.root()).await.ok() else {
+        return [team.agents_md(), team.user_md()]
+            .iter()
+            .any(|file| file == resolved);
+    };
+    [team.agents_md(), team.user_md()]
+        .iter()
+        .filter_map(|file| file.file_name().map(|name| team_root.join(name)))
+        .any(|file| file == resolved)
+}
+
+/// `GET /api/agents/{name}/workspace/files` — list directory contents inside the workspace.
+///
+/// Defaults to the workspace root when no `path` query parameter is provided.
+/// Directories are sorted before files; entries within each group are sorted
+/// alphabetically. Blocked paths (internal databases, index directories) are
+/// excluded from the listing.
+pub(super) async fn api_workspace_files(
+    Query(query): Query<FilesQuery>,
+    State(state): State<ConfigApiState>,
+) -> Result<Json<Vec<WorkspaceEntry>>, (StatusCode, String)> {
+    let relative = query.path.unwrap_or_default();
+
+    if is_blocked_path(&relative) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "access to this path is blocked".to_string(),
+        ));
+    }
+
+    let located = state.locate(&relative);
+    let dir_path = if relative.is_empty() {
+        state.workspace_dir.clone()
+    } else {
+        located.existing().await?
+    };
+    let relative = relative.trim_end_matches('/').to_string();
+
+    let mut read_dir = tokio::fs::read_dir(&dir_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read directory: {e}"),
+        )
+    })?;
+
+    let mut entries: Vec<WorkspaceEntry> = Vec::new();
+    while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read directory entry: {e}"),
+        )
+    })? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let entry_relative = if relative.is_empty() {
+            name.clone()
+        } else {
+            format!("{relative}/{name}")
+        };
+
+        if is_blocked_path(&entry_relative) {
+            continue;
+        }
+
+        if let Some(item) = workspace_entry(name, &entry).await? {
+            entries.push(item);
+        }
+    }
+
+    // The team directory appears as a `team` folder at the top of the tree.
+    if relative.is_empty()
+        && let Some(team_root) = state.team_mount()
+        && !entries
+            .iter()
+            .any(|e| e.name == residuum_workspace::team_files::TEAM_PREFIX)
+        && let Ok(metadata) = tokio::fs::metadata(&team_root).await
+        && metadata.is_dir()
+    {
+        entries.push(WorkspaceEntry {
+            name: residuum_workspace::team_files::TEAM_PREFIX.to_string(),
+            entry_type: "directory".to_string(),
+            size: None,
+            modified: modified_unix_ms(&metadata),
+            version: version_token(&metadata),
+        });
+    }
+
+    // Sort: directories first, then alphabetically within each group.
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.entry_type == "directory";
+        let b_is_dir = b.entry_type == "directory";
+        b_is_dir.cmp(&a_is_dir).then_with(|| a.name.cmp(&b.name))
+    });
+
+    Ok(Json(entries))
+}
+
+/// Build a `WorkspaceEntry` for one directory entry.
+///
+/// Returns `Ok(None)` if the entry disappeared between listing the
+/// directory and statting it — a benign race with a concurrent delete, not
+/// an error the caller should surface.
+async fn workspace_entry(
+    name: String,
+    entry: &tokio::fs::DirEntry,
+) -> Result<Option<WorkspaceEntry>, (StatusCode, String)> {
+    let metadata = match entry.metadata().await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read metadata for {name}: {e}"),
+            ));
+        }
+    };
+
+    let (entry_type, size) = if metadata.is_dir() {
+        ("directory".to_string(), None)
+    } else {
+        ("file".to_string(), Some(metadata.len()))
+    };
+
+    Ok(Some(WorkspaceEntry {
+        name,
+        entry_type,
+        size,
+        modified: modified_unix_ms(&metadata),
+        version: version_token(&metadata),
+    }))
+}
+
+/// `GET /api/agents/{name}/workspace/file` — read a workspace file as plain text.
+///
+/// Returns 404 if the file does not exist, 403 if the path is blocked, 413
+/// if the file exceeds the 8 MiB text limit, and 415 if the file is not
+/// valid UTF-8 (pointing the caller at the raw endpoint instead). On
+/// success the response carries an `ETag` header with the file's version.
+pub(super) async fn api_workspace_file_read(
+    Query(query): Query<FileQuery>,
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let relative = &query.path;
+
+    if is_blocked_path(relative) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "access to this path is blocked".to_string(),
+        ));
+    }
+
+    let path = state.locate(relative).existing().await?;
+
+    let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            (StatusCode::NOT_FOUND, format!("file not found: {relative}"))
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to stat file: {e}"),
+            )
+        }
+    })?;
+
+    if metadata.len() > TEXT_FILE_LIMIT_BYTES as u64 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "file exceeds the {TEXT_FILE_LIMIT_BYTES}-byte text limit ({} bytes)",
+                metadata.len()
+            ),
+        ));
+    }
+
+    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read file: {e}"),
+        )
+    })?;
+
+    let content = String::from_utf8(bytes).map_err(|utf8_err| {
+        tracing::debug!(
+            path = %relative,
+            error = %utf8_err,
+            "workspace file read rejected: not valid utf-8"
+        );
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!(
+                "{relative} is not valid UTF-8 text; read it from \
+                 /api/workspace/raw?path={relative} instead"
+            ),
+        )
+    })?;
+
+    let version = version_token(&metadata);
+    let mut response = content.into_response();
+    if let Ok(header_value) = HeaderValue::from_str(&version) {
+        response.headers_mut().insert(header::ETAG, header_value);
+    }
+
+    Ok(response)
+}
+
+/// A header's value as `&str`, `None` if absent or not valid UTF-8.
+fn header_str(headers: &HeaderMap, name: HeaderName) -> Option<&str> {
+    headers.get(name)?.to_str().ok()
+}
+
+/// Build a `412 Precondition Failed` response with the conditional-write
+/// error body: `{ "error": "...", "current_version": "<version>" | null }`.
+fn precondition_failed(error: String, current_version: Option<String>) -> Response {
+    (
+        StatusCode::PRECONDITION_FAILED,
+        Json(ConditionalWriteError {
+            error,
+            current_version,
+        }),
+    )
+        .into_response()
+}
+
+/// Check `If-Match`/`If-None-Match` against the file currently at
+/// `target_path`. Returns `Ok(Some(response))` with a `412` when the
+/// precondition fails, `Ok(None)` when the write may proceed (including
+/// when neither header is present, which is unconditional).
+async fn check_conditional_write(
+    target_path: &Path,
+    headers: &HeaderMap,
+) -> Result<Option<Response>, (StatusCode, String)> {
+    let if_match = header_str(headers, header::IF_MATCH);
+    let if_none_match_star = header_str(headers, header::IF_NONE_MATCH) == Some("*");
+
+    if if_match.is_none() && !if_none_match_star {
+        return Ok(None);
+    }
+
+    let current_version = match tokio::fs::metadata(target_path).await {
+        Ok(meta) => Some(version_token(&meta)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to stat file: {e}"),
+            ));
+        }
+    };
+
+    if if_none_match_star && current_version.is_some() {
+        return Ok(Some(precondition_failed(
+            "file already exists".to_string(),
+            current_version,
+        )));
+    }
+
+    if let Some(expected) = if_match
+        && current_version.as_deref() != Some(expected)
+    {
+        return Ok(Some(precondition_failed(
+            "file has changed since it was last read".to_string(),
+            current_version,
+        )));
+    }
+
+    Ok(None)
+}
+
+/// Diagnostics for `bytes` about to be written to workspace-relative
+/// `relative`, if it's one of the strictly-parsed files `residuum_core::diagnostics`
+/// understands. Never blocks the write — a strictly-parsed file with a
+/// problem (invalid `HEARTBEAT.yml`, say) is still saved, and the caller
+/// reports these diagnostics alongside the save so the problem is visible
+/// rather than accepted silently. Empty means either `relative` isn't one of
+/// these files, or its content has nothing to report.
+fn diagnose_write_content(
+    state: &ConfigApiState,
+    relative: &str,
+    bytes: &[u8],
+) -> Vec<residuum_core::diagnostics::Diagnostic> {
+    // A team file is recognized by where it really is, which the workspace-
+    // relative spelling can't say.
+    let located = state.locate(relative);
+    let team_path = located
+        .team
+        .is_some()
+        .then(|| located.base.join(&located.rel));
+    let path = team_path.as_deref().unwrap_or_else(|| Path::new(relative));
+    let paths = state.diagnostics_paths();
+
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        // Every file this module understands is text (YAML/TOML/JSON/MD), so
+        // non-UTF-8 content on a recognized path is itself worth reporting,
+        // even though there's no parser to run on bytes that aren't text.
+        return if residuum_a2a::diagnostics_dispatch::is_recognized(path, &paths) {
+            vec![residuum_core::diagnostics::Diagnostic::error(
+                "content is not valid UTF-8 text",
+            )]
+        } else {
+            Vec::new()
+        };
+    };
+
+    residuum_a2a::diagnostics_dispatch::diagnose(path, text, &paths).unwrap_or_default()
+}
+
+/// `POST /api/agents/{name}/workspace/validate` — diagnostics for `content` as if it were
+/// saved to `path`, without writing anything.
+///
+/// `path` is resolved the same way a write would resolve it: against the app
+/// config directory for `config.toml`/`providers.toml`, against the
+/// workspace root for `config/channels.toml`, `config/mcp.json`,
+/// `config/a2a.json`, and by filename alone for `HEARTBEAT.yml` and a skill
+/// `SKILL.md`. Empty diagnostics means either the content is clean or
+/// `path` isn't one of these files — this endpoint never errors on an
+/// unrecognized path, since the editor calls it on every debounced
+/// keystroke and most files have nothing to check.
+pub(super) async fn api_workspace_validate(
+    State(state): State<ConfigApiState>,
+    Json(req): Json<ValidateFileRequest>,
+) -> Json<ValidateFileResponse> {
+    let diagnostics = diagnose_write_content(&state, &req.path, req.content.as_bytes());
+    Json(ValidateFileResponse { diagnostics })
+}
+
+/// Send the workspace reload signal if `resolved` (reached as `relative`) is
+/// an identity file. Every write path that can leave an identity file's content changed —
+/// text write, raw write, delete, and either side of a move — applies this
+/// one function rather than repeating the check.
+async fn signal_identity_reload(relative: &str, resolved: &Path, state: &ConfigApiState) {
+    if is_identity_target(state, relative, resolved).await
+        && let Some(tx) = &state.reload_tx
+    {
+        // Best-effort: receiver may have been dropped during shutdown.
+        tx.send(ReloadSignal::Workspace).ok();
+    }
+}
+
+/// Write `bytes` to workspace-relative `relative`: blocked-path check, the
+/// conditional-write precondition, an atomic write that creates missing
+/// parent directories, and the identity-file reload signal. Shared by the
+/// text and raw write endpoints; size limits are checked by the caller
+/// before this runs, since the two endpoints report the limit against a
+/// different unit (`content` characters vs. body bytes). Diagnostics for a
+/// strictly-parsed file are computed and reported alongside the save, never
+/// blocking it — see [`diagnose_write_content`].
+async fn write_workspace_bytes(
+    state: &ConfigApiState,
+    relative: &str,
+    bytes: &[u8],
+    headers: &HeaderMap,
+    undo: UndoRefs,
+) -> Result<Response, (StatusCode, String)> {
+    if is_blocked_path(relative) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "access to this path is blocked".to_string(),
+        ));
+    }
+
+    let diagnostics = diagnose_write_content(state, relative, bytes);
+
+    let located = state.locate(relative);
+    let target_path = located.for_write(state).await?;
+
+    // A team file is written under its per-path lock, so the precondition
+    // below and the write can't interleave with an agent's write.
+    let team_lock = located.lock(&target_path).await;
+
+    if let Some(conflict) = check_conditional_write(&target_path, headers).await? {
+        return Ok(conflict);
+    }
+
+    if let Some((team, guard)) = &team_lock {
+        guard.commit(team.writer(), bytes).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to write file: {e:#}"),
+            )
+        })?;
+    } else {
+        let parent = target_path.parent().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("path has no parent directory: {relative}"),
+            )
+        })?;
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to create parent directory: {e}"),
+            )
+        })?;
+
+        residuum_core::util::fs::atomic_write(&target_path, bytes)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to write file: {e}"),
+                )
+            })?;
+    }
+
+    let metadata = tokio::fs::metadata(&target_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to stat file after write: {e}"),
+        )
+    })?;
+    let version = version_token(&metadata);
+
+    signal_identity_reload(relative, &target_path, state).await;
+
+    Ok(Json(WriteResponse {
+        saved: true,
+        version,
+        diagnostics,
+        undo,
+    })
+    .into_response())
+}
+
+/// `PUT /api/agents/{name}/workspace/file` — write content to a workspace file.
+///
+/// Creates the file and any missing parent directories inside the
+/// workspace. Writes are atomic (temp file in the target directory, then
+/// rename) and capped at 8 MiB. `If-Match: <version>` and
+/// `If-None-Match: *` are honored as conditional-write preconditions,
+/// answering `412` on a mismatch; without either header the write is
+/// unconditional. Returns `{ saved: true, version }` on success.
+///
+/// If the written file is a workspace identity file and a reload channel is
+/// available, sends a `Workspace` reload signal.
+///
+/// The write always succeeds, even for a strictly-parsed file like
+/// `HEARTBEAT.yml` with invalid content — the pulse scheduler simply won't
+/// pick up an unparseable `HEARTBEAT.yml` on its next hot-reload. Instead of
+/// rejecting the save, the response's `diagnostics` names the problem (see
+/// `residuum_core::diagnostics`) so the editor can show it right away.
+pub(super) async fn api_workspace_file_write(
+    State(state): State<ConfigApiState>,
+    headers: HeaderMap,
+    Json(req): Json<WriteFileRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    if req.content.len() > TEXT_FILE_LIMIT_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "content exceeds the {TEXT_FILE_LIMIT_BYTES}-byte text limit ({} bytes)",
+                req.content.len()
+            ),
+        ));
+    }
+
+    write_workspace_bytes(
+        &state,
+        &req.path,
+        req.content.as_bytes(),
+        &headers,
+        UndoRefs::default(),
+    )
+    .await
+}
+
+/// `GET /api/agents/{name}/workspace/raw` — read a workspace file as raw bytes.
+///
+/// Returns the file's bytes with a `Content-Type` guessed from its
+/// extension and an `ETag` header carrying its version. `404` if missing,
+/// `403` if the path is blocked, `413` over the 8 MiB limit shared with the
+/// text read endpoint.
+pub(super) async fn api_workspace_raw_read(
+    Query(query): Query<FileQuery>,
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let relative = &query.path;
+
+    if is_blocked_path(relative) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "access to this path is blocked".to_string(),
+        ));
+    }
+
+    let path = state.locate(relative).existing().await?;
+
+    let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            (StatusCode::NOT_FOUND, format!("file not found: {relative}"))
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to stat file: {e}"),
+            )
+        }
+    })?;
+
+    if metadata.len() > TEXT_FILE_LIMIT_BYTES as u64 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "file exceeds the {TEXT_FILE_LIMIT_BYTES}-byte raw read limit ({} bytes)",
+                metadata.len()
+            ),
+        ));
+    }
+
+    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read file: {e}"),
+        )
+    })?;
+
+    let version = version_token(&metadata);
+    let mime_type = residuum_bus::attachment::detect_mime_type(&path);
+
+    let mut response = bytes.into_response();
+    let response_headers = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&mime_type) {
+        response_headers.insert(header::CONTENT_TYPE, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&version) {
+        response_headers.insert(header::ETAG, v);
+    }
+    crate::file_server::mark_agent_file(response_headers, &mime_type);
+
+    Ok(response)
+}
+
+/// `PUT /api/agents/{name}/workspace/raw` — write raw bytes to a workspace file.
+///
+/// The request body is the file's exact bytes, up to 8 MiB (the route's
+/// body limit is raised to match). Otherwise identical to the text write
+/// endpoint: atomic, creates parents, honors `If-Match`/`If-None-Match`,
+/// sends the identity-file reload signal, and always succeeds — a
+/// non-UTF-8 raw write to a recognized name like `HEARTBEAT.yml` is saved
+/// with a diagnostic reported alongside it, the same as malformed YAML
+/// would be. Returns `{ saved: true, version, diagnostics }`.
+pub(super) async fn api_workspace_raw_write(
+    Query(query): Query<FileQuery>,
+    State(state): State<ConfigApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, (StatusCode, String)> {
+    if body.len() > TEXT_FILE_LIMIT_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "body exceeds the {TEXT_FILE_LIMIT_BYTES}-byte raw write limit ({} bytes)",
+                body.len()
+            ),
+        ));
+    }
+
+    let located = state.locate(&query.path);
+    let undo = checkpoint_before_destructive_action(
+        &state,
+        &[&located],
+        &format!("raw write {}", query.path),
+    )
+    .await;
+    write_workspace_bytes(&state, &query.path, &body, &headers, undo).await
+}
+
+/// Checkpoint the repository each of `paths` lives in before a destructive
+/// workspace API action (delete, overwrite, move/rename): the workspace
+/// repository for an agent path, the team repository for a `team/...` path,
+/// both for an action that spans the two. Never blocks or fails the action —
+/// see `residuum_checkpoints`. Names the checkpoints that were recorded and the
+/// repository holding each.
+async fn checkpoint_before_destructive_action(
+    state: &ConfigApiState,
+    paths: &[&Located],
+    summary: &str,
+) -> UndoRefs {
+    let touches_workspace = paths.iter().any(|located| located.team.is_none());
+    let touches_team = paths.iter().any(|located| located.team.is_some());
+    let mut recorded = Vec::new();
+    if touches_workspace
+        && let Some(checkpoint_id) = state
+            .checkpoint_workspace_id_before_write(summary.to_string())
+            .await
+    {
+        recorded.push(CheckpointRef {
+            checkpoint_id,
+            checkpoint_repo: residuum_checkpoints::RepoKind::Workspace,
+        });
+    }
+    if touches_team
+        && let Some(checkpoint_id) = state
+            .checkpoint_team_id_before_write(summary.to_string())
+            .await
+    {
+        recorded.push(CheckpointRef {
+            checkpoint_id,
+            checkpoint_repo: residuum_checkpoints::RepoKind::Team,
+        });
+    }
+    UndoRefs::from_recorded(recorded)
+}
+
+/// `DELETE /api/agents/{name}/workspace/file` — delete a workspace file or directory.
+///
+/// A directory requires `recursive=true`; without it the request answers
+/// `409`. The workspace root cannot be deleted (`400`). `If-Match` applies
+/// to files, not directories, since a directory has no single version
+/// token. Deleting an identity file sends the reload signal.
+/// Refuse a bulk operation on the directory at `dir` when it holds
+/// Residuum's own data (the search index or a database), which Residuum
+/// keeps open while it runs.
+async fn refuse_if_dir_holds_internal_data(
+    dir: &Path,
+    relative: &str,
+) -> Result<(), (StatusCode, String)> {
+    let owned = dir.to_path_buf();
+    let owned_relative = relative.to_string();
+    let holds = residuum_core::util::spawn_blocking_in_span(move || {
+        dir_holds_internal_data(&owned, &owned_relative)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to check {relative} for internal data: {e}"),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to check {relative} for internal data: {e}"),
+        )
+    })?;
+    if holds {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "{relative} holds Residuum's own memory index or database files, which can't be deleted, moved, or replaced through the file API"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) async fn api_workspace_delete(
+    Query(query): Query<DeleteFileQuery>,
+    State(state): State<ConfigApiState>,
+    headers: HeaderMap,
+) -> Result<Response, (StatusCode, String)> {
+    let relative = &query.path;
+
+    if is_blocked_path(relative) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "access to this path is blocked".to_string(),
+        ));
+    }
+
+    let located = state.locate(relative);
+    let path = located.existing().await?;
+    let canonical_root = canonicalize_workspace_root(&located.base).await?;
+    if path == canonical_root {
+        let what = if located.team.is_some() {
+            "the team folder"
+        } else {
+            "the workspace root"
+        };
+        return Err((StatusCode::BAD_REQUEST, format!("{what} cannot be deleted")));
+    }
+    // A team path is deleted under its per-path lock, and the deletion is
+    // recorded so an agent that wrote there earlier learns who removed it.
+    let team_lock = located.lock(&path).await;
+
+    let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to stat path: {e}"),
+        )
+    })?;
+
+    let undo;
+    if metadata.is_dir() {
+        if !query.recursive {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("{relative} is a directory; pass recursive=true to delete it"),
+            ));
+        }
+        refuse_if_dir_holds_internal_data(&path, relative).await?;
+        undo = checkpoint_before_destructive_action(
+            &state,
+            &[&located],
+            &format!("delete {relative}"),
+        )
+        .await;
+        tokio::fs::remove_dir_all(&path).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to delete directory: {e}"),
+            )
+        })?;
+        if let Some((team, guard)) = &team_lock {
+            guard.record_tree_removed(team.writer());
+        }
+    } else {
+        if let Some(conflict) = check_conditional_write(&path, &headers).await? {
+            return Ok(conflict);
+        }
+        undo = checkpoint_before_destructive_action(
+            &state,
+            &[&located],
+            &format!("delete {relative}"),
+        )
+        .await;
+        tokio::fs::remove_file(&path).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to delete file: {e}"),
+            )
+        })?;
+        if let Some((team, guard)) = &team_lock {
+            guard.record_removed(team.writer());
+        }
+    }
+
+    signal_identity_reload(relative, &path, &state).await;
+
+    Ok(Json(DeleteResponse {
+        deleted: true,
+        undo,
+    })
+    .into_response())
+}
+
+/// `POST /api/agents/{name}/workspace/dir` — create a workspace directory and any missing
+/// parents. Idempotent: creating a directory that already exists succeeds
+/// without changing anything. Answers `409` if a non-directory file already
+/// exists at that path.
+pub(super) async fn api_workspace_mkdir(
+    State(state): State<ConfigApiState>,
+    Json(req): Json<MkdirRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    let relative = &req.path;
+
+    if is_blocked_path(relative) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "access to this path is blocked".to_string(),
+        ));
+    }
+    if relative.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "path is required".to_string()));
+    }
+
+    let target = state.locate(relative).for_write(&state).await?;
+
+    match tokio::fs::metadata(&target).await {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("{relative} already exists and is not a directory"),
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir_all(&target)
+                .await
+                .map_err(|create_err| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to create directory: {create_err}"),
+                    )
+                })?;
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to stat path: {e}"),
+            ));
+        }
+    }
+
+    Ok(Json(MkdirResponse { created: true }).into_response())
+}
+
+/// Get `to_path` ready to receive a rename: creates its missing parent
+/// directories, and checks what already exists there. Without `overwrite`,
+/// an existing destination answers `409`.
+///
+/// A file replacing a file is left to the rename itself, which replaces the
+/// target in one step on every platform (on Windows `std::fs::rename` uses
+/// `MOVEFILE_REPLACE_EXISTING`), so a failed move never loses the existing
+/// file. Only when a directory is involved on either side does the
+/// destination need clearing first, since no platform renames over a
+/// non-empty directory or between a file and a directory — and even then,
+/// it's moved aside rather than deleted outright: returns `Some(aside_path)`
+/// for the caller to remove once its own rename onto `to_path` succeeds, or
+/// to rename back onto `to_path` if that rename fails, so a failed move
+/// never destroys what was there before.
+async fn ready_move_destination(
+    to_path: &Path,
+    to_relative: &str,
+    overwrite: bool,
+    source_is_dir: bool,
+) -> Result<Option<PathBuf>, (StatusCode, String)> {
+    let to_exists = match tokio::fs::metadata(to_path).await {
+        Ok(meta) => Some(meta),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to stat destination path: {e}"),
+            ));
+        }
+    };
+
+    if to_exists.is_some() && !overwrite {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("{to_relative} already exists; pass overwrite: true to replace it"),
+        ));
+    }
+
+    let parent = to_path.parent().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("path has no parent directory: {to_relative}"),
+        )
+    })?;
+    tokio::fs::create_dir_all(parent).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create parent directory: {e}"),
+        )
+    })?;
+
+    let Some(existing) = to_exists else {
+        return Ok(None);
+    };
+    if !existing.is_dir() && !source_is_dir {
+        return Ok(None);
+    }
+    if existing.is_dir() {
+        refuse_if_dir_holds_internal_data(to_path, to_relative).await?;
+    }
+
+    let aside = aside_path_for(to_path)?;
+    tokio::fs::rename(to_path, &aside).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to move the existing destination aside: {e}"),
+        )
+    })?;
+    Ok(Some(aside))
+}
+
+/// A same-directory temp path to move an existing destination aside to
+/// before it's cleared, so a failure between clearing it and completing the
+/// incoming rename never destroys data. Named like
+/// [`residuum_core::util::fs::atomic_write`]'s temp files so
+/// [`residuum_workspace::access::is_blocked_path`] (via
+/// [`residuum_core::util::fs::is_atomic_write_temp`]) hides it from listings and the
+/// change feed for the brief window it exists.
+fn aside_path_for(path: &Path) -> Result<PathBuf, (StatusCode, String)> {
+    let dir = path.parent().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("path has no parent directory: {}", path.display()),
+        )
+    })?;
+    let filename = path
+        .file_name()
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("path has no filename: {}", path.display()),
+            )
+        })?
+        .to_string_lossy();
+    let suffix: u32 = rand::random();
+    Ok(dir.join(format!(".{filename}.{suffix:08x}.residuum-tmp")))
+}
+
+/// Remove whatever [`ready_move_destination`] moved aside, now that the
+/// incoming rename onto its original path has succeeded. A failure here
+/// only strands a hidden temp file — the move itself already succeeded —
+/// so it's logged rather than turned into an error response.
+async fn cleanup_aside(aside: &Path) {
+    let metadata = match tokio::fs::metadata(aside).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(path = %aside.display(), error = %e, "failed to stat the moved-aside destination for cleanup");
+            return;
+        }
+    };
+    let result = if metadata.is_dir() {
+        tokio::fs::remove_dir_all(aside).await
+    } else {
+        tokio::fs::remove_file(aside).await
+    };
+    if let Err(e) = result {
+        tracing::warn!(path = %aside.display(), error = %e, "failed to remove the moved-aside destination after a successful move; it may need manual cleanup");
+    }
+}
+
+/// Restore what [`ready_move_destination`] moved aside, because the
+/// incoming rename onto its original path failed. Logged at `error` rather
+/// than `warn`: if this rename-back itself fails, the original destination
+/// is stranded at `aside` and needs manual recovery.
+async fn restore_aside(aside: &Path, to_path: &Path) {
+    if let Err(e) = tokio::fs::rename(aside, to_path).await {
+        tracing::error!(
+            aside = %aside.display(),
+            to = %to_path.display(),
+            error = %e,
+            "failed to restore the destination moved aside after a failed move; it is stranded at the aside path and needs manual recovery"
+        );
+    }
+}
+
+/// Take the write locks for the team paths a move touches. When the move's
+/// source and destination are both team paths they are locked in path order
+/// (and once, if they are the same path).
+async fn lock_move_paths(
+    from: &Located,
+    from_path: &Path,
+    to: &Located,
+    to_path: &Path,
+) -> (
+    Option<(TeamFiles, TeamPathGuard)>,
+    Option<(TeamFiles, TeamPathGuard)>,
+) {
+    if from.team.is_some() && to.team.is_some() {
+        if from_path == to_path {
+            return (from.lock(from_path).await, None);
+        }
+        if from_path < to_path {
+            let first = from.lock(from_path).await;
+            let second = to.lock(to_path).await;
+            return (first, second);
+        }
+        let second = to.lock(to_path).await;
+        let first = from.lock(from_path).await;
+        return (first, second);
+    }
+    (from.lock(from_path).await, to.lock(to_path).await)
+}
+
+/// Record a completed move against the coordinator: the source is gone
+/// (removed by the user), and a file now sits at the destination (written by
+/// the user), so an agent whose view of either path is stale learns who
+/// changed it.
+async fn record_team_move(
+    from: Option<&(TeamFiles, TeamPathGuard)>,
+    to: Option<&(TeamFiles, TeamPathGuard)>,
+    moved_a_directory: bool,
+) {
+    if let Some((team, guard)) = from {
+        if moved_a_directory {
+            guard.record_tree_removed(team.writer());
+        } else {
+            guard.record_removed(team.writer());
+        }
+    }
+    if let Some((team, guard)) = to
+        && !moved_a_directory
+        && let Err(e) = guard.record_written(team.writer()).await
+    {
+        tracing::warn!(error = %e, "failed to record a moved team file's new version; a stale writer may be reported as unknown");
+    }
+}
+
+/// `POST /api/agents/{name}/workspace/move` — move or rename a workspace file or
+/// directory.
+///
+/// Creates `to`'s missing parent directories. Answers `409` if `to` already
+/// exists and `overwrite` isn't `true`. `If-Match` applies to `from` when it
+/// is a file. Moving onto or away from an identity file sends the reload
+/// signal. The move always succeeds; if `to` is one of the strictly-parsed
+/// files `residuum_core::diagnostics` understands, the response's `diagnostics`
+/// names any problem with the moved file's content at its new name.
+pub(super) async fn api_workspace_move(
+    State(state): State<ConfigApiState>,
+    headers: HeaderMap,
+    Json(req): Json<MoveRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    let from_relative = &req.from;
+    let to_relative = &req.to;
+
+    if is_blocked_path(from_relative) || is_blocked_path(to_relative) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "access to this path is blocked".to_string(),
+        ));
+    }
+
+    let from_located = state.locate(from_relative);
+    from_located.refuse_team_root()?;
+    let from_path = from_located.existing().await?;
+    let to_located = state.locate(to_relative);
+    let to_path = to_located.for_write(&state).await?;
+    // Team paths on either side are held under their per-path locks for the
+    // whole move, taken in a fixed order so two moves can't deadlock.
+    let (from_lock, to_lock) =
+        lock_move_paths(&from_located, &from_path, &to_located, &to_path).await;
+    let from_metadata = tokio::fs::metadata(&from_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to stat source path: {e}"),
+        )
+    })?;
+
+    let mut diagnostics = Vec::new();
+    if from_metadata.is_file() {
+        if let Some(conflict) = check_conditional_write(&from_path, &headers).await? {
+            return Ok(conflict);
+        }
+        let bytes = tokio::fs::read(&from_path).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read source file: {e}"),
+            )
+        })?;
+        diagnostics = diagnose_write_content(&state, to_relative, &bytes);
+    }
+
+    // Moving a path onto itself is a no-op success, not a 409: the
+    // "destination already exists" check would otherwise see the source
+    // file, and an `overwrite: true` move would delete it out from under
+    // itself before the rename that was supposed to preserve it.
+    if to_path == from_path {
+        let version = from_metadata
+            .is_file()
+            .then(|| version_token(&from_metadata));
+        return Ok(Json(MoveResponse {
+            moved: true,
+            version,
+            diagnostics: Vec::new(),
+            undo: UndoRefs::default(),
+        })
+        .into_response());
+    }
+
+    if from_metadata.is_dir() {
+        refuse_if_dir_holds_internal_data(&from_path, from_relative).await?;
+    }
+
+    if from_metadata.is_dir() && to_path.starts_with(&from_path) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("can't move {from_relative} into itself ({to_relative})"),
+        ));
+    }
+
+    let aside =
+        ready_move_destination(&to_path, to_relative, req.overwrite, from_metadata.is_dir())
+            .await?;
+
+    let undo = checkpoint_before_destructive_action(
+        &state,
+        &[&from_located, &to_located],
+        &format!("move {from_relative} to {to_relative}"),
+    )
+    .await;
+    if let Err(e) = tokio::fs::rename(&from_path, &to_path).await {
+        if let Some(aside) = &aside {
+            restore_aside(aside, &to_path).await;
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to move {from_relative} to {to_relative}: {e}"),
+        ));
+    }
+    if let Some(aside) = &aside {
+        cleanup_aside(aside).await;
+    }
+    record_team_move(from_lock.as_ref(), to_lock.as_ref(), from_metadata.is_dir()).await;
+
+    let version = if from_metadata.is_file() {
+        let metadata = tokio::fs::metadata(&to_path).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to stat moved file: {e}"),
+            )
+        })?;
+        Some(version_token(&metadata))
+    } else {
+        None
+    };
+
+    signal_identity_reload(from_relative, &from_path, &state).await;
+    signal_identity_reload(to_relative, &to_path, &state).await;
+
+    Ok(Json(MoveResponse {
+        moved: true,
+        version,
+        diagnostics,
+        undo,
+    })
+    .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_files() {
+        assert!(is_identity_file("SOUL.md"));
+        assert!(is_identity_file("HEARTBEAT.yml"));
+        assert!(
+            !is_identity_file("AGENTS.md"),
+            "team files are matched by resolved path"
+        );
+        assert!(is_identity_file("subdir/SOUL.md"));
+        assert!(!is_identity_file("skills/research.md"));
+        assert!(!is_identity_file("random.txt"));
+    }
+
+    #[tokio::test]
+    async fn path_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            validate_workspace_path(dir.path(), "../etc/passwd", "../etc/passwd")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_workspace_path(dir.path(), "/etc/passwd", "/etc/passwd")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_workspace_path(dir.path(), "foo/../../etc/passwd", "foo/../../etc/passwd")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn path_traversal_for_write_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+
+        assert!(
+            resolve_labeled_path_for_write(&ws_dir, "../etc/shadow", "../etc/shadow")
+                .await
+                .is_err(),
+            "escaping via a relative .. should be rejected"
+        );
+        assert!(
+            resolve_labeled_path_for_write(&ws_dir, "/etc/shadow", "/etc/shadow")
+                .await
+                .is_err(),
+            "an absolute path should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn valid_paths_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("test.md"), "hello")
+            .await
+            .unwrap();
+        let result = validate_workspace_path(dir.path(), "test.md", "test.md").await;
+        assert!(result.is_ok());
+    }
+
+    fn make_state(ws_dir: PathBuf) -> ConfigApiState {
+        super::super::ConfigApiState {
+            team: None,
+            hub_dir: ws_dir.clone(),
+            config_dir: ws_dir.clone(),
+            agent_name: "test-agent".to_string(),
+            workspace_dir: ws_dir,
+            memory_dir: None,
+            reload_tx: None,
+            scope: crate::web::WorkspaceScope::Agent,
+            checkpoints: residuum_checkpoints::testing::test_engine(),
+        }
+    }
+
+    /// Deserialize a handler's JSON response body.
+    async fn response_json<T: serde::de::DeserializeOwned>(response: Response) -> T {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn workspace_file_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("SOUL.md"), "# Soul")
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("notes.md"), "some notes")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(ws_dir.join("skills")).await.unwrap();
+        tokio::fs::write(ws_dir.join("skills").join("research.md"), "skill content")
+            .await
+            .unwrap();
+        // Create Residuum's own database file to verify filtering; a
+        // same-named file elsewhere would not be blocked.
+        tokio::fs::create_dir(ws_dir.join("memory")).await.unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "binary data")
+            .await
+            .unwrap();
+
+        let state = make_state(ws_dir.clone());
+
+        // List root
+        let entries = api_workspace_files(Query(FilesQuery { path: None }), State(state.clone()))
+            .await
+            .unwrap();
+        let names: Vec<&str> = entries.0.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"SOUL.md"));
+        assert!(names.contains(&"notes.md"));
+        assert!(names.contains(&"skills"));
+        for entry in &entries.0 {
+            assert!(
+                !entry.version.is_empty(),
+                "every entry should carry a version"
+            );
+        }
+
+        // Residuum's own database file is filtered out of the directory it's in.
+        let memory_entries = api_workspace_files(
+            Query(FilesQuery {
+                path: Some("memory".to_string()),
+            }),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        let memory_names: Vec<&str> = memory_entries.0.iter().map(|e| e.name.as_str()).collect();
+        assert!(!memory_names.contains(&"vectors.db"));
+
+        // Read a file
+        let response = api_workspace_file_read(
+            Query(FileQuery {
+                path: "SOUL.md".to_string(),
+            }),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(response.headers().get(header::ETAG).is_some());
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"# Soul");
+
+        // Write a file
+        let write_response = api_workspace_file_write(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "SOUL.md".to_string(),
+                content: "# Updated Soul".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(write_response.status(), StatusCode::OK);
+        let write_body = axum::body::to_bytes(write_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let write_result: WriteResponse = serde_json::from_slice(&write_body).unwrap();
+        assert!(write_result.saved);
+        assert_ne!(write_result.version, "");
+
+        // Verify write persisted
+        let updated_content = tokio::fs::read_to_string(ws_dir.join("SOUL.md"))
+            .await
+            .unwrap();
+        assert_eq!(updated_content, "# Updated Soul");
+
+        // List subdirectory
+        let subdir_entries = api_workspace_files(
+            Query(FilesQuery {
+                path: Some("skills".to_string()),
+            }),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(subdir_entries.0.len(), 1);
+        assert_eq!(
+            subdir_entries.0.first().map(|e| e.name.as_str()),
+            Some("research.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_file_write_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        // Write a new file that does not exist yet
+        let response = api_workspace_file_write(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "new_file.md".to_string(),
+                content: "# New File".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let content = tokio::fs::read_to_string(ws_dir.join("new_file.md"))
+            .await
+            .unwrap();
+        assert_eq!(content, "# New File");
+
+        // Path traversal via write for new file should be rejected
+        let traversal_result = api_workspace_file_write(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "../etc/shadow".to_string(),
+                content: "hacked".to_string(),
+            }),
+        )
+        .await;
+        assert!(
+            traversal_result.is_err(),
+            "path traversal should be rejected for new file write"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_file_write_creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_file_write(
+            State(state),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "wiki/pages/new-topic.md".to_string(),
+                content: "# New Topic".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let content = tokio::fs::read_to_string(ws_dir.join("wiki/pages/new-topic.md"))
+            .await
+            .unwrap();
+        assert_eq!(content, "# New Topic");
+    }
+
+    #[tokio::test]
+    async fn workspace_file_read_rejects_non_utf8_with_415() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("binary.dat"), [0xff, 0xfe, 0x00, 0xff])
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_file_read(
+            Query(FileQuery {
+                path: "binary.dat".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert!(
+            err.1.contains("/api/workspace/raw"),
+            "415 message should point to the raw endpoint: {}",
+            err.1
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_file_roundtrips_a_three_mebibyte_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let content = "a".repeat(3 * 1024 * 1024);
+        let response = api_workspace_file_write(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "big.md".to_string(),
+                content: content.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let read_response = api_workspace_file_read(
+            Query(FileQuery {
+                path: "big.md".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap();
+        let body = axum::body::to_bytes(read_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), content.len());
+    }
+
+    #[tokio::test]
+    async fn workspace_file_write_over_limit_answers_413() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let content = "a".repeat(TEXT_FILE_LIMIT_BYTES + 1);
+        let err = api_workspace_file_write(
+            State(state),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "too_big.md".to_string(),
+                content,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn conditional_write_if_match_stale_answers_412_with_current_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("notes.md"), "original")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("stale-version"));
+
+        let response = api_workspace_file_write(
+            State(state),
+            headers,
+            Json(WriteFileRequest {
+                path: "notes.md".to_string(),
+                content: "changed".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: ConditionalWriteError = serde_json::from_slice(&body).unwrap();
+        assert!(parsed.current_version.is_some());
+    }
+
+    #[tokio::test]
+    async fn conditional_write_if_match_matching_version_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("notes.md"), "original")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let metadata = tokio::fs::metadata(ws_dir.join("notes.md")).await.unwrap();
+        let current = version_token(&metadata);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_MATCH, HeaderValue::from_str(&current).unwrap());
+
+        let response = api_workspace_file_write(
+            State(state),
+            headers,
+            Json(WriteFileRequest {
+                path: "notes.md".to_string(),
+                content: "changed".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn conditional_write_if_none_match_star_rejects_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("notes.md"), "original")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+
+        let response = api_workspace_file_write(
+            State(state),
+            headers,
+            Json(WriteFileRequest {
+                path: "notes.md".to_string(),
+                content: "changed".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    }
+
+    #[tokio::test]
+    async fn conditional_write_if_none_match_star_allows_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+
+        let response = api_workspace_file_write(
+            State(state),
+            headers,
+            Json(WriteFileRequest {
+                path: "brand_new.md".to_string(),
+                content: "hello".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn team_identity_files_are_identified_by_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = tokio::fs::canonicalize(dir.path()).await.unwrap();
+        let ws_dir = root.join("scout");
+        let team_dir = root.join("team");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::create_dir_all(team_dir.join("wiki"))
+            .await
+            .unwrap();
+        tokio::fs::write(team_dir.join("USER.md"), "u")
+            .await
+            .unwrap();
+        tokio::fs::write(team_dir.join("AGENTS.md"), "a")
+            .await
+            .unwrap();
+        tokio::fs::write(team_dir.join("notes.md"), "n")
+            .await
+            .unwrap();
+
+        let state = make_state(ws_dir.clone());
+
+        for name in ["USER.md", "AGENTS.md"] {
+            assert!(
+                is_identity_target(&state, &format!("team/{name}"), &team_dir.join(name)).await,
+                "team/{name} should trigger an identity reload"
+            );
+        }
+        assert!(
+            !is_identity_target(&state, "team/notes.md", &team_dir.join("notes.md")).await,
+            "other team files are not identity files"
+        );
+        assert!(
+            !is_identity_target(&state, "USER.md", &ws_dir.join("USER.md")).await,
+            "an agent-dir USER.md is not an identity file"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_identity_move_sends_reload_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = tokio::fs::canonicalize(dir.path()).await.unwrap();
+        let team_dir = root.join("team");
+        tokio::fs::create_dir_all(&team_dir).await.unwrap();
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>();
+        let mut state = make_state(root.join("scout"));
+        state.reload_tx = Some(tx);
+
+        signal_identity_reload("team/USER.md", &team_dir.join("USER.md"), &state).await;
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
+
+        signal_identity_reload("team/notes.md", &team_dir.join("notes.md"), &state).await;
+        assert!(rx.try_recv().is_err(), "non-identity file sends nothing");
+    }
+
+    #[tokio::test]
+    async fn identity_file_write_sends_reload_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>();
+        let state = super::super::ConfigApiState {
+            team: None,
+            hub_dir: dir.path().to_path_buf(),
+            config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
+            workspace_dir: ws_dir,
+            memory_dir: None,
+            reload_tx: Some(tx),
+            scope: crate::web::WorkspaceScope::Agent,
+            checkpoints: residuum_checkpoints::testing::test_engine(),
+        };
+
+        api_workspace_file_write(
+            State(state),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "SOUL.md".to_string(),
+                content: "# hi".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
+    }
+
+    #[tokio::test]
+    async fn workspace_file_write_saves_invalid_heartbeat_yaml_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("HEARTBEAT.yml"), "pulses: []")
+            .await
+            .unwrap();
+
+        let state = make_state(ws_dir.clone());
+
+        // Malformed YAML is saved, not rejected — the pulse scheduler hot-reloads
+        // this file every tick and simply won't pick up broken YAML on its next
+        // tick, so the write still succeeds and reports the problem instead of
+        // silently discarding the edit.
+        let response = api_workspace_file_write(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "not: valid: yaml: [[[".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: WriteResponse = response_json(response).await;
+        assert!(body.saved, "invalid HEARTBEAT.yml should still be saved");
+        assert!(
+            !body.diagnostics.is_empty(),
+            "invalid YAML should produce a diagnostic"
+        );
+
+        // The on-disk file reflects the write, invalid content and all.
+        let saved = tokio::fs::read_to_string(ws_dir.join("HEARTBEAT.yml"))
+            .await
+            .unwrap();
+        assert_eq!(
+            saved, "not: valid: yaml: [[[",
+            "the write should have happened"
+        );
+
+        // Valid YAML has no diagnostics.
+        let ok_response = api_workspace_file_write(
+            State(state),
+            HeaderMap::new(),
+            Json(WriteFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "pulses:\n  - name: test\n    schedule: \"1h\"\n    tasks: []\n"
+                    .to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok_response.status(), StatusCode::OK);
+        let ok_body: WriteResponse = response_json(ok_response).await;
+        assert!(
+            ok_body.diagnostics.is_empty(),
+            "valid HEARTBEAT.yml should have no diagnostics"
+        );
+    }
+
+    // ── Validate ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn validate_reports_diagnostics_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "not: valid: yaml: [[[".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(
+            !response.diagnostics.is_empty(),
+            "invalid YAML should produce a diagnostic"
+        );
+        assert!(
+            !ws_dir.join("HEARTBEAT.yml").exists(),
+            "validate must not write anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_clean_content_has_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "pulses:\n  - name: test\n    schedule: \"1h\"\n    tasks: []\n"
+                    .to_string(),
+            }),
+        )
+        .await;
+
+        assert!(
+            response.diagnostics.is_empty(),
+            "expected {:?} to be empty",
+            response.diagnostics
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_unrecognized_path_has_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "notes.md".to_string(),
+                content: "whatever content".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(
+            response.diagnostics.is_empty(),
+            "expected {:?} to be empty",
+            response.diagnostics
+        );
+    }
+
+    // ── Raw read/write ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn raw_roundtrip_is_byte_identical_for_arbitrary_binary_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let content: Vec<u8> = (0_u8..=255).cycle().take(4096).collect();
+        let write_response = api_workspace_raw_write(
+            Query(FileQuery {
+                path: "image.bin".to_string(),
+            }),
+            State(state.clone()),
+            HeaderMap::new(),
+            Bytes::from(content.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(write_response.status(), StatusCode::OK);
+
+        let read_response = api_workspace_raw_read(
+            Query(FileQuery {
+                path: "image.bin".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap();
+        assert!(read_response.headers().get(header::ETAG).is_some());
+        let body = axum::body::to_bytes(read_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            &body[..],
+            &content[..],
+            "raw round trip must be byte-identical"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_read_guesses_content_type_from_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("photo.png"), [0x89, b'P', b'N', b'G'])
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let response = api_workspace_raw_read(
+            Query(FileQuery {
+                path: "photo.png".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap();
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(content_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn raw_read_of_a_page_is_sandboxed_away_from_the_hubs_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("page.html"), "<script></script>")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let response = api_workspace_raw_read(
+            Query(FileQuery {
+                path: "page.html".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap();
+        let headers = response.headers();
+        assert_eq!(
+            headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
+            "sandbox allow-scripts allow-popups allow-downloads"
+        );
+        assert_eq!(
+            headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_read_missing_file_answers_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_raw_read(
+            Query(FileQuery {
+                path: "gone.bin".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn raw_write_blocked_path_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_raw_write(
+            Query(FileQuery {
+                path: "memory/vectors.db".to_string(),
+            }),
+            State(state),
+            HeaderMap::new(),
+            Bytes::from_static(b"data"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn raw_write_over_limit_answers_413() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let body = vec![0_u8; TEXT_FILE_LIMIT_BYTES + 1];
+        let err = api_workspace_raw_write(
+            Query(FileQuery {
+                path: "too_big.bin".to_string(),
+            }),
+            State(state),
+            HeaderMap::new(),
+            Bytes::from(body),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn raw_read_over_limit_answers_413() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(
+            ws_dir.join("huge.bin"),
+            vec![0_u8; TEXT_FILE_LIMIT_BYTES + 1],
+        )
+        .await
+        .unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_raw_read(
+            Query(FileQuery {
+                path: "huge.bin".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn raw_write_conditional_if_match_stale_answers_412() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("data.bin"), b"original")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("stale-version"));
+
+        let response = api_workspace_raw_write(
+            Query(FileQuery {
+                path: "data.bin".to_string(),
+            }),
+            State(state),
+            headers,
+            Bytes::from_static(b"changed"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    }
+
+    #[tokio::test]
+    async fn raw_write_saves_non_utf8_heartbeat_content_with_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_raw_write(
+            Query(FileQuery {
+                path: "HEARTBEAT.yml".to_string(),
+            }),
+            State(state),
+            HeaderMap::new(),
+            Bytes::from_static(&[0xff, 0xfe, 0x00]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: WriteResponse = response_json(response).await;
+        assert!(body.saved, "non-UTF-8 content should still be saved");
+        assert!(
+            !body.diagnostics.is_empty(),
+            "non-UTF-8 content on a recognized path should produce a diagnostic"
+        );
+
+        let saved = tokio::fs::read(ws_dir.join("HEARTBEAT.yml")).await.unwrap();
+        assert_eq!(
+            saved,
+            vec![0xff, 0xfe, 0x00],
+            "the write should have happened"
+        );
+    }
+
+    // ── Delete ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn delete_file_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("gone.md"), "bye")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "gone.md".to_string(),
+                recursive: false,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!ws_dir.join("gone.md").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_returns_the_checkpoint_taken_before_the_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::testing::watching_state(dir.path());
+        let ws_dir = state.workspace_dir.clone();
+        tokio::fs::write(ws_dir.join("gone.md"), "bye")
+            .await
+            .unwrap();
+
+        let response = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "gone.md".to_string(),
+                recursive: false,
+            }),
+            State(state.clone()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "delete should succeed");
+        let body: DeleteResponse = response_json(response).await;
+        let id = body
+            .undo
+            .checkpoint_id
+            .expect("delete should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                residuum_checkpoints::RepoKind::Workspace,
+                id.clone(),
+                "gone.md".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(b"bye".as_slice()),
+            "the returned checkpoint must still contain the deleted file"
+        );
+
+        tokio::fs::write(ws_dir.join("later.txt"), "after")
+            .await
+            .unwrap();
+        let later = state
+            .checkpoint_workspace_id_before_write("later workspace write")
+            .await
+            .expect("a later checkpoint should be recorded");
+        assert_ne!(
+            later, id,
+            "the id returned for Undo stays the pre-delete checkpoint after a newer one is taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_missing_path_answers_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "nope.md".to_string(),
+                recursive: false,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_blocked_path_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "x")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "memory/vectors.db".to_string(),
+                recursive: false,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn delete_directory_without_recursive_answers_409() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("folder"))
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "folder".to_string(),
+                recursive: false,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_directory_recursive_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("folder"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("folder/a.md"), "a")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "folder".to_string(),
+                recursive: true,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!ws_dir.join("folder").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_root_answers_400() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        for root in ["", "."] {
+            let err = api_workspace_delete(
+                Query(DeleteFileQuery {
+                    path: root.to_string(),
+                    recursive: true,
+                }),
+                State(state.clone()),
+                HeaderMap::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                err.0,
+                StatusCode::BAD_REQUEST,
+                "root path {root:?} should be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_file_with_stale_if_match_answers_412() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("notes.md"), "content")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("stale-version"));
+
+        let response = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "notes.md".to_string(),
+                recursive: false,
+            }),
+            State(state),
+            headers,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(
+            ws_dir.join("notes.md").exists(),
+            "stale delete must not touch the file"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_identity_file_sends_reload_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("SOUL.md"), "# hi")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>();
+        let state = super::super::ConfigApiState {
+            team: None,
+            hub_dir: dir.path().to_path_buf(),
+            config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
+            workspace_dir: ws_dir,
+            memory_dir: None,
+            reload_tx: Some(tx),
+            scope: crate::web::WorkspaceScope::Agent,
+            checkpoints: residuum_checkpoints::testing::test_engine(),
+        };
+
+        api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "SOUL.md".to_string(),
+                recursive: false,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
+    }
+
+    // ── Mkdir ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mkdir_creates_nested_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_mkdir(
+            State(state),
+            Json(MkdirRequest {
+                path: "wiki/pages/nested".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(ws_dir.join("wiki/pages/nested").is_dir());
+    }
+
+    #[tokio::test]
+    async fn mkdir_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("folder"))
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let response = api_workspace_mkdir(
+            State(state),
+            Json(MkdirRequest {
+                path: "folder".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mkdir_conflicts_with_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("notes.md"), "x")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_mkdir(
+            State(state),
+            Json(MkdirRequest {
+                path: "notes.md".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn mkdir_blocked_path_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_mkdir(
+            State(state),
+            Json(MkdirRequest {
+                path: ".index".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    // ── Move ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn move_file_renames_and_returns_a_new_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("old.md"), "content")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "old.md".to_string(),
+                to: "new.md".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: MoveResponse = serde_json::from_slice(&body).unwrap();
+        assert!(parsed.moved);
+        assert!(parsed.version.is_some());
+        assert!(!ws_dir.join("old.md").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(ws_dir.join("new.md"))
+                .await
+                .unwrap(),
+            "content"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_directory_has_no_version_in_the_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("folder"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("folder/a.md"), "a")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "folder".to_string(),
+                to: "renamed".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: MoveResponse = serde_json::from_slice(&body).unwrap();
+        assert!(parsed.moved);
+        assert!(parsed.version.is_none());
+        assert!(ws_dir.join("renamed/a.md").exists());
+    }
+
+    #[tokio::test]
+    async fn move_missing_source_answers_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "nope.md".to_string(),
+                to: "dest.md".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn move_onto_existing_destination_without_overwrite_answers_409() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("a.md"), "a").await.unwrap();
+        tokio::fs::write(ws_dir.join("b.md"), "b").await.unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "a.md".to_string(),
+                to: "b.md".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn move_onto_existing_destination_with_overwrite_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("a.md"), "a-content")
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("b.md"), "b-content")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "a.md".to_string(),
+                to: "b.md".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            tokio::fs::read_to_string(ws_dir.join("b.md"))
+                .await
+                .unwrap(),
+            "a-content"
+        );
+        assert!(!ws_dir.join("a.md").exists());
+    }
+
+    #[tokio::test]
+    async fn move_directory_onto_existing_directory_with_overwrite_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("src")).await.unwrap();
+        tokio::fs::write(ws_dir.join("src/file.md"), "new-content")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(ws_dir.join("dest"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("dest/old.md"), "old-content")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "src".to_string(),
+                to: "dest".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!ws_dir.join("src").exists());
+        assert!(!ws_dir.join("dest/old.md").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(ws_dir.join("dest/file.md"))
+                .await
+                .unwrap(),
+            "new-content"
+        );
+        // No stray aside temp file left behind in the parent directory.
+        let mut entries = tokio::fs::read_dir(&ws_dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(e) = entries.next_entry().await.unwrap() {
+            names.push(e.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(names, vec!["dest".to_string()], "got: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn ready_move_destination_moves_an_existing_directory_aside_instead_of_deleting() {
+        let dir = tempfile::tempdir().unwrap();
+        let to_path = dir.path().join("dest");
+        tokio::fs::create_dir_all(&to_path).await.unwrap();
+        tokio::fs::write(to_path.join("keepsake.md"), "precious")
+            .await
+            .unwrap();
+
+        let aside = ready_move_destination(&to_path, "dest", true, true)
+            .await
+            .unwrap()
+            .expect("an existing directory destination should be moved aside, not deleted");
+
+        assert!(
+            !to_path.exists(),
+            "the original path should be clear for the incoming rename"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(aside.join("keepsake.md"))
+                .await
+                .unwrap(),
+            "precious",
+            "the aside path should hold the original data, untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_aside_puts_the_original_destination_back_after_a_failed_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let to_path = dir.path().join("dest");
+        tokio::fs::create_dir_all(&to_path).await.unwrap();
+        tokio::fs::write(to_path.join("keepsake.md"), "precious")
+            .await
+            .unwrap();
+
+        let aside = ready_move_destination(&to_path, "dest", true, true)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Simulates the incoming rename failing after the destination was
+        // cleared: the original data must come back exactly as it was.
+        restore_aside(&aside, &to_path).await;
+
+        assert!(!aside.exists(), "the aside path should be gone");
+        assert_eq!(
+            tokio::fs::read_to_string(to_path.join("keepsake.md"))
+                .await
+                .unwrap(),
+            "precious",
+            "a failed move must never lose the original destination"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_aside_removes_the_moved_aside_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let to_path = dir.path().join("dest");
+        tokio::fs::create_dir_all(&to_path).await.unwrap();
+
+        let aside = ready_move_destination(&to_path, "dest", true, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(aside.exists());
+
+        cleanup_aside(&aside).await;
+
+        assert!(!aside.exists(), "the aside path should be cleaned up");
+    }
+
+    /// A workspace whose `memory/` holds a search index next to ordinary notes.
+    async fn workspace_with_memory_index(dir: &Path) -> PathBuf {
+        let ws_dir = dir.join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("memory/.index"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory/.index/segment.bin"), "x")
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory/notes.md"), "n")
+            .await
+            .unwrap();
+        ws_dir
+    }
+
+    #[tokio::test]
+    async fn recursive_delete_of_a_dir_holding_internal_data_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "memory".to_string(),
+                recursive: true,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert!(ws_dir.join("memory/.index/segment.bin").exists());
+        assert!(ws_dir.join("memory/notes.md").exists());
+    }
+
+    #[tokio::test]
+    async fn moving_a_dir_holding_internal_data_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "memory".to_string(),
+                to: "old-memory".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert!(ws_dir.join("memory/.index/segment.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn overwriting_a_dir_holding_internal_data_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        tokio::fs::create_dir_all(ws_dir.join("scratch"))
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "scratch".to_string(),
+                to: "memory".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert!(ws_dir.join("memory/.index/segment.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn recursive_delete_of_an_ordinary_dir_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        tokio::fs::create_dir_all(ws_dir.join("notes/deep"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("notes/deep/a.md"), "a")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "notes".to_string(),
+                recursive: true,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!ws_dir.join("notes").exists());
+    }
+
+    #[tokio::test]
+    async fn move_directory_into_itself_answers_400() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("notes"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("notes/a.md"), "a")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "notes".to_string(),
+                to: "notes/archive".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(ws_dir.join("notes/a.md").exists());
+    }
+
+    #[tokio::test]
+    async fn move_creates_destination_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("a.md"), "a").await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "a.md".to_string(),
+                to: "deep/nested/b.md".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(ws_dir.join("deep/nested/b.md").exists());
+    }
+
+    #[tokio::test]
+    async fn move_blocked_path_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "x")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "memory/vectors.db".to_string(),
+                to: "dest.db".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn move_file_with_stale_if_match_answers_412() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("a.md"), "a").await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_MATCH, HeaderValue::from_static("stale-version"));
+
+        let response = api_workspace_move(
+            State(state),
+            headers,
+            Json(MoveRequest {
+                from: "a.md".to_string(),
+                to: "b.md".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(
+            ws_dir.join("a.md").exists(),
+            "stale move must not touch the file"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_onto_identity_file_sends_reload_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("draft.md"), "# hi")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>();
+        let state = super::super::ConfigApiState {
+            team: None,
+            hub_dir: dir.path().to_path_buf(),
+            config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
+            workspace_dir: ws_dir,
+            memory_dir: None,
+            reload_tx: Some(tx),
+            scope: crate::web::WorkspaceScope::Agent,
+            checkpoints: residuum_checkpoints::testing::test_engine(),
+        };
+
+        api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "draft.md".to_string(),
+                to: "SOUL.md".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
+    }
+
+    #[tokio::test]
+    async fn move_onto_heartbeat_with_invalid_content_still_moves_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("draft.yml"), "not: valid: yaml: [[[")
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("HEARTBEAT.yml"), "pulses: []")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "draft.yml".to_string(),
+                to: "HEARTBEAT.yml".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: MoveResponse = response_json(response).await;
+        assert!(body.moved, "the move should still happen");
+        assert!(
+            !body.diagnostics.is_empty(),
+            "invalid content at the destination should produce a diagnostic"
+        );
+
+        assert!(
+            !ws_dir.join("draft.yml").exists(),
+            "the source should have moved away"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(ws_dir.join("HEARTBEAT.yml"))
+                .await
+                .unwrap(),
+            "not: valid: yaml: [[[",
+            "the destination should hold the moved content"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_onto_self_is_a_no_op_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("a.md"), "a").await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "a.md".to_string(),
+                to: "a.md".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            tokio::fs::read_to_string(ws_dir.join("a.md"))
+                .await
+                .unwrap(),
+            "a"
+        );
+    }
+}

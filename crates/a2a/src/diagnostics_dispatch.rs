@@ -13,7 +13,7 @@
 //! Reused in three places: after an agent `write_file`/`edit_file` call
 //! (`src/tools/write.rs`, `src/tools/edit.rs`), the `POST
 //! /api/agents/{name}/workspace/validate` endpoint and the raw config save handlers
-//! (`src/hub/web/workspace.rs`, `config.rs`, `providers.rs`), and the
+//! (`crates/hub/src/web/workspace.rs`, `config.rs`, `providers.rs`), and the
 //! load/reload notices for these files.
 
 use std::path::{Path, PathBuf};
@@ -47,7 +47,7 @@ pub struct DiagnosticsPaths {
 /// `config/a2a.json` by their canonical location under `paths.workspace_dir`.
 /// `HEARTBEAT.yml` and `SKILL.md` are matched by filename alone, regardless
 /// of directory, matching how the rest of the codebase already recognizes
-/// them (see `is_heartbeat_file` in `src/hub/web/workspace.rs` and the
+/// them (see `is_heartbeat_file` in `crates/hub/src/web/workspace.rs` and the
 /// skill scanner, which accepts a `SKILL.md` anywhere under the skills root).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileKind {
