@@ -126,10 +126,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
 # OpenTelemetry (trace export)
-opentelemetry = "0.31"
-opentelemetry_sdk = "0.31"
-opentelemetry-otlp = { version = "0.31", features = ["trace", "http-proto"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "trace"] }
+opentelemetry = "0.33.1"
+opentelemetry_sdk = "0.33.1"
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "http-proto", "reqwest-client", "internal-logs"] }
+opentelemetry-proto = { version = "0.33.1", features = ["gen-tonic-messages", "trace"] }
 prost = "0.14"
 
 # CLI
