@@ -1,7 +1,33 @@
-//! The web API states and routers the hub serves: the config API state and
-//! its workspace scope, the hub-level state, the routes that repair an agent
-//! whether or not it is running, the team's workspace file API, and the
-//! hub-level config, secret and key routes.
+//! The web routes the hub serves: the config API state and its workspace
+//! scope, the hub-level state, the routes that repair an agent whether or not
+//! it is running, the team's workspace file API, and the process-level config,
+//! secret, cloud, update, tracing and checkpoint routes. The embedded web app
+//! is served by `assets`.
+
+mod a2a;
+mod agent_files;
+mod agent_keys;
+mod assets;
+pub(crate) mod chat;
+pub mod checkpoints;
+pub mod cloud;
+pub(crate) mod cloud_sign_in;
+pub mod config;
+mod inbox;
+pub mod providers;
+pub mod secrets;
+mod system_one;
+pub mod teams_setup;
+pub mod tracing_api;
+pub mod update;
+pub(crate) mod workbench;
+pub mod workspace;
+pub(crate) mod workspace_bulk;
+#[cfg(test)]
+mod workspace_team_tests;
+
+pub(crate) use assets::static_assets;
+pub use assets::{WebAsset, WebAssetSource};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,10 +35,7 @@ use std::sync::Arc;
 use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
-use super::{
-    agent_keys, checkpoints, config, hub_a2a, providers, secrets, system_one, teams_setup,
-    workspace, workspace_bulk,
-};
+pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
 
 /// Shared state for the config API.
 #[derive(Clone)]
@@ -70,6 +93,8 @@ pub(crate) struct HubApiState {
     /// Coordinates writes under the team directory, which onboarding
     /// bootstraps.
     pub team: crate::workspace::team_files::TeamWriteCoordinator,
+    /// The embedded web app the static routes serve, and the MCP catalog reads.
+    pub assets: WebAssetSource,
 }
 
 /// The hub directory, for routes that only need to resolve `secret:` values
@@ -90,10 +115,10 @@ impl axum::extract::FromRef<ConfigApiState> for HubDir {
 }
 
 impl HubApiState {
-    /// A state over `hub_dir` with throwaway checkpoint repositories and no
-    /// one listening for reloads or setup completion.
+    /// A state over `hub_dir` with throwaway checkpoint repositories, no one
+    /// listening for reloads or setup completion, and `assets` as the web app.
     #[cfg(test)]
-    pub(crate) fn for_test(hub_dir: &std::path::Path) -> Self {
+    pub(crate) fn for_test(hub_dir: &std::path::Path, assets: WebAssetSource) -> Self {
         let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             hub_dir: hub_dir.to_path_buf(),
@@ -104,12 +129,13 @@ impl HubApiState {
             team: crate::workspace::team_files::TeamWriteCoordinator::new(
                 &crate::config::paths::TeamPaths::new(hub_dir.join("team-for-test")),
             ),
+            assets,
         }
     }
 
     /// Bootstrap `layout`'s workspace and the team directory under the hub's
     /// team write coordinator.
-    pub(super) async fn bootstrap_workspace(
+    async fn bootstrap_workspace(
         &self,
         layout: &crate::config::WorkspaceLayout,
         user_name: Option<&str>,
@@ -129,7 +155,7 @@ impl HubApiState {
     /// Checkpoint the hub config repository (hub `config.toml` and the
     /// encrypted key stores) before a write to one of them. Never fails or
     /// blocks the write — see `crate::checkpoints`.
-    pub(super) async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
+    async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
         let _checkpoint_id = self.checkpoint_config_id_before_write(summary).await;
     }
 
@@ -137,7 +163,7 @@ impl HubApiState {
     /// checkpoint that holds the pre-write tree. `None` when that checkpoint
     /// could not be recorded; the write still proceeds.
     #[must_use]
-    pub(super) async fn checkpoint_config_id_before_write(
+    async fn checkpoint_config_id_before_write(
         &self,
         summary: impl Into<String>,
     ) -> Option<String> {
@@ -154,7 +180,7 @@ impl ConfigApiState {
     /// The team directory when it appears inside this state's namespace as
     /// the `team/` folder. `None` in the team scope, where the namespace is
     /// the team directory itself, and where `team/` is an ordinary name.
-    pub(super) fn team_mount(&self) -> Option<PathBuf> {
+    fn team_mount(&self) -> Option<PathBuf> {
         match self.scope {
             WorkspaceScope::Agent => self.team.as_ref().map(|t| t.team_root().to_path_buf()),
             WorkspaceScope::Team => None,
@@ -164,7 +190,7 @@ impl ConfigApiState {
     /// The paths the strictly-parsed-file diagnostics resolve against. The
     /// team scope has no agent config to recognize, so both point at the hub
     /// directory, where no team file lives.
-    pub(super) fn diagnostics_paths(&self) -> crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
+    fn diagnostics_paths(&self) -> crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
         match self.scope {
             WorkspaceScope::Agent => crate::a2a::diagnostics_dispatch::DiagnosticsPaths {
                 config_dir: self.config_dir.clone(),
@@ -183,7 +209,7 @@ impl ConfigApiState {
     /// `team/...` is the team directory and anything else is relative to the
     /// workspace; in the team scope every path is relative to the team
     /// directory.
-    pub(super) fn locate(&self, relative: &str) -> workspace::Located {
+    fn locate(&self, relative: &str) -> workspace::Located {
         if self.scope == WorkspaceScope::Team
             && let Some(team) = &self.team
         {
@@ -227,14 +253,14 @@ impl ConfigApiState {
     /// loaded (e.g. an invalid `hub/config.toml`) — diagnosing the agent's
     /// own config needs the hub's resolved values (timezone, gateway, ...)
     /// to run the same resolution loading does.
-    pub(super) fn hub_config(&self) -> Result<crate::config::HubConfig, crate::util::FatalError> {
+    fn hub_config(&self) -> Result<crate::config::HubConfig, crate::util::FatalError> {
         crate::config::HubConfig::load_at(&self.hub_dir)
     }
 
     /// Checkpoint the agent's own config repository (`config.toml` and
     /// `providers.toml` in the agent's `config/` directory) before a write
     /// to either. Never fails or blocks the write.
-    pub(super) async fn checkpoint_agent_config_before_write(&self, summary: impl Into<String>) {
+    async fn checkpoint_agent_config_before_write(&self, summary: impl Into<String>) {
         let _checkpoint_id = self.checkpoint_agent_config_id_before_write(summary).await;
     }
 
@@ -242,7 +268,7 @@ impl ConfigApiState {
     /// the checkpoint that holds the pre-write tree. `None` when that
     /// checkpoint could not be recorded; the write still proceeds.
     #[must_use]
-    pub(super) async fn checkpoint_agent_config_id_before_write(
+    async fn checkpoint_agent_config_id_before_write(
         &self,
         summary: impl Into<String>,
     ) -> Option<String> {
@@ -262,10 +288,7 @@ impl ConfigApiState {
     /// diagnostic rather than panicking — semantic validation needs the
     /// hub's resolved values (timezone, gateway, ...) the same way loading
     /// does.
-    pub(super) fn diagnose_agent_config(
-        &self,
-        contents: &str,
-    ) -> Vec<crate::diagnostics::Diagnostic> {
+    fn diagnose_agent_config(&self, contents: &str) -> Vec<crate::diagnostics::Diagnostic> {
         match self.hub_config() {
             Ok(hub) => crate::config::Config::diagnose_agent_toml(
                 contents,
@@ -280,10 +303,7 @@ impl ConfigApiState {
     }
 
     /// [`Self::diagnose_agent_config`] for `providers.toml`.
-    pub(super) fn diagnose_agent_providers(
-        &self,
-        contents: &str,
-    ) -> Vec<crate::diagnostics::Diagnostic> {
+    fn diagnose_agent_providers(&self, contents: &str) -> Vec<crate::diagnostics::Diagnostic> {
         match self.hub_config() {
             Ok(hub) => crate::config::Config::diagnose_agent_providers_toml(
                 contents,
@@ -302,7 +322,7 @@ impl ConfigApiState {
     /// # Errors
     /// Returns a human-readable error string if validation fails, including
     /// when the hub config can't currently be loaded.
-    pub(super) fn validate_agent_config(&self, contents: &str) -> Result<(), String> {
+    fn validate_agent_config(&self, contents: &str) -> Result<(), String> {
         let hub = self.hub_config().map_err(|e| {
             format!("hub config couldn't be loaded, so this can't be validated: {e}")
         })?;
@@ -318,7 +338,7 @@ impl ConfigApiState {
     ///
     /// # Errors
     /// Same as [`Self::validate_agent_config`].
-    pub(super) fn validate_agent_providers(&self, contents: &str) -> Result<(), String> {
+    fn validate_agent_providers(&self, contents: &str) -> Result<(), String> {
         let hub = self.hub_config().map_err(|e| {
             format!("hub config couldn't be loaded, so this can't be validated: {e}")
         })?;
@@ -335,7 +355,7 @@ impl ConfigApiState {
     /// write to a workspace-owned strictly-parsed file (`mcp.json`,
     /// `config/a2a.json`). Never fails or blocks the action — see
     /// `crate::checkpoints`.
-    pub(super) async fn checkpoint_workspace_before_write(&self, summary: impl Into<String>) {
+    async fn checkpoint_workspace_before_write(&self, summary: impl Into<String>) {
         let _checkpoint_id = self.checkpoint_workspace_id_before_write(summary).await;
     }
 
@@ -343,7 +363,7 @@ impl ConfigApiState {
     /// checkpoint that holds the pre-action tree. `None` when that checkpoint
     /// could not be recorded; the action still proceeds.
     #[must_use]
-    pub(super) async fn checkpoint_workspace_id_before_write(
+    async fn checkpoint_workspace_id_before_write(
         &self,
         summary: impl Into<String>,
     ) -> Option<String> {
@@ -360,10 +380,7 @@ impl ConfigApiState {
     /// path, which the workspace repository does not contain. `None` when it
     /// could not be recorded; the action still proceeds.
     #[must_use]
-    pub(super) async fn checkpoint_team_id_before_write(
-        &self,
-        summary: impl Into<String>,
-    ) -> Option<String> {
+    async fn checkpoint_team_id_before_write(&self, summary: impl Into<String>) -> Option<String> {
         self.checkpoints
             .checkpoint_team_id_before_action(crate::checkpoints::CheckpointContext::system(
                 crate::checkpoints::CheckpointTrigger::PreAction,
@@ -497,12 +514,9 @@ pub(crate) fn hub_api_router(state: HubApiState) -> axum::Router {
         )
         .route(
             "/api/hub/a2a/keys",
-            get(hub_a2a::api_a2a_keys_list).post(hub_a2a::api_a2a_keys_create),
+            get(a2a::api_a2a_keys_list).post(a2a::api_a2a_keys_create),
         )
-        .route(
-            "/api/hub/a2a/keys/{name}",
-            delete(hub_a2a::api_a2a_keys_revoke),
-        )
+        .route("/api/hub/a2a/keys/{name}", delete(a2a::api_a2a_keys_revoke))
         .route(
             "/api/hub/secrets",
             post(secrets::api_secrets_set).get(secrets::api_secrets_list),
@@ -520,7 +534,6 @@ pub(crate) fn hub_api_router(state: HubApiState) -> axum::Router {
     reason = "test code uses indexing for clarity"
 )]
 mod tests {
-    use super::super::{AgentFilesState, chat};
     use super::*;
 
     #[tokio::test]
@@ -883,7 +896,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hub_dir = dir.path().join("hub");
         std::fs::create_dir_all(&hub_dir).unwrap();
-        let state = HubApiState::for_test(&hub_dir);
+        let state = HubApiState::for_test(&hub_dir, crate::hub::test_support::fixture_assets);
 
         // Set a secret
         let set_result = secrets::api_secrets_set(
@@ -914,64 +927,5 @@ mod tests {
         let after_delete = secrets::api_secrets_list(State(state)).await.unwrap();
         let actual = &after_delete.0.names;
         assert!(actual.is_empty(), "expected {actual:?} to be empty");
-    }
-}
-
-/// API states whose checkpoint engine watches the same config and workspace
-/// directories the handlers write to. `test_engine` deliberately does not, so
-/// a test that asserts on the returned checkpoint id needs these.
-#[cfg(test)]
-pub(super) mod test_support {
-    use super::{ConfigApiState, HubApiState, WorkspaceScope};
-
-    fn watching_engine(
-        root: &std::path::Path,
-    ) -> (
-        std::path::PathBuf,
-        std::path::PathBuf,
-        std::path::PathBuf,
-        std::sync::Arc<crate::checkpoints::CheckpointEngine>,
-    ) {
-        let config_dir = root.join("config");
-        let workspace_dir = root.join("workspace");
-        let hub_dir = root.join("hub");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::create_dir_all(&workspace_dir).unwrap();
-        std::fs::create_dir_all(&hub_dir).unwrap();
-        let checkpoints = std::sync::Arc::new(
-            crate::checkpoints::CheckpointEngine::new(
-                "test-agent",
-                workspace_dir.clone(),
-                &crate::config::paths::TeamPaths::new(hub_dir.clone().join("team")),
-                config_dir.clone(),
-                hub_dir.clone(),
-                &hub_dir.join("checkpoints"),
-                None,
-            )
-            .unwrap(),
-        );
-        (hub_dir, config_dir, workspace_dir, checkpoints)
-    }
-
-    pub(in crate::gateway::web) fn watching_state(root: &std::path::Path) -> ConfigApiState {
-        let (hub_dir, config_dir, workspace_dir, checkpoints) = watching_engine(root);
-        ConfigApiState {
-            team: None,
-            hub_dir,
-            config_dir,
-            agent_name: "test-agent".to_string(),
-            workspace_dir,
-            memory_dir: None,
-            reload_tx: None,
-            checkpoints,
-            scope: WorkspaceScope::Agent,
-        }
-    }
-
-    pub(in crate::gateway::web) fn watching_hub_state(root: &std::path::Path) -> HubApiState {
-        let (hub_dir, _config_dir, _workspace_dir, checkpoints) = watching_engine(root);
-        let mut state = HubApiState::for_test(&hub_dir);
-        state.checkpoints = checkpoints;
-        state
     }
 }

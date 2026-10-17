@@ -1,5 +1,5 @@
-//! The `team/` namespace in the workspace file API, and write coordination
-//! between the API and agents' file tools.
+//! The `team/` namespace in the workspace file API, and the team write
+//! coordination its writes and restores go through.
 
 use std::path::PathBuf;
 
@@ -16,17 +16,17 @@ use super::workspace::{
     api_workspace_mkdir, api_workspace_move, api_workspace_raw_read, api_workspace_raw_write,
 };
 use super::workspace_bulk::{api_workspace_read, api_workspace_tree};
-use crate::tools::team_namespace_tests::Hub;
+use crate::workspace::testing::TeamHub;
 use crate::workspace::version::version_token;
 
 struct Fixture {
-    hub: Hub,
+    hub: TeamHub,
     agent_dir: PathBuf,
     state: ConfigApiState,
 }
 
 fn fixture() -> Fixture {
-    let hub = Hub::new();
+    let hub = TeamHub::new();
     let agent_dir = hub.agent_dir("scout");
     let hub_dir = hub.dir.path().join("hub");
     std::fs::create_dir_all(&hub_dir).unwrap();
@@ -53,7 +53,7 @@ fn fixture() -> Fixture {
         workspace_dir: agent_dir.clone(),
         memory_dir: None,
         reload_tx: None,
-        scope: crate::gateway::web::WorkspaceScope::Agent,
+        scope: crate::hub::web::WorkspaceScope::Agent,
         checkpoints,
     };
     Fixture {
@@ -453,134 +453,6 @@ async fn batch_read_serves_team_paths() {
 }
 
 #[tokio::test]
-async fn an_agents_write_makes_a_stale_web_save_answer_412() {
-    let f = fixture();
-    std::fs::write(f.hub.team().join("shared.md"), "start").unwrap();
-    let path = f.hub.team().join("shared.md");
-    let version_seen_by_the_browser = version_of(&path);
-
-    let sam = f.hub.tools_for("sam");
-    sam.execute("read_file", json!({ "path": "team/shared.md" }))
-        .await
-        .unwrap();
-    let written = sam
-        .execute(
-            "write_file",
-            json!({ "path": "team/shared.md", "content": "sam's version" }),
-        )
-        .await
-        .unwrap();
-    assert!(!written.is_error, "{}", written.output);
-
-    let response = put(
-        &f.state,
-        "team/shared.md",
-        "browser version",
-        Some(&version_seen_by_the_browser),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "sam's version");
-}
-
-#[tokio::test]
-async fn a_web_save_makes_a_stale_agent_write_name_the_user() {
-    let f = fixture();
-    std::fs::write(f.hub.team().join("shared.md"), "start").unwrap();
-    let sam = f.hub.tools_for("sam");
-    sam.execute("read_file", json!({ "path": "team/shared.md" }))
-        .await
-        .unwrap();
-
-    let response = put(&f.state, "team/shared.md", "browser version", None).await;
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let refused = sam
-        .execute(
-            "write_file",
-            json!({ "path": "team/shared.md", "content": "sam's version" }),
-        )
-        .await
-        .unwrap();
-    assert!(refused.is_error);
-    assert!(refused.output.contains("the user"), "{}", refused.output);
-}
-
-#[tokio::test]
-async fn a_web_delete_is_reported_to_an_agent_that_read_the_file() {
-    let f = fixture();
-    std::fs::write(f.hub.team().join("shared.md"), "start").unwrap();
-    let sam = f.hub.tools_for("sam");
-    sam.execute("read_file", json!({ "path": "team/shared.md" }))
-        .await
-        .unwrap();
-
-    let deleted = api_workspace_delete(
-        Query(DeleteFileQuery {
-            path: "team/shared.md".to_string(),
-            recursive: false,
-        }),
-        State(f.state.clone()),
-        HeaderMap::new(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(deleted.status(), StatusCode::OK);
-
-    let refused = sam
-        .execute(
-            "write_file",
-            json!({ "path": "team/shared.md", "content": "sam's version" }),
-        )
-        .await
-        .unwrap();
-    assert!(refused.is_error);
-    assert!(refused.output.contains("the user"), "{}", refused.output);
-}
-
-#[tokio::test]
-async fn a_web_save_and_an_agent_write_racing_leave_one_winner() {
-    let f = fixture();
-    let path = f.hub.team().join("shared.md");
-    std::fs::write(&path, "start").unwrap();
-    let version = version_of(&path);
-    let sam = f.hub.tools_for("sam");
-    sam.execute("read_file", json!({ "path": "team/shared.md" }))
-        .await
-        .unwrap();
-
-    let (web, tool) = tokio::join!(
-        put(
-            &f.state,
-            "team/shared.md",
-            "browser version",
-            Some(&version)
-        ),
-        sam.execute(
-            "write_file",
-            json!({ "path": "team/shared.md", "content": "sam's version" }),
-        ),
-    );
-    let tool = tool.unwrap();
-
-    let web_won = web.status() == StatusCode::OK;
-    assert_ne!(
-        web_won,
-        !tool.is_error,
-        "exactly one writer succeeds: web {}, tool error {}",
-        web.status(),
-        tool.is_error
-    );
-    if web_won {
-        assert!(tool.output.contains("the user"), "{}", tool.output);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "browser version");
-    } else {
-        assert_eq!(web.status(), StatusCode::PRECONDITION_FAILED);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "sam's version");
-    }
-}
-
-#[tokio::test]
 async fn private_files_are_written_without_coordination() {
     let f = fixture();
     let path = f.agent_dir.join("notes.md");
@@ -840,39 +712,6 @@ async fn agent_only_actions_keep_the_workspace_checkpoint_shape() {
 
 // ── Restore and undo go through the team write coordinator ──────────
 
-async fn tool_call(
-    tools: &crate::agent::ToolRegistry,
-    name: &str,
-    args: Value,
-) -> crate::inference::ToolResult {
-    tools.execute(name, args).await.unwrap()
-}
-
-#[tokio::test]
-async fn a_restore_into_team_is_recorded_as_the_user_and_conflicts_a_stale_reader() {
-    let f = fixture();
-    write_team(&f, "wiki/a.md", "shared page");
-    let file = f.hub.team().join("wiki").join("a.md");
-    let body = delete(&f, "team/wiki/a.md").await;
-    let (id, _) = single_checkpoint(&body);
-
-    // Sam sees the file gone, then the user restores it.
-    let sam = f.hub.tools_for("sam");
-    let missing = tool_call(&sam, "read_file", json!({ "path": "team/wiki/a.md" })).await;
-    assert!(missing.is_error);
-    restore(&f, RepoKind::Team, &id, "wiki/a.md").await;
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "shared page");
-
-    let refused = tool_call(
-        &sam,
-        "write_file",
-        json!({ "path": "team/wiki/a.md", "content": "sam" }),
-    )
-    .await;
-    assert!(refused.is_error, "{}", refused.output);
-    assert!(refused.output.contains("the user"), "{}", refused.output);
-}
-
 #[tokio::test]
 async fn a_restore_waits_for_a_write_holding_the_path_lock() {
     let f = fixture();
@@ -895,50 +734,4 @@ async fn a_restore_waits_for_a_write_holding_the_path_lock() {
     drop(held);
     restoring.await;
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "shared page");
-}
-
-#[tokio::test]
-async fn an_undo_in_team_locks_and_names_the_agent_that_ran_it() {
-    let f = fixture();
-    write_team(&f, "wiki/a.md", "one");
-    let ctx = |summary: &str| CheckpointContext::system(CheckpointTrigger::PreAction, summary);
-    f.state
-        .checkpoints
-        .checkpoint_team_before_action(ctx("first"))
-        .await;
-    write_team(&f, "wiki/a.md", "two");
-    let second = f
-        .state
-        .checkpoints
-        .checkpoint_team_id_before_action(ctx("second"))
-        .await
-        .unwrap();
-
-    let sam = f.hub.tools_for("sam");
-    assert!(
-        !tool_call(&sam, "read_file", json!({ "path": "team/wiki/a.md" }))
-            .await
-            .is_error
-    );
-    f.state
-        .checkpoints
-        .undo_checkpoint(
-            RepoKind::Team,
-            second,
-            CheckpointContext::system(CheckpointTrigger::Undo, "undo"),
-            &crate::workspace::team_files::TeamWriter::Agent("robin".to_string()),
-        )
-        .await
-        .unwrap();
-    let file = f.hub.team().join("wiki").join("a.md");
-    assert_eq!(std::fs::read_to_string(file).unwrap(), "one");
-
-    let refused = tool_call(
-        &sam,
-        "write_file",
-        json!({ "path": "team/wiki/a.md", "content": "sam" }),
-    )
-    .await;
-    assert!(refused.is_error, "{}", refused.output);
-    assert!(refused.output.contains("robin"), "{}", refused.output);
 }

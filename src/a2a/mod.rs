@@ -27,8 +27,6 @@ pub mod listener;
 mod listener_tests;
 pub mod public_url;
 #[cfg(test)]
-mod server_e2e_tests;
-#[cfg(test)]
 pub mod static_directory;
 pub mod task_store;
 

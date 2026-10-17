@@ -557,7 +557,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -673,7 +673,7 @@ mod tests {
     #[tokio::test]
     async fn providers_patch_returns_the_checkpoint_taken_before_the_write() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = crate::hub::test_support::watching_state(dir.path());
         std::fs::create_dir_all(&state.hub_dir).unwrap();
         std::fs::write(state.hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         let before = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";

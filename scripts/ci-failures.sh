@@ -17,8 +17,9 @@
 #
 # touched          a file the failure names is in the change: the test's file, and
 #                  for a Rust failure also the file its panic was raised in. A test
-#                  of an integration module (tests/it) is also touched when the change
-#                  reaches a package the module's covers line names. The diff is
+#                  of an integration module (tests/it, or src/integration for the
+#                  cross-crate tests) is also touched when the change reaches a
+#                  package the module's covers line names. The diff is
 #                  against the merge base with origin/main, or for a release tag the
 #                  diff since the previous release tag
 # seen elsewhere   the same failure was in a failed run on another branch or tag
@@ -432,15 +433,27 @@ module_files() { # a::b::c::test -> the repo files that hold module a::b::c
     echo "${out# }"
 }
 
-# The tests/it file of the module that holds a test named by its path: the top-level
-# module a::b::test is in, as tests/it/a.rs or tests/it/a/mod.rs. Prints nothing for
-# a bare name or a member crate's test.
+# The file of the module that holds a test named by its path: the top-level module
+# a::b::test is in, as tests/it/a.rs or tests/it/a/mod.rs. A test under
+# integration::<m>:: is in src/integration/<m>.rs or src/integration/<m>/mod.rs.
+# Prints nothing for a bare name or a member crate's test.
 it_module_file() { # a::b::test -> tests/it/a.rs or tests/it/a/mod.rs
-    local name="$1" seg0 cand
+    local name="$1" seg0 rest cand
     if [[ "$name" != *::* || "$name" =~ ^residuum_ ]]; then
         return 0
     fi
     seg0="${name%%::*}"
+    rest="${name#*::}"
+    if [[ "$seg0" == integration && "$rest" == *::* ]]; then
+        seg0="${rest%%::*}"
+        for cand in "src/integration/$seg0.rs" "src/integration/$seg0/mod.rs"; do
+            if [[ -n "${repo_files[$cand]:-}" ]]; then
+                echo "$cand"
+                return 0
+            fi
+        done
+        return 0
+    fi
     for cand in "tests/it/$seg0.rs" "tests/it/$seg0/mod.rs"; do
         if [[ -n "${repo_files[$cand]:-}" ]]; then
             echo "$cand"

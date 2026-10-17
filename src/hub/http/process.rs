@@ -7,7 +7,7 @@ use axum::Router;
 use axum::routing::{get, post};
 
 use super::state::HubHttpState;
-use crate::gateway::web;
+use crate::hub::web;
 use crate::remote_control_guard::reject_remote_shutdown_and_disconnect;
 
 /// Cloud connection routes. Disconnect is refused over the tunnel, since a
@@ -165,5 +165,6 @@ pub(super) fn hub_config_routes(hub: &HubHttpState) -> Router {
         secret_lock: Arc::clone(&hub.secret_lock),
         checkpoints: Arc::clone(&hub.checkpoints),
         team: hub.team.clone(),
+        assets: hub.assets,
     })
 }

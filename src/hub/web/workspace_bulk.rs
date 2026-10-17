@@ -875,7 +875,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }

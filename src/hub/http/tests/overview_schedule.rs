@@ -7,20 +7,14 @@
 //! depend on the day it runs.
 
 use std::fmt::Write as _;
-use std::sync::Arc;
 
-use axum::extract::Request;
 use chrono::{DateTime, Duration as TimeDelta, TimeZone as _};
 
 use super::overview::{changed, expect_no_frame, move_to, next_overview, overview_of};
 use super::*;
-use crate::actions::store::ActionStore;
 use crate::actions::types::ScheduledAction;
-use crate::background::registry::SessionRegistry;
-use crate::background::store::SessionStore;
 use crate::bus::remote_task::TrackedTask;
 use crate::bus::remote_task::UNREACHABLE_NOTICE_AFTER;
-use crate::gateway::web::scheduled::{ScheduledApiState, scheduled_api_router};
 use crate::hub::agent_watch::{AgentChangeKind, WatchedPath};
 use crate::hub::overview::AgentOverview;
 use residuum_core::testing::log::EventLog;
@@ -157,72 +151,6 @@ fn problem_ids(overview: &AgentOverview) -> Vec<&str> {
         .iter()
         .map(|problem| problem.task_id.as_str())
         .collect()
-}
-
-/// The Schedule place's routes over the agent in `dir`, as its gateway builds
-/// them.
-fn scheduled_endpoint(dir: &std::path::Path, tz: chrono_tz::Tz) -> axum::Router {
-    scheduled_api_router(ScheduledApiState {
-        registry: Arc::new(SessionRegistry::new()),
-        store: Arc::new(SessionStore::new(dir.join("sessions"))),
-        action_store: Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(
-            dir.join("scheduled_actions.json"),
-        ))),
-        layout: WorkspaceLayout::new(dir),
-        tz,
-    })
-}
-
-/// `GET /api/scheduled/pulses` of `endpoint`.
-async fn pulses_listed(endpoint: &axum::Router) -> Value {
-    let response = tower::ServiceExt::oneshot(
-        endpoint.clone(),
-        Request::get("/api/scheduled/pulses")
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    serde_json::from_slice(&bytes).unwrap()
-}
-
-fn instant(text: &Value) -> DateTime<chrono::FixedOffset> {
-    DateTime::parse_from_rfc3339(text.as_str().unwrap()).unwrap()
-}
-
-/// Check that each pulse the endpoint gives a next time is in `upcoming` at
-/// that time, and that a pulse it gives none is not there. A pulse that has
-/// never run is counted from now for both, each read at its own moment, so
-/// they may be a minute tick apart.
-fn assert_same_next_times(listed: &Value, upcoming: &Value) {
-    for pulse in listed.as_array().unwrap() {
-        let name = pulse["name"].as_str().unwrap();
-        let in_overview = upcoming
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|run| run["name"] == name);
-        match (pulse["next_fire_at"].is_null(), in_overview) {
-            (true, None) => assert_eq!(name, "off", "only the disabled pulse has no next run"),
-            (false, Some(run)) => {
-                let endpoint_at = instant(&pulse["next_fire_at"]);
-                let overview_at = instant(&run["at"]);
-                if name == "never_run" {
-                    assert!(
-                        (endpoint_at - overview_at).num_seconds().abs() <= 60,
-                        "{name}"
-                    );
-                } else {
-                    assert_eq!(endpoint_at, overview_at, "{name}");
-                }
-            }
-            (null, run) => panic!("{name}: next_fire_at null={null} but the overview has {run:?}"),
-        }
-    }
 }
 
 // ---- upcoming ---------------------------------------------------------------
@@ -510,65 +438,6 @@ async fn a_running_agents_upcoming_follows_the_changes_its_watcher_reports() {
         AgentChangeKind::WatchedPathChanged(WatchedPath::PulseState),
     );
     expect_no_frame(&mut frames).await;
-}
-
-#[tokio::test]
-async fn the_pulses_endpoint_and_the_overview_give_a_pulse_the_same_next_time() {
-    let h = Harness::new();
-    let new_york = chrono_tz::America::New_York;
-    *h.directory.timezone.lock().unwrap() = new_york;
-    write_pulses(
-        &h,
-        "quiet",
-        &[
-            ("hourly", "1h", None),
-            ("pushed", "1h", Some("09:00-17:00")),
-            ("never_run", "6h", None),
-            ("off", "1h", None),
-        ],
-    );
-    let heartbeat = h.agent_dir("quiet").join("HEARTBEAT.yml");
-    let yaml = std::fs::read_to_string(&heartbeat).unwrap();
-    std::fs::write(
-        &heartbeat,
-        yaml.replace("  - name: off\n", "  - name: off\n    enabled: false\n"),
-    )
-    .unwrap();
-    write_pulse_state(
-        &h,
-        "quiet",
-        &[
-            ("hourly", "2099-01-01T10:00:00"),
-            ("pushed", "2099-01-01T16:30:00"),
-            ("off", "2099-01-01T10:00:00"),
-        ],
-    );
-
-    let endpoint = scheduled_endpoint(&h.agent_dir("quiet"), new_york);
-
-    let listed = pulses_listed(&endpoint).await;
-    let upcoming = overview_of(&h, "quiet").await["upcoming"].clone();
-    assert_same_next_times(&listed, &upcoming);
-    assert_eq!(listed.as_array().unwrap().len(), 4);
-    assert_eq!(upcoming.as_array().unwrap().len(), 3);
-    assert_eq!(
-        instant(&upcoming[2]["at"]),
-        DateTime::parse_from_rfc3339("2099-01-02T09:00:00-05:00").unwrap(),
-        "the pushed pulse opens at 09:00 New York time"
-    );
-
-    write_config(&h, "quiet", "[pulse]\nenabled = false\n");
-    let off = pulses_listed(&endpoint).await;
-    assert!(
-        off.as_array()
-            .unwrap()
-            .iter()
-            .all(|pulse| pulse["next_fire_at"].is_null()),
-        "no pulse runs while the pulse system is off: {off}"
-    );
-    let overview = overview_of(&h, "quiet").await;
-    let actual_4 = overview["upcoming"].as_array().unwrap().as_slice();
-    assert!(actual_4.is_empty(), "expected {actual_4:?} to be empty");
 }
 
 // ---- outbound problems --------------------------------------------------------

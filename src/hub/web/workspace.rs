@@ -965,7 +965,7 @@ pub(super) async fn api_workspace_raw_read(
     if let Ok(v) = HeaderValue::from_str(&version) {
         response_headers.insert(header::ETAG, v);
     }
-    crate::gateway::file_server::mark_agent_file(response_headers, &mime_type);
+    crate::hub::file_server::mark_agent_file(response_headers, &mime_type);
 
     Ok(response)
 }
@@ -1618,7 +1618,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -2068,7 +2068,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 
@@ -2491,7 +2491,7 @@ mod tests {
     #[tokio::test]
     async fn delete_returns_the_checkpoint_taken_before_the_delete() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = crate::hub::test_support::watching_state(dir.path());
         let ws_dir = state.workspace_dir.clone();
         tokio::fs::write(ws_dir.join("gone.md"), "bye")
             .await
@@ -2709,7 +2709,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 
@@ -3305,7 +3305,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 

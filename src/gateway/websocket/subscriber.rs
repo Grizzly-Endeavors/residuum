@@ -5,8 +5,8 @@ use crate::bus::{
     OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind, ResponseEvent, SessionEvent,
     Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
 };
-use crate::gateway::file_server::FileRegistry;
 use crate::gateway::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
+use crate::hub::file_server::FileRegistry;
 use crate::protocol::frames::{session_event_to_server_message, workspace_frame};
 use crate::protocol::{QueuedMessage, ServerMessage, SnapshotFrame, TurnInProgress};
 use tokio::sync::mpsc;
@@ -261,7 +261,7 @@ pub struct WsSubscribers {
     /// The prefixes this connection watches, replaced by its
     /// `watch_workspace` frames.
     pub watch_set: tokio::sync::watch::Receiver<WatchSet>,
-    pub file_registry: crate::gateway::file_server::FileRegistry,
+    pub file_registry: crate::hub::file_server::FileRegistry,
 }
 
 impl WsSubscribers {
@@ -274,7 +274,7 @@ impl WsSubscribers {
         bus_handle: &crate::bus::BusHandle,
         team_bus: &crate::bus::BusHandle,
         ep: EndpointName,
-        file_registry: crate::gateway::file_server::FileRegistry,
+        file_registry: crate::hub::file_server::FileRegistry,
         watch_set: tokio::sync::watch::Receiver<WatchSet>,
         journal: &TurnJournal,
     ) -> Result<Self, crate::bus::BusError> {
@@ -444,7 +444,7 @@ mod tests {
             &handle,
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new("scout"),
+            crate::hub::file_server::FileRegistry::new("scout"),
             no_watch_set(),
             &TurnJournal::spawn(&handle).await.unwrap(),
         )
@@ -469,7 +469,7 @@ mod tests {
             &handle,
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new("scout"),
+            crate::hub::file_server::FileRegistry::new("scout"),
             no_watch_set(),
             &journal,
         )
@@ -957,7 +957,7 @@ mod tests {
             &handle,
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new("scout"),
+            crate::hub::file_server::FileRegistry::new("scout"),
             no_watch_set(),
             &TurnJournal::spawn(&handle).await.unwrap(),
         )
@@ -997,7 +997,7 @@ mod tests {
             &handle,
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new("scout"),
+            crate::hub::file_server::FileRegistry::new("scout"),
             no_watch_set(),
             &TurnJournal::spawn(&handle).await.unwrap(),
         )
@@ -1062,7 +1062,7 @@ mod tests {
             &handle,
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new("scout"),
+            crate::hub::file_server::FileRegistry::new("scout"),
             watch_rx,
             &TurnJournal::spawn(&handle).await.unwrap(),
         )

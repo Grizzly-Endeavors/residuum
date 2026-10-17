@@ -140,7 +140,7 @@ async fn bug_report_happy_path_sends_wire_contract_and_returns_receipt() {
 async fn bug_report_includes_active_subagents_when_present() {
     // The wire format itself doesn't know about the session registry —
     // that's assembled by the bug-report tool and HTTP handler (see
-    // src/tools/file_bug_report.rs and src/gateway/web/tracing_api.rs).
+    // src/tools/file_bug_report.rs and src/hub/web/tracing_api.rs).
     // This test only confirms the wire contract carries whatever the
     // caller populates through unchanged, since the happy-path test
     // above pins the empty case.

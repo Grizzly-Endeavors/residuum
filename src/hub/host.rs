@@ -196,13 +196,13 @@ fn role_line(team: &TeamPaths, name: &str) -> Option<String> {
 }
 
 /// Everything the host keeps for an agent that is running.
-struct RunningAgent {
+pub(crate) struct RunningAgent {
     /// The routers, reload and stop channels, and cleanup the agent started
     /// with.
-    control: AgentControl,
+    pub(crate) control: AgentControl,
     /// Set before the stop signal is sent, so the supervisor can tell a
     /// requested stop from a failure.
-    stop_requested: Arc<AtomicBool>,
+    pub(crate) stop_requested: Arc<AtomicBool>,
     /// Set before the agent's task is aborted after a stop timed out.
     forced: Arc<AtomicBool>,
     /// Turns `true` once the supervisor has recorded the agent's exit.
@@ -210,10 +210,10 @@ struct RunningAgent {
     abort: AbortHandle,
 }
 
-struct SlotState {
+pub(crate) struct SlotState {
     state: AgentState,
     last_error: Option<AgentLastError>,
-    running: Option<RunningAgent>,
+    pub(crate) running: Option<RunningAgent>,
     generation: u64,
     /// Autostart and visibility from the last config that loaded, as last
     /// published. `None` until one has loaded. Summaries and the A2A
@@ -226,7 +226,7 @@ struct SlotState {
 }
 
 /// One agent the host knows about.
-struct AgentSlot {
+pub(crate) struct AgentSlot {
     name: String,
     dir: PathBuf,
     /// Serializes start, stop, restart, and patch on this agent.
@@ -240,7 +240,7 @@ struct AgentSlot {
 }
 
 impl AgentSlot {
-    fn lock(&self) -> std::sync::MutexGuard<'_, SlotState> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, SlotState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -380,7 +380,7 @@ impl AgentHost {
             .collect()
     }
 
-    fn slot(&self, name: &str) -> Result<Arc<AgentSlot>, LifecycleError> {
+    pub(crate) fn slot(&self, name: &str) -> Result<Arc<AgentSlot>, LifecycleError> {
         let slots = self.slots.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(slot) = slots.get(name) {
             return Ok(Arc::clone(slot));
@@ -410,11 +410,11 @@ impl AgentHost {
         found.ok_or_else(|| LifecycleError::NotFound(name.to_string()))
     }
 
-    fn team_paths(&self) -> TeamPaths {
+    pub(crate) fn team_paths(&self) -> TeamPaths {
         TeamPaths::new(crate::config::paths::team_dir(&self.services.root))
     }
 
-    fn hub_config(&self) -> HubConfig {
+    pub(crate) fn hub_config(&self) -> HubConfig {
         self.hub_cfg
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -830,7 +830,7 @@ impl AgentHost {
     /// After a reload, move the agent's Teams port reservation to the port
     /// its new config uses. A port another agent holds is left to the
     /// adapter, whose failed bind is told to the user.
-    fn refresh_teams_port(&self, slot: &AgentSlot) {
+    pub(crate) fn refresh_teams_port(&self, slot: &AgentSlot) {
         let hub_cfg = self.hub_config();
         let cfg = match agent_span(&slot.name)
             .in_scope(|| Config::load_agent_at(&slot.dir, &hub_cfg))
@@ -1255,7 +1255,11 @@ impl AgentHost {
     /// Log why a start that create or restore asked for did not happen. The
     /// agent stays in the state the summary reports (`failed` with its error,
     /// or `stopped` when the start was refused before it began).
-    fn note_start_outcome(&self, slot: &AgentSlot, started: &Result<(), LifecycleError>) {
+    pub(crate) fn note_start_outcome(
+        &self,
+        slot: &AgentSlot,
+        started: &Result<(), LifecycleError>,
+    ) {
         if let Err(reason) = started {
             tracing::info!(
                 agent = %slot.name,
@@ -1706,7 +1710,7 @@ impl AgentHost {
 
     /// [`Self::checkpoint_engine`] for an agent that has no slot, such as a
     /// deleted one.
-    fn checkpoint_engine_for(
+    pub(crate) fn checkpoint_engine_for(
         &self,
         name: &str,
         dir: &Path,
@@ -1746,7 +1750,7 @@ impl AgentHost {
         }
     }
 
-    fn checkpoints_dir(&self) -> PathBuf {
+    pub(crate) fn checkpoints_dir(&self) -> PathBuf {
         crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir()
     }
 
@@ -1768,7 +1772,7 @@ impl AgentHost {
             .running
             .as_ref()
             .map(|running| running.control.reload_tx.clone());
-        let state = crate::gateway::web::ConfigApiState {
+        let state = crate::hub::web::ConfigApiState {
             hub_dir: self.services.hub_dir.clone(),
             config_dir: slot.dir.join("config"),
             agent_name: slot.name.clone(),
@@ -1777,9 +1781,9 @@ impl AgentHost {
             reload_tx,
             checkpoints,
             team: Some(self.services.team.view_for_user(&slot.dir)),
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
         };
-        Ok(crate::gateway::web::agent_repair_api_router(state))
+        Ok(crate::hub::web::agent_repair_api_router(state))
     }
 
     /// The agent's chat history, usage, user inbox, A2A settings, and file
@@ -1795,16 +1799,16 @@ impl AgentHost {
             .as_ref()
             .map(|running| running.control.reload_tx.clone());
         let layout = WorkspaceLayout::new(&slot.dir);
-        crate::gateway::web::agent_files_api_router(crate::gateway::web::AgentFilesState {
+        crate::hub::web::agent_files_api_router(crate::hub::web::AgentFilesState {
             agent_name: slot.name.clone(),
             workspace_dir: slot.dir.clone(),
             memory_dir: Some(layout.memory_dir()),
-            file_registry: crate::gateway::file_server::FileRegistry::for_agent(
+            file_registry: crate::hub::file_server::FileRegistry::for_agent(
                 slot.name.clone(),
                 &layout,
             ),
             reload_tx,
-            checkpoints: crate::gateway::web::CheckpointAccess::lazy(
+            checkpoints: crate::hub::web::CheckpointAccess::lazy(
                 self.checkpoint_opener(&slot.name, &slot.dir),
             ),
         })
@@ -2082,6 +2086,3 @@ impl AgentDirectory for AgentHost {
         self.events.subscribe()
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -128,7 +128,7 @@ mod tests {
             tz: chrono_tz::UTC,
             publisher: core.publisher,
             bus_handle: core.bus_handle,
-            file_registry: crate::gateway::file_server::FileRegistry::new("scout"),
+            file_registry: crate::hub::file_server::FileRegistry::new("scout"),
             webhooks: crate::interfaces::webhook::WebhookTable::default(),
             session_registry,
             session_store,

@@ -19,6 +19,7 @@ pub mod config_watcher;
 mod deleted;
 pub mod directory;
 pub mod features;
+pub mod file_server;
 pub mod host;
 pub mod http;
 pub mod inbox;
@@ -27,7 +28,7 @@ pub mod launch;
 pub mod overview;
 pub mod provision;
 pub mod push;
-mod relay_agents;
+pub(crate) mod relay_agents;
 pub mod runtime;
 pub mod services;
 #[cfg(test)]
@@ -38,6 +39,7 @@ pub mod team_events;
 pub(crate) mod test_support;
 pub mod types;
 pub mod update;
+pub mod web;
 pub(crate) mod workbench_watcher;
 
 pub use directory::{AgentDirectory, AgentFiles};

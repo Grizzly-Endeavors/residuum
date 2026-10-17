@@ -1,10 +1,15 @@
 //! Integration tests for the agent host: real agents built from temp
-//! directories against mock model servers, served through the hub's HTTP
-//! wiring.
+//! directories against mock model servers, started through the gateway's
+//! launcher and served through the hub's HTTP wiring.
+//!
+//! covers: residuum-hub, residuum-gateway
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+use chrono::Utc;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -13,12 +18,22 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::*;
+use tokio::sync::broadcast;
+
+use crate::background::team::{
+    A2aVisibility, Actor, AgentErrorKind, AgentState, CreateAgentRequest, LifecycleError,
+    TeamDirectory,
+};
+use crate::config::{HubConfig, WorkspaceLayout};
+use crate::hub::directory::AgentDirectory;
+use crate::hub::host::AgentHost;
 use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
+use crate::hub::services::HubServices;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{mount_reply, write_agent};
+use crate::hub::types::{AgentActivity, AgentPatch, HubEvent, RestoreAgentRequest};
 use crate::inference::testing::model::GatedModel;
 use crate::testing::bus_wait;
 use crate::workspace::watch::WatchHealth;
@@ -28,10 +43,10 @@ use residuum_core::testing::wait;
 
 /// A hub over a temp residuum root with running-capable agents, each talking
 /// to its own mock model server that answers "<name> here".
-struct Fixture {
-    root: tempfile::TempDir,
-    host: Arc<AgentHost>,
-    services: HubServices,
+pub(crate) struct Fixture {
+    pub(crate) root: tempfile::TempDir,
+    pub(crate) host: Arc<AgentHost>,
+    pub(crate) services: HubServices,
     addr: String,
     mocks: BTreeMap<String, MockServer>,
     /// The gated proxy each agent's model calls go through, in front of its
@@ -69,7 +84,7 @@ fn array_at<'a>(value: &'a Value, key: &str) -> &'a Vec<Value> {
 impl Fixture {
     /// Build a hub with the agents `names` on disk (not started yet).
     /// `hub_toml` is appended to the hub config after the timezone.
-    async fn new(names: &[&str], hub_toml: &str) -> Self {
+    pub(crate) async fn new(names: &[&str], hub_toml: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let hub_dir = root.path().join("hub");
         std::fs::create_dir_all(&hub_dir).unwrap();
@@ -129,7 +144,16 @@ impl Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
-        let app = build_app(&host, &services, &team_events, &overview, reload_tx, None).unwrap();
+        let app = build_app(
+            &host,
+            &services,
+            &team_events,
+            &overview,
+            reload_tx,
+            None,
+            crate::hub::test_support::fixture_assets,
+        )
+        .unwrap();
         crate::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -287,7 +311,7 @@ impl Fixture {
         assert!(response.status().is_success(), "{}", response.status());
     }
 
-    fn state_of(&self, name: &str) -> AgentState {
+    pub(crate) fn state_of(&self, name: &str) -> AgentState {
         self.host.summary(name).unwrap().state
     }
 
@@ -372,7 +396,7 @@ impl Fixture {
         .unwrap();
     }
 
-    fn mock(&self, name: &str) -> &MockServer {
+    pub(crate) fn mock(&self, name: &str) -> &MockServer {
         self.mocks
             .get(name)
             .expect("the fixture has a mock model for every agent")
@@ -416,7 +440,7 @@ impl Fixture {
 
 /// The item files in a started agent's user inbox. An empty list means the
 /// hub wrote nothing there, since the directory itself must exist.
-fn user_inbox_files(hub: &Fixture, agent: &str) -> Vec<std::path::PathBuf> {
+pub(crate) fn user_inbox_files(hub: &Fixture, agent: &str) -> Vec<std::path::PathBuf> {
     let inbox = WorkspaceLayout::new(hub.root.path().join(agent)).user_inbox_dir();
     assert!(inbox.is_dir(), "{agent} has a user inbox");
     std::fs::read_dir(&inbox)
@@ -426,7 +450,7 @@ fn user_inbox_files(hub: &Fixture, agent: &str) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn drain_events(rx: &mut broadcast::Receiver<HubEvent>) -> Vec<HubEvent> {
+pub(crate) fn drain_events(rx: &mut broadcast::Receiver<HubEvent>) -> Vec<HubEvent> {
     let mut events = Vec::new();
     while let Ok(event) = rx.try_recv() {
         events.push(event);
@@ -600,7 +624,7 @@ async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     std::fs::create_dir_all(&outside).unwrap();
     let report = outside.join("report.txt");
     std::fs::write(&report, "the report").unwrap();
-    let id = crate::gateway::file_server::FileRegistry::for_agent(
+    let id = crate::hub::file_server::FileRegistry::for_agent(
         "scout",
         &crate::config::WorkspaceLayout::new(hub.root.path().join("scout")),
     )
@@ -1357,7 +1381,7 @@ fn every_log_line_an_agent_produces_carries_its_agent_field() {
         .args([
             "--ignored",
             "--exact",
-            "hub::host::tests::agent_log_lines_scenario",
+            "integration::hub_host::agent_log_lines_scenario",
             "--nocapture",
         ])
         .output()
@@ -1492,7 +1516,7 @@ async fn discovery_lists_every_agent_and_role_lines_come_from_the_wiki() {
     );
 }
 
-fn create_request(name: &str, description: Option<&str>) -> CreateAgentRequest {
+pub(crate) fn create_request(name: &str, description: Option<&str>) -> CreateAgentRequest {
     CreateAgentRequest {
         name: name.to_string(),
         description: description.map(str::to_string),
@@ -1504,7 +1528,7 @@ fn create_request(name: &str, description: Option<&str>) -> CreateAgentRequest {
 }
 
 /// Whether any request the model server got so far mentions `needle`.
-async fn model_was_told(server: &MockServer, needle: &str) -> bool {
+pub(crate) async fn model_was_told(server: &MockServer, needle: &str) -> bool {
     server
         .received_requests()
         .await
@@ -2241,11 +2265,10 @@ async fn a_reload_that_changes_the_teams_port_moves_the_reservation() {
     hub.host.refresh_teams_port(&slot);
 
     {
-        let ports = hub.host.teams_ports.lock().unwrap();
-        assert_eq!(ports.get(&second).map(String::as_str), Some("atlas"));
-        assert!(!ports.contains_key(&first));
+        let ports = announced.borrow_and_update();
+        assert_eq!(ports.get("atlas"), Some(&second));
+        assert!(!ports.values().any(|port| *port == first));
     }
-    assert_eq!(announced.borrow_and_update().get("atlas"), Some(&second));
     hub.host.start("scout").await.unwrap();
     assert_eq!(hub.state_of("scout"), AgentState::Running);
 }
@@ -2766,7 +2789,6 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
 mod agent_watch;
 mod artifacts_origin;
 mod hub_inbox;
-mod lifecycle_tools;
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes parsed JSON for clarity"
@@ -2780,7 +2802,6 @@ mod overview;
 mod push_triggers;
 mod reload_notices;
 mod restore;
-mod review_fixes;
 mod team_events;
 
 #[tokio::test]

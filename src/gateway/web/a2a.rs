@@ -21,7 +21,7 @@ use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT, WorkspaceLayout}
 use crate::protocol::OutboundA2aTaskSummary;
 use crate::tunnel::TunnelStatus;
 
-use super::ConfigApiState;
+use crate::hub::web::ConfigApiState;
 
 /// Shared state for `GET /api/agents/{name}/a2a/agents` and the outbound-task endpoints.
 #[derive(Clone)]
@@ -483,7 +483,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
+            scope: crate::hub::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }

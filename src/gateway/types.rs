@@ -90,7 +90,7 @@ pub(crate) struct GatewayState {
     pub tz: chrono_tz::Tz,
     pub publisher: Publisher,
     pub bus_handle: BusHandle,
-    pub file_registry: crate::gateway::file_server::FileRegistry,
+    pub file_registry: crate::hub::file_server::FileRegistry,
     /// Named webhooks served at `/webhook/{name}`; swapped in place on config reload.
     pub webhooks: crate::interfaces::webhook::WebhookTable,
     /// Live agent sessions, for the sessions listing and Activity's stop

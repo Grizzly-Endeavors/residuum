@@ -17,8 +17,8 @@ mod tests {
         EndpointCapabilities, EndpointEntry, EndpointId, EndpointName, EndpointRegistry,
         ResponseEvent, TopicId, topics,
     };
-    use residuum::gateway::file_server::FileRegistry;
     use residuum::gateway::websocket::subscriber::WsSubscribers;
+    use residuum::hub::file_server::FileRegistry;
     use residuum::protocol::ServerMessage;
     use residuum::tools::send_message::SendMessageTool;
 

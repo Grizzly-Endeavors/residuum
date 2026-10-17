@@ -177,7 +177,7 @@ async fn api_checkpoints_diff(
 
 /// `GET /api/checkpoints/{id}/file?repo=&path=` — a file's raw content at
 /// a checkpoint, marked as a file an agent wrote
-/// ([`crate::gateway::file_server::mark_agent_file`]). `404` if the path
+/// ([`crate::hub::file_server::mark_agent_file`]). `404` if the path
 /// doesn't exist there or names a directory.
 async fn api_checkpoints_file(
     State(state): State<CheckpointApiState>,
@@ -205,7 +205,7 @@ async fn api_checkpoints_file(
         bytes,
     )
         .into_response();
-    crate::gateway::file_server::mark_agent_file(response.headers_mut(), &content_type);
+    crate::hub::file_server::mark_agent_file(response.headers_mut(), &content_type);
     Ok(response)
 }
 

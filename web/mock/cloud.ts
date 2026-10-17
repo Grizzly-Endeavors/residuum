@@ -108,7 +108,7 @@ async function holdTunnel(ctx: RouteContext): Promise<void> {
 
 /**
  * `POST /api/hub/cloud/connect` `{ relay_url, port }`: start a sign-in, as
- * `api_cloud_connect` in `src/gateway/web/cloud_sign_in.rs` does, and answer
+ * `api_cloud_connect` in `src/hub/web/cloud_sign_in.rs` does, and answer
  * with the relay's sign-in address carrying its `state`. The states are
  * numbered, so a test can tell them apart.
  */
@@ -156,7 +156,7 @@ function saveSignIn(hub: MockHub, token: string): void {
   changeCloudTable(hub, { enabled: true, token: "secret:cloud_token" });
 }
 
-/** Where the gateway's callback sends the browser (`CLOUD_SETTINGS_PATH` in `src/gateway/web/cloud.rs`). */
+/** Where the gateway's callback sends the browser (`CLOUD_SETTINGS_PATH` in `src/hub/web/cloud.rs`). */
 const CLOUD_SETTINGS_PATH = "/home?settings=_all/cloud";
 
 /** Use up the started sign-in `state` names; false when there is none. */

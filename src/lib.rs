@@ -28,6 +28,8 @@ pub mod daemon;
 pub mod gateway;
 pub mod hub;
 pub mod inbox;
+#[cfg(test)]
+pub(crate) mod integration;
 pub mod interfaces;
 pub mod logging;
 pub mod notify;
