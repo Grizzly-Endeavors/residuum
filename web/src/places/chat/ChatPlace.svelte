@@ -233,12 +233,14 @@
       {#if running}
         <WaitingMessages
           messages={store.waiting}
-          agentName={hub.shownName(agent)}
-          offline={ws.transport.status !== "connected"}
-          onsendnow={(message) => {
-            ws.sendWaitingNow(message.id);
+          reader={hub.shownName(agent)}
+          actions={{
+            offline: ws.transport.status !== "connected",
+            onsendnow: (message) => {
+              ws.sendWaitingNow(message.id);
+            },
+            onmultitask: (message) => void multitask(message),
           }}
-          onmultitask={(message) => void multitask(message)}
         />
         <PostTurnStatus memory={store.memoryWorking} review={store.subconsciousWorking} />
       {:else if summary && shownState !== null && shownState !== "running"}

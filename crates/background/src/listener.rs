@@ -366,8 +366,13 @@ fn handle_spawn_request<'a>(
 }
 
 /// Deliver a spawn/resume request's content into the run that already won
-/// the race for its address, using [`race_guard_interrupt`] to pick the
-/// right interrupt kind.
+/// the race for its address.
+///
+/// A resume that carries agent messages delivers each of them unchanged, as
+/// its own [`Interrupt::AgentMessage`] (see [`losing_resume_messages`]), so
+/// each keeps its id and sender and the winning run reports it read under
+/// that id. Any other request's content becomes one interrupt, of the kind
+/// [`race_guard_interrupt`] picks.
 ///
 /// A chat user's message (a `Conversation`-triggered request carrying its
 /// original inbound message, which [`race_guard_interrupt`] renders as
@@ -382,15 +387,38 @@ fn handle_spawn_request<'a>(
 ///
 /// Returns an error if delivering an *agent* message fails (the winning
 /// run's channel is saturated, its own teardown is underway, or it has
-/// already left the registry) — that content is dropped in that case.
-fn deliver_race_guard_content(
+/// already left the registry) — that content is dropped in that case, and
+/// the error names the id of each message dropped.
+pub(crate) fn deliver_race_guard_content(
     registry: &Arc<SessionRegistry>,
     publisher: &Publisher,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
     let address = event.address.clone();
-    let content = event.kickoff_text();
     let category = SessionCategory::from_trigger(&event.source);
+    if !event.delivered_messages.is_empty() {
+        let messages = losing_resume_messages(
+            event.delivered_messages,
+            &event.prompt,
+            event.spawner,
+            category,
+            event.hop_count,
+        );
+        let failed = deliver_each_message(registry, &address, messages);
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let failed = failed
+            .iter()
+            .map(|(id, outcome)| format!("{id}: {outcome:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "session address {address} is already live and delivering this resume's messages \
+             into it failed ({failed}); those messages dropped"
+        );
+    }
+    let content = event.kickoff_text();
     let interrupt = race_guard_interrupt(
         &event.source,
         event.inbound.clone(),
@@ -439,7 +467,9 @@ fn deliver_race_guard_content(
 }
 
 /// Build the interrupt a spawn/resume request's content becomes when its
-/// target address has already been won by another attempt (see
+/// target address has already been won by another attempt and the request
+/// carries no agent messages of its own (one that does goes through
+/// [`losing_resume_messages`] instead; see
 /// [`handle_spawn_request`]'s `Forking | Running | Idle` branch, and
 /// `crate::runtime::deliver_losing_spawn_input`, which hits the
 /// same situation from the narrower race window between a spawn request
@@ -469,12 +499,59 @@ pub(crate) fn race_guard_interrupt(
     {
         return Interrupt::UserMessage(inbound);
     }
-    Interrupt::AgentMessage(AgentMessageEvent {
-        from: spawner.unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
-        from_category: category.as_str().to_string(),
+    Interrupt::AgentMessage(AgentMessageEvent::new(
+        spawner.unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
+        category.as_str(),
         content,
         hop_count,
-    })
+    ))
+}
+
+/// The messages a resume that lost the race for its address delivers into
+/// the run that won it: each agent message the resume carried, unchanged
+/// (its own id, sender, category and hop count), then the resume's other
+/// input (`prompt`, conversation messages drained with them), if any, as one
+/// message from `spawner` (or `main` if it has none). The resume's context,
+/// a pointer to the previous run, is left out: the run that won the address
+/// resumed from the same point and already has it.
+pub(crate) fn losing_resume_messages(
+    delivered: Vec<AgentMessageEvent>,
+    prompt: &str,
+    spawner: Option<SessionAddress>,
+    category: SessionCategory,
+    hop_count: u32,
+) -> Vec<AgentMessageEvent> {
+    let mut messages = delivered;
+    if !prompt.is_empty() {
+        messages.push(AgentMessageEvent::new(
+            spawner.unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
+            category.as_str(),
+            prompt,
+            hop_count,
+        ));
+    }
+    messages
+}
+
+/// Deliver `messages` one by one into the live run at `address`, returning
+/// the id and outcome of each one that could not be delivered.
+pub(crate) fn deliver_each_message(
+    registry: &SessionRegistry,
+    address: &SessionAddress,
+    messages: Vec<AgentMessageEvent>,
+) -> Vec<(String, DeliverOutcome)> {
+    messages
+        .into_iter()
+        .filter_map(|msg| {
+            let id = msg.id.clone();
+            match registry.deliver(address, Interrupt::AgentMessage(msg)) {
+                DeliverOutcome::Delivered => None,
+                outcome @ (DeliverOutcome::Completing
+                | DeliverOutcome::Full
+                | DeliverOutcome::NotLive) => Some((id, outcome)),
+            }
+        })
+        .collect()
 }
 
 /// Build resources and hand the run to `SessionRuntime`, once
@@ -522,28 +599,7 @@ async fn fork_and_spawn(
     )
     .await?;
 
-    let request = SessionSpawnRequest {
-        address: event.address,
-        source_label: event.source_label,
-        trigger: event.source,
-        agent_skill: event.skill,
-        spawner: event.spawner,
-        depth: event.depth,
-        subagent_config: SubAgentConfig {
-            prompt: event.prompt,
-            context: event.context,
-            model: event.model,
-            resolved_model: Some(spawned.resolved_model.clone()),
-            hop_count: event.hop_count,
-            sender: event.sender,
-            inbound: event.inbound,
-            images: event.images,
-            carried_history: event.carried_history,
-        },
-        conversation_target: event.conversation,
-        overlap: event.overlap,
-        stop,
-    };
+    let request = session_spawn_request(event, Some(spawned.resolved_model.clone()), stop);
 
     let log_address = request.address.clone();
     let log_source_label = request.source_label.clone();
@@ -556,6 +612,39 @@ async fn fork_and_spawn(
         "forked session"
     );
     Ok(SpawnOutcome::Accepted)
+}
+
+/// The run `event` asks the runtime for, on `resolved_model` (the
+/// `provider/model` id its resources were built for), stopped by `stop`
+/// when it belongs to a pulse fire.
+pub(crate) fn session_spawn_request(
+    event: SpawnRequestEvent,
+    resolved_model: Option<String>,
+    stop: Option<tokio_util::sync::CancellationToken>,
+) -> SessionSpawnRequest {
+    SessionSpawnRequest {
+        address: event.address,
+        source_label: event.source_label,
+        trigger: event.source,
+        agent_skill: event.skill,
+        spawner: event.spawner,
+        depth: event.depth,
+        subagent_config: SubAgentConfig {
+            prompt: event.prompt,
+            context: event.context,
+            model: event.model,
+            resolved_model,
+            hop_count: event.hop_count,
+            sender: event.sender,
+            inbound: event.inbound,
+            images: event.images,
+            carried_history: event.carried_history,
+            delivered_messages: event.delivered_messages,
+        },
+        conversation_target: event.conversation,
+        overlap: event.overlap,
+        stop,
+    }
 }
 
 #[cfg(test)]
@@ -618,6 +707,7 @@ mod tests {
             overlap: None,
             carried_history: Vec::new(),
             fire_id: None,
+            delivered_messages: Vec::new(),
         }
     }
 
@@ -876,6 +966,119 @@ mod tests {
             "a plain sentence for the Schedule place, the chain for the logs, and never the \
              web UI's start map"
         );
+    }
+
+    /// A resume of `address` by `delivered`, as `publish_resume` builds it.
+    fn resume_event(address: &str, delivered: Vec<AgentMessageEvent>) -> SpawnRequestEvent {
+        SpawnRequestEvent {
+            address: SessionAddress::from(address),
+            skill: None,
+            source_label: "agent:researcher".to_string(),
+            prompt: String::new(),
+            context: Some("[Resumed session] previous run".to_string()),
+            source: EventTrigger::Agent,
+            model: ModelSelector::MEDIUM,
+            spawner: None,
+            depth: 1,
+            hop_count: 1,
+            sender: None,
+            conversation: None,
+            inbound: None,
+            images: Vec::new(),
+            overlap: None,
+            carried_history: Vec::new(),
+            fire_id: None,
+            delivered_messages: delivered,
+        }
+    }
+
+    fn owner_message(id: &str, content: &str) -> AgentMessageEvent {
+        AgentMessageEvent::new(
+            SessionAddress::from(residuum_bus::session::OWNER_ADDRESS),
+            "owner",
+            content,
+            0,
+        )
+        .with_id(id)
+    }
+
+    #[tokio::test]
+    async fn a_losing_resume_delivers_each_of_its_messages_unchanged() {
+        let registry = Arc::new(SessionRegistry::new());
+        let address = "spawned-researcher-race-resume";
+        let mut rx = registry
+            .register(
+                sample_live_conversation_info(address),
+                CancellationToken::new(),
+            )
+            .expect("the winning resume registers the one live run");
+        let teammate = AgentMessageEvent::new(
+            SessionAddress::from("agent:ivan"),
+            residuum_bus::session::TEAMMATE_SENDER_CATEGORY,
+            "here's the file",
+            1,
+        )
+        .with_id("m-teammate");
+        let event = resume_event(
+            address,
+            vec![owner_message("m-owner", "are you there?"), teammate],
+        );
+
+        deliver_race_guard_content(&registry, &Publisher::noop(), event)
+            .expect("delivering into the live run must succeed");
+
+        let mut delivered = Vec::new();
+        while let Ok(interrupt) = rx.try_recv() {
+            match interrupt {
+                Interrupt::AgentMessage(m) => {
+                    delivered.push((m.id, m.from.to_string(), m.from_category, m.content));
+                }
+                Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                    panic!("a resume's messages are delivered as agent messages")
+                }
+            }
+        }
+        assert_eq!(
+            delivered,
+            vec![
+                (
+                    "m-owner".to_string(),
+                    residuum_bus::session::OWNER_ADDRESS.to_string(),
+                    "owner".to_string(),
+                    "are you there?".to_string()
+                ),
+                (
+                    "m-teammate".to_string(),
+                    "agent:ivan".to_string(),
+                    residuum_bus::session::TEAMMATE_SENDER_CATEGORY.to_string(),
+                    "here's the file".to_string()
+                ),
+            ],
+            "each message keeps its id, sender and text, without the resume's context"
+        );
+    }
+
+    #[test]
+    fn a_losing_resume_delivers_its_conversation_input_after_its_messages() {
+        let messages = losing_resume_messages(
+            vec![owner_message("m-owner", "are you there?")],
+            "[From: Jane via discord (#builds)] any news?",
+            None,
+            SessionCategory::External,
+            1,
+        );
+        let summary: Vec<(&str, &str)> = messages
+            .iter()
+            .map(|m| (m.from.as_ref(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (residuum_bus::session::OWNER_ADDRESS, "are you there?"),
+                (MAIN_ADDRESS, "[From: Jane via discord (#builds)] any news?"),
+            ]
+        );
+        assert_eq!(messages.first().map(|m| m.id.as_str()), Some("m-owner"));
     }
 
     // ── handle_spawn_failure dedup ───────────────────────────────────────

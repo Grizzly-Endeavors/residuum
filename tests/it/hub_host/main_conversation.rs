@@ -393,12 +393,12 @@ async fn a_sessions_message_to_main_is_announced_with_its_run_ahead_of_the_turn_
     hub.host.start("scout").await.unwrap();
     let mut ws = connect(&hub, "scout").await;
 
-    let mut message = MessageEvent::from_agent(&residuum::bus::AgentMessageEvent {
-        from: residuum::bus::SessionAddress::from("spawned-research-1a2b"),
-        from_category: "spawned".to_string(),
-        content: "found the answer".to_string(),
-        hop_count: 0,
-    });
+    let mut message = MessageEvent::from_agent(&residuum::bus::AgentMessageEvent::new(
+        residuum::bus::SessionAddress::from("spawned-research-1a2b"),
+        "spawned",
+        "found the answer",
+        0,
+    ));
     message.origin.agent_sender = Some(Box::new(residuum::inference::AgentSender {
         address: "spawned-research-1a2b".to_string(),
         category: "spawned".to_string(),

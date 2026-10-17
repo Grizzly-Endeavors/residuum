@@ -159,6 +159,7 @@ async fn publish_action_spawn(
         overlap: None,
         carried_history: Vec::new(),
         fire_id: None,
+        delivered_messages: Vec::new(),
     };
 
     match publisher.publish(topics::Background, spawn_event).await {

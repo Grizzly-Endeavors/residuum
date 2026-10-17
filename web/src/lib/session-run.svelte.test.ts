@@ -55,6 +55,8 @@ class FakeRelay implements SessionRelayLink {
 let transcripts: Record<string, { session: SessionSummary; messages: RecentMessage[] }>;
 let messageAnswer: () => Response;
 let requests: string[];
+/** The bodies of the messages sent to the session, in order. */
+let sentBodies: { content: string; id: string }[];
 /** While set, transcripts answer only once it resolves. */
 let holdTranscripts: Promise<void> | null;
 
@@ -67,6 +69,7 @@ function json(body: unknown, status = 200): Response {
 
 beforeEach(() => {
   requests = [];
+  sentBodies = [];
   transcripts = {
     "run-1": {
       session: summary("run-1"),
@@ -80,7 +83,7 @@ beforeEach(() => {
       ],
     },
   };
-  messageAnswer = () => json({ outcome: "live" });
+  messageAnswer = () => json({ outcome: "live", id: sentBodies.at(-1)?.id });
   holdTranscripts = null;
   vi.stubGlobal(
     "fetch",
@@ -92,7 +95,10 @@ beforeEach(() => {
         const found = transcripts[run];
         return found ? json(found) : json({ error: "no such run" }, 404);
       }
-      if (url.endsWith("/messages")) return messageAnswer();
+      if (url.endsWith("/messages")) {
+        sentBodies.push(JSON.parse(init?.body as string) as { content: string; id: string });
+        return messageAnswer();
+      }
       return json({ address: ADDRESS }, 202);
     }),
   );
@@ -112,6 +118,49 @@ async function opened(
     expect(run.loaded).toBe(true);
   });
   return { run, relay, close };
+}
+
+/** The frames of a turn starting and ending. */
+function turn(
+  relay: FakeRelay,
+  type: "session_turn_started" | "session_turn_ended",
+  turnId: string,
+  runId = "run-1",
+): void {
+  relay.relay("atlas", { type, address: ADDRESS, run_id: runId, turn_id: turnId });
+}
+
+/** The session read a message, the owner's unless `from` says otherwise. */
+function read(
+  relay: FakeRelay,
+  message: { id: string; content: string; turnId: string; runId?: string },
+  from = "owner",
+  fromCategory = "owner",
+): void {
+  relay.relay("atlas", {
+    type: "session_user_message",
+    address: ADDRESS,
+    run_id: message.runId ?? "run-1",
+    id: message.id,
+    turn_id: message.turnId,
+    content: message.content,
+    from,
+    from_category: fromCategory,
+  });
+}
+
+/** Send `content` from the message box; resolves to the id it went out with. */
+async function sendMessage(run: SessionRun, content: string): Promise<string> {
+  run.draft = content;
+  await run.send();
+  const body = sentBodies.at(-1);
+  expect(body?.content).toBe(content);
+  return body?.id ?? "";
+}
+
+/** The transcript's lines, by what they say. */
+function lines(run: SessionRun): string[] {
+  return run.items.map((item) => ("content" in item ? item.content : item.kind));
 }
 
 describe("following a run through the hub's session relay", () => {
@@ -296,14 +345,10 @@ describe("following a run through the hub's session relay", () => {
 
   it("tags the message that started a turn, so it can offer Undo this turn", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
-    run.draft = "Check outages too.";
-    await run.send();
-    relay.relay("atlas", {
-      type: "session_turn_ended",
-      address: ADDRESS,
-      run_id: "run-1",
-      turn_id: "turn-7",
-    });
+    const id = await sendMessage(run, "Check outages too.");
+    turn(relay, "session_turn_started", "turn-7");
+    read(relay, { id, content: "Check outages too.", turnId: "turn-7" });
+    turn(relay, "session_turn_ended", "turn-7");
     const sent = run.items.find(
       (item) => item.kind === "user" && item.content === "Check outages too.",
     );
@@ -324,8 +369,8 @@ describe("when a session's messages were sent", () => {
         turn_id: "t1",
         content: "Here are the fallbacks.",
       });
-      run.draft = "Thanks.";
-      await run.send();
+      const id = await sendMessage(run, "Thanks.");
+      read(relay, { id, content: "Thanks.", turnId: "t2" });
 
       const said = run.items.filter((item) => item.kind === "user" || item.kind === "assistant");
       expect(said.map((item) => [item.content, item.timestamp])).toEqual([
@@ -339,45 +384,324 @@ describe("when a session's messages were sent", () => {
   });
 });
 
-describe("the run's commands", () => {
-  it("keeps a message sent while a turn runs inside that turn, and starts a turn with one sent between", async () => {
+describe("a message waiting for the session to read it", () => {
+  const sentItem = (run: SessionRun, content: string): unknown =>
+    run.items.find((item) => item.kind === "user" && item.content === content);
+
+  it("waits apart from the transcript until the session reads it", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
-    const turn = (type: "session_turn_started" | "session_turn_ended", turnId: string): void => {
-      relay.relay("atlas", { type, address: ADDRESS, run_id: "run-1", turn_id: turnId });
-    };
+    const id = await sendMessage(run, "Weigh safety over speed.");
+    expect(id).toMatch(/^web-/);
+    expect(run.waiting).toEqual([{ id, content: "Weigh safety over speed." }]);
+    expect(sentItem(run, "Weigh safety over speed.")).toBeUndefined();
 
-    turn("session_turn_started", "t1");
-    run.draft = "Skip the old notes.";
-    await run.send();
-    turn("session_turn_ended", "t1");
-    run.draft = "Now summarize.";
-    await run.send();
-
-    const sent = (content: string): unknown =>
-      run.items.find((item) => item.kind === "user" && item.content === content);
-    expect(sent("Skip the old notes.")).toMatchObject({ turnId: "t1", midTurn: true });
-    expect(sent("Now summarize.")).not.toHaveProperty("midTurn");
+    turn(relay, "session_turn_started", "t1");
+    read(relay, { id, content: "Weigh safety over speed.", turnId: "t1" });
+    expect(run.waiting).toEqual([]);
+    expect(sentItem(run, "Weigh safety over speed.")).toMatchObject({
+      turnId: "t1",
+      messageId: id,
+    });
   });
 
-  it("sends the draft as the owner and says where it landed", async () => {
+  it("joins the turn in flight where the session read it, after what the turn did first", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    relay.relay("atlas", {
+      type: "session_tool_call",
+      address: ADDRESS,
+      run_id: "run-1",
+      id: "c1",
+      name: "read_file",
+      arguments: {},
+      server: null,
+    });
+    const id = await sendMessage(run, "Skip the old notes.");
+    relay.relay("atlas", {
+      type: "session_tool_result",
+      address: ADDRESS,
+      run_id: "run-1",
+      tool_call_id: "c1",
+      name: "read_file",
+      output: "notes",
+      is_error: false,
+    });
+    expect(sentItem(run, "Skip the old notes.")).toBeUndefined();
+    read(relay, { id, content: "Skip the old notes.", turnId: "t1" });
+
+    expect(run.items.at(-1)).toMatchObject({
+      kind: "user",
+      content: "Skip the old notes.",
+      turnId: "t1",
+      midTurn: true,
+    });
+    turn(relay, "session_turn_ended", "t1");
+    expect(sentItem(run, "Skip the old notes.")).not.toHaveProperty("turn");
+  });
+
+  it("starts the next turn when the turn in flight ended before reading it", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Now summarize.");
+    relay.relay("atlas", {
+      type: "session_response",
+      address: ADDRESS,
+      run_id: "run-1",
+      turn_id: "t1",
+      content: "Here's what I found.",
+    });
+    turn(relay, "session_turn_ended", "t1");
+    expect(run.waiting.map((message) => message.content)).toEqual(["Now summarize."]);
+
+    turn(relay, "session_turn_started", "t2");
+    read(relay, { id, content: "Now summarize.", turnId: "t2" });
+    turn(relay, "session_turn_ended", "t2");
+
+    const sent = sentItem(run, "Now summarize.");
+    expect(sent).toMatchObject({ turnId: "t2", turn: { turnId: "t2", changed: null } });
+    expect(sent).not.toHaveProperty("midTurn");
+    expect(lines(run).slice(-3)).toEqual(["Delivered.", "Here's what I found.", "Now summarize."]);
+  });
+
+  /** The run ends, cancelled: what a Stop ends with. */
+  const completed = (relay: FakeRelay, runId = "run-1"): void => {
+    relay.relay("atlas", {
+      type: "session_completed",
+      address: ADDRESS,
+      run_id: runId,
+      status: "cancelled",
+      error: null,
+      episode_id: null,
+    });
+  };
+
+  it("follows the new run that reads a message its stopped run left unread", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    completed(relay);
+    expect(run.waiting.map((message) => message.id)).toEqual([id]);
+
+    // The backend resumes the unread message as a new run.
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    turn(relay, "session_turn_started", "run-2-t1", "run-2");
+    read(relay, { id, content: "Also check the logs.", turnId: "run-2-t1", runId: "run-2" });
+
+    expect(run.runId).toBe("run-2");
+    expect(run.waiting).toEqual([]);
+    // It opens the new run's first turn, after the divider.
+    expect(run.items.slice(-2).map((item) => item.kind)).toEqual(["divider", "user"]);
+    expect(run.items.at(-1)).toMatchObject({
+      content: "Also check the logs.",
+      turnId: "run-2-t1",
+      messageId: id,
+    });
+    expect(run.items.at(-1)).not.toHaveProperty("midTurn");
+  });
+
+  it("follows the new run when the stopped run's end and that run's start race a reload", async () => {
+    transcripts["run-2"] = { session: summary("run-2"), messages: [] };
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    let release = (): void => {};
+    holdTranscripts = new Promise((resolve) => {
+      release = resolve;
+    });
+    relay.emit({ type: "subscribed", kind: "session", agent: "atlas", address: ADDRESS });
+    await waitFor(() => {
+      expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
+    });
+    // Both arrive while the reload is in flight.
+    completed(relay);
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    release();
+
+    turn(relay, "session_turn_started", "run-2-t1", "run-2");
+    read(relay, { id, content: "Also check the logs.", turnId: "run-2-t1", runId: "run-2" });
+    await waitFor(() => {
+      expect(run.waiting).toEqual([]);
+    });
+    expect(run.runId).toBe("run-2");
+  });
+
+  it("forgets a dismissed message, and still places it if the session reads it", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    run.dismissWaiting(id);
+    expect(run.waiting).toEqual([]);
+
+    read(relay, { id, content: "Also check the logs.", turnId: "t1" });
+    expect(sentItem(run, "Also check the logs.")).toMatchObject({ turnId: "t1", messageId: id });
+  });
+
+  it("doesn't follow a later run once its stopped run's unread message is dismissed", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    completed(relay);
+    run.dismissWaiting(id);
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    expect(run.runId).toBe("run-1");
+  });
+
+  it("doesn't follow a later run once the reloaded transcript shows the stopped run read its message", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const id = await sendMessage(run, "Also check the logs.");
+    let release = (): void => {};
+    holdTranscripts = new Promise((resolve) => {
+      release = resolve;
+    });
+    transcripts["run-1"]?.messages.push({
+      role: "user",
+      content: "Also check the logs.",
+      timestamp: "2026-09-23T12:00:00Z",
+      visibility: "user",
+      id,
+    });
+    relay.emit({ type: "subscribed", kind: "session", agent: "atlas", address: ADDRESS });
+    await waitFor(() => {
+      expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
+    });
+    completed(relay);
+    release();
+    await waitFor(() => {
+      expect(run.waiting).toEqual([]);
+    });
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    expect(run.runId).toBe("run-1");
+  });
+
+  it("stays on a run that ends with nothing of its waiting", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    completed(relay);
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    expect(run.runId).toBe("run-1");
+  });
+
+  it("shows what other senders sent the session where it read them", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    read(relay, { id: "m-main", content: "Weigh safety.", turnId: "t1" }, "main", "main");
+    read(
+      relay,
+      { id: "m-art", content: "Use the chart.", turnId: "t1" },
+      "artifact:wiki-graph",
+      "artifact",
+    );
+    read(relay, { id: "m-tab", content: "From my phone.", turnId: "t1" });
+
+    expect(run.items.slice(-3)).toMatchObject([
+      {
+        kind: "agent-message",
+        from: "main",
+        category: "main",
+        content: "Weigh safety.",
+        turnId: "t1",
+      },
+      {
+        kind: "user",
+        content: "Use the chart.",
+        sender: { name: "wiki-graph", interface: "workbench artifact" },
+        turnId: "t1",
+      },
+      { kind: "user", content: "From my phone.", turnId: "t1" },
+    ]);
+    // All three were read as the turn began, before it did anything.
+    expect(run.items.slice(-3).some((item) => item.midTurn === true)).toBe(false);
+    expect(run.waiting).toEqual([]);
+  });
+
+  it("shows a message once, however often its read arrives", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    const id = await sendMessage(run, "Once only.");
+    turn(relay, "session_turn_started", "t1");
+    read(relay, { id, content: "Once only.", turnId: "t1" });
+    read(relay, { id, content: "Once only.", turnId: "t1" });
+    expect(lines(run).filter((line) => line === "Once only.")).toHaveLength(1);
+  });
+
+  it("takes a message the reloaded transcript holds as read, and keeps one it doesn't waiting", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    turn(relay, "session_turn_started", "t1");
+    const readId = await sendMessage(run, "Check the logs.");
+    await sendMessage(run, "And the alerts.");
+    expect(run.waiting.map((message) => message.content)).toEqual([
+      "Check the logs.",
+      "And the alerts.",
+    ]);
+    // The session read the first while the relay lagged, so its read never came.
+    transcripts["run-1"]?.messages.push({
+      role: "user",
+      content:
+        "[Message from the owner via the web UI — your response in this turn is shown to them directly]\nCheck the logs.",
+      timestamp: "2026-09-23T12:00:00Z",
+      visibility: "user",
+      id: readId,
+    });
+    relay.emit({ type: "subscribed", kind: "session", agent: "atlas", address: ADDRESS });
+    await waitFor(() => {
+      expect(run.waiting.map((message) => message.content)).toEqual(["And the alerts."]);
+    });
+    await waitFor(() => {
+      expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
+    });
+    expect(lines(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
+
+    // Its read arriving late adds nothing.
+    read(relay, { id: readId, content: "Check the logs.", turnId: "t1" });
+    expect(lines(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
+  });
+
+  it("places a read that raced the transcript once, from the transcript", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    const id = await sendMessage(run, "Raced.");
+    let release = (): void => {};
+    holdTranscripts = new Promise((resolve) => {
+      release = resolve;
+    });
+    transcripts["run-1"]?.messages.push({
+      role: "user",
+      content: "Raced.",
+      timestamp: "2026-09-23T12:00:00Z",
+      visibility: "user",
+      id,
+    });
+    relay.emit({ type: "subscribed", kind: "session", agent: "atlas", address: ADDRESS });
+    await waitFor(() => {
+      expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
+    });
+    turn(relay, "session_turn_started", "t1");
+    read(relay, { id, content: "Raced.", turnId: "t1" });
+    release();
+    await waitFor(() => {
+      expect(run.waiting).toEqual([]);
+    });
+    expect(lines(run).filter((line) => line === "Raced.")).toHaveLength(1);
+  });
+});
+
+describe("the run's commands", () => {
+  it("sends the draft as the owner under its own id, and says where it landed", async () => {
     const { run } = await opened({ address: ADDRESS });
     run.draft = "  Weigh safety over speed.  ";
     await run.send();
     expect(requests).toContain(`POST /api/agents/atlas/sessions/${ADDRESS}/messages`);
+    expect(sentBodies).toEqual([{ content: "Weigh safety over speed.", id: run.waiting[0]?.id }]);
     expect(run.draft).toBe("");
-    expect(run.items.slice(-2)).toMatchObject([
-      { kind: "user", content: "Weigh safety over speed." },
-      { kind: "status", tone: "info", content: "Delivered." },
-    ]);
+    expect(run.items.at(-1)).toMatchObject({ kind: "status", tone: "info", content: "Delivered." });
   });
 
-  it("keeps the draft and says why when the message couldn't be sent", async () => {
+  it("keeps the draft and says why when the message couldn't be sent, and nothing waits", async () => {
     messageAnswer = () =>
       json({ error: "The session is busy. Try again shortly.", code: "busy" }, 409);
     const { run } = await opened({ address: ADDRESS });
     run.draft = "Hurry up";
     await run.send();
     expect(run.draft).toBe("Hurry up");
+    expect(run.waiting).toEqual([]);
     expect(run.items.at(-1)).toMatchObject({
       kind: "status",
       tone: "error",
@@ -387,7 +711,7 @@ describe("the run's commands", () => {
 
   it("follows a finished session into the run its message started", async () => {
     transcripts["run-1"] = { session: summary("run-1", { state: "completed" }), messages: [] };
-    messageAnswer = () => json({ outcome: "resumed" });
+    messageAnswer = () => json({ outcome: "resumed", id: sentBodies.at(-1)?.id });
     const { run, relay } = await opened({ address: ADDRESS });
     run.draft = "Pick this back up";
     const sending = run.send();
@@ -399,6 +723,13 @@ describe("the run's commands", () => {
     expect(run.items.at(-1)).toMatchObject({
       content: "This session had finished, so your message started a new run.",
     });
+    // The new run reads it as its first turn begins.
+    const id = sentBodies[0]?.id ?? "";
+    expect(run.waiting.map((message) => message.id)).toEqual([id]);
+    turn(relay, "session_turn_started", "run-2-t1", "run-2");
+    read(relay, { id, content: "Pick this back up", turnId: "run-2-t1", runId: "run-2" });
+    expect(run.waiting).toEqual([]);
+    expect(lines(run).at(-1)).toBe("Pick this back up");
   });
 
   it("keeps its notes, and shows a reply once, when the new run races its transcript", async () => {
@@ -416,7 +747,7 @@ describe("the run's commands", () => {
         },
       ],
     };
-    messageAnswer = () => json({ outcome: "resumed" });
+    messageAnswer = () => json({ outcome: "resumed", id: sentBodies.at(-1)?.id });
     let release = (): void => {};
     holdTranscripts = new Promise((resolve) => {
       release = resolve;
@@ -426,6 +757,9 @@ describe("the run's commands", () => {
     run.open();
     run.draft = "Again";
     const sending = run.send();
+    // The new run's transcript holds the message, under the id it went out with.
+    const again = transcripts["run-2"].messages[0];
+    if (again) again.id = run.waiting[0]?.id;
     relay.relay("atlas", { type: "session_started", session: summary("run-2") });
     relay.relay("atlas", {
       type: "session_response",
@@ -440,11 +774,12 @@ describe("the run's commands", () => {
       expect(run.loaded).toBe(true);
     });
     expect(run.runId).toBe("run-2");
-    expect(run.items.map((item) => ("content" in item ? item.content : item.kind))).toEqual([
+    expect(lines(run)).toEqual([
       "Again",
       "Picking this back up.",
       "This session had finished, so your message started a new run.",
     ]);
+    expect(run.waiting).toEqual([]);
   });
 
   it("doesn't follow a new run it didn't start", async () => {

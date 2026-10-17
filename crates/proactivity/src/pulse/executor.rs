@@ -83,6 +83,7 @@ pub fn build_pulse_execution(
         overlap,
         carried_history: Vec::new(),
         fire_id: None,
+        delivered_messages: Vec::new(),
     }
 }
 

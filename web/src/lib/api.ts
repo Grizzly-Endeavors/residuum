@@ -790,9 +790,18 @@ export async function startSession(agent: string, request: StartSessionRequest):
   return reply.address;
 }
 
+/** `POST /api/sessions/{address}/messages` response. */
+export interface SessionMessageReply {
+  /** Where the message landed. */
+  outcome: SessionDeliveryOutcome;
+  /** The message's id, which the session's `session_user_message` frame names once it reads it. */
+  id: string;
+}
+
 /**
- * Send the session at `address` a message as the owner: delivered to a live
- * run, or starting a new run of a finished one. Resolves to where it landed.
+ * Send the session at `address` a message as the owner, under `id`:
+ * delivered to a live run, or starting a new run of a finished one. Resolves
+ * to where it landed.
  *
  * Throws `ApiError` with `{ error, code }`: `404` for an unknown address,
  * `409` when the session is busy, `502` when delivery failed.
@@ -801,16 +810,16 @@ export async function messageSession(
   agent: string,
   address: string,
   content: string,
-): Promise<SessionDeliveryOutcome> {
-  const reply = await apiFetch<{ outcome: SessionDeliveryOutcome }>(
+  id: string,
+): Promise<SessionMessageReply> {
+  return apiFetch<SessionMessageReply>(
     agentPath(agent, `/sessions/${encodeURIComponent(address)}/messages`),
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, id }),
     },
   );
-  return reply.outcome;
 }
 
 /**

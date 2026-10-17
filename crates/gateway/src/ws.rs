@@ -347,6 +347,7 @@ async fn handle_client_message(
             id,
             address,
             content,
+            message_id,
         } => {
             tracing::info!(address = %address, "session message requested by client");
             handle_session_command(
@@ -354,6 +355,7 @@ async fn handle_client_message(
                     id,
                     address,
                     content,
+                    message_id,
                 },
                 state,
                 local_tx,
@@ -560,19 +562,22 @@ async fn handle_session_command(
             id,
             address,
             content,
+            message_id,
         } => {
             match crate::sessions::send_session_message(
                 &state.agent_messenger,
                 &address,
+                message_id,
                 content,
                 &crate::sessions::SessionMessageAuthor::Owner,
             )
             .await
             {
-                Ok(outcome) => ServerMessage::SessionMessageDelivered {
+                Ok(sent) => ServerMessage::SessionMessageDelivered {
                     id,
                     address,
-                    outcome,
+                    message_id: sent.id,
+                    outcome: sent.outcome,
                 },
                 Err(e) => ServerMessage::SessionCommandFailed {
                     id,
@@ -606,6 +611,7 @@ enum SessionCommand {
         id: String,
         address: String,
         content: String,
+        message_id: Option<String>,
     },
     Stop {
         id: String,

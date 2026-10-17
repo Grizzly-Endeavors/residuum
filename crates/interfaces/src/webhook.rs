@@ -222,6 +222,7 @@ async fn route_webhook_content(
                 overlap: None,
                 carried_history: Vec::new(),
                 fire_id: None,
+                delivered_messages: Vec::new(),
             };
             if let Err(e) = state
                 .publisher

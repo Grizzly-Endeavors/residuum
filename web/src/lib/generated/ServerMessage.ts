@@ -367,7 +367,37 @@ run_id: string,
 /**
  * Identifies the turn within the run.
  */
-turn_id: string, } | { "type": "session_tool_call", 
+turn_id: string, } | { "type": "session_user_message", 
+/**
+ * Session address.
+ */
+address: string, 
+/**
+ * Run id.
+ */
+run_id: string, 
+/**
+ * The message's id: the one its sender chose, or the one it was
+ * given when it sent none.
+ */
+id: string, 
+/**
+ * The turn that read it.
+ */
+turn_id: string, 
+/**
+ * The message as sent, without the sender header the session sees.
+ */
+content: string, 
+/**
+ * The sender's address (`owner` for the owner).
+ */
+from: string, 
+/**
+ * The sender's category label (`owner`, `artifact`, `teammate`,
+ * `main`, `spawned`, ...).
+ */
+from_category: string, } | { "type": "session_tool_call", 
 /**
  * Session address.
  */
@@ -497,6 +527,11 @@ id: string,
  * The target session's address.
  */
 address: string, 
+/**
+ * The message's id: the `message_id` the command chose, or the one
+ * it was given. The session's `SessionUserMessage` carries it.
+ */
+message_id: string, 
 /**
  * Where the message landed.
  */

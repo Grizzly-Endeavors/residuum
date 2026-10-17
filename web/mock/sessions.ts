@@ -8,7 +8,7 @@ import type {
   SessionSummary,
 } from "../src/lib/generated/protocol";
 import type { RecentMessage, SessionTranscriptResponse } from "../src/lib/types";
-import { untrackedRunFields } from "./data/sessions";
+import { untrackedRunFields, type UnreadSessionMessage } from "./data/sessions";
 import {
   artifactIdentity,
   hasArtifactHeader,
@@ -31,6 +31,15 @@ const TRANSCRIPT_DELAY_MS = 700;
 
 const OWNER_MESSAGE_LABEL =
   "[Message from the owner via the web UI — your response in this turn is shown to them directly]";
+
+/** The owner's sender address and category, as the backend gives them. */
+const OWNER_ADDRESS = "owner";
+const OWNER_CATEGORY = "owner";
+
+/** A message id a sender may choose, as the backend accepts one. */
+const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const INVALID_MESSAGE_ID =
+  "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.";
 
 /** Where a session command's reply goes: the socket that sent the command. */
 export type SessionReply = (frame: ServerMessage) => void;
@@ -67,6 +76,11 @@ function completeSession(
   errorDetails: string | null = null,
 ): void {
   const { sessions } = state;
+  // A run's end ends the turn in flight. What it hadn't read resumes the
+  // session as a new run once this one has gone, as the backend's
+  // `finish_run` does.
+  const unread = sessions.turns.get(session.run_id)?.unread.splice(0) ?? [];
+  sessions.turns.delete(session.run_id);
   setSessionState(state, session, "completing");
   state.env.after(800, () => {
     sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
@@ -83,14 +97,78 @@ function completeSession(
       ...(errorDetails === null ? {} : { error_details: errorDetails }),
       episode_id: session.episode_id,
     });
+    if (unread.length > 0)
+      resumeRun(state, session, { runIdPrefix: "run-resumed", messages: unread });
   });
 }
 
-// One turn: running → tool → reply → idle, relaying to main when spawned by it.
-function runSessionTurn(state: MockState, session: SessionSummary, reply: string): void {
+/** The owner's message, under the id the client chose or one given here. */
+function ownerMessage(
+  state: MockState,
+  id: string | undefined,
+  content: string,
+  reply: string,
+): UnreadSessionMessage {
+  return {
+    id: id ?? `msg-s-${String(state.env.nextId())}`,
+    content,
+    header: OWNER_MESSAGE_LABEL,
+    from: OWNER_ADDRESS,
+    fromCategory: OWNER_CATEGORY,
+    reply,
+  };
+}
+
+/** The session reads `message` in the turn `turnId`: into its transcript, and announced. */
+function readMessage(
+  state: MockState,
+  session: SessionSummary,
+  turnId: string,
+  message: UnreadSessionMessage,
+): void {
+  recordMessage(state, session, {
+    role: "user",
+    content: `${message.header}\n${message.content}`,
+    id: message.id,
+  });
+  state.broadcast({
+    type: "session_user_message",
+    address: session.address,
+    run_id: session.run_id,
+    id: message.id,
+    turn_id: turnId,
+    content: message.content,
+    from: message.from,
+    from_category: message.fromCategory,
+  });
+}
+
+/** Hand `message` to a live session: the turn in flight reads it after its tool batch, or it starts a turn. */
+function deliverMessage(
+  state: MockState,
+  session: SessionSummary,
+  message: UnreadSessionMessage,
+): void {
+  const inFlight = state.sessions.turns.get(session.run_id);
+  if (inFlight) inFlight.unread.push(message);
+  else runSessionTurn(state, session, message.reply, [message]);
+}
+
+// One turn: running → the messages that start it → tool → the messages sent
+// meanwhile → reply → idle, relaying to main when spawned by it. A message
+// sent after the tool batch starts the next turn.
+function runSessionTurn(
+  state: MockState,
+  session: SessionSummary,
+  reply: string,
+  openers: readonly UnreadSessionMessage[] = [],
+): void {
   const { sessions } = state;
   const turnId = `${session.run_id}-t${String(state.env.nextId())}`;
   const toolId = `tc_s_${String(state.env.nextId())}`;
+  const turn = { turnId, unread: [] as UnreadSessionMessage[] };
+  sessions.turns.set(session.run_id, turn);
+  let answer = openers.at(-1)?.reply ?? reply;
   setSessionState(state, session, "running");
   state.broadcast({
     type: "session_turn_started",
@@ -98,6 +176,7 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
     run_id: session.run_id,
     turn_id: turnId,
   });
+  for (const message of openers) readMessage(state, session, turnId, message);
   state.env.after(500, () => {
     state.broadcast({
       type: "session_broadcast_response",
@@ -125,16 +204,23 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       output: "1 result: notification-routing.md",
       is_error: false,
     });
+    // The checkpoint after the tool batch: the turn takes in what was sent meanwhile.
+    if (sessions.turns.get(session.run_id) !== turn) return;
+    for (const message of turn.unread.splice(0)) {
+      readMessage(state, session, turnId, message);
+      answer = message.reply;
+    }
   });
   state.env.after(2400, () => {
+    if (sessions.turns.get(session.run_id) === turn) sessions.turns.delete(session.run_id);
     if (!sessions.live.includes(session) || session.state !== "running") return;
-    recordMessage(state, session, { role: "assistant", content: reply });
+    recordMessage(state, session, { role: "assistant", content: answer });
     state.broadcast({
       type: "session_response",
       address: session.address,
       run_id: session.run_id,
       turn_id: turnId,
-      content: reply,
+      content: answer,
     });
     state.broadcast({
       type: "session_turn_ended",
@@ -143,7 +229,9 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       turn_id: turnId,
     });
     setSessionState(state, session, "idle");
-    if (session.spawner === "main") messageMainFrom(state, session, reply);
+    if (session.spawner === "main") messageMainFrom(state, session, answer);
+    const left = turn.unread.splice(0);
+    if (left.length > 0) runSessionTurn(state, session, answer, left);
   });
 }
 
@@ -191,11 +279,11 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
   return session;
 }
 
-/** Bring a finished session back as a new run that answers `message` with `reply`. */
+/** Bring a finished session back as a new run, whose first turn reads `messages`. */
 function resumeRun(
   state: MockState,
   prev: SessionSummary,
-  options: { runIdPrefix: string; message: string; reply: string },
+  options: { runIdPrefix: string; messages: readonly UnreadSessionMessage[] },
 ): SessionSummary {
   const { sessions } = state;
   sessions.runCounter++;
@@ -210,10 +298,9 @@ function resumeRun(
     ...untrackedRunFields(),
   };
   sessions.live.unshift(session);
-  recordMessage(state, session, { role: "user", content: options.message });
   state.broadcast({ type: "session_started", session });
   state.env.after(400, () => {
-    runSessionTurn(state, session, options.reply);
+    runSessionTurn(state, session, "Picking this back up.", options.messages);
   });
   return session;
 }
@@ -225,9 +312,21 @@ export function sendSessionMessage(
   id: string,
   address: string,
   content: string,
+  chosenId?: string,
 ): void {
   const { sessions } = state;
   const live = sessions.live.find((s) => s.address === address);
+  if (chosenId !== undefined && !MESSAGE_ID.test(chosenId)) {
+    reply({
+      type: "session_command_failed",
+      id,
+      address,
+      code: "invalid_request",
+      message: INVALID_MESSAGE_ID,
+    });
+    return;
+  }
+  const messageId = chosenId ?? `msg-s-${String(state.env.nextId())}`;
   if (content.includes("busy")) {
     reply({
       type: "session_command_failed",
@@ -239,12 +338,15 @@ export function sendSessionMessage(
     return;
   }
   if (live) {
-    recordMessage(state, live, {
-      role: "user",
-      content: `${OWNER_MESSAGE_LABEL}\n${content}`,
+    reply({
+      type: "session_message_delivered",
+      id,
+      address,
+      message_id: messageId,
+      outcome: "live",
     });
-    reply({ type: "session_message_delivered", id, address, outcome: "live" });
-    runSessionTurn(state, live, `Understood: "${content.slice(0, 60)}". Adjusting course.`);
+    const ack = `Understood: "${content.slice(0, 60)}". Adjusting course.`;
+    deliverMessage(state, live, ownerMessage(state, messageId, content, ack));
     return;
   }
   const prev = sessions.completed.find((s) => s.address === address);
@@ -258,12 +360,24 @@ export function sendSessionMessage(
     });
     return;
   }
-  reply({ type: "session_message_delivered", id, address, outcome: "resumed" });
+  reply({
+    type: "session_message_delivered",
+    id,
+    address,
+    message_id: messageId,
+    outcome: "resumed",
+  });
   state.env.after(300, () => {
     resumeRun(state, prev, {
       runIdPrefix: "run-resumed",
-      message: `${OWNER_MESSAGE_LABEL}\n${content}`,
-      reply: "Picking this back up. Here's where it stands now.",
+      messages: [
+        ownerMessage(
+          state,
+          messageId,
+          content,
+          "Picking this back up. Here's where it stands now.",
+        ),
+      ],
     });
   });
 }
@@ -498,12 +612,14 @@ function stopSessionRoute(ctx: RouteContext): void {
 }
 
 // POST /api/sessions/:address/messages — message any session, attributed
-// to the artifact naming itself with the identity header, or the owner.
+// to the artifact naming itself with the identity header, or the owner,
+// under the `id` the client chose or one given here.
 async function messageSessionRoute(ctx: RouteContext): Promise<void> {
   const { req, res, state } = ctx;
   const address = decodedParam(ctx, 0);
   const body = parseJsonObject((await readBody(req)) || "{}");
   const content = stringField(body, "content") ?? "";
+  const chosenId = stringField(body, "id");
   if (!content.trim() || address === "main") {
     sessionError(
       ctx,
@@ -513,16 +629,23 @@ async function messageSessionRoute(ctx: RouteContext): Promise<void> {
     );
     return;
   }
+  if (chosenId !== undefined && !MESSAGE_ID.test(chosenId)) {
+    sessionError(ctx, 400, INVALID_MESSAGE_ID, "invalid_request");
+    return;
+  }
   const artifactName = artifactIdentity(req);
-  const label = artifactName
-    ? `[Message from the workbench artifact "${artifactName}" — your response in this turn is shown to it directly]`
-    : OWNER_MESSAGE_LABEL;
   const { sessions } = state;
   const live = sessions.live.find((s) => s.address === address);
+  const ack = live ? `Understood: "${content.slice(0, 60)}".` : "Picking this back up.";
+  const message = ownerMessage(state, chosenId, content, ack);
+  if (artifactName) {
+    message.header = `[Message from the workbench artifact "${artifactName}" — your response in this turn is shown to it directly]`;
+    message.from = `artifact:${artifactName}`;
+    message.fromCategory = "artifact";
+  }
   if (live) {
-    recordMessage(state, live, { role: "user", content: `${label}\n${content}` });
-    runSessionTurn(state, live, `Understood: "${content.slice(0, 60)}".`);
-    json(res, 200, { outcome: "live" satisfies SessionDeliveryOutcome });
+    deliverMessage(state, live, message);
+    json(res, 200, { outcome: "live" satisfies SessionDeliveryOutcome, id: message.id });
     return;
   }
   const prev = sessions.completed.find((s) => s.address === address);
@@ -535,12 +658,8 @@ async function messageSessionRoute(ctx: RouteContext): Promise<void> {
     );
     return;
   }
-  resumeRun(state, prev, {
-    runIdPrefix: "run-resumed-http",
-    message: `${label}\n${content}`,
-    reply: "Picking this back up.",
-  });
-  json(res, 200, { outcome: "resumed" satisfies SessionDeliveryOutcome });
+  resumeRun(state, prev, { runIdPrefix: "run-resumed-http", messages: [message] });
+  json(res, 200, { outcome: "resumed" satisfies SessionDeliveryOutcome, id: message.id });
 }
 
 /** The sessions endpoints, in the unscoped `/api/...` spelling. */

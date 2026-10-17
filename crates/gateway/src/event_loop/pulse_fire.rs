@@ -292,6 +292,7 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
                     | SessionEventKind::Intermediate { .. }
                     | SessionEventKind::TurnUsage { .. }
                     | SessionEventKind::Response { .. }
+                    | SessionEventKind::MessageRead { .. }
                     | SessionEventKind::Error { .. } => {}
                 },
                 Ok(Some(_)) | Err(_) => {}

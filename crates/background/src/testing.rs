@@ -247,6 +247,7 @@ pub fn sample_conversation_request(address: &str) -> SessionSpawnRequest {
             inbound: None,
             images: Vec::new(),
             carried_history: Vec::new(),
+            delivered_messages: Vec::new(),
         },
         conversation_target: Some(ConversationTarget {
             endpoint: "discord".to_string(),

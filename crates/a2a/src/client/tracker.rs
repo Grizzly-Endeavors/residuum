@@ -589,10 +589,12 @@ impl RemoteTaskTracker {
             .messenger
             .send(
                 sender,
-                from.clone(),
-                "remote".to_string(),
-                content.clone(),
-                hop_count,
+                residuum_bus::AgentMessageEvent::new(
+                    from.clone(),
+                    "remote",
+                    content.clone(),
+                    hop_count,
+                ),
             )
             .await
         {
@@ -602,7 +604,10 @@ impl RemoteTaskTracker {
                 );
                 if let Err(e) = self
                     .messenger
-                    .send(MAIN_ADDRESS, from, "remote".to_string(), note, hop_count)
+                    .send(
+                        MAIN_ADDRESS,
+                        residuum_bus::AgentMessageEvent::new(from, "remote", note, hop_count),
+                    )
                     .await
                 {
                     tracing::error!(error = %e, sender, agent, "failed to deliver orphaned a2a remote-task result to main");

@@ -150,7 +150,7 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
       }),
   ],
   fetchSessionTranscript: [(a) => a.fetchSessionTranscript(AGENT, "run-1")],
-  messageSession: [(a) => a.messageSession(AGENT, "spawned-research-3f9a", "hello")],
+  messageSession: [(a) => a.messageSession(AGENT, "spawned-research-3f9a", "hello", "web-parity")],
   stopSession: [(a) => a.stopSession(AGENT, "spawned-research-3f9a")],
   startSession: [
     (a) => a.startSession(AGENT, { prompt: "plan the garden" }),

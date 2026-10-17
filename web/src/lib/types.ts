@@ -114,6 +114,11 @@ export interface RecentMessage {
   agent_sender?: AgentSender;
   /** The correlation id of the turn that produced this message, if any. */
   turn_id?: string;
+  /**
+   * The id of a message one agent, the owner or an artifact sent a session,
+   * which its `session_user_message` frame names too.
+   */
+  id?: string;
 }
 
 // ── Agent sessions ───────────────────────────────────────────────────

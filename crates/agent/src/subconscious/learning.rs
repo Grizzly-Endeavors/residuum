@@ -202,6 +202,7 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         overlap: None,
         carried_history: Vec::new(),
         fire_id: None,
+        delivered_messages: Vec::new(),
     }
 }
 

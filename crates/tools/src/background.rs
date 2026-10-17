@@ -422,6 +422,7 @@ impl Tool for SubagentSpawnTool {
             overlap: None,
             carried_history: Vec::new(),
             fire_id: None,
+            delivered_messages: Vec::new(),
         };
 
         self.deps.publisher

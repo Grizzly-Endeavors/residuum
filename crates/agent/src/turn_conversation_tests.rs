@@ -217,6 +217,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
         EventTarget::Session {
             address: &session_address,
             run_id: "run-1",
+            turn_id: "run-1-t1",
         }
     } else {
         EventTarget::Endpoint {
@@ -528,12 +529,12 @@ async fn a_person_message_folded_in_mid_turn_is_announced_under_its_own_id() {
 #[tokio::test]
 async fn background_input_and_session_to_session_messages_are_not_announced_as_user_messages() {
     let background = MessageEvent::from_background("a session finished".to_string());
-    let from_session = AgentMessageEvent {
-        from: SessionAddress::from("spawned-research-1a2b"),
-        from_category: "spawned".to_string(),
-        content: "status?".to_string(),
-        hop_count: 0,
-    };
+    let from_session = AgentMessageEvent::new(
+        SessionAddress::from("spawned-research-1a2b"),
+        "spawned",
+        "status?",
+        0,
+    );
     let run = run_turn_with(
         vec![Step::reply(text("ok"))],
         Options {
@@ -593,12 +594,12 @@ fn announced_agent_message(
 
 #[tokio::test]
 async fn a_teammates_message_folded_in_mid_turn_is_announced_with_its_sender() {
-    let from_teammate = AgentMessageEvent {
-        from: SessionAddress::from("agent:atlas"),
-        from_category: "teammate".to_string(),
-        content: "status?".to_string(),
-        hop_count: 0,
-    };
+    let from_teammate = AgentMessageEvent::new(
+        SessionAddress::from("agent:atlas"),
+        "teammate",
+        "status?",
+        0,
+    );
     let delivered = MessageEvent::from_agent(&from_teammate);
     let run = run_turn_with(
         vec![Step::reply(text("ok"))],
@@ -626,12 +627,12 @@ async fn a_sessions_message_folded_in_mid_turn_is_announced_with_its_run() {
         category: "spawned".to_string(),
         run_id: Some("run-1".to_string()),
     };
-    let mut delivered = MessageEvent::from_agent(&AgentMessageEvent {
-        from: SessionAddress::from("spawned-research-1a2b"),
-        from_category: "spawned".to_string(),
-        content: "found it".to_string(),
-        hop_count: 0,
-    });
+    let mut delivered = MessageEvent::from_agent(&AgentMessageEvent::new(
+        SessionAddress::from("spawned-research-1a2b"),
+        "spawned",
+        "found it",
+        0,
+    ));
     delivered.origin.agent_sender = Some(Box::new(session.clone()));
     let run = run_turn_with(
         vec![Step::reply(text("ok"))],

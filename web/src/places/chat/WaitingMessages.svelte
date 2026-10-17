@@ -1,29 +1,52 @@
-<script lang="ts">
+<script lang="ts" module>
   import type { WaitingMessage } from "../../lib/types";
-  import { IconButton } from "../../lib/ui";
 
-  // The messages the agent hasn't read yet, at the foot of the conversation
-  // under the turn they wait on. Each is the user's bubble, a little faded
-  // until the agent reads it, when it joins the conversation where it was
-  // read. Beside it, Send now stops the turn in flight so the message starts
-  // the next one, and Multitask sends it to a session forked from the
-  // conversation instead. While one of them is under way, both wait.
+  /** What a waiting message shows: main's carry more, a session's only its text. */
+  export type WaitingBubble = Pick<
+    WaitingMessage,
+    "id" | "content" | "images" | "sender" | "asked"
+  >;
 
-  interface Props {
-    messages: WaitingMessage[];
-    /** The agent's name as shown. */
-    agentName: string;
+  /** What can be asked of a waiting message in the main conversation. */
+  export interface WaitingActions<M extends WaitingBubble> {
     /** The agent's connection is down: nothing can be asked of a message. */
     offline: boolean;
-    onsendnow: (message: WaitingMessage) => void;
-    onmultitask: (message: WaitingMessage) => void;
+    onsendnow: (message: M) => void;
+    onmultitask: (message: M) => void;
   }
 
-  let { messages, agentName, offline, onsendnow, onmultitask }: Props = $props();
+  /** What can be asked of a message waiting for a session to read it. */
+  export interface SessionWaitingActions<M extends WaitingBubble> {
+    /** Stop showing it as waiting, for one nothing will read. */
+    ondismiss: (message: M) => void;
+  }
+</script>
+
+<script lang="ts" generics="M extends WaitingBubble">
+  import { IconButton } from "../../lib/ui";
+
+  // The messages the agent or a session hasn't read yet, at the foot of the
+  // transcript under the turn they wait on. Each is the user's bubble, a
+  // little faded until it is read, when it joins the transcript where it was
+  // read. In the main conversation, beside it, Send now stops the turn in
+  // flight so the message starts the next one, and Multitask sends it to a
+  // session forked from the conversation instead. While one of them is under
+  // way, both wait. In a session panel, Dismiss stops showing it as waiting,
+  // for one the session will never read.
+
+  interface Props {
+    messages: M[];
+    /** Who reads them, as shown: the agent's name, or "this session". */
+    reader: string;
+    /** Send now and Multitask for the main conversation's messages, Dismiss for a session's. */
+    actions?: WaitingActions<M> | SessionWaitingActions<M>;
+  }
+
+  let { messages, reader, actions }: Props = $props();
 
   const uid = $props.id();
 
-  function senderLine(message: WaitingMessage): string | null {
+  function senderLine(message: WaitingBubble): string | null {
     const sender = message.sender;
     if (sender === undefined) return null;
     return [sender.name, sender.interface, sender.location].filter(Boolean).join(" · ");
@@ -32,7 +55,7 @@
 
 {#if messages.length > 0}
   <section class="waiting" aria-labelledby="{uid}-note">
-    <p class="waiting-note" id="{uid}-note">Waiting for {agentName} to read</p>
+    <p class="waiting-note" id="{uid}-note">Waiting for {reader} to read</p>
     <ol class="waiting-list">
       {#each messages as message, index (message.id)}
         {@const sender = senderLine(message)}
@@ -42,32 +65,47 @@
             <p class="waiting-sender">{sender}</p>
           {/if}
           <div class="waiting-row">
-            <span class="waiting-actions">
-              <IconButton
-                size="sm"
-                icon="send"
-                label="Send now"
-                tooltip="Send now: stop the reply and send this"
-                aria-describedby={bubbleId}
-                loading={message.asked === "send-now"}
-                disabled={offline || message.asked === "withdraw"}
-                onclick={() => {
-                  onsendnow(message);
-                }}
-              />
-              <IconButton
-                size="sm"
-                icon="fork"
-                label="Multitask"
-                tooltip="Multitask: work on this in a session forked from this chat"
-                aria-describedby={bubbleId}
-                loading={message.asked === "withdraw"}
-                disabled={offline || message.asked === "send-now"}
-                onclick={() => {
-                  onmultitask(message);
-                }}
-              />
-            </span>
+            {#if actions && "ondismiss" in actions}
+              <span class="waiting-actions">
+                <IconButton
+                  size="sm"
+                  icon="close"
+                  label="Dismiss"
+                  tooltip="Dismiss: stop waiting for this to be read"
+                  aria-describedby={bubbleId}
+                  onclick={() => {
+                    actions.ondismiss(message);
+                  }}
+                />
+              </span>
+            {:else if actions}
+              <span class="waiting-actions">
+                <IconButton
+                  size="sm"
+                  icon="send"
+                  label="Send now"
+                  tooltip="Send now: stop the reply and send this"
+                  aria-describedby={bubbleId}
+                  loading={message.asked === "send-now"}
+                  disabled={actions.offline || message.asked === "withdraw"}
+                  onclick={() => {
+                    actions.onsendnow(message);
+                  }}
+                />
+                <IconButton
+                  size="sm"
+                  icon="fork"
+                  label="Multitask"
+                  tooltip="Multitask: work on this in a session forked from this chat"
+                  aria-describedby={bubbleId}
+                  loading={message.asked === "withdraw"}
+                  disabled={actions.offline || message.asked === "send-now"}
+                  onclick={() => {
+                    actions.onmultitask(message);
+                  }}
+                />
+              </span>
+            {/if}
             <div class="waiting-bubble" id={bubbleId}>
               {#if message.content}
                 <p class="waiting-text">{message.content}</p>
@@ -125,7 +163,7 @@
     font-size: var(--font-size-xs);
   }
 
-  /* Send now and Multitask left of the bubble, on its last line, the way a sent message keeps its time. */
+  /* The actions (Send now and Multitask, or Dismiss) left of the bubble, on its last line, the way a sent message keeps its time. */
   .waiting-row {
     display: flex;
     align-items: flex-end;
