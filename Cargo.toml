@@ -105,7 +105,7 @@ a2a-client = { package = "a2a-client-lf", version = "0.2.5", default-features = 
 # Workspace change feed (OS file notifications)
 notify = "8.2"
 
-# macOS native notifications (Apple Silicon only)
+# macOS native notifications
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-user-notifications = "0.3"

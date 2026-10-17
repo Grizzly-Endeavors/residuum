@@ -41,7 +41,7 @@ pub enum ExternalChannelKind {
         sound: Option<bool>,
         /// Display name in banners.
         app_name: Option<String>,
-        /// Base URL for "Open" action.
+        /// Base URL for the macOS "Open" action. Parsed only; no handler receives the action.
         web_url: Option<String>,
     },
     /// Native Windows Toast notification channel.

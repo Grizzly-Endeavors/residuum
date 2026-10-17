@@ -125,9 +125,9 @@ async fn flush<B: NotificationBridge>(bridge: &B, buffer: &[NotificationEvent]) 
 /// Appended to a non-empty summary body so the batch is never a dead end.
 /// Every result that reaches a native channel is also filed to the agent
 /// inbox (`inbox/agent/` in the workspace) by the notification router, so
-/// that is where the full list lives. macOS's "Open" action opens the web
-/// UI's Files place (see `MacosBridge`); Windows toasts have no click
-/// action, so the body itself has to say where the rest are.
+/// that is where the full list lives. The macOS "Open" button does nothing when
+/// pressed, and Windows toasts have no click action either, so the body itself
+/// has to say where the rest are.
 const INBOX_POINTER: &str =
     "\n\nAll of them are in your agent's inbox: inbox/agent in the workspace.";
 
