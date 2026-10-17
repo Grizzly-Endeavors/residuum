@@ -280,7 +280,7 @@ impl CheckpointEngine {
     /// when the engine drops.
     ///
     /// Commits from this instance and the running hub (or another CLI
-    /// invocation) are safe to interleave — see [`Self::checkpoint_config_now`].
+    /// invocation) are safe to interleave — see [`Self::checkpoint_config_kind_now`].
     ///
     /// Returns `None` (logged) if the repositories can't be opened: a CLI
     /// command's own operation must never fail just because checkpointing
@@ -335,8 +335,9 @@ impl CheckpointEngine {
     }
 
     /// Follow [`Self::pending_checkpoints`] as it changes.
+    #[cfg(test)]
     #[must_use]
-    pub fn subscribe_pending(&self) -> tokio::sync::watch::Receiver<usize> {
+    pub(crate) fn subscribe_pending(&self) -> tokio::sync::watch::Receiver<usize> {
         self.pending.subscribe()
     }
 
@@ -473,16 +474,17 @@ impl CheckpointEngine {
     /// Returns [`CheckpointError`] on failure. Callers on the hot path
     /// should not propagate it — see [`Self::checkpoint_config_before_write`]
     /// for the "never fail the caller" wrapping.
-    pub fn checkpoint_config_now(
+    #[cfg(test)]
+    pub(crate) fn checkpoint_config_now(
         &self,
         ctx: &CheckpointContext,
     ) -> Result<Option<String>, CheckpointError> {
         self.checkpoint_config_kind_now(RepoKind::Hub, ctx)
     }
 
-    /// [`Self::checkpoint_config_now`], generalized to either the hub config
-    /// repository or the agent's own config repository (`config.toml` and
-    /// `providers.toml` in the agent's `config/` directory).
+    /// Checkpoint either the hub config repository or the agent's own config
+    /// repository (`config.toml` and `providers.toml` in the agent's `config/`
+    /// directory), synchronously.
     ///
     /// # Errors
     /// Returns [`CheckpointError`] on failure.
