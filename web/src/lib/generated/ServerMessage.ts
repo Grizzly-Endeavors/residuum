@@ -249,7 +249,7 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details: string | null, } | { "type": "pong" } | { "type": "turn_snapshot", 
+details?: string, } | { "type": "pong" } | { "type": "turn_snapshot", 
 /**
  * The turn, or `null` when none is running.
  */

@@ -664,6 +664,7 @@ pub enum ServerMessage {
         message: String,
         /// Full technical cause chain, shown behind a details toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         details: Option<String>,
     },
     /// Keepalive pong.

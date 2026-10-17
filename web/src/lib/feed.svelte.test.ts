@@ -242,11 +242,11 @@ describe("FeedStore day dividers for live messages around local midnight", () =>
 });
 
 describe("FeedStore when a turn fails", () => {
-  const error = (replyTo: string | null, details: string | null = null): ServerMessage => ({
+  const error = (replyTo: string | null, details?: string): ServerMessage => ({
     type: "error",
     reply_to: replyTo,
     message: "The model provider didn't answer.",
-    details,
+    ...(details === undefined ? {} : { details }),
   });
 
   function failingTurn(store: FeedStore, id = "web-a"): void {
@@ -449,13 +449,13 @@ describe("FeedStore announcements", () => {
       reply_to: "t1",
       origin: { endpoint: "ws", visibility: "user" },
     });
-    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope.", details: null });
+    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope." });
     expect(store.announcement?.text).toBe("atlas couldn't finish");
   });
 
   it("leaves an error that names no turn to its toast", () => {
     const store = named();
-    store.handleMessage({ type: "error", reply_to: null, message: "Bad frame.", details: null });
+    store.handleMessage({ type: "error", reply_to: null, message: "Bad frame." });
     expect(store.announcement).toBeNull();
   });
 
