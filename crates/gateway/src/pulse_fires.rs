@@ -284,6 +284,11 @@ impl PulseFire {
         &self.id
     }
 
+    /// The pulse this is a fire of.
+    pub(crate) fn pulse(&self) -> &str {
+        &self.pulse
+    }
+
     /// Cancelled when the owner stops this fire or the agent stops.
     pub(crate) fn stop_token(&self) -> &CancellationToken {
         &self.stop

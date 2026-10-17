@@ -113,7 +113,7 @@ async fn run_pulse_fire(
 
     fire.announce(PulseFireChange::Started).await;
     let Some(runs) = run_pulse_scripts(&pulse, &deps.env, fire.stop_token()).await else {
-        end_stopped_fire(fire, &pulse).await;
+        end_stopped_fire(fire).await;
         return;
     };
     deliver_scripted_fire(fire, &pulse, &runs, overlap, context.as_ref(), &deps).await;
@@ -135,7 +135,7 @@ async fn deliver_scripted_fire(
     deps: &FireDeps,
 ) {
     if fire.stop_token().is_cancelled() {
-        end_stopped_fire(fire, pulse).await;
+        end_stopped_fire(fire).await;
         return;
     }
     if pulse.is_script_only() {
@@ -150,17 +150,17 @@ async fn deliver_scripted_fire(
 }
 
 /// End a fire whose stop token fired before it delivered anything.
-async fn end_stopped_fire(fire: PulseFire, pulse: &PulseDef) {
+async fn end_stopped_fire(fire: PulseFire) {
     if fire.agent_stopping() {
         tracing::info!(
-            pulse = %pulse.name,
+            pulse = %fire.pulse(),
             fire = %fire.id(),
             "the agent is stopping; delivering nothing for this pulse fire"
         );
         fire.end().await;
         return;
     }
-    tracing::info!(pulse = %pulse.name, fire = %fire.id(), "pulse fire stopped by the owner before it delivered anything");
+    tracing::info!(pulse = %fire.pulse(), fire = %fire.id(), "pulse fire stopped by the owner before it delivered anything");
     fire.finish(
         PulseFireOutcome {
             status: PulseFireStatus::Stopped,
@@ -225,6 +225,12 @@ async fn run_session_phase(fire: PulseFire, spawn: SpawnRequestEvent, deps: &Fir
         Ok::<_, residuum_bus::BusError>((sessions, failures))
     }
     .await;
+    // A stop that landed while the fire was subscribing (the owner's, or the
+    // agent's during shutdown) keeps the session from being asked for at all.
+    if fire.stop_token().is_cancelled() {
+        end_stopped_fire(fire).await;
+        return;
+    }
     let (mut sessions, mut failures) = match subscriptions {
         Ok(subscriptions) => subscriptions,
         Err(e) => {
@@ -962,7 +968,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stopped_agent_delivers_nothing_for_a_scripted_pulse() {
+    async fn a_fire_stopped_before_it_asks_for_its_session_starts_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = residuum_bus::spawn_broker();
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus.subscribe(topics::Background).await.unwrap();
+        let mut events = fire_events(&bus).await;
+        let deps = fire_deps(&bus, dir.path());
+
+        let pulse = plain_pulse();
+        let fire = begin(&deps, &pulse);
+        assert!(deps.fires.stop("watch", fire.id()));
+        run_pulse_fire(pulse, None, None, deps.clone(), fire).await;
+
+        let (outcome, session_run) = finished_outcome(&next_after_start(&mut events).await);
+        assert_eq!(outcome.status, PulseFireStatus::Stopped);
+        assert!(!session_run, "no session ran, so the event loop records it");
+        bus_barrier(&bus).await;
+        assert!(
+            spawns.drain().is_empty(),
+            "a fire stopped before its spawn request starts no session"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stopped_agent_delivers_nothing_for_any_pulse() {
         let dir = tempfile::tempdir().unwrap();
         let bus = residuum_bus::spawn_broker();
         let mut results: Subscriber<AgentResultEvent> =
@@ -975,8 +1005,9 @@ mod tests {
 
         run_fire(scripted_pulse("echo hi", true), &deps).await;
         run_fire(scripted_pulse("echo hi", false), &deps).await;
+        run_fire(plain_pulse(), &deps).await;
 
-        for _ in 0..2 {
+        for _ in 0..3 {
             let ended = next_after_start(&mut events).await;
             assert_eq!(ended.change, PulseFireChange::Ended, "nothing is recorded");
         }
