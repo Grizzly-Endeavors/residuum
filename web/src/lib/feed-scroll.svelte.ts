@@ -48,24 +48,60 @@ const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 /** How long a pressed expand or collapse control keeps its place against layout moving around it. */
 const KEEP_PLACE_MS = 500;
 
-/** Fields that move a caret or a choice with the arrow keys, Home and End. */
-const FIELDS = "input, textarea, select";
+/**
+ * Elements that act on Home and End themselves: fields, media players, and
+ * ARIA widgets that move their selection or position with them.
+ */
+const OWNS_HOME_END = [
+  "input",
+  "textarea",
+  "select",
+  "audio",
+  "video",
+  '[role="combobox"]',
+  '[role="grid"]',
+  '[role="listbox"]',
+  '[role="menu"]',
+  '[role="menubar"]',
+  '[role="menuitem"]',
+  '[role="option"]',
+  '[role="radiogroup"]',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="tab"]',
+  '[role="tablist"]',
+  '[role="tree"]',
+  '[role="treegrid"]',
+  '[role="toolbar"]',
+].join(", ");
 
 /**
  * Whether a key pressed on `target` scrolls the feed: it is the feed, or
- * something in it that leaves the key to the feed, not a field or editable
- * text, nor inside an area in the feed that scrolls up and down on its own.
+ * something in it that leaves the key to the feed, not an element that owns
+ * Home and End (`OWNS_HOME_END`), nor inside an area in the feed that scrolls
+ * up and down on its own.
  */
 function keyReachesFeed(target: EventTarget | null, feed: HTMLElement): boolean {
   if (target === feed || !(target instanceof Element)) return true;
-  if (target.closest(FIELDS) !== null) return false;
+  if (ownsHomeEnd(target, feed)) return false;
   if (target instanceof HTMLElement && target.isContentEditable) return false;
   return !scrollsInside(target, feed);
 }
 
+/** Whether `target`, or something from it up to, not including, `feed`, owns Home and End. */
+function ownsHomeEnd(target: Element, feed: HTMLElement): boolean {
+  for (let el: Element | null = target; el !== null && el !== feed; el = el.parentElement) {
+    if (el.matches(OWNS_HOME_END)) return true;
+  }
+  return false;
+}
+
 /**
- * Home or End with no modifier, that nothing in the feed has handled itself
- * and that reaches the feed: the feed takes these over from the browser.
+ * Home or End with no modifier that reaches the feed, and that no listener
+ * attached to its element has handled: the feed takes these over from the
+ * browser. Svelte's delegated `onkeydown` handlers run after the feed's own
+ * listener, so they can't be seen here; the widgets that use these keys are
+ * excluded by role instead.
  */
 function feedKey(event: KeyboardEvent, feed: HTMLElement): "Home" | "End" | null {
   const { key, altKey, ctrlKey, metaKey, shiftKey } = event;
@@ -335,8 +371,10 @@ export class FeedScroller {
     if (key === "End") {
       this.jumpToLatest();
     } else if (this.canScrollUp()) {
-      this.leave();
+      // The glide goes first: under reduced motion it moves the position at once,
+      // and leaving then sees the top, so the pill shows.
       this.glideTo(0);
+      this.leave();
     }
   };
 
