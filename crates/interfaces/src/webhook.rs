@@ -223,6 +223,7 @@ async fn route_webhook_content(
                 carried_history: Vec::new(),
                 fire_id: None,
                 delivered_messages: Vec::new(),
+                delivered_chat_messages: Vec::new(),
             };
             if let Err(e) = state
                 .publisher

@@ -660,10 +660,18 @@ pub struct SpawnRequestEvent {
     /// The agent messages a resume delivers as the new run's opening input.
     /// The run opens with each as its own history entry, carrying its id and
     /// sender, after `context` and ahead of `prompt`, which holds only the
-    /// resume's other input (empty when there is none). Its first turn
+    /// resume's chat messages combined (empty when there are none). Its first turn
     /// publishes a [`SessionEventKind::MessageRead`] for each. Empty for
     /// every other request.
     pub delivered_messages: Vec<AgentMessageEvent>,
+    /// The conversation's chat messages a resume delivers as the new run's
+    /// opening input, in the order they arrived. A resume by messages makes
+    /// its `prompt` from these alone, combined, which is how the new run
+    /// reads them. A resume that loses
+    /// the race for its address delivers each into the run that won it as
+    /// the chat message it is, the way a conversation's message reaches a
+    /// running conversation session. Empty for every other request.
+    pub delivered_chat_messages: Vec<MessageEvent>,
 }
 
 /// Marks a pulse fire that started while an earlier fire of the same pulse

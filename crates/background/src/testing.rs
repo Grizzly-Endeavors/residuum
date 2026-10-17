@@ -56,6 +56,15 @@ pub fn test_checkpoints(dir: &std::path::Path) -> Arc<residuum_checkpoints::Chec
     )
 }
 
+/// A session store in a temporary directory that lives as long as the
+/// store, for this crate's tests that need one but don't read what it
+/// records.
+#[cfg(test)]
+pub(crate) fn test_store() -> Arc<SessionStore> {
+    let dir = tempfile::tempdir().unwrap();
+    Arc::new(SessionStore::new(dir.path().to_path_buf()).with_tempdir_guard(dir))
+}
+
 /// A `TracingService` with auto error reporting off, for tests that need
 /// a `SessionRuntime` but don't exercise auto-reporting behavior
 /// themselves — `on_error` calls through it are a guaranteed no-op.
@@ -248,6 +257,7 @@ pub fn sample_conversation_request(address: &str) -> SessionSpawnRequest {
             images: Vec::new(),
             carried_history: Vec::new(),
             delivered_messages: Vec::new(),
+            delivered_chat_messages: Vec::new(),
         },
         conversation_target: Some(ConversationTarget {
             endpoint: "discord".to_string(),
