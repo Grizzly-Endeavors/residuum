@@ -3,7 +3,7 @@
 //! delete and an agent's read and write of the same team file see each
 //! other's changes, and whoever loses is told who changed it.
 //!
-//! covers: residuum-hub, residuum-tools
+//! covers: residuum-hub, residuum-tools, residuum-checkpoints, residuum-workspace
 
 use std::sync::Arc;
 

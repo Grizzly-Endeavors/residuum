@@ -1343,7 +1343,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -1399,7 +1399,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -1606,7 +1606,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -1826,7 +1826,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -1866,7 +1866,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -1900,7 +1900,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -1973,7 +1973,7 @@ mod tests {
                 &TurnFailureReport {
                     tracing_service: &test_tracing_service(),
                     cfg: &test_config(),
-                    build: crate::testing::HARNESS_BUILD,
+                    build: residuum_core::testing::HARNESS_BUILD,
                 },
             )
             .await;
@@ -2018,7 +2018,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -2086,7 +2086,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -2144,7 +2144,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &test_tracing_service(),
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -2202,7 +2202,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &tracing_service,
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;
@@ -2257,7 +2257,7 @@ mod tests {
             &TurnFailureReport {
                 tracing_service: &tracing_service,
                 cfg: &test_config(),
-                build: crate::testing::HARNESS_BUILD,
+                build: residuum_core::testing::HARNESS_BUILD,
             },
         )
         .await;

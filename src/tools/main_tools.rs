@@ -311,7 +311,7 @@ mod tests {
             session_registry: &h.session_registry,
             endpoint_registry: &h.endpoint_registry,
             publisher: &h.publisher,
-            build: crate::testing::HARNESS_BUILD,
+            build: residuum_core::testing::HARNESS_BUILD,
             tracing_service: &h.tracing_service,
             tracing_client_context: &h.tracing_client_context,
             agent_messenger: &h.agent_messenger,

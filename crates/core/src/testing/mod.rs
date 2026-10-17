@@ -32,3 +32,13 @@ pub mod log;
 pub mod ports;
 pub mod script;
 pub mod wait;
+
+use crate::build_info::BuildInfo;
+
+/// The build a test harness reports. A literal, so test code never reads the
+/// build from the root's entry point; a test that asserts a version passes its
+/// own literal.
+pub const HARNESS_BUILD: BuildInfo = BuildInfo {
+    version: "test",
+    commit: None,
+};

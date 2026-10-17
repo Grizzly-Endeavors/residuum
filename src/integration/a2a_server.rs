@@ -293,7 +293,7 @@ fn build_support_deps(
     ));
     let tracing_client_context = Arc::new(
         crate::tracing_service::client_context::gather_for_bug_report(
-            crate::testing::HARNESS_BUILD,
+            residuum_core::testing::HARNESS_BUILD,
             &cfg,
         ),
     );
@@ -620,7 +620,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         hybrid_searcher: Arc::clone(&deps.hybrid_searcher),
         tracing_service: Arc::clone(&deps.tracing_service),
         tracing_client_context: Arc::clone(&deps.tracing_client_context),
-        build: crate::testing::HARNESS_BUILD,
+        build: residuum_core::testing::HARNESS_BUILD,
         web_search_backend: None,
         model_catalog: crate::config::ModelCatalog::default().into_shared(),
         a2a_hub: Arc::clone(&deps.a2a_hub),

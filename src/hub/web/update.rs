@@ -193,7 +193,7 @@ mod tests {
     fn test_state(hub_dir: PathBuf) -> UpdateApiState {
         let (restart_tx, _restart_rx) = mpsc::channel(1);
         let (gateway_shutdown_tx, _shutdown_rx) = mpsc::channel(1);
-        let build = crate::testing::HARNESS_BUILD;
+        let build = residuum_core::testing::HARNESS_BUILD;
         UpdateApiState {
             build,
             update_status: crate::hub::update::shared_update_status(build.version),

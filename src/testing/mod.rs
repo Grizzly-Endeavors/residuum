@@ -27,11 +27,3 @@ mod crypto;
 mod manifest_scan;
 mod source_scan;
 mod wall_clock_backlog;
-
-/// The build a test harness reports. A literal, so test code never reads the
-/// build from the root's entry point; a test that asserts a version passes its
-/// own literal.
-pub(crate) const HARNESS_BUILD: crate::build_info::BuildInfo = crate::build_info::BuildInfo {
-    version: "test",
-    commit: None,
-};
