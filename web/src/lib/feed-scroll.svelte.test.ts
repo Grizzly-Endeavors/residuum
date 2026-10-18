@@ -916,6 +916,38 @@ describe("FeedScroller", () => {
       expect(feed.geometry.scrollTop).toBe(0);
     });
 
+    it("ends when the feed is hidden and shown again between two of its frames", () => {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(0);
+      scroller.jumpToLatest();
+      feed.frames(3);
+      feed.geometry.clientHeight = 0;
+      observer.notify();
+      // Shown again with the position where the browser has it, before any event says so.
+      feed.geometry.clientHeight = 500;
+      feed.geometry.scrollTop = 700;
+      feed.frames(1);
+      expect(feed.geometry.scrollTop).toBe(700);
+      // No glide is under way, so a touch now doesn't judge the reader as having cut one short.
+      feed.fire("touchstart");
+      expect(scroller.isFollowing).toBe(true);
+    });
+
+    it("leaves the pill to a rebuild that holds the reader's state when a move ends it", () => {
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.jumpToLatest();
+      feed.frames(3);
+      scroller.hold();
+      expect(scroller.scrolledUp).toBe(true);
+      // The rebuild moves the position near the end before the glide's next frame.
+      feed.geometry.scrollTop = 1450;
+      feed.frames(1);
+      expect(feed.geometry.scrollTop).toBe(1450);
+      expect(scroller.scrolledUp).toBe(true);
+      expect(scroller.isHeld).toBe(true);
+    });
+
     it("stops when the feed is hidden, and doesn't move it while it is", () => {
       const { feed, scroller } = attached();
       feed.scrollBy(100);

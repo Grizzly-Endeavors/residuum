@@ -646,6 +646,9 @@ export class FeedScroller {
       // and taking it in ends the glide, still counted as under way until then.
       if (this.knownTop !== null && Math.abs(el.scrollTop - this.knownTop) >= 1) {
         this.takeInScroll();
+        // Also when taking it in didn't get as far as ending the glide (the feed was
+        // shown again since the last frame): no frame is coming, so none is under way.
+        this.glideFrame = 0;
         return;
       }
       this.glideFrame = 0;
@@ -676,6 +679,8 @@ export class FeedScroller {
   private interruptGlide(): void {
     if (this.glideFrame === 0) return;
     this.stopGlide();
+    // A rebuild holds the reader's state until it is done (`hold`).
+    if (this.held) return;
     if (this.following && !this.nearEnd()) this.following = false;
     this.refreshPill();
   }
