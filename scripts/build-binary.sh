@@ -29,7 +29,7 @@ esac
 
 cargo build ${cargo_args[@]+"${cargo_args[@]}"}
 
-built="${CARGO_TARGET_DIR:-target}/$profile/residuum$exe"
+built="${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-target}}/$profile/residuum$exe"
 dest_dir="target/$profile"
 dest="$dest_dir/residuum$exe"
 if [ ! -f "$built" ]; then
@@ -46,4 +46,4 @@ if [ ! "$built" -ef "$dest" ]; then
     mv -f -- "$tmp" "$dest"
     trap - EXIT
 fi
-echo "Built $dest (cargo built it in ${CARGO_TARGET_DIR:-target})." >&2
+echo "Built $dest (cargo built it in ${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-target}})." >&2

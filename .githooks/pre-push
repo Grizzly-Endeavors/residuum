@@ -746,7 +746,7 @@ run_rust_checks_in_lease() {
         cd "$dir" || exit 1
         # A check of a commit other than the checkout builds only in a leased dir.
         if [ "$IN_PLACE" = 0 ]; then
-            unset CARGO_TARGET_DIR CARGO_BUILD_BUILD_DIR
+            unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_BUILD_BUILD_DIR
         fi
         exec "$TARGET_POOL" run -- "$HOOK_PATH" "$LEASED_STAGE_ARG" "$STAGE_DIR" "$dir" "$CHECK_SCOPE" "$CHANGED_KNOWN"
     ) </dev/null || status=$?
@@ -778,7 +778,7 @@ run_leased_stage() {
     CHECK_SCOPE="$3"
     CHANGED_KNOWN="$4"
     CHANGED_PATHS="$(cat "$stage/changed-paths")" || return 1
-    echo "Rust checks build in ${CARGO_TARGET_DIR:-$dir/target}${CARGO_BUILD_BUILD_DIR:+ (intermediates in $CARGO_BUILD_BUILD_DIR)}."
+    echo "Rust checks build in ${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-$dir/target}}${CARGO_BUILD_BUILD_DIR:+ (intermediates in $CARGO_BUILD_BUILD_DIR)}."
     plan_rust_tests "$dir"
     run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
     run_check "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
