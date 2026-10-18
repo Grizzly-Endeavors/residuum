@@ -71,21 +71,34 @@ function feed(): Feed {
 }
 
 /** Callbacks waiting for the next frame, by the id `requestAnimationFrame` returned. */
-const frameCallbacks = new Map<number, () => void>();
+const frameCallbacks = new Map<number, FrameRequestCallback>();
 let nextFrameId = 1;
+let frameTime = 1000;
 
-/** Run the frame: every callback requested before it runs once, and any it requests waits for the next. */
+/**
+ * Run the frames, 16ms apart: every callback requested before a frame runs
+ * once in it, and any it requests waits for the next.
+ */
 function runFrames(count: number): void {
   for (let n = 0; n < count; n++) {
     const due = [...frameCallbacks.values()];
     frameCallbacks.clear();
-    for (const callback of due) callback();
+    frameTime += 16;
+    for (const callback of due) callback(frameTime);
+  }
+}
+
+/** Run frames until nothing waits for one. */
+function runAllFrames(): void {
+  for (let n = 0; frameCallbacks.size > 0; n++) {
+    if (n > 100) throw new Error("something still waits for a frame after 100 frames");
+    runFrames(1);
   }
 }
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.stubGlobal("requestAnimationFrame", (callback: () => void): number => {
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback): number => {
     const id = nextFrameId++;
     frameCallbacks.set(id, callback);
     return id;
@@ -226,11 +239,13 @@ describe("FeedScroller, Home and End on what is in the feed", () => {
   }
 
   it("takes them on a control in the feed, which doesn't use them", () => {
-    const { button, scrollTo } = feed();
+    const { button, layout } = feed();
     expect(press(button, "Home").defaultPrevented).toBe(true);
-    expect(scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: "smooth" });
+    runAllFrames();
+    expect(layout.scrollTop).toBe(0);
     expect(press(button, "End").defaultPrevented).toBe(true);
-    expect(scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
+    runAllFrames();
+    expect(layout.scrollTop).toBe(1500);
   });
 
   it("leaves them, and the keys that scroll up, to a field or editable text in the feed", () => {
@@ -302,13 +317,15 @@ describe("FeedScroller, Home and End on what is in the feed", () => {
   });
 
   it("takes them inside an area that could scroll but has nothing to", () => {
-    const { content, scrollTo } = feed();
+    const { content, layout } = feed();
     content.insertAdjacentHTML(
       "beforeend",
       `<div id="inner" style="overflow-y: auto"><button id="inside">Copy</button></div>`,
     );
     const inside = document.getElementById("inside") as HTMLElement;
+    layout.scrollTop = 0;
     expect(press(inside, "End").defaultPrevented).toBe(true);
-    expect(scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
+    runAllFrames();
+    expect(layout.scrollTop).toBe(1500);
   });
 });

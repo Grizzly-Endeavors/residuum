@@ -92,6 +92,7 @@ Motion answers what the user did, and shows what changed.
 
 - `--duration-fast` (150ms) for hover, press and color; `--duration-base` (200ms) for anything that enters, leaves, expands or moves. Both use `--ease-out`.
 - `--duration-swap` (120ms) fades content swapped inside a frame that stays put, such as a settings section; the frame itself doesn't move.
+- A conversation's glides (Jump to latest, Home and End) are scripted a frame at a time with a cubic ease-out (the shape of `--ease-out`, not its exact curve, since a script steps it rather than CSS), over 150ms to 600ms depending on how far they go (`src/lib/feed-scroll.svelte.ts`). Under `prefers-reduced-motion` they jump straight there.
 - Continuous indicators use their own tokens: `spin` for spinners, `pulse` for the working glow, `blink` for the streaming caret.
 - Nothing moves on its own otherwise: no ambient drift, no staggered entrances, no texture.
 - Under `prefers-reduced-motion`, a global rule in `src/styles/ui-base.css` makes every animation and transition in the app finish at once.

@@ -39,19 +39,47 @@ interface FakeScroller {
   press: (init: KeyboardEventInit & { defaultPrevented?: boolean }) => ReturnType<typeof vi.fn>;
   /** Send the feed an event, as the browser does for the reader's input. */
   fire: (type: string, init?: Record<string, unknown>) => void;
-  /** From now on a smooth scroll starts and moves nothing: the test moves the glide on with `scrollBy`. */
-  holdGlides: () => void;
+  /**
+   * Run `count` animation frames, 16ms apart; after each, a position that
+   * moved sends its scroll event, as the browser does.
+   */
+  frames: (count: number) => void;
+  /** Run frames until nothing waits for one: a glide under way finishes. */
+  finishGlide: () => void;
+  /** Positions the feed's scroll events found, in order. */
+  seen: number[];
   geometry: Geometry;
 }
 
 function fakeScroller(): FakeScroller {
   const geometry: Geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500, padding: 0 };
   const listeners = new Map<string, (event?: Event) => void>();
-  let glidesHeld = false;
+  const seen: number[] = [];
   const scrollTo = vi.fn((options: { top: number; behavior?: string }) => {
-    if (glidesHeld && options.behavior === "smooth") return;
     geometry.scrollTop = options.top;
   });
+  const waiting = new Map<number, FrameRequestCallback>();
+  let nextFrame = 1;
+  let frameTime = 1000;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback): number => {
+    waiting.set(nextFrame, callback);
+    return nextFrame++;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => waiting.delete(id));
+  const scrolled = (): void => {
+    seen.push(geometry.scrollTop);
+    listeners.get("scroll")?.();
+  };
+  const frames = (count: number): void => {
+    for (let n = 0; n < count; n++) {
+      const due = [...waiting.values()];
+      waiting.clear();
+      frameTime += 16;
+      const before = geometry.scrollTop;
+      for (const callback of due) callback(frameTime);
+      if (geometry.scrollTop !== before) scrolled();
+    }
+  };
   const el = {
     get scrollHeight() {
       return geometry.scrollHeight;
@@ -73,9 +101,10 @@ function fakeScroller(): FakeScroller {
     content: {} as HTMLElement,
     scrollTo,
     geometry,
+    seen,
     scrollBy: (top) => {
       geometry.scrollTop = top;
-      listeners.get("scroll")?.();
+      scrolled();
     },
     press: (init) => {
       const preventDefault = vi.fn();
@@ -91,8 +120,12 @@ function fakeScroller(): FakeScroller {
     fire: (type, init = {}) => {
       listeners.get(type)?.({ type, ...init } as unknown as Event);
     },
-    holdGlides: () => {
-      glidesHeld = true;
+    frames,
+    finishGlide: () => {
+      for (let n = 0; waiting.size > 0; n++) {
+        if (n > 100) throw new Error("the glide is still going after 100 frames");
+        frames(1);
+      }
     },
   };
 }
@@ -125,9 +158,16 @@ describe("FeedScroller", () => {
     const preventDefault = feed.press({ key: "End" });
 
     expect(preventDefault).toHaveBeenCalled();
-    expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "smooth" });
     expect(scroller.isFollowing).toBe(true);
     expect(scroller.scrolledUp).toBe(false);
+    // A glide, frame by frame, not a jump.
+    feed.frames(4);
+    expect(feed.geometry.scrollTop).toBeGreaterThan(100);
+    expect(feed.geometry.scrollTop).toBeLessThan(1500);
+    feed.finishGlide();
+    expect(feed.geometry.scrollTop).toBe(1500);
+    expect(feed.scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ behavior: "smooth" }));
+    expect(scroller.isFollowing).toBe(true);
   });
 
   it("follows the newest content from End, though content lands at the top on the way", () => {
@@ -135,32 +175,57 @@ describe("FeedScroller", () => {
     // The reader went to the top, so the feed no longer follows.
     feed.scrollBy(0);
 
-    feed.holdGlides();
     feed.press({ key: "End" });
     // The glide is partway down when an older episode is prepended.
-    feed.scrollBy(600);
+    feed.frames(4);
     feed.geometry.scrollHeight = 3000;
     observer.notify();
+    expect(feed.geometry.scrollTop).toBe(3000);
 
+    // The pin ended the glide, which doesn't carry on from where it was.
+    feed.finishGlide();
     expect(feed.geometry.scrollTop).toBe(3000);
   });
 
-  it("stops Home's glide where it is at End, so that glide's last move isn't the reader leaving", () => {
-    const { feed, observer, scroller } = attached();
-    feed.holdGlides();
-    feed.press({ key: "Home" });
-    feed.scrollBy(300);
-    // Home's glide moves on to 56, and End comes before that move's scroll event.
-    feed.geometry.scrollTop = 56;
+  it("ends End's glide at the end as it is when the glide gets there", () => {
+    const { feed } = attached();
+    feed.scrollBy(0);
     feed.press({ key: "End" });
+    feed.frames(4);
+    // The content grows before the scroller hears of it.
+    feed.geometry.scrollHeight = 3000;
+    feed.finishGlide();
+    expect(feed.geometry.scrollTop).toBe(2500);
+  });
 
-    expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 2000, behavior: "smooth" });
-    feed.scrollBy(56);
+  it("follows from End pressed during Home's glide, while an older episode loads", () => {
+    // Seen in Chromium (#756): the browser's glide for Home went on after End,
+    // so End's started up and read as the reader leaving, and the older episode
+    // landing then kept the reader's place, which ended End's glide near the top.
+    const { feed, scroller } = attached();
+    feed.press({ key: "Home" });
+    feed.frames(8);
+    const atEnd = feed.geometry.scrollTop;
+    expect(atEnd).toBeLessThan(1500);
+    expect(atEnd).toBeGreaterThan(0);
+    const seenBefore = feed.seen.length;
+
+    feed.press({ key: "End" });
+    feed.frames(3);
+    // The older episode lands above, as `Feed` hands it to the scroller.
+    scroller.takeInPendingScroll();
+    feed.geometry.scrollHeight = 2322;
     expect(scroller.isFollowing).toBe(true);
-    // An older episode lands at the top on the way: the reader is pinned to the bottom.
-    feed.geometry.scrollHeight = 2300;
-    observer.notify();
-    expect(feed.geometry.scrollTop).toBe(2300);
+    scroller.contentChanged();
+    feed.finishGlide();
+
+    const afterEnd = feed.seen.slice(seenBefore);
+    for (const [n, top] of afterEnd.entries()) {
+      expect(top).toBeGreaterThanOrEqual(n === 0 ? atEnd : (afterEnd[n - 1] ?? 0));
+    }
+    expect(feed.geometry.scrollTop).toBe(2322);
+    expect(scroller.isFollowing).toBe(true);
+    expect(scroller.scrolledUp).toBe(false);
   });
 
   it("takes Home over: it glides to the top, and the feed stops following", () => {
@@ -169,8 +234,11 @@ describe("FeedScroller", () => {
     const preventDefault = feed.press({ key: "Home" });
 
     expect(preventDefault).toHaveBeenCalled();
-    expect(feed.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
     expect(scroller.isFollowing).toBe(false);
+    feed.finishGlide();
+    expect(feed.geometry.scrollTop).toBe(0);
+    // The glide's own moves bring the pill up.
+    expect(scroller.scrolledUp).toBe(true);
     // A reply landing as the reader reads from the top leaves them there.
     feed.geometry.scrollHeight = 2100;
     observer.notify();
@@ -217,6 +285,69 @@ describe("FeedScroller", () => {
     feed.press({ key: "End" });
     feed.scrollBy(1300);
     expect(scroller.isFollowing).toBe(false);
+    // The glide doesn't take the position back from them.
+    feed.finishGlide();
+    expect(feed.geometry.scrollTop).toBe(1300);
+  });
+
+  it("leaves a reader who stops End's glide short with a wheel, a touch or a press where it stopped, not following", () => {
+    for (const type of ["wheel", "touchstart", "pointerdown"]) {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(0);
+      feed.press({ key: "End" });
+      feed.frames(3);
+      const reached = feed.geometry.scrollTop;
+      expect(reached).toBeLessThan(1500 - 120);
+      feed.fire(type, { deltaY: 10, deltaX: 0 });
+      feed.finishGlide();
+      expect(feed.geometry.scrollTop).toBe(reached);
+      expect(scroller.isFollowing).toBe(false);
+      expect(scroller.scrolledUp).toBe(true);
+      // A reply landing now leaves them where they stopped.
+      feed.geometry.scrollHeight = 2100;
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(reached);
+    }
+  });
+
+  it("leaves a reader moved down short of the end during End's glide there, not following", () => {
+    const { feed, observer, scroller } = attached();
+    feed.scrollBy(0);
+    feed.press({ key: "End" });
+    feed.frames(3);
+    // A scrollbar drag or find in page moves them on down, still well short of the end.
+    const moved = feed.geometry.scrollTop + 100;
+    expect(moved).toBeLessThan(1500 - 120);
+    feed.scrollBy(moved);
+    feed.finishGlide();
+    expect(feed.geometry.scrollTop).toBe(moved);
+    expect(scroller.isFollowing).toBe(false);
+    expect(scroller.scrolledUp).toBe(true);
+    feed.geometry.scrollHeight = 2100;
+    observer.notify();
+    expect(feed.geometry.scrollTop).toBe(moved);
+  });
+
+  it("keeps following a reader moved to near the end during End's glide", () => {
+    const { feed, observer, scroller } = attached();
+    feed.scrollBy(0);
+    feed.press({ key: "End" });
+    feed.frames(3);
+    feed.scrollBy(1500 - 60);
+    feed.finishGlide();
+    expect(scroller.isFollowing).toBe(true);
+    expect(scroller.scrolledUp).toBe(false);
+    feed.geometry.scrollHeight = 2100;
+    observer.notify();
+    expect(feed.geometry.scrollTop).toBe(2100);
+  });
+
+  it("moves on the glide's first frame", () => {
+    const { feed } = attached();
+    feed.scrollBy(0);
+    feed.press({ key: "End" });
+    feed.frames(1);
+    expect(feed.geometry.scrollTop).toBeGreaterThan(0);
   });
 
   it("leaves Home and End with a modifier, and other keys, to the browser", () => {
@@ -502,7 +633,11 @@ describe("FeedScroller", () => {
       const { feed, scroller } = attached();
       feed.scrollBy(100);
       scroller.jumpToLatest();
-      expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "smooth" });
+      feed.frames(4);
+      expect(feed.geometry.scrollTop).toBeLessThan(1500);
+      feed.finishGlide();
+      expect(feed.geometry.scrollTop).toBe(1500);
+      expect(scroller.isFollowing).toBe(true);
     });
 
     it("jumps at once under reduced motion", () => {
@@ -707,11 +842,10 @@ describe("FeedScroller", () => {
     it("doesn't count its own scroll events as the reader's", () => {
       const { feed, observer, scroller } = attached();
       feed.scrollBy(100);
-      feed.holdGlides();
       scroller.jumpToLatest();
-      // The glide passes through on its way down.
-      feed.scrollBy(600);
-      feed.scrollBy(1200);
+      // The glide passes through on its way down, each frame's move sending its event.
+      feed.frames(6);
+      expect(feed.seen.length).toBeGreaterThan(2);
       expect(scroller.isFollowing).toBe(true);
       expect(scroller.scrolledUp).toBe(false);
       feed.geometry.scrollHeight = 2100;
@@ -725,8 +859,7 @@ describe("FeedScroller", () => {
       feed.scrollBy(100);
       expect(scroller.scrolledUp).toBe(true);
 
-      // They press Jump to latest; the browser's smooth glide hasn't moved yet.
-      feed.holdGlides();
+      // They press Jump to latest; the glide hasn't had a frame yet.
       scroller.jumpToLatest();
       // A streamed reply grows the feed before the glide's first frame: the feed pins
       // the reader to the bottom at once, which ends the glide, and the pin's own
@@ -746,21 +879,84 @@ describe("FeedScroller", () => {
       feed.geometry.scrollHeight = 2200;
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(0);
+      feed.finishGlide();
+      expect(feed.geometry.scrollTop).toBe(0);
     });
 
-    it("counts a move up while it runs as the reader's", () => {
+    it("counts a move up while it runs as the reader's, and leaves them there", () => {
       const { feed, observer, scroller } = attached();
       feed.scrollBy(100);
-      feed.holdGlides();
       scroller.jumpToLatest();
-      feed.scrollBy(700);
+      feed.frames(4);
       // The page scrolls back to the top mid-glide, with no input in the feed.
       feed.scrollBy(0);
       expect(scroller.isFollowing).toBe(false);
       expect(scroller.scrolledUp).toBe(true);
+      feed.finishGlide();
+      expect(feed.geometry.scrollTop).toBe(0);
       feed.geometry.scrollHeight = 2100;
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(0);
+    });
+
+    it("leaves a reader moved between two of its frames where they went, before that move's event", () => {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.jumpToLatest();
+      feed.frames(4);
+      // A script in the glide's own scroll event moves the reader back to the top.
+      feed.geometry.scrollTop = 0;
+      feed.frames(1);
+      expect(feed.geometry.scrollTop).toBe(0);
+      expect(scroller.isFollowing).toBe(false);
+      expect(scroller.scrolledUp).toBe(true);
+      feed.finishGlide();
+      feed.geometry.scrollHeight = 2100;
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(0);
+    });
+
+    it("ends when the feed is hidden and shown again between two of its frames", () => {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(0);
+      scroller.jumpToLatest();
+      feed.frames(3);
+      feed.geometry.clientHeight = 0;
+      observer.notify();
+      // Shown again with the position where the browser has it, before any event says so.
+      feed.geometry.clientHeight = 500;
+      feed.geometry.scrollTop = 700;
+      feed.frames(1);
+      expect(feed.geometry.scrollTop).toBe(700);
+      // No glide is under way, so a touch now doesn't judge the reader as having cut one short.
+      feed.fire("touchstart");
+      expect(scroller.isFollowing).toBe(true);
+    });
+
+    it("leaves the pill to a rebuild that holds the reader's state when a move ends it", () => {
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.jumpToLatest();
+      feed.frames(3);
+      scroller.hold();
+      expect(scroller.scrolledUp).toBe(true);
+      // The rebuild moves the position near the end before the glide's next frame.
+      feed.geometry.scrollTop = 1450;
+      feed.frames(1);
+      expect(feed.geometry.scrollTop).toBe(1450);
+      expect(scroller.scrolledUp).toBe(true);
+      expect(scroller.isHeld).toBe(true);
+    });
+
+    it("stops when the feed is hidden, and doesn't move it while it is", () => {
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.jumpToLatest();
+      feed.frames(3);
+      const reached = feed.geometry.scrollTop;
+      feed.geometry.clientHeight = 0;
+      feed.finishGlide();
+      expect(feed.geometry.scrollTop).toBe(reached);
     });
   });
 });

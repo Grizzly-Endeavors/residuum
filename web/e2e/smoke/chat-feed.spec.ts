@@ -252,8 +252,41 @@ test("the keyboard scrolls a conversation that overflows, and follows it again a
 
   await page.keyboard.press("End");
   await expect(greeting).toBeInViewport();
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
   await expect(jump).toHaveCount(0);
   await expect(feed).toBeFocused();
+});
+
+test("End pressed while an older episode loads still follows the conversation to its end", async ({
+  page,
+}) => {
+  // Home brings the reader near the top, which asks for the older episode; its answer
+  // waits until End has been pressed, so it lands while End takes the reader down.
+  let releaseOlder: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  const olderEpisode = /\/api\/agents\/atlas\/chat\/history\?episode=ep-002$/;
+  await page.route(olderEpisode, async (route) => {
+    await released;
+    await route.continue();
+  });
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  const greeting = feed.getByText(GREETING);
+  await expect(greeting).toBeInViewport();
+  await feed.focus();
+
+  const asked = page.waitForRequest(olderEpisode);
+  await page.keyboard.press("Home");
+  await asked;
+  await page.keyboard.press("End");
+  releaseOlder();
+
+  await expect(feed.getByRole("separator", { name: /, ep-002$/ })).toBeAttached();
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
+  await expect(greeting).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Jump to latest" })).toHaveCount(0);
 });
 
 test("a conversation with nothing to scroll is no tab stop", async ({ page }) => {
