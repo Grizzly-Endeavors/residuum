@@ -50,9 +50,9 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_A
 # from the repository's pool of warm target dirs, <main checkout>/target/pool,
 # through scripts/target-pool. The hook runs those checks as a second
 # invocation of itself under `scripts/target-pool run`, so they share one lease
-# and no other build takes the dir between them. The pool hands a tree the dir
-# it used last, keyed on the tree's path, so the checkout and the stable tree
-# (target/pre-push/tree) each keep building warm; the stable tree also keeps
+# and no other build takes the dir between them. The pool prefers to hand a
+# tree the dir it used last, keyed on the tree's path, when that dir is free, so
+# the checkout and the stable tree (target/pre-push/tree) each keep building warm; the stable tree also keeps
 # the modification times of unchanged files, which is what lets Cargo reuse its
 # build. A commit checked in place honours a CARGO_TARGET_DIR the caller set, in
 # which case target-pool leases nothing. A commit checked in another tree
@@ -737,11 +737,6 @@ run_rust_checks() {
 # check to a results file, which this reads into PASSED and FAILED.
 run_rust_checks_in_lease() {
     local dir="$1" status=0 kind name
-    if [ ! -x "$TARGET_POOL" ]; then
-        FAILED+=("${CHECK_SCOPE}Rust checks (no build dir)")
-        echo -e "${RED}FAILED: $TARGET_POOL, which leases the Rust checks' build dir, is missing or not executable. Restore it with 'git checkout -- scripts/target-pool' in the checkout the hook runs from.${NC}" >&2
-        return
-    fi
     if ! STAGE_DIR="$(mktemp -d)" || ! printf '%s' "$CHANGED_PATHS" >"$STAGE_DIR/changed-paths"; then
         FAILED+=("${CHECK_SCOPE}Rust checks (no scratch directory)")
         echo -e "${RED}FAILED: couldn't create a scratch directory for the Rust checks' changed paths and results. Skipping the Rust checks.${NC}" >&2
@@ -755,16 +750,19 @@ run_rust_checks_in_lease() {
         fi
         exec "$TARGET_POOL" run -- "$HOOK_PATH" "$LEASED_STAGE_ARG" "$STAGE_DIR" "$dir" "$CHECK_SCOPE" "$CHANGED_KNOWN"
     ) </dev/null || status=$?
-    if [ "$status" -ne 0 ] || [ ! -s "$STAGE_DIR/results" ]; then
-        FAILED+=("${CHECK_SCOPE}Rust checks (did not finish)")
-        echo -e "${RED}FAILED: the Rust checks stopped before they finished (exit $status); the lines above say why. 'scripts/target-pool status' lists the pool's build dirs and who holds them.${NC}" >&2
-    else
+    if [ -f "$STAGE_DIR/results" ]; then
         while IFS=$'\t' read -r kind name; do
             case "$kind" in
             passed) PASSED+=("$name") ;;
             failed) FAILED+=("$name") ;;
             esac
         done <"$STAGE_DIR/results"
+    fi
+    # A missing scripts/target-pool lands here too, with the shell's own line
+    # above naming it.
+    if [ "$status" -ne 0 ] || [ ! -s "$STAGE_DIR/results" ]; then
+        FAILED+=("${CHECK_SCOPE}Rust checks (did not finish)")
+        echo -e "${RED}FAILED: the Rust checks stopped before they finished (exit $status); the lines above say why. 'scripts/target-pool status' lists the pool's build dirs and who holds them.${NC}" >&2
     fi
     rm -rf "$STAGE_DIR"
     STAGE_DIR=""
@@ -780,7 +778,7 @@ run_leased_stage() {
     CHECK_SCOPE="$3"
     CHANGED_KNOWN="$4"
     CHANGED_PATHS="$(cat "$stage/changed-paths")" || return 1
-    echo "Rust checks build in ${CARGO_TARGET_DIR:-$dir/target}."
+    echo "Rust checks build in ${CARGO_TARGET_DIR:-$dir/target}${CARGO_BUILD_BUILD_DIR:+ (intermediates in $CARGO_BUILD_BUILD_DIR)}."
     plan_rust_tests "$dir"
     run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
     run_check "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
