@@ -156,8 +156,9 @@ TAKEOVER_CLAIM=""
 TREE_NAME=""
 TEST_LOG=""
 TS_EXPORT_DIR=""
-# The results file of the leased Rust checks (run_rust_checks_in_lease).
-STAGE_RESULTS=""
+# The scratch directory that hands the leased Rust checks their changed paths
+# and takes back their results (run_rust_checks_in_lease).
+STAGE_DIR=""
 cleanup_test_scratch() {
     if [ -n "$TEST_LOG" ]; then
         rm -f "$TEST_LOG"
@@ -170,9 +171,9 @@ cleanup_test_scratch() {
 }
 cleanup() {
     cleanup_test_scratch
-    if [ -n "$STAGE_RESULTS" ]; then
-        rm -f "$STAGE_RESULTS"
-        STAGE_RESULTS=""
+    if [ -n "$STAGE_DIR" ]; then
+        rm -rf "$STAGE_DIR"
+        STAGE_DIR=""
     fi
     # Unlink the borrowed node_modules first so nothing below can reach
     # through it into this checkout's copy.
@@ -731,8 +732,9 @@ run_rust_checks() {
 # Runs the Rust checks that build for the tree $1 in a build dir leased from
 # the pool: this hook again, as `<hook> --rust-checks-in-lease`, under
 # `scripts/target-pool run`, from the tree, so the pool's choice of dir follows
-# the tree. The leased invocation writes one line per check to a results file,
-# which this reads into PASSED and FAILED.
+# the tree. The changed paths go to it in a file, since a large push's list can
+# be longer than one command-line argument may be, and it writes one line per
+# check to a results file, which this reads into PASSED and FAILED.
 run_rust_checks_in_lease() {
     local dir="$1" status=0 kind name
     if [ ! -x "$TARGET_POOL" ]; then
@@ -740,20 +742,20 @@ run_rust_checks_in_lease() {
         echo -e "${RED}FAILED: $TARGET_POOL, which leases the Rust checks' build dir, is missing or not executable. Restore it with 'git checkout -- scripts/target-pool' in the checkout the hook runs from.${NC}" >&2
         return
     fi
-    STAGE_RESULTS="$(mktemp)" || {
-        FAILED+=("${CHECK_SCOPE}Rust checks (no results file)")
-        echo -e "${RED}FAILED: couldn't create a scratch file for the Rust checks' results. Skipping the Rust checks.${NC}" >&2
+    if ! STAGE_DIR="$(mktemp -d)" || ! printf '%s' "$CHANGED_PATHS" >"$STAGE_DIR/changed-paths"; then
+        FAILED+=("${CHECK_SCOPE}Rust checks (no scratch directory)")
+        echo -e "${RED}FAILED: couldn't create a scratch directory for the Rust checks' changed paths and results. Skipping the Rust checks.${NC}" >&2
         return
-    }
+    fi
     (
         cd "$dir" || exit 1
         # A check of a commit other than the checkout builds only in a leased dir.
         if [ "$IN_PLACE" = 0 ]; then
             unset CARGO_TARGET_DIR CARGO_BUILD_BUILD_DIR
         fi
-        exec "$TARGET_POOL" run -- "$HOOK_PATH" "$LEASED_STAGE_ARG" "$STAGE_RESULTS" "$dir" "$CHECK_SCOPE" "$CHANGED_KNOWN" "$CHANGED_PATHS"
+        exec "$TARGET_POOL" run -- "$HOOK_PATH" "$LEASED_STAGE_ARG" "$STAGE_DIR" "$dir" "$CHECK_SCOPE" "$CHANGED_KNOWN"
     ) </dev/null || status=$?
-    if [ "$status" -ne 0 ] || [ ! -s "$STAGE_RESULTS" ]; then
+    if [ "$status" -ne 0 ] || [ ! -s "$STAGE_DIR/results" ]; then
         FAILED+=("${CHECK_SCOPE}Rust checks (did not finish)")
         echo -e "${RED}FAILED: the Rust checks stopped before they finished (exit $status); the lines above say why. 'scripts/target-pool status' lists the pool's build dirs and who holds them.${NC}" >&2
     else
@@ -762,22 +764,22 @@ run_rust_checks_in_lease() {
             passed) PASSED+=("$name") ;;
             failed) FAILED+=("$name") ;;
             esac
-        done <"$STAGE_RESULTS"
+        done <"$STAGE_DIR/results"
     fi
-    rm -f "$STAGE_RESULTS"
-    STAGE_RESULTS=""
+    rm -rf "$STAGE_DIR"
+    STAGE_DIR=""
 }
 
 # The leased invocation: plans and runs the Rust checks that build, in the tree
 # it was started in, with CARGO_TARGET_DIR set by target-pool (or by the caller,
 # or unset when the pool is turned off), and writes each result to the results
-# file. Arguments: the results file, the tree, the check scope, CHANGED_KNOWN and
-# CHANGED_PATHS of the commit.
+# file. Arguments: the scratch directory, which holds changed-paths and gets
+# results; the tree; the check scope; and CHANGED_KNOWN of the commit.
 run_leased_stage() {
-    local results="$1" dir="$2" name
+    local stage="$1" dir="$2" name
     CHECK_SCOPE="$3"
     CHANGED_KNOWN="$4"
-    CHANGED_PATHS="$5"
+    CHANGED_PATHS="$(cat "$stage/changed-paths")" || return 1
     echo "Rust checks build in ${CARGO_TARGET_DIR:-$dir/target}."
     plan_rust_tests "$dir"
     run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
@@ -799,7 +801,7 @@ run_leased_stage() {
         for name in ${FAILED[@]+"${FAILED[@]}"}; do
             printf 'failed\t%s\n' "$name"
         done
-    } >"$results"
+    } >"$stage/results"
 }
 
 cargo_in() {
