@@ -6,8 +6,10 @@
 # Recipes that build Rust run under `scripts/target-pool run`, which leases a
 # warm target dir from the pool every worktree of the repo shares, under the
 # main checkout's target/pool, and holds it until the command exits. A
-# CARGO_TARGET_DIR you set is used as it is. CONTRIBUTING.md, "Build dirs", has
-# the details.
+# CARGO_TARGET_DIR you set is used as it is. `build` and `release` copy the
+# binary to target/<profile>/residuum before the lease ends, and `serve` and
+# `run` start it from there, so a running hub holds no pool dir.
+# CONTRIBUTING.md, "Build dirs", has the details.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -28,17 +30,17 @@ hooks:
 
 # --- run ---------------------------------------------------------------------
 
-# Start the hub in the foreground; extra args go to `residuum serve`. It holds a build dir from the pool while the hub runs
+# Start the hub in the foreground from a debug build (as `just build` leaves it at target/debug/residuum); extra args go to `residuum serve`
 [group('run')]
 [positional-arguments]
-serve *args: _web-dist
-    scripts/target-pool run -- cargo run -- serve --foreground "$@"
+serve *args: build
+    target/debug/residuum serve --foreground "$@"
 
-# Run any residuum subcommand, e.g. `just run logs --watch`. It holds a build dir from the pool while the command runs
+# Run any residuum subcommand from a debug build (as `just build` leaves it at target/debug/residuum), e.g. `just run logs --watch`
 [group('run')]
 [positional-arguments]
-run *args: _web-dist
-    scripts/target-pool run -- cargo run -- "$@"
+run *args: build
+    target/debug/residuum "$@"
 
 # --- docker ------------------------------------------------------------------
 
@@ -61,15 +63,15 @@ docker-compose *args:
 
 # --- rust --------------------------------------------------------------------
 
-# Debug build
+# Debug build; the binary is copied out of the pool dir to target/debug/residuum
 [group('rust')]
 build: _web-dist
-    scripts/target-pool run -- cargo build
+    scripts/target-pool run -- scripts/build-binary.sh debug
 
-# Release build; always rebuilds the web assets, since the binary embeds them
+# Release build, with the binary copied out of the pool dir to target/release/residuum; always rebuilds the web assets, since the binary embeds them
 [group('rust')]
 release: web-build
-    scripts/target-pool run -- cargo build --release
+    scripts/target-pool run -- scripts/build-binary.sh release
 
 # Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test logging::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
@@ -387,10 +389,11 @@ stress-issues-test:
 loc *args:
     scripts/loc.sh "$@"
 
-# Remove this checkout's build output, target/ and web/dist; in the main checkout target/ holds the build-dir pool every worktree shares, so this empties the pool too. The next cargo recipe rebuilds web/dist on its own
+# Remove build output: everything in this checkout's target/ except the build-dir pool, web/dist, and the contents of every pool dir no build holds (`scripts/target-pool clean`; a dir in use is named and left alone). Plain `cargo clean` in the main checkout deletes the pool under running builds. The next cargo recipe rebuilds web/dist on its own
 [group('misc')]
 clean:
-    cargo clean
+    scripts/target-pool clean
+    if [ -d target ]; then find target -mindepth 1 -maxdepth 1 ! -name pool -exec rm -rf {} +; fi
     rm -rf web/dist
 
 # A web/node_modules that is a symlink borrows another checkout's copy, as a worktree's link to the main
