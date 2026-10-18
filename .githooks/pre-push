@@ -45,37 +45,34 @@ CHECKOUT_HEAD="$(git rev-parse HEAD)"
 # they run in, including a temporary worktree, so it runs without them (the
 # reasoning is in .githooks/pre-commit).
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
-# The target directory every check that builds uses, set per pushed commit
-# below. A commit checked in place builds into the checkout's own target
-# directory (CARGO_TARGET_DIR when set, else target/), so the push reuses the
-# crate artifacts the checkout's cargo runs already left there. A commit checked
-# in a temporary tree builds into target/pre-push, which keeps the detached tree
-# from replacing the artifacts a cargo run in the checkout depends on.
-# target/pre-push keeps its own builds from push to push, and the stable tree
-# (target/pre-push/tree) keeps the modification times of unchanged files, which
-# is what lets Cargo reuse those builds.
-PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
+# Where the Rust checks build. Every Rust check of a pushed commit that builds
+# (clippy, the tests, the generated-types check) runs in one build dir leased
+# from the repository's pool of warm target dirs, <main checkout>/target/pool,
+# through scripts/target-pool. The hook runs those checks as a second
+# invocation of itself under `scripts/target-pool run`, so they share one lease
+# and no other build takes the dir between them. The pool prefers to hand a
+# tree the dir it used last, keyed on the tree's path, when that dir is free, so
+# the checkout and the stable tree (target/pre-push/tree) each keep building warm; the stable tree also keeps
+# the modification times of unchanged files, which is what lets Cargo reuse its
+# build. A commit checked in place honours a CARGO_TARGET_DIR the caller set, in
+# which case target-pool leases nothing. A commit checked in another tree
+# always leases, so a check of another commit never builds in the caller's dir.
+# Two pushes at once lease different dirs. The hook works the same with no
+# cargo wrapper on PATH: the pool is this repository's own copy of the script.
 STABLE_DIR="$REPO_ROOT/target/pre-push"
 STABLE_TREE="$STABLE_DIR/tree"
 STABLE_LOCK="$STABLE_DIR/tree.lock"
 # The commit web/dist was last built from in the stable tree.
 DIST_COMMIT_FILE="$STABLE_DIR/tree-dist-commit"
-
-# Git passes one line per pushed ref on stdin. Read them all up front: the
-# checks below run tools that would otherwise read the rest of it.
-PUSHED_REFS=()
-while IFS= read -r line || [ -n "$line" ]; do
-    PUSHED_REFS+=("$line")
-done
-
-# MAIN_KNOWN: some copy of origin/main exists. A new branch's changes are
-# measured against it, since a new branch has no remote commit to measure from.
-MAIN_KNOWN=0
-# A fetch that can't reach the remote must not hang on a credential prompt.
-if ! GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/main:$MAIN_REF"; then
-    note "WARNING: couldn't fetch main from origin; a new branch is measured against the last origin/main this checkout fetched."
-fi
-git rev-parse --verify --quiet "$MAIN_REF" >/dev/null && MAIN_KNOWN=1
+# This hook's own path, for the leased invocation, and the lease script from the
+# same checkout, which may be newer than the tree being checked.
+HOOK_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
+TARGET_POOL="$(cd "$(dirname "$HOOK_PATH")/.." && pwd -P)/scripts/target-pool"
+# The first argument that makes this hook run one commit's Rust checks in the
+# build dir target-pool leased, instead of checking a push (run_leased_stage).
+LEASED_STAGE_ARG="--rust-checks-in-lease"
+# 1 while the commit being checked is the checkout itself.
+IN_PLACE=0
 
 # Which parts of the tree the commits being pushed change. The range starts at
 # what the remote already has, or for a new branch where it left main. With
@@ -159,6 +156,9 @@ TAKEOVER_CLAIM=""
 TREE_NAME=""
 TEST_LOG=""
 TS_EXPORT_DIR=""
+# The scratch directory that hands the leased Rust checks their changed paths
+# and takes back their results (run_rust_checks_in_lease).
+STAGE_DIR=""
 cleanup_test_scratch() {
     if [ -n "$TEST_LOG" ]; then
         rm -f "$TEST_LOG"
@@ -171,6 +171,10 @@ cleanup_test_scratch() {
 }
 cleanup() {
     cleanup_test_scratch
+    if [ -n "$STAGE_DIR" ]; then
+        rm -rf "$STAGE_DIR"
+        STAGE_DIR=""
+    fi
     # Unlink the borrowed node_modules first so nothing below can reach
     # through it into this checkout's copy.
     if [ -n "$TEMP_TREE" ] && [ -L "$TEMP_TREE/web/node_modules" ]; then
@@ -626,7 +630,7 @@ run_cargo_test() {
     shift
     TEST_LOG="$(mktemp)" || return 1
     TS_EXPORT_DIR="$(mktemp -d)" || return 1
-    (cd "$dir" && RESIDUUM_TS_EXPORT_DIR="$TS_EXPORT_DIR" CARGO_TARGET_DIR="$PRE_PUSH_TARGET_DIR" cargo test --quiet --no-fail-fast "$@") 2>&1 | tee "$TEST_LOG" || result=1
+    (cd "$dir" && RESIDUUM_TS_EXPORT_DIR="$TS_EXPORT_DIR" cargo test --quiet --no-fail-fast "$@") 2>&1 | tee "$TEST_LOG" || result=1
     if [ "$result" -ne 0 ] && grep -qE '^(---- |    )testing::source_scan::' "$TEST_LOG"; then
         echo -e "${RED}ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\").${NC}" >&2
     fi
@@ -639,7 +643,7 @@ run_cargo_test() {
 # index, so a push that changes Rust has to carry the regenerated files, and the
 # checkout's own files and index are left as they are.
 generated_types_check() {
-    (cd "$1" && CARGO_TARGET_DIR="$PRE_PUSH_TARGET_DIR" scripts/check-generated-types.sh) && return 0
+    (cd "$1" && scripts/check-generated-types.sh) && return 0
     echo -e "${RED}ERROR: web/src/lib/generated is out of date with the Rust types. Run 'just types', stage the result, and commit again.${NC}" >&2
     return 1
 }
@@ -722,6 +726,59 @@ run_rust_checks() {
         echo -e "${RED}FAILED: building web/dist, which the Rust build needs. Skipping the Rust checks.${NC}" >&2
         return
     }
+    run_rust_checks_in_lease "$dir"
+}
+
+# Runs the Rust checks that build for the tree $1 in a build dir leased from
+# the pool: this hook again, as `<hook> --rust-checks-in-lease`, under
+# `scripts/target-pool run`, from the tree, so the pool's choice of dir follows
+# the tree. The changed paths go to it in a file, since a large push's list can
+# be longer than one command-line argument may be, and it writes one line per
+# check to a results file, which this reads into PASSED and FAILED.
+run_rust_checks_in_lease() {
+    local dir="$1" status=0 kind name
+    if ! STAGE_DIR="$(mktemp -d)" || ! printf '%s' "$CHANGED_PATHS" >"$STAGE_DIR/changed-paths"; then
+        FAILED+=("${CHECK_SCOPE}Rust checks (no scratch directory)")
+        echo -e "${RED}FAILED: couldn't create a scratch directory for the Rust checks' changed paths and results. Skipping the Rust checks.${NC}" >&2
+        return
+    fi
+    (
+        cd "$dir" || exit 1
+        # A check of a commit other than the checkout builds only in a leased dir.
+        if [ "$IN_PLACE" = 0 ]; then
+            unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_BUILD_BUILD_DIR
+        fi
+        exec "$TARGET_POOL" run -- "$HOOK_PATH" "$LEASED_STAGE_ARG" "$STAGE_DIR" "$dir" "$CHECK_SCOPE" "$CHANGED_KNOWN"
+    ) </dev/null || status=$?
+    if [ -f "$STAGE_DIR/results" ]; then
+        while IFS=$'\t' read -r kind name; do
+            case "$kind" in
+            passed) PASSED+=("$name") ;;
+            failed) FAILED+=("$name") ;;
+            esac
+        done <"$STAGE_DIR/results"
+    fi
+    # A missing scripts/target-pool lands here too, with the shell's own line
+    # above naming it.
+    if [ "$status" -ne 0 ] || [ ! -s "$STAGE_DIR/results" ]; then
+        FAILED+=("${CHECK_SCOPE}Rust checks (did not finish)")
+        echo -e "${RED}FAILED: the Rust checks stopped before they finished (exit $status); the lines above say why. 'scripts/target-pool status' lists the pool's build dirs and who holds them.${NC}" >&2
+    fi
+    rm -rf "$STAGE_DIR"
+    STAGE_DIR=""
+}
+
+# The leased invocation: plans and runs the Rust checks that build, in the tree
+# it was started in, with CARGO_TARGET_DIR set by target-pool (or by the caller,
+# or unset when the pool is turned off), and writes each result to the results
+# file. Arguments: the scratch directory, which holds changed-paths and gets
+# results; the tree; the check scope; and CHANGED_KNOWN of the commit.
+run_leased_stage() {
+    local stage="$1" dir="$2" name
+    CHECK_SCOPE="$3"
+    CHANGED_KNOWN="$4"
+    CHANGED_PATHS="$(cat "$stage/changed-paths")" || return 1
+    echo "Rust checks build in ${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-$dir/target}}${CARGO_BUILD_BUILD_DIR:+ (intermediates in $CARGO_BUILD_BUILD_DIR)}."
     plan_rust_tests "$dir"
     run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
     run_check "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
@@ -735,12 +792,20 @@ run_rust_checks() {
         run_check "integration tests (changed)" run_cargo_test "$dir" "${INTEGRATION_ARGS[@]}"
     fi
     run_check "generated types" generated_types_check "$dir"
+    {
+        for name in ${PASSED[@]+"${PASSED[@]}"}; do
+            printf 'passed\t%s\n' "$name"
+        done
+        for name in ${FAILED[@]+"${FAILED[@]}"}; do
+            printf 'failed\t%s\n' "$name"
+        done
+    } >"$stage/results"
 }
 
 cargo_in() {
     local dir="$1"
     shift
-    (cd "$dir" && CARGO_TARGET_DIR="$PRE_PUSH_TARGET_DIR" cargo "$@")
+    (cd "$dir" && cargo "$@")
 }
 
 # The web tests that import a changed web file (`vitest related`). CI runs the
@@ -799,6 +864,28 @@ run_web_checks() {
     run_check "web tests (Vitest, changed files)" web_tests "$dir"
 }
 
+if [ "${1:-}" = "$LEASED_STAGE_ARG" ]; then
+    shift
+    run_leased_stage "$@"
+    exit
+fi
+
+# Git passes one line per pushed ref on stdin. Read them all up front: the
+# checks below run tools that would otherwise read the rest of it.
+PUSHED_REFS=()
+while IFS= read -r line || [ -n "$line" ]; do
+    PUSHED_REFS+=("$line")
+done
+
+# MAIN_KNOWN: some copy of origin/main exists. A new branch's changes are
+# measured against it, since a new branch has no remote commit to measure from.
+MAIN_KNOWN=0
+# A fetch that can't reach the remote must not hang on a credential prompt.
+if ! GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/main:$MAIN_REF"; then
+    note "WARNING: couldn't fetch main from origin; a new branch is measured against the last origin/main this checkout fetched."
+fi
+git rev-parse --verify --quiet "$MAIN_REF" >/dev/null && MAIN_KNOWN=1
+
 PUSHED_COMMITS=0
 for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
     read -r _ local_sha _ _ <<<"$line"
@@ -836,9 +923,10 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
     # a file the author forgot to add compiles here and fails everywhere else.
     if [ "$local_sha" = "$CHECKOUT_HEAD" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
         dir="$REPO_ROOT"
-        PRE_PUSH_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+        IN_PLACE=1
         echo -e "${BOLD}Checking $local_ref in place.${NC}"
     else
+        IN_PLACE=0
         if ! prepare_worktree "$local_sha"; then
             cleanup
             FAILED+=("${CHECK_SCOPE}temporary worktree")
@@ -846,7 +934,6 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
             continue
         fi
         dir="$TEMP_TREE"
-        PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
         echo -e "${BOLD}Checking $local_ref in $TREE_NAME.${NC}"
     fi
 
