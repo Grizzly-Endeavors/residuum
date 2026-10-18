@@ -2,6 +2,12 @@
 #
 # Every recipe wraps a command you can run by hand (see CONTRIBUTING.md), so
 # nothing here is required to build or contribute.
+#
+# Recipes that build Rust run under `scripts/target-pool run`, which leases a
+# warm target dir from the pool every worktree of the repo shares, under the
+# main checkout's target/pool, and holds it until the command exits. A
+# CARGO_TARGET_DIR you set is used as it is. CONTRIBUTING.md, "Build dirs", has
+# the details.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -22,17 +28,17 @@ hooks:
 
 # --- run ---------------------------------------------------------------------
 
-# Start the hub in the foreground; extra args go to `residuum serve`
+# Start the hub in the foreground; extra args go to `residuum serve`. It holds a build dir from the pool while the hub runs
 [group('run')]
 [positional-arguments]
 serve *args: _web-dist
-    cargo run -- serve --foreground "$@"
+    scripts/target-pool run -- cargo run -- serve --foreground "$@"
 
-# Run any residuum subcommand, e.g. `just run logs --watch`
+# Run any residuum subcommand, e.g. `just run logs --watch`. It holds a build dir from the pool while the command runs
 [group('run')]
 [positional-arguments]
 run *args: _web-dist
-    cargo run -- "$@"
+    scripts/target-pool run -- cargo run -- "$@"
 
 # --- docker ------------------------------------------------------------------
 
@@ -58,12 +64,12 @@ docker-compose *args:
 # Debug build
 [group('rust')]
 build: _web-dist
-    cargo build
+    scripts/target-pool run -- cargo build
 
 # Release build; always rebuilds the web assets, since the binary embeds them
 [group('rust')]
 release: web-build
-    cargo build --release
+    scripts/target-pool run -- cargo build --release
 
 # Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test logging::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
@@ -93,7 +99,7 @@ test *args: _web-dist
             fi
         fi
     fi
-    cargo test --quiet --no-fail-fast "${cargo_args[@]}" 2>&1 | tee "$log"
+    scripts/target-pool run -- cargo test --quiet --no-fail-fast "${cargo_args[@]}" 2>&1 | tee "$log"
     status="${PIPESTATUS[0]}"
     if [ "$status" -eq 0 ]; then scripts/test-filters.sh check test "$log" -- "$@"; fi
     exit "$status"
@@ -102,9 +108,9 @@ test *args: _web-dist
 [group('rust')]
 [positional-arguments]
 test-crate crate *args:
-    cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
+    scripts/target-pool run -- cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
 
-# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress logging::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`, which skips the web build. A note on stderr says when a filter names a member crate; a warning says when no test matched
+# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress logging::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`, which skips the web build. The copies run the same test binaries, built once in one build dir from the pool, which the run holds until it ends. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]
 stress *args:
@@ -134,7 +140,7 @@ stress *args:
         {{ quote(just_executable()) }} _web-dist || exit "$?"
     fi
     scripts/test-filters.sh note stress "$@"
-    scripts/stress-tests.sh "$@"
+    scripts/target-pool run -- scripts/stress-tests.sh "$@"
     status="$?"
     if [ "$status" -eq 0 ]; then scripts/test-filters.sh check stress target/stress/*/*.log -- "$@"; fi
     exit "$status"
@@ -142,27 +148,27 @@ stress *args:
 # Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker, without the web build
 [group('rust')]
 pebble:
-    cargo test --quiet -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
+    scripts/target-pool run -- cargo test --quiet -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
 
 # Regenerate the TypeScript protocol types in web/src/lib/generated from the Rust types; the files are replaced only if the export succeeds
 [group('rust')]
 types: _web-dist
-    scripts/update-generated-types.sh
+    scripts/target-pool run -- scripts/update-generated-types.sh
 
 # Regenerate the TypeScript types from scratch and fail if they differ from the index, as CI does (stage regenerated files first)
 [group('rust')]
 types-check: _web-dist
-    scripts/check-generated-types.sh
+    scripts/target-pool run -- scripts/check-generated-types.sh
 
 # Clippy with warnings denied, exactly as the pre-push hook runs it
 [group('rust')]
 clippy: _web-dist
-    cargo clippy --all-targets --all-features -- -D warnings
+    scripts/target-pool run -- cargo clippy --all-targets --all-features -- -D warnings
 
 # Build the rustdoc of every package, private items included, with rustdoc warnings denied, so broken intra-doc links fail, exactly as CI runs it
 [group('rust')]
 doc: _web-dist
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
+    RUSTDOCFLAGS="-D warnings" scripts/target-pool run -- cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Format Rust code
 [group('rust')]
@@ -184,7 +190,7 @@ deny:
 [group('rust')]
 cross-clippy target="x86_64-pc-windows-gnu": _web-dist
     rustup target add {{ target }}
-    cargo clippy --target {{ target }} --all-targets --all-features -- -D warnings
+    scripts/target-pool run -- cargo clippy --target {{ target }} --all-targets --all-features -- -D warnings
 
 # Lint every cross-compile target CI covers
 [group('rust')]
@@ -381,7 +387,7 @@ stress-issues-test:
 loc *args:
     scripts/loc.sh "$@"
 
-# Remove build output; the next cargo recipe rebuilds web/dist on its own
+# Remove this checkout's build output, target/ and web/dist; in the main checkout target/ holds the build-dir pool every worktree shares, so this empties the pool too. The next cargo recipe rebuilds web/dist on its own
 [group('misc')]
 clean:
     cargo clean
