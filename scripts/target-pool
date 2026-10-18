@@ -2,18 +2,29 @@
 # target-pool: run a command with CARGO_TARGET_DIR leased from a small pool of
 # warm target dirs shared by every worktree of a git repo.
 #
-#   target-pool run [--] <command> [args...]
+#   target-pool run [-C <dir>] [--manifest-path <path>] [--] <command> [args...]
 #   target-pool status
 #   target-pool path
+#   target-pool clean
 #
 # Environment:
 #   TARGET_POOL_SIZE     number of build dirs in the pool (default 4)
 #   TARGET_POOL_CAP_GB   empty a build dir after a run that leaves it above this size (default 40)
 #   TARGET_POOL_DISABLE  set to 1 to make `run` a plain pass-through
 #
-# `run` also passes straight through when CARGO_TARGET_DIR or CARGO_BUILD_BUILD_DIR is
-# set (a build dir set outside the pool would be shared by every lease), and outside a
-# git work tree.
+# `run` also passes straight through when CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR or
+# CARGO_BUILD_BUILD_DIR is set (a dir chosen outside the pool would be shared by every
+# lease), and outside a git work tree.
+#
+# `run -C <dir>` and `run --manifest-path <path>` name the project the command builds,
+# the way cargo's options of those names do: the command acts as if started in <dir>,
+# and its workspace is the one whose manifest is <path> (relative to <dir> when -C is
+# given too). The repo, the pool, the worktree the lease is recorded for, and the
+# workspace whose fingerprints a hand-off clears then come from that project instead
+# of the current dir. Pass the same values the command itself gets.
+#
+# The flock lock lives on fd 9 of the target-pool process (bash 3.2 has no `{fd}>`), so
+# an fd 9 the caller passed in is replaced, and the command runs with fd 9 closed.
 #
 # On-disk layout and lock protocol. Every copy of this script must keep to it,
 # because copies vendored into different repos share one pool:
@@ -54,6 +65,11 @@ usage() {
 usage: target-pool run [--] <command> [args...]   run a command with a leased CARGO_TARGET_DIR
        target-pool status                         show each build dir, its size and holder
        target-pool path                           print this repo's pool dir
+       target-pool clean                          empty every build dir not in use
+
+run options (before the command; give the same values the command gets):
+  -C <dir>                 the dir the command acts in, as cargo's -C
+  --manifest-path <path>   the manifest the command builds, as cargo's --manifest-path
 EOF
 }
 
@@ -61,13 +77,21 @@ EOF
 
 physical_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 
-# Sets worktree_root, pool_root and locks_dir; fails outside a git work tree.
+parent_of() {
+	case $1 in
+		*/*) printf '%s\n' "${1%/*}" ;;
+		*) printf '.\n' ;;
+	esac
+}
+
+# Sets worktree_root, pool_root and locks_dir for the repo that holds dir $1; fails
+# outside a git work tree.
 locate_pool() {
-	local out top common main
-	out=$(git rev-parse --show-toplevel --git-common-dir 2>/dev/null) || return 1
+	local dir=$1 out top common main
+	out=$(cd "$dir" 2>/dev/null && git rev-parse --show-toplevel --git-common-dir 2>/dev/null) || return 1
 	top=${out%%$'\n'*}
 	common=${out#*$'\n'}
-	case $common in /*) ;; *) common=$PWD/$common ;; esac
+	case $common in /*) ;; *) common=$dir/$common ;; esac
 	worktree_root=$(physical_dir "$top") || return 1
 	common=$(physical_dir "$common") || return 1
 	case $common in
@@ -176,7 +200,7 @@ try_lock_slot() {
 	local slot=$1
 	case $lock_impl in
 		flock)
-			exec 9>>"$locks_dir/$slot.flock" || return 1
+			{ exec 9>>"$locks_dir/$slot.flock"; } 2>/dev/null || return 1
 			if ! flock -n 9; then
 				exec 9>&-
 				return 1
@@ -202,14 +226,26 @@ try_lock_slot() {
 	leased_slot=$slot
 }
 
+file_names_this_process() { [ "$(cat "$1" 2>/dev/null)" = "$$" ]; }
+
+# A pool deleted while this run held a slot is recreated by the next run, which can
+# then take the same slot, so release removes only lock files that still name this
+# process.
 release_lease() {
 	[ -n "$leased_slot" ] || return 0
+	local held=${locks_dir:?}/${leased_slot:?}
 	case $lock_impl in
 		flock)
-			rm -f "$locks_dir/$leased_slot.holder"
+			if file_names_this_process "$held.holder"; then
+				rm -f "$held.holder"
+			fi
 			exec 9>&-
 			;;
-		mkdir) rm -rf "$locks_dir/$leased_slot.lockdir" ;;
+		mkdir)
+			if file_names_this_process "$held.lockdir/pid"; then
+				rm -rf "$held.lockdir"
+			fi
+			;;
 	esac
 	leased_slot=
 }
@@ -262,14 +298,26 @@ candidate_slots() {
 	done | sort -k1,1n -k2,2n -k3,3n | awk '{ print $3 }'
 }
 
+# "1 build dir" or "N build dirs".
+count_dirs() {
+	if [ "$1" -eq 1 ]; then printf '1 build dir'; else printf '%s build dirs' "$1"; fi
+}
+
 lease_slot() {
 	local slot announced=
 	while :; do
+		# The pool can be deleted while a run waits (`cargo clean` in the main checkout),
+		# so each pass recreates the lock dir before trying the slots.
+		ensure_pool
 		for slot in $(candidate_slots); do
 			try_lock_slot "$slot" && return 0
 		done
 		if [ -z "$announced" ]; then
-			say "all $pool_size build dirs in $pool_root are in use; waiting for one to free up (run 'target-pool status' to see who holds them, or raise TARGET_POOL_SIZE)"
+			if [ "$pool_size" -eq 1 ]; then
+				say "the only build dir in $pool_root is in use; waiting for it to free up (run 'target-pool status' to see who holds it, or raise TARGET_POOL_SIZE)"
+			else
+				say "all $pool_size build dirs in $pool_root are in use; waiting for one to free up (run 'target-pool status' to see who holds them, or raise TARGET_POOL_SIZE)"
+			fi
 			announced=1
 		fi
 		sleep "$poll_seconds"
@@ -318,7 +366,12 @@ prepare_handed_off_slot() {
 	[ -n "$last_worktree" ] && [ "$last_worktree" != "$worktree_root" ] || return 0
 	[ -n "$(ls -A "$dir" 2>/dev/null)" ] || return 0
 
-	if metadata=$(cargo metadata --no-deps --format-version 1 --offline </dev/null 2>/dev/null); then
+	# Metadata describes the workspace the command builds: the one in its -C dir, or the
+	# one its --manifest-path names, resolved from that dir as cargo resolves it.
+	if metadata=$(
+		cd "$command_dir" &&
+			cargo metadata --no-deps --format-version 1 --offline ${manifest_path:+--manifest-path "$manifest_path"} </dev/null 2>/dev/null 9>&-
+	); then
 		names=$(workspace_member_names "$metadata")
 	fi
 	for fingerprints in "$dir"/*/.fingerprint "$dir"/*/*/.fingerprint; do
@@ -425,35 +478,83 @@ format_size() {
 
 dir_size_kb() { du -sk "$1" 2>/dev/null | awk '{ print $1 }'; }
 
+empty_dir() { rm -rf "${1:?}" && mkdir -p "$1"; }
+
 enforce_size_cap() {
 	local dir=$pool_root/$leased_slot used_kb
+	# The command may have removed the dir itself (`target-pool run -- cargo clean`).
+	[ -d "$dir" ] || return 0
 	used_kb=$(dir_size_kb "$dir")
 	if [ -z "$used_kb" ]; then
 		say "couldn't measure the size of build dir $dir, so the size cap was not checked"
 		return
 	fi
 	[ "$used_kb" -gt "$cap_kb" ] || return 0
-	if rm -rf "$dir" && mkdir -p "$dir"; then
+	if empty_dir "$dir"; then
 		say "build dir $dir reached $(format_size "$used_kb"), over the $(format_size "$cap_kb") cap (TARGET_POOL_CAP_GB); emptied it, so its next build starts cold"
 	else
 		say "build dir $dir reached $(format_size "$used_kb"), over the $(format_size "$cap_kb") cap (TARGET_POOL_CAP_GB), and couldn't be emptied; delete its contents by hand"
 	fi
 }
 
+# Sets command_dir (where the command acts: its -C dir, else the current dir) and
+# project_dir (the dir of the manifest it builds), resolved the way cargo resolves them.
+resolve_project() {
+	command_dir=$PWD
+	case $change_dir in
+		'') ;;
+		/*) command_dir=$change_dir ;;
+		*) command_dir=$PWD/$change_dir ;;
+	esac
+	project_dir=$command_dir
+	case $manifest_path in
+		'') ;;
+		/*) project_dir=$(parent_of "$manifest_path") ;;
+		*) project_dir=$(parent_of "$command_dir/$manifest_path") ;;
+	esac
+	project_dir=${project_dir:-/}
+}
+
 cmd_run() {
-	[ "${1:-}" = -- ] && shift
+	change_dir=
+	manifest_path=
+	while [ $# -gt 0 ]; do
+		case $1 in
+			--)
+				shift
+				break
+				;;
+			-C | --manifest-path)
+				if [ $# -lt 2 ]; then
+					usage
+					exit 2
+				fi
+				case $1 in -C) change_dir=$2 ;; *) manifest_path=$2 ;; esac
+				shift 2
+				;;
+			--manifest-path=*)
+				manifest_path=${1#--manifest-path=}
+				shift
+				;;
+			*) break ;;
+		esac
+	done
 	if [ $# -eq 0 ]; then
 		usage
 		exit 2
 	fi
-	if pool_disabled || [ -n "${CARGO_TARGET_DIR:-}" ] || [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then
+	if pool_disabled || [ -n "${CARGO_TARGET_DIR:-}" ] || [ -n "${CARGO_BUILD_TARGET_DIR:-}" ] ||
+		[ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then
 		exec "$@"
 	fi
 	if ! command -v git >/dev/null 2>&1; then
 		say "git is not on PATH, so no build dir was leased; running with the default target dir"
 		exec "$@"
 	fi
-	locate_pool || exec "$@"
+	resolve_project
+	# Outside a repo, or when the -C or manifest dir doesn't exist, the command runs as
+	# given and reports any error itself.
+	locate_pool "$project_dir" || exec "$@"
 	load_settings
 	ensure_pool
 
@@ -474,9 +575,9 @@ cmd_run() {
 # --- status and path ---------------------------------------------------------------
 
 cmd_status() {
-	locate_pool || die "not inside a git work tree; run 'target-pool status' from a checkout or worktree of the repo"
+	locate_pool "$PWD" || die "not inside a git work tree; run 'target-pool status' from a checkout or worktree of the repo"
 	load_settings
-	printf 'pool %s: %s build dirs, %s locks, cap %s\n' "$pool_root" "$pool_size" "$lock_impl" "$(format_size "$cap_kb")"
+	printf 'pool %s: %s, %s locks, cap %s\n' "$pool_root" "$(count_dirs "$pool_size")" "$lock_impl" "$(format_size "$cap_kb")"
 	if [ ! -d "$pool_root" ]; then
 		printf '  no build dirs yet\n'
 		return 0
@@ -497,8 +598,49 @@ cmd_status() {
 }
 
 cmd_path() {
-	locate_pool || die "not inside a git work tree; run 'target-pool path' from a checkout or worktree of the repo"
+	locate_pool "$PWD" || die "not inside a git work tree; run 'target-pool path' from a checkout or worktree of the repo"
 	printf '%s\n' "$pool_root"
+}
+
+# Empties every build dir that is free right now, holding its lease while it does, and
+# names the leased ones it skipped. Lock and bookkeeping files under .locks stay.
+cmd_clean() {
+	locate_pool "$PWD" || die "not inside a git work tree; run 'target-pool clean' from a checkout or worktree of the repo"
+	load_settings
+	if [ ! -d "$pool_root" ]; then
+		printf 'pool %s has no build dirs yet; nothing to clean\n' "$pool_root"
+		return 0
+	fi
+	ensure_pool
+	leased_slot=
+	trap release_lease EXIT
+	local slot dir used_kb holder emptied=0 skipped=0 next=0
+	while [ "$next" -lt "$pool_size" ] || [ -d "$pool_root/$next" ]; do
+		slot=$next
+		next=$((next + 1))
+		dir=$pool_root/$slot
+		[ -d "$dir" ] || continue
+		if ! try_lock_slot "$slot"; then
+			holder=$(slot_holder "$slot") || holder='?'
+			printf 'skipped build dir %s: leased by pid %s; run target-pool clean again once that build finishes\n' "$dir" "$holder"
+			skipped=$((skipped + 1))
+			continue
+		fi
+		if [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+			used_kb=$(dir_size_kb "$dir")
+			if empty_dir "$dir"; then
+				printf 'emptied build dir %s (%s)\n' "$dir" "$(format_size "${used_kb:-0}")"
+				emptied=$((emptied + 1))
+			else
+				say "couldn't empty build dir $dir; delete its contents by hand"
+			fi
+		fi
+		release_lease
+	done
+	if [ "$emptied" -eq 0 ] && [ "$skipped" -eq 0 ]; then
+		printf 'every build dir in %s is already empty\n' "$pool_root"
+	fi
+	return 0
 }
 
 case ${1:-} in
@@ -508,6 +650,7 @@ case ${1:-} in
 		;;
 	status) cmd_status ;;
 	path) cmd_path ;;
+	clean) cmd_clean ;;
 	-h | --help | help) usage ;;
 	*)
 		usage
