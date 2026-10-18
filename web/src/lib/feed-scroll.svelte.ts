@@ -12,13 +12,14 @@
 // partway up the conversation while the feed counts them as following.
 //
 // The scroller makes its glides itself, one position a frame, rather than with
-// the browser's smooth scroll. Script can neither see where a smooth scroll is
-// going nor reliably stop it: seen in Chromium, an instant scroll to where the
-// position already was left Home's glide running, so the start of End's glide
-// carried on up and read as the reader leaving; and a smooth scroll went on
-// moving after an instant scroll elsewhere. Each frame of a glide is a position
-// the scroller sets and records, a new glide or any other move of its own ends
-// the one under way, and End's glide aims at the end as it is on each frame.
+// the browser's smooth scroll. Script can't see where a smooth scroll is going
+// or reliably stop it: in Chromium, a smooth scroll keeps moving after an
+// instant scroll to where it is or elsewhere, and a smooth scroll started while
+// another runs carries the first one's speed. Each frame of a glide is a
+// position the scroller sets and records, a new glide or any other move of its
+// own ends the one under way, and End's glide aims at the end as it is on each
+// frame. A glide to the end that the reader stops short leaves them where it
+// stopped, no longer following.
 //
 // Leaving is the reader's doing, and takes effect at once: a wheel or key that
 // scrolls the feed up, or the scroll position moving up by any amount. How far
@@ -54,19 +55,27 @@ const READER_INPUT_EVENTS = ["wheel", "touchstart", "pointerdown"] as const;
 /** Keys that scroll a focused scrolling area up, whatever modifier is held with them. */
 const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 
-/**
- * How long a glide takes: longer the further it goes, as the browser's own
- * smooth scroll does, and never longer than the cap.
- */
+/** The shortest a glide takes. */
 const GLIDE_MIN_MS = 150;
+/** What each further pixel of distance adds, by its square root, so long glides don't drag. */
 const GLIDE_MS_PER_ROOT_PX = 8;
+/** The longest a glide takes, however far it goes. */
 const GLIDE_MAX_MS = 600;
 
+/** How long a glide over `distance` pixels takes: longer the further it goes, up to the cap. */
 function glideDuration(distance: number): number {
   return Math.min(GLIDE_MAX_MS, GLIDE_MIN_MS + Math.sqrt(distance) * GLIDE_MS_PER_ROOT_PX);
 }
 
-/** Off at once and slowing into the end, as the app's other motion eases (`--ease-out`). */
+/** The frame a glide's first frame counts as already having moved for, so the glide moves at once. */
+const FRAME_MS = 1000 / 60;
+
+/**
+ * A cubic ease-out: off at once and slowing into the end, the shape of the
+ * app's `--ease-out`, not its exact curve. That token is a CSS timing
+ * function; a glide is scripted a frame at a time, and the cubic needs no
+ * Bézier solver to get the same feel.
+ */
 function easeOut(progress: number): number {
   return 1 - (1 - progress) ** 3;
 }
@@ -289,7 +298,7 @@ export class FeedScroller {
     }
     if (from === null || Math.abs(top - from) < 1) return;
     // Someone else has the position now: a glide of the scroller's would take it back.
-    this.stopGlide();
+    this.interruptGlide();
     const up = top < from;
     if (this.held) return;
     if (up && !this.keptInRange(from, top, fromHeight)) {
@@ -390,13 +399,12 @@ export class FeedScroller {
 
   // The reader taking over the scroll ends a reload's hold on their state, and
   // any hold on the place of a control they pressed. A wheel, a touch or a
-  // press also ends a glide, as it does the browser's own smooth scroll; a key
-  // ends one only when it scrolls the feed.
+  // press also ends a glide; a key ends one only when it scrolls the feed.
   private readonly onReaderInput = (event: Event): void => {
     this.held = false;
     this.letGoOfPlace();
     if (event.type === "keydown") return;
-    this.stopGlide();
+    this.interruptGlide();
     if (event.type === "wheel" && this.wheelScrollsUp(event as WheelEvent)) this.leave();
   };
 
@@ -409,7 +417,7 @@ export class FeedScroller {
     const key = feedKey(event, el);
     if (key === null) {
       if (this.keyScrollsUp(event)) {
-        this.stopGlide();
+        this.interruptGlide();
         this.leave();
       }
       return;
@@ -629,15 +637,20 @@ export class FeedScroller {
     let start: number | null = null;
     // The frame's own time, not the page's clock: the end-to-end tests stop that clock.
     const step = (now: number): void => {
-      this.glideFrame = 0;
-      if (this.el !== el || isHidden(el)) return;
+      if (this.el !== el || isHidden(el)) {
+        this.glideFrame = 0;
+        return;
+      }
       // Moved since the last frame by someone else, whose scroll event hasn't come
-      // yet (a script in the glide's own scroll event, find in page): theirs wins.
+      // yet (a script in the glide's own scroll event, find in page): theirs wins,
+      // and taking it in ends the glide, still counted as under way until then.
       if (this.knownTop !== null && Math.abs(el.scrollTop - this.knownTop) >= 1) {
         this.takeInScroll();
         return;
       }
-      start ??= now;
+      this.glideFrame = 0;
+      // The first frame counts as one frame in, so the glide moves at once.
+      start ??= now - FRAME_MS;
       const progress = Math.min(1, (now - start) / duration);
       const to = destination();
       this.place(progress < 1 ? from + (to - from) * easeOut(progress) : to);
@@ -653,6 +666,18 @@ export class FeedScroller {
     if (this.glideFrame === 0) return;
     cancelAnimationFrame(this.glideFrame);
     this.glideFrame = 0;
+  }
+
+  /**
+   * The reader, not the scroller, ends the glide under way: a glide to the
+   * end that stops short of it leaves them where it stopped, no longer
+   * following, so new content doesn't pull them down after all.
+   */
+  private interruptGlide(): void {
+    if (this.glideFrame === 0) return;
+    this.stopGlide();
+    if (this.following && !this.nearEnd()) this.following = false;
+    this.refreshPill();
   }
 
   /** Put the reader at the true bottom, the reserved room included. */

@@ -290,17 +290,64 @@ describe("FeedScroller", () => {
     expect(feed.geometry.scrollTop).toBe(1300);
   });
 
-  it("ends a glide at a wheel, a touch or a press, as the browser's own glide ends", () => {
+  it("leaves a reader who stops End's glide short with a wheel, a touch or a press where it stopped, not following", () => {
     for (const type of ["wheel", "touchstart", "pointerdown"]) {
-      const { feed } = attached();
+      const { feed, observer, scroller } = attached();
       feed.scrollBy(0);
       feed.press({ key: "End" });
-      feed.frames(4);
+      feed.frames(3);
       const reached = feed.geometry.scrollTop;
+      expect(reached).toBeLessThan(1500 - 120);
       feed.fire(type, { deltaY: 10, deltaX: 0 });
       feed.finishGlide();
       expect(feed.geometry.scrollTop).toBe(reached);
+      expect(scroller.isFollowing).toBe(false);
+      expect(scroller.scrolledUp).toBe(true);
+      // A reply landing now leaves them where they stopped.
+      feed.geometry.scrollHeight = 2100;
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(reached);
     }
+  });
+
+  it("leaves a reader moved down short of the end during End's glide there, not following", () => {
+    const { feed, observer, scroller } = attached();
+    feed.scrollBy(0);
+    feed.press({ key: "End" });
+    feed.frames(3);
+    // A scrollbar drag or find in page moves them on down, still well short of the end.
+    const moved = feed.geometry.scrollTop + 100;
+    expect(moved).toBeLessThan(1500 - 120);
+    feed.scrollBy(moved);
+    feed.finishGlide();
+    expect(feed.geometry.scrollTop).toBe(moved);
+    expect(scroller.isFollowing).toBe(false);
+    expect(scroller.scrolledUp).toBe(true);
+    feed.geometry.scrollHeight = 2100;
+    observer.notify();
+    expect(feed.geometry.scrollTop).toBe(moved);
+  });
+
+  it("keeps following a reader moved to near the end during End's glide", () => {
+    const { feed, observer, scroller } = attached();
+    feed.scrollBy(0);
+    feed.press({ key: "End" });
+    feed.frames(3);
+    feed.scrollBy(1500 - 60);
+    feed.finishGlide();
+    expect(scroller.isFollowing).toBe(true);
+    expect(scroller.scrolledUp).toBe(false);
+    feed.geometry.scrollHeight = 2100;
+    observer.notify();
+    expect(feed.geometry.scrollTop).toBe(2100);
+  });
+
+  it("moves on the glide's first frame", () => {
+    const { feed } = attached();
+    feed.scrollBy(0);
+    feed.press({ key: "End" });
+    feed.frames(1);
+    expect(feed.geometry.scrollTop).toBeGreaterThan(0);
   });
 
   it("leaves Home and End with a modifier, and other keys, to the browser", () => {
