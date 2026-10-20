@@ -4,16 +4,18 @@ use super::types::SkillFrontmatter;
 
 /// Description length above which loading the skill raises a user notice.
 ///
-/// `skill-authoring` doctrine (see `docs/systems-usage/skills.md`) asks
-/// authors to keep descriptions under ~60 characters so the skill index
-/// stays scannable. There is no hard cap: a longer description still loads
-/// and the skill still activates, since a skill someone actually wrote is
-/// more valuable than one silently dropped over a wire-format concern. This
-/// threshold only decides when to surface the recurring per-turn token cost
-/// of a long description — every activated skill's description is
-/// concatenated into the `<available_skills>` block sent on every turn (see
+/// This is separate from the authoring target: `skill-authoring` doctrine
+/// (see `docs/systems-usage/skills.md`) asks authors to keep descriptions
+/// under ~60 characters so the skill index stays scannable, but the notice
+/// only fires far above that, once a description is genuinely expensive.
+/// There is no hard cap: a longer description still loads and the skill still
+/// activates, since a skill someone actually wrote is more valuable than one
+/// silently dropped over a wire-format concern. This threshold only decides
+/// when to surface the recurring per-turn token cost of a long description —
+/// every activated skill's description is concatenated into the
+/// `<available_skills>` block sent on every turn (see
 /// `SkillIndex::format_for_prompt`).
-pub(super) const NOTICE_DESCRIPTION_LEN: usize = 280;
+pub(super) const NOTICE_DESCRIPTION_LEN: usize = 1024;
 
 /// Rough characters-per-token estimate for English prose, used only to give
 /// the oversized-description notice an approximate (not exact) token cost.
@@ -192,11 +194,11 @@ mod tests {
 
     #[test]
     fn parse_skill_description_too_long_accepted() {
-        let long_description = "a".repeat(281);
+        let long_description = "a".repeat(1025);
         let content = format!("---\nname: my-skill\ndescription: \"{long_description}\"\n---\n");
         assert!(
             parse_skill_md(&content).is_ok(),
-            "description over 280 chars should still parse and load; there is no cap"
+            "description over 1024 chars should still parse and load; there is no cap"
         );
     }
 
@@ -306,13 +308,13 @@ mod tests {
 
     #[test]
     fn description_exactly_notice_len_accepted() {
-        let description = "a".repeat(280);
+        let description = "a".repeat(1024);
         assert!(validate_skill_description(&description).is_ok());
     }
 
     #[test]
     fn description_too_long_still_accepted() {
-        let description = "a".repeat(281);
+        let description = "a".repeat(1025);
         assert!(
             validate_skill_description(&description).is_ok(),
             "there is no length cap on skill descriptions"
@@ -323,17 +325,17 @@ mod tests {
 
     #[test]
     fn oversized_description_notice_none_under_threshold() {
-        assert!(oversized_description_notice("my-skill", &"a".repeat(280)).is_none());
+        assert!(oversized_description_notice("my-skill", &"a".repeat(1024)).is_none());
     }
 
     #[test]
     fn oversized_description_notice_names_skill_and_length() {
-        let description = "a".repeat(281);
+        let description = "a".repeat(1025);
         let notice = oversized_description_notice("my-skill", &description)
             .expect("over-threshold description should produce a notice");
         assert!(notice.contains("my-skill"), "notice should name the skill");
         assert!(
-            notice.contains("281"),
+            notice.contains("1025"),
             "notice should include the description length"
         );
         assert!(
@@ -356,7 +358,7 @@ mod tests {
         // No length cap: the skill still loads (see
         // description_too_long_still_accepted below), so this is a warning
         // naming the per-turn cost, not an error.
-        let long_description = "a".repeat(281);
+        let long_description = "a".repeat(1025);
         let content = format!("---\nname: my-skill\ndescription: \"{long_description}\"\n---\n");
         let diagnostics = diagnose_skill_md(&content);
         assert_eq!(diagnostics.len(), 1);
@@ -365,7 +367,7 @@ mod tests {
             diagnostic.severity,
             residuum_core::diagnostics::Severity::Warning
         );
-        assert!(diagnostic.message.contains("281"));
+        assert!(diagnostic.message.contains("1025"));
         assert!(diagnostic.message.contains("my-skill"));
     }
 

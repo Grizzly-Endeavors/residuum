@@ -385,7 +385,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("verbose-skill");
         tokio::fs::create_dir(&skill_dir).await.unwrap();
-        let long_description = "a".repeat(300);
+        let long_description = "a".repeat(1100);
         tokio::fs::write(
             skill_dir.join("SKILL.md"),
             format!("---\nname: verbose-skill\ndescription: \"{long_description}\"\n---\n"),
@@ -408,7 +408,7 @@ mod tests {
         );
         let notice = index.notices().first().unwrap();
         assert!(notice.contains("verbose-skill"));
-        assert!(notice.contains("300"));
+        assert!(notice.contains("1100"));
     }
 
     #[tokio::test]
