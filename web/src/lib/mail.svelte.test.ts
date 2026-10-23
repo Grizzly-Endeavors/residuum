@@ -100,11 +100,30 @@ let sendAnswer: () => Response | Promise<Response>;
 let replyAnswer: (id: string) => Response | Promise<Response>;
 let uploadAnswer: (filename: string) => Response | Promise<Response>;
 let uploads: number;
+/** The abort signal of each upload request, in the order they were made. */
+let uploadSignals: (AbortSignal | null | undefined)[];
+
+/** An answer that rejects the way fetch does when `signal` aborts before it arrives. */
+function abortable(
+  signal: AbortSignal | null | undefined,
+  answer: Response | Promise<Response>,
+): Promise<Response> {
+  if (!signal) return Promise.resolve(answer);
+  return new Promise<Response>((resolve, reject) => {
+    const abort = (): void => {
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    void Promise.resolve(answer).then(resolve, reject);
+  });
+}
 
 beforeEach(() => {
   requests = [];
   bodies = {};
   uploads = 0;
+  uploadSignals = [];
   listAnswer = () => page([]);
   threadAnswer = () => fail(404);
   actionAnswer = () => new Response(null, { status: 204 });
@@ -123,7 +142,8 @@ beforeEach(() => {
       requests.push(line);
       if (typeof init?.body === "string") bodies[line] = JSON.parse(init.body);
       if (url.pathname === "/api/hub/uploads") {
-        return uploadAnswer(url.searchParams.get("filename") ?? "");
+        uploadSignals.push(init?.signal);
+        return abortable(init?.signal, uploadAnswer(url.searchParams.get("filename") ?? ""));
       }
       if (url.pathname === "/api/hub/mail/send") return sendAnswer();
       if (url.pathname === "/api/hub/mail/threads") return listAnswer(url);
@@ -644,6 +664,56 @@ describe("attachments", () => {
 
     expect(draft.attachments).toEqual([]);
     expect(attachment?.uploadId).toBeNull();
+  });
+
+  it("cancels the upload of an attachment removed before it finished", async () => {
+    const store = new MailStore();
+    const draft = store.openNewMessage();
+    const held = deferred<Response>();
+    uploadAnswer = () => held.promise;
+    draft.attach([fileOf("a.txt"), fileOf("b.txt")]);
+    const [removed, kept] = draft.attachments;
+    const [removedSignal, keptSignal] = uploadSignals;
+    expect(removedSignal?.aborted).toBe(false);
+
+    draft.removeAttachment(removed?.key ?? "");
+    await removed?.done;
+
+    expect(removedSignal?.aborted).toBe(true);
+    expect(keptSignal?.aborted).toBe(false);
+    expect(removed?.error).toBeNull();
+    expect(kept?.status).toBe("uploading");
+  });
+
+  it("cancels the uploads still running when the draft is thrown away", () => {
+    const store = new MailStore();
+    const draft = store.openNewMessage();
+    uploadAnswer = () => deferred<Response>().promise;
+    draft.attach([fileOf("a.txt")]);
+    const [signal] = uploadSignals;
+    expect(draft.attachments).toHaveLength(1);
+
+    store.discardNewMessage();
+
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("gives a retried upload a signal of its own", async () => {
+    const store = new MailStore();
+    const draft = store.openNewMessage();
+    uploadAnswer = () => fail(500);
+    draft.attach([fileOf("a.txt")]);
+    const [attachment] = draft.attachments;
+    await attachment?.done;
+    expect(attachment?.status).toBe("failed");
+
+    uploadAnswer = () => deferred<Response>().promise;
+    void draft.retryAttachment(attachment?.key ?? "");
+    draft.removeAttachment(attachment?.key ?? "");
+
+    expect(uploadSignals).toHaveLength(2);
+    expect(uploadSignals[0]).not.toBe(uploadSignals[1]);
+    expect(uploadSignals[1]?.aborted).toBe(true);
   });
 });
 

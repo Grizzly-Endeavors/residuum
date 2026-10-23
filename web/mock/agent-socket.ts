@@ -99,6 +99,11 @@ const VERBOSE_ONLY_FRAMES: ReadonlySet<ServerMessage["type"]> = new Set([
   "session_tool_result",
 ]);
 
+/** Whether the upgrade request asks for a connection that only watches files, which the agent doesn't count as a client. */
+function isWatchOnly(req: IncomingMessage): boolean {
+  return new URL(req.url ?? "/", "http://mock.invalid").searchParams.get("watch_only") === "true";
+}
+
 /**
  * Open an agent's WebSocket, `/api/agents/{name}/ws`, on the HTTP server. It
  * refuses connections with `409` while the agent isn't running. The agent's
@@ -110,8 +115,12 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   const chat = createChatSimulator(hub, agent);
   const journal = new MockTurnJournal(() => hub.env.clock.iso());
   const verbose = new WeakSet<WebSocket>();
-  /** The sockets opened through the artifacts origin. A workbench page isn't the user reading the chat, so they don't count as clients. */
-  const throughArtifactsOrigin = new WeakSet<WebSocket>();
+  /**
+   * The sockets that aren't the user reading the chat, so they don't count as
+   * clients: those opened through the artifacts origin (a workbench page) and
+   * those that ask to only watch files (`?watch_only=true`).
+   */
+  const notClients = new WeakSet<WebSocket>();
   /** What each page watches (`watch_workspace`); a page that never asked watches nothing. */
   const watching = new WeakMap<WebSocket, WatchSet>();
 
@@ -142,7 +151,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   agent.receiveMessage = chat.receive;
   state.messageMain = chat.receiveFromSession;
   agent.connectedClients = () =>
-    [...wss.clients].filter((client) => !throughArtifactsOrigin.has(client)).length;
+    [...wss.clients].filter((client) => !notClients.has(client)).length;
   agent.dispose = () => {
     stopRouting();
     state.dropSockets();
@@ -252,8 +261,8 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   }
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
-    if (arrivedThroughArtifactsOrigin(req)) {
-      throughArtifactsOrigin.add(ws);
+    if (arrivedThroughArtifactsOrigin(req) || isWatchOnly(req)) {
+      notClients.add(ws);
     } else {
       // Opening the agent's socket is what shows its messages.
       hub.clearUnread(agent);

@@ -58,10 +58,7 @@ import type {
   DeletedAgentListResponse,
   RestoreAgentRequest,
   AgentPatch,
-  HubInboxItem,
-  HubInboxPage,
   HubStatusResponse,
-  InboxStatus,
   MailFolder,
   MailMessage,
   MailThread,
@@ -1392,7 +1389,7 @@ async function patchAgent(name: string, patch: Partial<AgentPatch>): Promise<Age
   });
 }
 
-// ── Team overview, team events and the cross-agent inbox ────────────
+// ── Team overview and team events ───────────────────────────────────
 
 /** `?a=1&b=2` from the parameters that are set, or `""` when none are. */
 function queryString(params: Record<string, string | number | undefined>): string {
@@ -1418,49 +1415,6 @@ export async function fetchTeamEvents(
   query: { before?: number; after?: number; limit?: number } = {},
 ): Promise<TeamEventPage> {
   return apiFetch<TeamEventPage>(hubPath(`/events${queryString(query)}`));
-}
-
-/**
- * One page of every agent's user inbox, newest first: the active items by
- * default, one agent's with `agent`, the page after a `next_cursor` with
- * `before`. Throws `ApiError`.
- */
-export async function fetchHubInbox(
-  query: { status?: InboxStatus; agent?: string; before?: string; limit?: number } = {},
-): Promise<HubInboxPage> {
-  return apiFetch<HubInboxPage>(hubPath(`/inbox${queryString(query)}`));
-}
-
-/** The hub's route for one item of `agent`'s user inbox, followed by `action`. */
-function hubInboxItemPath(agent: string, id: string, action: string): string {
-  return hubPath(`/inbox/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/${action}`);
-}
-
-/**
- * Mark an item read, whether it is in the inbox or the archive, and get it
- * back. Throws `ApiError`.
- */
-export async function markHubInboxItemRead(agent: string, id: string): Promise<HubInboxItem> {
-  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "read"), {
-    method: "PUT",
-  });
-  return item;
-}
-
-/** Move an item from the inbox to the archive. Throws `ApiError`. */
-export async function archiveHubInboxItem(agent: string, id: string): Promise<HubInboxItem> {
-  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "archive"), {
-    method: "POST",
-  });
-  return item;
-}
-
-/** Move an archived item back to the inbox. Throws `ApiError`. */
-export async function restoreHubInboxItem(agent: string, id: string): Promise<HubInboxItem> {
-  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "restore"), {
-    method: "POST",
-  });
-  return item;
 }
 
 // ── Mail ────────────────────────────────────────────────────────────

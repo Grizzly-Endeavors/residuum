@@ -772,27 +772,3 @@ export type FeedItem =
   | ToolGroupFeedItem
   | FileAttachmentFeedItem
   | LocalSystemFeedItem;
-
-// ── User Inbox ───────────────────────────────────────────────────────
-
-// Field names match the JSON wire format as-is (snake_case), consistent with
-// the rest of UserInboxItem below — this endpoint doesn't go through the
-// camelCase mapping step that ServerMessage-derived feed items do.
-export interface UserInboxAttachment {
-  filename: string;
-  mime_type: string;
-  size: number;
-  url: string;
-}
-
-export interface UserInboxItem {
-  id: string;
-  title: string;
-  body: string;
-  source: string;
-  timestamp: string;
-  read: boolean;
-  attachments: UserInboxAttachment[];
-  /** The ref (`<agent>/<user|agent>/<id>`) of the message this one answers; absent for a message that starts a thread. */
-  in_reply_to?: string;
-}

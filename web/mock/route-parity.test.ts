@@ -264,13 +264,6 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   setAgentAutostart: [(a) => a.setAgentAutostart("scout", false)],
   fetchOverview: [(a) => a.fetchOverview()],
   fetchTeamEvents: [(a) => a.fetchTeamEvents(), (a) => a.fetchTeamEvents({ after: 3, limit: 20 })],
-  fetchHubInbox: [
-    (a) => a.fetchHubInbox(),
-    (a) => a.fetchHubInbox({ status: "archived", agent: "scout", before: "1:scout:x", limit: 5 }),
-  ],
-  markHubInboxItemRead: [(a) => a.markHubInboxItemRead("scout", "item-1")],
-  archiveHubInboxItem: [(a) => a.archiveHubInboxItem("scout", "item-1")],
-  restoreHubInboxItem: [(a) => a.restoreHubInboxItem("scout", "item-1")],
   fetchMailThreads: [
     (a) => a.fetchMailThreads({ folder: "inbox" }),
     (a) =>

@@ -26,7 +26,12 @@ function agent(name: string, state: AgentState): AgentSummary {
 }
 
 function socketsOf(name: string): FakeWebSocket[] {
-  return FakeWebSocket.sockets.filter((s) => s.url.endsWith(`/api/agents/${name}/ws`));
+  return FakeWebSocket.sockets.filter((s) => new URL(s.url).pathname === `/api/agents/${name}/ws`);
+}
+
+/** The `watch_only` parameter a socket was opened with. */
+function watchOnlyOf(socket: FakeWebSocket): string | null {
+  return new URL(socket.url).searchParams.get("watch_only");
 }
 
 function watchFrames(socket: FakeWebSocket): unknown[] {
@@ -124,6 +129,20 @@ describe("following an agent's workspace", () => {
     expect(heard.resyncs).toEqual(["lagged"]);
     own.simulateMessage({ type: "workspace_watch_unavailable", message: "Live updates are off." });
     expect(heard.unavailable).toEqual(["Live updates are off."]);
+  });
+
+  it("asks the agent not to count its own connection as an open client, which the bound socket still is", async () => {
+    setViewedAgent("atlas");
+    const bound = FakeWebSocket.last;
+    bound.simulateOpen();
+    follow("scout").set(["notes/a.md"]);
+    await settle();
+
+    const [own] = socketsOf("scout");
+    expect(own).toBeDefined();
+    if (own === undefined) return;
+    expect(watchOnlyOf(own)).toBe("true");
+    expect(watchOnlyOf(bound)).toBeNull();
   });
 
   it("keeps the bound agent's socket free of the other agent's watch", async () => {

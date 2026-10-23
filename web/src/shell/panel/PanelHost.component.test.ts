@@ -59,7 +59,7 @@ function summary(name: string, state: AgentState): AgentSummary {
 
 /** The connection the page opened to `agent` for following its files, if any. */
 function socketOf(agent: string): FakeWebSocket | undefined {
-  return FakeWebSocket.sockets.find((s) => s.url.endsWith(`/api/agents/${agent}/ws`));
+  return FakeWebSocket.sockets.find((s) => new URL(s.url).pathname === `/api/agents/${agent}/ws`);
 }
 
 /** Move the app to `place` with `panel` open, as the router would. */

@@ -15,12 +15,13 @@
 //   runs. A stopped agent has no change feed to follow, and its files are
 //   still read and written through the hub's file routes.
 //
-// The agent counts such a connection as an open page: while it is up, the
-// agent's unread count stays at zero and a reply to the user is not pushed.
+// The connection asks to be left out of the agent's count of open pages
+// (`?watch_only=true`), so a watched agent's unread count and its pushes carry
+// on as if no page were watching it.
 
 import { untrack } from "svelte";
 import { hub } from "./hub.svelte";
-import { agentWsUrl } from "./paths";
+import { agentWatchWsUrl } from "./paths";
 import { WsTransport } from "./transport.svelte";
 import { WatchRegistry, type WatchHandler, type WatchOwner } from "./watch-registry";
 import { normalizeWatchPrefix } from "./workspace-watch";
@@ -36,7 +37,7 @@ class AgentWatchConnection {
   private readonly stopFollowing: () => void;
 
   constructor(private readonly agent: string) {
-    this.transport = new WsTransport({ url: () => agentWsUrl(agent), keepalive: true });
+    this.transport = new WsTransport({ url: () => agentWatchWsUrl(agent), keepalive: true });
     this.registry = new WatchRegistry({
       send: (prefixes) => {
         this.transport.send({ type: "watch_workspace", prefixes });

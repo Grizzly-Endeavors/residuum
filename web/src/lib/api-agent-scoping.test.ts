@@ -220,26 +220,6 @@ const AREAS: Record<string, Row[]> = {
   ],
   inbox: [
     [
-      "markHubInboxItemRead",
-      (a) => api.markHubInboxItemRead(a, "i1"),
-      "PUT /api/hub/inbox/{agent}/i1/read",
-    ],
-    [
-      "archiveHubInboxItem",
-      (a) => api.archiveHubInboxItem(a, "i1"),
-      "POST /api/hub/inbox/{agent}/i1/archive",
-    ],
-    [
-      "restoreHubInboxItem",
-      (a) => api.restoreHubInboxItem(a, "i1"),
-      "POST /api/hub/inbox/{agent}/i1/restore",
-    ],
-    [
-      "fetchHubInbox",
-      (a) => api.fetchHubInbox({ agent: a, status: "archived" }),
-      "GET /api/hub/inbox?agent={agent}&status=archived",
-    ],
-    [
       "fetchMailThreads",
       (a) => api.fetchMailThreads({ folder: "sent", agent: a }),
       "GET /api/hub/mail/threads?folder=sent&agent={agent}",

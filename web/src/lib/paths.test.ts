@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentPath,
+  agentWatchWsUrl,
   agentWsUrl,
   hubPath,
   hubWsUrl,
@@ -61,6 +62,12 @@ describe("base path helpers", () => {
   it("builds the WebSocket URLs", () => {
     expect(agentWsUrl("scout")).toBe("ws://localhost:7700/api/agents/scout/ws");
     expect(hubWsUrl()).toBe("ws://localhost:7700/api/hub/ws");
+  });
+
+  it("marks a watch-only agent connection", () => {
+    expect(agentWatchWsUrl("scout")).toBe(
+      "ws://localhost:7700/api/agents/scout/ws?watch_only=true",
+    );
   });
 
   it("uses wss over https", () => {
@@ -192,21 +199,6 @@ describe("api functions use the contract paths", () => {
       "fetchOutboundA2aTasks",
       () => api.fetchOutboundA2aTasks("scout"),
       "GET /api/agents/scout/a2a/outbound",
-    ],
-    [
-      "markHubInboxItemRead",
-      () => api.markHubInboxItemRead("scout", "i"),
-      "PUT /api/hub/inbox/scout/i/read",
-    ],
-    [
-      "archiveHubInboxItem",
-      () => api.archiveHubInboxItem("scout", "i"),
-      "POST /api/hub/inbox/scout/i/archive",
-    ],
-    [
-      "restoreHubInboxItem",
-      () => api.restoreHubInboxItem("scout", "i"),
-      "POST /api/hub/inbox/scout/i/restore",
     ],
     [
       "fetchSessions",
