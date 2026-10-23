@@ -488,10 +488,16 @@ export function correctForAgents(
     note(place.agent);
     place = HOME;
   } else if (place.kind === "inbox") {
-    let { agent, compose } = place;
+    let { agent, compose, thread } = place;
     if (agent !== null && !known.has(agent)) {
       note(agent);
       agent = null;
+    }
+    // A ref's first segment is the agent whose inbox holds the message.
+    const threadAgent = thread?.split("/")[0];
+    if (threadAgent !== undefined && !known.has(threadAgent)) {
+      note(threadAgent);
+      thread = null;
     }
     if (compose !== null) {
       const to = compose.to.filter((name) => {
@@ -500,7 +506,7 @@ export function correctForAgents(
       });
       if (to.length !== compose.to.length) compose = { to };
     }
-    place = { ...place, agent, compose };
+    place = { ...place, agent, compose, thread };
   }
   const panelAgent = panel?.kind === "session" || panel?.kind === "file" ? panel.agent : null;
   if (panelAgent !== null && !known.has(panelAgent)) {
