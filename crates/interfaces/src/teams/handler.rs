@@ -7,9 +7,10 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 
 use residuum_bus::origin::{ConversationContext, MessageOrigin};
-use residuum_inference::{ImageData, MessageSender};
+use residuum_inference::{ImageData, MessageAttachment, MessageSender};
 use residuum_workspace::inbox::attachment::{
-    AttachmentInfo, AttachmentKind, format_failed_attachment_line, reserve_attachment_item,
+    AttachmentInfo, AttachmentKind, FinalizedAttachment, format_failed_attachment_line,
+    reserve_attachment_item,
 };
 
 use super::TeamsRuntime;
@@ -324,7 +325,16 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming, is_owner: bool)
         text: mut content,
     } = incoming;
 
-    let images = collect_attachments(rt, &activity.attachments, &mut content, &sender_name).await;
+    let mut images: Vec<ImageData> = Vec::new();
+    let mut attachments: Vec<MessageAttachment> = Vec::new();
+    for finalized in
+        collect_attachments(rt, &activity.attachments, &mut content, &sender_name).await
+    {
+        if let Some(image) = finalized.image {
+            images.push(image);
+        }
+        attachments.push(finalized.attachment);
+    }
     if content.trim().is_empty() && images.is_empty() {
         tracing::debug!(conversation = %reference.label, "teams message had no content, dropping");
         return;
@@ -367,6 +377,7 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming, is_owner: bool)
         },
         timestamp: residuum_core::time::now_local(rt.tz),
         images,
+        attachments,
         context: background,
     };
     if let Err(e) = rt
@@ -420,15 +431,15 @@ fn shared_file_names(attachments: &[Attachment]) -> String {
     }
 }
 
-/// Download files and inline images into the inbox, appending a line per
-/// attachment to `content` and returning images to show the model.
+/// Download files into the inbox, appending a line per attachment to `content`,
+/// and return what each saved file adds to the message.
 async fn collect_attachments(
     rt: &TeamsRuntime,
     attachments: &[Attachment],
     content: &mut String,
     sender_name: &str,
-) -> Vec<ImageData> {
-    let mut images = Vec::new();
+) -> Vec<FinalizedAttachment> {
+    let mut finalized = Vec::new();
     for attachment in attachments {
         let (url, filename, needs_bot_token) = if attachment.content_type == FILE_DOWNLOAD_INFO {
             let Some(url) = attachment
@@ -492,9 +503,7 @@ async fn collect_attachments(
         };
         match saved {
             Ok(saved) => {
-                if let Some(image) = item.finalize(&saved, &info, content, sender_name).await {
-                    images.push(image);
-                }
+                finalized.push(item.finalize(&saved, &info, content, sender_name).await);
             }
             Err(reason) => {
                 item.discard().await;
@@ -504,7 +513,7 @@ async fn collect_attachments(
             }
         }
     }
-    images
+    finalized
 }
 
 async fn fetch_public(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {

@@ -10,7 +10,7 @@ use crate::attachment::FileAttachment;
 use crate::origin::MessageOrigin;
 use crate::types::{SessionAddress, SkillName};
 use residuum_config::ModelSelector;
-use residuum_inference::{ImageData, Message, MessageSender};
+use residuum_inference::{ImageData, Message, MessageAttachment, MessageSender};
 use residuum_memory::types::Visibility;
 
 // ---------------------------------------------------------------------------
@@ -158,6 +158,8 @@ pub struct MessageEvent {
     pub timestamp: NaiveDateTime,
     /// Inline images attached to the message.
     pub images: Vec<ImageData>,
+    /// Files that came with the message, each saved as a companion agent-inbox item.
+    pub attachments: Vec<MessageAttachment>,
     /// Earlier conversation the sender's interface supplies as background
     /// (e.g. group chat messages leading up to an @mention).
     pub context: Option<String>,
@@ -183,6 +185,7 @@ impl MessageEvent {
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: Vec::new(),
+            attachments: Vec::new(),
             context: None,
         }
     }
@@ -202,11 +205,12 @@ impl MessageEvent {
     /// message itself.
     #[must_use]
     pub fn into_history_messages(self) -> Vec<Message> {
-        let user = if self.images.is_empty() {
+        let mut user = if self.images.is_empty() {
             Message::user(self.content)
         } else {
             Message::user_with_images(self.content, self.images)
         };
+        user.attachments = self.attachments;
         self.context
             .map(|context| Message::system(context).as_context())
             .into_iter()
@@ -1097,6 +1101,8 @@ pub enum MainConversationEvent {
         content: String,
         /// Images attached to it.
         images: Vec<ImageData>,
+        /// Files attached to it, each saved as a companion agent-inbox item.
+        attachments: Vec<MessageAttachment>,
         /// The person who sent it, for interfaces that identify one.
         sender: Option<MessageSender>,
         /// The agent that sent it, for a teammate's or a session's message;
@@ -1210,6 +1216,7 @@ impl MainConversationEvent {
             turn_id: turn_id.to_owned(),
             content: message.content.clone(),
             images: message.images.clone(),
+            attachments: message.attachments.clone(),
             sender: message.origin.sender.clone(),
             agent_sender: agent_sender.cloned(),
             endpoint: message.origin.endpoint.clone(),
@@ -1626,6 +1633,7 @@ mod tests {
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
+            attachments: vec![],
             context: context.map(str::to_string),
         }
     }
@@ -1666,6 +1674,24 @@ mod tests {
             user.agent_sender.as_ref().map(|a| a.address.as_str()),
             Some("spawned-a")
         );
+    }
+
+    #[test]
+    fn attachments_are_carried_on_the_user_message() {
+        let attachment = residuum_inference::MessageAttachment {
+            item_id: "item-1".to_string(),
+            filename: "notes.md".to_string(),
+            size: 12,
+            content_type: "text/markdown".to_string(),
+            path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+        };
+        let mut message = inbound(None);
+        message.attachments = vec![attachment.clone()];
+        let messages = message.into_history_messages();
+        let [user] = messages.as_slice() else {
+            panic!("expected a single user message, got {messages:?}");
+        };
+        assert_eq!(user.attachments, vec![attachment]);
     }
 
     #[test]

@@ -296,6 +296,7 @@ async fn run_test_turn_loop(
                 turn_id: reply_id.clone(),
                 content: inbound.content.clone(),
                 images: Vec::new(),
+                attachments: Vec::new(),
                 sender: None,
                 agent_sender: None,
                 endpoint: ep.to_string(),

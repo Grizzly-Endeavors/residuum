@@ -335,6 +335,7 @@ fn person_message(id: &str, endpoint: &str) -> MessageEvent {
         },
         timestamp: chrono::Utc::now().naive_utc(),
         images: Vec::new(),
+        attachments: Vec::new(),
         context: None,
     }
 }

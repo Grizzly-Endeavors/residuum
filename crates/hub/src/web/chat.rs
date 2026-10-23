@@ -1,5 +1,7 @@
 //! Chat history and session-usage HTTP handlers.
 
+use std::path::Path;
+
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
@@ -8,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use residuum_agent::usage::load_session_usage_totals;
 use residuum_bus::usage::SessionUsageTotals;
+use residuum_config::WorkspaceLayout;
 use residuum_inference::{Message, readable_thinking};
 use residuum_memory::episode_store::{older_main_episode_id, read_episode_jsonl};
 use residuum_memory::recent_messages::{RecentMessage, load_recent_messages};
@@ -117,7 +120,7 @@ pub(super) async fn api_chat_history(
     match params.episode {
         None => {
             let recent_path = memory_dir.join("recent_messages.json");
-            let messages = load_recent_messages(&recent_path).await.map_err(|err| {
+            let recent = load_recent_messages(&recent_path).await.map_err(|err| {
                 tracing::warn!(
                     error = %err,
                     path = %recent_path.display(),
@@ -125,6 +128,9 @@ pub(super) async fn api_chat_history(
                 );
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+            let mut messages: Vec<HistoryMessage> =
+                recent.into_iter().map(HistoryMessage::from).collect();
+            refresh_attachment_paths(&state.workspace_dir, &mut messages).await;
             let next_cursor = older_main_episode_id(&episodes_dir, None)
                 .await
                 .map_err(|err| {
@@ -136,7 +142,7 @@ pub(super) async fn api_chat_history(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
             Ok(Json(ChatHistorySegment::Recent {
-                messages: messages.into_iter().map(HistoryMessage::from).collect(),
+                messages,
                 next_cursor,
             }))
         }
@@ -167,10 +173,11 @@ pub(super) async fn api_chat_history(
             }
 
             let timestamp = meta.date.and_hms_opt(0, 0, 0).unwrap_or_default();
-            let messages = raw_messages
+            let mut messages: Vec<HistoryMessage> = raw_messages
                 .into_iter()
                 .map(|message| HistoryMessage::from(wrap_episode_message(message, timestamp)))
                 .collect();
+            refresh_attachment_paths(&state.workspace_dir, &mut messages).await;
 
             let next_cursor = older_main_episode_id(&episodes_dir, Some(&meta.id))
                 .await
@@ -225,6 +232,52 @@ fn wrap_episode_message(message: Message, timestamp: chrono::NaiveDateTime) -> R
     }
 }
 
+/// Point each attachment at its archived file when the file has moved.
+///
+/// Archiving an inbox item moves its attachment directory into the archive, so
+/// an attachment recorded at `inbox/agent/attachments/<id>/<name>` is then only
+/// at `archive/inbox/agent/attachments/<id>/<name>`. An attachment whose file is
+/// still at its recorded path, or is in neither place, keeps the recorded path.
+async fn refresh_attachment_paths(workspace_dir: &Path, messages: &mut [HistoryMessage]) {
+    let archive_root = WorkspaceLayout::new(workspace_dir).agent_inbox_archive_attachments_dir();
+    for history in messages {
+        for attachment in &mut history.message.attachments {
+            if file_exists(&workspace_dir.join(&attachment.path)).await {
+                continue;
+            }
+            let archived = archive_root
+                .join(&attachment.item_id)
+                .join(&attachment.filename);
+            if !file_exists(&archived).await {
+                continue;
+            }
+            let Ok(relative) = archived.strip_prefix(workspace_dir) else {
+                continue;
+            };
+            attachment.path = relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+        }
+    }
+}
+
+/// Whether `path` exists as a file. A failed lookup is logged and reads as absent.
+async fn file_exists(path: &Path) -> bool {
+    match tokio::fs::try_exists(path).await {
+        Ok(exists) => exists,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                path = %path.display(),
+                "failed to check an attachment's location",
+            );
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,
@@ -234,7 +287,7 @@ mod tests {
     use axum::extract::{Query, State};
 
     use super::*;
-    use residuum_inference::ThinkingBlock;
+    use residuum_inference::{MessageAttachment, ThinkingBlock};
     use residuum_memory::recent_messages::append_recent_messages;
 
     /// An assistant message whose reasoning the provider needs replayed:
@@ -359,6 +412,82 @@ mod tests {
             history.message.thinking.is_empty(),
             "expected {:?} to be empty",
             history.message.thinking
+        );
+    }
+
+    /// A user message that came with one saved file, recorded at `path`.
+    fn message_with_attachment(path: &str) -> HistoryMessage {
+        let mut message = Message::user("see attached");
+        message.attachments = vec![MessageAttachment {
+            item_id: "item-1".to_string(),
+            filename: "notes.md".to_string(),
+            size: 7,
+            content_type: "text/markdown".to_string(),
+            path: path.to_string(),
+        }];
+        HistoryMessage::from(RecentMessage {
+            message,
+            timestamp: chrono::NaiveDateTime::default(),
+            visibility: Visibility::User,
+            turn_id: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn archived_attachment_path_points_at_the_archived_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let archived = dir
+            .path()
+            .join("archive/inbox/agent/attachments/item-1/notes.md");
+        tokio::fs::create_dir_all(archived.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&archived, b"# notes").await.unwrap();
+        let mut messages = vec![message_with_attachment(
+            "inbox/agent/attachments/item-1/notes.md",
+        )];
+
+        refresh_attachment_paths(dir.path(), &mut messages).await;
+
+        assert_eq!(
+            messages[0].message.attachments[0].path,
+            "archive/inbox/agent/attachments/item-1/notes.md",
+            "an archived item's attachment should point at its archived file"
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_still_in_the_inbox_keeps_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let active = dir.path().join("inbox/agent/attachments/item-1/notes.md");
+        tokio::fs::create_dir_all(active.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&active, b"# notes").await.unwrap();
+        let mut messages = vec![message_with_attachment(
+            "inbox/agent/attachments/item-1/notes.md",
+        )];
+
+        refresh_attachment_paths(dir.path(), &mut messages).await;
+
+        assert_eq!(
+            messages[0].message.attachments[0].path,
+            "inbox/agent/attachments/item-1/notes.md",
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_missing_everywhere_keeps_its_recorded_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut messages = vec![message_with_attachment(
+            "inbox/agent/attachments/item-1/notes.md",
+        )];
+
+        refresh_attachment_paths(dir.path(), &mut messages).await;
+
+        assert_eq!(
+            messages[0].message.attachments[0].path, "inbox/agent/attachments/item-1/notes.md",
+            "a file found nowhere keeps the path it was recorded with"
         );
     }
 }
