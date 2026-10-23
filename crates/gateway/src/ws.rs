@@ -1346,15 +1346,26 @@ mod tests {
         // bus does.
         state.publisher = residuum_bus::Publisher::noop();
 
-        let mut local = handle_on_connection(
+        let (local_tx, mut local) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let keep_going = handle_client_message(
             ClientMessage::SendMessage {
                 id: "chat-4".into(),
                 content: "photo".into(),
                 attachments: vec![photo_id.clone()],
             },
             &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
         )
         .await;
+        // A failed publish ends the connection after the refusal is sent.
+        assert!(!keep_going, "a failed publish closes the connection");
 
         let reply = next_server_message(&mut local).await;
         assert!(
