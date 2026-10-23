@@ -940,7 +940,7 @@ impl RemoteTaskTracker {
         let item = match self.reserve_artifact(&info).await {
             Ok(item) => item,
             Err(e) => {
-                write!(body, "\n\n[Artifact: {filename} — failed to save: {e}]").ok();
+                Self::note_failed_artifact(body, agent, &filename, "save", &e);
                 return;
             }
         };
@@ -952,7 +952,7 @@ impl RemoteTaskTracker {
             }
             Err(e) => {
                 item.discard().await;
-                write!(body, "\n\n[Artifact: {filename} — failed to save: {e}]").ok();
+                Self::note_failed_artifact(body, agent, &filename, "save", &e);
             }
         }
     }
@@ -974,7 +974,7 @@ impl RemoteTaskTracker {
         let item = match self.reserve_artifact(&info).await {
             Ok(item) => item,
             Err(e) => {
-                write!(body, "\n\n[Artifact: {filename} — failed to download: {e}]").ok();
+                Self::note_failed_artifact(body, agent, &filename, "download", &e);
                 return;
             }
         };
@@ -986,9 +986,32 @@ impl RemoteTaskTracker {
             }
             Err(e) => {
                 item.discard().await;
-                write!(body, "\n\n[Artifact: {filename} — failed to download: {e}]").ok();
+                Self::note_failed_artifact(body, agent, &filename, "download", &e);
             }
         }
+    }
+
+    /// Name an artifact that failed to `action` ("save" or "download") in the
+    /// message body, and log why it failed.
+    fn note_failed_artifact(
+        body: &mut String,
+        agent: &str,
+        filename: &str,
+        action: &str,
+        reason: &str,
+    ) {
+        tracing::warn!(
+            agent = %agent,
+            filename = %filename,
+            action,
+            error = %reason,
+            "failed to store a2a artifact"
+        );
+        write!(
+            body,
+            "\n\n[Artifact: {filename} — failed to {action}: {reason}]"
+        )
+        .ok();
     }
 
     /// Reserve the companion agent-inbox item for an artifact file.

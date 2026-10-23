@@ -714,7 +714,14 @@ async fn finalize_and_append(
     item.finalize(saved, info, content, "a2a caller").await
 }
 
+/// Name a failed attachment in the message and log why it failed, once for
+/// every failure path (reserve, save, download, unsupported url).
 fn append_failed_attachment(content: &mut String, info: &AttachmentInfo, reason: &str) {
+    tracing::warn!(
+        filename = %info.filename,
+        error = %reason,
+        "failed to save a2a attachment"
+    );
     content.push('\n');
     content.push_str(&attachment::format_failed_attachment_line(info, reason));
 }
