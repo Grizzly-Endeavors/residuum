@@ -42,7 +42,7 @@
     /** Focus left the composer. */
     onleave?: () => void;
     onpaste?: (event: ClipboardEvent) => void;
-    /** Lines above the message box, such as attached images. */
+    /** Lines above the message box, such as attached files. */
     above?: Snippet;
     /** The bar's tools, given the `/` menu's button to place among them. */
     tools?: Snippet<[Snippet]>;

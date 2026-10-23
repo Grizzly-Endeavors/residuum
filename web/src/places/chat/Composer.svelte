@@ -2,26 +2,22 @@
   import { untrack } from "svelte";
   import ComposerFrame, { type ComposerMenu } from "../../composer/ComposerFrame.svelte";
   import { actionRegistry, commandActions } from "../../lib/action-registry.svelte";
-  import {
-    readDraft,
-    readDraftImages,
-    saveDraft,
-    saveDraftImages,
-  } from "../../lib/composer-drafts";
+  import StagedFiles from "../../composer/StagedFiles.svelte";
+  import { draftAttachments, readDraft, saveDraft } from "../../lib/composer-drafts";
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
-  import { IMAGE_TYPES, readImages } from "../../lib/image-attachments";
   import { PressAgain } from "../../lib/press-again.svelte";
-  import type { ImageAttachment } from "../../lib/types";
+  import type { StagedAttachment } from "../../lib/staged-attachments.svelte";
   import { IconButton, overlayOpen } from "../../lib/ui";
   import ModelControl from "./ModelControl.svelte";
 
   // The chat's composer, on the frame it shares with a session's message box
-  // (`ComposerFrame`): images attached by button, paste or drop, the chat
-  // actions under `/`, the model and thinking control, and Send, which
-  // becomes Stop while a reply runs and nothing is typed. What is typed is
-  // kept per agent until it is sent. While the connection is down, what is
-  // sent waits for it.
+  // (`ComposerFrame`): files attached by button, paste or drop, each
+  // uploading at once, the chat actions under `/`, the model and thinking
+  // control, and Send, which becomes Stop while a reply runs and nothing is
+  // typed. Send waits while a file is uploading or one failed, and says so.
+  // What is typed and attached is kept per agent until it is sent. While the
+  // connection is down, what is sent waits for it.
 
   interface Props {
     agent: string;
@@ -32,26 +28,31 @@
     /** Messages waiting for the connection. */
     queued: number;
     /**
-     * A message, or a `/name text` line, to send. False when it couldn't go
-     * (a command that can't run now): the box keeps what was typed.
+     * A message, or a `/name text` line, to send, with the files attached to
+     * it, every one uploaded. False when it couldn't go (a command that can't
+     * run now): the box keeps what was typed and attached.
      */
-    onsend: (text: string, images?: ImageAttachment[]) => boolean;
+    onsend: (text: string, attachments: StagedAttachment[]) => boolean;
     onstop: () => void;
   }
 
   let { agent, replying, reconnecting, queued, onsend, onstop }: Props = $props();
 
   let text = $state(untrack(() => readDraft(agent)));
-  let images = $state<ImageAttachment[]>(untrack(() => readDraftImages(agent)));
-  let problem = $state<string | null>(null);
+  const files = untrack(() => draftAttachments(agent));
+  /** Send was pressed while a file was uploading or had failed, so the composer says why it waits. */
+  let sendHeld = $state(false);
   let frame = $state<ReturnType<typeof ComposerFrame>>();
   let filePicker = $state<HTMLInputElement>();
 
   $effect(() => {
     saveDraft(agent, text);
   });
+
+  // The reason goes once there is nothing left to wait for.
+  const heldReason = $derived(sendHeld ? files.problem : null);
   $effect(() => {
-    saveDraftImages(agent, images);
+    if (files.problem === null) sendHeld = false;
   });
 
   const menu: ComposerMenu = $derived({
@@ -88,41 +89,50 @@
     if (stopKey.press()) onstop();
   }
 
-  /** Put a message that couldn't go back in the box, ahead of anything typed since. */
-  export function restore(message: string): void {
-    text = text.trim() === "" ? message : `${message}\n\n${text}`;
+  /**
+   * Put a message that couldn't go back in the box, ahead of anything typed
+   * since, with the files it carried ahead of any attached since.
+   */
+  export function restore(message: string, attachments: readonly StagedAttachment[] = []): void {
+    if (message !== "") text = text.trim() === "" ? message : `${message}\n\n${text}`;
+    files.restore(attachments);
     frame?.focus();
   }
 
-  // ── Images ─────────────────────────────────────────────────────────
+  // ── Files ──────────────────────────────────────────────────────────
 
-  /** Attach the images among `files`, such as ones dropped on the chat; names any it can't. */
-  export async function attach(files: Iterable<File>): Promise<void> {
-    const read = await readImages(files);
-    images = [...images, ...read.images];
-    problem = read.problem;
+  /** Attach `dropped`, such as files dropped on the chat: each starts uploading at once. */
+  export function attach(dropped: Iterable<File>): void {
+    files.attach(dropped);
   }
 
   function onpaste(event: ClipboardEvent): void {
     const pasted = [...(event.clipboardData?.files ?? [])];
     if (pasted.length === 0) return;
     event.preventDefault();
-    void attach(pasted);
+    attach(pasted);
   }
 
   // ── Sending ────────────────────────────────────────────────────────
 
-  const empty = $derived(text.trim() === "" && images.length === 0);
+  const empty = $derived(text.trim() === "" && files.attachments.length === 0);
   // With nothing typed while a reply runs, Send is Stop; typing brings Send
   // back, for a message that steers the reply.
   const showStop = $derived(replying && empty);
 
   function send(): boolean {
     if (empty) return false;
-    if (!onsend(text.trim(), images.length > 0 ? images : undefined)) return false;
+    if (files.problem !== null) {
+      sendHeld = true;
+      return false;
+    }
+    const attachments = files.take();
+    if (!onsend(text.trim(), attachments)) {
+      files.restore(attachments);
+      return false;
+    }
     text = "";
-    images = [];
-    problem = null;
+    sendHeld = false;
     return true;
   }
 
@@ -155,28 +165,13 @@
     {#if reconnecting}
       <p class="composer-line" role="status"><Icon name="wifi-off" size={14} />{queuedLine}</p>
     {/if}
-    {#if problem !== null}
-      <p class="composer-line composer-problem" role="alert">{problem}</p>
-    {/if}
-    {#if images.length > 0}
-      <ul class="composer-images" aria-label="Attached images">
-        {#each images as image, index (image)}
-          <li class="composer-image">
-            <img src="data:{image.media_type};base64,{image.data}" alt="Image {index + 1}" />
-            <IconButton
-              icon="close"
-              size="sm"
-              variant="secondary"
-              label="Remove image {index + 1}"
-              onclick={() => (images = images.filter((other) => other !== image))}
-            />
-          </li>
-        {/each}
-      </ul>
+    <StagedFiles {files} />
+    {#if heldReason !== null}
+      <p class="composer-line composer-problem" role="alert">{heldReason}</p>
     {/if}
   {/snippet}
   {#snippet tools(menuButton)}
-    <IconButton icon="paperclip" label="Attach images" onclick={() => filePicker?.click()} />
+    <IconButton icon="paperclip" label="Attach files" onclick={() => filePicker?.click()} />
     {@render menuButton()}
     <ModelControl {agent} />
   {/snippet}
@@ -198,12 +193,11 @@
   <input
     bind:this={filePicker}
     type="file"
-    accept={IMAGE_TYPES.join(",")}
     multiple
     hidden
     onchange={(event) => {
       const input = event.currentTarget;
-      void attach([...(input.files ?? [])]);
+      attach([...(input.files ?? [])]);
       // The same file can be picked again.
       input.value = "";
     }}
@@ -227,31 +221,6 @@
     color: var(--color-err-text);
   }
 
-  .composer-images {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-8);
-    list-style: none;
-  }
-
-  .composer-image {
-    position: relative;
-
-    & img {
-      display: block;
-      width: 56px;
-      height: 56px;
-      border-radius: var(--corner-md);
-      object-fit: cover;
-    }
-
-    & :global(.ui-icon-button) {
-      position: absolute;
-      top: calc(-1 * var(--space-6));
-      right: calc(-1 * var(--space-6));
-    }
-  }
-
   .composer-hint {
     min-width: 0;
     overflow: hidden;
@@ -259,19 +228,5 @@
     font-size: var(--font-size-sm);
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  @media (max-width: 760px) {
-    /* A small badge on the corner, so the thumbnail stays visible; its touch area grows past it to the touch target. */
-    .composer-image :global(.ui-icon-button.ui-icon-button) {
-      width: 24px;
-      height: 24px;
-
-      &::after {
-        content: "";
-        position: absolute;
-        inset: calc((24px - var(--layout-touch-target)) / 2);
-      }
-    }
   }
 </style>

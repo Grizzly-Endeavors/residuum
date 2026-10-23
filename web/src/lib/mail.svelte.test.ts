@@ -712,11 +712,11 @@ describe("attachments", () => {
     const held = deferred<Response>();
     uploadAnswer = () => held.promise;
 
-    draft.attach([fileOf("notes.md")]);
+    draft.files.attach([fileOf("notes.md")]);
 
-    const [attachment] = draft.attachments;
+    const [attachment] = draft.files.attachments;
     expect(attachment?.status).toBe("uploading");
-    expect(draft.uploading).toBe(true);
+    expect(draft.files.uploading).toBe(true);
     expect(requests).toEqual(["POST /api/hub/uploads?filename=notes.md"]);
     held.resolve(json({ id: "upload_9", filename: "notes.md", size: 10 }));
     await attachment?.done;
@@ -728,28 +728,34 @@ describe("attachments", () => {
     const store = new MailStore();
     const draft = store.openNewMessage();
 
-    draft.attach([fileOf("huge.mov", MAX_UPLOAD_BYTES + 1), fileOf("ok.txt", MAX_UPLOAD_BYTES)]);
+    draft.files.attach([
+      fileOf("huge.mov", MAX_UPLOAD_BYTES + 1),
+      fileOf("ok.txt", MAX_UPLOAD_BYTES),
+    ]);
 
-    expect(draft.attachNotice).toBe(
+    expect(draft.files.notice).toBe(
       "huge.mov is larger than the 50 MB upload limit, so it wasn't attached.",
     );
-    expect(draft.attachments.map((a) => a.filename)).toEqual(["ok.txt"]);
+    expect(draft.files.attachments.map((a) => a.filename)).toEqual(["ok.txt"]);
     expect(requests).toEqual(["POST /api/hub/uploads?filename=ok.txt"]);
 
-    draft.attach([fileOf("a.iso", MAX_UPLOAD_BYTES + 1), fileOf("b.iso", MAX_UPLOAD_BYTES + 1)]);
-    expect(draft.attachNotice).toBe(
+    draft.files.attach([
+      fileOf("a.iso", MAX_UPLOAD_BYTES + 1),
+      fileOf("b.iso", MAX_UPLOAD_BYTES + 1),
+    ]);
+    expect(draft.files.notice).toBe(
       "a.iso and b.iso are larger than the 50 MB upload limit, so they weren't attached.",
     );
-    draft.dismissAttachNotice();
-    expect(draft.attachNotice).toBeNull();
+    draft.files.dismissNotice();
+    expect(draft.files.notice).toBeNull();
   });
 
   it("shows a failed upload, and Try again uploads it", async () => {
     const store = new MailStore();
     const draft = store.openNewMessage();
     uploadAnswer = () => fail(413);
-    draft.attach([fileOf("report.pdf")]);
-    const [attachment] = draft.attachments;
+    draft.files.attach([fileOf("report.pdf")]);
+    const [attachment] = draft.files.attachments;
     await attachment?.done;
 
     expect(attachment?.status).toBe("failed");
@@ -758,7 +764,7 @@ describe("attachments", () => {
     );
 
     uploadAnswer = () => json({ id: "upload_2", filename: "report.pdf", size: 10 });
-    await draft.retryAttachment(attachment?.key ?? "");
+    await draft.files.retry(attachment?.key ?? "");
     expect(attachment?.status).toBe("uploaded");
     expect(attachment?.error).toBeNull();
   });
@@ -768,14 +774,14 @@ describe("attachments", () => {
     const draft = store.openNewMessage();
     const held = deferred<Response>();
     uploadAnswer = () => held.promise;
-    draft.attach([fileOf("a.txt")]);
-    const [attachment] = draft.attachments;
+    draft.files.attach([fileOf("a.txt")]);
+    const [attachment] = draft.files.attachments;
 
-    draft.removeAttachment(attachment?.key ?? "");
+    draft.files.remove(attachment?.key ?? "");
     held.resolve(json({ id: "upload_1", filename: "a.txt", size: 1 }));
     await attachment?.done;
 
-    expect(draft.attachments).toEqual([]);
+    expect(draft.files.attachments).toEqual([]);
     expect(attachment?.uploadId).toBeNull();
   });
 
@@ -784,12 +790,12 @@ describe("attachments", () => {
     const draft = store.openNewMessage();
     const held = deferred<Response>();
     uploadAnswer = () => held.promise;
-    draft.attach([fileOf("a.txt"), fileOf("b.txt")]);
-    const [removed, kept] = draft.attachments;
+    draft.files.attach([fileOf("a.txt"), fileOf("b.txt")]);
+    const [removed, kept] = draft.files.attachments;
     const [removedSignal, keptSignal] = uploadSignals;
     expect(removedSignal?.aborted).toBe(false);
 
-    draft.removeAttachment(removed?.key ?? "");
+    draft.files.remove(removed?.key ?? "");
     await removed?.done;
 
     expect(removedSignal?.aborted).toBe(true);
@@ -802,9 +808,9 @@ describe("attachments", () => {
     const store = new MailStore();
     const draft = store.openNewMessage();
     uploadAnswer = () => deferred<Response>().promise;
-    draft.attach([fileOf("a.txt")]);
+    draft.files.attach([fileOf("a.txt")]);
     const [signal] = uploadSignals;
-    expect(draft.attachments).toHaveLength(1);
+    expect(draft.files.attachments).toHaveLength(1);
 
     store.discardNewMessage();
 
@@ -815,14 +821,14 @@ describe("attachments", () => {
     const store = new MailStore();
     const draft = store.openNewMessage();
     uploadAnswer = () => fail(500);
-    draft.attach([fileOf("a.txt")]);
-    const [attachment] = draft.attachments;
+    draft.files.attach([fileOf("a.txt")]);
+    const [attachment] = draft.files.attachments;
     await attachment?.done;
     expect(attachment?.status).toBe("failed");
 
     uploadAnswer = () => deferred<Response>().promise;
-    void draft.retryAttachment(attachment?.key ?? "");
-    draft.removeAttachment(attachment?.key ?? "");
+    void draft.files.retry(attachment?.key ?? "");
+    draft.files.remove(attachment?.key ?? "");
 
     expect(uploadSignals).toHaveLength(2);
     expect(uploadSignals[0]).not.toBe(uploadSignals[1]);
@@ -867,7 +873,7 @@ describe("a new message", () => {
 
     store.discardNewMessage();
     const attached = store.openNewMessage(["atlas"]);
-    attached.attach([fileOf("a.txt")]);
+    attached.files.attach([fileOf("a.txt")]);
     expect(store.openNewMessage(["scout"]).to).toEqual(["atlas", "scout"]);
   });
 
@@ -903,7 +909,7 @@ describe("a new message", () => {
     draft.body = "See attached";
     const held = deferred<Response>();
     uploadAnswer = () => held.promise;
-    draft.attach([fileOf("plan.md")]);
+    draft.files.attach([fileOf("plan.md")]);
 
     const sending = store.sendNewMessage();
     expect(draft.sending).toBe(true);
@@ -932,7 +938,7 @@ describe("a new message", () => {
     const draft = store.openNewMessage(["atlas"]);
     draft.body = "Hi";
     uploadAnswer = () => fail(500);
-    draft.attach([fileOf("log.txt")]);
+    draft.files.attach([fileOf("log.txt")]);
 
     expect(await store.sendNewMessage()).toBeNull();
 
@@ -962,13 +968,13 @@ describe("a new message", () => {
     const first = deferred<Response>();
     const second = deferred<Response>();
     uploadAnswer = (filename) => (filename === "a.txt" ? first.promise : second.promise);
-    draft.attach([fileOf("a.txt")]);
+    draft.files.attach([fileOf("a.txt")]);
 
     const sending = store.sendNewMessage();
-    draft.attach([fileOf("b.txt")]);
+    draft.files.attach([fileOf("b.txt")]);
     first.resolve(json({ id: "upload_a", filename: "a.txt", size: 1 }));
     await waitFor(() => {
-      expect(draft.attachments[0]?.status).toBe("uploaded");
+      expect(draft.files.attachments[0]?.status).toBe("uploaded");
     });
     expect(draft.sendError).toBeNull();
     expect(requests).not.toContain("POST /api/hub/mail/send");
@@ -988,7 +994,7 @@ describe("a new message", () => {
       draft.body = "Still going";
       const held = deferred<Response>();
       uploadAnswer = () => held.promise;
-      draft.attach([fileOf("plan.md")]);
+      draft.files.attach([fileOf("plan.md")]);
       const sending = store.sendNewMessage();
 
       store.discardNewMessage();
@@ -1014,7 +1020,7 @@ describe("a new message", () => {
       sendAnswer = () => fail(400, "There is no agent named 'atlas'.");
       const held = deferred<Response>();
       uploadAnswer = () => held.promise;
-      draft.attach([fileOf("a.txt")]);
+      draft.files.attach([fileOf("a.txt")]);
       const sending = store.sendNewMessage();
 
       store.discardNewMessage();
@@ -1033,7 +1039,7 @@ describe("a new message", () => {
       draft.body = "Lost?";
       const held = deferred<Response>();
       uploadAnswer = () => held.promise;
-      draft.attach([fileOf("a.txt")]);
+      draft.files.attach([fileOf("a.txt")]);
       const sending = store.sendNewMessage();
 
       store.discardNewMessage();
@@ -1052,7 +1058,7 @@ describe("a new message", () => {
       draft.body = "Going";
       const held = deferred<Response>();
       uploadAnswer = () => held.promise;
-      draft.attach([fileOf("a.txt")]);
+      draft.files.attach([fileOf("a.txt")]);
       const sending = store.sendNewMessage();
       const list = locationAt(INBOX);
 
@@ -1075,7 +1081,7 @@ describe("replies", () => {
     const draft = store.openReply;
     if (draft === null) throw new Error("no reply draft");
     draft.body = "Thanks";
-    draft.attach([fileOf("a.txt")]);
+    draft.files.attach([fileOf("a.txt")]);
 
     expect(await store.sendReply(ID)).toBe(true);
 
@@ -1085,7 +1091,7 @@ describe("replies", () => {
     });
     expect(store.thread?.messages.map((m) => m.ref)).toEqual([ID, "atlas/agent/reply"]);
     expect(draft.body).toBe("");
-    expect(draft.attachments).toEqual([]);
+    expect(draft.files.attachments).toEqual([]);
     await waitFor(() => {
       expect(requests.at(-1)).toBe("GET /api/hub/mail/threads?folder=inbox&limit=50");
     });
@@ -1225,7 +1231,7 @@ describe("unsaved drafts", () => {
     draft.subject = "Plan";
     expect(store.dirty).toBe(true);
     draft.subject = "";
-    draft.attach([fileOf("a.txt")]);
+    draft.files.attach([fileOf("a.txt")]);
     expect(store.dirty).toBe(true);
     store.discardNewMessage();
     expect(store.dirty).toBe(false);

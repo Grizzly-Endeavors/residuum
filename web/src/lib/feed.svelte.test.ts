@@ -299,10 +299,16 @@ describe("FeedStore when a turn fails", () => {
     expect(reloaded.feed.map((item) => item.kind)).toEqual(["user"]);
   });
 
-  it("keeps the images the user sent for Try again", () => {
+  it("offers no Try again for a message that carried files, whose uploads it used", () => {
     const store = new FeedStore();
-    const image = { media_type: "image/png", data: "AAAA" };
-    store.pushUserMessage("What is this?", [image], "web-a");
+    const file = {
+      item_id: "",
+      filename: "notes.pdf",
+      size: 10,
+      content_type: "application/pdf",
+      path: "",
+    };
+    store.pushUserMessage("What is this?", [file], "web-a");
     store.handleMessage({
       type: "turn_started",
       reply_to: "web-a",
@@ -310,9 +316,66 @@ describe("FeedStore when a turn fails", () => {
     });
     store.handleMessage(error("web-a"));
 
-    expect(store.feed.at(-1)).toMatchObject({
-      retry: { content: "What is this?", images: [image] },
+    const failure = store.feed.at(-1);
+    expect(failure?.kind).toBe("turn-failure");
+    expect(failure).not.toHaveProperty("retry");
+  });
+
+  it("shows the files of a message it sent as the agent saved them", () => {
+    const store = new FeedStore();
+    const sent = {
+      item_id: "",
+      filename: "notes.pdf",
+      size: 10,
+      content_type: "application/pdf",
+      path: "",
+    };
+    store.pushUserMessage("Read this", [sent], "web-a");
+    expect(store.feed.at(-1)).toMatchObject({ kind: "user", attachments: [sent] });
+
+    const saved = {
+      ...sent,
+      item_id: "20260314_chat_attachment_notes_pdf",
+      path: "inbox/agent/attachments/20260314_chat_attachment_notes_pdf/notes.pdf",
+    };
+    store.handleMessage({
+      type: "user_message",
+      id: "web-a",
+      turn_id: "web-a",
+      content: "Read this",
+      attachments: [saved],
+      endpoint: "ws",
     });
+    const shown = store.feed.filter((item) => item.kind === "user");
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toMatchObject({ attachments: [saved] });
+  });
+
+  it("takes a refused message off the feed, and the reply it was waiting on with it", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Read this", undefined, "web-a");
+    expect(store.isProcessing).toBe(true);
+
+    store.withdrawRefused("web-a");
+
+    expect(store.feed.filter((item) => item.kind === "user")).toEqual([]);
+    expect(store.isProcessing).toBe(false);
+  });
+
+  it("takes a refused message off the waiting messages", () => {
+    const store = new FeedStore();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.pushUserMessage("And this", undefined, "web-b");
+    expect(store.waiting.map((message) => message.id)).toEqual(["web-b"]);
+
+    store.withdrawRefused("web-b");
+
+    expect(store.waiting).toEqual([]);
+    expect(store.isProcessing).toBe(true);
   });
 
   it("puts the failure inside its turn's block, so the turn ends on it", () => {

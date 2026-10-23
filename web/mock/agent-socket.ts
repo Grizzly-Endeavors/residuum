@@ -3,6 +3,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "../src/lib/generated/protocol";
 import { agentInboxItemId, deriveTitle } from "./agent-inbox";
 import { arrivedThroughArtifactsOrigin } from "./artifacts-origin";
+import { saveChatAttachments, UPLOAD_GONE } from "./chat-attachments";
 import { createChatSimulator } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
 import { sendSessionMessage, spawnSession, stopSession } from "./sessions";
@@ -53,6 +54,9 @@ export function parseClientMessage(raw: string): ClientMessage {
         type,
         id: requiredString(body, "id"),
         content: requiredString(body, "content"),
+        ...(body.attachments === undefined
+          ? {}
+          : { attachments: requiredStrings(body, "attachments") }),
       };
     case "set_verbose": {
       const { enabled } = body;
@@ -170,12 +174,19 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         reply({ type: "pong" });
         break;
 
-      case "send_message":
+      case "send_message": {
+        // Files come as uploads staged on the hub; one that isn't staged refuses the whole message.
+        const saved = saveChatAttachments(hub, agent, msg.content, msg.attachments ?? []);
+        if (saved === null) {
+          reply({ type: "error", reply_to: msg.id, message: UPLOAD_GONE });
+          break;
+        }
         if (msg.content.toLowerCase().startsWith("spawn")) {
           spawnSession(state, msg.content.replace(/^spawn\s*/i, "") || "Look into something");
         }
-        chat.send(msg);
+        chat.send({ ...msg, content: saved.content }, saved.attachments);
         break;
+      }
 
       case "cancel":
         chat.cancel(msg.reply_to);

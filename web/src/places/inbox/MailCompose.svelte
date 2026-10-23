@@ -6,7 +6,7 @@
   import { Button, IconButton, TextField, VisuallyHidden } from "../../lib/ui";
   import AttachFiles from "./AttachFiles.svelte";
   import ComposerHint from "./ComposerHint.svelte";
-  import DraftAttachments from "./DraftAttachments.svelte";
+  import StagedFiles from "../../composer/StagedFiles.svelte";
   import {
     deliveryHint,
     joinNames,
@@ -116,16 +116,16 @@
       bind:element={bodyField}
       onkeydown={(event) => sendOnModEnter(event, () => void send())}
     />
-    <DraftAttachments {draft} />
+    <StagedFiles files={draft.files} />
   </div>
 
   {#if draft.sendError !== null}
     <p class="compose-error" role="alert">{draft.sendError}</p>
   {/if}
   <div class="compose-foot">
-    <AttachFiles {draft} />
+    <AttachFiles files={draft.files} />
     <ComposerHint
-      waiting={draft.sending && draft.uploading}
+      waiting={draft.sending && draft.files.uploading}
       delivery={draft.to.length > 0 ? deliveryHint(draft.to) : PICK_AGENT_HINT}
     />
     <Button variant="quiet" onclick={oncancel}>Cancel</Button>

@@ -1,13 +1,13 @@
 // What the user has typed to each agent and not sent yet. The text is kept in
-// local storage, so it survives navigation and reload; attached images are
-// kept for the life of the page only, since a few of them would fill the
-// storage the browser allows.
+// local storage, so it survives navigation and reload; attached files are
+// kept for the life of the page only, since a file can't be put in storage,
+// and their uploads carry on while the chat shows another agent.
 
-import type { ImageAttachment } from "./types";
+import { StagedAttachments } from "./staged-attachments.svelte";
 
 const STORAGE_PREFIX = "residuum-draft:";
 
-const images = new Map<string, ImageAttachment[]>();
+const attachments = new Map<string, StagedAttachments>();
 
 /** The text typed to `agent` and not sent, or "" when there is none or storage is blocked. */
 export function readDraft(agent: string): string {
@@ -29,12 +29,18 @@ export function saveDraft(agent: string, text: string): void {
   }
 }
 
-/** The images attached to `agent`'s draft on this page. */
-export function readDraftImages(agent: string): ImageAttachment[] {
-  return images.get(agent) ?? [];
+/** The files attached to `agent`'s draft on this page: the same list each time it is asked for. */
+export function draftAttachments(agent: string): StagedAttachments {
+  let staged = attachments.get(agent);
+  if (staged === undefined) {
+    staged = new StagedAttachments();
+    attachments.set(agent, staged);
+  }
+  return staged;
 }
 
-export function saveDraftImages(agent: string, attached: readonly ImageAttachment[]): void {
-  if (attached.length === 0) images.delete(agent);
-  else images.set(agent, [...attached]);
+/** Throw away every agent's attached files, cancelling uploads still running. */
+export function clearDraftAttachments(): void {
+  for (const staged of attachments.values()) staged.clear();
+  attachments.clear();
 }
