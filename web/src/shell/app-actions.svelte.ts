@@ -15,7 +15,7 @@ import type { InstallOffer } from "../lib/install";
 import type { IconName } from "../lib/icons";
 import { notifications } from "../lib/notifications.svelte";
 import { router } from "../lib/router.svelte";
-import { HOME, type Place } from "../lib/routes";
+import { HOME, INBOX, type Place } from "../lib/routes";
 import {
   AGENT_SECTIONS,
   ALL_SCOPE,
@@ -36,8 +36,6 @@ export const installHelp = $state({ open: false });
 
 /** Whether Show connection status is open. */
 export const connectionStatusDialog = $state({ open: false });
-
-const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 
 function open(place: Place): () => void {
   return () => void router.openPlace(place);

@@ -83,7 +83,8 @@ function currentUrl(): string {
 
 /**
  * What closing removes from the URL: the panel, the Settings modal, or the
- * item open in the Inbox or the artifact selected on the Workbench.
+ * thread or New message open in the Inbox, or the artifact selected on the
+ * Workbench.
  */
 type ClosableParam = "panel" | "settings" | "item";
 
@@ -101,8 +102,8 @@ function withoutParam(location: AppLocation, param: ClosableParam): AppLocation 
           ? null
           : { ...location, place: { ...place, artifact: null } };
       }
-      return place.kind === "inbox" && place.item !== null
-        ? { ...location, place: { ...place, item: null } }
+      return place.kind === "inbox" && (place.thread !== null || place.compose !== null)
+        ? { ...location, place: { ...place, thread: null, compose: null } }
         : null;
   }
 }
@@ -283,9 +284,9 @@ class Router {
   }
 
   /**
-   * Close the item open in the Inbox, or collapse the artifact selected on the
-   * Workbench: `history.back()` when this page pushed the entry that opened it,
-   * else a replace without it.
+   * Close the thread or New message open in the Inbox, or collapse the
+   * artifact selected on the Workbench: `history.back()` when this page pushed
+   * the entry that opened it, else a replace without it.
    */
   closeItem(): Promise<boolean> {
     return this.close("item");

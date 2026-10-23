@@ -29,12 +29,12 @@
   $effect(() => tree.watch());
 
   function open(path: string): void {
-    void router.openPanel({ kind: "file", path });
+    void router.openPanel({ kind: "file", path, agent: null });
   }
 
   /** The panel follows a file it shows to where it was renamed or moved. */
   function moved(from: string, to: string): void {
-    if (shown === from) void router.replacePanel({ kind: "file", path: to });
+    if (shown === from) void router.replacePanel({ kind: "file", path: to, agent: null });
   }
 </script>
 

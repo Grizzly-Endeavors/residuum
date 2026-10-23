@@ -5,7 +5,7 @@
   import type { NeedsYouItem } from "../../lib/needs-you";
   import { overview } from "../../lib/overview.svelte";
   import { router } from "../../lib/router.svelte";
-  import { formatLocation, locationAt, type Place } from "../../lib/routes";
+  import { formatLocation, INBOX, locationAt, userInboxRef, type Place } from "../../lib/routes";
   import { ALL_SCOPE } from "../../lib/settings-sections";
   import { relativeTime } from "../../lib/time";
   import { Badge, Button, Disclosure } from "../../lib/ui";
@@ -26,7 +26,6 @@
 
   const uid = $props.id();
   const needs = $derived(overview.needsYou);
-  const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 
   /** The action in flight on each item, by item key. */
   let pending = $state<Record<string, string | undefined>>({});
@@ -49,7 +48,7 @@
   }
 
   function inboxPlace(agent: string, id: string): Place {
-    return { kind: "inbox", agent: null, tab: "active", item: { agent, id } };
+    return { ...INBOX, thread: userInboxRef(agent, id) };
   }
 
   /** An item that clears slides away, so the list shows what changed. */

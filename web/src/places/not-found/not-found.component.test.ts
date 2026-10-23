@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { router } from "../../lib/router.svelte";
-import { HOME } from "../../lib/routes";
+import { HOME, INBOX } from "../../lib/routes";
 import { fireEvent, render, screen } from "../../test/component";
 import NotFound from "./NotFound.svelte";
 
@@ -28,11 +28,6 @@ describe("Not Found", () => {
     expect(open).toHaveBeenLastCalledWith(HOME);
 
     await fireEvent.click(screen.getByRole("button", { name: "Open Inbox" }));
-    expect(open).toHaveBeenLastCalledWith({
-      kind: "inbox",
-      agent: null,
-      tab: "active",
-      item: null,
-    });
+    expect(open).toHaveBeenLastCalledWith(INBOX);
   });
 });

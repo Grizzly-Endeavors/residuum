@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { landingNotices } from "./landing-notices";
-import { locationAt, type Place } from "./routes";
+import { INBOX, locationAt, type Place } from "./routes";
 
 const chat: Place = { kind: "chat", agent: "scout" };
 const workbench: Place = { kind: "workbench", artifact: null };
-const inbox: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 
 describe("landing notices", () => {
   it("names the agent whose file link expired", () => {
@@ -33,7 +32,7 @@ describe("landing notices", () => {
   });
 
   it("explains a missing inbox attachment", () => {
-    expect(landingNotices("?notice=inbox-attachment-missing", locationAt(inbox))).toEqual([
+    expect(landingNotices("?notice=inbox-attachment-missing", locationAt(INBOX))).toEqual([
       "That attachment is no longer available. It may have been removed from its inbox item.",
     ]);
   });

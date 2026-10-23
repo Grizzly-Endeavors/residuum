@@ -11,7 +11,7 @@ import { router } from "../lib/router.svelte";
 import { parseUrl } from "../lib/routes";
 import { isWorkerMessage } from "../sw/protocol";
 
-/** Go where a clicked notification leads: an app path such as `/inbox?item=atlas:note-1`. */
+/** Go where a clicked notification leads: an app path such as `/inbox?thread=atlas%2Fuser%2Fnote-1`. */
 export function openNotificationTarget(target: string): Promise<boolean> {
   const query = target.indexOf("?");
   const pathname = query < 0 ? target : target.slice(0, query);

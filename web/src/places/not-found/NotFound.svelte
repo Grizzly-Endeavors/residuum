@@ -1,6 +1,6 @@
 <script lang="ts">
   import { router } from "../../lib/router.svelte";
-  import { HOME } from "../../lib/routes";
+  import { HOME, INBOX } from "../../lib/routes";
   import { NOT_FOUND_TITLE } from "../../lib/tab-title";
   import { Button, EmptyState } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
@@ -37,13 +37,7 @@
         <Button variant="primary" icon="home" onclick={() => void router.openPlace(HOME)}>
           Go to Home
         </Button>
-        <Button
-          icon="inbox"
-          onclick={() =>
-            void router.openPlace({ kind: "inbox", agent: null, tab: "active", item: null })}
-        >
-          Open Inbox
-        </Button>
+        <Button icon="inbox" onclick={() => void router.openPlace(INBOX)}>Open Inbox</Button>
       {/snippet}
     </EmptyState>
   </div>
