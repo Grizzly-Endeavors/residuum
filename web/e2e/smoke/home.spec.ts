@@ -129,22 +129,31 @@ test("Stop task says when the remote agent can't be reached", async ({ page }) =
   await expect(atlas).toBeVisible();
 });
 
-test("a turn shows up across the team and on the agent's row", async ({ page, mock }) => {
+test("a turn shows on the agent's row but not across the team", async ({ page, mock }) => {
   await page.goto("/home");
   await expect(acrossTheTeam(page).getByText("Residuum started")).toBeVisible();
 
   await mock.post("/api/mock/teammate-message", { params: { agent: "atlas" } });
-
-  const replied = acrossTheTeam(page).getByRole("link", {
-    name: "atlas replied in your conversation",
-  });
-  await expect(replied).toBeVisible();
   await expect(
     board(page).getByRole("row").filter({ hasText: "scout asked me to check the wiki index" }),
   ).toHaveCount(1);
 
-  await replied.click();
-  await expect.poll(() => address(page)).toBe("/agent/atlas");
+  // The hub logged atlas's reply before this item, over the same socket, so
+  // once the item shows the reply has had its chance to.
+  await mock.post("/api/mock/user-inbox-add", {
+    params: { agent: "scout" },
+    data: { title: "Release notes are ready" },
+  });
+  const added = acrossTheTeam(page).getByRole("link", {
+    name: "scout added an item to your inbox",
+  });
+  await expect(added).toBeVisible();
+  await expect(acrossTheTeam(page).getByText("replied in your conversation")).toHaveCount(0);
+
+  await added.click();
+  await expect
+    .poll(() => address(page))
+    .toMatch(/^\/inbox\?item=scout:\d{8}_release_notes_are_ready$/);
 });
 
 test("a board row opens the agent's chat", async ({ page }) => {
