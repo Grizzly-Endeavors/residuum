@@ -1250,8 +1250,8 @@ mod tests {
         assert_eq!(items.len(), 1, "one companion item in the agent inbox");
         let (file_name, item) = items.first().expect("one companion item");
         assert_eq!(
-            file_name.strip_suffix(".json"),
-            Some(attachment.item_id.as_str()),
+            file_name.as_str(),
+            attachment.item_id.as_str(),
             "the attachment names the companion item"
         );
         assert_eq!(item.source, "chat");
