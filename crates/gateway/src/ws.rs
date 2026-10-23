@@ -191,13 +191,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
         }
     }
 
-    // Dropping the senders lets the forwarder write what is already queued
-    // (above all the `message_refused` for a failed publish, which ends this
-    // loop) and then close the socket. Aborting it outright lost that frame,
-    // so the client saw a bare close and its message vanished unrefused.
-    drop(local_tx);
-    drop(close_tx);
-    finish_forwarding(fwd_handle).await;
+    finish_forwarding(local_tx, close_tx, fwd_handle).await;
     tracing::debug!("client disconnected");
 }
 
@@ -205,10 +199,20 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
 /// has ended, before it is aborted.
 const FORWARDER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Wait for the forwarding task to flush its queued frames and close the
-/// socket, aborting it if a stuck socket keeps it past
+/// Close the forwarder's inputs, then wait for it to flush its queued frames
+/// and close the socket, aborting it if a stuck socket keeps it past
 /// [`FORWARDER_DRAIN_TIMEOUT`].
-async fn finish_forwarding(mut fwd_handle: tokio::task::JoinHandle<()>) {
+async fn finish_forwarding(
+    local_tx: mpsc::UnboundedSender<ServerMessage>,
+    close_tx: oneshot::Sender<Option<CloseFrame>>,
+    mut fwd_handle: tokio::task::JoinHandle<()>,
+) {
+    // Dropping the senders lets the forwarder write what is already queued
+    // (above all the `message_refused` for a failed publish, which ends the
+    // read loop) and then close the socket. Aborting it outright lost that
+    // frame, so the client saw a bare close and its message vanished unrefused.
+    drop(local_tx);
+    drop(close_tx);
     if tokio::time::timeout(FORWARDER_DRAIN_TIMEOUT, &mut fwd_handle)
         .await
         .is_err()
