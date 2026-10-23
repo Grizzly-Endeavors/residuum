@@ -628,6 +628,24 @@ describe("corrections for agents that don't exist", () => {
     );
   });
 
+  it("closes a thread whose ref names an agent that doesn't exist, keeping the list", () => {
+    expect(correct("/inbox?folder=archived&agent=atlas&thread=ghost%2Fuser%2F1")).toEqual({
+      url: "/inbox?folder=archived&agent=atlas",
+      notices: [`There's no agent named "ghost".`],
+    });
+    expect(correct("/inbox?item=ghost:1")).toEqual({
+      url: "/inbox",
+      notices: [`There's no agent named "ghost".`],
+    });
+    expect(correct("/inbox?thread=scout%2Fagent%2F1").url).toBe("/inbox?thread=scout%2Fagent%2F1");
+  });
+
+  it("names a missing agent once across the filter and the thread", () => {
+    expect(correct("/inbox?agent=ghost&thread=ghost%2Fuser%2F1").notices).toEqual([
+      `There's no agent named "ghost".`,
+    ]);
+  });
+
   it("removes the recipients of a New message that don't exist", () => {
     expect(correct("/inbox?folder=sent&compose=1&to=atlas,ghost,phantom")).toEqual({
       url: "/inbox?folder=sent&compose=1&to=atlas",

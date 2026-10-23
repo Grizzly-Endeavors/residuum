@@ -182,7 +182,8 @@ test("needs-you says so when nothing is waiting, and fills in as things arrive",
       `/api/agents/${agent}/a2a/outbound/task-19c2/stop-watching`,
     );
     expect(stopped.ok()).toBe(true);
-    const read = await page.request.put(`/api/hub/inbox/${agent}/mock_1/read`);
+    const thread = encodeURIComponent(`${agent}/user/mock_1`);
+    const read = await page.request.post(`/api/hub/mail/threads/${thread}/read`);
     expect(read.ok()).toBe(true);
   }
   const removed = await page.request.delete("/api/hub/agents/brittle");

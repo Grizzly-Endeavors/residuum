@@ -5,8 +5,8 @@ import { HubStore } from "./hub.svelte";
 import type {
   AgentOverview,
   AgentSummary,
-  HubInboxItem,
-  HubInboxPage,
+  MailThreadPage,
+  MailThreadSummary,
   OverviewResponse,
   TeamEvent,
   TeamEventPage,
@@ -54,16 +54,19 @@ function teamEvent(id: number, summary = `event ${String(id)}`): TeamEvent {
   };
 }
 
-function inboxItem(id: string, read = false): HubInboxItem {
+function inboxThread(id: string, unread = true): MailThreadSummary {
   return {
-    agent: "atlas",
-    id,
-    title: id,
-    body: "",
-    source: "agent",
-    at: "2026-03-14T12:00:00Z",
-    read,
-    attachments: [],
+    thread_id: `atlas/user/${id}`,
+    subject: id,
+    participants: ["atlas"],
+    message_count: 1,
+    latest_at: "2026-03-14T12:00:00Z",
+    snippet: "",
+    unread,
+    has_attachments: false,
+    in_inbox: true,
+    in_sent: false,
+    archived: false,
   };
 }
 
@@ -78,7 +81,7 @@ function json(body: unknown, status = 200): Response {
 let answers: {
   overview: OverviewResponse;
   events: (url: URL) => TeamEventPage;
-  inbox: (url: URL) => HubInboxPage;
+  mail: (url: URL) => MailThreadPage;
   /** Held back until released, for a test about a request that is still out. */
   holdOverview: Promise<void> | null;
   task: (url: URL) => Response;
@@ -98,7 +101,7 @@ function stubHub(): void {
         return json(answer);
       }
       if (url.pathname === "/api/hub/events") return json(answers.events(url));
-      if (url.pathname === "/api/hub/inbox") return json(answers.inbox(url));
+      if (url.pathname === "/api/hub/mail/threads") return json(answers.mail(url));
       if (url.pathname.includes("/a2a/outbound/")) return answers.task(url);
       return json({ error: `unexpected ${url.pathname}` }, 500);
     }),
@@ -118,7 +121,7 @@ beforeEach(() => {
   answers = {
     overview: { boot_id: BOOT, agents: [overviewOf("atlas"), overviewOf("scout")] },
     events: () => ({ boot_id: BOOT, events: [teamEvent(2), teamEvent(1)], next_before: null }),
-    inbox: () => ({ items: [], next_cursor: null }),
+    mail: () => ({ threads: [], next: null }),
     holdOverview: null,
     task: () => json({}),
   };
@@ -312,30 +315,31 @@ describe("OverviewStore frames", () => {
   });
 });
 
-describe("OverviewStore inbox items", () => {
-  it("fetches the newest unread items when a count changes, paging until it has five", async () => {
+describe("OverviewStore inbox threads", () => {
+  it("fetches the newest unread threads when a count changes, paging until it has five", async () => {
     answers.overview = {
       boot_id: BOOT,
       agents: [overviewOf("atlas", { inbox_unread: 6 }), overviewOf("scout")],
     };
-    answers.inbox = (url) =>
+    answers.mail = (url) =>
       url.searchParams.get("before") === null
         ? {
-            items: [inboxItem("a"), inboxItem("b", true), inboxItem("c")],
-            next_cursor: "cursor-1",
+            threads: [inboxThread("a"), inboxThread("b", false), inboxThread("c")],
+            next: "cursor-1",
           }
         : {
-            items: [inboxItem("d"), inboxItem("e"), inboxItem("f"), inboxItem("g")],
-            next_cursor: "cursor-2",
+            threads: [inboxThread("d"), inboxThread("e"), inboxThread("f"), inboxThread("g")],
+            next: "cursor-2",
           };
     connect();
     await waitFor(() => {
-      expect(store.unreadItems.map((i) => i.id)).toEqual(["a", "c", "d", "e", "f"]);
+      expect(store.unreadThreads.map((t) => t.subject)).toEqual(["a", "c", "d", "e", "f"]);
     });
-    expect(requests.filter((r) => r.includes("/inbox"))).toEqual([
-      "GET /api/hub/inbox?status=active&limit=50",
-      "GET /api/hub/inbox?status=active&limit=50&before=cursor-1",
+    expect(requests.filter((r) => r.includes("/mail/"))).toEqual([
+      "GET /api/hub/mail/threads?folder=inbox&limit=50",
+      "GET /api/hub/mail/threads?folder=inbox&before=cursor-1&limit=50",
     ]);
+    expect(store.unreadThreadsComplete).toBe(false);
     expect(store.needsYou.count).toBe(5);
     expect(store.needsYou.moreInInbox).toBe(1);
 
@@ -344,19 +348,32 @@ describe("OverviewStore inbox items", () => {
     const asked = requests.length;
     hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 0 }) });
     await waitFor(() => {
-      expect(store.unreadItems).toEqual([]);
+      expect(store.unreadThreads).toEqual([]);
     });
     expect(requests).toHaveLength(asked);
   });
 
-  it("says when the items can't be loaded, and keeps counting them", async () => {
+  it("counts nothing more in the Inbox once every unread thread is listed", async () => {
+    // Two unread items in one thread: the count says 2, the inbox has one thread.
     answers.overview = { boot_id: BOOT, agents: [overviewOf("atlas", { inbox_unread: 2 })] };
-    answers.inbox = () => {
+    answers.mail = () => ({ threads: [inboxThread("a"), inboxThread("b", false)], next: null });
+    connect(BOOT, [agent("atlas")]);
+    await waitFor(() => {
+      expect(store.unreadThreads.map((t) => t.thread_id)).toEqual(["atlas/user/a"]);
+    });
+    expect(store.unreadThreadsComplete).toBe(true);
+    expect(store.needsYou.moreInInbox).toBe(0);
+    expect(store.needsYou.count).toBe(1);
+  });
+
+  it("says when the threads can't be loaded, and keeps counting the unread items", async () => {
+    answers.overview = { boot_id: BOOT, agents: [overviewOf("atlas", { inbox_unread: 2 })] };
+    answers.mail = () => {
       throw new Error("down");
     };
     connect(BOOT, [agent("atlas")]);
     await waitFor(() => {
-      expect(store.unreadItemsError).toContain("Couldn't load your newest inbox items");
+      expect(store.unreadThreadsError).toContain("Couldn't load your newest inbox messages");
     });
     expect(store.needsYou.count).toBe(2);
   });

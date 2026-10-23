@@ -1,19 +1,19 @@
 // What needs the user, worked out from the hub's agent list, the overview and
-// the newest unread inbox items: Home's "Needs you" list and the rail's Home
+// the newest unread inbox threads: Home's "Needs you" list and the rail's Home
 // count. Each item lasts exactly as long as the condition behind it.
 
 import type {
   AgentLastError,
   AgentOverview,
   AgentSummary,
-  HubInboxItem,
+  MailThreadSummary,
   OutboundProblem,
   SystemOneOutage,
   SystemOneStatus,
 } from "./hub-types";
 
-/** The most inbox items the list shows; the rest are counted under it. */
-export const INBOX_ITEMS_SHOWN = 5;
+/** The most unread inbox threads the list shows; the rest are counted under it. */
+export const INBOX_THREADS_SHOWN = 5;
 
 export type NeedsYouSeverity = "error" | "warn" | "info";
 
@@ -39,10 +39,10 @@ export interface OutboundProblemItem extends ItemBase {
   problem: OutboundProblem;
 }
 
-/** An unread item in an agent's user inbox. */
+/** An unread thread in the Inbox: an agent wrote to the user. */
 export interface InboxNeedsItem extends ItemBase {
   kind: "inbox";
-  item: HubInboxItem;
+  thread: MailThreadSummary;
 }
 
 /** The decision model can't answer, so Auto Mode's checks are skipped until it can. */
@@ -62,11 +62,11 @@ export type NeedsYouItem =
 export interface NeedsYou {
   /** Error first, then warn, then info; newest first within each. */
   items: NeedsYouItem[];
-  /** Unread inbox items beyond the ones listed. */
+  /** Unread inbox items beyond the threads listed. */
   moreInInbox: number;
   /**
    * The rail's Home count: one per item, with the inbox counted up to the
-   * five the list shows, whether or not their details have loaded.
+   * five the list shows, whether or not their threads have loaded.
    */
   count: number;
 }
@@ -74,8 +74,14 @@ export interface NeedsYou {
 export interface NeedsYouInput {
   agents: readonly AgentSummary[];
   overviews: Readonly<Record<string, AgentOverview>>;
-  /** The newest unread user-inbox items across agents, newest first. */
-  unreadItems: readonly HubInboxItem[];
+  /** The newest unread inbox threads across agents, newest first. */
+  unreadThreads: readonly MailThreadSummary[];
+  /**
+   * `unreadThreads` holds every unread thread: the search reached the end of
+   * the inbox. Then nothing more is waiting there, whatever the per-item
+   * unread counts add up to (one thread can hold several unread items).
+   */
+  unreadThreadsComplete?: boolean;
   /** The decision model service's status; null until the hub reports it. */
   systemOne?: SystemOneStatus | null;
 }
@@ -100,7 +106,8 @@ function byNeed(a: NeedsYouItem, b: NeedsYouItem): number {
 export function deriveNeedsYou({
   agents,
   overviews,
-  unreadItems,
+  unreadThreads,
+  unreadThreadsComplete = false,
   systemOne,
 }: NeedsYouInput): NeedsYou {
   const items: NeedsYouItem[] = [];
@@ -147,16 +154,17 @@ export function deriveNeedsYou({
   }
 
   const known = new Set(agents.map((agent) => agent.name));
-  const inbox = unreadItems
-    .filter((item) => !item.read && known.has(item.agent))
-    .slice(0, INBOX_ITEMS_SHOWN);
-  for (const item of inbox) {
+  // A thread only agents that no longer exist took part in has nowhere to open.
+  const inbox = unreadThreads
+    .filter((thread) => thread.unread && thread.participants.some((name) => known.has(name)))
+    .slice(0, INBOX_THREADS_SHOWN);
+  for (const thread of inbox) {
     items.push({
       kind: "inbox",
-      key: `inbox:${item.agent}:${item.id}`,
+      key: `inbox:${thread.thread_id}`,
       severity: "info",
-      at: item.at,
-      item,
+      at: thread.latest_at,
+      thread,
     });
   }
 
@@ -164,7 +172,9 @@ export function deriveNeedsYou({
   const listedProblems = items.length - inbox.length;
   return {
     items,
-    moreInInbox: Math.max(0, inboxUnread - inbox.length),
-    count: listedProblems + Math.min(INBOX_ITEMS_SHOWN, inboxUnread),
+    moreInInbox: unreadThreadsComplete ? 0 : Math.max(0, inboxUnread - inbox.length),
+    count:
+      listedProblems +
+      (unreadThreadsComplete ? inbox.length : Math.min(INBOX_THREADS_SHOWN, inboxUnread)),
   };
 }
