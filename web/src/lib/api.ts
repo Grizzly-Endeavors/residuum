@@ -62,6 +62,10 @@ import type {
   HubInboxPage,
   HubStatusResponse,
   InboxStatus,
+  MailFolder,
+  MailMessage,
+  MailThread,
+  MailThreadPage,
   OverviewResponse,
   PushDevice,
   PushPreferencesPatch,
@@ -1457,6 +1461,123 @@ export async function restoreHubInboxItem(agent: string, id: string): Promise<Hu
     method: "POST",
   });
   return item;
+}
+
+// ── Mail ────────────────────────────────────────────────────────────
+
+/** The largest file the hub stages for a message, in bytes. A larger upload is answered `413`. */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** A file the hub has staged, to attach to a message by `id`. */
+export interface UploadedFile {
+  id: string;
+  filename: string;
+  size: number;
+}
+
+/** What `POST /api/hub/mail/send` takes. `attachments` are upload ids. */
+export interface SendMailRequest {
+  to: string[];
+  subject: string;
+  body: string;
+  attachments: string[];
+}
+
+/** The thread a sent message started. */
+export interface SendMailResponse {
+  thread_id: string;
+}
+
+/** What `POST /api/hub/mail/threads/{thread_id}/reply` takes. `attachments` are upload ids. */
+export interface ReplyToMailRequest {
+  body: string;
+  attachments: string[];
+}
+
+/** The message a reply added to its thread. */
+export interface ReplyToMailResponse {
+  message: MailMessage;
+}
+
+/** The hub's route for one mail thread, followed by `action` when there is one. A thread id holds `/`, so it is encoded. */
+function mailThreadPath(threadId: string, action?: string): string {
+  const path = `/mail/threads/${encodeURIComponent(threadId)}`;
+  return hubPath(action === undefined ? path : `${path}/${action}`);
+}
+
+/**
+ * One page of the mail threads in a folder, newest first, across every agent
+ * or only those `agent` took part in. `before` is the previous page's `next`.
+ * Throws `ApiError`.
+ */
+export async function fetchMailThreads(query: {
+  folder: MailFolder;
+  agent?: string;
+  before?: string;
+  limit?: number;
+}): Promise<MailThreadPage> {
+  const { folder, agent, before, limit } = query;
+  return apiFetch<MailThreadPage>(
+    hubPath(`/mail/threads${queryString({ folder, agent, before, limit })}`),
+  );
+}
+
+/**
+ * A thread with every message, oldest first. `threadId` can be the ref of any
+ * message in the thread; the answer names the thread by its own id. Throws
+ * `ApiError`.
+ */
+export async function fetchMailThread(threadId: string): Promise<MailThread> {
+  return apiFetch<MailThread>(mailThreadPath(threadId));
+}
+
+/** Send a new message to one or more agents and get the thread it starts. Throws `ApiError`. */
+export async function sendMail(request: SendMailRequest): Promise<SendMailResponse> {
+  return apiFetch<SendMailResponse>(hubPath("/mail/send"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+/** Reply to everyone in a thread and get the message that was added. Throws `ApiError`. */
+export async function replyToMailThread(
+  threadId: string,
+  request: ReplyToMailRequest,
+): Promise<ReplyToMailResponse> {
+  return apiFetch<ReplyToMailResponse>(mailThreadPath(threadId, "reply"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+/** Mark every message an agent sent in the thread read. Throws `ApiError`. */
+export async function markMailThreadRead(threadId: string): Promise<void> {
+  await apiFetchText(mailThreadPath(threadId, "read"), { method: "POST" });
+}
+
+/** Move the thread's messages from the agents to the archive. Throws `ApiError`. */
+export async function archiveMailThread(threadId: string): Promise<void> {
+  await apiFetchText(mailThreadPath(threadId, "archive"), { method: "POST" });
+}
+
+/** Move the thread's archived messages back to the inbox. Throws `ApiError`. */
+export async function restoreMailThread(threadId: string): Promise<void> {
+  await apiFetchText(mailThreadPath(threadId, "restore"), { method: "POST" });
+}
+
+/**
+ * Stage a file for a message to attach: the body is the file's bytes, so
+ * nothing is encoded. Throws `ApiError`; a file over `MAX_UPLOAD_BYTES` is
+ * answered `413`.
+ */
+export async function uploadFile(file: File | Blob, filename: string): Promise<UploadedFile> {
+  return apiFetch<UploadedFile>(hubPath(`/uploads${queryString({ filename })}`), {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
 }
 
 // ── Teams setup API ─────────────────────────────────────────────────
