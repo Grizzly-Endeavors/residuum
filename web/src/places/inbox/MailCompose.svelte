@@ -3,7 +3,7 @@
   import { hub } from "../../lib/hub.svelte";
   import { mail } from "../../lib/mail.svelte";
   import { toast } from "../../lib/toast.svelte";
-  import { Button, IconButton, TextField } from "../../lib/ui";
+  import { Button, IconButton, TextField, VisuallyHidden } from "../../lib/ui";
   import AttachFiles from "./AttachFiles.svelte";
   import ComposerHint from "./ComposerHint.svelte";
   import DraftAttachments from "./DraftAttachments.svelte";
@@ -88,7 +88,9 @@
             icon={chosen ? "check" : undefined}
             onclick={() => toggle(choice.name)}
           >
-            {choice.name}{#if choice.stopped}<span class="compose-stopped">stopped</span>{/if}
+            {choice.name}{#if choice.stopped}<span class="compose-stopped"
+                ><VisuallyHidden>,</VisuallyHidden>stopped</span
+              >{/if}
           </Button>
         {:else}
           <p class="compose-none">There are no agents to send it to yet.</p>

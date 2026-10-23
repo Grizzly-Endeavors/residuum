@@ -75,7 +75,9 @@ describe("New message", () => {
     expect(screen.getByRole("heading", { name: "New message", level: 2 })).toBeTruthy();
     expect(chosen("scout")).toBe(true);
     expect(chosen("atlas")).toBe(false);
-    expect(screen.getByRole("button", { name: /^drifter/ }).textContent).toContain("stopped");
+    expect(screen.getByRole("button", { name: /^drifter\W+stopped$/ }).textContent).toContain(
+      "stopped",
+    );
   });
 
   it("says it is a new thread that is not sent yet", () => {
