@@ -55,7 +55,7 @@ enum AgentRouterKind {
     /// agent so the user can repair it.
     Repair,
     /// Routes that only read and write the agent's files: chat history,
-    /// usage, the user inbox, the raw A2A client settings, and the file links
+    /// usage, the inbox attachments, the raw A2A client settings, and the file links
     /// (workspace and token). A running agent serves them from its own router, at the
     /// cost it always had. Any other agent gets them from a router that opens
     /// no checkpoint repository, so they answer even when the repositories
@@ -92,10 +92,9 @@ impl AgentRouterKind {
 fn is_file_data_route(route: &[&str]) -> bool {
     match route {
         ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] | ["files", _] => true,
-        ["inbox", rest @ ..] => matches!(
-            rest,
-            [] | ["archive"] | [_, "read" | "archive" | "restore"] | [_, "attachments", _]
-        ),
+        ["inbox", rest @ ..] => {
+            matches!(rest, [_, "attachments", _] | ["agent", _, "attachments", _])
+        }
         _ => false,
     }
 }
@@ -336,20 +335,15 @@ mod tests {
     }
 
     #[test]
-    fn file_routes_are_history_usage_the_user_inbox_the_raw_a2a_settings_and_file_links() {
+    fn file_routes_are_history_usage_inbox_attachments_the_raw_a2a_settings_and_file_links() {
         for files in [
             "/api/chat/history",
             "/api/usage",
             "/api/a2a/agents/raw",
             "/api/files/workspace",
             "/api/files/abc123",
-            "/api/inbox",
-            "/api/inbox/archive",
-            "/api/inbox/2026-09-30-note/read",
-            "/api/inbox/2026-09-30-note/archive",
-            "/api/inbox/2026-09-30-note/restore",
             "/api/inbox/2026-09-30-note/attachments/0",
-            "/api/inbox/archive/read",
+            "/api/inbox/agent/2026-09-30-note/attachments/0",
         ] {
             assert_eq!(
                 AgentRouterKind::for_inner_path(files),
@@ -378,8 +372,12 @@ mod tests {
             "/api/a2a/status",
             "/api/a2a/card",
             "/api/a2a/outbound",
+            "/api/inbox",
+            "/api/inbox/archive",
             "/api/inbox/item",
+            "/api/inbox/item/read",
             "/api/inbox/item/unknown",
+            "/api/inbox/agent/item/attachments",
             "/api/inbox/item/attachments",
             "/api/inbox/item/attachments/0/extra",
         ] {

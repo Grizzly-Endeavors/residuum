@@ -560,7 +560,7 @@ async fn the_unread_count_follows_the_inbox_tool_and_files_placed_by_hand() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_hubs_inbox_actions_update_the_count_of_a_running_and_of_a_stopped_agent() {
+async fn the_hubs_mail_actions_update_the_count_of_a_running_and_of_a_stopped_agent() {
     let h = Harness::new();
     let _tracker = h.track_overview();
     place_item(&h, "scout", "20260930_a").await;
@@ -571,29 +571,31 @@ async fn the_hubs_inbox_actions_update_the_count_of_a_running_and_of_a_stopped_a
     assert_eq!(listed["agents"][1]["inbox_unread"], 2, "scout: {listed}");
     let mut frames = h.overview.subscribe();
 
-    h.expect(
-        Method::PUT,
-        "/api/hub/inbox/scout/20260930_a/read",
-        None,
-        StatusCode::OK,
+    h.post_expect(
+        "/api/hub/mail/threads/scout%2Fuser%2F20260930_a/read",
+        StatusCode::NO_CONTENT,
     )
     .await;
     let read = next_overview(&mut frames).await;
     assert_eq!((read.name.as_str(), read.inbox_unread), ("scout", 1));
 
-    h.post_expect("/api/hub/inbox/scout/20260930_b/archive", StatusCode::OK)
-        .await;
+    h.post_expect(
+        "/api/hub/mail/threads/scout%2Fuser%2F20260930_b/archive",
+        StatusCode::NO_CONTENT,
+    )
+    .await;
     assert_eq!(next_overview(&mut frames).await.inbox_unread, 0);
 
-    h.post_expect("/api/hub/inbox/scout/20260930_b/restore", StatusCode::OK)
-        .await;
+    h.post_expect(
+        "/api/hub/mail/threads/scout%2Fuser%2F20260930_b/restore",
+        StatusCode::NO_CONTENT,
+    )
+    .await;
     assert_eq!(next_overview(&mut frames).await.inbox_unread, 1);
 
-    h.expect(
-        Method::PUT,
-        "/api/hub/inbox/quiet/20260930_c/read",
-        None,
-        StatusCode::OK,
+    h.post_expect(
+        "/api/hub/mail/threads/quiet%2Fuser%2F20260930_c/read",
+        StatusCode::NO_CONTENT,
     )
     .await;
     let stopped = next_overview(&mut frames).await;
@@ -604,10 +606,8 @@ async fn the_hubs_inbox_actions_update_the_count_of_a_running_and_of_a_stopped_a
     );
 
     // An action that fails changes nothing.
-    h.expect(
-        Method::PUT,
-        "/api/hub/inbox/scout/missing/read",
-        None,
+    h.post_expect(
+        "/api/hub/mail/threads/scout%2Fuser%2Fmissing/read",
         StatusCode::NOT_FOUND,
     )
     .await;

@@ -24,12 +24,13 @@ use super::service::PushService;
 use super::types::{PushEvent, PushMessage, PushPayload};
 use crate::agent_watch::{AgentChange, AgentChangeKind, AgentChangeReceiver};
 use crate::directory::AgentDirectory;
-use crate::inbox;
+use crate::mail;
 use crate::overview::plain_preview;
 use crate::types::HubEvent;
 use residuum_background::team::{AgentErrorKind, AgentState, AgentSummary};
 use residuum_bus::remote_task::TrackedTask;
 use residuum_memory::types::Visibility;
+use residuum_workspace::inbox::{InboxKind, InboxRef};
 
 /// The title of an inbox item push whose item couldn't be read, or has none.
 const UNREADABLE_ITEM_TITLE: &str = "New inbox item";
@@ -353,7 +354,7 @@ impl Sender {
         let badge = self.badge().await;
         Some(match trigger {
             Trigger::InboxItem { agent, item_id } => {
-                let text = match inbox::active_text(self.directory.as_ref(), &agent, &item_id).await
+                let text = match mail::active_text(self.directory.as_ref(), &agent, &item_id).await
                 {
                     Ok(Some(text)) => Some(text),
                     Ok(None) => {
@@ -388,15 +389,10 @@ impl Sender {
     }
 
     /// The total of unread inbox items, which every push sets on the app
-    /// badge. A count that can't be made still lets the push go out, with 0.
+    /// badge. An inbox that can't be read counts as none, so the push still
+    /// goes out.
     async fn badge(&self) -> u32 {
-        match inbox::unread(self.directory.as_ref()).await {
-            Ok(unread) => unread.total,
-            Err(e) => {
-                tracing::warn!(error = %e, "couldn't count unread inbox items for a push's badge, so it carries 0");
-                0
-            }
-        }
+        mail::unread_total(self.directory.as_ref()).await
     }
 
     /// `at` as the hub's timezone reads it: the time of day, with the date
@@ -422,9 +418,16 @@ fn clock_text(at: DateTime<chrono_tz::Tz>, now: DateTime<chrono_tz::Tz>) -> Stri
     }
 }
 
-/// `value` escaped for a URL query.
-fn query_escape(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+/// The app address a push for the new user-inbox item `item_id` opens: its
+/// thread in the Inbox, or the Inbox itself for an id no ref can carry.
+fn inbox_item_target(agent: &str, item_id: &str) -> String {
+    match InboxRef::new(agent, InboxKind::User, item_id) {
+        Ok(item) => mail::thread_link(&item),
+        Err(e) => {
+            tracing::warn!(agent = %agent, item_id = %item_id, error = %e, "a new inbox item has no ref, so its push opens the Inbox");
+            "/inbox".to_string()
+        }
+    }
 }
 
 fn inbox_item_payload(
@@ -452,11 +455,7 @@ fn inbox_item_payload(
         agent,
         title,
         &body,
-        format!(
-            "/inbox?item={}:{}",
-            query_escape(agent),
-            query_escape(item_id)
-        ),
+        inbox_item_target(agent, item_id),
         format!("inbox:{agent}:{item_id}"),
         badge,
     )

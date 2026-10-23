@@ -47,7 +47,7 @@ pub trait AgentDirectory: TeamDirectory {
     fn agent_repair_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
 
     /// The agent's routes that only read and write its files (chat history,
-    /// usage, the user inbox, the raw A2A settings, and the workspace file
+    /// usage, the inbox attachments, the raw A2A settings, and the workspace file
     /// links), over its files on disk and with no checkpoint repository
     /// opened until a write needs one. The hub serves them from
     /// [`Self::agent_router`] while the agent is running, and from this
@@ -58,7 +58,7 @@ pub trait AgentDirectory: TeamDirectory {
     fn agent_file_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
 
     /// Where the agent's files are, for what the hub reads across agents
-    /// without going through an agent's own routes (the user inboxes).
+    /// without going through an agent's own routes (mail and the unread counts).
     ///
     /// # Errors
     /// [`LifecycleError::NotFound`] for an unknown agent.

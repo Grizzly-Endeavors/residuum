@@ -51,7 +51,7 @@ use residuum_workspace::watch::WatchHealth;
 
 mod artifacts_origin;
 mod events;
-mod inbox;
+mod mail;
 mod overview;
 mod overview_schedule;
 mod pairing;
@@ -1356,45 +1356,14 @@ async fn seed_inbox_item(agent_dir: &Path, id: &str, title: &str, attachment: &[
         .unwrap();
 }
 
-/// The JSON a listing shows for [`seed_inbox_item`]'s item `id` of agent
-/// `name`.
-fn listed_inbox_item(name: &str, id: &str, title: &str, read: bool) -> Value {
-    json!({
-        "id": id,
-        "title": title,
-        "body": format!("body of {title}"),
-        "source": "test",
-        "timestamp": "2026-09-30T08:15",
-        "read": read,
-        "attachments": [{
-            "filename": "note.txt",
-            "mime_type": "text/plain",
-            "size": 5,
-            "url": format!("/api/agents/{name}/inbox/{id}/attachments/0"),
-        }],
-    })
-}
-
 #[tokio::test]
-async fn the_user_inbox_is_served_from_disk_in_every_agent_state() {
+async fn inbox_attachments_are_served_from_disk_in_every_agent_state() {
     let h = Harness::new();
     h.add_failed_agent();
 
     for name in EVERY_STATE {
         seed_inbox_item(&h.agent_dir(name), "item1", "First", b"hello").await;
-        let inbox = format!("/api/agents/{name}/inbox");
-
-        let listed = h.get_expect(&inbox, StatusCode::OK).await;
-        assert_eq!(
-            listed,
-            json!([listed_inbox_item(name, "item1", "First", false)]),
-            "{name}"
-        );
-        h.get_expect(&format!("{inbox}/archive"), StatusCode::OK)
-            .await;
-
-        // The attachment link the listing handed out downloads the file.
-        let attachment = format!("{inbox}/item1/attachments/0");
+        let attachment = format!("/api/agents/{name}/inbox/item1/attachments/0");
         let (headers, bytes) = h.request_ok(Method::GET, &attachment, "").await;
         assert_eq!(bytes, b"hello", "{name}");
         assert_eq!(headers["content-type"], "text/plain", "{name}");
@@ -1403,80 +1372,15 @@ async fn the_user_inbox_is_served_from_disk_in_every_agent_state() {
             "{name}"
         );
         h.get_expect(
-            &format!("{inbox}/ghost/attachments/0"),
+            &format!("/api/agents/{name}/inbox/ghost/attachments/0"),
             StatusCode::NOT_FOUND,
         )
         .await;
-
-        // Marking read returns the item and persists on disk.
-        let read = h
-            .expect(
-                Method::PUT,
-                &format!("{inbox}/item1/read"),
-                None,
-                StatusCode::OK,
-            )
-            .await;
-        assert_eq!(
-            read,
-            listed_inbox_item(name, "item1", "First", true),
-            "{name}"
-        );
-        let on_disk = residuum_workspace::inbox::load_item(
-            &WorkspaceLayout::new(h.agent_dir(name))
-                .user_inbox_dir()
-                .join("item1.json"),
+        h.get_expect(
+            &format!("/api/agents/{name}/inbox/agent/ghost/attachments/0"),
+            StatusCode::NOT_FOUND,
         )
-        .await
-        .unwrap();
-        assert!(on_disk.read, "{name}: the read flag is saved");
-
-        // Archiving moves the item out of the active list, and the archive
-        // keeps serving its attachment.
-        let archived = h
-            .expect(
-                Method::POST,
-                &format!("{inbox}/item1/archive"),
-                None,
-                StatusCode::OK,
-            )
-            .await;
-        assert_eq!(archived, Value::Null, "{name}");
-        assert_eq!(
-            h.get_expect(&inbox, StatusCode::OK).await,
-            json!([]),
-            "{name}"
-        );
-        assert_eq!(
-            h.get_expect(&format!("{inbox}/archive"), StatusCode::OK)
-                .await,
-            json!([listed_inbox_item(name, "item1", "First", true)]),
-            "{name}"
-        );
-        let (_, archived_bytes) = h.request_ok(Method::GET, &attachment, "").await;
-        assert_eq!(archived_bytes, b"hello", "{name}: archived attachment");
-
-        // Restoring puts it back.
-        let restored = h
-            .expect(
-                Method::POST,
-                &format!("{inbox}/item1/restore"),
-                None,
-                StatusCode::OK,
-            )
-            .await;
-        assert_eq!(restored, Value::Null, "{name}");
-        assert_eq!(
-            h.get_expect(&inbox, StatusCode::OK).await,
-            json!([listed_inbox_item(name, "item1", "First", true)]),
-            "{name}"
-        );
-        assert_eq!(
-            h.get_expect(&format!("{inbox}/archive"), StatusCode::OK)
-                .await,
-            json!([]),
-            "{name}"
-        );
+        .await;
     }
 }
 
@@ -1559,11 +1463,9 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
 }
 
 /// The file routes a reader hits, none of which writes.
-const FILE_READ_ROUTES: [&str; 6] = [
+const FILE_READ_ROUTES: [&str; 4] = [
     "chat/history",
     "usage",
-    "inbox",
-    "inbox/archive",
     "inbox/item1/attachments/0",
     "a2a/agents/raw",
 ];
@@ -1599,21 +1501,13 @@ async fn reading_the_file_routes_opens_no_checkpoint_repositories() {
                 h.request_ok(Method::GET, &format!("/api/agents/{name}/{route}"), "")
                     .await;
             }
-            for (method, route) in [
-                (Method::PUT, "inbox/item1/read"),
-                (Method::POST, "inbox/item1/archive"),
-                (Method::POST, "inbox/item1/restore"),
-            ] {
-                h.request_ok(method, &format!("/api/agents/{name}/{route}"), "")
-                    .await;
-            }
         }
     }
     assert!(routers_built() > 0, "stopped agents use the file router");
     assert_eq!(
         opens(),
         0,
-        "history, usage and the inbox never touch the repositories"
+        "history, usage and inbox attachments never touch the repositories"
     );
 }
 

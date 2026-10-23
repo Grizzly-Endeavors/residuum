@@ -19,7 +19,6 @@ use axum::routing::{get, patch, post};
 use super::error::json_error;
 use super::lifecycle::parse_body;
 use crate::AgentDirectory;
-use crate::inbox;
 use crate::push::{
     PatchPushDeviceRequest, PushDeviceList, PushDeviceResponse, PushError, PushKeyResponse,
     PushService, PutPushDeviceRequest, validate_subscription,
@@ -114,14 +113,7 @@ async fn delete_device(State(state): State<PushApiState>, Path(id): Path<String>
 /// `POST /api/hub/push/devices/{id}/test` — send a test notification and
 /// answer once the push service has accepted or refused it.
 async fn test_device(State(state): State<PushApiState>, Path(id): Path<String>) -> Response {
-    let badge = match inbox::unread(state.directory.as_ref()).await {
-        Ok(unread) => unread.total,
-        Err(e) => {
-            // The count only sets the app badge, so a test still goes out.
-            tracing::warn!(error = %e, "couldn't count unread inbox items for a test notification's badge");
-            0
-        }
-    };
+    let badge = crate::mail::unread_total(state.directory.as_ref()).await;
     match state.push.send_test(&id, badge).await {
         Ok(result) => Json(result).into_response(),
         Err(e) => push_error_response(&e),

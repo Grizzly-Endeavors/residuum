@@ -6,8 +6,8 @@
 //!
 //! - `/api/hub/...`: agent lifecycle and status (`lifecycle`), the hub
 //!   WebSocket (`ws`, with its artifact events in `artifact_events` and
-//!   its session relay in `session_relay`), every agent's user inbox
-//!   (`inbox`), the team event
+//!   its session relay in `session_relay`), the user's mail with every
+//!   agent (`mail`), staged uploads (`uploads`), the team event
 //!   log (`events`), the team overview (`overview`), Web Push devices
 //!   (`push`), device pairing (`pairing`), and the routes that
 //!   exist once per process: hub config, secrets, keys, cloud, update,
@@ -29,8 +29,8 @@ mod artifacts_origin;
 mod dispatch;
 mod error;
 mod events;
-mod inbox;
 mod lifecycle;
+mod mail;
 mod overview;
 mod pairing;
 mod process;
@@ -84,9 +84,10 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
     let app = Router::new()
         .merge(lifecycle::routes(lifecycle_state))
         .merge(ws::routes(ws_state))
-        .merge(inbox::routes(inbox::InboxState {
+        .merge(mail::routes(mail::MailState {
             directory: Arc::clone(&directory),
             overview: Arc::clone(&hub.overview),
+            uploads: hub.uploads.clone(),
         }))
         .merge(uploads::routes(hub.uploads.clone()))
         .merge(push::routes(push::PushApiState {

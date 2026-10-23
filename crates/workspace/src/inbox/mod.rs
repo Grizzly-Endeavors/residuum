@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use residuum_bus::attachment::FileAttachment;
 use residuum_config::WorkspaceLayout;
@@ -58,64 +57,6 @@ pub struct InboxItem {
     /// or resolve as no parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<String>,
-}
-
-/// An attachment of a user inbox item as a client sees it: what it needs to
-/// show and fetch the file. The on-disk path never leaves the server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
-#[ts(export)]
-pub struct InboxAttachment {
-    /// The file's name.
-    pub filename: String,
-    /// The file's MIME type, from its extension.
-    pub mime_type: String,
-    /// The file's size in bytes.
-    #[ts(type = "number")]
-    pub size: u64,
-    /// Where to fetch the file: under the owning agent's routes, so a client
-    /// uses it as given.
-    pub url: String,
-}
-
-/// Resolve an item's attachments into servable metadata by statting each file
-/// under `attachments_root/<id>/`. Each URL is under the owning agent's routes
-/// (`/api/agents/{agent}/inbox/{id}/attachments/{index}`), which also serve a
-/// stopped agent's.
-///
-/// An attachment whose file can't be found on disk is dropped from the listing
-/// (rather than shown as a broken link) and logged — this can happen if a
-/// workspace was hand-edited, but should not happen in normal operation.
-pub async fn resolve_attachments(
-    agent: &str,
-    id: &str,
-    item: &InboxItem,
-    attachments_root: &Path,
-) -> Vec<InboxAttachment> {
-    let mut resolved = Vec::with_capacity(item.attachments.len());
-    for (index, stored) in item.attachments.iter().enumerate() {
-        let Some(file_name) = stored.file_name().and_then(|f| f.to_str()) else {
-            tracing::warn!(id = %id, stored = %stored.display(), "inbox attachment entry has no filename, omitting");
-            continue;
-        };
-        let path = attachments_root.join(id).join(file_name);
-        match tokio::fs::metadata(&path).await {
-            Ok(meta) => resolved.push(InboxAttachment {
-                filename: file_name.to_string(),
-                mime_type: residuum_bus::attachment::detect_mime_type(&path),
-                size: meta.len(),
-                url: format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
-            }),
-            Err(e) => {
-                tracing::warn!(
-                    id = %id,
-                    filename = %file_name,
-                    error = %e,
-                    "inbox attachment file missing on disk, omitting from listing"
-                );
-            }
-        }
-    }
-    resolved
 }
 
 /// Generate a filename for an inbox item: `{YYYYMMDD}_{sanitized_title}.json`.

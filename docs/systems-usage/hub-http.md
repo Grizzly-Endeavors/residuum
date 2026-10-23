@@ -79,7 +79,7 @@ Errors are `{ "error": message }`: `400` for a `status` other than `active` or `
 
 `POST /api/hub/uploads?filename=<name>` takes one file as the raw request body and stages it in the hub directory, under `uploads/`, so it works while no agent runs. The answer is `{ "id", "filename", "size" }`, and the id identifies the staged file to whatever uses it. The `filename` must be a base name: an empty name, `.`, `..`, a name with `/` or `\`, or one with a control character is `400`. An empty body is `400`, and a body over 50 MB is `413`. A failure to write the file is `500`.
 
-A staged upload is kept for 24 hours and removed after that. The hub removes expired uploads at startup and before each new upload is staged. Each upload is one directory holding its content and a `meta.json` with its filename, size, content type, and creation time.
+A staged upload is kept for 24 hours and removed after that. The hub removes expired uploads at startup and before each new upload is staged. Each upload is one directory holding its content, as a file under the name the client gave it, and a `meta.json` with its filename, size, content type, and creation time.
 
 ### Web Push devices
 

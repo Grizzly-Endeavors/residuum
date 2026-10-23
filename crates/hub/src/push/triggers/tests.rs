@@ -435,7 +435,10 @@ fn an_inbox_item_push_carries_the_items_title_and_the_start_of_its_body() {
     assert_eq!(payload.title, "Weekly report");
     assert_eq!(payload.body, "From scout: Done: the migration. Next: docs");
     assert_eq!(payload.tag, "inbox:scout:20260930_weekly_report");
-    assert_eq!(payload.target, "/inbox?item=scout:20260930_weekly_report");
+    assert_eq!(
+        payload.target,
+        "/inbox?thread=scout%2Fuser%2F20260930_weekly_report"
+    );
     assert_eq!(payload.badge, 4);
 }
 
@@ -490,7 +493,7 @@ fn an_item_id_with_unusual_characters_stays_one_query_value() {
 
     assert_eq!(
         payload.target,
-        "/inbox?item=scout:20260930_caf%C3%A9+%26+more%3D1"
+        "/inbox?thread=scout%2Fuser%2F20260930_caf%C3%A9+%26+more%3D1"
     );
     assert_eq!(
         payload.tag, "inbox:scout:20260930_café & more=1",

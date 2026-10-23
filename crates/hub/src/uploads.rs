@@ -4,8 +4,9 @@
 //! A later send (a chat message, or mail) names that id, and the sender moves
 //! the staged file into its destination. The store lives in the hub directory
 //! under `uploads/`, so it works while no agent runs. Each upload is one
-//! directory: `<id>/content` holds the bytes and `<id>/meta.json` the filename,
-//! size, content type, and creation time. Uploads older than
+//! directory: `<id>/content/<filename>` holds the bytes under the name the
+//! client gave, so a sender that copies the file by path keeps that name, and
+//! `<id>/meta.json` holds the filename, size, content type, and creation time. Uploads older than
 //! [`RETENTION`] are removed when the store prunes, which happens at startup
 //! and before every stage.
 
@@ -26,8 +27,8 @@ pub const RETENTION: Duration = Duration::hours(24);
 
 /// The directory under the hub directory that holds the uploads.
 const UPLOADS_DIR: &str = "uploads";
-/// The file holding an upload's bytes.
-const CONTENT_FILE: &str = "content";
+/// The directory holding an upload's bytes, as one file under its filename.
+const CONTENT_DIR: &str = "content";
 /// The sidecar file holding an upload's metadata.
 const META_FILE: &str = "meta.json";
 /// Prefix of the directory a new upload is written into before it is renamed
@@ -57,7 +58,8 @@ pub struct StagedUpload {
     pub content_type: String,
     /// When the upload was staged.
     pub created_at: DateTime<Utc>,
-    /// The file holding the content, for a sender to copy or move.
+    /// The file holding the content, for a sender to copy or move. Its file
+    /// name is [`Self::filename`].
     pub path: PathBuf,
 }
 
@@ -191,16 +193,28 @@ impl UploadStore {
         };
         let meta: UploadMeta = serde_json::from_str(&text).map_err(|source| UploadError::Io {
             action: "parse",
-            path: meta_path,
+            path: meta_path.clone(),
             source: std::io::Error::new(ErrorKind::InvalidData, source),
         })?;
+        // The name becomes a path segment, so a hand-edited sidecar can't
+        // point the content path outside the upload's directory.
+        if validate_filename(&meta.filename).is_err() {
+            return Err(UploadError::Io {
+                action: "parse",
+                path: meta_path,
+                source: std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "the stored filename is not a base name",
+                ),
+            });
+        }
         Ok(StagedUpload {
             id: id.to_string(),
-            filename: meta.filename,
             size: meta.size,
             content_type: meta.content_type,
             created_at: meta.created_at,
-            path: dir.join(CONTENT_FILE),
+            path: dir.join(CONTENT_DIR).join(&meta.filename),
+            filename: meta.filename,
         })
     }
 
@@ -357,11 +371,11 @@ impl UploadStore {
             })?;
         Ok(StagedUpload {
             id,
+            path: final_dir.join(CONTENT_DIR).join(&meta.filename),
             filename: meta.filename,
             size: meta.size,
             content_type: meta.content_type,
             created_at: meta.created_at,
-            path: final_dir.join(CONTENT_FILE),
         })
     }
 }
@@ -371,7 +385,9 @@ async fn write_upload(dir: &Path, meta: &UploadMeta, bytes: &[u8]) -> std::io::R
     tokio::fs::create_dir(dir).await?;
     let meta_json = serde_json::to_vec(meta).map_err(std::io::Error::other)?;
     tokio::fs::write(dir.join(META_FILE), meta_json).await?;
-    tokio::fs::write(dir.join(CONTENT_FILE), bytes).await
+    let content_dir = dir.join(CONTENT_DIR);
+    tokio::fs::create_dir(&content_dir).await?;
+    tokio::fs::write(content_dir.join(&meta.filename), bytes).await
 }
 
 /// Accept `filename` only when it is a base name: non-empty, not `.` or `..`,
@@ -430,6 +446,11 @@ mod tests {
         assert_eq!(staged.content_type, "text/plain");
         let resolved = store.resolve(&staged.id).await.unwrap();
         assert_eq!(resolved, staged);
+        assert_eq!(
+            resolved.path.file_name().and_then(|n| n.to_str()),
+            Some("notes.txt"),
+            "the content file carries the upload's name, so a copy by path keeps it"
+        );
         let content = tokio::fs::read(&resolved.path).await.unwrap();
         assert_eq!(content, b"hello");
     }
