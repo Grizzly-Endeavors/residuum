@@ -575,7 +575,7 @@ async fn send_message_and_receive_response() {
         &ClientMessage::SendMessage {
             id: "msg-1".to_string(),
             content: "hello".to_string(),
-            images: vec![],
+            attachments: vec![],
         },
     )
     .await;
@@ -647,7 +647,7 @@ async fn a_turn_with_a_tool_call_arrives_in_order_with_its_model_calls_numbered(
         &ClientMessage::SendMessage {
             id: "msg-1".to_string(),
             content: "what time is it".to_string(),
-            images: vec![],
+            attachments: vec![],
         },
     )
     .await;
@@ -763,7 +763,7 @@ async fn multiple_clients_receive_broadcast() {
         &ClientMessage::SendMessage {
             id: "multi-1".to_string(),
             content: "hello from A".to_string(),
-            images: vec![],
+            attachments: vec![],
         },
     )
     .await;
@@ -834,7 +834,7 @@ async fn client_disconnect_does_not_crash_gateway() {
             &ClientMessage::SendMessage {
                 id: "d-1".to_string(),
                 content: "before disconnect".to_string(),
-                images: vec![],
+                attachments: vec![],
             },
         )
         .await;
@@ -849,7 +849,7 @@ async fn client_disconnect_does_not_crash_gateway() {
         &ClientMessage::SendMessage {
             id: "d-2".to_string(),
             content: "after disconnect".to_string(),
-            images: vec![],
+            attachments: vec![],
         },
     )
     .await;

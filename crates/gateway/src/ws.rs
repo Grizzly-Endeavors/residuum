@@ -783,7 +783,7 @@ async fn save_upload(state: &GatewayState, upload: &StagedUpload) -> Result<Copi
     let info = AttachmentInfo {
         filename: upload.filename.clone(),
         size: u32::try_from(upload.size)
-            .map_err(|_| format!("file is {} bytes, too large to attach", upload.size))?,
+            .map_err(|_too_large| format!("file is {} bytes, too large to attach", upload.size))?,
         content_type: Some(upload.content_type.clone()),
     };
     let item = reserve_attachment_item(
@@ -1235,17 +1235,20 @@ mod tests {
         );
 
         assert_eq!(event.images.len(), 1, "a PNG is inlined for the model");
-        assert_eq!(event.images[0].media_type, "image/png");
+        assert_eq!(
+            event.images.first().map(|image| image.media_type.as_str()),
+            Some("image/png")
+        );
 
         assert_eq!(event.attachments.len(), 1, "a repeated id attaches once");
-        let attachment = &event.attachments[0];
+        let attachment = event.attachments.first().expect("one attachment");
         assert_eq!(attachment.filename, "photo.png");
 
         let items = residuum_workspace::inbox::list_items(&state.agent_inbox_dir)
             .await
             .unwrap();
         assert_eq!(items.len(), 1, "one companion item in the agent inbox");
-        let (file_name, item) = &items[0];
+        let (file_name, item) = items.first().expect("one companion item");
         assert_eq!(
             file_name.strip_suffix(".json"),
             Some(attachment.item_id.as_str()),
