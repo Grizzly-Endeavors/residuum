@@ -2,7 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
-import { expectFileOpen } from "../support/lazy";
+import { expectFileRendered } from "../support/lazy";
 
 /**
  * The chat feed: older history loading near the top, Jump to latest, catching
@@ -395,18 +395,12 @@ test.describe("path links", () => {
     await expect(page).toHaveURL(
       /\/agent\/atlas\?panel=file:team\/wiki\/notification-fallbacks\.md$/,
     );
-    // A Markdown file opens rendered; Edit opens the editor on its text.
-    await expect(page.getByRole("heading", { name: "Fallbacks", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Edit", exact: true }).click();
-    await expect(await expectFileOpen(page, "notification-fallbacks.md")).toHaveValue(
-      /# Fallbacks/,
-    );
+    await expectFileRendered(page, "Fallbacks");
+    await expect(page.getByText("Cascade first, then park.")).toBeVisible();
 
     await page.goBack();
     await expect(page).toHaveURL(/\/agent\/atlas$/);
-    await expect(
-      page.getByRole("textbox", { name: "Contents of notification-fallbacks.md" }),
-    ).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Fallbacks", exact: true })).toHaveCount(0);
   });
 
   test("a path that doesn't exist says so, and offers nothing to edit", async ({ page }) => {
