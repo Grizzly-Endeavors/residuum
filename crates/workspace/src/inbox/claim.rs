@@ -245,13 +245,16 @@ impl ClaimedItem {
     /// `file_name` in [`Self::attachments_dir`]: relative to the workspace root,
     /// under the user or agent inbox the claim is in.
     ///
+    /// The path is always `/`-separated, whatever the platform: the item JSON
+    /// stores it, so a Windows item must read the same as one written anywhere
+    /// else. Reads go through `Path`, which accepts either separator.
+    ///
     /// An inbox outside the workspace layout has no workspace root to be
     /// relative to, so its paths are relative to the inbox directory.
     #[must_use]
     pub fn recorded_attachment_path(&self, file_name: &str) -> PathBuf {
-        workspace_relative_attachments_dir(&self.inbox_dir)
-            .join(&self.id)
-            .join(file_name)
+        let attachments = workspace_relative_attachments_dir(&self.inbox_dir);
+        PathBuf::from(format!("{attachments}/{}/{file_name}", self.id))
     }
 
     /// Write the item's JSON atomically under the claimed id, which completes
@@ -367,8 +370,9 @@ fn archive_sibling(inbox_dir: &Path) -> Option<PathBuf> {
 
 /// The user or agent inbox's attachments directory relative to the workspace
 /// root (`inbox/<kind>/attachments`), taken from the layout rooted at the empty
-/// path. For an inbox directory outside the layout, plain `attachments`.
-fn workspace_relative_attachments_dir(inbox_dir: &Path) -> PathBuf {
+/// path, joined with `/`. For an inbox directory outside the layout, plain
+/// `attachments`.
+fn workspace_relative_attachments_dir(inbox_dir: &Path) -> String {
     let layout = WorkspaceLayout::new(PathBuf::new());
     [
         (layout.user_inbox_dir(), layout.user_inbox_attachments_dir()),
@@ -380,8 +384,14 @@ fn workspace_relative_attachments_dir(inbox_dir: &Path) -> PathBuf {
     .into_iter()
     .find(|(inbox, _)| inbox_dir.ends_with(inbox))
     .map_or_else(
-        || PathBuf::from("attachments"),
-        |(_, attachments)| attachments,
+        || "attachments".to_string(),
+        |(_, attachments)| {
+            attachments
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        },
     )
 }
 
@@ -541,6 +551,38 @@ mod tests {
             claimed.id(),
             "20260225_gone_3",
             "an archived item keeps its id, JSON or attachments directory alike"
+        );
+    }
+
+    #[tokio::test]
+    async fn recorded_attachment_path_is_slash_separated_on_every_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = workspace_inbox(dir.path()).await;
+        let claim = ClaimedItem::claim(&inbox, "slashes", test_now())
+            .await
+            .unwrap();
+
+        let recorded = claim.recorded_attachment_path("report.pdf");
+
+        assert_eq!(
+            recorded.to_str(),
+            Some(format!("inbox/agent/attachments/{}/report.pdf", claim.id()).as_str()),
+        );
+    }
+
+    #[tokio::test]
+    async fn recorded_user_attachment_path_is_slash_separated() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = WorkspaceLayout::new(dir.path()).user_inbox_dir();
+        let claim = ClaimedItem::claim(&inbox, "user slashes", test_now())
+            .await
+            .unwrap();
+
+        let recorded = claim.recorded_attachment_path("a.txt");
+
+        assert_eq!(
+            recorded.to_str(),
+            Some(format!("inbox/user/attachments/{}/a.txt", claim.id()).as_str()),
         );
     }
 

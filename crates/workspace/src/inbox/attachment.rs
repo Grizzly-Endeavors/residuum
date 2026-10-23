@@ -341,10 +341,8 @@ impl AttachmentItem {
             path: self
                 .claim
                 .recorded_attachment_path(&saved.file_name)
-                .components()
-                .map(|part| part.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
+                .to_string_lossy()
+                .into_owned(),
         };
 
         self.file_companion_item(saved, info, author).await;
