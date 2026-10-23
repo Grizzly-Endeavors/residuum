@@ -27,7 +27,7 @@ title: string,
  */
 body: string, 
 /**
- * The app path a click opens, such as `/inbox?item=scout:note-1`.
+ * The app path a click opens, such as `/inbox?thread=scout%2Fuser%2Fnote-1`.
  */
 target: string, 
 /**
