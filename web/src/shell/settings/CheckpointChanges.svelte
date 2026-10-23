@@ -136,7 +136,7 @@
                 <Button
                   size="sm"
                   variant="quiet"
-                  aria-pressed={shown?.mode === "diff"}
+                  pressed={shown?.mode === "diff"}
                   aria-label="Changes to {change.path}"
                   onclick={() => void show(change.path, "diff")}>Changes</Button
                 >
@@ -146,7 +146,7 @@
                   <Button
                     size="sm"
                     variant="quiet"
-                    aria-pressed={shown?.mode === "file"}
+                    pressed={shown?.mode === "file"}
                     aria-label="{change.path} as it was then"
                     onclick={() => void show(change.path, "file")}>As it was</Button
                   >
@@ -248,11 +248,6 @@
     display: flex;
     gap: var(--space-4);
     margin-left: auto;
-
-    /* The view shown below the row reads as chosen. */
-    & :global(.ui-button[aria-pressed="true"]) {
-      background: var(--color-stone-3);
-    }
   }
 
   .path-note {

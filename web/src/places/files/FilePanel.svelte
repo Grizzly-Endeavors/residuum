@@ -9,13 +9,17 @@
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import { panelFile, type FileBuffer } from "./file-buffer.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
+  import FileRendered from "./FileRendered.svelte";
   import { fileSourceFor, sameSource } from "./file-source";
   import TextEditor from "./TextEditor.svelte";
 
   // A file in the context panel, from the Files places' trees and from
   // `panel=file:` links: the editor with live validation, Save and Discard,
-  // the save conflict, and the file's history. Unsaved edits are asked about
-  // before anything closes the panel or shows another file.
+  // the save conflict, and the file's history. A Markdown file shows rendered
+  // until Edit opens the editor, and the rendered view shows the buffer's text,
+  // edits included, with the file's problems in a banner that opens the
+  // editor. Unsaved edits are asked about before anything closes the panel or
+  // shows another file.
 
   interface Props {
     /** The open file, which outlives this view while the panel stays open. */
@@ -31,6 +35,9 @@
 
   const source = $derived(buffer.source);
   let historyOpen = $state(false);
+
+  const isMarkdown = $derived(/\.md$/i.test(buffer.path));
+  const rendered = $derived(isMarkdown && !buffer.editing);
 
   const inFolder = $derived(buffer.path.includes("/"));
 
@@ -88,12 +95,16 @@
     return () => window.clearTimeout(timer);
   });
 
+  // Ctrl or Cmd+S saves the open file while it has edits, in either view and
+  // from anywhere in the app's window (the header's Edit button included), with
+  // the same save as the Save button. Without edits the browser keeps its own.
   function saveOnShortcut(event: KeyboardEvent): void {
-    if ((event.metaKey || event.ctrlKey) && event.key === "s") {
-      event.preventDefault();
-      void buffer.save();
-    }
+    if (!buffer.dirty || !(event.metaKey || event.ctrlKey) || event.key !== "s") return;
+    event.preventDefault();
+    void buffer.save();
   }
+
+  const problemCount = $derived(buffer.diagnostics.length);
 </script>
 
 <PanelHeader
@@ -102,18 +113,30 @@
   title={buffer.name}
   code
   meta={inFolder ? folder : undefined}
-  actions={buffer.status === "ready" ? history : undefined}
+  actions={buffer.status === "ready" ? actions : undefined}
 />
 
 {#snippet folder()}
   <code class="file-panel-path">{buffer.path}</code>
 {/snippet}
 
-{#snippet history()}
+{#snippet actions()}
+  {#if isMarkdown}
+    <Button
+      class="file-panel-edit"
+      variant="quiet"
+      size="sm"
+      icon="edit"
+      pressed={!rendered}
+      onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
+    >
+  {/if}
   <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
     >History</Button
   >
 {/snippet}
+
+<svelte:window onkeydown={saveOnShortcut} />
 
 <div class="file-panel">
   {#if buffer.status === "loading"}
@@ -148,14 +171,35 @@
     {:else if buffer.error}
       <Banner tone="warn" edge ondismiss={() => (buffer.error = "")}>{buffer.error}</Banner>
     {/if}
-    <TextEditor
-      layout="panel"
-      name={buffer.name}
-      value={buffer.text}
-      problems={buffer.diagnostics}
-      oninput={(text) => (buffer.text = text)}
-      onkeydown={saveOnShortcut}
-    />
+    {#if rendered}
+      {#if problemCount > 0}
+        <Banner tone="warn" edge>
+          {problemCount === 1
+            ? "This file has a problem."
+            : `This file has ${problemCount} problems.`}
+          {#snippet actions()}
+            <Button variant="quiet" size="sm" onclick={() => (buffer.editing = true)}
+              >Edit to see them</Button
+            >
+          {/snippet}
+        </Banner>
+      {/if}
+      <div class="file-panel-rendered">
+        {#if buffer.text.trim() === ""}
+          <p class="file-panel-empty">Nothing written yet. Edit to add text.</p>
+        {:else}
+          <FileRendered content={buffer.text} path={buffer.path} {source} mode="markdown" />
+        {/if}
+      </div>
+    {:else}
+      <TextEditor
+        layout="panel"
+        name={buffer.name}
+        value={buffer.text}
+        problems={buffer.diagnostics}
+        oninput={(text) => (buffer.text = text)}
+      />
+    {/if}
     {#if buffer.dirty}
       <div class="file-panel-save">
         <span class="file-panel-save-note"><Badge tone="accent" dot>Unsaved changes</Badge></span>
@@ -205,6 +249,18 @@
 
   .file-panel-path {
     font-size: var(--font-size-xs);
+  }
+
+  .file-panel-rendered {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: var(--space-16) var(--space-18);
+  }
+
+  .file-panel-empty {
+    margin: 0;
+    color: var(--color-text-3);
   }
 
   .file-panel-save {

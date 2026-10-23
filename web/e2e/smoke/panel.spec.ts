@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
-import { expectFileOpen } from "../support/lazy";
+import { expectFileRendered } from "../support/lazy";
 
 /**
  * The context panel: opened and closed by link and by Back, resized at wide
@@ -107,7 +107,7 @@ test("a linked file opens in the panel, and Esc closes it by replacing the URL",
   const panel = contextPanel(page, isMobile, "index.md");
   await expect(panel).toBeVisible();
   await expect(panel.getByText("team/wiki/index.md").first()).toBeVisible();
-  await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
+  await expectFileRendered(page, "Wiki Index");
   await scanPanel(page, isMobile);
 
   await page.keyboard.press("Escape");
@@ -122,7 +122,7 @@ test("a linked file opens in the panel, and Esc closes it by replacing the URL",
 test("on Shared files, a file is read from the team's folder", async ({ page, isMobile }) => {
   await page.goto("/team/files?panel=file:wiki/index.md");
   await expect(contextPanel(page, isMobile, "index.md")).toBeVisible();
-  await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
+  await expectFileRendered(page, "Wiki Index");
 });
 
 // Each URL, and where it is corrected to.

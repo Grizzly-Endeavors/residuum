@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import {
-  expectFileOpen,
+  expectFileRendered,
   expectPaletteOpen,
   expectSettingsOpen,
   expectSetupOpen,
@@ -94,7 +94,7 @@ test.describe("the production build", { tag: "@preview" }, () => {
     expect(loaded(requested, "FilePanel")).toBe(false);
 
     await page.goto("/agent/atlas/files?panel=file:SOUL.md");
-    await expectFileOpen(page, "SOUL.md");
+    await expectFileRendered(page, "Soul");
     expect(loaded(requested, "FilePanel")).toBe(true);
   });
 

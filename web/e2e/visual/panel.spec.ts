@@ -1,5 +1,5 @@
 import { expect, test } from "../support/fixtures";
-import { expectFileOpen } from "../support/lazy";
+import { expectFileRendered } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
 
 /** The context panel's design reference: a file open beside the chat. */
@@ -10,7 +10,7 @@ test.describe("context panel", { tag: "@visual" }, () => {
   test("a file beside the chat", async ({ page }) => {
     await page.goto("/agent/atlas?panel=file:team/wiki/index.md");
     await expect(page.getByRole("heading", { name: "index.md" })).toBeVisible();
-    await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
+    await expectFileRendered(page, "Wiki Index");
     await expectScreenshot(page.getByRole("complementary", { name: "index.md" }), "panel-file");
   });
 });

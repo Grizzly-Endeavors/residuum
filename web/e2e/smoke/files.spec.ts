@@ -37,10 +37,17 @@ async function onDisk(page: Page, path: string): Promise<string> {
   return response.text();
 }
 
+/** A Markdown file opens rendered; Edit opens its editor. Other files open in the editor already. */
+async function showEditor(panel: Locator, name: string): Promise<void> {
+  if (name.endsWith(".md")) await panel.getByRole("button", { name: "Edit" }).click();
+}
+
 async function openFile(page: Page, isMobile: boolean, name: string): Promise<Locator> {
   await row(page, name).click();
+  const panel = filePanel(page, isMobile, name);
+  await showEditor(panel, name);
   await expectFileOpen(page, name);
-  return filePanel(page, isMobile, name);
+  return panel;
 }
 
 async function rowMenu(page: Page, name: string): Promise<void> {
@@ -140,6 +147,7 @@ test("a linked file that doesn't exist says so, and offers nothing else", async 
 test("History restores an earlier version", async ({ page, isMobile }) => {
   await page.goto("/agent/atlas/files?panel=file:SOUL.md");
   const panel = filePanel(page, isMobile, "SOUL.md");
+  await showEditor(panel, "SOUL.md");
   await expect(editor(panel, "SOUL.md")).toHaveValue(/Craft/);
   await panel.getByRole("button", { name: "History" }).click();
 
@@ -169,6 +177,7 @@ test("a save after the file changed on disk asks, and overwrites only when told"
 }) => {
   await page.goto("/agent/atlas/files?panel=file:SOUL.md");
   const panel = filePanel(page, isMobile, "SOUL.md");
+  await showEditor(panel, "SOUL.md");
   // The file has to be in the editor before the edit starts, or loading it replaces the edit.
   await expect(await expectFileOpen(page, "SOUL.md")).toHaveValue(/Craft/);
   await editor(panel, "SOUL.md").press("End");
