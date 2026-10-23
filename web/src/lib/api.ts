@@ -1570,13 +1570,20 @@ export async function restoreMailThread(threadId: string): Promise<void> {
 /**
  * Stage a file for a message to attach: the body is the file's bytes, so
  * nothing is encoded. Throws `ApiError`; a file over `MAX_UPLOAD_BYTES` is
- * answered `413`.
+ * answered `413`. Aborting `signal` cancels the upload, so one the user
+ * removed before it finished stages nothing; the call then throws the
+ * `AbortError` the fetch rejects with.
  */
-export async function uploadFile(file: File | Blob, filename: string): Promise<UploadedFile> {
+export async function uploadFile(
+  file: File | Blob,
+  filename: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<UploadedFile> {
   return apiFetch<UploadedFile>(hubPath(`/uploads${queryString({ filename })}`), {
     method: "POST",
     headers: { "Content-Type": file.type || "application/octet-stream" },
     body: file,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 }
 

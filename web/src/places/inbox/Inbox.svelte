@@ -1,51 +1,43 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { hub } from "../../lib/hub.svelte";
-  import type { HubInboxItem } from "../../lib/hub-types";
-  import { inbox, inboxItemKey, type InboxItemRef, type InboxTab } from "../../lib/inbox.svelte";
-  import { notifications } from "../../lib/notifications.svelte";
+  import type { MailFolder } from "../../lib/hub-types";
+  import { mail } from "../../lib/mail.svelte";
   import { overview } from "../../lib/overview.svelte";
-  import { router } from "../../lib/router.svelte";
-  import { userInboxRef, type InboxPlace } from "../../lib/routes";
-  import { Banner, Button, EmptyState, SelectField, Skeleton, Tabs } from "../../lib/ui";
+  import { router, type PlaceExtras } from "../../lib/router.svelte";
+  import { formatLocation, locationAt, type InboxPlace } from "../../lib/routes";
+  import { Badge, Banner, Button, EmptyState, SelectField, Skeleton } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
-  import InboxItem from "./InboxItem.svelte";
+  import MailCompose from "./MailCompose.svelte";
+  import MailThread from "./MailThread.svelte";
+  import MailThreadRow from "./MailThreadRow.svelte";
+  import { emptyListText, FOLDERS, panelOfThread } from "./mail-model";
 
-  // The Inbox: every agent's user inbox in one list, newest first, filtered
-  // to one agent or not, with the archive on its own tab. The filter, the tab
-  // and the open item live in the URL. Opening an item pushes, so Back closes
-  // it; switching items, the filter and the tab replace.
+  // The Inbox: mail between the user and their agents, one folder at a time
+  // (Inbox, Sent, Archived), for every agent or one. The list sits beside the
+  // open thread or New message while there is room for both, and gives way to
+  // it when there isn't. The folder, the filter, the open thread and the New
+  // message live in the URL. Opening a thread or a New message from the list
+  // pushes, so Back closes it; switching threads, folders and the filter
+  // replace. A file panel that shows one of the open thread's attachments
+  // belongs to the thread and closes with it.
 
   let { place }: { place: InboxPlace } = $props();
 
-  /** The item a thread ref names, when it is one of the user's own inbox items. */
-  function itemOfThread(thread: string | null): InboxItemRef | null {
-    const parts = thread?.split("/");
-    const [agent, kind, id] = parts ?? [];
-    return parts?.length === 3 && kind === "user" && agent !== undefined && id !== undefined
-      ? { agent, id }
-      : null;
-  }
-
-  /** The item the place has open, when it has one rather than a New message. */
-  function openItemOf(current: InboxPlace): InboxItemRef | null {
-    return current.compose === null ? itemOfThread(current.thread) : null;
-  }
-
   const ALL = "";
+  const folder = $derived(place.folder);
   const agent = $derived(place.agent);
-  const tab = $derived<InboxTab>(place.folder === "archived" ? "archived" : "active");
-  const openItem = $derived(openItemOf(place));
-  const openKey = $derived(openItem === null ? null : inboxItemKey(openItem));
+  const composing = $derived(place.compose !== null);
+  /** The ref of the open thread; a New message closes it. */
+  const ref = $derived(place.compose === null ? place.thread : null);
+  const itemOpen = $derived(composing || ref !== null);
+  const missing = $derived(ref !== null && mail.openRef === ref && mail.threadStatus === "missing");
+  /** The open thread's own id once loaded, else the ref it was asked for by. */
+  const openId = $derived(
+    mail.thread !== null && mail.openRef === ref ? mail.thread.thread_id : ref,
+  );
 
-  /** The open item when the list doesn't hold it. */
-  const apart = $derived.by(() => {
-    const item = inbox.openedApart;
-    if (item === null || inboxItemKey(item) !== openKey) return null;
-    return inbox.items.some((held) => inboxItemKey(held) === openKey) ? null : item;
-  });
-
-  /** Unread items, for everyone or for the filtered agent. */
+  /** Unread items, for everyone or for the filtered agent, from the overview. */
   const unread = $derived(
     agent === null ? overview.inboxUnread : (overview.overviewOf(agent)?.inbox_unread ?? 0),
   );
@@ -57,12 +49,15 @@
       return {
         value: summary.name,
         label:
-          tab === "active" && count > 0
+          folder === "inbox" && count > 0
             ? `${summary.name} (${String(count)} unread)`
             : summary.name,
       };
     }),
   ]);
+
+  let listElement = $state<HTMLElement>();
+  let paneElement = $state<HTMLElement>();
 
   /** The clock relative times read, moving each half minute. */
   let now = $state(Date.now());
@@ -73,81 +68,177 @@
     return () => window.clearInterval(timer);
   });
 
-  // The list follows the filter and the tab, and is fetched each time the Inbox opens.
+  // The list follows the folder and the filter, and is fetched each time the Inbox opens.
   $effect(() => {
-    const list = { agent, tab };
-    untrack(() => void inbox.show(list));
+    const list = { folder, agent };
+    untrack(() => void mail.show(list));
   });
 
-  // New items arrive as the overview's counts change.
+  // New mail arrives as the overview's counts change.
   $effect(() => {
     const counts = overview.unreadCounts();
     untrack(() => {
-      inbox.followCounts(counts);
+      mail.followCounts(counts);
     });
   });
   $effect(() => () => {
-    inbox.leave();
+    mail.leave();
+    mail.close();
   });
 
-  // Opening an item, from here or from a link, marks it read.
+  // Leaving with an unsent New message, or closing the page with an unsent
+  // reply, asks first.
+  $effect(() => router.guard.register((target) => mail.draftLoss(target)));
+
+  // The thread in the URL is open, from here or from a link.
   $effect(() => {
-    if (openKey === null) return;
+    const opened = ref;
     untrack(() => {
-      if (openItem !== null) void reveal(openItem);
+      if (opened === null) mail.close();
+      else void reveal(opened);
     });
   });
 
-  async function reveal(ref: InboxItemRef): Promise<void> {
-    const outcome = await inbox.open(ref);
+  // A New message in the URL is the store's draft; one that closes without
+  // sending (Cancel, Back, or leaving once the guard was answered) is dropped.
+  $effect(() => {
+    const open = composing;
+    untrack(() => {
+      if (open && place.compose !== null) mail.openNewMessage(place.compose.to);
+      else mail.discardNewMessage();
+    });
+  });
+
+  async function reveal(asked: string): Promise<void> {
+    const outcome = await mail.open(asked);
+    if (outcome.status !== "shown") return;
     const current = router.place;
-    if (current.kind !== "inbox") return;
-    const open = openItemOf(current);
-    if (open === null || inboxItemKey(open) !== inboxItemKey(ref)) return;
-    if (outcome === "missing") {
-      notifications.surface("notice", `That item isn't in ${ref.agent}'s inbox any more.`);
-      void router.replacePlace({ ...current, thread: null });
-      return;
+    if (current.kind !== "inbox" || current.compose !== null || current.thread !== asked) return;
+    // Any message's ref opens its thread; the address names the thread itself.
+    if (outcome.threadId !== asked) {
+      const panel = router.panel;
+      void router.replacePlace(
+        { ...current, thread: outcome.threadId },
+        panel === null ? {} : { panel },
+      );
     }
-    document.getElementById(rowId(ref))?.scrollIntoView({ block: "nearest" });
+    await tick();
+    document.getElementById(rowId(outcome.threadId))?.scrollIntoView({ block: "nearest" });
   }
 
-  function rowId(ref: InboxItemRef): string {
-    return `inbox-item-${inboxItemKey(ref)}`;
+  function rowId(threadId: string): string {
+    return `mail-row-${threadId}`;
   }
 
-  /** Open an item, close it, or switch to it from the one that is open. */
-  function toggle(item: HubInboxItem): void {
-    const ref: InboxItemRef = { agent: item.agent, id: item.id };
-    const opened = { ...place, thread: userInboxRef(ref.agent, ref.id), compose: null };
-    if (inboxItemKey(ref) === openKey) void router.closeItem();
-    else if (openItem === null) void router.openPlace(opened);
-    else void router.replacePlace(opened);
+  /** The panel to carry along when the open thread changes: any but one of its attachments. */
+  function panelKept(): PlaceExtras {
+    const panel = router.panel;
+    return panel === null || panelOfThread(mail.thread, panel) ? {} : { panel };
   }
 
-  function showList(next: { agent?: string | null; tab?: InboxTab }): void {
-    void router.replacePlace({
+  /** A plain click opens the place in the app; one asking for a new tab is left to the browser. */
+  function followsInPlace(event: MouseEvent): boolean {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+      return false;
+    }
+    event.preventDefault();
+    return true;
+  }
+
+  function threadPlace(threadId: string): InboxPlace {
+    return { ...place, thread: threadId, compose: null };
+  }
+
+  async function openThread(threadId: string): Promise<void> {
+    if (threadId === openId && !composing) return;
+    const next = threadPlace(threadId);
+    const moved = itemOpen
+      ? await router.replacePlace(next, panelKept())
+      : await router.openPlace(next, panelKept());
+    if (moved) await focusPaneWhenAlone();
+  }
+
+  function newMessage(): void {
+    if (composing) return;
+    const next: InboxPlace = {
       ...place,
-      folder: (next.tab ?? tab) === "archived" ? "archived" : "inbox",
+      thread: null,
+      compose: { to: agent === null ? [] : [agent] },
+    };
+    const go = itemOpen
+      ? router.replacePlace(next, panelKept())
+      : router.openPlace(next, panelKept());
+    void go.then((moved) => (moved ? focusPaneWhenAlone() : undefined));
+  }
+
+  function listPlace(next: { folder?: MailFolder; agent?: string | null }): InboxPlace {
+    return {
+      ...place,
+      folder: next.folder ?? folder,
       agent: next.agent === undefined ? agent : next.agent,
       thread: null,
       compose: null,
-    });
+    };
   }
 
-  const TABS = $derived([
-    { value: "active" as const, label: "Inbox", count: unread },
-    { value: "archived" as const, label: "Archived" },
-  ]);
+  function showList(next: { folder?: MailFolder; agent?: string | null }): void {
+    void router.replacePlace(listPlace(next), panelKept());
+  }
+
+  /** Back to the list, closing the panel when it shows one of the thread's attachments. */
+  async function backToList(): Promise<void> {
+    const left = openId;
+    if (panelOfThread(mail.thread, router.panel) && !(await router.closePanel())) return;
+    if (!(await router.closeItem())) return;
+    await tick();
+    const row = left === null ? null : document.getElementById(rowId(left));
+    (row ?? listElement)?.focus();
+  }
+
+  /** The message went: open its thread in Sent. */
+  function sent(threadId: string): void {
+    void router.replacePlace(
+      { ...place, folder: "sent", thread: threadId, compose: null },
+      panelKept(),
+    );
+  }
+
+  /** When the list made way for what opened, focus follows it there instead of being dropped. */
+  async function focusPaneWhenAlone(): Promise<void> {
+    await tick();
+    if (listElement && getComputedStyle(listElement).display === "none") paneElement?.focus();
+  }
 </script>
 
-<PlaceHeader title="Inbox" sub="Things your agents want you to see" />
+<PlaceHeader title="Inbox" sub="Mail between you and your agents">
+  <span class="mail-header-actions">
+    <Button variant="primary" icon="edit" onclick={newMessage}>New message</Button>
+  </span>
+</PlaceHeader>
 
-<div class="inbox-scroll">
-  <section class="inbox" aria-label="Inbox">
-    <div class="inbox-filter">
+<div class="mail" data-open={itemOpen || undefined}>
+  <section class="mail-list" aria-label="Conversations" tabindex="-1" bind:this={listElement}>
+    <div class="mail-tools">
+      <nav class="mail-folders" aria-label="Folders">
+        {#each FOLDERS as entry (entry.folder)}
+          <a
+            class="mail-folder"
+            href={formatLocation(locationAt(listPlace({ folder: entry.folder })))}
+            aria-current={entry.folder === folder ? "page" : undefined}
+            onclick={(event) => {
+              if (followsInPlace(event) && entry.folder !== folder)
+                showList({ folder: entry.folder });
+            }}
+          >
+            {entry.label}
+            {#if entry.folder === "inbox"}
+              <Badge count={unread} label="unread" />
+            {/if}
+          </a>
+        {/each}
+      </nav>
       <SelectField
-        label="Show items from"
+        label="Show conversations with"
         labelHidden
         value={agent ?? ALL}
         options={filterOptions}
@@ -155,169 +246,271 @@
       />
     </div>
 
-    <Tabs
-      label="Inbox or archive"
-      tabs={TABS}
-      selected={tab}
-      onchange={(next) => showList({ tab: next })}
-    >
-      {#snippet children(shown)}
-        {#if inbox.openError}
-          <Banner tone="error">
-            {inbox.openError}
-            {#snippet actions()}
-              {#if openItem}
-                {@const ref = openItem}
-                <Button variant="quiet" size="sm" onclick={() => void reveal(ref)}>Try again</Button
-                >
-              {/if}
-            {/snippet}
-          </Banner>
-        {/if}
+    <div class="mail-rows">
+      {#if mail.loadError}
+        <Banner tone="error">
+          {mail.loadError}
+          {#snippet actions()}
+            <Button variant="quiet" size="sm" onclick={() => void mail.reload()}>Try again</Button>
+          {/snippet}
+        </Banner>
+      {/if}
 
-        {#if apart}
-          <ul class="inbox-list inbox-apart" aria-label="Opened item">
-            {@render row(apart)}
-          </ul>
+      {#if !mail.loaded}
+        {#if mail.loadError === null}
+          <div class="mail-loading">
+            <Skeleton shape="block" height="64px" label="Loading conversations" />
+            <Skeleton shape="block" height="64px" />
+            <Skeleton shape="block" height="64px" />
+            <Skeleton shape="block" height="64px" />
+          </div>
         {/if}
-
-        {#if inbox.loadError}
-          <Banner tone="error">
-            {inbox.loadError}
-            {#snippet actions()}
-              <Button variant="quiet" size="sm" onclick={() => void inbox.reload()}
-                >Try again</Button
+      {:else if mail.threads.length === 0}
+        <EmptyState>
+          {emptyListText(folder, agent)}
+          {#snippet actions()}
+            {#if folder === "sent"}
+              <Button variant="quiet" size="sm" icon="edit" onclick={newMessage}>New message</Button
               >
-            {/snippet}
-          </Banner>
-        {/if}
-
-        {#if !inbox.loaded}
-          {#if inbox.loadError === null}
-            <div class="inbox-loading">
-              <Skeleton shape="block" height="50px" label="Loading your inbox" />
-              <Skeleton shape="block" height="50px" />
-              <Skeleton shape="block" height="50px" />
-            </div>
-          {/if}
-        {:else if inbox.items.length === 0}
-          <EmptyState>
-            {#if shown === "archived" && agent === null}
-              Nothing is archived. Archived items wait here until you move them back.
-            {:else if shown === "archived"}
-              Nothing from {agent} is archived.
-            {:else if agent === null}
-              You're all caught up. Agents put things here when they need you to see them.
-            {:else}
-              Nothing from {agent} right now.
             {/if}
-          </EmptyState>
-        {:else}
-          <ul class="inbox-list" aria-label={shown === "archived" ? "Archived items" : "Items"}>
-            {#each inbox.items as item (inboxItemKey(item))}
-              {@render row(item)}
-            {/each}
-          </ul>
-          {#if inbox.moreError}
-            <p class="inbox-problem" role="alert">
-              {inbox.moreError}
-              <Button variant="quiet" size="sm" onclick={() => void inbox.loadMore()}
-                >Try again</Button
-              >
-            </p>
-          {:else if inbox.nextCursor !== null}
-            <div class="inbox-more">
-              <Button
-                variant="quiet"
-                size="sm"
-                loading={inbox.loadingMore}
-                onclick={() => void inbox.loadMore()}>Show older items</Button
-              >
-            </div>
-          {/if}
+          {/snippet}
+        </EmptyState>
+      {:else}
+        <ul class="mail-row-list">
+          {#each mail.threads as summary (summary.thread_id)}
+            <li>
+              <MailThreadRow
+                {summary}
+                {now}
+                href={formatLocation(locationAt(threadPlace(summary.thread_id)))}
+                selected={summary.thread_id === openId && !composing}
+                onopen={(event) => {
+                  if (followsInPlace(event)) void openThread(summary.thread_id);
+                }}
+              />
+            </li>
+          {/each}
+        </ul>
+        {#if mail.moreError}
+          <p class="mail-problem" role="alert">
+            {mail.moreError}
+            <Button variant="quiet" size="sm" onclick={() => void mail.loadMore()}>Try again</Button
+            >
+          </p>
+        {:else if mail.next !== null}
+          <div class="mail-more">
+            <Button
+              variant="quiet"
+              size="sm"
+              loading={mail.loadingMore}
+              onclick={() => void mail.loadMore()}>Show older</Button
+            >
+          </div>
         {/if}
-      {/snippet}
-    </Tabs>
+      {/if}
+    </div>
   </section>
+
+  <div class="mail-pane" tabindex="-1" bind:this={paneElement}>
+    <div class="mail-pane-frame">
+      {#if place.compose !== null}
+        <MailCompose to={place.compose.to} onsent={sent} oncancel={() => void router.closeItem()} />
+      {:else if missing}
+        <EmptyState
+          variant="block"
+          icon="inbox"
+          title="That conversation isn't there any more"
+          headingLevel={2}
+        >
+          The link may name a message that was removed. The list shows what's there now.
+          {#snippet actions()}
+            <Button variant="secondary" icon="back" onclick={() => void backToList()}
+              >Back to list</Button
+            >
+          {/snippet}
+        </EmptyState>
+      {:else if ref !== null}
+        <MailThread threadId={openId ?? ref} onback={() => void backToList()} />
+      {:else}
+        <div class="mail-pane-idle">
+          <EmptyState>Choose a conversation to read it here.</EmptyState>
+        </div>
+      {/if}
+    </div>
+  </div>
 </div>
 
-{#snippet row(item: HubInboxItem)}
-  <InboxItem
-    {item}
-    {now}
-    id={rowId(item)}
-    open={inboxItemKey(item) === openKey}
-    ontoggle={() => toggle(item)}
-    onleave={() => void router.closeItem()}
-  />
-{/snippet}
-
 <style>
-  .inbox-scroll {
+  .mail-header-actions {
+    display: flex;
+    flex: none;
+    align-self: center;
+    margin-left: auto;
+  }
+
+  /* The list keeps its width and the thread takes the rest, its reading
+     column centered in it. As the region narrows (the file panel opening
+     beside it, a smaller window), the thread gives up its margins first,
+     then shrinks to its floor, and past that the list makes way. */
+  .mail {
+    display: flex;
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    container: mail / inline-size;
   }
 
-  .inbox {
-    position: relative;
-    width: 100%;
-    max-width: calc(var(--layout-reading-width) + var(--space-64));
-    margin-inline: auto;
-    padding: var(--space-24) clamp(var(--space-16), 3vw, var(--space-32)) var(--space-64);
-    container-type: inline-size;
-  }
+  .mail-list {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    width: var(--layout-mail-list-width);
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--color-line-soft);
 
-  /* Beside the tabs while there's room, centered on them; above them when there isn't. */
-  .inbox-filter {
-    position: absolute;
-    top: calc(var(--space-24) - 3px);
-    right: clamp(var(--space-16), 3vw, var(--space-32));
-    width: 200px;
-  }
-
-  @container (max-width: 520px) {
-    .inbox-filter {
-      position: static;
-      width: 100%;
-      margin-bottom: var(--space-12);
+    &:focus {
+      outline: none;
     }
   }
 
-  .inbox-list {
+  .mail-tools {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: var(--space-10);
+    padding: var(--space-14) var(--space-14) var(--space-10);
+  }
+
+  .mail-folders {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border-radius: var(--corner-md);
+    background: var(--color-stone-1);
+  }
+
+  .mail-folder {
+    display: inline-flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-6);
+    height: 28px;
+    padding: 0 var(--space-10);
+    border-radius: var(--corner-sm);
+    color: var(--color-text-2);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    text-decoration: none;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      color: var(--color-text);
+    }
+
+    &[aria-current="page"] {
+      background: var(--color-stone-3);
+      color: var(--color-text);
+    }
+  }
+
+  .mail-rows {
+    flex: 1;
+    min-height: 0;
+    padding: var(--space-2) var(--space-8) var(--space-24);
+    overflow-y: auto;
+  }
+
+  .mail-row-list {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     list-style: none;
   }
 
-  .inbox-apart {
-    margin-bottom: var(--space-16);
-  }
-
-  .inbox-loading {
+  .mail-loading {
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
+    padding-inline: var(--space-6);
   }
 
-  .inbox-more {
+  .mail-more {
     margin-top: var(--space-12);
+    padding-inline: var(--space-6);
   }
 
-  .inbox-problem {
+  .mail-problem {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-8);
     margin-top: var(--space-12);
+    padding-inline: var(--space-12);
     color: var(--color-err-text);
     font-size: var(--font-size-sm);
   }
 
+  .mail-pane {
+    flex: 1;
+    min-width: var(--layout-mail-thread-min-width);
+    min-height: 0;
+    overflow-y: auto;
+
+    &:focus {
+      outline: none;
+    }
+  }
+
+  .mail-pane-frame {
+    width: 100%;
+    max-width: calc(var(--layout-reading-width) + 2 * var(--space-24));
+    margin-inline: auto;
+    padding: var(--space-20) var(--space-24) var(--space-48);
+  }
+
+  .mail-pane-idle {
+    display: flex;
+    justify-content: center;
+    padding-top: var(--space-64);
+  }
+
+  /* --layout-mail-list-width + --layout-mail-thread-min-width, less a pixel:
+     narrower than both side by side, one shows at a time. */
+  @container mail (max-width: 779px) {
+    .mail-list {
+      flex: 1;
+      width: auto;
+      border-right: 0;
+    }
+
+    .mail-pane {
+      min-width: 0;
+    }
+
+    .mail[data-open] .mail-list,
+    .mail:not([data-open]) .mail-pane {
+      display: none;
+    }
+  }
+
   @media (max-width: 760px) {
-    .inbox {
-      padding: var(--space-18) var(--space-16) var(--space-40);
+    .mail-tools {
+      padding: var(--space-12) var(--space-16) var(--space-8);
+    }
+
+    .mail-rows {
+      padding-inline: var(--space-8);
+    }
+
+    .mail-folder {
+      height: var(--layout-touch-target);
+    }
+
+    .mail-pane-frame {
+      padding: var(--space-12) var(--space-16) var(--space-40);
     }
   }
 </style>

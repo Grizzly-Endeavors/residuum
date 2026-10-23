@@ -175,31 +175,38 @@ describe("AttachmentChip, failed", () => {
       state: "failed",
       failure: "Couldn't upload",
     });
-    expect(screen.getByRole("alert")).toHaveTextContent("report.pdf: Couldn't upload");
+    expect(screen.getByRole("status")).toHaveTextContent("report.pdf: Couldn't upload");
   });
 
   it("says it failed unless told more", () => {
     render(AttachmentChip, { filename: "report.pdf", state: "failed" });
-    expect(screen.getByRole("alert")).toHaveTextContent("report.pdf: Failed");
+    expect(screen.getByRole("status")).toHaveTextContent("report.pdf: Failed");
   });
 
-  it("offers Retry for that file, and runs it", async () => {
+  it("announces the failure politely, so several failed chips mounting at once aren't loud", () => {
+    render(AttachmentChip, { filename: "one.pdf", state: "failed", failure: "Couldn't upload" });
+    render(AttachmentChip, { filename: "two.pdf", state: "failed", failure: "Couldn't upload" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getAllByRole("status")).toHaveLength(2);
+  });
+
+  it("offers Try again for that file, and runs it", async () => {
     const user = userEvent.setup();
     const onretry = vi.fn();
     render(AttachmentChip, { filename: "report.pdf", state: "failed", onretry });
-    const retry = screen.getByRole("button", { name: "Retry report.pdf" });
-    expect(retry).toHaveTextContent("Retry");
+    const retry = screen.getByRole("button", { name: "Try again report.pdf" });
+    expect(retry).toHaveTextContent("Try again");
     await user.click(retry);
     expect(onretry).toHaveBeenCalledTimes(1);
   });
 
-  it("offers no Retry without an action to run, and none unless it failed", () => {
+  it("offers no Try again without an action to run, and none unless it failed", () => {
     const failed = render(AttachmentChip, { filename: "report.pdf", state: "failed" });
-    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
     failed.unmount();
 
     render(AttachmentChip, { filename: "report.pdf", onretry: () => {} });
-    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
   });
 
   it("can't be opened or downloaded, but can be removed", async () => {

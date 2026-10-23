@@ -139,6 +139,12 @@
      pinned to the bottom of the viewport sits above this. */
   --layout-bottom-bar-offset: calc(var(--layout-bottom-bar-height) + var(--safe-bottom));
   --layout-touch-target: 44px;
+  /* The Inbox's conversation list beside the open thread, and the narrowest
+     the thread gets before the list makes way for it. Container queries can't
+     read custom properties, so Inbox.svelte writes their sum out as its split
+     width; mail-layout.test.ts keeps the three in step. */
+  --layout-mail-list-width: 360px;
+  --layout-mail-thread-min-width: 420px;
   /* The room a conversation keeps under its newest line beside the composer
      on a wide screen: a quarter of the view, between these. It reads
      container-query units, so it works inside the feed's scrolling area. */

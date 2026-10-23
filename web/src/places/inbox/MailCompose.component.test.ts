@@ -149,7 +149,7 @@ describe("New message", () => {
     const { oncancel } = compose(["atlas"]);
     await userEvent.type(screen.getByRole("textbox", { name: /^Message/ }), "Draft");
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await userEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+    await userEvent.click(screen.getByRole("button", { name: "Back to list" }));
     expect(oncancel).toHaveBeenCalledTimes(2);
     expect(mail.newMessage?.body).toBe("Draft");
   });

@@ -63,7 +63,7 @@ test.describe("the / menu", () => {
     await page.keyboard.type("water the plants");
     await sendFromComposer(box(page));
     // One message: the agent's own, once the note is in its inbox.
-    await expect(page.getByText("[inbox] item added")).toBeVisible();
+    await expect(page.getByText("Added a note to the inbox.")).toBeVisible();
   });
 
   test("a pasted path is a message, and an action that can't run keeps the line", async ({

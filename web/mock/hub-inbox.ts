@@ -4,7 +4,7 @@ import type { HubInboxUnread } from "../src/lib/generated/HubInboxUnread";
 import type { InboxStatus } from "../src/lib/generated/InboxStatus";
 import type { UserInboxItem } from "../src/lib/types";
 import { json } from "./http";
-import { toApiInboxItem } from "./inbox";
+import { moveAttachments, toApiInboxItem } from "./inbox";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockAgent, MockState } from "./state";
 
@@ -231,6 +231,7 @@ function moveItem(ctx: RouteContext, from: InboxStatus): void {
   const source = itemsOf(agent.state, from);
   source.splice(source.indexOf(item), 1);
   itemsOf(agent.state, to).push(item);
+  moveAttachments(agent.state, item, to === "archived");
   ctx.hub.overview.changed(agent);
   respondWithItem(ctx, agent, item);
 }

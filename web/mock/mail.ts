@@ -1,14 +1,17 @@
 import type { MailFolder, MailThreadPage } from "../src/lib/hub-types";
-import { agentInboxItemId } from "./agent-inbox";
-import { json, readBodyBytes, readJsonObject, type JsonObject } from "./http";
-import { storeAttachment } from "./inbox";
+import { agentInboxItemId, deriveTitle } from "./agent-inbox";
+import { json, readBodyBytes, readJsonObject, text, type JsonObject } from "./http";
+import { moveAttachments, storeAttachment } from "./inbox";
 import {
   agentMessagesOf,
   buildThreads,
+  compareRefs,
   findEntry,
   findThread,
   isInFolder,
+  latestOf,
   messageOf,
+  parseRef,
   participantsOf,
   replyTitle,
   subjectOf,
@@ -48,29 +51,28 @@ function isFolder(value: string): value is MailFolder {
 
 // ─── Listing ──────────────────────────────────────────────────────────────────
 
-/** Where a page stopped: the sort key of its last thread, as `<unix seconds>:<thread id>`. */
+/** Where a page stopped: the sort key of its last thread, as `<unix milliseconds>:<thread id>`. */
 interface Cursor {
-  seconds: number;
+  ms: number;
   threadId: string;
 }
 
 function renderCursor(cursor: Cursor): string {
-  return `${String(cursor.seconds)}:${cursor.threadId}`;
+  return `${String(cursor.ms)}:${cursor.threadId}`;
 }
 
 /** The cursor `raw` renders, or `null` when this inbox didn't issue it. */
 function parseCursor(raw: string): Cursor | null {
   const match = /^(-?\d+):(.+)$/.exec(raw);
-  const [, seconds, threadId] = match ?? [];
-  if (seconds === undefined || threadId === undefined) return null;
-  return { seconds: Number(seconds), threadId };
+  const [, ms, threadId] = match ?? [];
+  if (ms === undefined || threadId === undefined || parseRef(threadId) === null) return null;
+  return { ms: Number(ms), threadId };
 }
 
-/** Descending order: by the latest message's time, then thread id. */
+/** The list's order: the latest message's time, newest first, then the thread's ref in ascending order. */
 function compareKeys(a: Cursor, b: Cursor): number {
-  if (a.seconds !== b.seconds) return a.seconds < b.seconds ? 1 : -1;
-  if (a.threadId !== b.threadId) return a.threadId < b.threadId ? 1 : -1;
-  return 0;
+  if (a.ms !== b.ms) return a.ms < b.ms ? 1 : -1;
+  return compareRefs(a.threadId, b.threadId);
 }
 
 /** The page size the request asks for, or `null` after answering `400`. */
@@ -118,8 +120,7 @@ function listThreads(ctx: RouteContext): void {
     .filter((thread) => agent === null || participantsOf(thread).includes(agent))
     .map((thread) => {
       const summary = summaryOf(thread);
-      const seconds = thread.entries.at(-1)?.seconds ?? 0;
-      return { key: { seconds, threadId: thread.id }, summary };
+      return { key: { ms: latestOf(thread).ms, threadId: thread.id }, summary };
     });
   listed.sort((a, b) => compareKeys(a.key, b.key));
   const after = before === null ? listed : listed.filter((row) => compareKeys(row.key, before) > 0);
@@ -133,22 +134,48 @@ function listThreads(ctx: RouteContext): void {
 
 // ─── One thread ───────────────────────────────────────────────────────────────
 
-/** The thread id (or any message's ref) the route names, or `null` after answering `400`. */
-function threadRef(ctx: RouteContext): string | null {
+/**
+ * The text of a percent-encoded path segment the way the backend's router
+ * reads it: an escape that isn't one is left as it is, and bytes that aren't
+ * UTF-8 make the whole segment unreadable (`null`).
+ */
+function decodeSegment(raw: string): string | null {
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  for (let at = 0; at < raw.length; ) {
+    const escape = /^%([0-9A-Fa-f]{2})/.exec(raw.slice(at, at + 3));
+    if (escape?.[1] !== undefined) {
+      bytes.push(parseInt(escape[1], 16));
+      at += 3;
+    } else {
+      const char = String.fromCodePoint(raw.codePointAt(at) ?? 0);
+      bytes.push(...encoder.encode(char));
+      at += char.length;
+    }
+  }
   try {
-    return decodeURIComponent(ctx.params[0] ?? "");
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
   } catch {
-    fail(ctx, 400, "the thread id isn't percent-encoded properly");
     return null;
   }
 }
 
-/** The thread the route names, or `null` after answering `400` or `404`. */
+/** The answer for a ref that names no message. */
+function noMessage(ctx: RouteContext, ref: string): void {
+  fail(ctx, 404, `There is no message '${ref}'. It may have been deleted.`);
+}
+
+/** The thread the route names, by the ref of any of its messages, or `null` after answering `400` or `404`. */
 function requestedThread(ctx: RouteContext): MailThreadData | null {
-  const ref = threadRef(ctx);
-  if (ref === null) return null;
+  const raw = ctx.params[0] ?? "";
+  const ref = decodeSegment(raw);
+  if (ref === null) {
+    // The router refuses a path parameter that isn't UTF-8 before any route sees it.
+    text(ctx.res, 400, "Invalid URL: Invalid UTF-8 in `thread`");
+    return null;
+  }
   const thread = findThread(ctx.hub, ref);
-  if (thread === undefined) fail(ctx, 404, `there is no mail thread '${ref}'`);
+  if (thread === undefined) noMessage(ctx, ref);
   return thread ?? null;
 }
 
@@ -185,6 +212,7 @@ function actOnThread(ctx: RouteContext, action: ThreadAction): void {
       if (at === -1) continue;
       from.splice(at, 1);
       to.push(home.item);
+      moveAttachments(state, home.item, action === "archive");
     }
     changed.add(home.agent);
   }
@@ -240,7 +268,11 @@ function stagedUploads(ctx: RouteContext, ids: readonly string[]): MockUpload[] 
   for (const id of new Set(ids)) {
     const upload = ctx.hub.hubState.uploads.get(id);
     if (upload === undefined) {
-      fail(ctx, 400, "That upload is not staged.");
+      fail(
+        ctx,
+        400,
+        `An attached file (upload '${id}') isn't available anymore. Attach it again and send.`,
+      );
       return null;
     }
     uploads.push(upload);
@@ -262,39 +294,58 @@ function freeFilename(filename: string, taken: ReadonlySet<string>): string {
 
 // ─── Sending ──────────────────────────────────────────────────────────────────
 
+/** Answer `400` for a body the routes can't read, with the reason as the backend words it. */
+function unreadable(ctx: RouteContext, reason: string): null {
+  fail(ctx, 400, `The message couldn't be read: ${reason}`);
+  return null;
+}
+
 /** The request's JSON body, or `null` after answering `400`. */
 async function requestBody(ctx: RouteContext): Promise<JsonObject | null> {
   try {
     return await readJsonObject(ctx.req);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
-    fail(ctx, 400, `The request body isn't a JSON object: ${why}`);
-    return null;
+    return unreadable(ctx, `Failed to parse the request body as JSON: ${why}`);
   }
 }
 
-/** A required string field, or `null` after answering `422`. */
-function textField(ctx: RouteContext, body: JsonObject, key: string): string | null {
+/** A string field. `fallback` stands in when it is absent; without one it is required. `null` after answering `400`. */
+function textField(
+  ctx: RouteContext,
+  body: JsonObject,
+  key: string,
+  fallback?: string,
+): string | null {
   const value = body[key];
   if (typeof value === "string") return value;
-  fail(ctx, 422, `The request body needs \`${key}\` as text.`);
-  return null;
+  if (value === undefined && fallback !== undefined) return fallback;
+  return unreadable(
+    ctx,
+    value === undefined
+      ? `Failed to deserialize the JSON body into the target type: missing field \`${key}\``
+      : `Failed to deserialize the JSON body into the target type: \`${key}\` must be text`,
+  );
 }
 
-/** A list-of-strings field; absent means empty when `optional`. `null` after answering `422`. */
+/** A list-of-strings field. `fallback` stands in when it is absent; without one it is required. `null` after answering `400`. */
 function listField(
   ctx: RouteContext,
   body: JsonObject,
   key: string,
-  optional: boolean,
+  fallback?: string[],
 ): string[] | null {
   const value = body[key];
-  if (value === undefined && optional) return [];
   if (Array.isArray(value) && value.every((entry): entry is string => typeof entry === "string")) {
     return value;
   }
-  fail(ctx, 422, `The request body needs \`${key}\` as a list of text.`);
-  return null;
+  if (value === undefined && fallback !== undefined) return fallback;
+  return unreadable(
+    ctx,
+    value === undefined
+      ? `Failed to deserialize the JSON body into the target type: missing field \`${key}\``
+      : `Failed to deserialize the JSON body into the target type: \`${key}\` must be a list of text`,
+  );
 }
 
 /**
@@ -338,76 +389,81 @@ function deliver(
   return `${first?.name ?? ""}/agent/${id}`;
 }
 
-/** `POST /api/hub/mail/send`: a new message to one or more agents. Answers the thread it starts. */
-async function sendMail(ctx: RouteContext): Promise<void> {
-  const body = await requestBody(ctx);
-  if (body === null) return;
-  const to = listField(ctx, body, "to", false);
-  if (to === null) return;
-  const subject = textField(ctx, body, "subject");
-  if (subject === null) return;
-  const text = textField(ctx, body, "body");
-  if (text === null) return;
-  const attachments = listField(ctx, body, "attachments", true);
-  if (attachments === null) return;
-
-  if (text.trim() === "") {
-    fail(ctx, 400, "The message body must not be blank.");
-    return;
-  }
-  if (to.length === 0) {
-    fail(ctx, 400, "Pick at least one agent to send the message to.");
-    return;
-  }
+/**
+ * The agents `to` names, each once and in name order, or `null` after
+ * answering `400` for one that doesn't exist.
+ */
+function recipientsOf(ctx: RouteContext, to: readonly string[]): MockAgent[] | null {
   const recipients: MockAgent[] = [];
   for (const name of [...new Set(to)].sort(byName)) {
     const agent = ctx.hub.agents.get(name);
     if (agent === undefined) {
       fail(ctx, 400, `There is no agent named '${name}'.`);
-      return;
+      return null;
     }
     recipients.push(agent);
   }
+  return recipients;
+}
+
+/** `POST /api/hub/mail/send`: a new message to one or more agents. Answers the thread it starts. */
+async function sendMail(ctx: RouteContext): Promise<void> {
+  const body = await requestBody(ctx);
+  if (body === null) return;
+  const to = listField(ctx, body, "to");
+  if (to === null) return;
+  const subject = textField(ctx, body, "subject", "");
+  if (subject === null) return;
+  const content = textField(ctx, body, "body");
+  if (content === null) return;
+  const attachments = listField(ctx, body, "attachments", []);
+  if (attachments === null) return;
+
   const uploads = stagedUploads(ctx, attachments);
   if (uploads === null) return;
+  if (to.length === 0) {
+    fail(ctx, 400, "Choose at least one agent to send the message to.");
+    return;
+  }
+  if (content.trim() === "") {
+    fail(ctx, 400, "Write a message before sending it.");
+    return;
+  }
+  const recipients = recipientsOf(ctx, to);
+  if (recipients === null) return;
 
-  const ref = deliver(ctx, recipients, { title: subject.trim(), body: text }, uploads);
+  const title = subject.trim() === "" ? deriveTitle(content) : subject;
+  const ref = deliver(ctx, recipients, { title, body: content }, uploads);
   json(ctx.res, 200, { thread_id: ref });
 }
 
 /** `POST /api/hub/mail/threads/{thread_id}/reply`: reply to everyone in the thread. Answers the message added. */
 async function replyToThread(ctx: RouteContext): Promise<void> {
-  const thread = requestedThread(ctx);
-  if (thread === null) return;
   const body = await requestBody(ctx);
   if (body === null) return;
-  const text = textField(ctx, body, "body");
-  if (text === null) return;
-  const attachments = listField(ctx, body, "attachments", true);
+  const content = textField(ctx, body, "body");
+  if (content === null) return;
+  const attachments = listField(ctx, body, "attachments", []);
   if (attachments === null) return;
+  const thread = requestedThread(ctx);
+  if (thread === null) return;
 
-  if (text.trim() === "") {
-    fail(ctx, 400, "The message body must not be blank.");
-    return;
-  }
-  const recipients = participantsOf(thread)
-    .sort(byName)
-    .flatMap((name) => ctx.hub.agents.get(name) ?? []);
-  if (recipients.length === 0) {
-    fail(ctx, 400, "Nobody in this thread can be written to any more.");
-    return;
-  }
   const uploads = stagedUploads(ctx, attachments);
   if (uploads === null) return;
+  if (content.trim() === "") {
+    fail(ctx, 400, "Write a message before sending it.");
+    return;
+  }
+  const recipients = recipientsOf(ctx, participantsOf(thread));
+  if (recipients === null) return;
 
-  const latest = thread.entries.at(-1);
   const ref = deliver(
     ctx,
     recipients,
     {
       title: replyTitle(subjectOf(thread)),
-      body: text,
-      ...(latest === undefined ? {} : { inReplyTo: latest.ref }),
+      body: content,
+      inReplyTo: latestOf(thread).ref,
     },
     uploads,
   );

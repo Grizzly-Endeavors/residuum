@@ -45,7 +45,8 @@ export interface MailEntry {
   from: MailSender;
   /** The recipients of a message the user sent; empty for an agent's. */
   to: string[];
-  seconds: number;
+  /** When it was written, in milliseconds since the epoch. */
+  ms: number;
   at: string;
   title: string;
   body: string;
@@ -58,37 +59,39 @@ export interface MailEntry {
   home: AgentMessageHome | null;
 }
 
-/** A thread: its id and its messages, oldest first. */
+/** A thread: its id and its messages, the root first and then the replies oldest first. */
 export interface MailThreadData {
   id: string;
   entries: MailEntry[];
 }
 
-/** An item's time as seconds since the epoch and as RFC 3339, the way the backend reports it. */
-function instantOf(id: string, timestamp: string): { seconds: number; at: string } {
+/** An item's time as milliseconds since the epoch and as RFC 3339, the way the backend reports it. */
+function instantOf(id: string, timestamp: string): { ms: number; at: string } {
   const ms = Date.parse(timestamp);
   if (Number.isNaN(ms)) {
     throw new Error(`inbox item '${id}' has a time the mock can't read: ${timestamp}`);
   }
   return {
-    seconds: Math.floor(ms / 1000),
+    ms,
     at: new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
 }
 
+/** The files of an item, each with the route that serves it and the path the file panel opens it by, which moves with the item into the archive. */
 function attachmentsOf(
   agent: string,
   side: InboxSide,
   id: string,
   attachments: readonly UserInboxAttachment[],
+  archived: boolean,
 ): MailAttachment[] {
   return attachments.map((attachment, index) => ({
     filename: attachment.filename,
     size: attachment.size,
     content_type: attachment.mime_type,
-    url: attachmentUrl(agent, id, index),
+    url: attachmentUrl(agent, side, id, index),
     agent,
-    path: attachmentPath(side, id, attachment.filename),
+    path: attachmentPath(side, id, attachment.filename, archived),
   }));
 }
 
@@ -102,7 +105,7 @@ function agentMessage(agent: MockAgent, item: UserInboxItem, archived: boolean):
     ...instantOf(item.id, item.timestamp),
     title: item.title,
     body: item.body,
-    attachments: attachmentsOf(agent.name, "user", item.id, item.attachments),
+    attachments: attachmentsOf(agent.name, "user", item.id, item.attachments, archived),
     inReplyTo: item.in_reply_to ?? null,
     read: item.read,
     archived,
@@ -133,6 +136,7 @@ function userMessage(copies: readonly [Copy, ...Copy[]]): MailEntry {
       "agent",
       first.item.id,
       first.item.attachments ?? [],
+      false,
     ),
     inReplyTo: first.item.in_reply_to ?? null,
     read: true,
@@ -155,7 +159,13 @@ function collectEntries(hub: MockHub): MailEntry[] {
     for (const item of agent.state.inboxArchive) entries.push(agentMessage(agent, item, true));
     for (const item of agent.state.agentInbox) {
       if (!USER_AUTHORED_SOURCES.has(item.source)) continue;
-      const key = `${item.id}\n${item.timestamp}`;
+      // What makes items copies of one message: the same id, words and time.
+      const key = JSON.stringify([
+        item.id,
+        item.title,
+        item.body,
+        instantOf(item.id, item.timestamp).ms,
+      ]);
       const copy = { agent, item };
       const copies = sent.get(key);
       if (copies === undefined) sent.set(key, [copy]);
@@ -166,8 +176,48 @@ function collectEntries(hub: MockHub): MailEntry[] {
   return entries;
 }
 
-function oldestFirst(a: MailEntry, b: MailEntry): number {
-  return a.seconds - b.seconds || byName(a.ref, b.ref);
+/** A ref taken apart: `<agent>/<user|agent>/<id>`. */
+interface ParsedRef {
+  agent: string;
+  side: InboxSide;
+  id: string;
+}
+
+/** The parts of a ref, or `null` when `raw` isn't one (the backend's `InboxRef::parse`). */
+export function parseRef(raw: string): ParsedRef | null {
+  const parts = raw.split("/");
+  const [agent, side, id] = parts;
+  if (parts.length !== 3 || agent === undefined || side === undefined || id === undefined) {
+    return null;
+  }
+  if (side !== "user" && side !== "agent") return null;
+  if (agent === "" || id === "" || id.includes("..") || /[\\\0]/.test(id)) return null;
+  return { agent, side, id };
+}
+
+/**
+ * The order of refs: by agent, then an agent's messages to you (`user`) before
+ * the messages to it (`agent`), then by id. That is not the order of the
+ * strings, which puts `agent` before `user`.
+ */
+export function compareRefs(a: string, b: string): number {
+  const left = parseRef(a);
+  const right = parseRef(b);
+  if (left === null || right === null) return byName(a, b);
+  return (
+    byName(left.agent, right.agent) || byName(right.side, left.side) || byName(left.id, right.id)
+  );
+}
+
+/** A reply in its place among the replies, with how far it is from the root. */
+interface Reply {
+  entry: MailEntry;
+  depth: number;
+}
+
+/** Replies in time order; within one instant a parent before its replies, then by ref so the order is stable. */
+function repliesInOrder(a: Reply, b: Reply): number {
+  return a.entry.ms - b.entry.ms || a.depth - b.depth || compareRefs(a.entry.ref, b.entry.ref);
 }
 
 /** Every thread, in no particular order. */
@@ -177,27 +227,28 @@ export function buildThreads(hub: MockHub): MailThreadData[] {
   for (const entry of entries) {
     for (const ref of entry.refs) byRef.set(ref, entry);
   }
-  /** The message a chain of replies starts from; a reply to something that isn't mail starts its own thread. */
-  const rootOf = (entry: MailEntry): MailEntry => {
-    const visited = new Set<MailEntry>([entry]);
-    let current = entry;
-    for (;;) {
-      const parent = current.inReplyTo === null ? undefined : byRef.get(current.inReplyTo);
-      if (parent === undefined || visited.has(parent)) return current;
-      visited.add(parent);
+  /** The messages from `entry` up to the one its chain of replies starts from; a reply to something that isn't mail starts its own thread. */
+  const chainOf = (entry: MailEntry): [MailEntry, ...MailEntry[]] => {
+    const chain: [MailEntry, ...MailEntry[]] = [entry];
+    for (let current = entry; current.inReplyTo !== null; ) {
+      const parent = byRef.get(current.inReplyTo);
+      if (parent === undefined || chain.includes(parent)) break;
+      chain.push(parent);
       current = parent;
     }
+    return chain;
   };
-  const threads = new Map<MailEntry, MailEntry[]>();
+  const threads = new Map<MailEntry, Reply[]>();
   for (const entry of entries) {
-    const root = rootOf(entry);
-    const members = threads.get(root);
-    if (members === undefined) threads.set(root, [entry]);
-    else members.push(entry);
+    const chain = chainOf(entry);
+    const root = chain[chain.length - 1] ?? entry;
+    const replies = threads.get(root) ?? [];
+    threads.set(root, replies);
+    if (root !== entry) replies.push({ entry, depth: chain.length - 1 });
   }
-  return [...threads].map(([root, members]) => ({
+  return [...threads].map(([root, replies]) => ({
     id: root.ref,
-    entries: members.sort(oldestFirst),
+    entries: [root, ...replies.sort(repliesInOrder).map((reply) => reply.entry)],
   }));
 }
 
@@ -220,9 +271,25 @@ export function findEntry(
   return undefined;
 }
 
-/** What a thread is about: its first message's title. */
+/** The message a thread starts from, which names it. */
+function rootOf(thread: MailThreadData): MailEntry {
+  const root = thread.entries[0];
+  if (root === undefined) throw new Error(`mail thread '${thread.id}' has no messages`);
+  return root;
+}
+
+/** What a thread is about: its root message's title. */
 export function subjectOf(thread: MailThreadData): string {
-  return thread.entries[0]?.title ?? "";
+  return rootOf(thread).title;
+}
+
+/** The message written last: the greatest time, a tie going to the later message. Not always the last one listed, since a reply can carry an earlier time than its root. */
+export function latestOf(thread: MailThreadData): MailEntry {
+  let latest = rootOf(thread);
+  for (const entry of thread.entries) {
+    if (entry.ms >= latest.ms) latest = entry;
+  }
+  return latest;
 }
 
 /** The messages of a thread an agent sent the user. */
@@ -230,16 +297,14 @@ export function agentMessagesOf(thread: MailThreadData): MailEntry[] {
   return thread.entries.filter((entry) => entry.home !== null);
 }
 
-/** The agents of a thread in the order they first show up, as senders or recipients. */
+/** Every agent of a thread, as a sender or a recipient, sorted by name. */
 export function participantsOf(thread: MailThreadData): string[] {
-  const names: string[] = [];
+  const names = new Set<string>();
   for (const entry of thread.entries) {
     const involved = entry.from.kind === "agent" ? [entry.from.agent] : entry.to;
-    for (const name of involved) {
-      if (!names.includes(name)) names.push(name);
-    }
+    for (const name of involved) names.add(name);
   }
-  return names;
+  return [...names].sort(byName);
 }
 
 /** Whether the thread is in `folder`: Inbox has an active message from an agent, Archived only archived ones, Sent a message of the user's. */
@@ -271,8 +336,7 @@ export function snippetOf(body: string): string {
 }
 
 export function summaryOf(thread: MailThreadData): MailThreadSummary {
-  const latest = thread.entries.at(-1);
-  if (latest === undefined) throw new Error(`mail thread '${thread.id}' has no messages`);
+  const latest = latestOf(thread);
   return {
     thread_id: thread.id,
     subject: subjectOf(thread),
@@ -316,8 +380,9 @@ export function threadOf(thread: MailThreadData): MailThread {
   };
 }
 
-/** A reply's title: `Re: <subject>`, with no second `Re:` on a subject that has one. */
+/** A reply's title: `Re: <subject>`, with any `Re:` the subject starts with dropped so they don't stack. */
 export function replyTitle(subject: string): string {
-  if (/^re:/i.test(subject.trim())) return subject.trim();
-  return `Re: ${subject.trim()}`.trimEnd();
+  let rest = subject.trim();
+  while (/^re:/i.test(rest)) rest = rest.slice(3).trimStart();
+  return rest === "" ? "Re:" : `Re: ${rest}`;
 }

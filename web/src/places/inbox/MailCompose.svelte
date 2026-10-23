@@ -22,9 +22,6 @@
 
   let { to, onsent, oncancel }: Props = $props();
 
-  const uid = $props.id();
-  const titleId = `${uid}-title`;
-
   // Opened once: a draft already being written keeps its own recipients.
   const draft = untrack(() => mail.openNewMessage(to));
 
@@ -55,18 +52,18 @@
   }
 </script>
 
-<form class="mail-compose" aria-labelledby={titleId} onsubmit={(event) => void send(event)}>
+<form class="mail-compose" aria-label="New message" onsubmit={(event) => void send(event)}>
   <header class="compose-head">
     <IconButton
       class="compose-back"
       icon="back"
-      label="Back to the list"
+      label="Back to list"
       variant="quiet"
       size="sm"
       onclick={oncancel}
     />
     <div class="compose-title">
-      <h2 id={titleId} tabindex="-1">{subject === "" ? "New message" : subject}</h2>
+      <h2 tabindex="-1">{subject === "" ? "New message" : subject}</h2>
       <p class="compose-state">Not sent yet</p>
     </div>
   </header>

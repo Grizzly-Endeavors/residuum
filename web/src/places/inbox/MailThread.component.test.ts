@@ -161,7 +161,7 @@ describe("an open thread", () => {
 
   it("goes back to the list from Back", async () => {
     const onback = show();
-    await userEvent.click(await screen.findByRole("button", { name: "Back to the list" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Back to list" }));
     expect(onback).toHaveBeenCalledOnce();
   });
 
@@ -396,10 +396,10 @@ describe("attaching files to the reply", () => {
     show();
     await screen.findByRole("form", { name: "Reply to the thread" });
     await attach(file("log.txt"));
-    expect((await screen.findByRole("alert")).textContent).toContain("Couldn't upload log.txt.");
-    await userEvent.click(screen.getByRole("button", { name: /^(Retry|Try again) log\.txt$/ }));
+    expect(await screen.findByText(/Couldn't upload log\.txt\./)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Try again log.txt" }));
     await waitFor(() => {
-      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText(/Couldn't upload log\.txt\./)).toBeNull();
     });
     expect(uploads).toBe(2);
     await userEvent.click(screen.getByRole("button", { name: "Remove log.txt" }));

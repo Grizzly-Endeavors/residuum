@@ -286,7 +286,13 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   markMailThreadRead: [(a) => a.markMailThreadRead("scout/user/item-1")],
   archiveMailThread: [(a) => a.archiveMailThread("scout/user/item-1")],
   restoreMailThread: [(a) => a.restoreMailThread("scout/user/item-1")],
-  uploadFile: [(a) => a.uploadFile(new Blob(["notes"], { type: "text/plain" }), "notes.txt")],
+  uploadFile: [
+    (a) => a.uploadFile(new Blob(["notes"], { type: "text/plain" }), "notes.txt"),
+    (a) =>
+      a.uploadFile(new Blob(["notes"], { type: "text/plain" }), "notes.txt", {
+        signal: new AbortController().signal,
+      }),
+  ],
   fetchTeamsSetupPrereqs: [(a) => a.fetchTeamsSetupPrereqs(AGENT)],
   fetchTeamsSetupJob: [(a) => a.fetchTeamsSetupJob(AGENT), (a) => a.fetchTeamsSetupJob(AGENT, 10)],
   startTeamsSetupJob: [

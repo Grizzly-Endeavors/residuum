@@ -82,7 +82,7 @@
       <IconButton
         class="thread-back"
         icon="back"
-        label="Back to the list"
+        label="Back to list"
         variant="quiet"
         size="sm"
         onclick={onback}
@@ -191,7 +191,7 @@
       <IconButton
         class="thread-back"
         icon="back"
-        label="Back to the list"
+        label="Back to list"
         variant="quiet"
         size="sm"
         onclick={onback}

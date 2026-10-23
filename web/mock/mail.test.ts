@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
+  MailAttachment,
   MailMessage,
   MailThread,
   MailThreadPage,
@@ -85,12 +86,12 @@ describe("the mail routes", () => {
   };
 
   describe("listing", () => {
-    it("lists the Inbox newest first: the agents' own messages, then the scenario's threads", async () => {
+    it("lists the Inbox newest first, threads of one time by their ref: the agents' own messages, then the scenario's threads", async () => {
       expect(await listed("folder=inbox")).toEqual([
-        MAIL_SEED.deployTomorrow.threadIds.scout,
         MAIL_SEED.deployTomorrow.threadIds.atlas,
-        MAIL_SEED.dailyDigest.threadIds.scout,
+        MAIL_SEED.deployTomorrow.threadIds.scout,
         MAIL_SEED.dailyDigest.threadIds.atlas,
+        MAIL_SEED.dailyDigest.threadIds.scout,
         MAIL_SEED.syncResearch.threadId,
         WIKI.threadId,
       ]);
@@ -104,8 +105,41 @@ describe("the mail routes", () => {
       ]);
       expect(await listed("folder=archived")).toEqual([
         MAIL_SEED.backupRotation.threadId,
-        MAIL_SEED.lastWeeksDigest.threadIds.scout,
         MAIL_SEED.lastWeeksDigest.threadIds.atlas,
+        MAIL_SEED.lastWeeksDigest.threadIds.scout,
+      ]);
+    });
+
+    it("orders threads of one time by agent, then your messages to an agent after its messages to you, as the backend's refs sort", async () => {
+      const when = mock.hub.env.clock.iso();
+      const fromAgent = (name: string, id: string, inReplyTo?: string): void => {
+        agent(name).state.inboxItems.push({
+          id,
+          title: id,
+          body: id,
+          source: "agent",
+          timestamp: when,
+          read: true,
+          attachments: [],
+          ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
+        });
+      };
+      fromAgent("scout", "tie");
+      fromAgent("atlas", "tie");
+      // atlas answers a message of yours, which ties with the other threads on the answer's time.
+      agent("atlas").state.agentInbox.push({
+        id: "tie_question",
+        title: "tie_question",
+        body: "tie_question",
+        source: "web",
+        timestamp: mock.hub.env.clock.isoAgo(3_600_000),
+      });
+      fromAgent("atlas", "tie_answer", "atlas/agent/tie_question");
+
+      expect((await listed("folder=inbox&limit=200")).filter((id) => id.includes("tie"))).toEqual([
+        "atlas/user/tie",
+        "atlas/agent/tie_question",
+        "scout/user/tie",
       ]);
     });
 
@@ -152,8 +186,8 @@ describe("the mail routes", () => {
     it("flags a thread unread while an active message from an agent is", async () => {
       const unread = (await page("folder=inbox")).threads.filter((entry) => entry.unread);
       expect(unread.map((entry) => entry.thread_id)).toEqual([
-        MAIL_SEED.deployTomorrow.threadIds.scout,
         MAIL_SEED.deployTomorrow.threadIds.atlas,
+        MAIL_SEED.deployTomorrow.threadIds.scout,
       ]);
     });
 
@@ -198,7 +232,7 @@ describe("the mail routes", () => {
         `folder=inbox&limit=1&before=${encodeURIComponent(first.next ?? "")}`,
       );
       expect(next.threads.map((entry) => entry.thread_id)).toEqual([
-        MAIL_SEED.deployTomorrow.threadIds.atlas,
+        MAIL_SEED.deployTomorrow.threadIds.scout,
       ]);
     });
 
@@ -210,6 +244,7 @@ describe("the mail routes", () => {
         ["limit=many", "limit"],
         ["limit=-1", "limit"],
         ["before=garbage", "before"],
+        ["before=1790000000000:not-a-ref", "before"],
         ["agent=ghost", "ghost"],
       ] as const) {
         const res = await get(`/api/hub/mail/threads?${query}`);
@@ -284,7 +319,7 @@ describe("the mail routes", () => {
           filename: "audit-scope.md",
           size: expect.any(Number) as number,
           content_type: "text/markdown",
-          url: `/api/agents/atlas/inbox/${WIKI.sentId}/attachments/0`,
+          url: `/api/agents/atlas/inbox/agent/${WIKI.sentId}/attachments/0`,
           agent: "atlas",
           path: `inbox/agent/attachments/${WIKI.sentId}/audit-scope.md`,
         },
@@ -292,20 +327,188 @@ describe("the mail routes", () => {
       expect(result.messages[2]?.attachments[0]).toMatchObject({
         filename: "source-notes.pdf",
         content_type: "application/pdf",
+        url: `/api/agents/scout/inbox/${WIKI.replyId}/attachments/0`,
         agent: "scout",
         path: `inbox/user/attachments/${WIKI.replyId}/source-notes.pdf`,
       });
     });
 
-    it("answers 404 for a thread it doesn't have, and 400 for an id that isn't percent-encoded properly", async () => {
+    it("moves an archived message's attachments to the archive path, where the file panel still finds them, and back on restore", async () => {
+      const research = MAIL_SEED.syncResearch;
+      const attachment = async (): Promise<MailAttachment | undefined> =>
+        (await thread(research.threadId)).messages[0]?.attachments.find(
+          (candidate) => candidate.filename === "findings.md",
+        );
+      const open = async (found: MailAttachment): Promise<{ status: number; text: string }> => {
+        const res = await fetch(
+          url(`/api/agents/${found.agent}/workspace/file?path=${encodeURIComponent(found.path)}`),
+        );
+        return { status: res.status, text: await res.text() };
+      };
+      const before = await attachment();
+      if (before === undefined) throw new Error("the research thread has no findings.md");
+      expect(before.path).toBe(`inbox/user/attachments/${research.id}/findings.md`);
+      const bytes = await (await fetch(url(before.url))).text();
+
+      expect(await act(research.threadId, "archive")).toBe(204);
+
+      const archived = await attachment();
+      expect(archived?.path).toBe(`archive/inbox/user/attachments/${research.id}/findings.md`);
+      expect(archived?.url).toBe(before.url);
+      expect(await open(archived ?? before)).toEqual({ status: 200, text: bytes });
+      expect((await open(before)).status).toBe(404);
+      expect(await (await fetch(url(before.url))).text()).toBe(bytes);
+
+      expect(await act(research.threadId, "restore")).toBe(204);
+
+      expect((await attachment())?.path).toBe(before.path);
+      expect(await open(before)).toEqual({ status: 200, text: bytes });
+      expect(await (await fetch(url(before.url))).text()).toBe(bytes);
+    });
+
+    it("lists a thread's agents sorted by name, whichever wrote first, and replies to them all", async () => {
+      // scout starts the thread and atlas answers it, so atlas sorts before the agent who came first.
+      const started = await post("/api/mock/user-inbox-add?agent=scout", {
+        title: "Standup notes",
+        body: "Here are mine.",
+      });
+      const root = `scout/user/${(started.body as { id: string }).id}`;
+      await post("/api/mock/user-inbox-add?agent=atlas", {
+        body: "And mine.",
+        in_reply_to: root,
+      });
+
+      const result = await thread(root);
+      expect(result.messages.map((message) => message.from)).toEqual([
+        { kind: "agent", agent: "scout" },
+        { kind: "agent", agent: "atlas" },
+      ]);
+      expect(result.participants).toEqual(["atlas", "scout"]);
+      expect(result.recipients_for_reply).toEqual(["atlas", "scout"]);
+      expect((await summary("inbox", root))?.participants).toEqual(["atlas", "scout"]);
+      const reply = await post(threadPath(root, "reply"), { body: "Thanks.", attachments: [] });
+      expect((reply.body as { message: MailMessage }).message.to).toEqual(["atlas", "scout"]);
+    });
+
+    it("takes the subject from the root and the latest message by time, even when a reply carries an earlier time", async () => {
+      const rootId = "backdated_root";
+      agent("scout").state.inboxItems.push({
+        id: rootId,
+        title: "Backdated",
+        body: "The root.",
+        source: "agent",
+        timestamp: mock.hub.env.clock.iso(),
+        read: true,
+        attachments: [],
+      });
+      agent("atlas").state.inboxItems.push({
+        id: "backdated_reply",
+        title: "Re: Backdated",
+        body: "Written before the root.",
+        source: "agent",
+        timestamp: mock.hub.env.clock.isoAgo(3_600_000),
+        read: true,
+        attachments: [],
+        in_reply_to: `scout/user/${rootId}`,
+      });
+
+      const result = await thread(`scout/user/${rootId}`);
+      expect(result.subject).toBe("Backdated");
+      expect(result.messages.map((message) => message.ref)).toEqual([
+        `scout/user/${rootId}`,
+        "atlas/user/backdated_reply",
+      ]);
+      expect(await summary("inbox", `scout/user/${rootId}`)).toMatchObject({
+        subject: "Backdated",
+        snippet: "The root.",
+        latest_at: "2026-03-14T12:00:00Z",
+      });
+      const reply = await post(threadPath(`scout/user/${rootId}`, "reply"), {
+        body: "Got both.",
+        attachments: [],
+      });
+      expect((reply.body as { message: MailMessage }).message).toMatchObject({
+        title: "Re: Backdated",
+        in_reply_to: `scout/user/${rootId}`,
+      });
+    });
+
+    it("keeps your message and an agent's message with one id apart: each has its own attachment route", async () => {
+      const sent = await post("/api/hub/mail/send", {
+        to: ["atlas"],
+        subject: "Pairing",
+        body: "Free tomorrow?",
+        attachments: [],
+      });
+      const { thread_id } = sent.body as { thread_id: string };
+      await post("/api/mock/user-inbox-add?agent=atlas", {
+        body: "Yes.",
+        in_reply_to: thread_id,
+        attachments: [{ filename: "theirs.txt" }],
+      });
+      const staged = await upload("mine.txt", "mine\n");
+      await post(threadPath(thread_id, "reply"), { body: "Great.", attachments: [staged] });
+
+      const [, theirs, mine] = (await thread(thread_id)).messages;
+      // Both messages are `Re: Pairing` from the same day, so they share an id.
+      expect(theirs?.ref).toBe("atlas/user/20260314_re_pairing");
+      expect(mine?.ref).toBe("atlas/agent/20260314_re_pairing");
+      expect(theirs?.attachments[0]?.url).toBe(
+        "/api/agents/atlas/inbox/20260314_re_pairing/attachments/0",
+      );
+      expect(mine?.attachments[0]?.url).toBe(
+        "/api/agents/atlas/inbox/agent/20260314_re_pairing/attachments/0",
+      );
+
+      const serve = async (attachmentUrl: string | undefined): Promise<string> =>
+        (await fetch(url(attachmentUrl ?? ""))).text();
+      expect(await serve(theirs?.attachments[0]?.url)).toBe("Mock attachment: theirs.txt\n");
+      expect(await serve(mine?.attachments[0]?.url)).toBe("mine\n");
+
+      // Both routes are file routes, so they answer with the agent stopped.
+      await post("/api/hub/agents/atlas/stop");
+      expect(await serve(theirs?.attachments[0]?.url)).toBe("Mock attachment: theirs.txt\n");
+      expect(await serve(mine?.attachments[0]?.url)).toBe("mine\n");
+    });
+
+    it("keeps each route to its own inbox: an id on the wrong side is not found", async () => {
+      const staged = await upload("only-mine.txt", "mine\n");
+      await post("/api/hub/mail/send", {
+        to: ["atlas"],
+        subject: "Solo",
+        body: "No answer.",
+        attachments: [staged],
+      });
+      const id = "20260314_solo";
+      expect((await fetch(url(`/api/agents/atlas/inbox/agent/${id}/attachments/0`))).status).toBe(
+        200,
+      );
+      const wrongSide = await fetchJson(url(`/api/agents/atlas/inbox/${id}/attachments/0`));
+      expect(wrongSide).toEqual({
+        status: 404,
+        body: {
+          error:
+            "This attachment is no longer available. It may have been removed from its inbox item.",
+        },
+      });
+    });
+
+    it("answers 404 for a message it doesn't have, naming it, and 400 for a path that isn't UTF-8", async () => {
       expect(await get(threadPath("scout/user/nothing"))).toEqual({
         status: 404,
-        body: { error: "there is no mail thread 'scout/user/nothing'" },
+        body: { error: "There is no message 'scout/user/nothing'. It may have been deleted." },
       });
       for (const action of ["read", "archive", "restore"] as const) {
         expect(await act("scout/user/nothing", action), action).toBe(404);
       }
-      expect((await get("/api/hub/mail/threads/%E0%A4%A")).status).toBe(400);
+      // Anything that isn't a ref names no message, including an escape that isn't one.
+      expect(await get("/api/hub/mail/threads/%ZZ")).toEqual({
+        status: 404,
+        body: { error: "There is no message '%ZZ'. It may have been deleted." },
+      });
+      expect((await get(threadPath("not a ref"))).status).toBe(404);
+      // The router refuses bytes that aren't UTF-8 before the route runs.
+      expect((await fetch(url("/api/hub/mail/threads/%E0%A4%A"))).status).toBe(400);
     });
 
     it("leaves out what isn't mail: items from pulses, actions and artifacts", async () => {
@@ -550,11 +753,11 @@ describe("the mail routes", () => {
       ).body as { thread_id: string };
       const id = "20260314_two_files";
 
-      const asText = await fetch(url(`/api/agents/scout/inbox/${id}/attachments/0`));
+      const asText = await fetch(url(`/api/agents/scout/inbox/agent/${id}/attachments/0`));
       expect(asText.status).toBe(200);
       expect(asText.headers.get("content-type")).toBe("text/markdown");
       expect(await asText.text()).toBe("# Notes\n\nA list.\n");
-      const asBinary = await fetch(url(`/api/agents/scout/inbox/${id}/attachments/1`));
+      const asBinary = await fetch(url(`/api/agents/scout/inbox/agent/${id}/attachments/1`));
       expect(asBinary.headers.get("content-type")).toBe("application/octet-stream");
       expect(Buffer.from(await asBinary.arrayBuffer())).toEqual(Buffer.from(binary));
 
@@ -588,7 +791,9 @@ describe("the mail routes", () => {
         attachments: [staged],
       });
       for (const name of ["atlas", "scout"]) {
-        const res = await fetch(url(`/api/agents/${name}/inbox/20260314_shared/attachments/0`));
+        const res = await fetch(
+          url(`/api/agents/${name}/inbox/agent/20260314_shared/attachments/0`),
+        );
         expect(await res.text(), name).toBe("shared\n");
       }
     });
@@ -626,26 +831,93 @@ describe("the mail routes", () => {
       ]);
     });
 
-    it("sends to a stopped agent, and lets the subject be empty", async () => {
+    it("sends to a stopped agent, titling a message with no subject by the first line of its body", async () => {
+      for (const subject of [{ subject: "" }, { subject: "  " }, {}]) {
+        const sent = await post("/api/hub/mail/send", {
+          to: ["drifter"],
+          ...subject,
+          body: "Wake up.\nIt is late.",
+          attachments: [],
+        });
+        expect(sent.status, JSON.stringify(subject)).toBe(200);
+      }
+      const ids = (await listed("folder=sent&agent=drifter")).filter((id) =>
+        id.includes("wake_up"),
+      );
+      expect(ids.sort()).toEqual([
+        "drifter/agent/20260314_wake_up",
+        "drifter/agent/20260314_wake_up_2",
+        "drifter/agent/20260314_wake_up_3",
+      ]);
+      expect(await summary("sent", "drifter/agent/20260314_wake_up")).toMatchObject({
+        subject: "Wake up.",
+        snippet: "Wake up. It is late.",
+      });
+    });
+
+    it("shows a note added with /inbox in Sent, as a message from you to that agent", async () => {
+      const socket = await mock.openSocket("/api/agents/atlas/ws");
+      socket.send({ type: "inbox_add", body: "remember the milk\nand the eggs" });
+      expect(await socket.nextOfType("notice")).toEqual({
+        type: "notice",
+        message: "Added a note to the inbox.",
+      });
+
+      const id = "atlas/agent/20260314_remember_the_milk";
+      expect(await summary("sent", id)).toMatchObject({
+        subject: "remember the milk",
+        participants: ["atlas"],
+        message_count: 1,
+        snippet: "remember the milk and the eggs",
+        in_sent: true,
+        in_inbox: false,
+        archived: false,
+      });
+      const [message] = (await thread(id)).messages;
+      expect(message).toMatchObject({
+        ref: id,
+        from: { kind: "user" },
+        to: ["atlas"],
+        title: "remember the milk",
+        body: "remember the milk\nand the eggs",
+        seen_by: [{ agent: "atlas", seen: false }],
+      });
+      expect(await listed("folder=sent&agent=scout")).not.toContain(id);
+
+      socket.send({ type: "inbox_add", body: "remember the milk" });
+      await socket.nextOfType("notice");
+      expect(
+        agent("atlas")
+          .state.agentInbox.filter((item) => item.title === "remember the milk")
+          .map((item) => item.id),
+      ).toEqual(["20260314_remember_the_milk", "20260314_remember_the_milk_2"]);
+    });
+
+    it("keeps a subject as it is written", async () => {
       const sent = await post("/api/hub/mail/send", {
-        to: ["drifter"],
-        subject: "",
-        body: "Wake up.",
+        to: ["scout"],
+        subject: "  Spaced  ",
+        body: "Hi",
         attachments: [],
       });
       const { thread_id } = sent.body as { thread_id: string };
-      expect(thread_id).toBe("drifter/agent/20260314");
-      expect((await thread(thread_id)).subject).toBe("");
-      expect(await summary("sent", thread_id)).toMatchObject({ subject: "", snippet: "Wake up." });
+      expect((await thread(thread_id)).subject).toBe("  Spaced  ");
     });
 
     it("answers 400 for a message it can't send, naming why", async () => {
       const staged = await upload("a.txt", "a");
       const cases: [unknown, string][] = [
-        [{ to: ["scout"], subject: "Hi", body: "   \n", attachments: [] }, "blank"],
+        [{ to: ["scout"], subject: "Hi", body: "   \n", attachments: [] }, "Write a message"],
         [{ to: [], subject: "Hi", body: "Hi", attachments: [] }, "at least one agent"],
-        [{ to: ["scout", "ghost"], subject: "Hi", body: "Hi", attachments: [] }, "ghost"],
-        [{ to: ["scout"], subject: "Hi", body: "Hi", attachments: ["upload_9999"] }, "not staged"],
+        [{ to: ["scout", "ghost"], subject: "Hi", body: "Hi", attachments: [] }, "'ghost'"],
+        [
+          { to: ["scout"], subject: "Hi", body: "Hi", attachments: ["upload_9999"] },
+          "(upload 'upload_9999') isn't available anymore",
+        ],
+        // The staged files are checked first, then the recipients, then the words.
+        [{ to: [], subject: "", body: " ", attachments: ["upload_9999"] }, "upload_9999"],
+        [{ to: [], subject: "", body: " ", attachments: [] }, "at least one agent"],
+        [{ to: ["ghost"], subject: "", body: " ", attachments: [] }, "Write a message"],
       ];
       for (const [body, mentions] of cases) {
         const res = await post("/api/hub/mail/send", body);
@@ -663,17 +935,25 @@ describe("the mail routes", () => {
       expect(ok.status).toBe(200);
     });
 
-    it("answers 422 for a body without the fields it needs and 400 for one that isn't JSON", async () => {
+    it("answers 400 for a body it can't read, and sends one that leaves out the subject and attachments", async () => {
       for (const body of [
         {},
         { to: "scout", subject: "", body: "x" },
-        { to: [], subject: 1, body: "x" },
-        { to: [], subject: "", body: "x", attachments: [1] },
+        { to: ["scout"], subject: 1, body: "x" },
+        { to: ["scout"], subject: null, body: "x" },
+        { to: ["scout"], subject: "", body: "x", attachments: [1] },
+        { to: ["scout"], subject: "" },
       ]) {
-        expect((await post("/api/hub/mail/send", body)).status, JSON.stringify(body)).toBe(422);
+        const res = await post("/api/hub/mail/send", body);
+        expect(res.status, JSON.stringify(body)).toBe(400);
+        expect((res.body as { error: string }).error).toMatch(/^The message couldn't be read: /);
       }
       const res = await fetchJson(url("/api/hub/mail/send"), { method: "POST", body: "{nope" });
       expect(res.status).toBe(400);
+      expect((res.body as { error: string }).error).toMatch(/^The message couldn't be read: /);
+
+      const bare = await post("/api/hub/mail/send", { to: ["scout"], body: "Just this." });
+      expect(bare.status, JSON.stringify(bare.body)).toBe(200);
     });
   });
 
@@ -763,10 +1043,19 @@ describe("the mail routes", () => {
         attachments: ["upload_9999"],
       });
       expect(unknown.status).toBe(400);
-      expect((await post(threadPath(WIKI.threadId, "reply"), { attachments: [] })).status).toBe(
-        422,
+      const unreadable = await post(threadPath(WIKI.threadId, "reply"), { attachments: [] });
+      expect(unreadable.status).toBe(400);
+      expect((unreadable.body as { error: string }).error).toMatch(
+        /^The message couldn't be read: .*`body`/,
       );
+      // The body is read before the thread is looked up.
+      expect((await post(threadPath("scout/user/nothing", "reply"), {})).status).toBe(400);
       expect((await thread(WIKI.threadId)).messages).toHaveLength(4);
+    });
+
+    it("sends a reply that leaves out the attachments", async () => {
+      const res = await post(threadPath(WIKI.threadId, "reply"), { body: "No files." });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
     });
   });
 
@@ -836,8 +1125,11 @@ describe("replyTitle", () => {
   it.each([
     ["Deploy tomorrow", "Re: Deploy tomorrow"],
     ["Re: Deploy tomorrow", "Re: Deploy tomorrow"],
-    ["RE: Deploy tomorrow", "RE: Deploy tomorrow"],
+    ["RE: Deploy tomorrow", "Re: Deploy tomorrow"],
+    ["RE: re:Deploy tomorrow", "Re: Deploy tomorrow"],
     ["  Deploy tomorrow  ", "Re: Deploy tomorrow"],
+    ["Reply needed", "Re: Reply needed"],
+    ["Re:", "Re:"],
     ["", "Re:"],
   ])("answers %j with %j", (subject, title) => {
     expect(replyTitle(subject)).toBe(title);
