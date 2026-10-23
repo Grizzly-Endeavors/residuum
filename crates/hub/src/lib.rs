@@ -39,6 +39,7 @@ pub mod team_events;
 pub mod testing;
 pub mod types;
 pub mod update;
+pub mod uploads;
 pub mod web;
 mod workbench_watcher;
 

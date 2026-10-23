@@ -44,6 +44,7 @@ mod state;
     reason = "test code indexes parsed JSON for clarity"
 )]
 mod tests;
+mod uploads;
 mod ws;
 
 use std::sync::Arc;
@@ -87,6 +88,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
             directory: Arc::clone(&directory),
             overview: Arc::clone(&hub.overview),
         }))
+        .merge(uploads::routes(hub.uploads.clone()))
         .merge(push::routes(push::PushApiState {
             push: Arc::clone(&hub.push),
             directory: Arc::clone(&directory),

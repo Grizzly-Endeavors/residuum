@@ -28,6 +28,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `GET /api/hub/events?before=&after=&limit=` | The team event log, newest first: `{ boot_id, events, next_before }`. See [Team events](#team-events). |
 | `GET /api/hub/overview` | What Home shows about every agent: `{ boot_id, agents }`. See [Team overview](#team-overview). |
 | `GET /api/hub/inbox`, `GET /api/hub/inbox/unread`, `PUT /api/hub/inbox/{agent}/{id}/read`, `POST /api/hub/inbox/{agent}/{id}/archive`, `POST /api/hub/inbox/{agent}/{id}/restore` | Every agent's user inbox, read from their files, below. |
+| `POST /api/hub/uploads?filename=<name>` | Stages one file, sent as the raw request body, and answers `{ id, filename, size }`. See [Staged uploads](#staged-uploads). |
 | `GET /api/hub/push/key`, `GET`/`PUT /api/hub/push/devices`, `PATCH`/`DELETE /api/hub/push/devices/{id}`, `POST /api/hub/push/devices/{id}/test` | Web Push: the signing key and the devices that receive notifications, below. |
 | `GET`/`PUT /api/hub/config/raw`, `PATCH /api/hub/config/patch`, `POST /api/hub/config/validate` | The hub's `config.toml`. |
 | `POST /api/hub/config/complete-setup` | Onboarding: writes the hub config, the team layer, and the first agent's directory, then the hub starts that agent (see [hub.md](hub.md#start-up-and-shutdown)). `409` when an agent already exists. |
@@ -73,6 +74,12 @@ The hub's inbox routes read and change each agent's user inbox files directly (s
 A listing is newest first by `at`, then `id`, then agent. A page holds `limit` items, 50 when it isn't given, and a limit above 200 is treated as 200. `next_cursor` is `null` on the last page. Otherwise it is an opaque string to pass as `before` to get the page that follows, which starts after the item the cursor names even if that item has since been archived or removed. A listing fails as a whole when any listed agent's inbox can't be read, naming the agent, instead of answering with its items missing.
 
 Errors are `{ "error": message }`: `400` for a `status` other than `active` or `archived`, a `limit` that is not a whole number of at least 1, a `before` the hub didn't issue, or an `id` that isn't a bare item id (empty, `.` or `..`, or containing `/`, `\`, or a NUL); `404` for an unknown agent, or an item that isn't where the call looks for it (`archive` needs it active, `restore` needs it archived); `409` when the destination already holds a different item with the same `id`, in which case both items stay where they are; and `500` when the files can't be read or changed.
+
+### Staged uploads
+
+`POST /api/hub/uploads?filename=<name>` takes one file as the raw request body and stages it in the hub directory, under `uploads/`, so it works while no agent runs. The answer is `{ "id", "filename", "size" }`, and the id identifies the staged file to whatever uses it. The `filename` must be a base name: an empty name, `.`, `..`, a name with `/` or `\`, or one with a control character is `400`. An empty body is `400`, and a body over 50 MB is `413`. A failure to write the file is `500`.
+
+A staged upload is kept for 24 hours and removed after that. The hub removes expired uploads at startup and before each new upload is staged. Each upload is one directory holding its content and a `meta.json` with its filename, size, content type, and creation time.
 
 ### Web Push devices
 
