@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readDraft, readDraftImages, saveDraft, saveDraftImages } from "./composer-drafts";
+import { clearDraftAttachments, draftAttachments, readDraft, saveDraft } from "./composer-drafts";
 
 /** A `localStorage` that works, which the Node test environment lacks. */
 function stubStorage(): Map<string, string> {
@@ -44,12 +44,11 @@ describe("composer drafts", () => {
     expect(readDraft("atlas")).toBe("");
   });
 
-  it("keeps attached images per agent for the page's life", () => {
-    const image = { media_type: "image/png", data: "AAAA" };
-    saveDraftImages("atlas", [image]);
-    expect(readDraftImages("atlas")).toEqual([image]);
-    expect(readDraftImages("scout")).toEqual([]);
-    saveDraftImages("atlas", []);
-    expect(readDraftImages("atlas")).toEqual([]);
+  it("keeps one list of attached files per agent for the page's life", () => {
+    const atlas = draftAttachments("atlas");
+    expect(draftAttachments("atlas")).toBe(atlas);
+    expect(draftAttachments("scout")).not.toBe(atlas);
+    clearDraftAttachments();
+    expect(draftAttachments("atlas")).not.toBe(atlas);
   });
 });

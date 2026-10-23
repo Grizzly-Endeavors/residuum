@@ -11,7 +11,8 @@
   import { userErrorMessage } from "../../lib/errors";
   import { notifications } from "../../lib/notifications.svelte";
   import { openSessionByAddress } from "../../lib/session-address";
-  import type { ImageAttachment, WaitingMessage } from "../../lib/types";
+  import type { StagedAttachment } from "../../lib/staged-attachments.svelte";
+  import type { WaitingMessage } from "../../lib/types";
   import { Button, EmptyState, Skeleton } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import Feed from "../../feed/Feed.svelte";
@@ -30,7 +31,7 @@
   // its state card takes the composer's place at the end of the conversation.
   // Messages the agent hasn't read yet wait at the end of the conversation,
   // where each can be sent now or sent to a multitask session instead.
-  // Images dropped anywhere on the place are attached to the message.
+  // Files dropped anywhere on the place are attached to the message.
 
   let { agent, actions }: { agent: string; actions: ShellActions } = $props();
 
@@ -76,11 +77,27 @@
   // the rest of the line as its text; anything else is a message, a pasted
   // path included. An action that can't run now says why and leaves the line
   // in the box.
-  function handleSend(text: string, images?: ImageAttachment[]): boolean {
+  // A line sent with files is always a message, so the files go with it.
+  function handleSend(text: string, attachments: StagedAttachment[]): boolean {
+    if (attachments.length > 0) {
+      ws.sendChat(text, attachments);
+      return true;
+    }
     const outcome = runCommandLine(commandActions(actionRegistry.all), text);
-    if (outcome === "message") ws.sendChat(text, images);
+    if (outcome === "message") ws.sendChat(text);
     return outcome !== "refused";
   }
+
+  // A message the agent refused goes back in the box, files and all. With no
+  // box showing (the agent stopped meanwhile, or another place is open), the
+  // coordinator puts it in the agent's draft instead.
+  $effect(() => {
+    const shown = composer;
+    if (shown === undefined) return;
+    return ws.onRefusedSend((refused) => {
+      shown.restore(refused.content, refused.attachments);
+    });
+  });
 
   // ── Messages the agent hasn't read yet ─────────────────────────────
 
@@ -93,6 +110,13 @@
       notifications.surface(
         "notice",
         `A multitask session can't take pictures. Send this now, or let ${name} read it.`,
+      );
+      return;
+    }
+    if (message.attachments !== undefined && message.attachments.length > 0) {
+      notifications.surface(
+        "notice",
+        `A multitask session can't take files. Send this now, or let ${name} read it.`,
       );
       return;
     }
@@ -126,7 +150,7 @@
     if (!started) composer?.restore(message.content);
   }
 
-  // ── Dropping images ────────────────────────────────────────────────
+  // ── Dropping files ─────────────────────────────────────────────────
 
   // Files dragged anywhere over the place are for the composer, with an
   // overlay saying so. With no composer (the agent isn't running) the place
@@ -151,7 +175,7 @@
     if (!running || !carriesFiles(event)) return;
     event.preventDefault();
     dragging = false;
-    void composer?.attach(event.dataTransfer?.files ?? []);
+    composer?.attach(event.dataTransfer?.files ?? []);
   }
 
   const watchDrops = (place: HTMLElement): (() => void) => {
@@ -252,7 +276,7 @@
   </Feed>
   {#if dragging}
     <div class="chat-drop" aria-hidden="true">
-      <span class="chat-drop-label"><Icon name="paperclip" size={16} />Drop images to attach</span>
+      <span class="chat-drop-label"><Icon name="paperclip" size={16} />Drop files to attach</span>
     </div>
   {/if}
 </div>

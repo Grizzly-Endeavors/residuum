@@ -15,9 +15,13 @@ use crate::websocket::subscriber::WsSubscribers;
 use residuum_bus::EndpointName;
 use residuum_bus::origin::MessageOrigin;
 use residuum_config::WEB_UI_ENDPOINT;
-use residuum_inference::ImageData;
+use residuum_hub::uploads::{StagedUpload, UploadError};
+use residuum_inference::{ImageData, MessageAttachment};
 use residuum_net::workbench::ArtifactsOrigin;
 use residuum_protocol::{ClientMessage, ServerMessage};
+use residuum_workspace::inbox::attachment::{
+    AttachmentInfo, AttachmentItem, AttachmentKind, SavedAttachment, reserve_attachment_item,
+};
 use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// Query parameters of the agent `/ws` upgrade.
@@ -105,15 +109,19 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     // Forwarding task: bus subscribers + local channel → WebSocket client
     let fwd_handle = residuum_core::util::spawn_in_span(async move {
         loop {
+            // Local frames first: a `message_refused` for a failed publish is
+            // queued as the bus shuts down, and an unbiased pick could take the
+            // ended bus subscription and stop before writing it.
             let msg = tokio::select! {
-                bus_msg = subs.recv() => {
-                    match bus_msg {
+                biased;
+                msg = local_rx.recv() => {
+                    match msg {
                         Some(m) => Some(m),
                         None => break,
                     }
                 }
-                msg = local_rx.recv() => {
-                    match msg {
+                bus_msg = subs.recv() => {
+                    match bus_msg {
                         Some(m) => Some(m),
                         None => break,
                     }
@@ -183,9 +191,38 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
         }
     }
 
-    // Clean up: abort forwarding task when client disconnects
-    fwd_handle.abort();
+    finish_forwarding(local_tx, close_tx, fwd_handle).await;
     tracing::debug!("client disconnected");
+}
+
+/// How long the forwarder gets to write its queued frames once the read loop
+/// has ended, before it is aborted.
+const FORWARDER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Close the forwarder's inputs, then wait for it to flush its queued frames
+/// and close the socket, aborting it if a stuck socket keeps it past
+/// [`FORWARDER_DRAIN_TIMEOUT`].
+async fn finish_forwarding(
+    local_tx: mpsc::UnboundedSender<ServerMessage>,
+    close_tx: oneshot::Sender<Option<CloseFrame>>,
+    mut fwd_handle: tokio::task::JoinHandle<()>,
+) {
+    // Dropping the senders lets the forwarder write what is already queued
+    // (above all the `message_refused` for a failed publish, which ends the
+    // read loop) and then close the socket. Aborting it outright lost that
+    // frame, so the client saw a bare close and its message vanished unrefused.
+    drop(local_tx);
+    drop(close_tx);
+    if tokio::time::timeout(FORWARDER_DRAIN_TIMEOUT, &mut fwd_handle)
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            timeout = ?FORWARDER_DRAIN_TIMEOUT,
+            "websocket forwarder did not flush its queued frames in time; aborting it"
+        );
+        fwd_handle.abort();
+    }
 }
 
 /// Hand the client's Close frame to the forwarding task, which owns the send
@@ -235,7 +272,7 @@ async fn handle_client_message(
         ClientMessage::SendMessage {
             id,
             content,
-            images,
+            attachments,
         } => {
             // The id names the turn this message starts or joins in every
             // frame about it, and an empty one reads as a message posted
@@ -250,18 +287,15 @@ async fn handle_client_message(
             } else {
                 id
             };
-            if !images.is_empty()
-                && let Err(reason) = validate_images(&images)
-            {
-                local_tx
-                    .send(ServerMessage::Error {
-                        reply_to: Some(id),
-                        message: reason,
-                        details: None,
-                    })
-                    .ok();
-                return true;
-            }
+            let attached = match attach_uploads(state, content, &attachments).await {
+                Ok(attached) => attached,
+                Err(message) => {
+                    local_tx
+                        .send(ServerMessage::MessageRefused { id, message })
+                        .ok();
+                    return true;
+                }
+            };
 
             let origin = MessageOrigin {
                 endpoint: WEB_UI_ENDPOINT.to_string(),
@@ -269,12 +303,18 @@ async fn handle_client_message(
                 conversation: None,
                 agent_sender: None,
             };
+            let companion_item_ids: Vec<String> = attached
+                .attachments
+                .iter()
+                .map(|attachment| attachment.item_id.clone())
+                .collect();
             let msg_event = residuum_bus::MessageEvent {
                 id: id.clone(),
-                content,
+                content: attached.content,
                 origin,
                 timestamp: residuum_core::time::now_local(chrono_tz::UTC),
-                images,
+                images: attached.images,
+                attachments: attached.attachments,
                 context: None,
             };
             if let Err(e) = state
@@ -283,8 +323,16 @@ async fn handle_client_message(
                 .await
             {
                 tracing::warn!(error = %e, "failed to publish message to bus");
+                discard_companion_items(state, &companion_item_ids).await;
+                local_tx
+                    .send(ServerMessage::MessageRefused {
+                        id,
+                        message: "Your message didn't reach the agent. Send it again.".to_string(),
+                    })
+                    .ok();
                 return false;
             }
+            consume_uploads(state, &attached.upload_ids).await;
         }
         ClientMessage::SetVerbose { enabled } => {
             verbose.store(enabled, Ordering::Relaxed);
@@ -646,41 +694,183 @@ enum SessionCommand {
     },
 }
 
-/// Maximum raw image size in bytes, per the model API's per-image limit (5 MB).
-const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// The platform a web chat attachment's companion item is filed under.
+const CHAT_PLATFORM: &str = "Chat";
 
-/// MIME types the model API accepts for image input.
-const ALLOWED_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+/// The author line of a web chat attachment's companion item.
+const CHAT_AUTHOR: &str = "Web chat";
 
-/// Validate image attachments before publishing to the bus.
-///
-/// Enforces the model API's own per-image limits — 5 MB and JPEG/PNG/GIF/WebP
-/// only — since those are provider facts, not a residuum-imposed cap. There
-/// is no limit on how many images a message can carry.
-///
-/// # Errors
-///
-/// Returns a human-readable error describing the first violation found.
-fn validate_images(images: &[ImageData]) -> Result<(), String> {
-    for img in images {
-        if !ALLOWED_MIME_TYPES.contains(&img.media_type.as_str()) {
-            return Err(format!(
-                "unsupported image type: {} (allowed: {})",
-                img.media_type,
-                ALLOWED_MIME_TYPES.join(", ")
-            ));
-        }
+/// What a chat message says when one of its uploads is no longer staged.
+const UPLOAD_UNAVAILABLE_MESSAGE: &str =
+    "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.";
 
-        // Estimate raw bytes from base64 length: every 4 base64 chars = 3 bytes
-        let estimated_bytes = img.data.len() * 3 / 4;
-        if estimated_bytes > MAX_IMAGE_BYTES {
-            return Err(format!(
-                "image too large: ~{estimated_bytes} bytes (max {MAX_IMAGE_BYTES})"
-            ));
-        }
+/// A chat message once its uploads are saved into the agent's inbox.
+struct AttachedUploads {
+    /// The message text, with an `[Attachment: …]` line for each file.
+    content: String,
+    /// Supported images among the files, inlined for the model.
+    images: Vec<ImageData>,
+    /// The files, as the message carries them to history and the web.
+    attachments: Vec<MessageAttachment>,
+    /// The staged uploads the message used, removed once it is published.
+    upload_ids: Vec<String>,
+}
+
+/// An upload whose file is copied into its companion item.
+struct CopiedUpload {
+    item: AttachmentItem,
+    info: AttachmentInfo,
+    saved: SavedAttachment,
+}
+
+/// Turn a chat message's upload ids into the companion inbox items they
+/// stand for, the same attachments a Discord message carries.
+///
+/// All or nothing: every id is resolved before anything is copied, and a
+/// failed copy discards the items already made, so a refused message leaves
+/// no inbox item behind. Returns the plain-language message to send back when
+/// the message is refused. Repeated ids count once.
+async fn attach_uploads(
+    state: &GatewayState,
+    mut content: String,
+    upload_ids: &[String],
+) -> Result<AttachedUploads, String> {
+    let staged = resolve_uploads(state, upload_ids).await?;
+    let copied = save_uploads(state, &staged).await?;
+
+    let mut images = Vec::new();
+    let mut attachments = Vec::with_capacity(copied.len());
+    for upload in copied {
+        let finalized = upload
+            .item
+            .finalize(&upload.saved, &upload.info, &mut content, CHAT_AUTHOR)
+            .await;
+        images.extend(finalized.image);
+        attachments.push(finalized.attachment);
     }
 
-    Ok(())
+    Ok(AttachedUploads {
+        content,
+        images,
+        attachments,
+        upload_ids: staged.into_iter().map(|upload| upload.id).collect(),
+    })
+}
+
+/// Resolve each distinct upload id to its staged file, refusing the whole
+/// message on the first id that is not available.
+async fn resolve_uploads(
+    state: &GatewayState,
+    upload_ids: &[String],
+) -> Result<Vec<StagedUpload>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut staged = Vec::with_capacity(upload_ids.len());
+    for id in upload_ids {
+        if !seen.insert(id.as_str()) {
+            continue;
+        }
+        match state.uploads.resolve(id).await {
+            Ok(upload) => staged.push(upload),
+            Err(e @ UploadError::Io { .. }) => {
+                tracing::error!(upload_id = %id, error = %e, "failed to read a chat attachment");
+                return Err(UPLOAD_UNAVAILABLE_MESSAGE.to_string());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    upload_id = %id,
+                    error = %e,
+                    "chat message named an attachment that isn't staged"
+                );
+                return Err(UPLOAD_UNAVAILABLE_MESSAGE.to_string());
+            }
+        }
+    }
+    Ok(staged)
+}
+
+/// Copy every staged file into its own companion item. If one copy fails,
+/// the items already copied are discarded and the message is refused.
+async fn save_uploads(
+    state: &GatewayState,
+    staged: &[StagedUpload],
+) -> Result<Vec<CopiedUpload>, String> {
+    let mut copied = Vec::with_capacity(staged.len());
+    for upload in staged {
+        match save_upload(state, upload).await {
+            Ok(done) => copied.push(done),
+            Err(reason) => {
+                tracing::error!(
+                    upload_id = %upload.id,
+                    filename = %upload.filename,
+                    error = %reason,
+                    "failed to copy a chat attachment into the agent inbox"
+                );
+                for done in copied {
+                    done.item.discard().await;
+                }
+                return Err(format!(
+                    "Couldn't attach {}. Try sending it again.",
+                    upload.filename
+                ));
+            }
+        }
+    }
+    Ok(copied)
+}
+
+/// Reserve a companion item for one staged file and copy the file into it.
+/// A failed copy discards the item it reserved.
+async fn save_upload(state: &GatewayState, upload: &StagedUpload) -> Result<CopiedUpload, String> {
+    let info = AttachmentInfo {
+        filename: upload.filename.clone(),
+        size: u32::try_from(upload.size)
+            .map_err(|_too_large| format!("file is {} bytes, too large to attach", upload.size))?,
+        content_type: Some(upload.content_type.clone()),
+    };
+    let item = reserve_attachment_item(
+        &state.agent_inbox_dir,
+        &info,
+        CHAT_PLATFORM,
+        AttachmentKind::Attachment,
+        state.tz,
+    )
+    .await?;
+    match item.save_file(&info, &upload.path).await {
+        Ok(saved) => Ok(CopiedUpload { item, info, saved }),
+        Err(reason) => {
+            item.discard().await;
+            Err(reason)
+        }
+    }
+}
+
+/// Remove the companion items of a message that did not reach the bus, so a
+/// resend does not file each attachment a second time. The staged uploads stay
+/// for that resend. A failed removal is logged, and the item stays in the inbox.
+async fn discard_companion_items(state: &GatewayState, item_ids: &[String]) {
+    for id in item_ids {
+        if let Err(e) = residuum_workspace::inbox::remove_item(&state.agent_inbox_dir, id).await {
+            tracing::warn!(
+                item_id = %id,
+                error = %e,
+                "failed to remove a companion item of a chat message that did not publish"
+            );
+        }
+    }
+}
+
+/// Remove the staged uploads a published message used. A failed removal is
+/// logged; the store's expiry clears the file later.
+async fn consume_uploads(state: &GatewayState, upload_ids: &[String]) {
+    for id in upload_ids {
+        if let Err(e) = state.uploads.remove(id).await {
+            tracing::warn!(
+                upload_id = %id,
+                error = %e,
+                "failed to remove a sent chat attachment; it expires later"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -703,104 +893,6 @@ mod tests {
         assert!(
             !flag.load(Ordering::Relaxed),
             "should be false after storing false"
-        );
-    }
-
-    fn make_image(media_type: &str, data_len: usize) -> ImageData {
-        ImageData {
-            media_type: media_type.to_string(),
-            data: "A".repeat(data_len),
-        }
-    }
-
-    #[test]
-    fn validate_images_accepts_valid_input() {
-        let images = vec![make_image("image/jpeg", 100), make_image("image/png", 200)];
-        assert!(
-            validate_images(&images).is_ok(),
-            "valid images should pass validation"
-        );
-    }
-
-    #[test]
-    fn validate_images_accepts_empty() {
-        assert!(
-            validate_images(&[]).is_ok(),
-            "empty images should pass validation"
-        );
-    }
-
-    #[test]
-    fn validate_images_accepts_many_images() {
-        // There is no cap on how many images a message can carry.
-        let images: Vec<_> = (0..50).map(|_| make_image("image/png", 100)).collect();
-        assert!(
-            validate_images(&images).is_ok(),
-            "any number of images should be accepted"
-        );
-    }
-
-    #[test]
-    fn validate_images_rejects_bad_mime_type() {
-        let images = vec![make_image("image/bmp", 100)];
-        let result = validate_images(&images);
-        assert!(result.is_err(), "should reject unsupported MIME type");
-        assert!(
-            result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.contains("unsupported")),
-            "error should mention 'unsupported'"
-        );
-    }
-
-    #[test]
-    fn validate_images_rejects_oversized() {
-        // 7 MB worth of base64 (~9.3M base64 chars encode ~7M raw bytes)
-        let oversized_len = 7 * 1024 * 1024 * 4 / 3;
-        let images = vec![make_image("image/jpeg", oversized_len)];
-        let result = validate_images(&images);
-        assert!(result.is_err(), "should reject oversized image");
-        assert!(
-            result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.contains("too large")),
-            "error should mention 'too large'"
-        );
-    }
-
-    #[test]
-    fn validate_images_allows_all_mime_types() {
-        for mime in ALLOWED_MIME_TYPES {
-            let images = vec![make_image(mime, 100)];
-            assert!(validate_images(&images).is_ok(), "{mime} should be allowed");
-        }
-    }
-
-    #[test]
-    fn validate_images_accepts_max_bytes() {
-        // Compute base64 length such that estimated_bytes == MAX_IMAGE_BYTES exactly.
-        // estimated_bytes = data.len() * 3 / 4; we want this == MAX_IMAGE_BYTES (not greater).
-        let max_b64_len = MAX_IMAGE_BYTES * 4 / 3 + 1;
-        let images = vec![make_image("image/jpeg", max_b64_len)];
-        assert!(
-            validate_images(&images).is_ok(),
-            "image at exactly MAX_IMAGE_BYTES should be accepted"
-        );
-    }
-
-    #[test]
-    fn validate_images_rejects_empty_media_type() {
-        let images = vec![make_image("", 100)];
-        let result = validate_images(&images);
-        assert!(result.is_err(), "empty media_type should be rejected");
-        assert!(
-            result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.contains("unsupported")),
-            "error should mention 'unsupported'"
         );
     }
 
@@ -949,6 +1041,7 @@ mod tests {
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
             agent_inbox_dir: workspace_dir.join("inbox/agent"),
+            uploads: residuum_hub::uploads::UploadStore::open(&workspace_dir.join("hub")).unwrap(),
             tz: chrono_tz::UTC,
             publisher: core.publisher,
             bus_handle: core.bus_handle,
@@ -1073,6 +1166,17 @@ mod tests {
         msg: ClientMessage,
         state: &GatewayState,
     ) -> mpsc::UnboundedReceiver<ServerMessage> {
+        let (keep_going, local_rx) = handle_on_connection_with_outcome(msg, state).await;
+        assert!(keep_going, "the connection should stay open");
+        local_rx
+    }
+
+    /// [`handle_on_connection`], also returning whether the connection's read
+    /// loop goes on.
+    async fn handle_on_connection_with_outcome(
+        msg: ClientMessage,
+        state: &GatewayState,
+    ) -> (bool, mpsc::UnboundedReceiver<ServerMessage>) {
         let (local_tx, local_rx) = mpsc::unbounded_channel();
         let verbose = AtomicBool::new(false);
         let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
@@ -1087,8 +1191,7 @@ mod tests {
             },
         )
         .await;
-        assert!(keep_going);
-        local_rx
+        (keep_going, local_rx)
     }
 
     #[tokio::test]
@@ -1152,6 +1255,299 @@ mod tests {
         );
     }
 
+    /// Stage a file in the hub's upload store, returning its upload id.
+    async fn stage_upload(state: &GatewayState, filename: &str, bytes: &[u8]) -> String {
+        state.uploads.stage(filename, bytes).await.unwrap().id
+    }
+
+    /// Subscribe to the user messages the bus publishes.
+    async fn user_messages(
+        state: &GatewayState,
+    ) -> residuum_bus::Subscriber<residuum_bus::MessageEvent> {
+        state
+            .bus_handle
+            .subscribe(residuum_bus::topics::UserMessage)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_chat_upload_becomes_a_companion_item_and_an_inline_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let photo_id = stage_upload(&state, "photo.png", b"\x89PNG fake pixels").await;
+        let mut inbound = user_messages(&state).await;
+
+        // The same id twice counts once.
+        let _local = handle_on_connection(
+            ClientMessage::SendMessage {
+                id: "chat-1".into(),
+                content: "look".into(),
+                attachments: vec![photo_id.clone(), photo_id.clone()],
+            },
+            &state,
+        )
+        .await;
+
+        let event = inbound.recv().await.unwrap().unwrap();
+        let attachment_line = event
+            .content
+            .strip_prefix("look\n")
+            .expect("the text is followed by the attachment line");
+        assert!(
+            attachment_line.starts_with("[Attachment: photo.png (")
+                && attachment_line.ends_with(']'),
+            "expected an attachment line, got {attachment_line:?}"
+        );
+
+        assert_eq!(event.images.len(), 1, "a PNG is inlined for the model");
+        assert_eq!(
+            event.images.first().map(|image| image.media_type.as_str()),
+            Some("image/png")
+        );
+
+        assert_eq!(event.attachments.len(), 1, "a repeated id attaches once");
+        let attachment = event.attachments.first().expect("one attachment");
+        assert_eq!(attachment.filename, "photo.png");
+
+        let items = residuum_workspace::inbox::list_items(&state.agent_inbox_dir)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1, "one companion item in the agent inbox");
+        let (file_name, item) = items.first().expect("one companion item");
+        assert_eq!(
+            file_name.as_str(),
+            attachment.item_id.as_str(),
+            "the attachment names the companion item"
+        );
+        assert_eq!(item.source, "chat");
+        assert_eq!(item.title, "Chat attachment: photo.png");
+        assert_eq!(item.body.lines().next(), Some("From: Web chat"));
+
+        assert!(
+            state.uploads.resolve(&photo_id).await.is_err(),
+            "the staged upload is removed once the message is sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chat_message_naming_an_unstaged_upload_is_refused_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let good_id = stage_upload(&state, "notes.txt", b"some notes").await;
+        let mut inbound = user_messages(&state).await;
+
+        let mut local = handle_on_connection(
+            ClientMessage::SendMessage {
+                id: "chat-2".into(),
+                content: "here".into(),
+                attachments: vec![good_id.clone(), "0".repeat(32)],
+            },
+            &state,
+        )
+        .await;
+
+        let reply = next_server_message(&mut local).await;
+        assert!(
+            matches!(
+                &reply,
+                ServerMessage::MessageRefused { id, message }
+                    if id == "chat-2" && message == UPLOAD_UNAVAILABLE_MESSAGE
+            ),
+            "expected the unavailable-file refusal, got {reply:?}"
+        );
+
+        // Nothing was published: the next message is the first event seen.
+        let _local = handle_on_connection(
+            ClientMessage::SendMessage {
+                id: "after".into(),
+                content: "next".into(),
+                attachments: Vec::new(),
+            },
+            &state,
+        )
+        .await;
+        let event = inbound.recv().await.unwrap().unwrap();
+        assert_eq!(event.id, "after", "the refused message was not published");
+
+        let items = residuum_workspace::inbox::list_items_or_empty(&state.agent_inbox_dir)
+            .await
+            .unwrap();
+        assert!(items.is_empty(), "a refused message makes no inbox item");
+        assert!(
+            state.uploads.resolve(&good_id).await.is_ok(),
+            "the other staged upload is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_publish_failure_leaves_no_companion_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = make_test_gateway_state(dir.path());
+        let photo_id = stage_upload(&state, "photo.txt", b"photo bytes").await;
+        // A publisher not backed by a broker fails every publish, as a stopped
+        // bus does.
+        state.publisher = residuum_bus::Publisher::noop();
+
+        let (keep_going, mut local) = handle_on_connection_with_outcome(
+            ClientMessage::SendMessage {
+                id: "chat-4".into(),
+                content: "photo".into(),
+                attachments: vec![photo_id.clone()],
+            },
+            &state,
+        )
+        .await;
+        assert!(!keep_going, "a stopped bus ends the connection");
+
+        let reply = next_server_message(&mut local).await;
+        assert!(
+            matches!(
+                &reply,
+                ServerMessage::MessageRefused { id, message }
+                    if id == "chat-4"
+                        && message == "Your message didn't reach the agent. Send it again."
+            ),
+            "expected the publish-failure refusal, got {reply:?}"
+        );
+
+        let items = residuum_workspace::inbox::list_items_or_empty(&state.agent_inbox_dir)
+            .await
+            .unwrap();
+        assert!(items.is_empty(), "the unpublished message leaves no item");
+        let attachments_dir = state.agent_inbox_dir.join("attachments");
+        let leftovers = if attachments_dir.exists() {
+            std::fs::read_dir(&attachments_dir).unwrap().count()
+        } else {
+            0
+        };
+        assert_eq!(leftovers, 0, "no attachment directory is left behind");
+        assert!(
+            state.uploads.resolve(&photo_id).await.is_ok(),
+            "the staged upload is kept for a resend"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_publish_failure_refusal_reaches_the_socket_before_it_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = make_test_gateway_state(dir.path());
+        // A publisher not backed by a broker fails every publish, as a stopped
+        // bus does, which ends the connection.
+        state.publisher = residuum_bus::Publisher::noop();
+        let addr = serve_ws_handler(state).await;
+        let mut socket = open_socket_past_handshake(addr, "/ws").await;
+
+        let send = serde_json::to_string(&ClientMessage::SendMessage {
+            id: "chat-5".into(),
+            content: "hello".into(),
+            attachments: Vec::new(),
+        })
+        .unwrap();
+        socket.send(WireMessage::text(send)).await.unwrap();
+
+        let refusal = serde_json::to_string(&ServerMessage::MessageRefused {
+            id: "chat-5".into(),
+            message: "Your message didn't reach the agent. Send it again.".into(),
+        })
+        .unwrap();
+        loop {
+            let Some(Ok(frame)) = wait::guarded("the refusal on the socket", socket.next()).await
+            else {
+                panic!("the socket ended before the refusal arrived");
+            };
+            match frame {
+                WireMessage::Text(text) => {
+                    if text.as_str() == refusal {
+                        break;
+                    }
+                }
+                WireMessage::Ping(_) | WireMessage::Pong(_) => {}
+                other
+                @ (WireMessage::Binary(_) | WireMessage::Close(_) | WireMessage::Frame(_)) => {
+                    panic!("expected the refusal before the close, got {other:?}")
+                }
+            }
+        }
+
+        // The connection still ends after the refusal.
+        loop {
+            match wait::guarded("the socket to close", socket.next()).await {
+                None | Some(Err(_) | Ok(WireMessage::Close(_))) => break,
+                Some(Ok(
+                    WireMessage::Text(_)
+                    | WireMessage::Binary(_)
+                    | WireMessage::Ping(_)
+                    | WireMessage::Pong(_)
+                    | WireMessage::Frame(_),
+                )) => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_copy_discards_the_items_already_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let first_id = stage_upload(&state, "first.txt", b"first").await;
+        let second_id = stage_upload(&state, "second.txt", b"second").await;
+        // The second file's bytes vanish after staging, so its copy fails
+        // after the first has been copied into its item.
+        let second_path = state.uploads.resolve(&second_id).await.unwrap().path;
+        std::fs::remove_file(&second_path).unwrap();
+        let mut inbound = user_messages(&state).await;
+
+        let mut local = handle_on_connection(
+            ClientMessage::SendMessage {
+                id: "chat-3".into(),
+                content: "both".into(),
+                attachments: vec![first_id.clone(), second_id.clone()],
+            },
+            &state,
+        )
+        .await;
+
+        let reply = next_server_message(&mut local).await;
+        assert!(
+            matches!(
+                &reply,
+                ServerMessage::MessageRefused { id, message }
+                    if id == "chat-3"
+                        && message == "Couldn't attach second.txt. Try sending it again."
+            ),
+            "expected the copy-failure refusal, got {reply:?}"
+        );
+
+        let items = residuum_workspace::inbox::list_items_or_empty(&state.agent_inbox_dir)
+            .await
+            .unwrap();
+        assert!(items.is_empty(), "the first file's item is discarded too");
+        let attachments_dir = state.agent_inbox_dir.join("attachments");
+        let leftovers = if attachments_dir.exists() {
+            std::fs::read_dir(&attachments_dir).unwrap().count()
+        } else {
+            0
+        };
+        assert_eq!(leftovers, 0, "no attachment directory is left behind");
+
+        let _local = handle_on_connection(
+            ClientMessage::SendMessage {
+                id: "after".into(),
+                content: "next".into(),
+                attachments: Vec::new(),
+            },
+            &state,
+        )
+        .await;
+        let event = inbound.recv().await.unwrap().unwrap();
+        assert_eq!(event.id, "after", "the refused message was not published");
+        assert!(
+            state.uploads.resolve(&first_id).await.is_ok(),
+            "both staged uploads are kept for a retry"
+        );
+        assert!(state.uploads.resolve(&second_id).await.is_ok());
+    }
+
     #[tokio::test]
     async fn a_message_sent_without_an_id_is_given_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -1169,7 +1565,7 @@ mod tests {
             ClientMessage::SendMessage {
                 id: String::new(),
                 content: "hello".to_string(),
-                images: Vec::new(),
+                attachments: Vec::new(),
             },
             &state,
             &ConnectionChannels {

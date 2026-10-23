@@ -127,6 +127,16 @@ describe("attachment routes over the whole mock", () => {
     },
   );
 
+  it("serves the seeded chat attachments of the agent's own inbox", async () => {
+    const notes = await fetch(at("atlas", "/agent/mock-chat-notes/attachments/0"));
+    expect(notes.status).toBe(200);
+    expect(notes.headers.get("content-type")).toBe("text/markdown");
+    expect(await notes.text()).toContain("# Routing notes");
+    const spec = await fetch(at("atlas", "/agent/mock-chat-spec/attachments/0"));
+    expect(spec.status).toBe(200);
+    expect(spec.headers.get("content-type")).toBe("application/pdf");
+  });
+
   it("serves an agent's attachments while it is stopped", async () => {
     sampleItem(stateOf("atlas")).attachments = [mockAttachment("note.txt", "text/plain")];
     await fetch(`${mock.baseUrl}/api/hub/agents/atlas/stop`, { method: "POST" });

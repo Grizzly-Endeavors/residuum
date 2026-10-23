@@ -177,10 +177,13 @@ impl InboxRef {
 }
 
 /// An item id must be usable as a filename stem in one directory: not empty,
-/// no path separators or NUL, and no `..`.
-fn validate_item_id(id: &str) -> Result<(), String> {
+/// not `.`, no path separators or NUL, and no `..`.
+pub(super) fn validate_item_id(id: &str) -> Result<(), String> {
     if id.is_empty() {
         return Err("the id is empty".to_string());
+    }
+    if id == "." {
+        return Err("the id is '.'".to_string());
     }
     if id.contains(['/', '\\', '\0']) {
         return Err(format!("'{id}' contains a path separator or NUL"));
@@ -284,6 +287,10 @@ mod tests {
         ));
         assert!(matches!(
             InboxRef::parse("atlas/user/.."),
+            Err(InboxRefError::InvalidId { .. })
+        ));
+        assert!(matches!(
+            InboxRef::parse("atlas/user/."),
             Err(InboxRefError::InvalidId { .. })
         ));
         assert!(matches!(

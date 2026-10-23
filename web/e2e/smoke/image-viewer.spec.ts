@@ -19,6 +19,11 @@ function conversation(page: Page): Locator {
   return page.getByRole("region", { name: "Conversation with atlas" });
 }
 
+/** The message this spec sends, so the pictures of other messages in the conversation don't match. */
+function sent(page: Page): Locator {
+  return conversation(page).locator(".user-message").filter({ hasText: "Here are the pictures" });
+}
+
 /** Send a message with `images`, and wait for them to show in the conversation. */
 async function sendPictures(page: Page, images: Buffer[]): Promise<void> {
   await page.goto("/agent/atlas");
@@ -34,7 +39,7 @@ async function sendPictures(page: Page, images: Buffer[]): Promise<void> {
   await box.fill("Here are the pictures");
   await sendFromComposer(box);
   await expect(
-    conversation(page).getByRole("button", { name: "View full size: Attached image 1" }),
+    sent(page).getByRole("button", { name: "View full size: Attached image 1" }),
   ).toBeVisible();
 }
 
@@ -42,7 +47,7 @@ test("a picture opens full size, fitted to the view, and Esc gives focus back", 
   page,
 }) => {
   await sendPictures(page, [WIDE]);
-  const thumbnail = conversation(page).getByRole("button", {
+  const thumbnail = sent(page).getByRole("button", {
     name: "View full size: Attached image 1",
   });
   await thumbnail.click();
@@ -75,9 +80,7 @@ test("a picture opens full size, fitted to the view, and Esc gives focus back", 
 
 test("a tall picture fits the view as well", async ({ page }) => {
   await sendPictures(page, [TALL]);
-  await conversation(page)
-    .getByRole("button", { name: "View full size: Attached image 1" })
-    .click();
+  await sent(page).getByRole("button", { name: "View full size: Attached image 1" }).click();
   const picture = page.getByRole("dialog").getByRole("img");
   await expect.poll(() => picture.evaluate((img: HTMLImageElement) => img.complete)).toBe(true);
   const size = await picture.boundingBox();
@@ -93,9 +96,7 @@ test("the arrow keys and the buttons move between a message's pictures, wrapping
   isMobile,
 }) => {
   await sendPictures(page, [WIDE, TALL]);
-  await conversation(page)
-    .getByRole("button", { name: "View full size: Attached image 2" })
-    .click();
+  await sent(page).getByRole("button", { name: "View full size: Attached image 2" }).click();
   const viewer = page.getByRole("dialog");
   await expect(viewer).toHaveAccessibleName("Attached image 2");
   await expect(viewer.locator(".viewer-place")).toHaveText("2 of 2");
@@ -125,9 +126,7 @@ test("focus stays in the viewer while Tab is pressed, and the page behind it can
   page,
 }) => {
   await sendPictures(page, [WIDE]);
-  await conversation(page)
-    .getByRole("button", { name: "View full size: Attached image 1" })
-    .click();
+  await sent(page).getByRole("button", { name: "View full size: Attached image 1" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
 
   // Only the viewer's close button can take focus, with a tooltip showing on it.

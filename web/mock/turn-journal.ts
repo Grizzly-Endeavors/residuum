@@ -88,6 +88,7 @@ function turnOf(frame: ServerMessage): string | null {
     case "post_turn_activity":
     case "file_attachment":
     case "error":
+    case "message_refused":
     case "pong":
     case "turn_snapshot":
     case "reloading":

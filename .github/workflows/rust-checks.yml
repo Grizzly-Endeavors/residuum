@@ -310,7 +310,7 @@ jobs:
       - name: Pebble tests
         id: pebble
         if: ${{ !cancelled() && inputs.pebble && steps.build_tests.outcome == 'success' }}
-        run: cargo test --quiet -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
+        run: cargo test --quiet --no-fail-fast -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
 
       # Regenerates web/src/lib/generated from the Rust protocol types and
       # fails on any difference from what is committed.

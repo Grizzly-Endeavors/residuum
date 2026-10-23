@@ -93,6 +93,8 @@ pub(crate) struct GatewayState {
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
     pub agent_inbox_dir: std::path::PathBuf,
+    /// The hub's staged uploads, which a chat message's attachment ids name.
+    pub uploads: residuum_hub::uploads::UploadStore,
     pub tz: chrono_tz::Tz,
     pub publisher: Publisher,
     pub bus_handle: BusHandle,

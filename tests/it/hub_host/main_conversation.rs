@@ -107,6 +107,7 @@ fn telegram_message(id: &str, content: &str) -> MessageEvent {
         },
         timestamp: chrono::Utc::now().naive_utc(),
         images: Vec::new(),
+        attachments: Vec::new(),
         context: None,
     }
 }

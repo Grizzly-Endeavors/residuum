@@ -313,6 +313,7 @@ mod tests {
             },
             timestamp: test_timestamp(),
             images: vec![],
+            attachments: Vec::new(),
             context: None,
         }
     }

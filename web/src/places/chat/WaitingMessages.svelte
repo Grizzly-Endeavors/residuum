@@ -4,7 +4,7 @@
   /** What a waiting message shows: main's carry more, a session's only its text. */
   export type WaitingBubble = Pick<
     WaitingMessage,
-    "id" | "content" | "images" | "sender" | "asked"
+    "id" | "content" | "images" | "attachments" | "sender" | "asked"
   >;
 
   /** What can be asked of a waiting message in the main conversation. */
@@ -23,7 +23,7 @@
 </script>
 
 <script lang="ts" generics="M extends WaitingBubble">
-  import { IconButton } from "../../lib/ui";
+  import { AttachmentChip, IconButton } from "../../lib/ui";
 
   // The messages the agent or a session hasn't read yet, at the foot of the
   // transcript under the turn they wait on. Each is the user's bubble, a
@@ -120,6 +120,19 @@
                   {/each}
                 </div>
               {/if}
+              {#if message.attachments !== undefined && message.attachments.length > 0}
+                <ul class="waiting-files" aria-label="Attachments">
+                  {#each message.attachments as attachment, fileIndex (fileIndex)}
+                    <li>
+                      <AttachmentChip
+                        filename={attachment.filename}
+                        size={attachment.size}
+                        contentType={attachment.content_type}
+                      />
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
             </div>
           </div>
         </li>
@@ -134,6 +147,13 @@
     flex-direction: column;
     align-items: flex-end;
     gap: var(--space-8);
+  }
+
+  .waiting-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    list-style: none;
   }
 
   .waiting-note {

@@ -13,7 +13,7 @@ use residuum_bus::{
     PulseFireChange, PulseFireEvent, PulseFireOutcome, PulseFirePhase, PulseFireRun,
     PulseFireStatus, PulseOverlap, ReloadOutcome, ReloadedFiles, TurnOrigin,
 };
-use residuum_inference::{AgentSender, ImageData, MessageSender};
+use residuum_inference::{AgentSender, ImageData, MessageAttachment, MessageSender};
 
 /// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -26,9 +26,9 @@ pub enum ClientMessage {
         id: String,
         /// The user message content.
         content: String,
-        /// Optional image attachments (base64-encoded).
+        /// Upload ids of the files attached to the message, from `POST /api/hub/uploads`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        images: Vec<ImageData>,
+        attachments: Vec<String>,
     },
     /// Turn tool call/result events on or off for this connection (verbose mode). The web UI
     /// turns them on at every connect, since its activity line is built from them.
@@ -128,6 +128,9 @@ pub struct QueuedMessage {
     /// Images attached to the message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageData>,
+    /// Files attached to the message, each saved as a companion agent-inbox item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachment>,
     /// The person who sent it, for interfaces that identify one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -711,6 +714,9 @@ pub enum ServerMessage {
         /// Images attached to the message.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageData>,
+        /// Files attached to the message, each saved as a companion agent-inbox item.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<MessageAttachment>,
         /// The person who sent it, for interfaces that identify one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -774,6 +780,17 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         details: Option<String>,
+    },
+    /// A `send_message` was refused before it reached the agent: an attached
+    /// upload is gone or couldn't be saved, or the message couldn't be handed
+    /// to the agent. Nothing of it was delivered, so the client takes its copy
+    /// of the message back for the person to send again. Sent to the sending
+    /// connection only; a failure after delivery is an `error` instead.
+    MessageRefused {
+        /// The refused message's id.
+        id: String,
+        /// Plain-language reason, with what to do next.
+        message: String,
     },
     /// Keepalive pong.
     Pong,
@@ -1153,8 +1170,8 @@ mod tests {
         assert!(
             matches!(
                 &msg,
-                ClientMessage::SendMessage { id, content, images }
-                    if id == "abc-123" && content == "hello" && images.is_empty()
+                ClientMessage::SendMessage { id, content, attachments }
+                    if id == "abc-123" && content == "hello" && attachments.is_empty()
             ),
             "should deserialize to SendMessage with correct fields"
         );
@@ -1248,6 +1265,7 @@ mod tests {
             turn_id: "turn-1".to_string(),
             content: "hello".to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
             sender: None,
             agent_sender: None,
             endpoint: "ws".to_string(),
@@ -1265,12 +1283,102 @@ mod tests {
     }
 
     #[test]
+    fn server_message_serialize_user_message_attachments() {
+        let msg = ServerMessage::UserMessage {
+            id: "m2".to_string(),
+            turn_id: "turn-2".to_string(),
+            content: "see attached".to_string(),
+            images: Vec::new(),
+            attachments: vec![MessageAttachment {
+                item_id: "item-1".to_string(),
+                filename: "notes.md".to_string(),
+                size: 12,
+                content_type: "text/markdown".to_string(),
+                path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+            }],
+            sender: None,
+            agent_sender: None,
+            endpoint: "chat".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "user_message",
+                "id": "m2",
+                "turn_id": "turn-2",
+                "content": "see attached",
+                "attachments": [{
+                    "item_id": "item-1",
+                    "filename": "notes.md",
+                    "size": 12,
+                    "content_type": "text/markdown",
+                    "path": "inbox/agent/attachments/item-1/notes.md",
+                }],
+                "endpoint": "chat",
+            })
+        );
+    }
+
+    #[test]
+    fn queued_message_serializes_its_attachments() {
+        let queued = QueuedMessage {
+            id: "m4".to_string(),
+            content: "see attached".to_string(),
+            images: Vec::new(),
+            attachments: vec![MessageAttachment {
+                item_id: "item-1".to_string(),
+                filename: "notes.md".to_string(),
+                size: 12,
+                content_type: "text/markdown".to_string(),
+                path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+            }],
+            sender: None,
+            endpoint: "chat".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&queued).unwrap(),
+            serde_json::json!({
+                "id": "m4",
+                "content": "see attached",
+                "attachments": [{
+                    "item_id": "item-1",
+                    "filename": "notes.md",
+                    "size": 12,
+                    "content_type": "text/markdown",
+                    "path": "inbox/agent/attachments/item-1/notes.md",
+                }],
+                "endpoint": "chat",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_user_message_without_attachments_omits_the_field() {
+        let msg = ServerMessage::UserMessage {
+            id: "m3".to_string(),
+            turn_id: "turn-3".to_string(),
+            content: "plain".to_string(),
+            images: Vec::new(),
+            attachments: Vec::new(),
+            sender: None,
+            agent_sender: None,
+            endpoint: "ws".to_string(),
+        };
+        let value = serde_json::to_value(&msg).unwrap();
+        assert!(
+            value.get("attachments").is_none(),
+            "an empty attachments list should be skipped: {value}"
+        );
+    }
+
+    #[test]
     fn server_message_serialize_teammate_user_message() {
         let msg = ServerMessage::UserMessage {
             id: "bg-1".to_string(),
             turn_id: "bg-1".to_string(),
             content: "[Message from teammate agent:scout, not the user.]\nhi".to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
             sender: None,
             agent_sender: Some(AgentSender {
                 address: "agent:scout".to_string(),
@@ -1299,6 +1407,7 @@ mod tests {
             turn_id: "bg-2".to_string(),
             content: "[Agent Message from spawned-research (spawned)]\nfound it".to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
             sender: None,
             agent_sender: Some(AgentSender {
                 address: "spawned-research".to_string(),
@@ -1416,6 +1525,24 @@ mod tests {
         assert!(
             json.contains("\"message\":\"something failed\""),
             "should have message field"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_message_refused() {
+        let msg = ServerMessage::MessageRefused {
+            id: "id-1".to_string(),
+            message: "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "message_refused",
+                "id": "id-1",
+                "message": "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
+            }),
+            "message_refused should carry the send's id and the reason"
         );
     }
 
@@ -1640,28 +1767,39 @@ mod tests {
     }
 
     #[test]
-    fn client_message_send_message_with_images_roundtrip() {
+    fn client_message_send_message_with_attachments_roundtrip() {
         let msg = ClientMessage::SendMessage {
-            id: "img-1".to_string(),
+            id: "att-1".to_string(),
             content: "look at this".to_string(),
-            images: vec![ImageData {
-                media_type: "image/png".to_string(),
-                data: "aGVsbG8=".to_string(),
-            }],
+            attachments: vec!["0123456789abcdef0123456789abcdef".to_string()],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(
-            json.contains("\"images\""),
-            "images field should be serialized when non-empty"
+            json.contains("\"attachments\":[\"0123456789abcdef0123456789abcdef\"]"),
+            "attachments field should be serialized when non-empty, got {json}"
         );
         let deserialized: ClientMessage = serde_json::from_str(&json).unwrap();
         assert!(
             matches!(
                 &deserialized,
-                ClientMessage::SendMessage { id, content, images }
-                    if id == "img-1" && content == "look at this" && images.len() == 1
+                ClientMessage::SendMessage { id, content, attachments }
+                    if id == "att-1" && content == "look at this" && attachments.len() == 1
             ),
-            "should survive serialization round-trip with images"
+            "should survive serialization round-trip with attachments"
+        );
+    }
+
+    #[test]
+    fn client_message_send_message_without_attachments_omits_the_field() {
+        let msg = ClientMessage::SendMessage {
+            id: "plain-1".to_string(),
+            content: "hi".to_string(),
+            attachments: Vec::new(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("attachments"),
+            "an empty attachments list should not be serialized, got {json}"
         );
     }
 

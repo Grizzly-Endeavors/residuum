@@ -8,6 +8,8 @@ describe("the agent inbox route", () => {
 
   beforeEach(async () => {
     harness = await startRouteHarness(agentInboxRoutes, createMockEnv({ deterministic: true }));
+    // The sample agent's seeded chat attachments are not what these tests look at.
+    harness.state.agentInbox = [];
   });
 
   afterEach(async () => {

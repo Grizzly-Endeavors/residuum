@@ -12,7 +12,7 @@ import {
 } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
 import { actionRegistry } from "../../lib/action-registry.svelte";
-import { saveDraft, saveDraftImages } from "../../lib/composer-drafts";
+import { clearDraftAttachments, saveDraft } from "../../lib/composer-drafts";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
@@ -262,6 +262,48 @@ describe("the conversation", () => {
   });
 });
 
+describe("a waiting message with files", () => {
+  it("shows its files, and multitask refuses it without taking it back from the agent", async () => {
+    setViewedAgent("atlas");
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    ws.store.handleMessage({
+      type: "message_queued",
+      message: {
+        id: "m3",
+        content: "see the notes",
+        endpoint: "ws",
+        attachments: [
+          {
+            item_id: "20260314_chat_attachment_notes_md",
+            filename: "notes.md",
+            size: 120,
+            content_type: "text/markdown",
+            path: "inbox/agent/attachments/20260314_chat_attachment_notes_md/notes.md",
+          },
+        ],
+      },
+    });
+    const withdraw = vi.spyOn(ws, "withdrawWaiting");
+    // Multitask is offered only while the agent's connection is up.
+    ws.transport.status = "connected";
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+
+    expect(screen.getByRole("list", { name: "Attachments" })).toHaveTextContent("notes.md");
+    await userEvent.click(screen.getByRole("button", { name: "Multitask" }));
+    expect(withdraw).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(notifications.history.some((item) => item.message.includes("can't take files"))).toBe(
+        true,
+      );
+    });
+  });
+});
+
 describe("stopping the reply", () => {
   function startTurn(): void {
     setViewedAgent("atlas");
@@ -346,7 +388,7 @@ describe("sending a line", () => {
     await userEvent.paste("/home/bear/logs/app.log has the error");
     await userEvent.keyboard("{Enter}");
 
-    expect(sendChat).toHaveBeenCalledWith("/home/bear/logs/app.log has the error", undefined);
+    expect(sendChat).toHaveBeenCalledWith("/home/bear/logs/app.log has the error");
     expect(surface).not.toHaveBeenCalledWith("error", expect.stringContaining("run /"));
     expect(box).toHaveValue("");
   });
@@ -357,7 +399,7 @@ describe("sending a line", () => {
 
     await userEvent.type(box, "/nope at all{Enter}");
 
-    expect(sendChat).toHaveBeenCalledWith("/nope at all", undefined);
+    expect(sendChat).toHaveBeenCalledWith("/nope at all");
   });
 
   it("runs the action a line names, with the rest as its text", async () => {
@@ -489,34 +531,130 @@ describe("loading the history", () => {
   });
 });
 
-describe("dropping images", () => {
+describe("dropping files", () => {
   const png = (name: string): File => new File(["png"], name, { type: "image/png" });
   const carrying = (...files: File[]): { dataTransfer: Partial<DataTransfer> } => ({
     dataTransfer: { types: ["Files"], files: files as unknown as FileList },
   });
 
   afterEach(() => {
-    saveDraftImages("atlas", []);
+    clearDraftAttachments();
   });
 
-  it("takes images dropped anywhere on the place, with an overlay while they are over it", async () => {
+  it("takes files dropped anywhere on the place, with an overlay while they are over it", async () => {
     Element.prototype.scrollIntoView = vi.fn();
     setViewedAgent("atlas");
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
     const header = screen.getByRole("heading", { level: 1, name: "atlas" });
-    expect(screen.queryByText("Drop images to attach")).toBeNull();
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
 
     // Over the header, which is nowhere near the composer.
     const taken = !(await fireEvent.dragOver(header, carrying(png("a.png"))));
     expect(taken).toBe(true);
     await settle();
-    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+    expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
 
-    await fireEvent.drop(header, carrying(png("a.png")));
+    const report = new File(["%PDF"], "report.pdf", { type: "application/pdf" });
+    await fireEvent.drop(header, carrying(report));
     await settle();
-    expect(screen.queryByText("Drop images to attach")).toBeNull();
-    expect(await screen.findByRole("img", { name: "Image 1" })).toBeInTheDocument();
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
+    const attached = await screen.findByRole("list", { name: "Attached files" });
+    expect(attached).toHaveTextContent("report.pdf");
+  });
+
+  it("sends a message's files as their uploads, and puts them back, uploading again, when the agent refuses it", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    // The first upload answers at once; the one after the refusal waits for `finish`.
+    let uploads = 0;
+    let finish: (response: Response) => void = () => {};
+    mockFetch((url) => {
+      if (!url.startsWith("/api/hub/uploads")) return jsonResponse({}, 404);
+      uploads += 1;
+      if (uploads === 1) return jsonResponse({ id: "upload_7", filename: "report.pdf", size: 4 });
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    });
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const send = vi.spyOn(ws.transport, "send");
+    const header = screen.getByRole("heading", { level: 1, name: "atlas" });
+    await fireEvent.drop(
+      header,
+      carrying(new File(["%PDF"], "report.pdf", { type: "application/pdf" })),
+    );
+    await settle();
+    const box = screen.getByRole("combobox", { name: "Message atlas" });
+    await userEvent.type(box, "Read this{Enter}");
+
+    const frame = send.mock.calls
+      .map(([sent]) => sent)
+      .find((sent) => sent.type === "send_message");
+    expect(frame).toMatchObject({ content: "Read this", attachments: ["upload_7"] });
+    expect(box).toHaveValue("");
+    expect(screen.queryByRole("list", { name: "Attached files" })).toBeNull();
+    await userEvent.type(box, "And then");
+
+    ws.transport.onMessage?.({
+      type: "message_refused",
+      id: frame?.type === "send_message" ? frame.id : "",
+      message:
+        "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
+    });
+    await settle();
+    expect(box).toHaveValue("Read this\n\nAnd then");
+    expect(screen.getByRole("list", { name: "Attached files" })).toHaveTextContent("report.pdf");
+    expect(ws.store.feed.filter((item) => item.kind === "user")).toEqual([]);
+    expect(ws.store.feed.some((item) => item.kind === "turn-failure")).toBe(false);
+
+    // The hub's copy may be gone, so the file uploads again before it can go.
+    expect(screen.getByRole("progressbar", { name: "Uploading report.pdf" })).toBeInTheDocument();
+    await userEvent.type(box, "{Enter}");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Wait for report.pdf to finish uploading, then send.",
+    );
+    const sendsSoFar = send.mock.calls.filter(([sent]) => sent.type === "send_message").length;
+    expect(sendsSoFar).toBe(1);
+
+    finish(jsonResponse({ id: "upload_8", filename: "report.pdf", size: 4 }));
+    await waitFor(() => {
+      expect(screen.queryByRole("progressbar")).toBeNull();
+    });
+    await userEvent.type(box, "{Enter}");
+    const again = send.mock.calls
+      .map(([sent]) => sent)
+      .filter((sent) => sent.type === "send_message");
+    expect(again).toHaveLength(2);
+    expect(again[1]).toMatchObject({
+      content: "Read this\n\nAnd then",
+      attachments: ["upload_8"],
+    });
+  });
+
+  it("keeps a message and a turn-failure card when an error names it before the agent confirmed it", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const send = vi.spyOn(ws.transport, "send");
+    const box = screen.getByRole("combobox", { name: "Message atlas" });
+    await userEvent.type(box, "Hello{Enter}");
+    const frame = send.mock.calls
+      .map(([sent]) => sent)
+      .find((sent) => sent.type === "send_message");
+
+    // The turn failed so fast that its error overtook the message's confirmation.
+    ws.transport.onMessage?.({
+      type: "error",
+      reply_to: frame?.type === "send_message" ? frame.id : "",
+      message: "The model isn't reachable.",
+    });
+    await settle();
+    expect(box).toHaveValue("");
+    expect(ws.store.feed.filter((item) => item.kind === "user")).toHaveLength(1);
+    expect(ws.store.feed.some((item) => item.kind === "turn-failure")).toBe(true);
   });
 
   it("drops the overlay when the files leave the place", async () => {
@@ -526,11 +664,11 @@ describe("dropping images", () => {
     const header = screen.getByRole("heading", { level: 1, name: "atlas" });
     await fireEvent.dragOver(header, carrying(png("a.png")));
     await settle();
-    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+    expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
 
     await fireEvent.dragLeave(header, { relatedTarget: null });
     await settle();
-    expect(screen.queryByText("Drop images to attach")).toBeNull();
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
   });
 
   it("ignores a drag that isn't carrying files", async () => {
@@ -540,7 +678,7 @@ describe("dropping images", () => {
     const header = screen.getByRole("heading", { level: 1, name: "atlas" });
     const taken = !(await fireEvent.dragOver(header, { dataTransfer: { types: ["text/plain"] } }));
     expect(taken).toBe(false);
-    expect(screen.queryByText("Drop images to attach")).toBeNull();
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
   });
 
   it("takes nothing while the agent has no composer, and leaves the drop for the app to refuse", async () => {
@@ -550,6 +688,6 @@ describe("dropping images", () => {
     const header = screen.getByRole("heading", { level: 1, name: "drifter" });
     const taken = !(await fireEvent.dragOver(header, carrying(png("a.png"))));
     expect(taken).toBe(false);
-    expect(screen.queryByText("Drop images to attach")).toBeNull();
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
   });
 });

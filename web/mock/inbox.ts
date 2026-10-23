@@ -48,6 +48,7 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   gif: "image/gif",
+  webp: "image/webp",
   svg: "image/svg+xml",
   zip: "application/zip",
 };

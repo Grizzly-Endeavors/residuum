@@ -18,6 +18,23 @@ pub struct ImageData {
     pub data: String,
 }
 
+/// A file that came with a user's message, saved as a companion agent-inbox item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MessageAttachment {
+    /// Id of the companion agent-inbox item that holds the file.
+    pub item_id: String,
+    /// The file's name as saved.
+    pub filename: String,
+    /// Size in bytes.
+    #[ts(type = "number")]
+    pub size: u64,
+    /// MIME type.
+    pub content_type: String,
+    /// Workspace-relative path of the file (`inbox/agent/attachments/<id>/<name>`).
+    pub path: String,
+}
+
 /// A message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -34,6 +51,9 @@ pub struct Message {
     /// Inline images attached to the message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageData>,
+    /// Files that came with a user message, each saved as a companion agent-inbox item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachment>,
     /// Who sent a user message, when it came from an identifiable person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<MessageSender>,
@@ -296,6 +316,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            attachments: Vec::new(),
             context: false,
         }
     }
@@ -313,6 +334,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            attachments: Vec::new(),
             context: false,
         }
     }
@@ -330,6 +352,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            attachments: Vec::new(),
             context: false,
         }
     }
@@ -347,6 +370,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            attachments: Vec::new(),
             context: false,
         }
     }
@@ -364,6 +388,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            attachments: Vec::new(),
             context: false,
         }
     }
@@ -385,6 +410,7 @@ impl Message {
             agent_sender: None,
             thinking: Vec::new(),
             id: None,
+            attachments: Vec::new(),
             context: false,
         }
     }

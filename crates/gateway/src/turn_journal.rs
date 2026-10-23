@@ -73,6 +73,7 @@ impl JournalState {
                 id,
                 content,
                 images,
+                attachments,
                 sender,
                 endpoint,
             } => {
@@ -81,6 +82,7 @@ impl JournalState {
                         id: id.clone(),
                         content: content.clone(),
                         images: images.clone(),
+                        attachments: attachments.clone(),
                         sender: sender.clone(),
                         endpoint: endpoint.clone(),
                     });
@@ -348,6 +350,7 @@ mod tests {
             turn_id: "m1".into(),
             content: "hi".into(),
             images: vec![],
+            attachments: vec![],
             sender: None,
             agent_sender: None,
             endpoint: "web".into(),
@@ -480,6 +483,7 @@ mod tests {
             id: id.into(),
             content: format!("say {id}"),
             images: vec![],
+            attachments: vec![],
             sender: None,
             endpoint: "ws".into(),
         }
@@ -491,6 +495,7 @@ mod tests {
             turn_id: turn.into(),
             content: format!("say {id}"),
             images: vec![],
+            attachments: vec![],
             sender: None,
             agent_sender: None,
             endpoint: "ws".into(),
@@ -531,6 +536,32 @@ mod tests {
         assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
+    #[test]
+    fn a_waiting_message_keeps_its_attachments_in_the_snapshot() {
+        let attachment = residuum_inference::MessageAttachment {
+            item_id: "item-1".to_string(),
+            filename: "notes.md".to_string(),
+            size: 12,
+            content_type: "text/markdown".to_string(),
+            path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+        };
+        let journal = TurnJournal::default();
+        journal.observe(&started("t1"));
+        journal.observe(&MainConversationEvent::MessageQueued {
+            id: "a".into(),
+            content: "see attached".into(),
+            images: vec![],
+            attachments: vec![attachment.clone()],
+            sender: None,
+            endpoint: "ws".into(),
+        });
+        let snapshot = journal.snapshot();
+        let [waiting] = snapshot.queued.as_slice() else {
+            panic!("expected one waiting message, got {:?}", snapshot.queued);
+        };
+        assert_eq!(waiting.attachments, vec![attachment]);
+    }
+
     /// Observe `agent`'s message opening a turn, and check the snapshot keeps
     /// it as the turn's first entry with its sender.
     fn assert_opening_message_is_kept_with_its_sender(agent: &residuum_inference::AgentSender) {
@@ -540,6 +571,7 @@ mod tests {
             turn_id: "bg-1".into(),
             content: "status?".into(),
             images: vec![],
+            attachments: vec![],
             sender: None,
             agent_sender: Some(agent.clone()),
             endpoint: "background".into(),

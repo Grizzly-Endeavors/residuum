@@ -1958,6 +1958,7 @@ mod tests {
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
+            attachments: Vec::new(),
             context: buffered.map(str::to_string),
         }
     }

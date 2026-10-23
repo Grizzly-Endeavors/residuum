@@ -12,6 +12,7 @@ import {
 describe("parseClientMessage", () => {
   it.each([
     [{ type: "send_message", id: "m1", content: "hi" }],
+    [{ type: "send_message", id: "m1", content: "hi", attachments: ["upload_0001"] }],
     [{ type: "set_verbose", enabled: true }],
     [{ type: "ping" }],
     [{ type: "reload" }],
@@ -203,6 +204,37 @@ describe("agent socket", () => {
       await watcher.close();
       expect(await watched()).toEqual({ prefixes: ["memory", "notes/plan.md"] });
       expect((await fetchJson(`${harness.baseUrl}/api/mock/watches?agent=ghost`)).status).toBe(404);
+    });
+
+    it("saves the uploads a message names as inbox items, and tells pages of the files", async () => {
+      const staged = await fetch(`${harness.baseUrl}/api/hub/uploads?filename=notes.txt`, {
+        method: "POST",
+        body: "the notes",
+      });
+      const { id } = (await staged.json()) as { id: string };
+
+      socket.send({ type: "send_message", id: "m1", content: "Read this", attachments: [id] });
+      const message = await socket.nextOfType("user_message");
+
+      const item = harness.hub.agents.get("atlas")?.state.agentInbox.at(-1);
+      expect(item).toMatchObject({ title: "Chat attachment: notes.txt", source: "chat" });
+      const path = `inbox/agent/attachments/${item?.id ?? ""}/notes.txt`;
+      expect(message.attachments).toEqual([
+        { item_id: item?.id, filename: "notes.txt", size: 9, content_type: "text/plain", path },
+      ]);
+      expect(message.content).toBe(`Read this\n[Attachment: notes.txt (9 bytes) → ${path}]`);
+      expect(harness.hub.hubState.uploads.size).toBe(0);
+    });
+
+    it("refuses a message that names an upload that isn't staged", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "Read this", attachments: ["gone"] });
+      expect(await socket.nextOfType("message_refused")).toEqual({
+        type: "message_refused",
+        id: "m1",
+        message:
+          "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
+      });
+      expect((await socket.settled()).map((frame) => frame.type)).not.toContain("user_message");
     });
 
     it("starts a session when the message begins with spawn", async () => {

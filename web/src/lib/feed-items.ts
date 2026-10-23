@@ -213,6 +213,10 @@ export function convertHistory(
           id: nextFeedId(),
           kind: "user",
           content: ownerBody ?? content,
+          ...(msg.images === undefined || msg.images.length === 0 ? {} : { images: msg.images }),
+          ...(msg.attachments === undefined || msg.attachments.length === 0
+            ? {}
+            : { attachments: msg.attachments }),
           sender: msg.sender,
           ...ofTurn,
           ...sent,

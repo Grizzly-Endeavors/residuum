@@ -23,7 +23,7 @@ use residuum_bus::{
     SessionEventKind, topics,
 };
 use residuum_config::ModelSelector;
-use residuum_inference::{ImageData, MessageSender};
+use residuum_inference::{ImageData, MessageAttachment, MessageSender};
 use residuum_skills::SharedSkillState;
 use residuum_workspace::inbox::attachment::{
     self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image,
@@ -297,7 +297,7 @@ async fn deliver_inbound(
     message: &A2aMessage,
 ) -> Result<(), A2AError> {
     let (skill, skill_note) = executor.resolve_skill(message).await;
-    let (mut content, images) =
+    let (mut content, images, attachments) =
         build_inbound_content(&message.parts, &executor.agent_inbox_dir, executor.tz).await;
     if let Some(note) = skill_note {
         content = format!("{note}\n{content}");
@@ -324,6 +324,7 @@ async fn deliver_inbound(
         },
         timestamp: residuum_core::time::now_local(executor.tz),
         images,
+        attachments,
         context: None,
     };
     let spawn = ConversationSpawn {
@@ -559,24 +560,43 @@ async fn build_inbound_content(
     parts: &[Part],
     agent_inbox_dir: &Path,
     tz: chrono_tz::Tz,
-) -> (String, Vec<ImageData>) {
+) -> (String, Vec<ImageData>, Vec<MessageAttachment>) {
     let mut content = String::new();
     let mut images = Vec::new();
+    let mut attachments = Vec::new();
 
     for part in parts {
         match &part.content {
             PartContent::Text(text) => append_text(&mut content, text),
             PartContent::Raw(bytes) => {
-                append_raw_part(&mut content, &mut images, part, bytes, agent_inbox_dir, tz).await;
+                append_raw_part(
+                    &mut content,
+                    &mut images,
+                    &mut attachments,
+                    part,
+                    bytes,
+                    agent_inbox_dir,
+                    tz,
+                )
+                .await;
             }
             PartContent::Url(url) => {
-                append_url_part(&mut content, &mut images, part, url, agent_inbox_dir, tz).await;
+                append_url_part(
+                    &mut content,
+                    &mut images,
+                    &mut attachments,
+                    part,
+                    url,
+                    agent_inbox_dir,
+                    tz,
+                )
+                .await;
             }
             PartContent::Data(value) => append_data_part(&mut content, value),
         }
     }
 
-    (content, images)
+    (content, images, attachments)
 }
 
 fn append_text(content: &mut String, text: &str) {
@@ -598,6 +618,7 @@ fn append_data_part(content: &mut String, value: &serde_json::Value) {
 async fn append_raw_part(
     content: &mut String,
     images: &mut Vec<ImageData>,
+    attachments: &mut Vec<MessageAttachment>,
     part: &Part,
     bytes: &[u8],
     agent_inbox_dir: &Path,
@@ -641,9 +662,7 @@ async fn append_raw_part(
     let saved = item.save_bytes(&info, bytes).await;
     match saved {
         Ok(saved) => {
-            if let Some(image) = finalize_and_append(&saved, &info, content, item).await {
-                images.push(image);
-            }
+            finalize_and_append(&saved, &info, content, item, images, attachments).await;
         }
         Err(e) => {
             item.discard().await;
@@ -658,6 +677,7 @@ async fn append_raw_part(
 async fn append_url_part(
     content: &mut String,
     images: &mut Vec<ImageData>,
+    attachments: &mut Vec<MessageAttachment>,
     part: &Part,
     url: &str,
     agent_inbox_dir: &Path,
@@ -694,9 +714,7 @@ async fn append_url_part(
     let downloaded = item.download(&info, url).await;
     match downloaded {
         Ok(saved) => {
-            if let Some(image) = finalize_and_append(&saved, &info, content, item).await {
-                images.push(image);
-            }
+            finalize_and_append(&saved, &info, content, item, images, attachments).await;
         }
         Err(e) => {
             item.discard().await;
@@ -710,8 +728,14 @@ async fn finalize_and_append(
     info: &AttachmentInfo,
     content: &mut String,
     item: attachment::AttachmentItem,
-) -> Option<ImageData> {
-    item.finalize(saved, info, content, "a2a caller").await
+    images: &mut Vec<ImageData>,
+    attachments: &mut Vec<MessageAttachment>,
+) {
+    let finalized = item.finalize(saved, info, content, "a2a caller").await;
+    if let Some(image) = finalized.image {
+        images.push(image);
+    }
+    attachments.push(finalized.attachment);
 }
 
 /// Name a failed attachment in the message and log why it failed, once for

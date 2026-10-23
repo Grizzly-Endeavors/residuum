@@ -5,8 +5,9 @@
   import { Button, TextField } from "../../lib/ui";
   import AttachFiles from "./AttachFiles.svelte";
   import ComposerHint from "./ComposerHint.svelte";
-  import DraftAttachments from "./DraftAttachments.svelte";
-  import { deliveryHint, joinNames, sendOnModEnter } from "./thread-model";
+  import StagedFiles from "../../composer/StagedFiles.svelte";
+  import { joinNames } from "../../lib/words";
+  import { deliveryHint, sendOnModEnter } from "./thread-model";
 
   // The reply at the foot of an open thread, to everyone in it. The text and
   // files live in the store's draft for the thread, so they survive moving
@@ -43,13 +44,16 @@
     bind:value={draft.body}
     onkeydown={(event) => sendOnModEnter(event, () => void send())}
   />
-  <DraftAttachments {draft} />
+  <StagedFiles files={draft.files} />
   {#if draft.sendError !== null}
     <p class="reply-error" role="alert">{draft.sendError}</p>
   {/if}
   <div class="reply-foot">
-    <AttachFiles {draft} />
-    <ComposerHint waiting={draft.sending && draft.uploading} delivery={deliveryHint(recipients)} />
+    <AttachFiles files={draft.files} />
+    <ComposerHint
+      waiting={draft.sending && draft.files.uploading}
+      delivery={deliveryHint(recipients)}
+    />
     <Button type="submit" variant="primary" icon="send" disabled={blank} loading={draft.sending}>
       Send
     </Button>

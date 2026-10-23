@@ -22,7 +22,7 @@ use residuum_background::registry::SessionRegistry;
 use residuum_bus::Publisher;
 use residuum_bus::control::{ServerCommand, StopRequest};
 use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
-use residuum_inference::{ImageData, MessageSender};
+use residuum_inference::{ImageData, MessageAttachment, MessageSender};
 use residuum_workspace::inbox::attachment::{
     AttachmentInfo, AttachmentKind, format_failed_attachment_line, reserve_attachment_item,
 };
@@ -98,7 +98,7 @@ impl EventHandler for DiscordHandler {
         };
 
         // Build content with attachment metadata and collect inline images
-        let (content, images) = process_discord_attachments(
+        let (content, images, attachments) = process_discord_attachments(
             &msg.attachments,
             addressed.text,
             &msg.author.name,
@@ -131,6 +131,7 @@ impl EventHandler for DiscordHandler {
             },
             timestamp: residuum_core::time::now_local(self.tz),
             images,
+            attachments,
             context: addressed.context,
         };
 
@@ -332,8 +333,9 @@ async fn process_discord_attachments(
     author_name: &str,
     inbox_dir: &std::path::Path,
     tz: chrono_tz::Tz,
-) -> (String, Vec<ImageData>) {
+) -> (String, Vec<ImageData>, Vec<MessageAttachment>) {
     let mut images: Vec<ImageData> = Vec::new();
+    let mut saved_attachments: Vec<MessageAttachment> = Vec::new();
 
     for attachment in attachments {
         let info = AttachmentInfo {
@@ -367,12 +369,13 @@ async fn process_discord_attachments(
         let downloaded = item.download(&info, &attachment.url).await;
         match downloaded {
             Ok(saved) => {
-                if let Some(img) = item
+                let finalized = item
                     .finalize(&saved, &info, &mut content, author_name)
-                    .await
-                {
+                    .await;
+                if let Some(img) = finalized.image {
                     images.push(img);
                 }
+                saved_attachments.push(finalized.attachment);
             }
             Err(reason) => {
                 item.discard().await;
@@ -388,7 +391,7 @@ async fn process_discord_attachments(
         }
     }
 
-    (content, images)
+    (content, images, saved_attachments)
 }
 
 /// Register global slash commands with Discord from the shared command registry.

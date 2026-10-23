@@ -2,6 +2,7 @@
 import type { AgentSender } from "./AgentSender";
 import type { AutoModeVerdict } from "./AutoModeVerdict";
 import type { ImageAttachment } from "./ImageAttachment";
+import type { MessageAttachment } from "./MessageAttachment";
 import type { MessageSender } from "./MessageSender";
 import type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 import type { PostTurnActivityKind } from "./PostTurnActivityKind";
@@ -184,6 +185,10 @@ content: string,
  */
 images?: Array<ImageAttachment>, 
 /**
+ * Files attached to the message, each saved as a companion agent-inbox item.
+ */
+attachments?: Array<MessageAttachment>, 
+/**
  * The person who sent it, for interfaces that identify one.
  */
 sender?: MessageSender, 
@@ -252,7 +257,15 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details?: string, } | { "type": "pong" } | { "type": "turn_snapshot", 
+details?: string, } | { "type": "message_refused", 
+/**
+ * The refused message's id.
+ */
+id: string, 
+/**
+ * Plain-language reason, with what to do next.
+ */
+message: string, } | { "type": "pong" } | { "type": "turn_snapshot", 
 /**
  * The turn, or `null` when none is running.
  */

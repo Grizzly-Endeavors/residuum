@@ -20,6 +20,7 @@ import { notifications } from "./notifications.svelte";
 import { noticeFrameNotice, reloadingNotice } from "./reload-notices";
 import { invalidate } from "./cache";
 import { newMessageId } from "./message-id";
+import { restoreDraft } from "./composer-drafts";
 import { userErrorMessage, userErrorReason } from "./errors";
 import { normalizeWatchPrefix } from "./workspace-watch";
 import { WatchRegistry } from "./watch-registry";
@@ -34,7 +35,14 @@ import {
   cacheKeyProvidersRaw,
   cacheKeyMcpRaw,
 } from "./api";
-import type { ClientMessage, ImageAttachment, RecentHistorySegment, ServerMessage } from "./types";
+import type { StagedAttachment } from "./staged-attachments.svelte";
+import type { ClientMessage, RecentHistorySegment, ServerMessage } from "./types";
+
+/** A chat message the agent refused: what was written, and the files staged for it. */
+export interface RefusedSend {
+  content: string;
+  attachments: StagedAttachment[];
+}
 
 class WsCoordinator {
   /** The bound agent: the one this connection and its stores belong to, or `null` before one is chosen. */
@@ -77,6 +85,13 @@ class WsCoordinator {
   });
   /** Whether this connection already told the user live updates are off. */
   private liveUpdatesOffShown = false;
+  /**
+   * Chat messages this page sent that nothing has yet said the agent took in
+   * (its `user_message`, `message_queued` or `turn_started`), by id: what
+   * each held, to hand back should a `message_refused` name it.
+   */
+  private unconfirmedSends = new Map<string, RefusedSend>();
+  private refusalListeners = new Set<(refused: RefusedSend) => void>();
 
   constructor() {
     onViewedAgentChange((name) => {
@@ -107,8 +122,12 @@ class WsCoordinator {
         return;
       }
       this.settleWithdrawal(msg);
+      this.confirmSend(msg);
       if (msg.type === "error") {
         notifications.surface("error", msg.message, msg.details ?? undefined);
+      } else if (msg.type === "message_refused") {
+        notifications.surface("error", msg.message);
+        this.refuseSend(msg.id);
       } else if (msg.type === "workspace_watch_unavailable") {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;
@@ -223,6 +242,36 @@ class WsCoordinator {
     pending.resolve(msg.type === "message_withdrawn");
   }
 
+  /** A frame that says the agent took in a message this page sent. */
+  private confirmSend(msg: ServerMessage): void {
+    if (this.unconfirmedSends.size === 0) return;
+    if (msg.type === "user_message") this.unconfirmedSends.delete(msg.id);
+    else if (msg.type === "message_queued") this.unconfirmedSends.delete(msg.message.id);
+    else if (msg.type === "turn_started") this.unconfirmedSends.delete(msg.reply_to);
+    else if (msg.type === "turn_snapshot") {
+      for (const queued of msg.queued) this.unconfirmedSends.delete(queued.id);
+      if (msg.turn !== null) this.unconfirmedSends.delete(msg.turn.reply_to);
+    }
+  }
+
+  /**
+   * The agent refused the message `id` this page sent: what it held goes back
+   * to a listener's composer, or into the agent's draft when nothing listens,
+   * so it waits there for the chat to open. Its files upload again, since the
+   * hub's copies may be gone (the feed takes the message off by itself).
+   */
+  private refuseSend(id: string): void {
+    const refused = this.unconfirmedSends.get(id);
+    if (refused === undefined) return;
+    this.unconfirmedSends.delete(id);
+    for (const attachment of refused.attachments) void attachment.uploadAgain();
+    if (this.refusalListeners.size > 0) {
+      for (const listener of this.refusalListeners) listener(refused);
+    } else if (this.agent !== null) {
+      restoreDraft(this.agent, refused.content, refused.attachments);
+    }
+  }
+
   /** Every withdrawal still awaiting an answer will get none: it fails with `reason`. */
   private failWithdrawals(reason: string): void {
     const pending = [...this.withdrawals.values()];
@@ -264,6 +313,7 @@ class WsCoordinator {
     this.hasConnected = false;
     this.catchUpOnConnect = false;
     this.liveUpdatesOffShown = false;
+    this.unconfirmedSends.clear();
     this.watches.bind(name);
     scheduled.reset(name);
     this.agent = name;
@@ -415,17 +465,48 @@ class WsCoordinator {
     this.transport.send(msg);
   }
 
-  sendChat(content: string, images?: ImageAttachment[]): void {
+  /**
+   * Send a chat message with the files staged for it, which go as their
+   * upload ids. Should the agent refuse it (`message_refused`), the
+   * `onRefusedSend` listeners get it back, files and all, or the agent's draft
+   * does when nothing listens.
+   */
+  sendChat(content: string, attachments: readonly StagedAttachment[] = []): void {
     const id = newMessageId();
     const msg: ClientMessage = {
       type: "send_message",
       id,
       content,
-      ...(images !== undefined && images.length > 0 ? { images } : {}),
+      ...(attachments.length > 0
+        ? { attachments: attachments.map((attachment) => attachment.uploadId ?? "") }
+        : {}),
     };
     const delivered = this.transport.status === "connected";
+    this.unconfirmedSends.set(id, { content, attachments: [...attachments] });
     this.transport.send(msg);
-    this.store.pushUserMessage(content, images, id, delivered);
+    this.store.pushUserMessage(
+      content,
+      attachments.map((attachment) => ({
+        item_id: "",
+        filename: attachment.filename,
+        size: attachment.size,
+        content_type: attachment.contentType || "application/octet-stream",
+        path: "",
+      })),
+      id,
+      delivered,
+    );
+  }
+
+  /**
+   * Hear of each chat message this page sent that the agent refused, with
+   * what it held, to put back in a composer that is showing; its files are
+   * already uploading again. While anything listens, the agent's draft is
+   * left alone. Returns a function that stops listening.
+   */
+  onRefusedSend(listener: (refused: RefusedSend) => void): () => void {
+    this.refusalListeners.add(listener);
+    return () => this.refusalListeners.delete(listener);
   }
 
   /**

@@ -99,6 +99,7 @@ impl MainDelivery {
                     },
                     timestamp: residuum_core::time::now_local(tz),
                     images: Vec::new(),
+                    attachments: Vec::new(),
                     context: None,
                 };
                 return self
