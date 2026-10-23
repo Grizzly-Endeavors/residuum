@@ -178,7 +178,7 @@ mod tests {
         fx.archive_user_item("scout", "s").await;
 
         let index = fx.index().await;
-        mark_thread_read(&fx.directory, index.thread(&root).unwrap())
+        mark_thread_read(&fx.directory, index.thread_containing(&root).unwrap())
             .await
             .unwrap();
 
@@ -188,7 +188,7 @@ mod tests {
             !fx.load(&mail).await.0.read,
             "the agent's copy is the agent's to read"
         );
-        assert!(!fx.index().await.thread(&root).unwrap().unread());
+        assert!(!fx.index().await.thread_containing(&root).unwrap().unread());
     }
 
     #[tokio::test]
@@ -200,7 +200,7 @@ mod tests {
             .await;
 
         let index = fx.index().await;
-        archive_thread(&fx.directory, index.thread(&mail).unwrap())
+        archive_thread(&fx.directory, index.thread_containing(&mail).unwrap())
             .await
             .unwrap();
 
@@ -210,12 +210,18 @@ mod tests {
             "the user's message stays in the agent's inbox"
         );
         let after = fx.index().await;
-        let thread = after.thread(&mail).unwrap();
+        let thread = after.thread_containing(&mail).unwrap();
         assert!(thread.archived() && !thread.in_inbox() && thread.in_sent());
 
         restore_thread(&fx.directory, thread).await.unwrap();
         assert!(!fx.load(&reply).await.1);
-        assert!(fx.index().await.thread(&mail).unwrap().in_inbox());
+        assert!(
+            fx.index()
+                .await
+                .thread_containing(&mail)
+                .unwrap()
+                .in_inbox()
+        );
     }
 
     #[tokio::test]
@@ -224,7 +230,7 @@ mod tests {
         let a = fx.user_item("atlas", "a", "A", 9, None).await;
         fx.user_item("atlas", "b", "Re: A", 10, Some(&a)).await;
         let index = fx.index().await;
-        let thread = index.thread(&a).unwrap().clone();
+        let thread = index.thread_containing(&a).unwrap().clone();
         let b_path = WorkspaceLayout::new(fx.dir("atlas"))
             .user_inbox_dir()
             .join("b.json");
