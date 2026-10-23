@@ -1,7 +1,7 @@
 // ── Team overview (Svelte 5 runes) ───────────────────────────────────
 //
 // What Home and the rail's Home count show beyond the hub's agent list: each
-// agent's overview, the team event log, and the newest unread inbox items.
+// agent's overview, the team event log, and the newest unread inbox threads.
 // The hub socket feeds it (`agent_overview`, `team_event`), and it fetches
 // again whenever the socket can't vouch for what it holds: on every
 // connection, after a snapshot sent in place of lost frames, and when the
@@ -10,7 +10,7 @@
 
 import {
   ApiError,
-  fetchHubInbox,
+  fetchMailThreads,
   fetchOverview,
   fetchTeamEvents,
   stopOutboundA2aTask,
@@ -21,20 +21,20 @@ import { hub } from "./hub.svelte";
 import type {
   AgentOverview,
   AgentSummary,
-  HubInboxItem,
   HubServerMessage,
+  MailThreadSummary,
   SystemOneStatus,
   TeamEvent,
 } from "./hub-types";
 import type { OutboundA2aTaskSummary } from "./types";
-import { deriveNeedsYou, INBOX_ITEMS_SHOWN, type NeedsYou } from "./needs-you";
+import { deriveNeedsYou, INBOX_THREADS_SHOWN, type NeedsYou } from "./needs-you";
 import { notifications } from "./notifications.svelte";
 import { unreachableAgentMessage } from "./sessions.svelte";
 
 /** How many team events the store keeps, newest first. */
 const MAX_EVENTS = 50;
 
-/** How many inbox items one request asks for while looking for the newest unread ones. */
+/** How many inbox threads one request asks for while looking for the newest unread ones. */
 const INBOX_PAGE = 50;
 
 /** What the store reads from the hub store. */
@@ -64,9 +64,11 @@ export class OverviewStore {
   eventsLoaded = $state(false);
   eventsError = $state<string | null>(null);
 
-  /** The newest unread user-inbox items across agents, at most five. */
-  unreadItems = $state<HubInboxItem[]>([]);
-  unreadItemsError = $state<string | null>(null);
+  /** The newest unread inbox threads across agents, at most five. */
+  unreadThreads = $state<MailThreadSummary[]>([]);
+  /** `unreadThreads` is every unread thread: the search reached the end of the inbox. */
+  unreadThreadsComplete = $state(false);
+  unreadThreadsError = $state<string | null>(null);
 
   /** Outbound tasks whose stop is in flight, as `agent:task`. */
   stoppingTasks = $state<string[]>([]);
@@ -78,7 +80,8 @@ export class OverviewStore {
     deriveNeedsYou({
       agents: this.source.agents,
       overviews: this.overviews,
-      unreadItems: this.unreadItems,
+      unreadThreads: this.unreadThreads,
+      unreadThreadsComplete: this.unreadThreadsComplete,
       systemOne: this.source.systemOne,
     }),
   );
@@ -90,7 +93,7 @@ export class OverviewStore {
   private framedDuringFetch: string[] = [];
   private eventsRequest = 0;
   private unreadRequest = 0;
-  /** The per-agent unread counts the inbox items were last fetched for. */
+  /** The per-agent unread counts the inbox threads were last fetched for. */
   private unreadCountsFetched: string | null = null;
 
   constructor(private readonly source: OverviewHub) {}
@@ -172,7 +175,8 @@ export class OverviewStore {
       this.loaded = false;
       this.events = [];
       this.eventsLoaded = false;
-      this.unreadItems = [];
+      this.unreadThreads = [];
+      this.unreadThreadsComplete = false;
       this.unreadCountsFetched = null;
     }
     this.bootId = bootId;
@@ -239,32 +243,34 @@ export class OverviewStore {
   }
 
   /**
-   * Fetch the newest unread inbox items, paging until five are found or the
-   * inbox ends. A failure lands in `unreadItemsError`.
+   * Fetch the newest unread inbox threads, paging until five are found or the
+   * inbox ends. A failure lands in `unreadThreadsError`.
    */
-  async refreshUnreadItems(): Promise<void> {
+  async refreshUnreadThreads(): Promise<void> {
     const request = ++this.unreadRequest;
     this.unreadCountsFetched = this.unreadCounts();
     if (this.inboxUnread === 0) {
-      this.unreadItems = [];
-      this.unreadItemsError = null;
+      this.unreadThreads = [];
+      this.unreadThreadsComplete = true;
+      this.unreadThreadsError = null;
       return;
     }
     try {
-      const found: HubInboxItem[] = [];
+      const found: MailThreadSummary[] = [];
       let before: string | undefined;
       do {
-        const page = await fetchHubInbox({ status: "active", limit: INBOX_PAGE, before });
-        found.push(...page.items.filter((item) => !item.read));
-        before = page.next_cursor ?? undefined;
-      } while (found.length < INBOX_ITEMS_SHOWN && before !== undefined);
+        const page = await fetchMailThreads({ folder: "inbox", limit: INBOX_PAGE, before });
+        found.push(...page.threads.filter((thread) => thread.unread));
+        before = page.next ?? undefined;
+      } while (found.length < INBOX_THREADS_SHOWN && before !== undefined);
       if (request !== this.unreadRequest) return;
-      this.unreadItems = found.slice(0, INBOX_ITEMS_SHOWN);
-      this.unreadItemsError = null;
+      this.unreadThreads = found.slice(0, INBOX_THREADS_SHOWN);
+      this.unreadThreadsComplete = before === undefined && found.length <= INBOX_THREADS_SHOWN;
+      this.unreadThreadsError = null;
     } catch (err) {
       if (request !== this.unreadRequest) return;
-      this.unreadItemsError = userErrorMessage(err, {
-        action: "Couldn't load your newest inbox items.",
+      this.unreadThreadsError = userErrorMessage(err, {
+        action: "Couldn't load your newest inbox messages.",
       });
     }
   }
@@ -340,11 +346,11 @@ export class OverviewStore {
     };
   }
 
-  // ── Keeping the inbox items in step ────────────────────────────────
+  // ── Keeping the inbox threads in step ──────────────────────────────
 
   private setOverviews(next: Record<string, AgentOverview>): void {
     this.overviews = next;
-    if (this.unreadCounts() !== this.unreadCountsFetched) void this.refreshUnreadItems();
+    if (this.unreadCounts() !== this.unreadCountsFetched) void this.refreshUnreadThreads();
   }
 
   /** Each agent's unread count, as one comparable value: it changes whenever any count does. */

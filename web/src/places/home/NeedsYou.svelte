@@ -5,8 +5,9 @@
   import type { NeedsYouItem } from "../../lib/needs-you";
   import { overview } from "../../lib/overview.svelte";
   import { router } from "../../lib/router.svelte";
-  import { formatLocation, INBOX, locationAt, userInboxRef, type Place } from "../../lib/routes";
+  import { formatLocation, INBOX, locationAt, type Place } from "../../lib/routes";
   import { ALL_SCOPE } from "../../lib/settings-sections";
+  import { displaySubject } from "../../lib/mail-subject";
   import { relativeTime } from "../../lib/time";
   import { Badge, Button, Disclosure } from "../../lib/ui";
   import type { ShellActions } from "../../shell/shell-actions";
@@ -47,8 +48,8 @@
     }
   }
 
-  function inboxPlace(agent: string, id: string): Place {
-    return { ...INBOX, thread: userInboxRef(agent, id) };
+  function threadPlace(threadId: string): Place {
+    return { ...INBOX, thread: threadId };
   }
 
   /** An item that clears slides away, so the list shows what changed. */
@@ -109,10 +110,10 @@
               </p>
             {:else}
               <p class="need-title">
-                {item.item.title}
-                <span class="need-meta">{relativeTime(item.item.at, now)}</span>
+                {displaySubject(item.thread.subject)}
+                <span class="need-meta">{relativeTime(item.thread.latest_at, now)}</span>
               </p>
-              <p class="need-detail">In {item.item.agent}'s inbox</p>
+              <p class="need-detail">From {item.thread.participants.join(", ")}</p>
             {/if}
           </div>
           <div class="need-actions">
@@ -150,11 +151,11 @@
                 >Decision model settings</Button
               >
             {:else}
-              {@const place = inboxPlace(item.item.agent, item.item.id)}
+              {@const place = threadPlace(item.thread.thread_id)}
               <a
                 class="need-link"
                 href={formatLocation(locationAt(place))}
-                aria-label="Open {item.item.title}"
+                aria-label="Open {displaySubject(item.thread.subject)}"
                 onclick={(event) => followLink(event, place)}>Open</a
               >
             {/if}
@@ -174,10 +175,10 @@
     {/if}
   {/if}
 
-  {#if overview.unreadItemsError}
+  {#if overview.unreadThreadsError}
     <p class="needs-problem" role="alert">
-      {overview.unreadItemsError}
-      <Button variant="quiet" size="sm" onclick={() => void overview.refreshUnreadItems()}
+      {overview.unreadThreadsError}
+      <Button variant="quiet" size="sm" onclick={() => void overview.refreshUnreadThreads()}
         >Try again</Button
       >
     </p>
