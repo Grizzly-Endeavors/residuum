@@ -7,7 +7,13 @@
   import AttachFiles from "./AttachFiles.svelte";
   import ComposerHint from "./ComposerHint.svelte";
   import DraftAttachments from "./DraftAttachments.svelte";
-  import { deliveryHint, joinNames, PICK_AGENT_HINT, sendOnModEnter } from "./thread-model";
+  import {
+    deliveryHint,
+    joinNames,
+    moveOnEnter,
+    PICK_AGENT_HINT,
+    sendOnModEnter,
+  } from "./thread-model";
 
   // New message, shown as a thread not sent yet: who it goes to (one agent
   // or more), a subject, the Markdown body and attachments. The draft is the
@@ -35,6 +41,7 @@
   ]);
 
   const subject = $derived(draft.subject.trim());
+  let bodyField = $state<HTMLInputElement | HTMLTextAreaElement>();
 
   function toggle(name: string): void {
     draft.to = draft.to.includes(name)
@@ -88,7 +95,15 @@
         {/each}
       </div>
     </fieldset>
-    <TextField label="Subject" placeholder="What is it about?" bind:value={draft.subject} />
+    <TextField
+      label="Subject"
+      placeholder="What is it about?"
+      bind:value={draft.subject}
+      onkeydown={(event) => {
+        sendOnModEnter(event, () => void send());
+        moveOnEnter(event, () => bodyField?.focus());
+      }}
+    />
     <TextField
       label="Message"
       hint="Markdown works here: lists, links, code."
@@ -96,6 +111,7 @@
       rows={10}
       placeholder="Write your message…"
       bind:value={draft.body}
+      bind:element={bodyField}
       onkeydown={(event) => sendOnModEnter(event, () => void send())}
     />
     <DraftAttachments {draft} />

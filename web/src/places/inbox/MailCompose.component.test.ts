@@ -115,6 +115,28 @@ describe("New message", () => {
     },
   );
 
+  it("moves from the subject to the message on Enter instead of sending", async () => {
+    const { onsent } = compose(["atlas"]);
+    await userEvent.type(screen.getByRole("textbox", { name: /^Message/ }), "Ready to go.");
+    const subject = screen.getByRole("textbox", { name: "Subject" });
+    await userEvent.type(subject, "Weekly plan{Enter}");
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: /^Message/ }));
+    expect(sends()).toHaveLength(0);
+    expect(onsent).not.toHaveBeenCalled();
+  });
+
+  it("still sends from the subject on Ctrl+Enter", async () => {
+    vi.spyOn(toast, "success").mockImplementation(() => 0);
+    const { onsent } = compose(["atlas"]);
+    await userEvent.type(screen.getByRole("textbox", { name: /^Message/ }), "Ready to go.");
+    await userEvent.type(screen.getByRole("textbox", { name: "Subject" }), "Plan");
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => {
+      expect(onsent).toHaveBeenCalledOnce();
+    });
+    expect(sends()[0]?.body).toMatchObject({ subject: "Plan", body: "Ready to go." });
+  });
+
   it("says what is missing when Ctrl+Enter is pressed on a blank message", async () => {
     compose(["atlas"]);
     screen.getByRole("textbox", { name: /^Message/ }).focus();

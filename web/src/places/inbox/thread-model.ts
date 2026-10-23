@@ -57,6 +57,16 @@ export function sendOnModEnter(
   send();
 }
 
+/** Enter in a one-line field moves on to the next field instead of submitting the form, as mail apps do. */
+export function moveOnEnter(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "isComposing" | "preventDefault">,
+  next: () => void,
+): void {
+  if (event.key !== "Enter" || event.isComposing || event.ctrlKey || event.metaKey) return;
+  event.preventDefault();
+  next();
+}
+
 /** Who has seen a message of yours, and who hasn't yet, in one line. */
 export function seenLine(seen: readonly MailSeen[]): string {
   const yes = seen.filter((mark) => mark.seen).map((mark) => mark.agent);

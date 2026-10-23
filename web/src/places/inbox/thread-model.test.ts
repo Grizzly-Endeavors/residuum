@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   deliveryHint,
   joinNames,
+  moveOnEnter,
   opensInPanel,
   seenLine,
   sendOnModEnter,
@@ -73,6 +74,37 @@ describe("sendOnModEnter", () => {
     expect(press({ key: "Enter" })).toEqual({ sent: false, prevented: false });
     expect(press({ key: "Enter", shiftKey: true })).toEqual({ sent: false, prevented: false });
     expect(press({ key: "a", ctrlKey: true })).toEqual({ sent: false, prevented: false });
+  });
+});
+
+describe("moveOnEnter", () => {
+  function press(init: {
+    key: string;
+    ctrlKey?: boolean;
+    metaKey?: boolean;
+    isComposing?: boolean;
+  }): { moved: boolean; prevented: boolean } {
+    const next = vi.fn();
+    const preventDefault = vi.fn();
+    moveOnEnter(
+      { ctrlKey: false, metaKey: false, isComposing: false, ...init, preventDefault },
+      next,
+    );
+    return {
+      moved: next.mock.calls.length === 1,
+      prevented: preventDefault.mock.calls.length === 1,
+    };
+  }
+
+  it("moves on with a plain Enter, which would otherwise submit the form", () => {
+    expect(press({ key: "Enter" })).toEqual({ moved: true, prevented: true });
+  });
+
+  it("leaves other keys, Ctrl or Cmd with Enter, and an Enter that confirms an input method alone", () => {
+    expect(press({ key: "a" })).toEqual({ moved: false, prevented: false });
+    expect(press({ key: "Enter", ctrlKey: true })).toEqual({ moved: false, prevented: false });
+    expect(press({ key: "Enter", metaKey: true })).toEqual({ moved: false, prevented: false });
+    expect(press({ key: "Enter", isComposing: true })).toEqual({ moved: false, prevented: false });
   });
 });
 
