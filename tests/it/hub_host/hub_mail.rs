@@ -52,9 +52,9 @@ async fn mail_lists_and_changes_a_running_and_a_stopped_agents_threads() {
         assert_eq!(read.status().as_u16(), 204, "{thread}");
     }
     let (_, after_read) = hub.get("/api/hub/mail/threads").await;
-    let page: Value = serde_json::from_str(&after_read).unwrap();
+    let unread_page: Value = serde_json::from_str(&after_read).unwrap();
     assert!(
-        array_at(&page, "threads")
+        array_at(&unread_page, "threads")
             .iter()
             .all(|t| t.get("unread") == Some(&Value::Bool(false))),
         "{after_read}"

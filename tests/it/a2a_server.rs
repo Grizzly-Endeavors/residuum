@@ -642,6 +642,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         build: residuum_core::testing::HARNESS_BUILD,
         web_search_backend: None,
         model_catalog: residuum::config::ModelCatalog::default().into_shared(),
+        mailboxes: None,
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
         lifecycle: residuum::tools::LifecycleAccess::new(

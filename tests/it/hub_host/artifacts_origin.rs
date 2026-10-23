@@ -324,7 +324,10 @@ async fn hub_routes_with_path_parameters_answer_on_the_artifacts_port() {
         .json()
         .await
         .unwrap();
-    assert_eq!(thread["thread_id"], "scout/user/20260930_pelican");
+    assert_eq!(
+        thread.get("thread_id"),
+        Some(&serde_json::Value::from("scout/user/20260930_pelican"))
+    );
 
     let archived = http
         .post(url(
