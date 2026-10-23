@@ -118,26 +118,19 @@ pub(super) async fn locate(
         .mailbox(item_ref.agent())
         .ok_or_else(|| LocateError::UnknownAgent(item_ref.agent().to_string()))?;
     let layout = WorkspaceLayout::new(mailbox.dir.clone());
-    for archived in [false, true] {
-        let items_dir = item_ref.kind().items_dir(&layout, archived);
-        let path = items_dir.join(format!("{}.json", item_ref.id()));
-        if !matches!(tokio::fs::try_exists(&path).await, Ok(true)) {
-            continue;
-        }
-        let item = inbox::load_item(&path)
-            .await
-            .map_err(|error| LocateError::Read {
-                item: item_ref.clone(),
-                error,
-            })?;
-        return Ok(LocatedItem {
-            item,
-            items_dir,
-            archived,
-            workspace_dir: mailbox.dir,
-        });
-    }
-    Err(LocateError::NotFound(item_ref.clone()))
+    let found = inbox::locate_item(&layout, item_ref)
+        .await
+        .map_err(|error| LocateError::Read {
+            item: item_ref.clone(),
+            error,
+        })?
+        .ok_or_else(|| LocateError::NotFound(item_ref.clone()))?;
+    Ok(LocatedItem {
+        item: found.item,
+        items_dir: found.items_dir,
+        archived: found.archived,
+        workspace_dir: mailbox.dir,
+    })
 }
 
 /// The ref an agent passed to a tool: a full `<agent>/<user|agent>/<id>`

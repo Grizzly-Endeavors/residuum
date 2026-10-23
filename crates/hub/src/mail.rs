@@ -372,12 +372,9 @@ pub async fn active_text(
     let Some(mailbox) = AgentMailboxes(directory).mailbox(item.agent()) else {
         anyhow::bail!("no agent named '{agent}'");
     };
-    let path = InboxKind::User
-        .items_dir(&WorkspaceLayout::new(&mailbox.dir), false)
-        .join(format!("{}.json", item.id()));
-    if !tokio::fs::try_exists(&path).await? {
-        return Ok(None);
-    }
-    let loaded = residuum_workspace::inbox::load_item(&path).await?;
-    Ok(Some((loaded.title, loaded.body)))
+    let found =
+        residuum_workspace::inbox::locate_item(&WorkspaceLayout::new(&mailbox.dir), &item).await?;
+    Ok(found
+        .filter(|found| !found.archived)
+        .map(|found| (found.item.title, found.item.body)))
 }

@@ -154,22 +154,20 @@ async fn find_inbox_attachment(
     id: &str,
     index: usize,
 ) -> Option<(std::path::PathBuf, String)> {
+    // An id no ref can carry (a path separator, `..`) names no item, so it is
+    // never joined into a path.
+    let item_ref = InboxRef::new(&state.agent_name, kind, id).ok()?;
     let layout = WorkspaceLayout::new(&state.workspace_dir);
+    let found = match residuum_workspace::inbox::locate_item(&layout, &item_ref).await {
+        Ok(found) => found?,
+        Err(e) => {
+            tracing::warn!(item = %item_ref, error = %e, "couldn't read the inbox item an attachment was requested from");
+            return None;
+        }
+    };
 
-    let active_json = kind.items_dir(&layout, false).join(format!("{id}.json"));
-    let (item, attachments_root) =
-        if let Ok(item) = residuum_workspace::inbox::load_item(&active_json).await {
-            (item, kind.attachments_dir(&layout, false))
-        } else {
-            let archived_json = kind.items_dir(&layout, true).join(format!("{id}.json"));
-            let item = residuum_workspace::inbox::load_item(&archived_json)
-                .await
-                .ok()?;
-            (item, kind.attachments_dir(&layout, true))
-        };
-
-    let file_name = item.attachments.get(index)?.file_name()?.to_owned();
-    let Some(resolved) = confine(&attachments_root, id, &file_name).await else {
+    let file_name = found.item.attachments.get(index)?.file_name()?.to_owned();
+    let Some(resolved) = confine(&found.attachments_root, id, &file_name).await else {
         tracing::warn!(id = %id, kind = %kind, index, "rejected inbox attachment request outside item directory");
         return None;
     };
@@ -194,8 +192,12 @@ mod tests {
         id: &str,
         attachments: Vec<std::path::PathBuf>,
     ) {
-        let dir = kind.items_dir(layout, archived);
-        tokio::fs::create_dir_all(&dir).await.unwrap();
+        write_item_at(&kind.items_dir(layout, archived), id, attachments).await;
+    }
+
+    /// Write item `id` with `attachments` into `dir`.
+    async fn write_item_at(dir: &std::path::Path, id: &str, attachments: Vec<std::path::PathBuf>) {
+        tokio::fs::create_dir_all(dir).await.unwrap();
         let item = InboxItem {
             title: "test item".to_string(),
             body: "body".to_string(),
@@ -205,7 +207,7 @@ mod tests {
             attachments,
             in_reply_to: None,
         };
-        residuum_workspace::inbox::save_item(&dir, &format!("{id}.json"), &item)
+        residuum_workspace::inbox::save_item(dir, &format!("{id}.json"), &item)
             .await
             .unwrap();
     }
@@ -279,6 +281,22 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_id_no_ref_can_carry_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        // An item one directory above the inbox, which `../planted` would
+        // reach if the id were joined into a path unchecked.
+        let planted = InboxKind::User.items_dir(&layout, false).join("..");
+        write_item_at(&planted, "planted", vec![]).await;
+
+        for id in ["../planted", "a/b", ""] {
+            let response =
+                fetch(make_state(dir.path().to_path_buf()), InboxKind::User, id, 0).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{id:?}");
+        }
     }
 
     #[tokio::test]

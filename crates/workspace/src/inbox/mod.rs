@@ -11,6 +11,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use residuum_bus::attachment::FileAttachment;
+use residuum_config::WorkspaceLayout;
 
 pub mod attachment;
 mod item_ref;
@@ -353,6 +354,57 @@ pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
     Ok(item)
 }
 
+/// An inbox item found by its ref, active or archived.
+#[derive(Debug, Clone)]
+pub struct LocatedItem {
+    /// The item as stored.
+    pub item: InboxItem,
+    /// The directory holding the item's JSON file.
+    pub items_dir: PathBuf,
+    /// The directory holding the per-item attachment directories next to
+    /// `items_dir`; the item's own files are in `<attachments_root>/<id>/`.
+    pub attachments_root: PathBuf,
+    /// Whether the item is in the archive.
+    pub archived: bool,
+}
+
+/// Find the item `item` names in `layout`, the workspace of the item's
+/// agent: the active inbox first, then the archive, so a ref handed out
+/// before an item was archived still finds it.
+///
+/// # Errors
+/// When a directory can't be checked, or the item's file exists but can't be
+/// read or parsed. `Ok(None)` when neither the inbox nor the archive holds
+/// it.
+pub async fn locate_item(
+    layout: &WorkspaceLayout,
+    item: &InboxRef,
+) -> anyhow::Result<Option<LocatedItem>> {
+    use anyhow::Context as _;
+
+    let file_name = format!("{}.json", item.id());
+    for archived in [false, true] {
+        let items_dir = item.kind().items_dir(layout, archived);
+        let path = items_dir.join(&file_name);
+        let exists = tokio::fs::try_exists(&path).await.with_context(|| {
+            format!(
+                "failed to check for inbox item {item} at {}",
+                path.display()
+            )
+        })?;
+        if !exists {
+            continue;
+        }
+        return Ok(Some(LocatedItem {
+            item: load_item(&path).await?,
+            items_dir,
+            attachments_root: item.kind().attachments_dir(layout, archived),
+            archived,
+        }));
+    }
+    Ok(None)
+}
+
 /// List all inbox items (non-recursive, ignores subdirectories).
 ///
 /// Returns `(filename_stem, item)` pairs sorted newest-first by timestamp.
@@ -634,6 +686,79 @@ mod tests {
             attachments: Vec::new(),
             in_reply_to: None,
         }
+    }
+
+    /// Save `item` as `file_name` in `dir`, creating `dir`.
+    async fn save_in(dir: &Path, file_name: &str, item: &InboxItem) {
+        tokio::fs::create_dir_all(dir).await.unwrap();
+        save_item(dir, file_name, item).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn locate_item_finds_an_active_item_then_an_archived_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let active = InboxRef::new("atlas", InboxKind::User, "active-note").unwrap();
+        let archived = InboxRef::new("atlas", InboxKind::User, "old-note").unwrap();
+        let missing = InboxRef::new("atlas", InboxKind::User, "gone").unwrap();
+        save_in(
+            &layout.user_inbox_dir(),
+            "active-note.json",
+            &make_item("Active", 9, false),
+        )
+        .await;
+        save_in(
+            &layout.user_inbox_archive_dir(),
+            "old-note.json",
+            &make_item("Old", 8, true),
+        )
+        .await;
+
+        let found = locate_item(&layout, &active).await.unwrap().unwrap();
+        assert_eq!(found.item.title, "Active");
+        assert!(!found.archived);
+        assert_eq!(found.items_dir, layout.user_inbox_dir());
+        assert_eq!(found.attachments_root, layout.user_inbox_attachments_dir());
+
+        let old = locate_item(&layout, &archived).await.unwrap().unwrap();
+        assert_eq!(old.item.title, "Old");
+        assert!(old.archived);
+        assert_eq!(old.items_dir, layout.user_inbox_archive_dir());
+        assert_eq!(
+            old.attachments_root,
+            layout.user_inbox_archive_attachments_dir()
+        );
+
+        assert!(locate_item(&layout, &missing).await.unwrap().is_none());
+        let other_kind = InboxRef::new("atlas", InboxKind::Agent, "active-note").unwrap();
+        assert!(
+            locate_item(&layout, &other_kind).await.unwrap().is_none(),
+            "the agent inbox doesn't hold a user-inbox item"
+        );
+    }
+
+    #[tokio::test]
+    async fn locate_item_reports_an_unreadable_item_rather_than_the_archived_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let item = InboxRef::new("atlas", InboxKind::Agent, "note").unwrap();
+        let active_dir = layout.agent_inbox_dir();
+        tokio::fs::create_dir_all(&active_dir).await.unwrap();
+        tokio::fs::write(active_dir.join("note.json"), "not json")
+            .await
+            .unwrap();
+        save_in(
+            &layout.agent_inbox_archive_dir(),
+            "note.json",
+            &make_item("Old", 8, true),
+        )
+        .await;
+
+        let error = locate_item(&layout, &item).await.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("failed to parse inbox item"),
+            "{error:#}"
+        );
     }
 
     #[test]
