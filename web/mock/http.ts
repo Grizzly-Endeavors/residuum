@@ -16,6 +16,25 @@ export function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * A request body's bytes, or `null` when it is longer than `limit`. A body
+ * over the limit is read to its end and dropped as it arrives, so the client
+ * can finish sending and read the answer.
+ */
+export function readBodyBytes(req: IncomingMessage, limit: number): Promise<Buffer | null> {
+  return new Promise<Buffer | null>((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= limit) chunks.push(chunk);
+    });
+    req.on("end", () => {
+      resolve(size <= limit ? Buffer.concat(chunks) : null);
+    });
+  });
+}
+
 /** Parse a request body that must be a JSON object; anything else throws. */
 export function parseJsonObject(raw: string): JsonObject {
   const value: unknown = JSON.parse(raw);

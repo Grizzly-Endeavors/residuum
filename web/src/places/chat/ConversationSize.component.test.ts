@@ -56,7 +56,6 @@ beforeEach(() => {
     openNotifications: vi.fn(),
     openFeedback: vi.fn(),
     createAgent: vi.fn(),
-    addInboxNote: vi.fn(),
   } satisfies ShellActions;
   unregister = registerAppActions(shell);
 });

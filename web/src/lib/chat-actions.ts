@@ -3,7 +3,7 @@
 // messages now". They act on the bound agent, and the ones that go to it
 // need it running. Each says one thing of its own at most: Summarize and
 // Condense say they've started, and the agent's notice says when they're
-// done; Reload and Add a note leave it all to the agent's notice, which comes
+// done; Reload and New message leave it all to the agent's notice, which comes
 // at once; Fork this conversation names the session it started, with Open
 // session, or says why it couldn't.
 
@@ -35,8 +35,8 @@ export interface ChatActionContext {
   openSession: (agent: string, address: string) => void;
   /** Show the agent's conversation size in the context panel. */
   showConversationSize: (agent: string) => void;
-  /** Ask for the text of an inbox note. */
-  askForInboxNote: (agent: string) => void;
+  /** Open the New message view addressed to `agent`. */
+  composeMailTo: (agent: string) => void;
   /** Open the connection status dialog. */
   showConnectionStatus: () => void;
 }
@@ -144,15 +144,17 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
     {
       ...base,
       id: "chat:inbox",
-      label: `Add a note to ${agent}'s inbox`,
+      label: `New message to ${agent}`,
       icon: "inbox",
       command: "inbox",
       takesText: true,
-      disabled: offline,
+      // Composing works with the agent stopped; only a note sent to its inbox needs it running.
+      disabled: ctx.agent === null ? offline : undefined,
+      disabledWithText: offline,
       run: (text) => {
         const body = text?.trim() ?? "";
         if (body === "") {
-          if (ctx.agent !== null) ctx.askForInboxNote(ctx.agent);
+          if (ctx.agent !== null) ctx.composeMailTo(ctx.agent);
           return;
         }
         ctx.send({ type: "inbox_add", body });

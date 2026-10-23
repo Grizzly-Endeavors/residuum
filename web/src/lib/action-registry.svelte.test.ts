@@ -16,7 +16,7 @@ const ACTIONS: readonly AppAction[] = [
   action("home", { group: "Go to", label: "Home", hint: "Your team" }),
   action("scout-files", { group: "In scout", label: "Files", hint: "scout", searchOnly: true }),
   action("observe", { label: "Summarize older messages now", hint: "atlas", command: "observe" }),
-  action("inbox", { label: "Add a note to atlas's inbox", command: "inbox", takesText: true }),
+  action("inbox", { label: "New message to atlas", command: "inbox", takesText: true }),
   action("atlas", { group: "Agents", label: "atlas", terms: ["Keeps the team wiki tidy"] }),
 ];
 
@@ -27,7 +27,7 @@ describe("matchActions", () => {
     expect(labels(matchActions(ACTIONS, "  "))).toEqual([
       "Home",
       "Summarize older messages now",
-      "Add a note to atlas's inbox",
+      "New message to atlas",
       "atlas",
     ]);
   });

@@ -79,6 +79,15 @@ export function agentWsUrl(agent: string): string {
   return wsUrl(`${agentBase(agent)}/ws`);
 }
 
+/**
+ * WebSocket URL for a connection that only watches an agent's files. The agent
+ * does not count it as an open client, so the agent's unread count and its
+ * pushes carry on as if no page were watching.
+ */
+export function agentWatchWsUrl(agent: string): string {
+  return `${agentWsUrl(agent)}?watch_only=true`;
+}
+
 /** WebSocket URL for the hub connection. */
 export function hubWsUrl(): string {
   return wsUrl(hubPath("/ws"));

@@ -3,7 +3,9 @@ import { appTarget, clickTarget, notificationFor, rotationRequest } from "./push
 
 describe("appTarget", () => {
   it("keeps a path in the app", () => {
-    expect(appTarget("/inbox?item=atlas:note-1")).toBe("/inbox?item=atlas:note-1");
+    expect(appTarget("/inbox?thread=atlas%2Fuser%2Fnote-1")).toBe(
+      "/inbox?thread=atlas%2Fuser%2Fnote-1",
+    );
     expect(appTarget("/agent/atlas/activity")).toBe("/agent/atlas/activity");
   });
 

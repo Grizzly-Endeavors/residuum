@@ -133,7 +133,7 @@ test.describe("the worker's notifications", { tag: "@preview" }, () => {
       agent: "atlas",
       title: "Deploy tomorrow",
       body: "From atlas: Reminder to trigger the deployment pipeline",
-      target: "/inbox?item=atlas:mock_1",
+      target: "/inbox?thread=atlas%2Fuser%2Fmock_1",
       tag: "inbox:atlas:mock_1",
       badge: 2,
     });
@@ -144,7 +144,7 @@ test.describe("the worker's notifications", { tag: "@preview" }, () => {
           title: "Deploy tomorrow",
           body: "From atlas: Reminder to trigger the deployment pipeline",
           tag: "inbox:atlas:mock_1",
-          target: "/inbox?item=atlas:mock_1",
+          target: "/inbox?thread=atlas%2Fuser%2Fmock_1",
         },
       ]);
 
@@ -190,7 +190,13 @@ test.describe("the worker's notifications", { tag: "@preview" }, () => {
   });
 
   const targets: readonly [string, (page: Page) => Locator][] = [
-    ["/inbox?item=atlas:mock_1", (p) => p.getByText("Reminder to trigger the deployment pipeline")],
+    [
+      "/inbox?thread=atlas%2Fuser%2Fmock_1",
+      (p) =>
+        p
+          .getByRole("region", { name: "Conversation", exact: true })
+          .getByRole("heading", { name: "Deploy tomorrow", level: 2 }),
+    ],
     ["/agent/brittle", (p) => p.getByRole("region", { name: "brittle couldn't start" })],
     ["/agent/atlas/activity", (p) => p.getByRole("heading", { name: "Running now" })],
     ["/home", (p) => p.getByRole("heading", { name: "Home", level: 1 })],

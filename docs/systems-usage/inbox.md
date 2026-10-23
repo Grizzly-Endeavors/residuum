@@ -112,7 +112,7 @@ Files reach a message in two steps. The client first stages each file with `POST
 - A send that names an unknown upload ID is refused with `400`.
 - Each recipient's copy receives its own copy of every attachment, in that copy's `attachments/{item id}/` directory.
 
-Attachments of a user-inbox item are served by `GET /api/agents/{name}/inbox/{id}/attachments/{index}`, and those of an agent-inbox item by `GET /api/agents/{name}/inbox/agent/{id}/attachments/{index}`, whether the item is active or archived. Each attachment in a thread carries its URL and its workspace-relative path. Both routes confine every path to the item's own attachment directory and answers `404` for a missing file. See [hub-http.md](hub-http.md#staged-uploads) for the upload route and the rest of the hub's surface.
+Attachments of a user-inbox item are served by `GET /api/agents/{name}/inbox/{id}/attachments/{index}`, and those of an agent-inbox item by `GET /api/agents/{name}/inbox/agent/{id}/attachments/{index}`, whether the item is active or archived. Each attachment in a thread carries its URL and its workspace-relative path. Both routes confine every path to the item's own attachment directory and answers `404` for a missing file. In the web UI, a `.md` or `.txt` attachment opens in the Files panel instead of downloading (see [Web Inbox](#web-inbox)). See [hub-http.md](hub-http.md#staged-uploads) for the upload route and the rest of the hub's surface.
 
 For the agent, `user_inbox_add`'s `attachments` parameter takes paths to files the agent has already written. Each file is copied into the item's own directory, so the original can be moved or deleted afterward. There is no size cap, since these files are already local. A file that fails to copy is skipped and named in the result, and the item is still created with the others.
 
@@ -136,6 +136,35 @@ The notification router files each substantive `scheduled` result and each subst
 A workbench artifact can file an agent-inbox item with `POST /api/agents/{name}/agent-inbox` (body `{ title?, body }`). The title defaults to the body's first line, and a blank body is refused with `400`. The item's source is `artifact:<name>` when the request carries the `X-Residuum-Artifact` header that the workbench SDK sends, and `api` otherwise. Neither is mail: the user's own messages go through the hub's mail routes. An artifact cannot write to the user inbox.
 
 A file that a Discord, Telegram, Teams or A2A message carries gets its own companion agent-inbox item, and each file an A2A task's remote agent returns gets one as well, titled `A2A artifact: <filename>`. The file sits in that item's attachment directory, so archiving the item moves the file with it (see [a2a.md](a2a.md)).
+
+## Web Inbox
+
+The Inbox place (`/inbox`, **Inbox** at the top of the left-hand rail) is a mail client over every agent's mail. It reads and writes through the hub's `/api/hub/mail/*` routes, which work from the agents' files, so a stopped or failed agent's mail is listed, read, archived and answered like a running agent's. What counts as a conversation is in [Threads](#threads) and [Folders and State](#folders-and-state), and how files reach a message is in [Uploads and Attachments](#uploads-and-attachments).
+
+- **Folders.** **Inbox** holds the conversations with at least one message from an agent that isn't archived, **Sent** the conversations with a message you wrote, and **Archived** the conversations whose agent messages are all archived. A conversation can be in Inbox and Sent at once.
+- **Agent filter.** The filter beside the folders is **All agents** or one agent. In the Inbox folder it shows each agent's unread count.
+- **List.** Conversations are newest first, in pages (**Show older** pages older ones in). A row names who the conversation is with (in Sent, who it went to: **To atlas, wren**), how many messages it holds, when it last moved, its subject (**(no subject)** when it has none) and the first line of the latest message. An unread conversation has a dot and a bold subject, and a conversation with files has a paperclip.
+- **Unread counts.** The counts on the rail, in the bottom bar, in the tab title and on the app badge are each agent's `inbox_unread` from the [team overview](hub.md#team-overview): the unread messages from agents, not conversations. They recount when mail is read, archived, restored or arrives, and the open list and conversation refresh with them.
+- **Address.** The folder, the filter, the open conversation and a New message are in the URL: `/inbox?folder=sent&agent=atlas&thread=<ref>` and `/inbox?compose=1&to=atlas,scout`, with `thread` percent-encoded. A link naming any message of a conversation opens the whole conversation. `?item=<agent>:<id>` opens that agent's message and `?tab=archived` the Archived folder. An agent in the URL that doesn't exist is dropped, with a notice.
+
+### Reading and filing
+
+Opening a conversation shows its messages oldest first, each marked as yours or the agent's, with the time, the Markdown body, its attachments and, on a message you wrote, whether each agent it went to has seen it.
+
+- **Read.** Opening a conversation marks it read at once. If the hub refuses, it goes back to unread and the reason is shown.
+- **Archive and restore.** Archiving moves the whole conversation to Archived, and restoring moves it back to Inbox. Each shows a toast with **Undo**.
+- **Reply.** The box under the messages is reply-all: it goes to every agent in the conversation, listed on its **To:** line, and says that each agent will see it the next time it checks its inbox. Ctrl+Enter or Cmd+Enter sends it. A reply draft stays while you switch folders, and is kept in memory only.
+- **Attachments.** A `.md` or `.txt` attachment opens in the Files panel beside the conversation, rendered, with **Edit** to change it and save it in the agent's workspace. Any other attachment downloads. Closing the conversation, opening another or changing folder closes a panel the conversation opened, and leaves a Files panel opened some other way.
+
+### Writing
+
+**New message** (in the place header, and in an agent's chat as **New message to** that agent) opens a message in the pane beside the list. **To** takes one or more agents (the filtered agent is filled in), and the message has a subject, a Markdown body and attachments. The subject may be empty, and the first line of the body is then the subject. The body may not be empty. Sending opens the conversation in Sent; the hub files one copy in each recipient's inbox. Cancelling drops the draft. Leaving a New message that has text or files asks first, unless it is already being sent (the send carries on, and a notice says whether it went), and closing or reloading the page with any unsent draft asks too.
+
+A file attached to a message or reply uploads when it is chosen, shows its progress on its chip, and can be removed first. A failed upload shows **Try again** on its chip, and **Send** waits for uploads still running and won't go while one has failed. Both boxes say under the text what a file may weigh (**Any file, up to 50 MB each.**) and when the recipients will see the message, and a file over that is refused before it uploads, with a message naming the file and the limit. A message waiting on uploads says so under the text. In a New message, Ctrl+Enter or Cmd+Enter sends from the message box or the subject, as in a reply; a plain Enter in the subject moves to the message box and never sends.
+
+### Layout
+
+The conversation list, the conversation and a Files panel share the main region, and the conversation narrows to a minimum width before anything else gives way. When the list and the conversation no longer fit side by side, as when a Files panel opens beside them, the place shows one at a time: the list, or the open conversation or New message with **Back to list**. On a phone it is always one at a time. Focus follows what opens: opening a conversation or New message while the list is hidden, and sending a New message, put focus on the conversation's subject (or **New message**), and **Back to list** or **Cancel** put it back on the conversation's row or the list. **Show older** keeps focus when its last page takes the button away, moving it to the first new row.
 
 ## Intended Usage
 

@@ -4,7 +4,7 @@
 
 import { agentConfigFile, type ConfigFile } from "../../lib/config-coordinator";
 import type { WorkspaceScope } from "../../lib/hub-types";
-import { isAgentPlace, type Place } from "../../lib/routes";
+import { isAgentPlace, type Panel, type Place } from "../../lib/routes";
 import type { RepoKind } from "../../lib/types";
 import { checkpointLocation } from "../../lib/undo";
 
@@ -14,11 +14,23 @@ export interface FileSource {
   scope: WorkspaceScope;
 }
 
+/** A file panel, as `Panel` names it. */
+type FilePanelSpec = Extract<Panel, { kind: "file" }>;
+
 /** Where a file panel's path is read on `place`, or null on a place that can't show one. */
 export function fileSourceFor(place: Place): FileSource | null {
   if (isAgentPlace(place)) return { agent: place.agent, scope: "agent" };
   if (place.kind === "shared-files") return { agent: null, scope: "team" };
   return null;
+}
+
+/**
+ * Where a file panel's path is read when the panel shows on `place`: the
+ * agent's workspace when the panel names an agent, else the place's own tree.
+ */
+export function panelFileSource(place: Place, panel: FilePanelSpec): FileSource | null {
+  if (panel.agent !== null) return { agent: panel.agent, scope: "agent" };
+  return fileSourceFor(place);
 }
 
 export function sameSource(a: FileSource | null, b: FileSource | null): boolean {

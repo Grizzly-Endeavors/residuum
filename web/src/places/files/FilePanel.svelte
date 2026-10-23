@@ -1,36 +1,51 @@
 <script lang="ts">
+  import { watchAgentWorkspace } from "../../lib/agent-watches.svelte";
   import { configCoordinator } from "../../lib/config-coordinator";
   import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
   import { Badge, Banner, Button, Dialog, EmptyState, Skeleton } from "../../lib/ui";
   import type { WatchHandler, WatchOwner } from "../../lib/watch-registry";
   import { normalizeWatchPrefix } from "../../lib/workspace-watch";
-  import { ws } from "../../lib/ws.svelte";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import { panelFile, type FileBuffer } from "./file-buffer.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
-  import { fileSourceFor, sameSource } from "./file-source";
+  import FileRendered from "./FileRendered.svelte";
+  import { panelFileSource, sameSource } from "./file-source";
   import TextEditor from "./TextEditor.svelte";
 
   // A file in the context panel, from the Files places' trees and from
-  // `panel=file:` links: the editor with live validation, Save and Discard,
-  // the save conflict, and the file's history. Unsaved edits are asked about
-  // before anything closes the panel or shows another file.
+  // `panel=file:` and `panel=agent-file:` links: the editor with live
+  // validation, Save and Discard, the save conflict, and the file's history. A
+  // Markdown or plain text file shows rendered until Edit opens the editor,
+  // and the rendered view shows the buffer's text, edits included, with the
+  // file's problems in a banner that opens the editor. Unsaved edits are asked
+  // about before anything closes the panel or shows another file.
 
   interface Props {
     /** The open file, which outlives this view while the panel stays open. */
     buffer: FileBuffer;
     /** The path the URL names. */
     path: string;
+    /** The URL names the file's agent (`panel=agent-file:`), so links in the file open as that agent's files. */
+    agentNamed?: boolean;
   }
 
-  let { buffer, path }: Props = $props();
+  let { buffer, path, agentNamed = false }: Props = $props();
 
   /** How long after the last keystroke the text is checked: long enough not to fire on every character. */
   const VALIDATE_DEBOUNCE_MS = 500;
 
   const source = $derived(buffer.source);
   let historyOpen = $state(false);
+
+  /** How a file that reads before it edits is shown: Markdown formatted, plain text as written. */
+  const renderMode = $derived.by((): "markdown" | "text" | null => {
+    if (/\.md$/i.test(buffer.path)) return "markdown";
+    return /\.txt$/i.test(buffer.path) ? "text" : null;
+  });
+  const rendered = $derived(renderMode !== null && !buffer.editing);
+  /** Live updates are off for the file's agent, so the file may change without this view hearing. */
+  let followOff = $state(false);
 
   const inFolder = $derived(buffer.path.includes("/"));
 
@@ -53,21 +68,31 @@
       const keeps =
         target?.panel?.kind === "file" &&
         target.panel.path === buffer.path &&
-        sameSource(fileSourceFor(target.place), source);
+        sameSource(panelFileSource(target.place, target.panel), source);
       return keeps ? null : `Unsaved changes to ${buffer.name}`;
     }),
   );
 
   // Follow the file on disk: through the agent's socket, or the hub's team
-  // watch for the team's folder. After a resync or a reconnect, read it again.
+  // watch for the team's folder. An agent's file is followed while the agent
+  // runs, whichever agent the app is on; a stopped agent's file is read and
+  // saved all the same. After a resync or a reconnect, read it again.
   $effect(() => {
     const prefix = source.scope === "team" ? `team/${buffer.path}` : buffer.path;
+    followOff = false;
     if (buffer.path === "" || normalizeWatchPrefix(prefix) === null) return;
     const refresh = (): void => void buffer.refresh();
-    const handler: WatchHandler = { changed: refresh, resync: refresh, reconnected: refresh };
+    const handler: WatchHandler = {
+      changed: refresh,
+      resync: refresh,
+      reconnected: refresh,
+      unavailable: () => {
+        followOff = true;
+      },
+    };
     let owner: WatchOwner | null = null;
     if (source.scope === "team") owner = hub.teamWatches.register(handler);
-    else if (source.agent !== null) owner = ws.watches.register(handler, { agent: source.agent });
+    else if (source.agent !== null) owner = watchAgentWorkspace(source.agent, handler);
     owner?.set([prefix]);
     return () => owner?.release();
   });
@@ -88,12 +113,16 @@
     return () => window.clearTimeout(timer);
   });
 
+  // Ctrl or Cmd+S saves the open file while it has edits, in either view and
+  // from anywhere in the app's window (the header's Edit button included), with
+  // the same save as the Save button. Without edits the browser keeps its own.
   function saveOnShortcut(event: KeyboardEvent): void {
-    if ((event.metaKey || event.ctrlKey) && event.key === "s") {
-      event.preventDefault();
-      void buffer.save();
-    }
+    if (!buffer.dirty || !(event.metaKey || event.ctrlKey) || event.key !== "s") return;
+    event.preventDefault();
+    void buffer.save();
   }
+
+  const problemCount = $derived(buffer.diagnostics.length);
 </script>
 
 <PanelHeader
@@ -102,18 +131,30 @@
   title={buffer.name}
   code
   meta={inFolder ? folder : undefined}
-  actions={buffer.status === "ready" ? history : undefined}
+  actions={buffer.status === "ready" ? actions : undefined}
 />
 
 {#snippet folder()}
   <code class="file-panel-path">{buffer.path}</code>
 {/snippet}
 
-{#snippet history()}
+{#snippet actions()}
+  {#if renderMode !== null}
+    <Button
+      class="file-panel-edit"
+      variant="quiet"
+      size="sm"
+      icon="edit"
+      pressed={!rendered}
+      onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
+    >
+  {/if}
   <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
     >History</Button
   >
 {/snippet}
+
+<svelte:window onkeydown={saveOnShortcut} />
 
 <div class="file-panel">
   {#if buffer.status === "loading"}
@@ -148,14 +189,47 @@
     {:else if buffer.error}
       <Banner tone="warn" edge ondismiss={() => (buffer.error = "")}>{buffer.error}</Banner>
     {/if}
-    <TextEditor
-      layout="panel"
-      name={buffer.name}
-      value={buffer.text}
-      problems={buffer.diagnostics}
-      oninput={(text) => (buffer.text = text)}
-      onkeydown={saveOnShortcut}
-    />
+    {#if followOff}
+      <Banner tone="info" edge>
+        Live updates are off{source.agent === null ? "" : ` for ${hub.shownName(source.agent)}`}, so
+        changes made elsewhere won't show here until you open {buffer.name} again.
+      </Banner>
+    {/if}
+    {#if rendered && renderMode !== null}
+      {#if problemCount > 0}
+        <Banner tone="warn" edge>
+          {problemCount === 1
+            ? "This file has a problem."
+            : `This file has ${problemCount} problems.`}
+          {#snippet actions()}
+            <Button variant="quiet" size="sm" onclick={() => (buffer.editing = true)}
+              >Edit to see them</Button
+            >
+          {/snippet}
+        </Banner>
+      {/if}
+      <div class="file-panel-rendered">
+        {#if buffer.text.trim() === ""}
+          <p class="file-panel-empty">Nothing written yet. Edit to add text.</p>
+        {:else}
+          <FileRendered
+            content={buffer.text}
+            path={buffer.path}
+            {source}
+            mode={renderMode}
+            {agentNamed}
+          />
+        {/if}
+      </div>
+    {:else}
+      <TextEditor
+        layout="panel"
+        name={buffer.name}
+        value={buffer.text}
+        problems={buffer.diagnostics}
+        oninput={(text) => (buffer.text = text)}
+      />
+    {/if}
     {#if buffer.dirty}
       <div class="file-panel-save">
         <span class="file-panel-save-note"><Badge tone="accent" dot>Unsaved changes</Badge></span>
@@ -205,6 +279,18 @@
 
   .file-panel-path {
     font-size: var(--font-size-xs);
+  }
+
+  .file-panel-rendered {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: var(--space-16) var(--space-18);
+  }
+
+  .file-panel-empty {
+    margin: 0;
+    color: var(--color-text-3);
   }
 
   .file-panel-save {
