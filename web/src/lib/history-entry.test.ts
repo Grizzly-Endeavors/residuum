@@ -8,7 +8,7 @@ import {
   stepsToClose,
   withoutOverlay,
 } from "./history-entry";
-import { HOME, locationAt, type AppLocation } from "./routes";
+import { HOME, INBOX, locationAt, type AppLocation, type MailFolder } from "./routes";
 
 const plain = locationAt({ kind: "chat", agent: "scout" });
 const withSettings: AppLocation = {
@@ -133,20 +133,33 @@ describe("marks on a replace", () => {
   });
 });
 
-describe("the open inbox item's mark", () => {
-  const list = locationAt({ kind: "inbox", agent: null, tab: "active", item: null });
-  const opened = (id: string, tab: "active" | "archived" = "active"): AppLocation =>
-    locationAt({ kind: "inbox", agent: null, tab, item: { agent: "atlas", id } });
+describe("the open inbox thread's mark", () => {
+  const list = locationAt(INBOX);
+  const opened = (id: string, folder: MailFolder = "inbox"): AppLocation =>
+    locationAt({ ...INBOX, folder, thread: `atlas/user/${id}` });
+  const composing = (to: string[] = []): AppLocation => locationAt({ ...INBOX, compose: { to } });
 
   it("is read back like the others", () => {
     expect(readEntry({ idx: 2, item: 2 })).toEqual({ idx: 2, item: 2 });
   });
 
-  it("is set by the push that opens an item", () => {
+  it("is set by the push that opens a thread", () => {
     expect(entryAfterPush({ idx: 1 }, list, opened("a"))).toEqual({ idx: 2, item: 2 });
   });
 
-  it("stays with the entry that opened the first item while others are switched to", () => {
+  it("is set by the push that opens a New message, and it counts as the same open item as a thread", () => {
+    expect(entryAfterPush({ idx: 1 }, list, composing(["atlas"]))).toEqual({ idx: 2, item: 2 });
+    expect(entryAfterPush({ idx: 2, item: 2 }, opened("a"), composing())).toEqual({
+      idx: 3,
+      item: 2,
+    });
+    expect(entryAfterPush({ idx: 2, item: 2 }, composing(), opened("a"))).toEqual({
+      idx: 3,
+      item: 2,
+    });
+  });
+
+  it("stays with the entry that opened the first thread while others are switched to", () => {
     expect(entryAfterPush({ idx: 2, item: 2 }, opened("a"), opened("b"))).toEqual({
       idx: 3,
       item: 2,
@@ -155,10 +168,24 @@ describe("the open inbox item's mark", () => {
       idx: 2,
       item: 2,
     });
+    expect(entryAfterReplace({ idx: 2, item: 2 }, opened("a"), composing())).toEqual({
+      idx: 2,
+      item: 2,
+    });
   });
 
-  it("isn't set when the item opens with another list, or appears by replace", () => {
+  it("takes another agent filter for another list", () => {
+    const filtered = (id: string): AppLocation =>
+      locationAt({ ...INBOX, agent: "scout", thread: `atlas/user/${id}` });
+    expect(
+      entryAfterPush({ idx: 1 }, locationAt({ ...INBOX, agent: "scout" }), filtered("a")),
+    ).toEqual({ idx: 2, item: 2 });
+    expect(entryAfterPush({ idx: 1 }, list, filtered("a"))).toEqual({ idx: 2 });
+  });
+
+  it("isn't set when the thread opens with another list, or appears by replace", () => {
     expect(entryAfterPush({ idx: 1 }, list, opened("a", "archived"))).toEqual({ idx: 2 });
+    expect(entryAfterPush({ idx: 1 }, list, opened("a", "sent"))).toEqual({ idx: 2 });
     expect(entryAfterReplace({ idx: 1 }, list, opened("a"))).toEqual({ idx: 1 });
     expect(entryAfterReplace({ idx: 2, item: 2 }, opened("a"), opened("a", "archived"))).toEqual({
       idx: 2,

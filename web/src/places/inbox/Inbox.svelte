@@ -2,11 +2,11 @@
   import { untrack } from "svelte";
   import { hub } from "../../lib/hub.svelte";
   import type { HubInboxItem } from "../../lib/hub-types";
-  import { inbox, inboxItemKey } from "../../lib/inbox.svelte";
+  import { inbox, inboxItemKey, type InboxItemRef, type InboxTab } from "../../lib/inbox.svelte";
   import { notifications } from "../../lib/notifications.svelte";
   import { overview } from "../../lib/overview.svelte";
   import { router } from "../../lib/router.svelte";
-  import type { InboxItemRef, InboxTab, Place } from "../../lib/routes";
+  import { userInboxRef, type InboxPlace } from "../../lib/routes";
   import { Banner, Button, EmptyState, SelectField, Skeleton, Tabs } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import InboxItem from "./InboxItem.svelte";
@@ -16,14 +16,27 @@
   // and the open item live in the URL. Opening an item pushes, so Back closes
   // it; switching items, the filter and the tab replace.
 
-  type InboxPlace = Extract<Place, { kind: "inbox" }>;
-
   let { place }: { place: InboxPlace } = $props();
+
+  /** The item a thread ref names, when it is one of the user's own inbox items. */
+  function itemOfThread(thread: string | null): InboxItemRef | null {
+    const parts = thread?.split("/");
+    const [agent, kind, id] = parts ?? [];
+    return parts?.length === 3 && kind === "user" && agent !== undefined && id !== undefined
+      ? { agent, id }
+      : null;
+  }
+
+  /** The item the place has open, when it has one rather than a New message. */
+  function openItemOf(current: InboxPlace): InboxItemRef | null {
+    return current.compose === null ? itemOfThread(current.thread) : null;
+  }
 
   const ALL = "";
   const agent = $derived(place.agent);
-  const tab = $derived(place.tab);
-  const openKey = $derived(place.item === null ? null : inboxItemKey(place.item));
+  const tab = $derived<InboxTab>(place.folder === "archived" ? "archived" : "active");
+  const openItem = $derived(openItemOf(place));
+  const openKey = $derived(openItem === null ? null : inboxItemKey(openItem));
 
   /** The open item when the list doesn't hold it. */
   const apart = $derived.by(() => {
@@ -81,21 +94,19 @@
   $effect(() => {
     if (openKey === null) return;
     untrack(() => {
-      if (place.item !== null) void reveal(place.item);
+      if (openItem !== null) void reveal(openItem);
     });
   });
 
   async function reveal(ref: InboxItemRef): Promise<void> {
     const outcome = await inbox.open(ref);
     const current = router.place;
-    const stillOpen =
-      current.kind === "inbox" &&
-      current.item !== null &&
-      inboxItemKey(current.item) === inboxItemKey(ref);
-    if (!stillOpen) return;
+    if (current.kind !== "inbox") return;
+    const open = openItemOf(current);
+    if (open === null || inboxItemKey(open) !== inboxItemKey(ref)) return;
     if (outcome === "missing") {
       notifications.surface("notice", `That item isn't in ${ref.agent}'s inbox any more.`);
-      void router.replacePlace({ ...current, item: null });
+      void router.replacePlace({ ...current, thread: null });
       return;
     }
     document.getElementById(rowId(ref))?.scrollIntoView({ block: "nearest" });
@@ -108,17 +119,19 @@
   /** Open an item, close it, or switch to it from the one that is open. */
   function toggle(item: HubInboxItem): void {
     const ref: InboxItemRef = { agent: item.agent, id: item.id };
+    const opened = { ...place, thread: userInboxRef(ref.agent, ref.id), compose: null };
     if (inboxItemKey(ref) === openKey) void router.closeItem();
-    else if (place.item === null) void router.openPlace({ ...place, item: ref });
-    else void router.replacePlace({ ...place, item: ref });
+    else if (openItem === null) void router.openPlace(opened);
+    else void router.replacePlace(opened);
   }
 
   function showList(next: { agent?: string | null; tab?: InboxTab }): void {
     void router.replacePlace({
-      kind: "inbox",
+      ...place,
+      folder: (next.tab ?? tab) === "archived" ? "archived" : "inbox",
       agent: next.agent === undefined ? agent : next.agent,
-      tab: next.tab ?? tab,
-      item: null,
+      thread: null,
+      compose: null,
     });
   }
 
@@ -153,8 +166,8 @@
           <Banner tone="error">
             {inbox.openError}
             {#snippet actions()}
-              {#if place.item}
-                {@const ref = place.item}
+              {#if openItem}
+                {@const ref = openItem}
                 <Button variant="quiet" size="sm" onclick={() => void reveal(ref)}>Try again</Button
                 >
               {/if}

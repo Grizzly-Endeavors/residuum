@@ -1,7 +1,7 @@
 // What the router writes into `history.state` for each entry it creates. The
 // marks answer two questions the browser can't: "did this page push the entry
-// that opened the panel, the modal, the open inbox item or the selected
-// workbench artifact?" (closing is then
+// that opened the panel, the modal, the open inbox thread or New message, or
+// the selected workbench artifact?" (closing is then
 // `history.back()`), and "is this entry an overlay's?" (Back then closes the
 // overlay and nothing else).
 
@@ -16,7 +16,7 @@ export interface EntryState {
   section?: number;
   /** The same, for the context panel. */
   panel?: number;
-  /** The same, for the item open in the Inbox or the artifact selected on the Workbench. */
+  /** The same, for the thread or New message open in the Inbox, or the artifact selected on the Workbench. */
   item?: number;
   /** Set on an entry pushed for an overlay: same URL as the entry below it. */
   overlay?: string;
@@ -48,26 +48,26 @@ export function readEntry(state: unknown): EntryState | null {
 
 /**
  * Whether both places are the same list, whatever item is open in it: the
- * Inbox with the same filter and tab, or the Workbench.
+ * Inbox with the same folder and agent filter, or the Workbench.
  */
 function sameList(a: Place, b: Place): boolean {
   if (a.kind === "workbench") return b.kind === "workbench";
-  return a.kind === "inbox" && b.kind === "inbox" && a.agent === b.agent && a.tab === b.tab;
+  return a.kind === "inbox" && b.kind === "inbox" && a.agent === b.agent && a.folder === b.folder;
 }
 
-/** Whether the location is the Inbox with an item open, or the Workbench with an artifact selected. */
+/** Whether the location is the Inbox with a thread or New message open, or the Workbench with an artifact selected. */
 function hasItem(location: AppLocation): boolean {
   const { place } = location;
   if (place.kind === "workbench") return place.artifact !== null;
-  return place.kind === "inbox" && place.item !== null;
+  return place.kind === "inbox" && (place.thread !== null || place.compose !== null);
 }
 
 /**
  * The marks for a new entry pushed after `entry`, which showed `from`. A
  * parameter that appears with this push was opened by it; one that was already
  * open keeps the entry that opened it, or none when the page didn't push that.
- * The open inbox item and the selected artifact count as one while the list
- * around them stays the same.
+ * The open thread or New message and the selected artifact count as one while
+ * the list around them stays the same.
  * A push that also changes the place has no other marks: going back would
  * leave the place, and closing a parameter only removes it.
  */

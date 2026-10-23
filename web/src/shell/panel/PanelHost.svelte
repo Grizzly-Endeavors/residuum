@@ -11,7 +11,7 @@
   import { NewSession } from "../../places/activity/new-session.svelte";
   import SessionPanel from "../../places/activity/SessionPanel.svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
-  import { fileSourceFor } from "../../places/files/file-source";
+  import { panelFileSource } from "../../places/files/file-source";
 
   // The context panel, open while the URL names a `panel` its place can show
   // (the router removes any other). Each kind's content renders inside the
@@ -29,7 +29,7 @@
   );
 
   const panel = $derived(router.panel);
-  const fileSource = $derived(fileSourceFor(router.place));
+  const fileSource = $derived(panel?.kind === "file" ? panelFileSource(router.place, panel) : null);
   const fileTree = $derived(
     panel?.kind === "file" && fileSource !== null
       ? `${fileSource.scope}:${fileSource.agent ?? ""}`

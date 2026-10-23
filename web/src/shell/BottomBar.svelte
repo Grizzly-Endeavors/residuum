@@ -2,7 +2,7 @@
   import { Icon, type IconName } from "../lib/icons";
   import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
-  import { formatLocation, HOME, locationAt, type Place } from "../lib/routes";
+  import { formatLocation, HOME, INBOX, locationAt, type Place } from "../lib/routes";
   import { Badge } from "../lib/ui";
   import type { ShellActions } from "./shell-actions";
 
@@ -17,8 +17,6 @@
   }
 
   let { drawerOpen, onmenu, actions }: Props = $props();
-
-  const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 
   function open(event: MouseEvent, target: Place): void {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {

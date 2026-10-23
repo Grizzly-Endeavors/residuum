@@ -7,7 +7,7 @@ import { router } from "../lib/router.svelte";
 import { formatLocation, viewedAgentOf, type Panel } from "../lib/routes";
 
 function filePanel(path: string): Panel {
-  return { kind: "file", path };
+  return { kind: "file", path, agent: null };
 }
 
 /** The address a path link points at, for opening it in a new tab. */

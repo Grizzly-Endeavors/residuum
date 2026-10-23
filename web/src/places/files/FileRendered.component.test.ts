@@ -56,6 +56,6 @@ describe("a relative link in a team file", () => {
 
     await userEvent.click(screen.getByRole("link", { name: "rules" }));
 
-    expect(openPanel).toHaveBeenCalledWith({ kind: "file", path: "AGENTS.md" });
+    expect(openPanel).toHaveBeenCalledWith({ kind: "file", path: "AGENTS.md", agent: null });
   });
 });

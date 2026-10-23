@@ -1,7 +1,7 @@
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "../../lib/router.svelte";
-import { HOME, type AppLocation } from "../../lib/routes";
+import { HOME, INBOX, type AppLocation } from "../../lib/routes";
 import { toast } from "../../lib/toast.svelte";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import FilePanelHarness from "../../test/ui/FilePanelHarness.svelte";
@@ -33,10 +33,10 @@ function serve(): void {
 }
 
 /** Where the router would go: a place, with or without a file in the panel. */
-function at(place: AppLocation["place"], path?: string): AppLocation {
+function at(place: AppLocation["place"], path?: string, agent: string | null = null): AppLocation {
   return {
     place,
-    panel: path === undefined ? null : { kind: "file", path },
+    panel: path === undefined ? null : { kind: "file", path, agent },
     settings: null,
   };
 }
@@ -257,7 +257,11 @@ describe("relative links in a rendered Markdown file", () => {
 
     await userEvent.click(await screen.findByRole("link", { name: "the config" }));
 
-    expect(openPanel).toHaveBeenCalledWith({ kind: "file", path: "notes/refs/config.md" });
+    expect(openPanel).toHaveBeenCalledWith({
+      kind: "file",
+      path: "notes/refs/config.md",
+      agent: null,
+    });
   });
 
   it("keeps a link that climbs out of the workspace as a link in a new tab", async () => {
@@ -299,6 +303,23 @@ describe("the unsaved-edit guard", () => {
     render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
     await userEvent.type(await openEditor(), "edit");
     expect(router.guard.losses(at({ kind: "chat", agent: "atlas" }, "notes/plan.md"))).toEqual([]);
+  });
+
+  it("reads a panel that names its agent from that agent, whatever place it is beside", async () => {
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+    await userEvent.type(await openEditor(), "edit");
+    const loss = ["Unsaved changes to plan.md"];
+
+    expect(router.guard.losses(at(INBOX, "notes/plan.md", "atlas"))).toEqual([]);
+    expect(
+      router.guard.losses(at({ kind: "chat", agent: "scout" }, "notes/plan.md", "atlas")),
+    ).toEqual([]);
+    expect(router.guard.losses(at(INBOX, "notes/plan.md", "scout"))).toEqual(loss);
+    expect(router.guard.losses(at(INBOX, "notes/other.md", "atlas"))).toEqual(loss);
+    expect(router.guard.losses(at({ kind: "shared-files" }, "notes/plan.md", "atlas"))).toEqual([]);
+    expect(router.guard.losses(at({ kind: "chat", agent: "scout" }, "notes/plan.md"))).toEqual(
+      loss,
+    );
   });
 
   it("stops asking once the panel is gone", async () => {

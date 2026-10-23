@@ -103,7 +103,7 @@ test("an inbox item's Open goes to that item in the Inbox", async ({ page }) => 
     .first()
     .getByRole("link", { name: "Open Deploy tomorrow" })
     .click();
-  await expect.poll(() => address(page)).toBe("/inbox?item=atlas:mock_1");
+  await expect.poll(() => address(page)).toBe("/inbox?thread=atlas/user/mock_1");
 });
 
 test("Stop watching removes an unreachable agent's task", async ({ page }) => {
@@ -153,7 +153,7 @@ test("a turn shows on the agent's row but not across the team", async ({ page, m
   await added.click();
   await expect
     .poll(() => address(page))
-    .toMatch(/^\/inbox\?item=scout:\d{8}_release_notes_are_ready$/);
+    .toMatch(/^\/inbox\?thread=scout\/user\/\d{8}_release_notes_are_ready$/);
 });
 
 test("a board row opens the agent's chat", async ({ page }) => {

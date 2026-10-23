@@ -51,7 +51,7 @@ test("lists every agent's items, and opening one marks it read and drops the cou
 
   await itemButton(page, "Deploy tomorrow", "atlas").click();
 
-  await expect.poll(() => address(page)).toBe("/inbox?item=atlas:mock_1");
+  await expect.poll(() => address(page)).toBe("/inbox?thread=atlas/user/mock_1");
   const opened = item(page, "Deploy tomorrow", "atlas");
   await expect(opened.getByText("Reminder to trigger the deployment pipeline")).toBeVisible();
   await expect(itemButton(page, "Deploy tomorrow", "atlas")).toHaveAttribute(
@@ -72,11 +72,11 @@ test("Back closes the open item before it leaves the Inbox", async ({ page }) =>
   await page.goto("/home");
   await page.goto("/inbox");
   await itemButton(page, "Daily Digest", "scout").click();
-  await expect.poll(() => address(page)).toBe("/inbox?item=scout:mock_2");
+  await expect.poll(() => address(page)).toBe("/inbox?thread=scout/user/mock_2");
 
   // Another item takes its place without adding to the history.
   await itemButton(page, "Daily Digest", "atlas").click();
-  await expect.poll(() => address(page)).toBe("/inbox?item=atlas:mock_2");
+  await expect.poll(() => address(page)).toBe("/inbox?thread=atlas/user/mock_2");
 
   await page.goBack();
   await expect.poll(() => address(page)).toBe("/inbox");
@@ -98,7 +98,7 @@ test("archives an item, finds it in the archive, and moves it back", async ({ pa
   await expect.poll(() => address(page)).toBe("/inbox");
 
   await inbox(page).getByRole("tab", { name: "Archived" }).click();
-  await expect.poll(() => address(page)).toBe("/inbox?tab=archived");
+  await expect.poll(() => address(page)).toBe("/inbox?folder=archived");
   await expect(inbox(page).getByRole("listitem")).toHaveCount(3);
   await itemButton(page, "Daily Digest", "atlas").click();
   await expectNoAxeViolations(page);

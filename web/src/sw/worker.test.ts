@@ -531,7 +531,7 @@ describe("push", () => {
         agent: "atlas",
         title: "Deploy tomorrow",
         body: "From atlas: the pipeline",
-        target: "/inbox?item=atlas:note-1",
+        target: "/inbox?thread=atlas%2Fuser%2Fnote-1",
         tag: "inbox:atlas:note-1",
         badge: 3,
       }),
@@ -542,7 +542,7 @@ describe("push", () => {
         options: expect.objectContaining({
           body: "From atlas: the pipeline",
           tag: "inbox:atlas:note-1",
-          data: { target: "/inbox?item=atlas:note-1" },
+          data: { target: "/inbox?thread=atlas%2Fuser%2Fnote-1" },
         }) as NotificationOptions,
       },
     ]);
@@ -595,10 +595,10 @@ describe("a notification click", () => {
 
   it("opens a window at the target when none is open, and never another site", async () => {
     const worker = await loadWorker({ network: serving() });
-    await worker.fire("notificationclick", clickOn("/inbox?item=scout:note-2"));
+    await worker.fire("notificationclick", clickOn("/inbox?thread=scout%2Fuser%2Fnote-2"));
     await worker.fire("notificationclick", clickOn("//elsewhere.example/phish"));
     await worker.fire("notificationclick", clickOn(42));
-    expect(worker.opened).toEqual(["/inbox?item=scout:note-2", "/home", "/home"]);
+    expect(worker.opened).toEqual(["/inbox?thread=scout%2Fuser%2Fnote-2", "/home", "/home"]);
   });
 
   it("closes the notification it was", async () => {

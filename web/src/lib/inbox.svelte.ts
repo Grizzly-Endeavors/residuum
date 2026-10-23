@@ -15,7 +15,15 @@ import {
 } from "./api";
 import { userErrorMessage } from "./errors";
 import type { HubInboxItem } from "./hub-types";
-import type { InboxItemRef, InboxTab } from "./routes";
+
+/** Which of the two lists an item is in. */
+export type InboxTab = "active" | "archived";
+
+/** An inbox item: the agent whose inbox holds it, and its id there. */
+export interface InboxItemRef {
+  agent: string;
+  id: string;
+}
 
 /** Which list the Inbox shows: one agent's items or everyone's, in the inbox or the archive. */
 export interface InboxList {

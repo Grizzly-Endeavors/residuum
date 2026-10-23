@@ -10,7 +10,7 @@
   import { panelFile, type FileBuffer } from "./file-buffer.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
   import FileRendered from "./FileRendered.svelte";
-  import { fileSourceFor, sameSource } from "./file-source";
+  import { panelFileSource, sameSource } from "./file-source";
   import TextEditor from "./TextEditor.svelte";
 
   // A file in the context panel, from the Files places' trees and from
@@ -60,7 +60,7 @@
       const keeps =
         target?.panel?.kind === "file" &&
         target.panel.path === buffer.path &&
-        sameSource(fileSourceFor(target.place), source);
+        sameSource(panelFileSource(target.place, target.panel), source);
       return keeps ? null : `Unsaved changes to ${buffer.name}`;
     }),
   );

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EntryState } from "./history-entry";
-import type { AppLocation, Panel, Place } from "./routes";
+import { INBOX, type AppLocation, type InboxPlace, type Panel, type Place } from "./routes";
 
 import type { router as routerInstance } from "./router.svelte";
 import { waitFor } from "../test/wait";
@@ -137,7 +137,7 @@ describe("opening the app", () => {
     const page = await boot("/agent/scout/files?panel=file:SOUL.md");
     expect(page.replaces).toEqual([]);
     expect(page.router.place).toEqual(files("scout"));
-    expect(page.router.panel).toEqual({ kind: "file", path: "SOUL.md" });
+    expect(page.router.panel).toEqual({ kind: "file", path: "SOUL.md", agent: null });
   });
 
   it.each([
@@ -270,7 +270,7 @@ describe("links the backend redirected here", () => {
   });
 
   it("doesn't say it again on Back", async () => {
-    const page = await boot("/inbox?item=scout%3Aitem-1&notice=inbox-attachment-missing");
+    const page = await boot("/inbox?thread=scout%2Fuser%2Fitem-1&notice=inbox-attachment-missing");
     expect(page.notices).toHaveLength(1);
     await page.router.openPlace(home);
     window.history.back();
@@ -356,7 +356,7 @@ describe("push and replace", () => {
   it("pushes when opening a session or file in the panel from elsewhere", async () => {
     const page = await boot("/agent/scout");
     await page.router.openPanel(run("scout", "run-1"));
-    await page.router.openPanel({ kind: "file", path: "SOUL.md" });
+    await page.router.openPanel({ kind: "file", path: "SOUL.md", agent: null });
     expect(page.pushes).toEqual([
       "/agent/scout?panel=session:scout:run-1",
       "/agent/scout?panel=file:SOUL.md",
@@ -365,7 +365,7 @@ describe("push and replace", () => {
 
   it("replaces when the panel switches what it shows, from inside", async () => {
     const page = await boot("/agent/scout?panel=file:a.md");
-    await page.router.replacePanel({ kind: "file", path: "b.md" });
+    await page.router.replacePanel({ kind: "file", path: "b.md", agent: null });
     await page.router.replacePanel(run("scout", "run-2"));
     expect(page.pushes).toEqual([]);
     expect(page.replaces).toEqual([
@@ -443,50 +443,79 @@ describe("push and replace", () => {
   });
 });
 
-describe("the item open in the Inbox", () => {
-  type InboxPlace = Extract<Place, { kind: "inbox" }>;
-  const list: InboxPlace = { kind: "inbox", agent: null, tab: "active", item: null };
-  const opened = (id: string): InboxPlace => ({ ...list, item: { agent: "atlas", id } });
+describe("the thread or New message open in the Inbox", () => {
+  const list = INBOX;
+  const opened = (id: string): InboxPlace => ({ ...list, thread: `atlas/user/${id}` });
+  const composing: InboxPlace = { ...list, compose: { to: ["atlas"] } };
 
-  it("closes by going back when this page opened it, so Back never lands on a copy of the list", async () => {
+  it("closes a thread by going back when this page opened it, so Back never lands on a copy of the list", async () => {
     const page = await boot("/inbox");
     await page.router.openPlace(opened("a"));
-    expect(page.url()).toBe("/inbox?item=atlas:a");
+    expect(page.url()).toBe("/inbox?thread=atlas%2Fuser%2Fa");
     await expect(page.router.closeItem()).resolves.toBe(true);
     expect(page.url()).toBe("/inbox");
     expect(page.entry().idx).toBe(0);
     expect(page.replaces).toEqual([]);
   });
 
-  it("closes by replace when the page was linked to it", async () => {
-    const page = await boot("/inbox?item=atlas:a");
+  it("closes by replace when the page was linked to the thread", async () => {
+    const page = await boot("/inbox?thread=atlas%2Fuser%2Fa");
     await page.router.closeItem();
     expect(page.url()).toBe("/inbox");
     expect(page.replaces).toEqual(["/inbox"]);
     expect(page.pushes).toEqual([]);
   });
 
-  it("keeps the opener when another item is switched to, so closing leaves the list as it was", async () => {
+  it("opens an old item link as its thread, writing the address in the current form", async () => {
+    const page = await boot("/inbox?tab=archived&item=atlas:a");
+    expect(page.router.place).toEqual({ ...list, folder: "archived", thread: "atlas/user/a" });
+    expect(page.url()).toBe("/inbox?folder=archived&thread=atlas%2Fuser%2Fa");
+    await page.router.closeItem();
+    expect(page.url()).toBe("/inbox?folder=archived");
+  });
+
+  it("keeps the opener when another thread is switched to, so closing leaves the list as it was", async () => {
     const page = await boot("/inbox");
     await page.router.openPlace(opened("a"));
     await page.router.replacePlace(opened("b"));
-    expect(page.url()).toBe("/inbox?item=atlas:b");
+    expect(page.url()).toBe("/inbox?thread=atlas%2Fuser%2Fb");
     await page.router.closeItem();
     expect(page.url()).toBe("/inbox");
     expect(page.entry().idx).toBe(0);
   });
 
-  it("forgets the opener when the filter changes", async () => {
+  it("forgets the opener when the folder changes", async () => {
     const page = await boot("/inbox");
     await page.router.openPlace(opened("a"));
-    await page.router.replacePlace({ ...opened("a"), tab: "archived" });
+    await page.router.replacePlace({ ...opened("a"), folder: "archived" });
     expect(page.entry().item).toBeUndefined();
     await page.router.closeItem();
-    expect(page.url()).toBe("/inbox?tab=archived");
+    expect(page.url()).toBe("/inbox?folder=archived");
     expect(page.entry().idx).toBe(1);
   });
 
-  it("has nothing to close with no item open", async () => {
+  it("closes a New message by going back when this page opened it", async () => {
+    const page = await boot("/inbox?folder=sent");
+    await page.router.openPlace({ ...composing, folder: "sent" });
+    expect(page.url()).toBe("/inbox?folder=sent&compose=1&to=atlas");
+    await expect(page.router.closeItem()).resolves.toBe(true);
+    expect(page.url()).toBe("/inbox?folder=sent");
+    expect(page.entry().idx).toBe(0);
+  });
+
+  it("closes a New message opened by a link by replace, keeping the list", async () => {
+    const page = await boot("/inbox?agent=scout&compose=1&to=atlas,scout");
+    expect(page.router.place).toEqual({
+      ...list,
+      agent: "scout",
+      compose: { to: ["atlas", "scout"] },
+    });
+    await page.router.closeItem();
+    expect(page.url()).toBe("/inbox?agent=scout");
+    expect(page.pushes).toEqual([]);
+  });
+
+  it("has nothing to close with nothing open", async () => {
     const page = await boot("/inbox");
     await expect(page.router.closeItem()).resolves.toBe(true);
     expect(page.url()).toBe("/inbox");
@@ -603,7 +632,7 @@ describe("closing the panel and the modal", () => {
 
   it("closes the panel the same way: back when pushed, replace when linked", async () => {
     const pushed = await boot("/agent/scout");
-    await pushed.router.openPanel({ kind: "file", path: "a.md" });
+    await pushed.router.openPanel({ kind: "file", path: "a.md", agent: null });
     await pushed.router.closePanel();
     expect(pushed.url()).toBe("/agent/scout");
     expect(pushed.entry().idx).toBe(0);
@@ -617,8 +646,8 @@ describe("closing the panel and the modal", () => {
 
   it("goes back past every panel entry opened from elsewhere in a row", async () => {
     const page = await boot("/agent/scout");
-    await page.router.openPanel({ kind: "file", path: "a.md" });
-    await page.router.openPanel({ kind: "file", path: "b.md" });
+    await page.router.openPanel({ kind: "file", path: "a.md", agent: null });
+    await page.router.openPanel({ kind: "file", path: "b.md", agent: null });
     await page.router.closePanel();
     expect(page.url()).toBe("/agent/scout");
     expect(page.entry().idx).toBe(0);
@@ -930,20 +959,22 @@ describe("the unsaved-edit guard", () => {
       seen.push(target);
       return target?.place.kind === "files" ? null : "an edit";
     });
-    await page.router.openPlace(files("scout"), { panel: { kind: "file", path: "a.md" } });
+    await page.router.openPlace(files("scout"), {
+      panel: { kind: "file", path: "a.md", agent: null },
+    });
     await page.router.openPlace(chat("scout"));
     expect(seen.map((target) => target?.place.kind)).toEqual(["files", "chat"]);
   });
 
   it("asks before closing the panel", async () => {
     const page = await boot("/agent/scout");
-    await page.router.openPanel({ kind: "file", path: "a.md" });
+    await page.router.openPanel({ kind: "file", path: "a.md", agent: null });
     const confirm = vi.fn(() => Promise.resolve(false));
     page.router.guard.setConfirm(confirm);
     page.router.guard.register((target) => (target?.panel === null ? "an edit" : null));
     await expect(page.router.closePanel()).resolves.toBe(false);
     expect(confirm).toHaveBeenCalledTimes(1);
-    expect(page.router.panel).toEqual({ kind: "file", path: "a.md" });
+    expect(page.router.panel).toEqual({ kind: "file", path: "a.md", agent: null });
     confirm.mockResolvedValue(true);
     await expect(page.router.closePanel()).resolves.toBe(true);
     expect(page.url()).toBe("/agent/scout");

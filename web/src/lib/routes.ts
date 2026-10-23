@@ -2,7 +2,8 @@
 // the main region), an optional context panel, and an optional Settings modal:
 //
 //   /home                          Home
-//   /inbox                         Inbox (?agent=<name> &tab=archived &item=<agent>:<id>)
+//   /inbox                         Inbox (?folder=sent|archived &agent=<name> &thread=<ref>
+//                                  or &compose=1 &to=<name>,<name>)
 //   /agent/:name                   an agent's Chat
 //   /agent/:name/activity          its Activity
 //   /agent/:name/schedule          its Schedule
@@ -10,8 +11,8 @@
 //   /team/workbench[/:artifact]    the Workbench list, with an artifact's row selected
 //   /team/files                    Shared files
 //
-//   ?panel=session:<agent>:<runId> | new-session:<agent> | file:<path> | size
-//                                                           the context panel
+//   ?panel=session:<agent>:<runId> | new-session:<agent> | file:<path>
+//          | agent-file:<agent>:<path> | size               the context panel
 //   ?settings=<agent | _all>[/<section>]                    the Settings modal
 //
 // Paths that older versions used redirect to these, and any other path is the
@@ -32,17 +33,26 @@ import {
 
 export type AgentPlaceKind = "chat" | "activity" | "schedule" | "files";
 
-export type InboxTab = "active" | "archived";
+/** The Inbox's folders: what arrived, what the user sent, and what was set aside. */
+export type MailFolder = "inbox" | "sent" | "archived";
 
-/** An inbox item: the agent whose inbox holds it, and its id there. */
-export interface InboxItemRef {
-  agent: string;
-  id: string;
+/** A New message that is open: the agents it is addressed to so far. */
+export interface ComposeDraft {
+  to: string[];
 }
 
 export type Place =
   | { kind: "home" }
-  | { kind: "inbox"; agent: string | null; tab: InboxTab; item: InboxItemRef | null }
+  | {
+      kind: "inbox";
+      folder: MailFolder;
+      /** Shows only the threads this agent is in; null shows every agent's. */
+      agent: string | null;
+      /** The ref of a message in the open thread (the thread's own id, or any message's); null when none is open. */
+      thread: string | null;
+      /** The New message that is open. It takes the thread's place when both are set. */
+      compose: ComposeDraft | null;
+    }
   | { kind: AgentPlaceKind; agent: string }
   | { kind: "workbench"; artifact: string | null }
   | { kind: "shared-files" }
@@ -51,10 +61,17 @@ export type Place =
 
 export type AgentPlace = Extract<Place, { kind: AgentPlaceKind }>;
 
+export type InboxPlace = Extract<Place, { kind: "inbox" }>;
+
 export type Panel =
   | { kind: "session"; agent: string; runId: string }
   | { kind: "new-session"; agent: string }
-  | { kind: "file"; path: string }
+  /**
+   * A file. With no `agent` it is read from the tree the place shows (an
+   * agent's workspace on its places, the team's folder on Shared files); with
+   * one it is that agent's workspace, whatever place the panel is beside.
+   */
+  | { kind: "file"; path: string; agent: string | null }
   | { kind: "size" };
 
 /** The Settings modal: a scope (an agent's name, or `_all`) and, when the URL names one, a section. */
@@ -70,6 +87,20 @@ export interface AppLocation {
 }
 
 export const HOME: Place = { kind: "home" };
+
+/** The Inbox on its first folder, showing every agent's threads with nothing open. */
+export const INBOX: InboxPlace = {
+  kind: "inbox",
+  folder: "inbox",
+  agent: null,
+  thread: null,
+  compose: null,
+};
+
+/** The ref of message `id` in `agent`'s user inbox, which is what an old `item=` link names. */
+export function userInboxRef(agent: string, id: string): string {
+  return `${agent}/user/${id}`;
+}
 
 /** A location with no panel and no modal, for going to `place`. */
 export function locationAt(place: Place): AppLocation {
@@ -105,7 +136,8 @@ export function isAgentName(name: string): boolean {
 /**
  * Whether a panel can show on a place: a session of the viewed agent (or on
  * the Workbench), a new session on the viewed agent, a file, or the
- * conversation size.
+ * conversation size. A file that names its agent also shows on the Inbox, for
+ * a mail attachment beside its thread.
  */
 export function panelAllowed(place: Place, panel: Panel): boolean {
   switch (panel.kind) {
@@ -114,7 +146,11 @@ export function panelAllowed(place: Place, panel: Panel): boolean {
     case "new-session":
       return isAgentPlace(place) && place.agent === panel.agent;
     case "file":
-      return isAgentPlace(place) || place.kind === "shared-files";
+      return (
+        isAgentPlace(place) ||
+        place.kind === "shared-files" ||
+        (panel.agent !== null && place.kind === "inbox")
+      );
     case "size":
       return isAgentPlace(place);
   }
@@ -161,7 +197,14 @@ function parsePanel(value: string): Panel | null {
   if (colon < 0) return null;
   const kind = value.slice(0, colon);
   const rest = value.slice(colon + 1);
-  if (kind === "file") return rest === "" ? null : { kind: "file", path: rest };
+  if (kind === "file") return rest === "" ? null : { kind: "file", path: rest, agent: null };
+  if (kind === "agent-file") {
+    const split = rest.indexOf(":");
+    if (split < 0) return null;
+    const agent = rest.slice(0, split);
+    const path = rest.slice(split + 1);
+    return isAgentName(agent) && path !== "" ? { kind: "file", path, agent } : null;
+  }
   if (kind === "new-session")
     return isAgentName(rest) ? { kind: "new-session", agent: rest } : null;
   if (kind === "session") {
@@ -192,19 +235,63 @@ function parseSettings(value: string): { target: SettingsTarget; notices: string
   return { target: { scope, section }, notices: [] };
 }
 
+const MAIL_FOLDERS: readonly MailFolder[] = ["inbox", "sent", "archived"];
+
+function isMailFolder(value: string): value is MailFolder {
+  return (MAIL_FOLDERS as readonly string[]).includes(value);
+}
+
+/** The kinds of inbox a message ref names: `user` holds what agents sent the user, `agent` what was sent to an agent. */
+const REF_KINDS: ReadonlySet<string> = new Set(["user", "agent"]);
+
+/** A message ref, `<agent>/<kind>/<id>`, or null when `value` isn't shaped like one. */
+function parseThreadRef(value: string | null): string | null {
+  if (value === null) return null;
+  const parts = value.split("/");
+  if (parts.length !== 3) return null;
+  const [agent = "", kind = "", id = ""] = parts;
+  return isAgentName(agent) && REF_KINDS.has(kind) && id !== "" ? value : null;
+}
+
+/** An old `item=<agent>:<id>` value as the ref of that message, or null when it is malformed. */
+function refOfOldItem(value: string | null): string | null {
+  const colon = value === null ? -1 : value.indexOf(":");
+  if (value === null || colon <= 0) return null;
+  const agent = value.slice(0, colon);
+  const id = value.slice(colon + 1);
+  return isAgentName(agent) && id !== "" ? userInboxRef(agent, id) : null;
+}
+
+/** The agents a `to` value lists, comma separated: the well-formed names once each, in order. */
+function parseRecipients(value: string | null): string[] {
+  if (value === null) return [];
+  const names = value.split(",").filter(isAgentName);
+  return names.filter((name, index) => names.indexOf(name) === index);
+}
+
+/**
+ * The Inbox a query stands for. `folder`, `agent`, `thread` or `compose` with
+ * `to` are the current form. The old form, `tab=archived` and
+ * `item=<agent>:<id>`, is read as the folder and thread it stands for, and the
+ * current parameter wins when both are given.
+ */
 function parseInbox(query: URLSearchParams): Place {
   const agentParam = query.get("agent");
   const agent = agentParam !== null && isAgentName(agentParam) ? agentParam : null;
-  const itemParam = query.get("item");
-  const colon = itemParam === null ? -1 : itemParam.indexOf(":");
-  let item: InboxItemRef | null = null;
-  if (itemParam !== null && colon > 0) {
-    const itemAgent = itemParam.slice(0, colon);
-    const id = itemParam.slice(colon + 1);
-    if (isAgentName(itemAgent) && id !== "") item = { agent: itemAgent, id };
+  const folderParam = query.get("folder");
+  let folder: MailFolder = query.get("tab") === "archived" ? "archived" : "inbox";
+  if (folderParam !== null && isMailFolder(folderParam)) folder = folderParam;
+  if (query.get("compose") === "1") {
+    return {
+      kind: "inbox",
+      folder,
+      agent,
+      thread: null,
+      compose: { to: parseRecipients(query.get("to")) },
+    };
   }
-  const tab: InboxTab = query.get("tab") === "archived" ? "archived" : "active";
-  return { kind: "inbox", agent, tab, item };
+  const thread = parseThreadRef(query.get("thread")) ?? refOfOldItem(query.get("item"));
+  return { kind: "inbox", folder, agent, thread, compose: null };
 }
 
 /** What a path stands for, before the query's panel and settings parameters are applied. */
@@ -383,9 +470,9 @@ export function parseUrl(pathname: string, search: string, context: ParseContext
 
 /**
  * Move a location off agents that don't exist: an agent place goes to Home, an
- * inbox filter or item is dropped, a Settings scope becomes All agents, and a
- * session panel for a missing agent is removed. Each missing agent is named
- * once in the notices.
+ * inbox filter or a New message's recipient is dropped, a Settings scope
+ * becomes All agents, and a session panel or a file panel for a missing agent
+ * is removed. Each missing agent is named once in the notices.
  */
 export function correctForAgents(
   location: AppLocation,
@@ -401,19 +488,23 @@ export function correctForAgents(
     note(place.agent);
     place = HOME;
   } else if (place.kind === "inbox") {
-    let { agent, item } = place;
+    let { agent, compose } = place;
     if (agent !== null && !known.has(agent)) {
       note(agent);
       agent = null;
     }
-    if (item !== null && !known.has(item.agent)) {
-      note(item.agent);
-      item = null;
+    if (compose !== null) {
+      const to = compose.to.filter((name) => {
+        note(name);
+        return known.has(name);
+      });
+      if (to.length !== compose.to.length) compose = { to };
     }
-    place = { ...place, agent, item };
+    place = { ...place, agent, compose };
   }
-  if (panel?.kind === "session" && !known.has(panel.agent)) {
-    note(panel.agent);
+  const panelAgent = panel?.kind === "session" || panel?.kind === "file" ? panel.agent : null;
+  if (panelAgent !== null && !known.has(panelAgent)) {
+    note(panelAgent);
     panel = null;
   }
   if (panel !== null && !panelAllowed(place, panel)) panel = null;
@@ -451,7 +542,9 @@ function formatPanel(panel: Panel): string {
     case "size":
       return "size";
     case "file":
-      return `file:${panel.path}`;
+      return panel.agent === null
+        ? `file:${panel.path}`
+        : `agent-file:${panel.agent}:${panel.path}`;
     case "session":
       return `session:${panel.agent}:${panel.runId}`;
     case "new-session":
@@ -465,10 +558,16 @@ function formatPlace(place: Place): { path: string; params: string[] } {
       return { path: "/home", params: [] };
     case "inbox": {
       const params: string[] = [];
+      if (place.folder !== "inbox") params.push(`folder=${place.folder}`);
       if (place.agent !== null) params.push(`agent=${queryValue(place.agent)}`);
-      if (place.tab === "archived") params.push("tab=archived");
-      if (place.item !== null) {
-        params.push(`item=${queryValue(`${place.item.agent}:${place.item.id}`)}`);
+      if (place.compose !== null) {
+        params.push("compose=1");
+        if (place.compose.to.length > 0) {
+          params.push(`to=${place.compose.to.map((name) => encodeURIComponent(name)).join(",")}`);
+        }
+      } else if (place.thread !== null) {
+        // Encoded in full, separators included: a ref is one value, not a path.
+        params.push(`thread=${encodeURIComponent(place.thread)}`);
       }
       return { path: "/inbox", params };
     }

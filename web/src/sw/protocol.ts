@@ -22,7 +22,7 @@ export function isPageMessage(data: unknown): data is PageMessage {
 /**
  * A message the worker posts to a window of the app: a notification was
  * clicked, and the window it brought forward should show `target`, an app
- * path such as `/inbox?item=atlas:note-1`. The page routes there itself, so
+ * path such as `/inbox?thread=atlas%2Fuser%2Fnote-1`. The page routes there itself, so
  * nothing reloads and unsaved work is asked about first.
  */
 export interface OpenTargetMessage {
