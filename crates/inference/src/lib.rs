@@ -42,8 +42,8 @@ pub use role_options::completion_options_for_role;
 pub use tool::{ToolError, ToolResult};
 pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
-    MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
-    ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig,
-    joined_thinking_text, readable_thinking,
+    MessageAttachment, MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta,
+    StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    WebSearchNativeConfig, joined_thinking_text, readable_thinking,
 };
 pub(crate) use types::{ReplayScope, blocks_produced_at};

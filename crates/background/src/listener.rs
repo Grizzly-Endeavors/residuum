@@ -731,6 +731,7 @@ mod tests {
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
+            attachments: Vec::new(),
             context: None,
         }
     }

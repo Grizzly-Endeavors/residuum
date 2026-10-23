@@ -37,7 +37,7 @@ use residuum::hub::types::{
     AgentActivity, AgentListResponse, AgentPatch, DeletedAgent, DeletedAgentListResponse,
     HubClientMessage, HubEvent, HubSocketFrame, NoticeLevel, RestoreAgentRequest,
 };
-use residuum::inference::ImageData;
+use residuum::inference::{ImageData, MessageAttachment};
 use residuum::interfaces::teams::setup_types::{
     AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine, LogStream,
     SetupError, SetupResult, SignInPrompt, SuggestedEndpointSource, TeamsSetupForm, TeamsSetupJob,
@@ -76,6 +76,7 @@ fn export_protocol_types() {
     ClientMessage::export_all(&cfg).unwrap();
     ServerMessage::export_all(&cfg).unwrap();
     ImageData::export_all(&cfg).unwrap();
+    MessageAttachment::export_all(&cfg).unwrap();
     // HTTP response type for `GET /api/sessions` (its `SessionSummary`
     // items are also carried by the `session_started` frame).
     SessionListResponse::export_all(&cfg).unwrap();

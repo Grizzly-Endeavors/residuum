@@ -1034,6 +1034,7 @@ mod tests {
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
+            attachments: Vec::new(),
             context: Some("[14:00] Sam: build is red".to_string()),
         };
 
@@ -1137,6 +1138,7 @@ mod tests {
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
+            attachments: Vec::new(),
             context: None,
         }))
         .unwrap();

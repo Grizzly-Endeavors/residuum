@@ -22,7 +22,8 @@ use residuum_background::registry::SessionRegistry;
 use residuum_bus::control::{ServerCommand, StopRequest};
 use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
 use residuum_bus::{EndpointName, Publisher};
-use residuum_inference::{ImageData, MessageSender};
+use residuum_inference::{ImageData, MessageAttachment, MessageSender};
+use residuum_workspace::inbox::attachment::FinalizedAttachment;
 
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
@@ -337,17 +338,15 @@ async fn dispatch_message(
     // Build content with attachment metadata and collect inline images
     let mut content = text;
     let mut images: Vec<ImageData> = Vec::new();
+    let mut attachments: Vec<MessageAttachment> = Vec::new();
 
-    process_attachments(
-        bot,
-        msg,
-        &mut content,
-        &mut images,
-        ctx.inbox_dir,
-        from,
-        ctx.tz,
-    )
-    .await;
+    for finalized in process_attachments(bot, msg, &mut content, ctx.inbox_dir, from, ctx.tz).await
+    {
+        if let Some(img) = finalized.image {
+            images.push(img);
+        }
+        attachments.push(finalized.attachment);
+    }
 
     // Skip empty messages (no text, no attachments processed)
     if content.is_empty() {
@@ -382,6 +381,7 @@ async fn dispatch_message(
         origin,
         timestamp: residuum_core::time::now_local(ctx.tz),
         images,
+        attachments,
         context,
     };
 
@@ -633,85 +633,55 @@ fn video_as_meta(video: &Video) -> AttachmentMeta<'_> {
     }
 }
 
-/// Extract and process all attachment types from a Telegram message.
+/// Extract and process all attachment types from a Telegram message, one
+/// result per attachment that was saved.
 async fn process_attachments(
     bot: &Bot,
     msg: &teloxide_core::types::Message,
     content: &mut String,
-    images: &mut Vec<ImageData>,
     inbox_dir: &Path,
     from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
-) {
+) -> Vec<FinalizedAttachment> {
+    let mut metas: Vec<AttachmentMeta<'_>> = Vec::new();
     if let Some(doc) = msg.document() {
-        handle_attachment(bot, content, images, &doc_as_meta(doc), inbox_dir, from, tz).await;
+        metas.push(doc_as_meta(doc));
     }
-
     if let Some(photos) = msg.photo()
         && let Some(photo) = photos.last()
     {
-        handle_attachment(
-            bot,
-            content,
-            images,
-            &photo_as_meta(photo),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
+        metas.push(photo_as_meta(photo));
     }
-
     if let Some(audio) = msg.audio() {
-        handle_attachment(
-            bot,
-            content,
-            images,
-            &audio_as_meta(audio),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
+        metas.push(audio_as_meta(audio));
     }
-
     if let Some(voice) = msg.voice() {
-        handle_attachment(
-            bot,
-            content,
-            images,
-            &voice_as_meta(voice),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
+        metas.push(voice_as_meta(voice));
+    }
+    if let Some(video) = msg.video() {
+        metas.push(video_as_meta(video));
     }
 
-    if let Some(video) = msg.video() {
-        handle_attachment(
-            bot,
-            content,
-            images,
-            &video_as_meta(video),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
+    let mut finalized = Vec::new();
+    for meta in &metas {
+        if let Some(saved) = handle_attachment(bot, content, meta, inbox_dir, from, tz).await {
+            finalized.push(saved);
+        }
     }
+    finalized
 }
 
-/// Download a Telegram file and append attachment metadata to the content string.
+/// Download a Telegram file, append attachment metadata to the content string,
+/// and return the saved attachment. `None` when the file could not be saved;
+/// the failure is already in the content.
 async fn handle_attachment(
     bot: &Bot,
     content: &mut String,
-    images: &mut Vec<ImageData>,
     meta: &AttachmentMeta<'_>,
     inbox_dir: &Path,
     from: &teloxide_core::types::User,
     tz: chrono_tz::Tz,
-) {
+) -> Option<FinalizedAttachment> {
     use residuum_workspace::inbox::attachment::{
         AttachmentInfo, AttachmentKind, SavedAttachment, format_failed_attachment_line,
         reserve_attachment_item,
@@ -740,7 +710,7 @@ async fn handle_attachment(
                 let line = format_failed_attachment_line(&info, &reason);
                 content.push('\n');
                 content.push_str(&line);
-                return;
+                return None;
             }
         };
 
@@ -764,9 +734,7 @@ async fn handle_attachment(
     match download_result {
         Ok(saved) => {
             let author = build_sender_name(from);
-            if let Some(img) = item.finalize(&saved, &info, content, &author).await {
-                images.push(img);
-            }
+            Some(item.finalize(&saved, &info, content, &author).await)
         }
         Err(reason) => {
             item.discard().await;
@@ -778,6 +746,7 @@ async fn handle_attachment(
             let line = format_failed_attachment_line(&info, &reason);
             content.push('\n');
             content.push_str(&line);
+            None
         }
     }
 }

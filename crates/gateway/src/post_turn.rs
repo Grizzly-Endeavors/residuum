@@ -573,6 +573,7 @@ fn build_correction_event(
         },
         timestamp,
         images: vec![],
+        attachments: Vec::new(),
         context: None,
     }
 }

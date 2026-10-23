@@ -16,9 +16,20 @@ use base64::Engine;
 use chrono::NaiveDateTime;
 use tokio::io::AsyncWriteExt;
 
-use residuum_inference::ImageData;
+use residuum_bus::attachment::detect_mime_type;
+use residuum_inference::{ImageData, MessageAttachment};
 
 use super::{ClaimedItem, dedupe_filename, sanitize_attachment_filename};
+
+/// The result of finalizing an attachment.
+#[derive(Debug)]
+pub struct FinalizedAttachment {
+    /// The file encoded for inline delivery, when it is a supported image within
+    /// the inline size limit.
+    pub image: Option<ImageData>,
+    /// The file as a message records it: its companion item, name, size and path.
+    pub attachment: MessageAttachment,
+}
 
 /// Images larger than 20 MB are saved but not sent inline to the model.
 pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;
@@ -191,6 +202,35 @@ impl AttachmentItem {
         })
     }
 
+    /// Copy the file at `source` into the item's directory, named as [`Self::save_bytes`]
+    /// names it. `source` is left in place.
+    ///
+    /// # Errors
+    /// Returns an error if the directory cannot be created or the copy fails.
+    pub async fn save_file(
+        &self,
+        info: &AttachmentInfo,
+        source: &Path,
+    ) -> Result<SavedAttachment, String> {
+        let (file_name, local_path) =
+            unique_attachment_path(self.claim.attachments_dir(), &info.filename).await?;
+
+        let copied = tokio::fs::copy(source, &local_path).await.map_err(|e| {
+            format!(
+                "failed to copy attachment '{}' from {} to {}: {e}",
+                info.filename,
+                source.display(),
+                local_path.display(),
+            )
+        })?;
+
+        Ok(SavedAttachment {
+            local_path,
+            file_name,
+            size: u32::try_from(copied).unwrap_or(u32::MAX),
+        })
+    }
+
     /// Download `url` into the item's directory, named as [`Self::save_bytes`] names it.
     ///
     /// There is no size cap: the file already exists on the sending platform,
@@ -250,15 +290,16 @@ impl AttachmentItem {
     /// it inline when it is a supported image within the size limit, and save the
     /// companion item that records it. Consumes the item.
     ///
-    /// `author` is the sender named in the item body. Returns an `ImageData` if
-    /// the attachment is a supported image within the inline size limit.
+    /// `author` is the sender named in the item body. The returned
+    /// [`FinalizedAttachment`] carries the inline image, if any, and the
+    /// [`MessageAttachment`] the message records for the file.
     pub async fn finalize(
         self,
         saved: &SavedAttachment,
         info: &AttachmentInfo,
         content: &mut String,
         author: &str,
-    ) -> Option<ImageData> {
+    ) -> FinalizedAttachment {
         content.push('\n');
         content.push_str(&format_attachment_line(saved, info));
 
@@ -289,9 +330,26 @@ impl AttachmentItem {
             _ => None,
         };
 
+        let attachment = MessageAttachment {
+            item_id: self.claim.id().to_string(),
+            filename: saved.file_name.clone(),
+            size: u64::from(saved.size),
+            content_type: info
+                .content_type
+                .clone()
+                .unwrap_or_else(|| detect_mime_type(&saved.local_path)),
+            path: self
+                .claim
+                .recorded_attachment_path(&saved.file_name)
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/"),
+        };
+
         self.file_companion_item(saved, info, author).await;
 
-        image
+        FinalizedAttachment { image, attachment }
     }
 
     /// Save the companion inbox item that records the saved file at its path in
@@ -811,8 +869,11 @@ mod tests {
         let info = pdf_info();
         let (item, saved) = reserve_and_save(dir.path(), &info, b"pdf bytes").await;
         let mut content = String::new();
-        let image = item.finalize(&saved, &info, &mut content, "author").await;
-        assert!(image.is_none(), "pdf should not be encoded inline");
+        let finalized = item.finalize(&saved, &info, &mut content, "author").await;
+        assert!(
+            finalized.image.is_none(),
+            "pdf should not be encoded inline"
+        );
 
         let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
         let items = crate::inbox::list_items(&inbox_dir).await.unwrap();
@@ -991,10 +1052,10 @@ mod tests {
         let result = item.finalize(&saved, &info, &mut content, "author").await;
 
         assert!(
-            result.is_some(),
+            result.image.is_some(),
             "supported image within size limit should return ImageData"
         );
-        let img = result.unwrap();
+        let img = result.image.unwrap();
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&img.data)
             .unwrap();
@@ -1025,7 +1086,7 @@ mod tests {
         let result = item.finalize(&saved, &info, &mut content, "author").await;
 
         assert!(
-            result.is_none(),
+            result.image.is_none(),
             "image exceeding inline size limit should not be encoded"
         );
     }
@@ -1044,8 +1105,101 @@ mod tests {
         let result = item.finalize(&saved, &info, &mut content, "author").await;
 
         assert!(
-            result.is_none(),
+            result.image.is_none(),
             "non-image content type should not be encoded"
         );
+    }
+
+    #[tokio::test]
+    async fn save_file_copies_the_source_and_records_the_saved_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("report.txt");
+        tokio::fs::write(&source, b"report body").await.unwrap();
+        let info = AttachmentInfo {
+            filename: "report.txt".to_string(),
+            size: 0,
+            content_type: Some("text/plain".to_string()),
+        };
+        let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let item = reserve_attachment_item(
+            &inbox_dir,
+            &info,
+            "Chat",
+            AttachmentKind::Attachment,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        let saved = item.save_file(&info, &source).await.unwrap();
+
+        assert_eq!(saved.size(), 11, "size should be the copied byte count");
+        assert_eq!(
+            saved.local_path(),
+            item.claim.attachments_dir().join("report.txt"),
+            "the copy should sit in the item's attachment directory"
+        );
+        assert_eq!(
+            tokio::fs::read(saved.local_path()).await.unwrap(),
+            b"report body",
+            "the copy should hold the source's bytes"
+        );
+        assert!(source.is_file(), "the source should be left in place");
+    }
+
+    #[tokio::test]
+    async fn finalize_returns_the_message_attachment() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = AttachmentInfo {
+            filename: "photo.jpg".to_string(),
+            size: 0,
+            content_type: Some("image/jpeg".to_string()),
+        };
+        let (item, saved) = reserve_and_save(dir.path(), &info, b"fake image bytes").await;
+        let item_id = item.claim.id().to_string();
+        let mut content = String::new();
+
+        let finalized = item.finalize(&saved, &info, &mut content, "author").await;
+
+        let attachment = finalized.attachment;
+        assert_eq!(
+            attachment.item_id, item_id,
+            "item id should be the claim id"
+        );
+        assert_eq!(attachment.filename, "photo.jpg");
+        assert_eq!(attachment.size, 16, "size should be the saved byte count");
+        assert_eq!(attachment.content_type, "image/jpeg");
+        assert_eq!(
+            attachment.path,
+            format!("inbox/agent/attachments/{item_id}/photo.jpg"),
+            "path should be workspace-relative"
+        );
+        assert!(
+            finalized.image.is_some(),
+            "a supported image within the limit should be inlined"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_falls_back_to_detected_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = AttachmentInfo {
+            filename: "notes.md".to_string(),
+            size: 0,
+            content_type: None,
+        };
+        let (item, saved) = reserve_and_save(dir.path(), &info, b"# notes").await;
+        let mut content = String::new();
+
+        let finalized = item.finalize(&saved, &info, &mut content, "author").await;
+
+        assert_eq!(
+            finalized.attachment.content_type,
+            residuum_bus::attachment::detect_mime_type(&saved.local_path),
+            "an unknown content type should be detected from the saved file"
+        );
+        assert!(finalized.image.is_none(), "a markdown file is not inlined");
     }
 }
