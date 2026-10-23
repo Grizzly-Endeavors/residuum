@@ -257,7 +257,15 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details?: string, } | { "type": "pong" } | { "type": "turn_snapshot", 
+details?: string, } | { "type": "message_refused",
+/**
+ * The refused message's id.
+ */
+id: string,
+/**
+ * Plain-language reason, with what to do next.
+ */
+message: string, } | { "type": "pong" } | { "type": "turn_snapshot", 
 /**
  * The turn, or `null` when none is running.
  */

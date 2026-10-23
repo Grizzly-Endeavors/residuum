@@ -258,11 +258,7 @@ async fn handle_client_message(
                 Ok(attached) => attached,
                 Err(message) => {
                     local_tx
-                        .send(ServerMessage::Error {
-                            reply_to: Some(id),
-                            message,
-                            details: None,
-                        })
+                        .send(ServerMessage::MessageRefused { id, message })
                         .ok();
                     return true;
                 }
@@ -290,10 +286,9 @@ async fn handle_client_message(
             {
                 tracing::warn!(error = %e, "failed to publish message to bus");
                 local_tx
-                    .send(ServerMessage::Error {
-                        reply_to: Some(id),
+                    .send(ServerMessage::MessageRefused {
+                        id,
                         message: "Your message didn't reach the agent. Send it again.".to_string(),
-                        details: None,
                     })
                     .ok();
                 return false;
@@ -1292,7 +1287,7 @@ mod tests {
         assert!(
             matches!(
                 &reply,
-                ServerMessage::Error { reply_to: Some(id), message, details: None }
+                ServerMessage::MessageRefused { id, message }
                     if id == "chat-2" && message == UPLOAD_UNAVAILABLE_MESSAGE
             ),
             "expected the unavailable-file refusal, got {reply:?}"
@@ -1347,7 +1342,7 @@ mod tests {
         assert!(
             matches!(
                 &reply,
-                ServerMessage::Error { reply_to: Some(id), message, .. }
+                ServerMessage::MessageRefused { id, message }
                     if id == "chat-3"
                         && message == "Couldn't attach second.txt. Try sending it again."
             ),

@@ -781,6 +781,17 @@ pub enum ServerMessage {
         #[ts(optional)]
         details: Option<String>,
     },
+    /// A `send_message` was refused before it reached the agent: an attached
+    /// upload is gone or couldn't be saved, or the message couldn't be handed
+    /// to the agent. Nothing of it was delivered, so the client takes its copy
+    /// of the message back for the person to send again. Sent to the sending
+    /// connection only; a failure after delivery is an `error` instead.
+    MessageRefused {
+        /// The refused message's id.
+        id: String,
+        /// Plain-language reason, with what to do next.
+        message: String,
+    },
     /// Keepalive pong.
     Pong,
     /// The main agent's turn in flight as it has run so far, answering
@@ -1514,6 +1525,24 @@ mod tests {
         assert!(
             json.contains("\"message\":\"something failed\""),
             "should have message field"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_message_refused() {
+        let msg = ServerMessage::MessageRefused {
+            id: "id-1".to_string(),
+            message: "An attached file isn't available anymore.".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "message_refused",
+                "id": "id-1",
+                "message": "An attached file isn't available anymore.",
+            }),
+            "message_refused should carry the send's id and the reason"
         );
     }
 
