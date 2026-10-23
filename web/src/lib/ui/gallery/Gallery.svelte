@@ -125,7 +125,7 @@
   let replacingKey = $state("sk-live-");
   let settingsOpen = $state(false);
   let jobsOpen = $state(true);
-  let inboxTab = $state<"inbox" | "archived" | "later">("inbox");
+  let sessionsTab = $state<"running" | "finished" | "scheduled">("running");
   let showDismissible = $state(true);
 
   // Back closes the overlays opened here, without the router reading this
@@ -532,19 +532,19 @@
         </div>
         <div class="gallery-surface">
           <Tabs
-            label="Inbox"
-            bind:selected={inboxTab}
+            label="Sessions"
+            bind:selected={sessionsTab}
             tabs={[
-              { value: "inbox", label: "Inbox", count: 3 },
-              { value: "archived", label: "Archived" },
-              { value: "later", label: "Later", disabled: true },
+              { value: "running", label: "Running", count: 3 },
+              { value: "finished", label: "Finished" },
+              { value: "scheduled", label: "Scheduled", disabled: true },
             ]}
           >
             {#snippet children(tab)}
-              {#if tab === "inbox"}
-                <p class="gallery-note">Three things need you.</p>
+              {#if tab === "running"}
+                <p class="gallery-note">Three sessions are running.</p>
               {:else}
-                <EmptyState>Nothing archived yet.</EmptyState>
+                <EmptyState>Nothing finished yet.</EmptyState>
               {/if}
             {/snippet}
           </Tabs>
@@ -563,9 +563,9 @@
             {/snippet}
           </EmptyState>
           <EmptyState variant="block" icon="inbox" title="You're all caught up">
-            Agents put things here that need you.
+            Mail from your agents lands here.
             {#snippet actions()}
-              <Button variant="secondary" icon="chat">Open a chat</Button>
+              <Button variant="secondary" icon="edit">New message</Button>
             {/snippet}
           </EmptyState>
         </div>
