@@ -7,10 +7,13 @@ const ARTIFACT_HEADER = "x-residuum-artifact";
 
 /**
  * An item's id, as the backend makes it: the day and the title's words, with
- * `_2`, `_3` and so on when that day already has an item of the same title.
+ * `_2`, `_3` and so on when that day already has an item of the same title in
+ * any of `states`' inboxes (a message to several agents takes one id for them all).
  */
-function inboxItemId(state: MockState, title: string): string {
-  const day = state.env.clock.iso().slice(0, 10).replaceAll("-", "");
+export function agentInboxItemId(states: readonly MockState[], title: string): string {
+  const [first] = states;
+  if (first === undefined) throw new Error("an item id needs the inbox it goes in");
+  const day = first.env.clock.iso().slice(0, 10).replaceAll("-", "");
   const slug = title
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
@@ -20,7 +23,9 @@ function inboxItemId(state: MockState, title: string): string {
     .replace(/_+$/, "");
   const stem = slug === "" ? day : `${day}_${slug}`;
   let id = stem;
-  for (let suffix = 2; state.agentInbox.some((item) => item.id === id); suffix++) {
+  const taken = (candidate: string): boolean =>
+    states.some((each) => each.agentInbox.some((item) => item.id === candidate));
+  for (let suffix = 2; taken(id); suffix++) {
     id = `${stem}_${String(suffix)}`;
   }
   return id;
@@ -57,7 +62,7 @@ async function addAgentInboxItem({ req, res, state }: RouteContext): Promise<voi
   }
   const given = stringField(body, "title");
   const title = given !== undefined && given.trim() !== "" ? given : (content.split("\n")[0] ?? "");
-  const id = inboxItemId(state, title);
+  const id = agentInboxItemId([state], title);
   state.agentInbox.push({
     id,
     title,

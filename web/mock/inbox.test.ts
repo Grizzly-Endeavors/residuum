@@ -208,16 +208,19 @@ describe("inbox routes over the whole mock", () => {
   const at = (agent: string, path: string): string =>
     `${mock.baseUrl}/api/agents/${agent}/inbox${path}`;
 
+  /** The ids of the sample items in a listing, leaving out the scenario's mail threads. */
+  const sampleIds = (body: unknown): string[] =>
+    (body as UserInboxItem[]).map((item) => item.id).filter((id) => id.startsWith("mock_"));
+
   it("keeps every agent's inbox its own", async () => {
     await fetchJson(at("atlas", "/mock_1/archive"), { method: "POST" });
-    const atlas = (await fetchJson(at("atlas", ""))).body as UserInboxItem[];
-    const scout = (await fetchJson(at("scout", ""))).body as UserInboxItem[];
-    expect(atlas.map((item) => item.id)).toEqual(["mock_2"]);
-    expect(scout.map((item) => item.id)).toEqual(["mock_1", "mock_2"]);
-    const archive = (await fetchJson(at("atlas", "/archive"))).body as UserInboxItem[];
-    expect(archive.map((item) => item.id)).toEqual(["mock_1", "mock_archived_1"]);
-    const scoutArchive = (await fetchJson(at("scout", "/archive"))).body as UserInboxItem[];
-    expect(scoutArchive.map((item) => item.id)).toEqual(["mock_archived_1"]);
+    expect(sampleIds((await fetchJson(at("atlas", ""))).body)).toEqual(["mock_2"]);
+    expect(sampleIds((await fetchJson(at("scout", ""))).body)).toEqual(["mock_1", "mock_2"]);
+    expect(sampleIds((await fetchJson(at("atlas", "/archive"))).body)).toEqual([
+      "mock_1",
+      "mock_archived_1",
+    ]);
+    expect(sampleIds((await fetchJson(at("scout", "/archive"))).body)).toEqual(["mock_archived_1"]);
   });
 
   it.each(["drifter", "brittle"])(
@@ -237,7 +240,10 @@ describe("inbox routes over the whole mock", () => {
       status: 200,
       body: null,
     });
-    expect(((await fetchJson(at("atlas", "/archive"))).body as unknown[]).length).toBe(2);
+    expect(sampleIds((await fetchJson(at("atlas", "/archive"))).body)).toEqual([
+      "mock_1",
+      "mock_archived_1",
+    ]);
     expect(await fetchJson(at("atlas", "/mock_1/restore"), { method: "POST" })).toEqual({
       status: 200,
       body: null,

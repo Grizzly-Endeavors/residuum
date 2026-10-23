@@ -20,6 +20,7 @@
 // touches the browser: the router applies what this module reads and formats.
 
 import { isAgentSlug } from "./agent-name";
+import type { MailFolder } from "./hub-types";
 import {
   ALL_SCOPE,
   defaultSection,
@@ -33,8 +34,7 @@ import {
 
 export type AgentPlaceKind = "chat" | "activity" | "schedule" | "files";
 
-/** The Inbox's folders: what arrived, what the user sent, and what was set aside. */
-export type MailFolder = "inbox" | "sent" | "archived";
+export type { MailFolder };
 
 /** A New message that is open: the agents it is addressed to so far. */
 export interface ComposeDraft {

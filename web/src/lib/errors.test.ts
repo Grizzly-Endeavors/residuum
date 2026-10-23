@@ -37,6 +37,15 @@ describe("userErrorReason", () => {
     }
   });
 
+  it("names the upload limit on a 413, whatever the body says", () => {
+    for (const body of ["", "<html><body>413 Request Entity Too Large</body></html>"]) {
+      const err = new ApiError(413, "Payload Too Large", body);
+      expect(userErrorReason(err, { action: "Couldn't upload." })).toBe(
+        "That file is larger than the 50 MB upload limit.",
+      );
+    }
+  });
+
   it("uses the caller's serverFault override on a 5xx, else the generic server-fault message", () => {
     const err = new ApiError(500, "Internal Server Error", "stack trace garbage");
     expect(userErrorReason(err, { action: "Couldn't load." })).toBe(
