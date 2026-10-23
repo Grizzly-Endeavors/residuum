@@ -40,6 +40,9 @@ export type SecretSource =
   | { readonly kind: "env"; readonly variable: string }
   | { readonly kind: "none" };
 
+/** Where an attachment chip's file stands: usable, still being sent or loaded, or failed. */
+export type AttachmentState = "ready" | "pending" | "failed";
+
 /** An agent's state as a status dot draws it. */
 export type StatusDotState = AgentDisplayState;
 
