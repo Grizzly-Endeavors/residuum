@@ -161,7 +161,7 @@ An inbound A2A message's parts become the session's kickoff content:
 
 - **Text parts** become the message content, concatenated in order.
 - **Image raw parts** (`image/jpeg`, `image/png`, `image/gif`, `image/webp`, within the existing inline size limit) become inline images the model sees directly, the same as a pasted image on any other interface.
-- **Other raw parts** are saved to the agent inbox and referenced in the content by path, the same as an interface attachment.
+- **Other raw parts** are saved to the agent inbox and referenced in the content by path, the same as an interface attachment: the file goes into its companion inbox item's directory, `inbox/agent/attachments/<item id>/`.
 - **URL parts** naming an `http(s)` resource are downloaded and handled the same way as a raw part; any other scheme is reported as a failed attachment.
 - **Data parts** (arbitrary JSON) are pretty-printed inline in the content.
 

@@ -6,10 +6,11 @@ The inbox is a capture system for items the agent or background tasks want to sa
 |---|---|---|
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
-| Populated by | Notification router (`inbox` channel target) for `scheduled` and webhook-triggered `external` results, the WS `/inbox` command, `POST /api/agents/{name}/agent-inbox` | `user_inbox_add` tool |
+| Attachments path | `inbox/agent/attachments/{item id}/` | `inbox/user/attachments/{item id}/` |
+| Populated by | Notification router (`inbox` channel target) for `scheduled` and webhook-triggered `external` results, the WS `/inbox` command, `POST /api/agents/{name}/agent-inbox`, and the companion item of each file a Discord, Telegram, Teams or A2A message carries | `user_inbox_add` tool |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore` | *(none for the agent)* |
 | Consumed by | The agent, via the tools above | The user, via the web UI/HTTP API |
-| Attachments | Populated only when a chat attachment is saved to the agent inbox as a companion item; not attachable via `inbox_list`/`inbox_read`/`inbox_archive`/`inbox_restore` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/agents/{name}/inbox/{id}/attachments/{index}` |
+| Attachments | Populated by a chat or A2A attachment's companion item, which records the file under its own directory; not attachable via `inbox_list`/`inbox_read`/`inbox_archive`/`inbox_restore` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/agents/{name}/inbox/{id}/attachments/{index}` |
 
 The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` skill) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
 
