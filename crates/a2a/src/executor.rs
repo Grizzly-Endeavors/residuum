@@ -623,11 +623,10 @@ async fn append_raw_part(
         });
         return;
     }
-    match attachment::save_attachment_bytes(&info, bytes, agent_inbox_dir).await {
+    let item = attachment::reserve_attachment_item(agent_inbox_dir, &info, "A2A", tz).await;
+    match attachment::save_attachment_bytes(&info, bytes, item.attachments_dir()).await {
         Ok(saved) => {
-            if let Some(image) =
-                finalize_and_append(&saved, &info, content, agent_inbox_dir, tz).await
-            {
+            if let Some(image) = finalize_and_append(&saved, &info, content, item).await {
                 images.push(image);
             }
         }
@@ -659,11 +658,10 @@ async fn append_url_part(
         append_failed_attachment(content, &info, "only http(s) urls are supported");
         return;
     }
-    match attachment::download_attachment(&info, url, agent_inbox_dir).await {
+    let item = attachment::reserve_attachment_item(agent_inbox_dir, &info, "A2A", tz).await;
+    match attachment::download_attachment(&info, url, item.attachments_dir()).await {
         Ok(saved) => {
-            if let Some(image) =
-                finalize_and_append(&saved, &info, content, agent_inbox_dir, tz).await
-            {
+            if let Some(image) = finalize_and_append(&saved, &info, content, item).await {
                 images.push(image);
             }
         }
@@ -675,19 +673,9 @@ async fn finalize_and_append(
     saved: &attachment::SavedAttachment,
     info: &AttachmentInfo,
     content: &mut String,
-    agent_inbox_dir: &Path,
-    tz: chrono_tz::Tz,
+    item: attachment::AttachmentItem,
 ) -> Option<ImageData> {
-    attachment::finalize_attachment(
-        saved,
-        info,
-        content,
-        "a2a caller",
-        agent_inbox_dir,
-        tz,
-        "A2A",
-    )
-    .await
+    attachment::finalize_attachment(saved, info, content, "a2a caller", item).await
 }
 
 fn append_failed_attachment(content: &mut String, info: &AttachmentInfo, reason: &str) {

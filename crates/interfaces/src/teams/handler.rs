@@ -9,7 +9,8 @@ use axum::http::{HeaderMap, StatusCode, header};
 use residuum_bus::origin::{ConversationContext, MessageOrigin};
 use residuum_inference::{ImageData, MessageSender};
 use residuum_workspace::inbox::attachment::{
-    AttachmentInfo, finalize_attachment, format_failed_attachment_line, save_attachment_bytes,
+    AttachmentInfo, finalize_attachment, format_failed_attachment_line, reserve_attachment_item,
+    save_attachment_bytes,
 };
 
 use super::TeamsRuntime;
@@ -469,22 +470,15 @@ async fn collect_attachments(
                 .map_or(0, |b| u32::try_from(b.len()).unwrap_or(u32::MAX)),
             content_type,
         };
+        let item = reserve_attachment_item(&rt.inbox_dir, &info, "Teams", rt.tz).await;
         let saved = match bytes {
-            Ok(bytes) => save_attachment_bytes(&info, &bytes, &rt.inbox_dir).await,
+            Ok(bytes) => save_attachment_bytes(&info, &bytes, item.attachments_dir()).await,
             Err(e) => Err(e),
         };
         match saved {
             Ok(saved) => {
-                if let Some(image) = finalize_attachment(
-                    &saved,
-                    &info,
-                    content,
-                    sender_name,
-                    &rt.inbox_dir,
-                    rt.tz,
-                    "Teams",
-                )
-                .await
+                if let Some(image) =
+                    finalize_attachment(&saved, &info, content, sender_name, item).await
                 {
                     images.push(image);
                 }

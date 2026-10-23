@@ -714,6 +714,7 @@ async fn handle_attachment(
 ) {
     use residuum_workspace::inbox::attachment::{
         AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
+        reserve_attachment_item, unique_attachment_path,
     };
     use teloxide_core::net::Download;
 
@@ -725,6 +726,8 @@ async fn handle_attachment(
         content_type: meta.content_type.clone(),
     };
 
+    let item = reserve_attachment_item(inbox_dir, &info, "Telegram", tz).await;
+
     // Two-step Telegram download: get_file → download_file
     let download_result: Result<SavedAttachment, String> = async {
         let file = bot
@@ -732,9 +735,7 @@ async fn handle_attachment(
             .await
             .map_err(|e| format!("failed to get file info for '{filename}': {e}"))?;
 
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let saved_name = format!("{timestamp}_{filename}");
-        let local_path = inbox_dir.join(&saved_name);
+        let local_path = unique_attachment_path(item.attachments_dir(), filename).await?;
 
         let mut dst = tokio::fs::File::create(&local_path)
             .await
@@ -757,10 +758,7 @@ async fn handle_attachment(
     match download_result {
         Ok(saved) => {
             let author = build_sender_name(from);
-            if let Some(img) =
-                finalize_attachment(&saved, &info, content, &author, inbox_dir, tz, "Telegram")
-                    .await
-            {
+            if let Some(img) = finalize_attachment(&saved, &info, content, &author, item).await {
                 images.push(img);
             }
         }

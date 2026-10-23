@@ -25,6 +25,7 @@ use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin}
 use residuum_inference::{ImageData, MessageSender};
 use residuum_workspace::inbox::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
+    reserve_attachment_item,
 };
 
 use super::DiscordState;
@@ -342,18 +343,11 @@ async fn process_discord_attachments(
             content_type: attachment.content_type.clone(),
         };
 
-        match download_attachment(&info, &attachment.url, inbox_dir).await {
+        let item = reserve_attachment_item(inbox_dir, &info, "Discord", tz).await;
+        match download_attachment(&info, &attachment.url, item.attachments_dir()).await {
             Ok(saved) => {
-                if let Some(img) = finalize_attachment(
-                    &saved,
-                    &info,
-                    &mut content,
-                    author_name,
-                    inbox_dir,
-                    tz,
-                    "Discord",
-                )
-                .await
+                if let Some(img) =
+                    finalize_attachment(&saved, &info, &mut content, author_name, item).await
                 {
                     images.push(img);
                 }

@@ -11,13 +11,22 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use residuum_bus::attachment::FileAttachment;
+use residuum_config::WorkspaceLayout;
 
 pub mod attachment;
 
 /// Workspace-root-relative directory that user inbox attachments are copied into,
-/// one subdirectory per item ID. Mirrors `WorkspaceLayout::user_inbox_attachments_dir`
-/// as a string literal because this module doesn't depend on `config::WorkspaceLayout`.
-const USER_INBOX_ATTACHMENTS_REL: &str = "inbox/user/attachments";
+/// one subdirectory per item ID. Items record their attachments relative to the
+/// workspace root, so this is taken from the layout rooted at the empty path.
+fn user_inbox_attachments_rel() -> PathBuf {
+    WorkspaceLayout::new(PathBuf::new()).user_inbox_attachments_dir()
+}
+
+/// Workspace-root-relative directory that agent inbox attachments are written into,
+/// one subdirectory per item ID. See [`user_inbox_attachments_rel`].
+fn agent_inbox_attachments_rel() -> PathBuf {
+    WorkspaceLayout::new(PathBuf::new()).agent_inbox_attachments_dir()
+}
 
 /// A single inbox item stored as a JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,11 +332,7 @@ pub async fn copy_attachments(
     for source in source_paths {
         match copy_one_attachment(source, &item_dir, &mut used_names).await {
             Ok(unique_name) => {
-                recorded.push(
-                    PathBuf::from(USER_INBOX_ATTACHMENTS_REL)
-                        .join(item_id)
-                        .join(unique_name),
-                );
+                recorded.push(user_inbox_attachments_rel().join(item_id).join(unique_name));
             }
             Err(e) => {
                 tracing::warn!(
@@ -542,10 +547,9 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
 /// Move an inbox item to the inbox archive directory (`archive/inbox/`).
 ///
 /// If the item has an `attachments/<item_id>/` subdirectory sitting alongside its
-/// JSON file — which only the user inbox ever populates — that directory moves
-/// into the archive alongside it, so an archived item's attachments keep serving.
-/// This is a no-op for items with no such directory (every agent-inbox item, and
-/// any user-inbox item with no attachments).
+/// JSON file, that directory moves into the archive alongside it, so an archived
+/// item's attachments keep serving. This is a no-op for items with no such
+/// directory (an agent-inbox item or user-inbox item without attachments).
 ///
 /// The attachment directory is moved before the JSON file: if the attachment move
 /// fails, the item is left untouched and archiving can be retried; if the JSON move

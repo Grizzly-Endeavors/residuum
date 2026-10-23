@@ -1,14 +1,21 @@
 //! Attachment downloading and metadata formatting for channel messages.
 //!
-//! Downloads attachments to the workspace inbox directory and formats metadata
-//! lines for the agent. Supported image formats are base64-encoded for inline
-//! delivery to the model.
+//! Each inbound attachment is filed under a companion agent-inbox item, in that
+//! item's own directory: `inbox/agent/attachments/<item id>/<filename>`. The item
+//! is reserved first ([`reserve_attachment_item`]) so its ID is known before the
+//! file is written; the file is then saved into [`AttachmentItem::attachments_dir`]
+//! and finalized into the item. Supported image formats are base64-encoded for
+//! inline delivery to the model.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
+use chrono::NaiveDateTime;
 
 use residuum_inference::ImageData;
+
+use super::{agent_inbox_attachments_rel, dedupe_filename, sanitize_attachment_filename};
 
 /// Images larger than 20 MB are saved but not sent inline to the model.
 pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;
@@ -54,12 +61,66 @@ pub struct SavedAttachment {
     pub local_path: PathBuf,
 }
 
-/// Download an attachment to the inbox directory.
+/// The companion inbox item an attachment is filed under.
 ///
-/// Files are saved as `{timestamp}_{filename}` to prevent collisions. There
-/// is no size cap here: the file already exists on the sending platform
-/// (which enforced its own upload limit, if any, when it was sent), so
-/// downloading it is just an HTTP fetch with no platform limit of its own.
+/// Reserved by [`reserve_attachment_item`] before the file is written, so the
+/// file can go into the item's own attachment directory. Nothing is written to
+/// the inbox until [`finalize_attachment`] saves the item.
+#[derive(Debug)]
+pub struct AttachmentItem {
+    inbox_dir: PathBuf,
+    /// Filename stem of the item, which also names its attachment directory.
+    id: String,
+    /// The item's JSON filename (`<id>.json`).
+    filename: String,
+    title: String,
+    source: String,
+    timestamp: NaiveDateTime,
+    attachments_dir: PathBuf,
+}
+
+impl AttachmentItem {
+    /// Directory the item's attachment file is saved into: `<inbox>/attachments/<id>/`.
+    #[must_use]
+    pub fn attachments_dir(&self) -> &Path {
+        &self.attachments_dir
+    }
+}
+
+/// Reserve the companion inbox item for an attachment arriving on `platform`.
+///
+/// Picks an item filename that is unused in `inbox_dir` and its archive, and the
+/// attachment directory the file belongs in. Nothing is written to disk here, so
+/// a download that fails leaves no trace.
+pub async fn reserve_attachment_item(
+    inbox_dir: &Path,
+    info: &AttachmentInfo,
+    platform: &str,
+    tz: chrono_tz::Tz,
+) -> AttachmentItem {
+    let timestamp = residuum_core::time::now_local(tz);
+    let title = format!("{platform} attachment: {}", info.filename);
+    let filename = crate::inbox::unique_filename(inbox_dir, &title, timestamp).await;
+    let id = filename.trim_end_matches(".json").to_string();
+    let attachments_dir = inbox_dir.join("attachments").join(&id);
+    AttachmentItem {
+        inbox_dir: inbox_dir.to_path_buf(),
+        id,
+        filename,
+        title,
+        source: platform.to_lowercase(),
+        timestamp,
+        attachments_dir,
+    }
+}
+
+/// Download an attachment into `dir`.
+///
+/// The file keeps its sanitized name, with `_2`, `_3`, ... appended when `dir`
+/// already holds a file of that name. There is no size cap here: the file already
+/// exists on the sending platform (which enforced its own upload limit, if any,
+/// when it was sent), so downloading it is just an HTTP fetch with no platform
+/// limit of its own.
 ///
 /// # Errors
 ///
@@ -67,7 +128,7 @@ pub struct SavedAttachment {
 pub async fn download_attachment(
     info: &AttachmentInfo,
     url: &str,
-    inbox_dir: &Path,
+    dir: &Path,
 ) -> Result<SavedAttachment, String> {
     let response = reqwest::get(url)
         .await
@@ -80,26 +141,24 @@ pub async fn download_attachment(
         .await
         .map_err(|e| format!("failed to read attachment body '{}': {e}", info.filename))?;
 
-    save_attachment_bytes(info, &bytes, inbox_dir).await
+    save_attachment_bytes(info, &bytes, dir).await
 }
 
-/// Save already-downloaded attachment bytes to the inbox directory.
+/// Save already-downloaded attachment bytes into `dir`.
 ///
 /// For interfaces whose files need an authenticated fetch the caller performs.
-/// Uses the same `{timestamp}_{filename}` naming as [`download_attachment`],
-/// and likewise has no size cap of its own.
+/// Names the file as [`download_attachment`] does, and likewise has no size cap
+/// of its own.
 ///
 /// # Errors
 ///
-/// Returns an error if the file write fails.
+/// Returns an error if the directory cannot be created or the file write fails.
 pub async fn save_attachment_bytes(
     info: &AttachmentInfo,
     bytes: &[u8],
-    inbox_dir: &Path,
+    dir: &Path,
 ) -> Result<SavedAttachment, String> {
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let saved_name = format!("{timestamp}_{}", info.filename);
-    let local_path = inbox_dir.join(&saved_name);
+    let local_path = unique_attachment_path(dir, &info.filename).await?;
 
     tokio::fs::write(&local_path, bytes).await.map_err(|e| {
         format!(
@@ -110,6 +169,36 @@ pub async fn save_attachment_bytes(
     })?;
 
     Ok(SavedAttachment { local_path })
+}
+
+/// Choose the path a file called `filename` is saved to in `dir`, creating `dir`
+/// if needed.
+///
+/// The name is sanitized, then `_2`, `_3`, ... is appended before the extension
+/// while `dir` already holds a file of that name.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created or read.
+pub async fn unique_attachment_path(dir: &Path, filename: &str) -> Result<PathBuf, String> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| format!("failed to create attachment dir {}: {e}", dir.display()))?;
+
+    let mut existing = HashSet::new();
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .map_err(|e| format!("failed to read attachment dir {}: {e}", dir.display()))?;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| format!("failed to read attachment dir {}: {e}", dir.display()))?
+    {
+        existing.insert(entry.file_name().to_string_lossy().into_owned());
+    }
+
+    let name = dedupe_filename(&sanitize_attachment_filename(filename), &existing);
+    Ok(dir.join(name))
 }
 
 /// Format a metadata line for a successfully saved attachment.
@@ -132,11 +221,12 @@ pub fn format_failed_attachment_line(info: &AttachmentInfo, reason: &str) -> Str
     )
 }
 
-/// Finalize a downloaded attachment: append metadata to content, optionally encode inline,
-/// and create a companion inbox item.
+/// Finalize a saved attachment: append metadata to content, optionally encode inline,
+/// and save its companion inbox item.
 ///
-/// `platform` is the display name of the interface (e.g. `"Discord"`, `"Telegram"`); the inbox
-/// item title is `"{platform} attachment: {filename}"` and the source field is its lowercase form.
+/// `saved` must be a file saved into `item.attachments_dir()`; the companion item
+/// records it at its workspace-relative path there. `author` is the sender named
+/// in the item body.
 ///
 /// Returns an `ImageData` if the attachment is a supported image within the inline size limit.
 pub async fn finalize_attachment(
@@ -144,9 +234,7 @@ pub async fn finalize_attachment(
     info: &AttachmentInfo,
     content: &mut String,
     author: &str,
-    inbox_dir: &Path,
-    tz: chrono_tz::Tz,
-    platform: &str,
+    item: AttachmentItem,
 ) -> Option<ImageData> {
     let line = format_attachment_line(saved, info);
     content.push('\n');
@@ -186,22 +274,20 @@ pub async fn finalize_attachment(
         );
         return image;
     };
-    let saved_name = file_name_os.to_string_lossy().to_string();
+    let file_name = file_name_os.to_string_lossy().to_string();
     let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
     let companion = crate::inbox::InboxItem {
-        title: format!("{platform} attachment: {}", info.filename),
+        title: item.title.clone(),
         body: format!(
             "From: {author}\nSize: {} bytes\nContent-Type: {content_type_str}",
             info.size,
         ),
-        source: platform.to_lowercase(),
-        timestamp: residuum_core::time::now_local(tz),
+        source: item.source.clone(),
+        timestamp: item.timestamp,
         read: false,
-        attachments: vec![PathBuf::from("inbox").join(&saved_name)],
+        attachments: vec![agent_inbox_attachments_rel().join(&item.id).join(file_name)],
     };
-    let filename =
-        crate::inbox::unique_filename(inbox_dir, &companion.title, companion.timestamp).await;
-    if let Err(e) = crate::inbox::save_item(inbox_dir, &filename, &companion).await {
+    if let Err(e) = crate::inbox::save_item(&item.inbox_dir, &item.filename, &companion).await {
         tracing::warn!(
             filename = %info.filename,
             error = %e,
@@ -215,6 +301,23 @@ pub async fn finalize_attachment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use residuum_config::WorkspaceLayout;
+
+    /// Reserve a companion item under `root`'s agent inbox and save `bytes` into it.
+    async fn reserve_and_save(
+        root: &Path,
+        info: &AttachmentInfo,
+        bytes: &[u8],
+    ) -> (AttachmentItem, SavedAttachment) {
+        let inbox_dir = WorkspaceLayout::new(root).agent_inbox_dir();
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let item = reserve_attachment_item(&inbox_dir, info, "Discord", chrono_tz::UTC).await;
+        let saved = save_attachment_bytes(info, bytes, item.attachments_dir())
+            .await
+            .unwrap();
+        (item, saved)
+    }
 
     #[test]
     fn format_attachment_line_output() {
@@ -381,36 +484,146 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_attachment_inline_image() {
+    async fn companion_item_records_attachment_path_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let info = AttachmentInfo {
+            filename: "doc.pdf".to_string(),
+            size: 9,
+            content_type: Some("application/pdf".to_string()),
+        };
+        let (item, saved) = reserve_and_save(dir.path(), &info, b"pdf bytes").await;
+        let mut content = String::new();
+        let image = finalize_attachment(&saved, &info, &mut content, "author", item).await;
+        assert!(image.is_none(), "pdf should not be encoded inline");
 
-        let image_path = dir.path().join("photo.jpg");
-        tokio::fs::write(&image_path, b"fake image bytes")
+        let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
+        let items = crate::inbox::list_items(&inbox_dir).await.unwrap();
+        assert_eq!(items.len(), 1, "one companion item should be saved");
+        let (_, companion) = &items[0];
+        assert_eq!(
+            companion.attachments.len(),
+            1,
+            "item should record its file"
+        );
+
+        let recorded = &companion.attachments[0];
+        assert!(
+            recorded.starts_with("inbox/agent/attachments"),
+            "recorded path should be workspace-relative: {}",
+            recorded.display()
+        );
+        assert_eq!(
+            dir.path().join(recorded),
+            saved.local_path,
+            "recorded path should name the saved file"
+        );
+        assert!(
+            saved.local_path.is_file(),
+            "the recorded file should exist on disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn attachments_with_same_filename_on_one_item_are_deduped() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = AttachmentInfo {
+            filename: "notes.txt".to_string(),
+            size: 3,
+            content_type: None,
+        };
+        let item_dir = dir.path().join("inbox/agent/attachments/item1");
+
+        let first = save_attachment_bytes(&info, b"one", &item_dir)
+            .await
+            .unwrap();
+        let second = save_attachment_bytes(&info, b"two", &item_dir)
             .await
             .unwrap();
 
-        let saved = SavedAttachment {
-            local_path: image_path,
+        assert_eq!(first.local_path, item_dir.join("notes.txt"));
+        assert_eq!(second.local_path, item_dir.join("notes_2.txt"));
+        assert_eq!(
+            tokio::fs::read_to_string(&first.local_path).await.unwrap(),
+            "one",
+            "the first file should be untouched"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&second.local_path).await.unwrap(),
+            "two",
+            "the second file should hold its own bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn archiving_companion_item_moves_its_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let inbox_dir = layout.agent_inbox_dir();
+        let archive_dir = layout.agent_inbox_archive_dir();
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let info = AttachmentInfo {
+            filename: "photo.png".to_string(),
+            size: 4,
+            content_type: Some("image/png".to_string()),
         };
+        let item = reserve_attachment_item(&inbox_dir, &info, "Telegram", chrono_tz::UTC).await;
+        let saved = save_attachment_bytes(&info, b"png!", item.attachments_dir())
+            .await
+            .unwrap();
+        let mut content = String::new();
+        finalize_attachment(&saved, &info, &mut content, "author", item).await;
+
+        let (id, _) = crate::inbox::list_items(&inbox_dir)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("companion item should be saved");
+        let json_name = format!("{id}.json");
+        let file_name = saved.local_path.file_name().unwrap().to_owned();
+
+        crate::inbox::archive_item(&inbox_dir, &archive_dir, &json_name)
+            .await
+            .unwrap();
+        assert!(
+            !saved.local_path.exists(),
+            "the attachment should leave the active inbox with its item"
+        );
+        let archived_file = layout
+            .agent_inbox_archive_attachments_dir()
+            .join(&id)
+            .join(&file_name);
+        assert!(
+            archived_file.is_file(),
+            "the attachment should move to the archive attachments dir"
+        );
+
+        crate::inbox::restore_item(&archive_dir, &inbox_dir, &json_name)
+            .await
+            .unwrap();
+        assert!(
+            saved.local_path.is_file(),
+            "restoring the item should move its attachment back"
+        );
+        assert!(
+            !archived_file.exists(),
+            "the archived copy should be gone after restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_inline_image() {
+        let dir = tempfile::tempdir().unwrap();
         let info = AttachmentInfo {
             filename: "photo.jpg".to_string(),
             size: 1024,
             content_type: Some("image/jpeg".to_string()),
         };
+        let (item, saved) = reserve_and_save(dir.path(), &info, b"fake image bytes").await;
         let mut content = String::new();
 
-        let result = finalize_attachment(
-            &saved,
-            &info,
-            &mut content,
-            "author",
-            &inbox_dir,
-            chrono_tz::UTC,
-            "Discord",
-        )
-        .await;
+        let result = finalize_attachment(&saved, &info, &mut content, "author", item).await;
 
         assert!(
             result.is_some(),
@@ -433,32 +646,15 @@ mod tests {
     #[tokio::test]
     async fn finalize_attachment_oversized_image_skips_inline() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
-
-        let image_path = dir.path().join("large.jpg");
-        tokio::fs::write(&image_path, b"bytes").await.unwrap();
-
-        let saved = SavedAttachment {
-            local_path: image_path,
-        };
         let info = AttachmentInfo {
             filename: "large.jpg".to_string(),
             size: MAX_IMAGE_INLINE_SIZE + 1,
             content_type: Some("image/jpeg".to_string()),
         };
+        let (item, saved) = reserve_and_save(dir.path(), &info, b"bytes").await;
         let mut content = String::new();
 
-        let result = finalize_attachment(
-            &saved,
-            &info,
-            &mut content,
-            "author",
-            &inbox_dir,
-            chrono_tz::UTC,
-            "Discord",
-        )
-        .await;
+        let result = finalize_attachment(&saved, &info, &mut content, "author", item).await;
 
         assert!(
             result.is_none(),
@@ -469,32 +665,15 @@ mod tests {
     #[tokio::test]
     async fn finalize_attachment_non_image_skips_encoding() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
-
-        let file_path = dir.path().join("doc.pdf");
-        tokio::fs::write(&file_path, b"pdf content").await.unwrap();
-
-        let saved = SavedAttachment {
-            local_path: file_path,
-        };
         let info = AttachmentInfo {
             filename: "doc.pdf".to_string(),
             size: 1024,
             content_type: Some("application/pdf".to_string()),
         };
+        let (item, saved) = reserve_and_save(dir.path(), &info, b"pdf content").await;
         let mut content = String::new();
 
-        let result = finalize_attachment(
-            &saved,
-            &info,
-            &mut content,
-            "author",
-            &inbox_dir,
-            chrono_tz::UTC,
-            "Discord",
-        )
-        .await;
+        let result = finalize_attachment(&saved, &info, &mut content, "author", item).await;
 
         assert!(
             result.is_none(),
@@ -505,29 +684,20 @@ mod tests {
     #[tokio::test]
     async fn finalize_attachment_no_path_filename_skips_inbox_item() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
-
-        let saved = SavedAttachment {
-            local_path: PathBuf::from("/"),
-        };
         let info = AttachmentInfo {
             filename: "doc.pdf".to_string(),
             size: 100,
             content_type: Some("application/pdf".to_string()),
         };
+        let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let item = reserve_attachment_item(&inbox_dir, &info, "Discord", chrono_tz::UTC).await;
+        let saved = SavedAttachment {
+            local_path: PathBuf::from("/"),
+        };
         let mut content = String::new();
 
-        let result = finalize_attachment(
-            &saved,
-            &info,
-            &mut content,
-            "author",
-            &inbox_dir,
-            chrono_tz::UTC,
-            "Discord",
-        )
-        .await;
+        let result = finalize_attachment(&saved, &info, &mut content, "author", item).await;
 
         assert!(
             result.is_none(),
