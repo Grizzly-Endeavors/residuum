@@ -289,6 +289,13 @@ async fn handle_client_message(
                 .await
             {
                 tracing::warn!(error = %e, "failed to publish message to bus");
+                local_tx
+                    .send(ServerMessage::Error {
+                        reply_to: Some(id),
+                        message: "Your message didn't reach the agent. Send it again.".to_string(),
+                        details: None,
+                    })
+                    .ok();
                 return false;
             }
             consume_uploads(state, &attached.upload_ids).await;
