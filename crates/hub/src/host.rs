@@ -377,6 +377,9 @@ impl AgentHost {
             services
                 .directory
                 .bind(Weak::clone(me) as Weak<dyn TeamDirectory>);
+            services.mailboxes.bind(
+                Weak::clone(me) as Weak<dyn residuum_workspace::inbox::mail::MailboxDirectory>
+            );
             Self {
                 me: Weak::clone(me),
                 services,

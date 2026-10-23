@@ -1057,9 +1057,9 @@ mod tests {
                 item_paths.push(path);
             }
         }
-        assert_eq!(item_paths.len(), 1, "one companion item per artifact file");
-
-        let item_path = item_paths.first().unwrap();
+        let [item_path] = item_paths.as_slice() else {
+            panic!("one companion item per artifact file: {item_paths:?}");
+        };
         let id = item_path
             .file_stem()
             .unwrap()
@@ -1073,7 +1073,10 @@ mod tests {
         let body_text = &item.body;
         assert!(body_text.contains("From: remote-agent"), "{body_text}");
         assert!(body_text.contains("Size: 5 bytes"), "{body_text}");
-        let recorded = item.attachments.first().unwrap().to_string_lossy();
+        let [recorded] = item.attachments.as_slice() else {
+            panic!("one attachment recorded: {:?}", item.attachments);
+        };
+        let recorded = recorded.to_string_lossy();
         assert!(
             recorded.ends_with(&format!("attachments/{id}/report.bin")),
             "item should record its file under its own directory: {recorded}"

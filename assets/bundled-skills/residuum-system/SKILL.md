@@ -17,7 +17,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Wiki | `read_file`, `write_file`, `edit_file` | `team/wiki/` (your role page is `team/wiki/agents/<name>.md`) | the `wiki` skill |
 | Workbench | `read_file`, `write_file`, `edit_file` | `team/workbench/` (shared by every agent) | the `workbench` skill |
 | Heartbeats | *(none — runs automatically)* | `HEARTBEAT.yml` | [heartbeats](references/heartbeats.md) |
-| Inbox | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* | [inbox](references/inbox.md) |
+| Inbox | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore`, `user_inbox_list` | `user_inbox_add` | [inbox](references/inbox.md) |
 | Scheduled Actions | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` | [scheduled-actions](references/scheduled-actions.md) |
 | Skills | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` | [skills](references/skills.md) |
 | Agent Keys | `agent_keys_list`, `agent_key_delete`, `exec` (`keys`, `store_output_as`) | `residuum agent-keys` CLI, Settings → All agents → Saved keys | [agent-keys](references/agent-keys.md) |

@@ -196,6 +196,9 @@ pub struct HubServices {
     /// The agent host, for agent tools that create or delete teammates. The
     /// host binds itself when it is built.
     pub directory: residuum_background::team::DirectoryHandle,
+    /// The agent host as every agent's mailbox, for the agents' mail-aware
+    /// inbox tools. The host binds itself when it is built.
+    pub mailboxes: residuum_workspace::inbox::mail::MailboxDirectoryHandle,
     /// Web Push: registered devices and delivery. Triggers send through it.
     pub push: Arc<PushService>,
     /// The System 1 (decision model) client every agent shares, with its
@@ -289,6 +292,7 @@ impl HubServices {
             sibling_fanout,
             team_router: residuum_background::team::TeamRouter::new_shared(directory.clone()),
             directory,
+            mailboxes: residuum_workspace::inbox::mail::MailboxDirectoryHandle::unbound(),
             pairing,
             remote_access,
             uploads,

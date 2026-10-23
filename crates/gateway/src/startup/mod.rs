@@ -376,6 +376,8 @@ struct StartupSpawnContextInputs<'a> {
     checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
     lifecycle: &'a residuum_tools::LifecycleAccess,
     model_catalog: &'a residuum_config::SharedModelCatalog,
+    /// Every agent's mailbox, for the session tools' mail-aware inbox tools.
+    mailboxes: &'a Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup, with the
@@ -407,6 +409,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         tz: inputs.tz,
         depth_cap: inputs.cfg.background.subagent_depth_cap,
         auto_mode: Some(Arc::clone(inputs.auto_mode)),
+        mailboxes: Some(Arc::clone(inputs.mailboxes)),
     });
     Arc::new(SpawnContext {
         background_config: inputs.cfg.background.clone(),
@@ -913,6 +916,8 @@ struct MainAgentInputs<'a> {
     checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
     lifecycle: &'a residuum_tools::LifecycleAccess,
     model_catalog: &'a residuum_config::SharedModelCatalog,
+    /// See `ToolRegistryDeps::mailboxes`.
+    mailboxes: &'a Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>,
     /// See `ToolsAndAgentInputs::degradations`.
     degradations: &'a mut Vec<String>,
     /// See `ToolRegistryDeps::config_reload_tracker`.
@@ -963,6 +968,7 @@ async fn build_main_agent(
             hub_dir: inputs.hub_dir,
             lifecycle: inputs.lifecycle,
             model_catalog: inputs.model_catalog,
+            mailboxes: Some(Arc::clone(inputs.mailboxes)),
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,
@@ -1000,6 +1006,9 @@ struct AgentInitInputs<'a> {
     build: residuum_core::build_info::BuildInfo,
     checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
     directory: &'a residuum_background::team::DirectoryHandle,
+    /// The hub's late-bound handle to every agent's mailbox, for the
+    /// mail-aware inbox tools of main and every session.
+    mailboxes: &'a residuum_workspace::inbox::mail::MailboxDirectoryHandle,
     identity: IdentityFiles,
     provider: Box<dyn residuum_inference::InferenceProvider>,
     options: residuum_inference::CompletionOptions,
@@ -1029,6 +1038,8 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
     // One live catalog shared by every session and every tool that checks an
     // explicit model; config reloads replace its contents in place.
     let model_catalog = inputs.cfg.model_catalog.clone().into_shared();
+    let mailboxes: Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory> =
+        Arc::new(inputs.mailboxes.clone());
     let infra = inputs.infra;
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg: inputs.cfg,
@@ -1061,6 +1072,7 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
         checkpoints: inputs.checkpoints,
         lifecycle: &lifecycle,
         model_catalog: &model_catalog,
+        mailboxes: &mailboxes,
     });
 
     let (agent, tool_injections, output_topic_override_tx) = build_main_agent(MainAgentInputs {
@@ -1089,6 +1101,7 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
         checkpoints: inputs.checkpoints,
         lifecycle: &lifecycle,
         model_catalog: &model_catalog,
+        mailboxes: &mailboxes,
         degradations: inputs.degradations,
         config_reload_tracker: &infra.config_reload_tracker,
     })
@@ -1418,6 +1431,7 @@ pub(crate) async fn initialize(
         build: shared.control.build,
         checkpoints: &checkpoints,
         directory: &shared.directory,
+        mailboxes: &shared.mailboxes,
         identity,
         provider: providers.provider,
         options: providers.options,

@@ -166,7 +166,17 @@ pub async fn send_mail(
         mail.title.clone()
     };
     let now = Utc::now();
-    let id = free_id(&mailboxes, &title, now).await;
+    let id = free_id(&mailboxes, &title, now).await?;
+
+    // Everything that can fail without writing is done before the first copy
+    // is written, so every error after that point rolls back.
+    let mut copies = mailboxes
+        .iter()
+        .map(|m| InboxRef::new(&m.agent, InboxKind::Agent, &id))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| SendMailError::Write(e.into()))?;
+    copies.sort();
+    let message = copies.first().cloned().ok_or(SendMailError::NoRecipients)?;
 
     let mut written = Vec::new();
     let result = write_copies(&mailboxes, &mail, &title, &id, now, &mut written).await;
@@ -176,13 +186,6 @@ pub async fn send_mail(
         return Err(e);
     }
 
-    let mut copies = mailboxes
-        .iter()
-        .map(|m| InboxRef::new(&m.agent, InboxKind::Agent, &id))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| SendMailError::Write(e.into()))?;
-    copies.sort();
-    let message = copies.first().cloned().ok_or(SendMailError::NoRecipients)?;
     tracing::info!(message = %message, copies = copies.len(), "mail sent");
     Ok(SentMail { message, copies })
 }
@@ -255,8 +258,13 @@ async fn roll_back(written: &[Written]) {
 
 /// The first id from `title` (`generate_filename`, then `_2`, `_3`, ...) that
 /// no recipient uses in its agent inbox or archive, as an item or an
-/// attachment directory.
-async fn free_id(mailboxes: &[Mailbox], title: &str, now: chrono::DateTime<Utc>) -> String {
+/// attachment directory. An inbox that can't be checked is an error, not a
+/// taken id: treating it as taken would retry forever.
+async fn free_id(
+    mailboxes: &[Mailbox],
+    title: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<String, SendMailError> {
     let local = mailboxes.first().map_or_else(
         || now.naive_utc(),
         |m| now.with_timezone(&m.timezone).naive_local(),
@@ -265,31 +273,38 @@ async fn free_id(mailboxes: &[Mailbox], title: &str, now: chrono::DateTime<Utc>)
     let stem = base.trim_end_matches(".json").to_string();
     let mut candidate = stem.clone();
     let mut suffix: u32 = 2;
-    while id_taken(mailboxes, &candidate).await {
+    while id_taken(mailboxes, &candidate)
+        .await
+        .map_err(SendMailError::Write)?
+    {
         candidate = format!("{stem}_{suffix}");
         suffix += 1;
     }
-    candidate
+    Ok(candidate)
 }
 
-async fn id_taken(mailboxes: &[Mailbox], id: &str) -> bool {
+async fn id_taken(mailboxes: &[Mailbox], id: &str) -> anyhow::Result<bool> {
     for mailbox in mailboxes {
         let layout = WorkspaceLayout::new(&mailbox.dir);
         for archived in [false, true] {
             let items = InboxKind::Agent.items_dir(&layout, archived);
             let attachments = InboxKind::Agent.attachments_dir(&layout, archived);
-            if exists(&items.join(format!("{id}.json"))).await
-                || exists(&attachments.join(id)).await
+            if exists(&items.join(format!("{id}.json"))).await?
+                || exists(&attachments.join(id)).await?
             {
-                return true;
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
-async fn exists(path: &Path) -> bool {
-    tokio::fs::try_exists(path).await.unwrap_or(true)
+async fn exists(path: &Path) -> anyhow::Result<bool> {
+    use anyhow::Context as _;
+
+    tokio::fs::try_exists(path)
+        .await
+        .with_context(|| format!("failed to check whether {} exists", path.display()))
 }
 
 #[cfg(test)]
@@ -352,7 +367,7 @@ mod tests {
             assert!(fx.dir(copy.agent()).join(expected).is_file());
         }
         let index = MailIndex::load(&fx.directory).await;
-        let thread = index.thread(&sent.message).unwrap();
+        let thread = index.thread_containing(&sent.message).unwrap();
         assert_eq!(thread.message_count(), 1);
         assert_eq!(thread.root().to, ["atlas", "scout"]);
         assert!(thread.has_attachments());
@@ -422,6 +437,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_uncheckable_recipient_inbox_fails_the_send_before_anything_is_written() {
+        let fx = Fixture::new(&["atlas", "scout"]);
+        tokio::fs::create_dir_all(fx.dir("scout")).await.unwrap();
+        tokio::fs::write(fx.dir("scout").join("inbox"), b"not a directory")
+            .await
+            .unwrap();
+
+        let err = send_mail(&fx.directory, mail(&["atlas", "scout"], "T", "b"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SendMailError::Write(_)), "{err:?}");
+        assert!(
+            !WorkspaceLayout::new(fx.dir("atlas"))
+                .agent_inbox_dir()
+                .exists()
+        );
+    }
+
+    #[tokio::test]
     async fn a_blank_title_comes_from_the_body() {
         let fx = Fixture::new(&["atlas"]);
         let sent = send_mail(&fx.directory, mail(&["atlas"], " ", "First line\nmore"))
@@ -444,7 +479,7 @@ mod tests {
             .await;
 
         let index = MailIndex::load(&fx.directory).await;
-        let thread = index.thread(&root).unwrap();
+        let thread = index.thread_containing(&root).unwrap();
         let reply = OutgoingMail::reply(thread, "Thanks", Vec::new(), UserMailSource::Web);
         assert_eq!(reply.to, ["atlas", "scout"]);
         assert_eq!(reply.title, "Re: Report");
@@ -452,7 +487,7 @@ mod tests {
 
         let sent = send_mail(&fx.directory, reply).await.unwrap();
         let after = MailIndex::load(&fx.directory).await;
-        let replied = after.thread(&root).unwrap();
+        let replied = after.thread_containing(&root).unwrap();
         assert_eq!(replied.message_count(), 4);
         assert_eq!(replied.latest().item_ref, sent.message);
         assert_eq!(replied.latest().from, MailSender::User);

@@ -20,10 +20,12 @@
 
 use std::path::PathBuf;
 
+mod handle;
 mod send;
 mod thread;
 mod update;
 
+pub use handle::MailboxDirectoryHandle;
 pub use send::{
     OutgoingMail, SendMailError, SentMail, UserMailSource, is_user_mail_source, reply_subject,
     send_mail,
@@ -48,7 +50,8 @@ pub struct Mailbox {
 }
 
 /// The agents whose workspaces hold mail. The hub implements it on its agent
-/// directory; tools hold it as an `Arc<dyn MailboxDirectory>`.
+/// directory; tools hold it as an `Arc<dyn MailboxDirectory>`, reaching the
+/// hub through a [`MailboxDirectoryHandle`].
 pub trait MailboxDirectory: Send + Sync {
     /// Every agent's mailbox, whatever the agent's state, sorted by agent name.
     fn mailboxes(&self) -> Vec<Mailbox>;

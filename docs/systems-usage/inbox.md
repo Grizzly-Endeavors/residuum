@@ -1,99 +1,149 @@
 # Inbox
 
-The inbox is a capture system for items the agent or background tasks want to save for later triage. There are **two separate inboxes**, each stored as individual JSON files under the workspace root — they have different paths, different tools, and different consumers.
+The inbox is the mail between the user and the agents. Every agent has two inbox folders on disk: the **agent inbox** holds what arrives for the agent (the user's messages, and the results and files the agent's background work files for later triage), and the **user inbox** holds what the agent has written to the user. The web UI shows both as one mailbox: threads of messages with Inbox, Sent and Archived folders, and the agent tools read the same files, so the agent and the user see one definition of a thread.
+
+Mail is only part of what the two folders hold. Each item records its own source, and only some sources are mail (see [What is mail](#what-is-mail)).
+
+## The Two Inboxes
 
 | | Agent inbox | User inbox |
 |---|---|---|
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
 | Attachments path | `inbox/agent/attachments/{item id}/` | `inbox/user/attachments/{item id}/` |
-| Populated by | Notification router (`inbox` channel target) for `scheduled` and webhook-triggered `external` results, the WS `/inbox` command, `POST /api/agents/{name}/agent-inbox`, and the companion item of each file a Discord, Telegram, Teams or A2A message carries or an A2A task's remote agent returns as an artifact | `user_inbox_add` tool |
-| Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore` | *(none for the agent)* |
-| Consumed by | The agent, via the tools above | The user, via the web UI/HTTP API |
-| Attachments | Populated by a chat or A2A attachment's or artifact's companion item, which records the file under its own directory; not attachable via `inbox_list`/`inbox_read`/`inbox_archive`/`inbox_restore` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/agents/{name}/inbox/{id}/attachments/{index}` |
+| Written by | The user's messages (web UI, CLI, the `/inbox` chat command), the notification router for `scheduled` and webhook-triggered `external` results, `POST /api/agents/{name}/agent-inbox`, the companion item of each file a Discord, Telegram, Teams or A2A message carries, and each file an A2A task's remote agent returns as an artifact | `user_inbox_add` |
+| Read and manage | The agent: `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore`. The user: the web UI | Every agent can list and read it (`user_inbox_list`, `inbox_read` with a ref) but never changes it. The user reads, archives, restores and replies in the web UI |
 
-The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` skill) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
+The user inbox is a delivery channel to the user. An agent (most often a background sub-agent such as `introspection`) writes findings there with `user_inbox_add`, and the user answers them in the web UI. Because the files are read straight from disk, the user can list, read, archive and restore a stopped agent's items too.
 
-Archiving is a soft delete in both inboxes, not a permanent one: an archived item's JSON file (and its attachments directory, if it has one) simply moves under `archive/inbox/`, so restoring it is just moving it back. The agent restores its own inbox items with `inbox_restore`; the user restores inbox items from the web UI Inbox's Archived tab, which calls the hub's `POST /api/hub/inbox/{agent}/{id}/restore` (see [Cross-Agent View](#cross-agent-view)); `POST /api/agents/{name}/inbox/{id}/restore` makes the same move for one agent.
+Archiving is a soft delete in both folders. An item's JSON file and its attachment directory move together under `archive/inbox/`, and restoring moves them back. The user archives and restores user-inbox items in the web UI, and the agent restores its own agent-inbox items with `inbox_restore`.
 
-The user inbox's HTTP routes (`GET /api/agents/{name}/inbox` and `.../inbox/archive`, `PUT .../inbox/{id}/read`, `POST .../inbox/{id}/archive` and `.../restore`, and `GET .../inbox/{id}/attachments/{index}`) only read and write the inbox files, so they answer for a stopped or failed agent as well as a running one (see [Hub HTTP Surface](hub-http.md#agent-routes)). `POST /api/agents/{name}/agent-inbox`, which adds to the agent inbox, needs the agent running.
+## What Is Mail
 
-The hub also serves every agent's user inbox as one list (see [Cross-Agent View](#cross-agent-view)).
+The web UI's Inbox, Sent and Archived folders show mail only:
 
-## How Items Arrive
+- **Messages the user sent an agent** are agent-inbox items whose source is `web` or `cli`. A message sent to several agents is one copy per recipient (see [Copies of one message](#copies-of-one-message)).
+- **Messages an agent sent the user** are user-inbox items. Every user-inbox item is mail.
 
-- **Agent inbox**: the notification router files every substantive `scheduled` result and every substantive webhook-triggered `external` result here. A conversation-triggered `external` result (A2A, or a non-owner Discord/Telegram/Teams chat) never reaches the inbox — its output already went back to the conversation it came from, and its observations are merged into memory as an episode — nor does an `artifact` or `spawned` session's result, both of which are relayed elsewhere (see [background-tasks.md](background-tasks.md#result-routing)). A workbench artifact can also add an item directly with `POST /api/agents/{name}/agent-inbox` (body `{ title?, body }`) — the same place the WS `/inbox` command writes to. `title` defaults to the body's first line, in full; a blank `body` is refused with `400`. The item's `source` is `artifact:<name>` when the request carries the `X-Residuum-Artifact` header the workbench SDK sends, `web` otherwise. There is no equivalent HTTP endpoint for the user inbox.
-- **User inbox**: the agent calls `user_inbox_add`; nothing else writes here, the hub included. An agent's failure and an agent being created, deleted or restored reach the user through the hub's events, its team event log and push instead (see [Agent states](hub.md#agent-states) and [Agent creation, deletion and restore](agent-lifecycle.md)). After saving an item the tool publishes its ID on the agent's bus, which the hub's watcher passes on (see [Watching running agents](hub.md#watching-running-agents)).
+Every other agent-inbox item is not mail and never appears in a thread: pulse, action, `scheduled` and webhook results, `system` items, `artifact:<name>` items, and the companion items of chat and A2A files. These stay in the agent inbox for the agent to triage, and the agent's `inbox_list` and `inbox_read` still show them.
+
+## Refs
+
+An item is named by a **ref**, the string `<agent>/<kind>/<id>`:
+
+- `<agent>` is the agent's folder name (the name `/api/agents/{name}` and the attachment URLs use), not its display name.
+- `<kind>` is `agent` for the agent inbox or `user` for the user inbox.
+- `<id>` is the item's ID, the filename stem.
+
+Example: `atlas/agent/20260227_deploy-status` is the agent inbox item `20260227_deploy-status` of the agent `atlas`. A ref names one item wherever it sits, active or archived. The agent tools accept a full ref (`inbox_read`), a bare ID in the agent's own agent inbox, or a bare ID for `user_inbox_add`'s `in_reply_to`, which means that agent's user inbox. The API takes refs in percent-encoded form inside URLs.
 
 ## Item Format
 
-Each item is a JSON file. There is **no `id` field in the JSON body** — the ID is the filename stem (e.g. `20260227_deploy-completed.json` has ID `20260227_deploy-completed`):
+Each item is a JSON file. There is **no `id` field in the JSON body**. The ID is the filename stem, so `20260227_deploy-completed.json` has the ID `20260227_deploy-completed`.
 
 ```json
 {
   "title": "Deploy completed",
-  "body": "Production deployment finished successfully. 3 services updated.",
+  "body": "Production deploy v2.3.1 finished successfully.",
   "source": "deploy-watcher",
   "timestamp": "2026-02-27T14:30",
   "read": false,
-  "attachments": []
+  "attachments": [],
+  "in_reply_to": "atlas/agent/20260227_deploy-status"
 }
 ```
 
-A user inbox item created with `user_inbox_add`'s `attachments` parameter records each copied file's path under `inbox/user/attachments/{item id}/`, relative to the workspace root:
+- `timestamp` is a naive local time to the minute, in the hub's timezone. The API reports it as RFC 3339 with an offset.
+- `source` names where the item came from: `web` or `cli` for the user's messages, `artifact:<name>` for a workbench artifact, and the producing label otherwise (a job, a webhook, a platform).
+- `in_reply_to` is present only on an item that answers a message. It holds that message's ref.
+- `attachments` lists each copied file's path, relative to the workspace root. Only the filename is authoritative: the directory can go stale once an item is archived, so consumers resolve each attachment by filename against the item's current location.
 
-```json
-{
-  "title": "Weekly export ready",
-  "body": "Attached the CSV export for this week.",
-  "source": "agent",
-  "timestamp": "2026-02-27T14:30",
-  "read": false,
-  "attachments": ["inbox/user/attachments/20260227_weekly_export_ready/export.csv"]
-}
-```
+Filenames are generated from the date and the sanitized title (`{YYYYMMDD}_{title}`, at most 60 title characters). Titles that are blank fall back to the first line of the body.
 
-- Filenames are generated from the date and the sanitized title (`{YYYYMMDD}_{title}`, at most 60 title characters). The filename stem *is* the ID used by `inbox_read`/`inbox_archive`, and the directory attachments are copied into.
-- **IDs are unique within an agent.** When the generated stem is already taken, by an item in the inbox or in its archive, `_2`, `_3`, ... is appended (`20260227_weekly_export_ready_2`), so two items with the same title on the same day each keep their own file and attachment directory, and an archived item's ID is never reused. Every writer goes through this: `user_inbox_add`, the notification router, the WS `/inbox` command, `POST /api/agents/{name}/agent-inbox`, and a chat attachment's companion item. Any existing file keeps working under its own stem, suffixed or not.
-- Archiving and restoring never replace a different item that has the same ID. If a file in the destination already has it (an item placed by hand, say), the move fails with an error naming the conflict, and both items stay where they are. The hub API answers that case with `409`.
-- `timestamp` is a naive local time to the minute (`YYYY-MM-DDTHH:MM`) in the hub's timezone. The hub API reports it as RFC 3339 with an offset (see [Cross-Agent View](#cross-agent-view)).
-- Only the final path component (the filename) of each `attachments` entry is meaningful — the directory portion can go stale once an item is archived, since archiving physically moves the item's attachment directory alongside its JSON file. Consumers (the web UI, the HTTP serving endpoint) resolve attachments by filename against the item's *current* location, not by trusting the stored path literally.
-- There is no unread-count surfaced anywhere in the agent's context or status line — the agent has to call `inbox_list` (with `unread_only: true`) to find out.
+IDs are unique within an agent across both its inbox and its archive. When the generated stem is taken, `_2`, `_3`, ... is appended, so two same-titled items on one day each keep their own file and attachment directory, and an archived item's ID is never reused. Archiving and restoring never replace a different item that has the same ID. If the destination already holds that ID, the move fails with an error naming the conflict, and both items stay put. The API answers that with `409`.
 
-## Tools (Agent Inbox Only)
+## Threads
 
-| Tool | Parameters | Notes |
-|------|-----------|-------|
-| `inbox_list` | `unread_only` (bool, optional, default false), `archived` (bool, optional, default false) | Lists agent inbox items. `archived: true` lists `archive/inbox/agent/` instead and ignores `unread_only` (everything there is already read). |
-| `inbox_read` | `id` (string — filename stem) | Reads item content, marks as read as a side effect. Cannot be unmarked. |
-| `inbox_archive` | `ids` (string[] — filename stems) | Moves items from `inbox/agent/` to `archive/inbox/agent/`. This is a move, not a copy. |
-| `inbox_restore` | `ids` (string[] — filename stems) | Moves items from `archive/inbox/agent/` back to `inbox/agent/`. The only way to undo `inbox_archive`. |
+A **thread** is a root message and every message whose `in_reply_to` chain reaches it. The thread's ID is the root's ref, and its subject is the root's title.
 
-## User Inbox Attachments
+- A reply's `in_reply_to` names the message it answers, so a thread can cross agents and the archive. An agent that answers the user's message, and the user's follow-up, are one conversation.
+- A message whose parent is missing, unreadable, or itself makes it the root of its own thread.
+- If the chain loops, the oldest message in the loop is the root.
+- Messages are ordered by time. Where two messages share a stored minute, the one that is a parent of the other comes first, then the ref breaks any remaining tie. The root always comes first in the thread view.
+- Any ref of a message in a thread, not only the root, finds the whole thread and returns its canonical thread ID.
 
-`user_inbox_add` accepts an optional `attachments` parameter: an array of paths to files the agent has already written to disk (an export, a report, a screenshot). Each file is copied — not moved or linked — into the item's own directory, so the item keeps working even if the original file is later moved or deleted.
+### Copies of one message
 
-- **Copy, not reference**: files land at `inbox/user/attachments/{item id}/{filename}`. Source filenames are reduced to their final path component before use, so a traversal-style source path can't place a copy outside the item's directory, and same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering.
-- **No size cap**: these are already-local files, not something arriving over a platform with its own upload limit.
-- **Partial failure is not fatal**: a file that fails to copy (missing, unreadable) is skipped and logged; the item is still created with whichever attachments did succeed, and the tool result names each one that failed.
-- **Archiving moves attachments too**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving; restoring the item reverses that move.
-- **Serving**: the web UI downloads attachments from `GET /api/agents/{name}/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists. A missing attachment answers `404` with `{ "error" }`; a browser opening the link in a tab is sent to the item in the Inbox (`/inbox?item=<agent>:<id>`) with a notice that the attachment is gone (see [Browser landings](hub-http.md#browser-landings)).
-- **Restoring**: `GET /api/agents/{name}/inbox/archive` lists archived user inbox items the same shape as `GET /api/agents/{name}/inbox`; `POST /api/agents/{name}/inbox/{id}/restore` moves one back to the active inbox. The web UI's Inbox lists and restores archived items through the hub's cross-agent routes instead, which make the same moves.
+A message the user sends to several agents is written as one agent-inbox item per recipient, all with the same ID. Those copies are shown as one message. Copies count as the same message when they share the ID, title, body and absolute time. The canonical ref of the message is the copy whose agent name sorts first, and a ref to any copy resolves to the message.
 
-## Cross-Agent View
+Each recipient's copy has its own read and archived state. The message's **Seen** list reports, for each recipient, whether that agent has read or archived its copy.
 
-`GET /api/hub/inbox` and its per-item routes serve the user inboxes of every agent as one list, read straight from each agent's `inbox/user/` and `archive/inbox/user/`, so an agent's items are included whether it is running, stopped, or failed. The routes and shapes are in [Hub HTTP Surface](hub-http.md#cross-agent-inbox).
+## Folders and State
 
-- Each item is identified by its agent and its ID, since two agents can have items with the same ID.
-- Each agent's unread count is part of its [team overview](hub.md#team-overview). The overview counts again when the hub reads, archives or restores an item through these routes, and when the `user_inbox_add` tool or a change to the inbox's files touches a running agent's inbox.
-- The list is newest first, by the item's time and then its ID, in pages.
-- An item's time is the stored naive local time read in the hub's configured timezone at the moment of the request, so changing the timezone changes the instants reported. A local time that happened twice (a DST fall-back) takes its first occurrence, and one that never happened (a spring-forward gap) moves forward by the length of the gap.
-- Marking an item read, archiving it, and restoring it make the same file changes as the per-agent routes.
-- Attachment links point at the per-agent attachment route, which serves a stopped agent as well.
-- The web UI's Inbox is built on these routes: one list across agents, an agent filter, an Archived tab, and the unread counts from the team overview. Opening an item marks it read.
+| Folder | Holds a thread when |
+|---|---|
+| Inbox | The thread has at least one active user-inbox item |
+| Archived | The thread has user-inbox items and every one is archived |
+| Sent | The thread contains at least one message the user wrote |
+
+A thread can be in Sent and Inbox at once. A thread the user started that no agent has answered shows only in Sent. A thread with unread user-inbox items is unread. Opening a thread marks all of its user-inbox items read. Archiving and restoring change only the user-inbox items of the thread, so an agent's copy of the user's message is never moved. A new agent reply to an archived thread adds an active user-inbox item, so the thread returns to Inbox.
+
+A folder that cannot be read is logged and skipped, so one unreadable agent does not hide the others. A missing folder counts as empty.
+
+Participants are every agent that wrote in the thread plus every agent a message of the user's went to.
+
+## Sending and Replying
+
+**New message.** The web UI's New message composes an empty thread with `to` (one or more agents), a subject, a body and attachments. The subject becomes each copy's title, and a blank subject takes the first line of the body. The send is all or nothing. The ID is free in every recipient's agent inbox and archive, as an item and as an attachment directory. If any copy or attachment fails, the copies already written are removed.
+
+**Reply.** A reply carries a body and attachments. Its recipients are computed on the server as reply-all: every agent that wrote in the thread, plus every agent a message of the user's in it went to. The reply answers the latest message, and its title is `Re: <subject>`, with repeated `Re:` prefixes collapsed rather than stacked.
+
+An agent's reply goes to the user only. Agents coordinate with one another through `message_agent` and can read the thread with the inbox tools.
+
+## Uploads and Attachments
+
+Files reach a message in two steps. The client first stages each file with `POST /api/hub/uploads?filename=<name>`, which takes the raw bytes and returns an upload ID. The send or reply then names those IDs in its `attachments`.
+
+- Uploads are at most 50 MB. A larger body is refused with `413`.
+- Staged uploads live in the hub directory under `uploads/`, not in an agent's folder, so one upload can go to several recipients and the staging works while every agent is stopped.
+- Staged uploads are removed 24 hours after they were staged. The store prunes at hub startup and before each new upload.
+- A send that names an unknown upload ID is refused with `400`.
+- Each recipient's copy receives its own copy of every attachment, in that copy's `attachments/{item id}/` directory.
+
+Attachments of an item are served by `GET /api/agents/{name}/inbox/{id}/attachments/{index}`. Each attachment in a thread carries its URL and its workspace-relative path. Agent-inbox attachments are served the same way as user-inbox ones. The route confines every path to the item's own attachment directory and answers `404` for a missing file. See [hub-http.md](hub-http.md#staged-uploads) for the upload route and the rest of the hub's surface.
+
+For the agent, `user_inbox_add`'s `attachments` parameter takes paths to files the agent has already written. Each file is copied into the item's own directory, so the original can be moved or deleted afterward. There is no size cap, since these files are already local. A file that fails to copy is skipped and named in the result, and the item is still created with the others.
+
+## Agent Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `inbox_list` | `unread_only` (bool, optional), `archived` (bool, optional) | Lists the agent's own agent-inbox items. `archived: true` lists `archive/inbox/agent/` and ignores `unread_only`. |
+| `inbox_read` | `id` (a filename stem of the agent's own agent inbox, or any item's ref) | Reads one item, shows its ref, and for mail shows the thread's earlier messages oldest first, with each message's ref, and the refs of later messages. Marks the item read only when it is an active item of the agent's own agent inbox. |
+| `inbox_archive` | `ids` (filename stems) | Moves items from `inbox/agent/` to `archive/inbox/agent/`. |
+| `inbox_restore` | `ids` (filename stems) | Moves items from `archive/inbox/agent/` back. Find the stems with `inbox_list` and `archived: true`. |
+| `user_inbox_add` | `title` (optional when `in_reply_to` is set), `body`, `in_reply_to` (ref, optional), `attachments` (paths, optional) | Writes an item to the user inbox. With `in_reply_to`, the item answers that message in its thread, titled `Re: <subject>` unless a title is given. A ref that is not in any thread is refused, and nothing is written. Without `in_reply_to`, a title is required. |
+| `user_inbox_list` | `agent` (folder name, optional), `include_archived` (bool, optional) | Lists every agent's user-inbox items newest first, with ref, title, agent, time, read and archived state, and the message each one answers. Read-only. Lists at most 100 items and notes when more match. |
+
+Neither `user_inbox_list` nor `inbox_read` changes the user's read or archived state. Archiving and restoring user-inbox items belong to the user in the web UI.
+
+## Notifications and Other Writers
+
+The notification router files each substantive `scheduled` result and each substantive webhook-triggered `external` result as an agent-inbox item, with the result's summary as the body and its source label as the source (see [notifications.md](notifications.md)). A conversation-triggered `external` result (A2A, or a non-owner Discord, Telegram or Teams chat) files nothing: its output already went back to the conversation it came from, and its observations are merged into memory as an episode. `artifact` and `spawned` session results are relayed elsewhere (see [background-tasks.md](background-tasks.md#result-routing)).
+
+A workbench artifact can file an agent-inbox item with `POST /api/agents/{name}/agent-inbox` (body `{ title?, body }`). The title defaults to the body's first line, and a blank body is refused with `400`. The item's source is `artifact:<name>` when the request carries the `X-Residuum-Artifact` header that the workbench SDK sends, and `web` otherwise. An artifact cannot write to the user inbox.
+
+A file that a Discord, Telegram, Teams or A2A message carries gets its own companion agent-inbox item, and each file an A2A task's remote agent returns gets one as well, titled `A2A artifact: <filename>`. The file sits in that item's attachment directory, so archiving the item moves the file with it (see [a2a.md](a2a.md)).
 
 ## Intended Usage
 
-The agent inbox is for **low-urgency items** that don't need immediate attention — background task results that are informational but not actionable should route here rather than to a push notification channel. The agent should periodically triage it — reading items, acting on anything that needs follow-up, and archiving items that are resolved. This should be driven by a heartbeat pulse.
+The agent inbox is for items that do not need immediate attention. Background results that are informational rather than actionable belong there rather than on a push channel. The agent triages it periodically, reads what needs follow-up, and archives what is resolved. A heartbeat pulse drives this.
 
-The user inbox is for findings the agent wants to hand to the user asynchronously, without interrupting a conversation — e.g. the built-in `reflection` pulse delivers its suggestions there. `memory_tending` files knowledge into the team wiki and `team/USER.md` directly and does not deliver to the user inbox. Attach a file with `user_inbox_add`'s `attachments` parameter when the finding is easier to review as a file than as inline text (an export, a screenshot, a generated report). Before adding a new item, check prior items (including the archive) so the same suggestion isn't repeated.
+The user inbox is for findings the agent wants to hand the user without interrupting a conversation. The built-in `reflection` pulse delivers its suggestions there, and `memory_tending` writes to the team wiki and `team/USER.md` directly rather than to the user inbox. Attach a file with `attachments` when the finding is easier to review as a file than as inline text, such as an export, a screenshot or a generated report. Before adding an item, the agent checks what every agent has already sent, including the archive, so it does not repeat a suggestion. A reply to the user's mail names the message it answers in `in_reply_to`.
+
+## See Also
+
+- [hub-http.md](hub-http.md): the hub's route table, the staged-upload route, and the browser landing for `/inbox?thread=<ref>`
+- [notifications.md](notifications.md): how results reach the agent inbox
+- [background-tasks.md](background-tasks.md): how session results are routed
+- [a2a.md](a2a.md): the companion items of A2A artifacts

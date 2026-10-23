@@ -215,10 +215,14 @@ impl MailThread {
         1 + self.replies.len()
     }
 
-    /// The last message in [`Self::messages`] order.
+    /// The message written last: the greatest time, with a tie going to the
+    /// later message in [`Self::messages`] order. Not necessarily the last
+    /// one listed, since a reply can carry an earlier time than its root.
     #[must_use]
     pub fn latest(&self) -> &MailMessage {
-        self.replies.last().unwrap_or(&self.root)
+        self.messages()
+            .max_by(|a, b| a.at.cmp(&b.at))
+            .unwrap_or(&self.root)
     }
 
     /// When the latest message was written.
@@ -340,14 +344,8 @@ impl MailIndex {
         self.threads.iter().filter(move |t| filter.matches(t))
     }
 
-    /// The thread whose root message `thread_id` names (any copy of it).
-    #[must_use]
-    pub fn thread(&self, thread_id: &InboxRef) -> Option<&MailThread> {
-        self.thread_containing(thread_id)
-            .filter(|t| t.root.copies.contains(thread_id))
-    }
-
-    /// The thread holding the message `item` names (any copy of it).
+    /// The thread holding the message `item` names: the ref of any copy of any
+    /// message in it, the root or a reply.
     #[must_use]
     pub fn thread_containing(&self, item: &InboxRef) -> Option<&MailThread> {
         self.thread_of
@@ -562,12 +560,12 @@ async fn load_mailbox(
                 let item_ref = match InboxRef::new(&mailbox.agent, kind, &id) {
                     Ok(r) => r,
                     Err(e) => {
-                        tracing::warn!(agent = %mailbox.agent, id = %id, error = %e, "inbox item has no valid ref; left out of mail");
+                        tracing::debug!(agent = %mailbox.agent, id = %id, error = %e, "inbox item has no valid ref; left out of mail");
                         continue;
                     }
                 };
                 if !seen_ids.insert(id.clone()) {
-                    tracing::warn!(item = %item_ref, "inbox item is both active and archived; mail shows the active one");
+                    tracing::debug!(item = %item_ref, "inbox item is both active and archived; mail shows the active one");
                     continue;
                 }
                 let attachments = resolve_attachments(&layout, &item_ref, archived, &item).await;
@@ -600,7 +598,7 @@ async fn resolve_attachments(
     let mut resolved = Vec::with_capacity(item.attachments.len());
     for (index, stored) in item.attachments.iter().enumerate() {
         let Some(filename) = stored.file_name().and_then(|f| f.to_str()) else {
-            tracing::warn!(item = %item_ref, stored = %stored.display(), "inbox attachment entry has no filename, omitting");
+            tracing::debug!(item = %item_ref, stored = %stored.display(), "inbox attachment entry has no filename, omitting");
             continue;
         };
         let path = on_disk.join(filename);
@@ -614,10 +612,10 @@ async fn resolve_attachments(
                 content_type: residuum_bus::attachment::detect_mime_type(&path),
             }),
             Ok(_) => {
-                tracing::warn!(item = %item_ref, path = %path.display(), "inbox attachment is not a file, omitting");
+                tracing::debug!(item = %item_ref, path = %path.display(), "inbox attachment is not a file, omitting");
             }
             Err(e) => {
-                tracing::warn!(item = %item_ref, path = %path.display(), error = %e, "inbox attachment file missing on disk, omitting");
+                tracing::debug!(item = %item_ref, path = %path.display(), error = %e, "inbox attachment file missing on disk, omitting");
             }
         }
     }
@@ -657,7 +655,7 @@ fn parse_reply_ref(loaded: &LoadedItem) -> Option<InboxRef> {
     match InboxRef::parse(raw) {
         Ok(r) => Some(r),
         Err(e) => {
-            tracing::warn!(item = %loaded.item_ref, error = %e, "inbox item's in_reply_to is not a valid ref; it starts its own thread");
+            tracing::debug!(item = %loaded.item_ref, error = %e, "inbox item's in_reply_to is not a valid ref; it starts its own thread");
             None
         }
     }
@@ -763,7 +761,14 @@ mod tests {
         assert_eq!(user.to, ["atlas", "scout"]);
         assert_eq!(user.copies.len(), 2);
         assert_eq!(index.thread_containing(&user.copies[1]), Some(thread));
-        assert_eq!(index.thread(&user.copies[1]), None, "not the root");
+        assert_eq!(
+            index
+                .thread_containing(&user.copies[1])
+                .unwrap()
+                .thread_id(),
+            &root,
+            "a copy of a reply resolves to the thread"
+        );
     }
 
     #[tokio::test]
@@ -775,7 +780,7 @@ mod tests {
             .await;
 
         let index = fx.index().await;
-        let thread = index.thread(&root).unwrap();
+        let thread = index.thread_containing(&root).unwrap();
         assert_eq!(thread.message_count(), 2);
         assert!(thread.root().archived);
         assert!(
@@ -797,7 +802,7 @@ mod tests {
 
         let index = fx.index().await;
         assert_eq!(index.threads(&ThreadFilter::default()).count(), 2);
-        let thread = index.thread(&orphan).unwrap();
+        let thread = index.thread_containing(&orphan).unwrap();
         assert_eq!(thread.message_count(), 1);
         assert_eq!(thread.root().in_reply_to.as_ref(), Some(&gone));
     }
@@ -815,10 +820,10 @@ mod tests {
         let index = fx.index().await;
         assert_eq!(index.threads(&ThreadFilter::default()).count(), 2);
         let cycle = index
-            .thread(&a)
+            .thread_containing(&a)
             .expect("the oldest message of a cycle is its root");
         assert_eq!(cycle.message_count(), 2);
-        assert_eq!(index.thread(&s).unwrap().message_count(), 1);
+        assert_eq!(index.thread_containing(&s).unwrap().message_count(), 1);
     }
 
     #[tokio::test]
@@ -831,7 +836,7 @@ mod tests {
         fx.archive_agent_copy("scout", "hello").await;
 
         let index = fx.index().await;
-        let thread = index.thread(&sent).unwrap();
+        let thread = index.thread_containing(&sent).unwrap();
         let message = thread.root();
         assert_eq!(message.to, ["atlas", "drifter", "scout"]);
         assert_eq!(
@@ -860,7 +865,7 @@ mod tests {
         let sent = fx.user_mail("q", &["atlas"], "Question", 9, None).await;
 
         let index = fx.index().await;
-        let thread = index.thread(&sent).unwrap();
+        let thread = index.thread_containing(&sent).unwrap();
         assert!(thread.in_sent() && !thread.in_inbox() && !thread.archived());
         assert!(!thread.unread());
         let inbox = ThreadFilter {
@@ -948,12 +953,25 @@ mod tests {
             .await;
 
         let index = fx.index().await;
-        let thread = index.thread(&root).unwrap();
+        let thread = index.thread_containing(&root).unwrap();
         let ids: Vec<_> = thread
             .messages()
             .map(|m| m.item_ref.id().to_string())
             .collect();
         assert_eq!(ids, ["zzz_root", "aaa_reply"]);
+    }
+
+    #[tokio::test]
+    async fn latest_is_the_newest_message_even_when_a_reply_predates_its_root() {
+        let fx = Fixture::new(&["atlas"]);
+        let root = fx.user_item("atlas", "root", "Root", 10, None).await;
+        fx.user_item("atlas", "early_reply", "Re: Root", 9, Some(&root))
+            .await;
+
+        let index = fx.index().await;
+        let thread = index.thread_containing(&root).unwrap();
+        assert_eq!(thread.latest().item_ref, root);
+        assert_eq!(thread.latest_at(), thread.root().at);
     }
 
     #[tokio::test]
@@ -965,7 +983,7 @@ mod tests {
         fx.archive_user_item("atlas", "files").await;
 
         let index = fx.index().await;
-        let thread = index.thread(&root).unwrap();
+        let thread = index.thread_containing(&root).unwrap();
         assert!(thread.has_attachments());
         let attachment = &thread.root().attachments[0];
         assert_eq!(attachment.agent(), "atlas");

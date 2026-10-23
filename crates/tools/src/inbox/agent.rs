@@ -1,4 +1,6 @@
-//! Inbox management tools: list, read, and archive inbox items.
+//! The agent-inbox tools: list, read, archive and restore this agent's
+//! inbox items. `inbox_read` also reads any agent's item by ref, with the
+//! earlier messages of its mail thread.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -6,12 +8,14 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use residuum_bus::{Publisher, UserInboxAddedEvent, topics};
-use residuum_inference::ToolDefinition;
-use residuum_workspace::inbox::{self, InboxItem};
-
 use residuum_agent::Tool;
-use residuum_inference::{ToolError, ToolResult};
+use residuum_inference::{ToolDefinition, ToolError, ToolResult};
+use residuum_workspace::inbox::mail::{MailIndex, MailMessage, MailSender};
+use residuum_workspace::inbox::{self, InboxItem, InboxKind, InboxRef};
+
+use super::mail::{
+    LocateError, MailAccess, OWN_INBOX_ONLY_NOTE, TIME_FORMAT, locate, parse_item_ref,
+};
 
 // ─── inbox_list ─────────────────────────────────────────────────────────────
 
@@ -109,17 +113,115 @@ impl Tool for InboxListTool {
 
 // ─── inbox_read ─────────────────────────────────────────────────────────────
 
-/// Tool for reading a single inbox item (marks it as read).
+/// Tool for reading a single inbox item, with the earlier messages of its
+/// mail thread. Reading an item of this agent's own active agent inbox marks
+/// it read.
 pub struct InboxReadTool {
-    inbox_dir: PathBuf,
+    mail: MailAccess,
 }
 
 impl InboxReadTool {
-    /// Create a new `InboxReadTool`.
+    /// Create a new `InboxReadTool` for the agent `mail` belongs to.
     #[must_use]
-    pub fn new(inbox_dir: PathBuf) -> Self {
-        Self { inbox_dir }
+    pub fn new(mail: MailAccess) -> Self {
+        Self { mail }
     }
+}
+
+/// Who wrote `message`, as the thread listing names them.
+fn sender_line(message: &MailMessage) -> String {
+    match &message.from {
+        MailSender::User if message.to.is_empty() => "the user".to_string(),
+        MailSender::User => format!("the user, to {}", message.to.join(", ")),
+        MailSender::Agent(agent) => agent.clone(),
+    }
+}
+
+/// The item's own lines: its ref, header fields, attachments and body.
+/// Attachment paths of another agent's item are absolute, since they are
+/// relative to that agent's workspace.
+fn item_section(item_ref: &InboxRef, located: &super::mail::LocatedItem, own: bool) -> String {
+    let item = &located.item;
+    let mut output = format!(
+        "Ref: {item_ref}\nTitle: {}\nSource: {}\nTime: {}\n",
+        item.title,
+        item.source,
+        item.timestamp.format(TIME_FORMAT)
+    );
+    if located.archived {
+        output.push_str("Archived: yes\n");
+    }
+    if let Some(parent) = &item.in_reply_to {
+        _ = writeln!(output, "In reply to: {parent}");
+    }
+    if !item.attachments.is_empty() {
+        let paths: Vec<String> = item
+            .attachments
+            .iter()
+            .map(|p| {
+                if own {
+                    p.display().to_string()
+                } else {
+                    located.workspace_dir.join(p).display().to_string()
+                }
+            })
+            .collect();
+        _ = writeln!(output, "Attachments: {}", paths.join(", "));
+    }
+    _ = write!(output, "\n{}", item.body);
+    output
+}
+
+/// The thread lines for the message `item_ref` names: the earlier messages,
+/// oldest first, and the refs of the later ones. Empty when the item is not
+/// mail or is the thread's only message.
+fn thread_section(index: &MailIndex, item_ref: &InboxRef) -> String {
+    let Some(thread) = index.thread_containing(item_ref) else {
+        return String::new();
+    };
+    if thread.message_count() < 2 {
+        return String::new();
+    }
+    let messages: Vec<&MailMessage> = thread.messages().collect();
+    let position = messages
+        .iter()
+        .position(|m| m.copies.contains(item_ref))
+        .unwrap_or_default();
+    let (earlier, rest) = messages.split_at(position);
+    let later: Vec<String> = rest
+        .iter()
+        .skip(1)
+        .map(|m| m.item_ref.to_string())
+        .collect();
+
+    let mut output = format!(
+        "\n\nThread \"{}\": message {} of {}.",
+        thread.subject(),
+        position + 1,
+        messages.len()
+    );
+    if !earlier.is_empty() {
+        _ = write!(output, "\n\nEarlier messages, oldest first:");
+        for message in earlier {
+            _ = write!(
+                output,
+                "\n\n--- From {} · {} · Ref: {}\nTitle: {}\n{}",
+                sender_line(message),
+                message.at.format(TIME_FORMAT),
+                message.item_ref,
+                message.title,
+                message.body
+            );
+        }
+    }
+    if !later.is_empty() {
+        _ = write!(
+            output,
+            "\n\nLater messages (read with inbox_read): {}",
+            later.join(", ")
+        );
+    }
+    output
 }
 
 #[async_trait]
@@ -131,13 +233,13 @@ impl Tool for InboxReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Read a single inbox item by filename stem. Marks the item as read and returns its full content.".to_string(),
+            description: "Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "Filename stem of the inbox item (without .json extension)"
+                        "description": "Filename stem of an item in your own agent inbox (without .json extension), or a full ref <agent>/<user|agent>/<id> as user_inbox_list and inbox_read show it"
                     }
                 },
                 "required": ["id"]
@@ -146,30 +248,38 @@ impl Tool for InboxReadTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let id = super::require_str(&arguments, "id")?;
+        let raw = crate::require_str(&arguments, "id")?;
+        let item_ref =
+            parse_item_ref(raw, self.mail.own_agent(), InboxKind::Agent).map_err(|e| {
+                ToolError::InvalidArguments(format!("'{raw}' is not an inbox item id or ref: {e}"))
+            })?;
+        let own = item_ref.agent() == self.mail.own_agent();
 
-        let item = inbox::mark_read(&self.inbox_dir, id).await.map_err(|e| {
-            tracing::error!(error = %e, id = %id, "failed to read inbox item");
-            ToolError::Execution(format!("failed to read inbox item '{id}': {e}"))
-        })?;
+        let view = self.mail.view();
+        let mut located = locate(view.directory.as_ref(), &item_ref)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, item = %item_ref, "failed to read inbox item");
+                let mut message = format!("failed to read inbox item '{raw}': {e}");
+                if matches!(e, LocateError::UnknownAgent(_)) && !view.every_agent {
+                    message.push(' ');
+                    message.push_str(OWN_INBOX_ONLY_NOTE);
+                }
+                ToolError::Execution(message)
+            })?;
 
-        let ts = item.timestamp.format("%Y-%m-%dT%H:%M");
-        let mut output = format!(
-            "Title: {}\nSource: {}\nTime: {ts}\n",
-            item.title, item.source
-        );
-
-        if !item.attachments.is_empty() {
-            let paths: Vec<String> = item
-                .attachments
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
-            _ = writeln!(output, "Attachments: {}", paths.join(", "));
+        if own && item_ref.kind() == InboxKind::Agent && !located.archived {
+            located.item = inbox::mark_read(&located.items_dir, item_ref.id())
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, item = %item_ref, "failed to mark inbox item read");
+                    ToolError::Execution(format!("failed to read inbox item '{raw}': {e}"))
+                })?;
         }
 
-        _ = write!(output, "\n{}", item.body);
-
+        let mut output = item_section(&item_ref, &located, own);
+        let index = MailIndex::load(view.directory.as_ref()).await;
+        output.push_str(&thread_section(&index, &item_ref));
         Ok(ToolResult::success(output))
     }
 }
@@ -372,203 +482,50 @@ impl Tool for InboxRestoreTool {
     }
 }
 
-// ─── user_inbox_add ─────────────────────────────────────────────────────────
-
-/// Tool for adding items to the user's inbox.
-pub struct UserInboxAddTool {
-    user_inbox_dir: PathBuf,
-    user_inbox_attachments_dir: PathBuf,
-    tz: chrono_tz::Tz,
-    /// Where each saved item is announced, so the hub learns of it without
-    /// waiting for a file change. `None` announces nothing.
-    publisher: Option<Publisher>,
-}
-
-impl UserInboxAddTool {
-    /// Create a new `UserInboxAddTool`.
-    #[must_use]
-    pub fn new(
-        user_inbox_dir: PathBuf,
-        user_inbox_attachments_dir: PathBuf,
-        tz: chrono_tz::Tz,
-    ) -> Self {
-        Self {
-            user_inbox_dir,
-            user_inbox_attachments_dir,
-            tz,
-            publisher: None,
-        }
-    }
-
-    /// Announce every saved item on `publisher`'s bus.
-    #[must_use]
-    pub fn with_publisher(mut self, publisher: Publisher) -> Self {
-        self.publisher = Some(publisher);
-        self
-    }
-
-    /// Tell the bus the item `item_id` was saved. A failure to announce
-    /// leaves the item saved: the hub still sees the file appear.
-    async fn announce(&self, item_id: &str) {
-        let Some(publisher) = &self.publisher else {
-            return;
-        };
-        if let Err(e) = publisher
-            .publish(
-                topics::UserInbox,
-                UserInboxAddedEvent {
-                    item_id: item_id.to_string(),
-                },
-            )
-            .await
-        {
-            tracing::warn!(error = %e, item_id, "failed to announce a new user inbox item");
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for UserInboxAddTool {
-    fn name(&self) -> &'static str {
-        "user_inbox_add"
-    }
-
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: "Add a new item to the user's inbox. Use this to explicitly send notes, reminders, or items for the human user to review later.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "A short summary of the item"
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "The detailed content of the item"
-                    },
-                    "attachments": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional. Paths to files you have already written to disk that should be attached to this item — e.g. a report, screenshot, or export a background task produced. Each file is copied into the item's own storage, so it's safe even if the source file is later moved or deleted. Omit or leave empty if there's nothing to attach."
-                    }
-                },
-                "required": ["title", "body"]
-            }),
-        }
-    }
-
-    async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let title = super::require_str(&arguments, "title")?;
-        let body = super::require_str(&arguments, "body")?;
-
-        let attachment_paths: Vec<PathBuf> = arguments
-            .get("attachments")
-            .and_then(Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(PathBuf::from)
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let (filename, failures) = inbox::add_user_inbox_item(
-            &self.user_inbox_dir,
-            &self.user_inbox_attachments_dir,
-            inbox::NewUserInboxItem {
-                title,
-                body,
-                source: "agent",
-                in_reply_to: None,
-                attachments: &attachment_paths,
-            },
-            self.tz,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, attachment_count = attachment_paths.len(), "failed to add item to user inbox");
-            ToolError::Execution(format!("failed to add item to user inbox: {e}"))
-        })?;
-
-        let id = filename.trim_end_matches(".json");
-        self.announce(id).await;
-        let succeeded = attachment_paths.len() - failures.len();
-        let mut message = if attachment_paths.is_empty() {
-            format!("Added item to user inbox with ID: {id}")
-        } else {
-            format!("Added item to user inbox with ID: {id} ({succeeded} attachment(s) copied)")
-        };
-        if !failures.is_empty() {
-            message
-                .push_str("\n\nSome attachments could not be copied (the item was still added):");
-            for failure in &failures {
-                message.push_str("\n- ");
-                message.push_str(failure);
-            }
-        }
-        Ok(ToolResult::success(message))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use residuum_bus::testing::bus_barrier;
-    use residuum_core::testing::wait;
+    use crate::inbox::test_fixture::{Item, MailHub};
+    use residuum_config::WorkspaceLayout;
 
-    #[test]
-    fn tool_names_correct() {
-        let dir = PathBuf::from("/tmp");
-        let archive = PathBuf::from("/tmp/archive");
-
-        assert_eq!(
-            InboxListTool::new(dir.clone(), archive.clone()).name(),
-            "inbox_list"
-        );
-        assert_eq!(InboxReadTool::new(dir.clone()).name(), "inbox_read");
-        assert_eq!(
-            InboxArchiveTool::new(dir.clone(), archive.clone()).name(),
-            "inbox_archive"
-        );
-        assert_eq!(
-            InboxRestoreTool::new(dir.clone(), archive).name(),
-            "inbox_restore"
-        );
-        assert_eq!(
-            UserInboxAddTool::new(dir.clone(), dir.join("attachments"), chrono_tz::UTC).name(),
-            "user_inbox_add"
-        );
+    /// The workspace of an agent named `atlas` under `dir`, and its mail
+    /// access with no hub directory.
+    fn atlas(dir: &tempfile::TempDir) -> (WorkspaceLayout, MailAccess) {
+        let layout = WorkspaceLayout::new(dir.path().join("atlas"));
+        let mail = MailAccess::new(None, &layout, chrono_tz::UTC);
+        (layout, mail)
     }
 
     #[test]
     fn definitions_have_matching_names() {
-        let dir = PathBuf::from("/tmp");
-        let archive = PathBuf::from("/tmp/archive");
+        let dir = tempfile::tempdir().unwrap();
+        let (layout, mail) = atlas(&dir);
+        let inbox_dir = layout.agent_inbox_dir();
+        let archive = layout.agent_inbox_archive_dir();
 
-        let list = InboxListTool::new(dir.clone(), archive.clone());
+        let list = InboxListTool::new(inbox_dir.clone(), archive.clone());
         assert_eq!(list.definition().name, list.name());
+        assert_eq!(list.name(), "inbox_list");
 
-        let read = InboxReadTool::new(dir.clone());
+        let read = InboxReadTool::new(mail);
         assert_eq!(read.definition().name, read.name());
+        assert_eq!(read.name(), "inbox_read");
 
-        let archive_tool = InboxArchiveTool::new(dir.clone(), archive.clone());
+        let archive_tool = InboxArchiveTool::new(inbox_dir.clone(), archive.clone());
         assert_eq!(archive_tool.definition().name, archive_tool.name());
+        assert_eq!(archive_tool.name(), "inbox_archive");
 
-        let restore_tool = InboxRestoreTool::new(dir.clone(), archive);
+        let restore_tool = InboxRestoreTool::new(inbox_dir, archive);
         assert_eq!(restore_tool.definition().name, restore_tool.name());
-
-        let user_add = UserInboxAddTool::new(dir.clone(), dir.join("attachments"), chrono_tz::UTC);
-        assert_eq!(user_add.definition().name, user_add.name());
+        assert_eq!(restore_tool.name(), "inbox_restore");
     }
 
     #[tokio::test]
     async fn inbox_add_list_read_archive_flow() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        let archive_dir = dir.path().join("archive/inbox");
+        let (layout, mail) = atlas(&dir);
+        let inbox_dir = layout.agent_inbox_dir();
+        let archive_dir = layout.agent_inbox_archive_dir();
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
         // Add an item via quick_add directly
@@ -599,7 +556,7 @@ mod tests {
         );
 
         // Read item (marks as read)
-        let read_tool = InboxReadTool::new(inbox_dir.clone());
+        let read_tool = InboxReadTool::new(mail);
         let read_result = read_tool
             .execute(serde_json::json!({"id": filename}))
             .await
@@ -780,7 +737,8 @@ mod tests {
     #[tokio::test]
     async fn inbox_read_missing_id() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = InboxReadTool::new(dir.path().to_path_buf());
+        let (_, mail) = atlas(&dir);
+        let tool = InboxReadTool::new(mail);
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing id should error");
     }
@@ -788,208 +746,161 @@ mod tests {
     #[tokio::test]
     async fn inbox_read_nonexistent_item() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = InboxReadTool::new(dir.path().to_path_buf());
-        // id is provided but the file does not exist on disk — goes through mark_read,
-        // which propagates as ToolError::Execution
+        let (_, mail) = atlas(&dir);
+        let tool = InboxReadTool::new(mail);
         let result = tool
             .execute(serde_json::json!({"id": "does-not-exist"}))
             .await;
+        let Err(ToolError::Execution(message)) = result else {
+            panic!("reading a nonexistent item is an execution error: {result:?}");
+        };
         assert!(
-            result.is_err(),
-            "reading nonexistent item should return ToolError"
+            message.contains("atlas/agent/does-not-exist") && message.contains("was found"),
+            "{message}"
         );
     }
 
     #[tokio::test]
-    async fn user_inbox_add_without_attachments_unchanged() {
+    async fn inbox_read_rejects_a_malformed_ref() {
         let dir = tempfile::tempdir().unwrap();
-        let user_inbox_dir = dir.path().join("inbox/user");
-        let attachments_dir = dir.path().join("inbox/user/attachments");
-        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
-
-        let tool = UserInboxAddTool::new(
-            user_inbox_dir.clone(),
-            attachments_dir.clone(),
-            chrono_tz::UTC,
-        );
-        let result = tool
-            .execute(serde_json::json!({"title": "plain reminder", "body": "just text"}))
-            .await
-            .unwrap();
-
-        assert!(!result.is_error, "should succeed: {}", result.output);
-        assert!(
-            result
-                .output
-                .starts_with("Added item to user inbox with ID: "),
-            "confirmation message format should be unchanged: {}",
-            result.output
-        );
-        assert!(
-            !result.output.contains("attachment(s) copied"),
-            "confirmation message should not report a copy count when none were given: {}",
-            result.output
-        );
-        assert!(
-            !attachments_dir.exists(),
-            "no attachments directory should be created"
-        );
-    }
-
-    #[tokio::test]
-    async fn user_inbox_add_announces_the_saved_item_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let user_inbox_dir = dir.path().join("inbox/user");
-        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
-        let bus = residuum_bus::spawn_broker();
-        let mut added = bus
-            .subscribe::<_, UserInboxAddedEvent>(topics::UserInbox)
-            .await
-            .unwrap();
-
-        let tool = UserInboxAddTool::new(
-            user_inbox_dir.clone(),
-            user_inbox_dir.join("attachments"),
-            chrono_tz::UTC,
-        )
-        .with_publisher(bus.publisher());
-        let result = tool
-            .execute(serde_json::json!({"title": "heads up", "body": "look"}))
-            .await
-            .unwrap();
-        assert!(!result.is_error, "{}", result.output);
-
-        let announced = wait::guarded("the item is announced", added.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            result.output.ends_with(&announced.item_id),
-            "the announced id {:?} is the one the tool reported: {}",
-            announced.item_id,
-            result.output
-        );
-        assert!(
-            user_inbox_dir
-                .join(format!("{}.json", announced.item_id))
-                .is_file(),
-            "the announced item is already saved"
-        );
-        bus_barrier(&bus).await;
-        assert!(added.drain().is_empty(), "one item, one announcement");
-    }
-
-    #[tokio::test]
-    async fn user_inbox_add_that_fails_announces_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        // A regular file where the inbox directory should be, so saving fails.
-        let blocked = dir.path().join("inbox");
-        tokio::fs::write(&blocked, b"not a directory")
-            .await
-            .unwrap();
-        let bus = residuum_bus::spawn_broker();
-        let mut added = bus
-            .subscribe::<_, UserInboxAddedEvent>(topics::UserInbox)
-            .await
-            .unwrap();
-
-        let tool = UserInboxAddTool::new(blocked.join("user"), blocked.join("a"), chrono_tz::UTC)
-            .with_publisher(bus.publisher());
-        let result = tool
-            .execute(serde_json::json!({"title": "lost", "body": "never saved"}))
+        let (_, mail) = atlas(&dir);
+        let result = InboxReadTool::new(mail)
+            .execute(serde_json::json!({"id": "atlas/letters/x"}))
             .await;
-        assert!(result.is_err(), "saving into a file path fails");
-        bus_barrier(&bus).await;
         assert!(
-            added.drain().is_empty(),
-            "an item that wasn't saved is not announced"
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "{result:?}"
         );
     }
 
     #[tokio::test]
-    async fn user_inbox_add_with_attachments_copies_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let user_inbox_dir = dir.path().join("inbox/user");
-        let attachments_dir = dir.path().join("inbox/user/attachments");
-        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
+    async fn inbox_read_by_stem_shows_the_ref_and_the_earlier_messages() {
+        let hub = MailHub::new(&["atlas", "nova"]);
+        hub.write(Item::agent_message(
+            "nova",
+            "plan",
+            "Plan",
+            "Draft attached.",
+            9,
+        ))
+        .await;
+        hub.write(
+            Item::user_mail("atlas", "re-plan", "Re: Plan", "Looks good, ship it.", 10)
+                .replying_to("nova/user/plan"),
+        )
+        .await;
 
-        let source_file = dir.path().join("export.csv");
-        tokio::fs::write(&source_file, b"a,b,c").await.unwrap();
-
-        let tool = UserInboxAddTool::new(
-            user_inbox_dir.clone(),
-            attachments_dir.clone(),
-            chrono_tz::UTC,
-        );
-        let result = tool
-            .execute(serde_json::json!({
-                "title": "weekly export",
-                "body": "attached",
-                "attachments": [source_file.to_string_lossy()],
-            }))
+        let result = InboxReadTool::new(hub.access("atlas"))
+            .execute(serde_json::json!({"id": "re-plan"}))
             .await
             .unwrap();
-
-        assert!(!result.is_error, "should succeed: {}", result.output);
+        let out = &result.output;
+        assert!(out.starts_with("Ref: atlas/agent/re-plan\n"), "{out}");
+        assert!(out.contains("In reply to: nova/user/plan"), "{out}");
+        assert!(out.contains("Looks good, ship it."), "{out}");
+        assert!(out.contains("Thread \"Plan\": message 2 of 2."), "{out}");
         assert!(
-            result.output.contains("1 attachment(s) copied"),
-            "confirmation should report the attachment count: {}",
-            result.output
+            out.contains("--- From nova · 2026-02-25T09:00 · Ref: nova/user/plan\nTitle: Plan\nDraft attached."),
+            "{out}"
         );
-
-        let mut entries = tokio::fs::read_dir(&user_inbox_dir).await.unwrap();
-        let mut found_copy = false;
-        while let Some(entry) = entries.next_entry().await.unwrap() {
-            if entry.path().extension().is_some_and(|e| e == "json") {
-                let item = residuum_workspace::inbox::load_item(&entry.path())
-                    .await
-                    .unwrap();
-                if item.title == "weekly export" {
-                    assert_eq!(item.attachments.len(), 1);
-                    found_copy = true;
-                }
-            }
-        }
-        assert!(found_copy, "saved item should be found in the inbox dir");
+        assert!(
+            hub.load("atlas", InboxKind::Agent, "re-plan").await.read,
+            "own agent-inbox item is marked read"
+        );
     }
 
     #[tokio::test]
-    async fn user_inbox_add_missing_attachment_source_still_saves_the_item() {
-        let dir = tempfile::tempdir().unwrap();
-        let user_inbox_dir = dir.path().join("inbox/user");
-        let attachments_dir = dir.path().join("inbox/user/attachments");
-        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
+    async fn inbox_read_by_another_agents_ref_marks_nothing_read() {
+        let hub = MailHub::new(&["atlas", "nova"]);
+        hub.write(Item::user_mail(
+            "nova",
+            "ask",
+            "Question",
+            "What is the status?",
+            8,
+        ))
+        .await;
+        hub.write(
+            Item::agent_message("nova", "answer", "Re: Question", "All green.", 9)
+                .replying_to("nova/agent/ask"),
+        )
+        .await;
+        hub.write(
+            Item::agent_message("atlas", "followup", "Re: Question", "Also green here.", 10)
+                .replying_to("nova/user/answer"),
+        )
+        .await;
 
-        let tool = UserInboxAddTool::new(user_inbox_dir.clone(), attachments_dir, chrono_tz::UTC);
+        let tool = InboxReadTool::new(hub.access("atlas"));
         let result = tool
-            .execute(serde_json::json!({
-                "title": "broken",
-                "body": "still saved",
-                "attachments": ["/tmp/residuum_test_does_not_exist.bin"],
-            }))
+            .execute(serde_json::json!({"id": "nova/user/answer"}))
             .await
             .unwrap();
-
-        // A file that can't be attached is reported, but never fails the
-        // whole item — the item itself is still saved.
-        assert!(!result.is_error, "{}", result.output);
+        let out = &result.output;
+        assert!(out.starts_with("Ref: nova/user/answer\n"), "{out}");
+        assert!(out.contains("All green."), "{out}");
         assert!(
-            result.output.contains("could not be copied"),
-            "the failure should be reported: {}",
+            out.contains("--- From the user, to nova · 2026-02-25T08:00 · Ref: nova/agent/ask\nTitle: Question\nWhat is the status?"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Later messages (read with inbox_read): atlas/user/followup"),
+            "{out}"
+        );
+        assert!(!hub.load("nova", InboxKind::User, "answer").await.read);
+
+        // Another agent's agent-inbox item stays unread too.
+        tool.execute(serde_json::json!({"id": "nova/agent/ask"}))
+            .await
+            .unwrap();
+        assert!(!hub.load("nova", InboxKind::Agent, "ask").await.read);
+
+        // So does this agent's own user-inbox item.
+        tool.execute(serde_json::json!({"id": "atlas/user/followup"}))
+            .await
+            .unwrap();
+        assert!(!hub.load("atlas", InboxKind::User, "followup").await.read);
+    }
+
+    #[tokio::test]
+    async fn inbox_read_finds_an_archived_item() {
+        let hub = MailHub::new(&["atlas", "nova"]);
+        hub.write(Item::agent_message("nova", "old", "Old note", "From last week.", 7).archived())
+            .await;
+        let result = InboxReadTool::new(hub.access("atlas"))
+            .execute(serde_json::json!({"id": "nova/user/old"}))
+            .await
+            .unwrap();
+        assert!(result.output.contains("Archived: yes"), "{}", result.output);
+        assert!(
+            result.output.contains("From last week."),
+            "{}",
             result.output
         );
+    }
 
-        let mut entries = tokio::fs::read_dir(&user_inbox_dir).await.unwrap();
-        let mut json_files = Vec::new();
-        while let Some(entry) = entries.next_entry().await.unwrap() {
-            if entry.path().extension().is_some_and(|e| e == "json") {
-                json_files.push(entry.path());
-            }
-        }
-        assert_eq!(
-            json_files.len(),
-            1,
-            "the item should be saved even though its attachment failed: {json_files:?}"
-        );
+    #[tokio::test]
+    async fn inbox_read_without_a_directory_reads_only_this_agent() {
+        let hub = MailHub::new(&["atlas", "nova"]);
+        hub.write(Item::agent_message("nova", "note", "Note", "Hi.", 9))
+            .await;
+        hub.write(Item::user_mail("atlas", "mine", "Mine", "For atlas.", 9))
+            .await;
+        let tool = InboxReadTool::new(hub.access_without_directory("atlas"));
+
+        let mine = tool
+            .execute(serde_json::json!({"id": "mine"}))
+            .await
+            .unwrap();
+        assert!(mine.output.contains("For atlas."), "{}", mine.output);
+
+        let Err(ToolError::Execution(message)) = tool
+            .execute(serde_json::json!({"id": "nova/user/note"}))
+            .await
+        else {
+            panic!("another agent's item is out of reach without a directory");
+        };
+        assert!(message.contains("no agent named 'nova'"), "{message}");
+        assert!(message.contains(OWN_INBOX_ONLY_NOTE), "{message}");
     }
 }
