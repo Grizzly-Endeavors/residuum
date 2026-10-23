@@ -117,6 +117,22 @@ describe("a message sent while a turn runs", () => {
     expect(store.waiting).toMatchObject([{ id: "tg-1", endpoint: "telegram" }]);
   });
 
+  it("shows the files a message sent while a turn ran came with, from the agent's frame", () => {
+    const store = running();
+    const file = {
+      item_id: "20260314_chat_attachment_notes_md",
+      filename: "notes.md",
+      size: 120,
+      content_type: "text/markdown",
+      path: "inbox/agent/attachments/20260314_chat_attachment_notes_md/notes.md",
+    };
+    store.handleMessage({
+      type: "message_queued",
+      message: { id: "m3", content: "see the notes", endpoint: "ws", attachments: [file] },
+    });
+    expect(store.waiting).toMatchObject([{ id: "m3", attachments: [file] }]);
+  });
+
   it("forgets what was asked of it when the agent says it no longer waits", () => {
     const store = running();
     store.pushUserMessage("also check the logs", undefined, "m2");

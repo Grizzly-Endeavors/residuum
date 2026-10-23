@@ -184,7 +184,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         if (msg.content.toLowerCase().startsWith("spawn")) {
           spawnSession(state, msg.content.replace(/^spawn\s*/i, "") || "Look into something");
         }
-        chat.send({ ...msg, content: saved.content }, saved.attachments);
+        chat.send({ ...msg, content: saved.content }, saved.attachments, saved.images);
         break;
       }
 

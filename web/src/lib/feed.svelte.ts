@@ -905,6 +905,9 @@ export class FeedStore {
       ...(message.images === undefined || message.images.length === 0
         ? {}
         : { images: message.images }),
+      ...(message.attachments === undefined || message.attachments.length === 0
+        ? {}
+        : { attachments: message.attachments }),
       ...(message.sender === undefined ? {} : { sender: message.sender }),
       endpoint: message.endpoint,
       connection: this.connection,
@@ -954,14 +957,19 @@ export class FeedStore {
 
   /**
    * The agent took in a message this page sent and already shows: the files
-   * it saved replace the ones the page showed as it sent them.
+   * it saved replace the ones the page showed as it sent them, and the
+   * pictures it inlined show as pictures.
    */
   private confirmSentAttachments(msg: UserMessageFrame): void {
-    if (msg.attachments === undefined || msg.attachments.length === 0) return;
+    const hasFiles = msg.attachments !== undefined && msg.attachments.length > 0;
+    const hasImages = msg.images !== undefined && msg.images.length > 0;
+    if (!hasFiles && !hasImages) return;
     const shown = this.feed.findLast(
       (item): item is UserFeedItem => item.kind === "user" && item.messageId === msg.id,
     );
-    if (shown !== undefined) shown.attachments = msg.attachments;
+    if (shown === undefined) return;
+    if (hasFiles) shown.attachments = msg.attachments;
+    if (hasImages) shown.images = msg.images;
   }
 
   /** The turn ended: settle calls still waiting on results, and record how it ended. */

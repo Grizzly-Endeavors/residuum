@@ -185,10 +185,6 @@ content: string,
  */
 images?: Array<ImageAttachment>,
 /**
- * Files attached to the message, each saved as a companion agent-inbox item.
- */
-attachments?: Array<MessageAttachment>,
-/**
  * Files attached to the message, each saved as a companion agent-inbox
  * item.
  */

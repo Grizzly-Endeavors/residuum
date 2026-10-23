@@ -157,7 +157,11 @@ interface TurnInFlight {
 /** Runs simulated main-agent turns for one agent. */
 export interface ChatSimulator {
   /** Start a turn for a message this page sent, with the files its uploads were saved as. */
-  send: (msg: SendMessage, attachments?: readonly MessageAttachment[]) => void;
+  send: (
+    msg: SendMessage,
+    attachments?: readonly MessageAttachment[],
+    images?: readonly ImageAttachment[],
+  ) => void;
   /** Start a turn for a message another channel brought, such as Telegram. */
   receive: (content: string, source: MessageSource) => void;
   /** Take a message one of the agent's own sessions sent main (see `receiveFromSession`). */
@@ -214,6 +218,12 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       content,
       timestamp: env.clock.iso(),
       visibility: source.agentSender === undefined ? "user" : "background",
+      ...(source.images === undefined || source.images.length === 0
+        ? {}
+        : { images: source.images }),
+      ...(source.attachments === undefined || source.attachments.length === 0
+        ? {}
+        : { attachments: source.attachments }),
       ...(source.sender === undefined ? {} : { sender: source.sender }),
       ...(source.agentSender === undefined ? {} : { agent_sender: source.agentSender }),
     };
@@ -624,6 +634,9 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         ...(source.images === undefined || source.images.length === 0
           ? {}
           : { images: source.images }),
+        ...(source.attachments === undefined || source.attachments.length === 0
+          ? {}
+          : { attachments: source.attachments }),
         ...(source.sender === undefined ? {} : { sender: source.sender }),
         endpoint: source.endpoint,
       },
@@ -637,9 +650,14 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     if (next !== undefined) start(next.id, next.content, next.source);
   }
 
-  function send(msg: SendMessage, attachments: readonly MessageAttachment[] = []): void {
+  function send(
+    msg: SendMessage,
+    attachments: readonly MessageAttachment[] = [],
+    images: readonly ImageAttachment[] = [],
+  ): void {
     arrive(msg.id, msg.content, {
       ...WEB,
+      ...(images.length === 0 ? {} : { images: [...images] }),
       ...(attachments.length === 0 ? {} : { attachments: [...attachments] }),
     });
   }

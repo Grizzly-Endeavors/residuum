@@ -262,6 +262,48 @@ describe("the conversation", () => {
   });
 });
 
+describe("a waiting message with files", () => {
+  it("shows its files, and multitask refuses it without taking it back from the agent", async () => {
+    setViewedAgent("atlas");
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    ws.store.handleMessage({
+      type: "message_queued",
+      message: {
+        id: "m3",
+        content: "see the notes",
+        endpoint: "ws",
+        attachments: [
+          {
+            item_id: "20260314_chat_attachment_notes_md",
+            filename: "notes.md",
+            size: 120,
+            content_type: "text/markdown",
+            path: "inbox/agent/attachments/20260314_chat_attachment_notes_md/notes.md",
+          },
+        ],
+      },
+    });
+    const withdraw = vi.spyOn(ws, "withdrawWaiting");
+    // Multitask is offered only while the agent's connection is up.
+    ws.transport.status = "connected";
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+
+    expect(screen.getByRole("list", { name: "Attachments" })).toHaveTextContent("notes.md");
+    await userEvent.click(screen.getByRole("button", { name: "Multitask" }));
+    expect(withdraw).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(notifications.history.some((item) => item.message.includes("can't take files"))).toBe(
+        true,
+      );
+    });
+  });
+});
+
 describe("stopping the reply", () => {
   function startTurn(): void {
     setViewedAgent("atlas");
