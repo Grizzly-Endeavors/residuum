@@ -12,7 +12,7 @@
   // or the composer's staged files. A ready chip is a download link (`href`),
   // an Open button (`onopen`), or plain text, and may carry Remove. While the
   // file is pending or failed it can't be opened or downloaded; a failed chip
-  // says so and offers Retry.
+  // says so and offers Try again.
   //
   // The chip has a `control-border` outline over a stone fill, so it stays
   // visible on any container stone (stone-0 to stone-3) and its boundary meets
@@ -39,7 +39,7 @@
     onopen?: () => void;
     /** Adds a Remove button. */
     onremove?: () => void;
-    /** Adds a Retry button to a failed chip. */
+    /** Adds a Try again button to a failed chip. */
     onretry?: () => void;
     class?: string;
   }
@@ -105,7 +105,7 @@
     <VisuallyHidden>{filename}</VisuallyHidden>
   </span>
   {#if state === "failed"}
-    <span class="ui-attachment-failure" role="alert">
+    <span class="ui-attachment-failure" role="status">
       <VisuallyHidden>{`${filename}: `}</VisuallyHidden>{failure}
     </span>
   {:else if size !== undefined}
@@ -177,10 +177,10 @@
       variant="quiet"
       size="sm"
       icon="reload"
-      aria-label={`Retry ${filename}`}
+      aria-label={`Try again ${filename}`}
       onclick={() => onretry?.()}
     >
-      Retry
+      Try again
     </Button>
   {/if}
   {#if onremove}
