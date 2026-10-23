@@ -535,14 +535,17 @@ mod tests {
         let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
         let items = crate::inbox::list_items(&inbox_dir).await.unwrap();
         assert_eq!(items.len(), 1, "one companion item should be saved");
-        let (_, companion) = &items[0];
+        let (_, companion) = items.first().expect("one companion item should be saved");
         assert_eq!(
             companion.attachments.len(),
             1,
             "item should record its file"
         );
 
-        let recorded = &companion.attachments[0];
+        let recorded = companion
+            .attachments
+            .first()
+            .expect("item should record its file");
         assert!(
             recorded.starts_with("inbox/agent/attachments"),
             "recorded path should be workspace-relative: {}",

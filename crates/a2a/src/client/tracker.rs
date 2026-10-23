@@ -942,7 +942,7 @@ impl RemoteTaskTracker {
         match attachment::save_attachment_bytes(&info, &bytes, item.attachments_dir()).await {
             Ok(saved) => {
                 self.note_saved_artifact(body, agent, &saved, &info, item)
-                    .await
+                    .await;
             }
             Err(e) => {
                 write!(body, "\n\n[Artifact: {filename} — failed to save: {e}]").ok();
@@ -969,7 +969,7 @@ impl RemoteTaskTracker {
         match attachment::download_attachment(&info, url, item.attachments_dir()).await {
             Ok(saved) => {
                 self.note_saved_artifact(body, agent, &saved, &info, item)
-                    .await
+                    .await;
             }
             Err(e) => {
                 write!(body, "\n\n[Artifact: {filename} — failed to download: {e}]").ok();
@@ -1059,7 +1059,9 @@ mod tests {
         }
         assert_eq!(item_paths.len(), 1, "one companion item per artifact file");
 
-        let item_path = &item_paths[0];
+        let item_path = item_paths
+            .first()
+            .expect("one companion item per artifact file");
         let id = item_path
             .file_stem()
             .unwrap()
@@ -1067,12 +1069,22 @@ mod tests {
             .into_owned();
         let item: serde_json::Value =
             serde_json::from_str(&tokio::fs::read_to_string(item_path).await.unwrap()).unwrap();
-        assert_eq!(item["title"], "A2A artifact: report.bin");
-        assert_eq!(item["source"], "a2a");
-        let body_text = item["body"].as_str().unwrap();
+        assert_eq!(
+            item.get("title").and_then(|v| v.as_str()),
+            Some("A2A artifact: report.bin")
+        );
+        assert_eq!(item.get("source").and_then(|v| v.as_str()), Some("a2a"));
+        let body_text = item
+            .get("body")
+            .and_then(|v| v.as_str())
+            .expect("item should carry a body");
         assert!(body_text.contains("From: remote-agent"), "{body_text}");
         assert!(body_text.contains("Size: 5 bytes"), "{body_text}");
-        let recorded = item["attachments"][0].as_str().unwrap();
+        let recorded = item
+            .get("attachments")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.as_str())
+            .expect("item should record its file");
         assert!(
             recorded.ends_with(&format!("attachments/{id}/report.bin")),
             "item should record its file under its own directory: {recorded}"
