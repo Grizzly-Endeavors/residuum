@@ -17,16 +17,14 @@ import {
   fetchMailThread,
   fetchMailThreads,
   markMailThreadRead,
-  MAX_UPLOAD_BYTES,
   replyToMailThread,
   restoreMailThread,
   sendMail,
-  UPLOAD_LIMIT_LABEL,
-  uploadFile,
 } from "./api";
 import { userErrorMessage } from "./errors";
 import type { MailFolder, MailMessage, MailThread, MailThreadSummary } from "./hub-types";
 import type { AppLocation } from "./routes";
+import { listing, StagedAttachments } from "./staged-attachments.svelte";
 import { toast } from "./toast.svelte";
 
 /** Which threads the list shows: one folder, for one agent or every agent. */
@@ -60,9 +58,6 @@ export type OpenThreadOutcome =
 
 /** Where a thread's messages from agents are: any still in the inbox, all archived, or none from an agent. */
 export type ThreadMailbox = "inbox" | "archived" | null;
-
-/** How far a staged attachment has got: uploading, staged on the hub, or failed. */
-export type AttachmentStatus = "uploading" | "uploaded" | "failed";
 
 /** How many threads one page asks for. */
 const PAGE_SIZE = 50;
@@ -114,129 +109,20 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
   return Object.fromEntries(Object.entries(record).filter(([k]) => k !== key));
 }
 
-function listing(names: readonly string[]): string {
-  if (names.length <= 1) return names.join("");
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
-}
-
-// ── Attachments and drafts ───────────────────────────────────────────
-
-let attachmentCount = 0;
-
-/**
- * A file picked for a message. Its upload starts as soon as it is picked; the
- * message is sent with the hub's id for it.
- */
-export class StagedAttachment {
-  /** Stable for keyed lists while the draft holds it. */
-  readonly key = `attachment-${String(++attachmentCount)}`;
-  readonly filename: string;
-  readonly size: number;
-  status = $state<AttachmentStatus>("uploading");
-  /** The hub's id for the staged file, once uploaded. */
-  uploadId = $state<string | null>(null);
-  /** Why the upload failed, in plain words, or null. */
-  error = $state<string | null>(null);
-  /** Settles when the current upload attempt does, whichever way it goes. */
-  done: Promise<void> = Promise.resolve();
-  /** Taken off the draft: a late upload answer changes nothing. */
-  private removed = false;
-  /** Cancels the upload attempt in flight. */
-  private controller: AbortController | null = null;
-
-  constructor(readonly file: File) {
-    this.filename = file.name;
-    this.size = file.size;
-  }
-
-  /** Upload the file, or upload it again after a failure. */
-  upload(): Promise<void> {
-    if (this.status === "uploaded") return this.done;
-    this.status = "uploading";
-    this.error = null;
-    const controller = new AbortController();
-    this.controller = controller;
-    this.done = (async () => {
-      try {
-        const staged = await uploadFile(this.file, this.filename, { signal: controller.signal });
-        if (this.removed) return;
-        this.uploadId = staged.id;
-        this.status = "uploaded";
-      } catch (err) {
-        if (this.removed) return;
-        this.error = userErrorMessage(err, { action: `Couldn't upload ${this.filename}.` });
-        this.status = "failed";
-      }
-    })();
-    return this.done;
-  }
-
-  /** Take it off the draft: an upload still running is cancelled, and nothing it answers later counts. */
-  remove(): void {
-    this.removed = true;
-    this.controller?.abort();
-  }
-}
+// ── Drafts ───────────────────────────────────────────────────────────
 
 /** What a message being written holds: its body and its attachments. */
 export class MailDraft {
   body = $state("");
-  attachments = $state<StagedAttachment[]>([]);
-  /** Files that weren't attached because they are too large, said in plain words, or null. */
-  attachNotice = $state<string | null>(null);
+  /** The files attached to it, each uploading as soon as it is attached. */
+  readonly files = new StagedAttachments();
   sending = $state(false);
   /** Why the last send didn't go, in plain words, or null. */
   sendError = $state<string | null>(null);
 
   /** The draft holds something the user wrote or attached. */
   get dirty(): boolean {
-    return this.body.trim() !== "" || this.attachments.length > 0;
-  }
-
-  /** Some attachment is still uploading. */
-  get uploading(): boolean {
-    return this.attachments.some((attachment) => attachment.status === "uploading");
-  }
-
-  /**
-   * Attach `files`: each starts uploading at once. A file over the upload
-   * limit is refused before any upload, and `attachNotice` names it.
-   */
-  attach(files: Iterable<File>): void {
-    const refused: string[] = [];
-    const added: StagedAttachment[] = [];
-    for (const file of files) {
-      if (file.size > MAX_UPLOAD_BYTES) {
-        refused.push(file.name);
-        continue;
-      }
-      const attachment = new StagedAttachment(file);
-      void attachment.upload();
-      added.push(attachment);
-    }
-    this.attachNotice =
-      refused.length === 0
-        ? null
-        : `${listing(refused)} ${refused.length === 1 ? "is" : "are"} larger than the ${UPLOAD_LIMIT_LABEL} upload limit, so ${refused.length === 1 ? "it wasn't" : "they weren't"} attached.`;
-    if (added.length > 0) this.attachments = [...this.attachments, ...added];
-  }
-
-  /** Upload a failed attachment again. */
-  retryAttachment(key: string): Promise<void> {
-    const attachment = this.attachments.find((held) => held.key === key);
-    return attachment?.status === "failed" ? attachment.upload() : Promise.resolve();
-  }
-
-  /** Take an attachment off the message, uploaded or not. */
-  removeAttachment(key: string): void {
-    const attachment = this.attachments.find((held) => held.key === key);
-    if (attachment === undefined) return;
-    attachment.remove();
-    this.attachments = this.attachments.filter((held) => held !== attachment);
-  }
-
-  dismissAttachNotice(): void {
-    this.attachNotice = null;
+    return this.body.trim() !== "" || this.files.attachments.length > 0;
   }
 
   /** Why the draft can't be sent as it stands, in plain words, or null when it can. */
@@ -250,24 +136,19 @@ export class MailDraft {
    * set when one didn't upload.
    */
   async uploadIds(): Promise<string[] | null> {
-    while (this.uploading) {
-      await Promise.all(this.attachments.map((attachment) => attachment.done));
-    }
-    const failed = this.attachments.filter((attachment) => attachment.status === "failed");
-    if (failed.length > 0) {
-      const names = listing(failed.map((attachment) => attachment.filename));
-      this.sendError = `${names} didn't upload. Try ${failed.length === 1 ? "it" : "them"} again or remove ${failed.length === 1 ? "it" : "them"}, then send.`;
+    await this.files.settled();
+    const problem = this.files.problem;
+    if (problem !== null) {
+      this.sendError = problem;
       return null;
     }
-    return this.attachments.map((attachment) => attachment.uploadId ?? "");
+    return this.files.uploadIds;
   }
 
   /** Empty the draft after it was sent. */
   clear(): void {
-    for (const attachment of this.attachments) attachment.remove();
+    this.files.clear();
     this.body = "";
-    this.attachments = [];
-    this.attachNotice = null;
     this.sendError = null;
   }
 }

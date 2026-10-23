@@ -1,5 +1,7 @@
 import type { RecentMessage } from "../../src/lib/types";
 import type { MockClock } from "../env";
+import { mockAttachment, storeAttachment } from "../inbox";
+import type { MockState } from "../state";
 
 // Recent live messages — span today, yesterday, and the day before so the
 // frontend inserts a day divider between each run. These correspond to the
@@ -77,7 +79,33 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
     },
     {
       role: "user",
-      content: "Good. Let's keep iterating on the notification routing doc.",
+      content:
+        "Good. Let's keep iterating on the notification routing doc.\n" +
+        "[Attachment: routing-notes.md (1840 bytes) → inbox/agent/attachments/mock-chat-notes/routing-notes.md]\n" +
+        "[Attachment: routing-spec.pdf (48213 bytes) → inbox/agent/attachments/mock-chat-spec/routing-spec.pdf]",
+      // A 1×1 PNG, the picture the message carried.
+      images: [
+        {
+          media_type: "image/png",
+          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        },
+      ],
+      attachments: [
+        {
+          item_id: "mock-chat-notes",
+          filename: "routing-notes.md",
+          size: 1840,
+          content_type: "text/markdown",
+          path: "inbox/agent/attachments/mock-chat-notes/routing-notes.md",
+        },
+        {
+          item_id: "mock-chat-spec",
+          filename: "routing-spec.pdf",
+          size: 48213,
+          content_type: "application/pdf",
+          path: "inbox/agent/attachments/mock-chat-spec/routing-spec.pdf",
+        },
+      ],
       timestamp: daysAgoAt(0, 10, 5),
       visibility: "user",
     },
@@ -313,3 +341,48 @@ export const markdownShowcase: string =
   "```\n\n" +
   "### Open questions\n\n" +
   "Should parked notifications expire after a week, or stay until someone reads them?";
+
+/** The text of the seeded `routing-notes.md`, which the history message's first attachment names. */
+const ROUTING_NOTES = [
+  "# Routing notes",
+  "",
+  "- Urgent notifications go to every channel the user has enabled.",
+  "- Normal notifications go to the user's preferred channel, then fall back.",
+  "- Low notifications are batched into the daily digest.",
+  "",
+].join("\n");
+
+/**
+ * The companion inbox items the seeded history message's attachments are
+ * saved in, as the backend saves a chat attachment: the agent can serve them,
+ * and a `.md` one is a workspace file the Files panel opens.
+ */
+export function seedChatAttachments(state: MockState): void {
+  const { clock } = state.env;
+  const notes = storeAttachment(
+    state,
+    "agent",
+    "mock-chat-notes",
+    "routing-notes.md",
+    Buffer.from(ROUTING_NOTES),
+  );
+  const spec = mockAttachment("routing-spec.pdf", "application/pdf");
+  state.agentInbox.push(
+    {
+      id: "mock-chat-notes",
+      title: "Chat attachment: routing-notes.md",
+      body: "",
+      source: "chat",
+      timestamp: clock.isoAgo(24 * 3_600_000),
+      attachments: [notes],
+    },
+    {
+      id: "mock-chat-spec",
+      title: "Chat attachment: routing-spec.pdf",
+      body: "",
+      source: "chat",
+      timestamp: clock.isoAgo(24 * 3_600_000),
+      attachments: [spec],
+    },
+  );
+}

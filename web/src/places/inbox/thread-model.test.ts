@@ -3,7 +3,6 @@ import {
   deliveryHint,
   joinNames,
   moveOnEnter,
-  opensInPanel,
   seenLine,
   sendOnModEnter,
   threadMeta,
@@ -16,15 +15,6 @@ describe("joinNames", () => {
     expect(joinNames(["atlas"])).toBe("atlas");
     expect(joinNames(["atlas", "scout"])).toBe("atlas and scout");
     expect(joinNames(["atlas", "scout", "wren"], "or")).toBe("atlas, scout or wren");
-  });
-});
-
-describe("opensInPanel", () => {
-  it("opens Markdown and text files beside the thread, whatever their case", () => {
-    expect(opensInPanel({ filename: "notes.md" })).toBe(true);
-    expect(opensInPanel({ filename: "LOG.TXT" })).toBe(true);
-    expect(opensInPanel({ filename: "report.pdf" })).toBe(false);
-    expect(opensInPanel({ filename: "md" })).toBe(false);
   });
 });
 

@@ -17,6 +17,7 @@ import type { HubServerMessage } from "../src/lib/hub-types";
 import type { RecentMessage, WorkspaceEntry } from "../src/lib/types";
 import { loadAsset } from "./assets";
 import { seedCheckpoints, type MockCheckpoints } from "./checkpoints";
+import { seedChatAttachments } from "./data/chat";
 import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
 import { createSessions, type MockSessions } from "./data/sessions";
 import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
@@ -325,6 +326,7 @@ export function seedAgentData(state: MockState): void {
   };
   state.inboxItems = createInboxItems(clock);
   state.inboxArchive = createArchivedInboxItems(clock);
+  seedChatAttachments(state);
   state.a2aAgentsJson = SAMPLE_A2A_AGENTS_JSON;
   state.scheduled = createScheduled(clock);
 }

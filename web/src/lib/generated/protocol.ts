@@ -14,6 +14,7 @@ export type { AgentSender } from "./AgentSender";
 export type { TurnOrigin } from "./TurnOrigin";
 export type { Visibility } from "./Visibility";
 export type { ImageAttachment } from "./ImageAttachment";
+export type { MessageAttachment } from "./MessageAttachment";
 export type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 export type { SessionCategory } from "./SessionCategory";
 export type { SessionCommandErrorCode } from "./SessionCommandErrorCode";

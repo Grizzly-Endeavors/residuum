@@ -19,7 +19,7 @@
   function tryAgain(): void {
     if (retry === undefined) return;
     sentAgain = true;
-    ws.sendChat(retry.content, retry.images);
+    ws.sendChat(retry.content);
   }
 </script>
 

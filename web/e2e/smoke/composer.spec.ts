@@ -4,8 +4,10 @@ import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../suppo
 import { expect, test } from "../support/fixtures";
 
 /**
- * The composer: the chat actions under `/`, images attached by
- * button and by drop, a draft kept per agent across navigation and reload,
+ * The composer: the chat actions under `/`, files attached by button and by
+ * drop (uploads, chips, removal, the 50 MB limit, chips kept on the sent
+ * bubble through a reload, a Markdown chip opening the Files panel), a draft
+ * kept per agent across navigation and reload,
  * the model and thinking control (a popover, a sheet on phones), messages
  * waiting while the connection is down, and the conversation size in the
  * context panel for a running agent and a stopped one.
@@ -18,6 +20,8 @@ const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "base64",
 );
+/** The start of a PDF; the mock keeps it as a stand-in, so it needn't be a whole one. */
+const PDF = Buffer.from("%PDF-1.4\n%mock\n");
 
 function box(page: Page, agent = "atlas"): Locator {
   return page.getByRole("combobox", { name: `Message ${agent}` });
@@ -103,29 +107,95 @@ test.describe("the / menu", () => {
   });
 });
 
-test.describe("images", () => {
-  test("attach by button, show as thumbnails, and send with the message", async ({ page }) => {
+/** The user's message whose text holds `text`, so a picture in another message doesn't match. */
+function sent(conversation: Locator, text: string): Locator {
+  return conversation.locator(".user-message").filter({ hasText: text });
+}
+
+test.describe("files", () => {
+  test("attach by button, watch each upload finish, remove one, and send with the message", async ({
+    page,
+  }) => {
     await openChat(page);
     await page.locator('input[type="file"]').setInputFiles([
+      { name: "spec.pdf", mimeType: "application/pdf", buffer: PDF },
       { name: "one.png", mimeType: "image/png", buffer: PNG },
       { name: "two.png", mimeType: "image/png", buffer: PNG },
     ]);
-    const attached = page.getByRole("list", { name: "Attached images" });
-    await expect(attached.getByRole("img")).toHaveCount(2);
-    await page.getByRole("button", { name: "Remove image 2" }).click();
-    await expect(attached.getByRole("img")).toHaveCount(1);
+    const attached = page.getByRole("list", { name: "Attached files" });
+    await expect(attached.getByRole("listitem")).toHaveCount(3);
+    await expect(attached.locator('[data-state="ready"]')).toHaveCount(3);
+    await page.getByRole("button", { name: "Remove two.png" }).click();
+    await expect(attached.getByRole("listitem")).toHaveCount(2);
     await expectNoAxeViolations(page);
 
-    await box(page).fill("Here's the screenshot");
+    await box(page).fill("Here's the spec and the screenshot");
     await sendFromComposer(box(page));
     const conversation = page.getByRole("region", { name: "Conversation with atlas" });
-    await expect(conversation.getByRole("img", { name: "Attached image 1" })).toBeVisible();
+    const bubble = conversation.getByRole("list", { name: "Attachments" });
+    await expect(bubble.getByRole("link", { name: "Download spec.pdf" })).toBeVisible();
+    await expect(bubble.getByRole("link", { name: "Download one.png" })).toBeVisible();
+    await expect(
+      sent(conversation, "Here's the spec").getByRole("img", { name: "Attached image 1" }),
+    ).toBeVisible();
     await expect(attached).toHaveCount(0);
   });
 
-  test("attach by drop anywhere on the chat, with an overlay while a file is over it", async ({
-    page,
-  }) => {
+  test("a sent message keeps its chips and picture on reload", async ({ page }) => {
+    await openChat(page);
+    await page.locator('input[type="file"]').setInputFiles([
+      { name: "photo.png", mimeType: "image/png", buffer: PNG },
+      { name: "data.csv", mimeType: "text/csv", buffer: Buffer.from("a,b\n1,2\n") },
+    ]);
+    const attached = page.getByRole("list", { name: "Attached files" });
+    await expect(attached.locator('[data-state="ready"]')).toHaveCount(2);
+    await box(page).fill("Reload me");
+    await sendFromComposer(box(page));
+
+    const conversation = page.getByRole("region", { name: "Conversation with atlas" });
+    await expect(conversation.getByRole("link", { name: "Download data.csv" })).toBeVisible();
+    await page.reload();
+    const reloaded = sent(conversation, "Reload me");
+    await expect(reloaded.getByText("Reload me")).toBeVisible();
+    await expect(reloaded.getByRole("link", { name: "Download data.csv" })).toBeVisible();
+    await expect(reloaded.getByRole("img", { name: "Attached image 1" })).toBeVisible();
+  });
+
+  test("a Markdown chip opens the file in the context panel", async ({ page, isMobile }) => {
+    await openChat(page);
+    const conversation = page.getByRole("region", { name: "Conversation with atlas" });
+    await conversation.getByRole("button", { name: "Open routing-notes.md" }).click();
+    const panel = page.getByRole(isMobile ? "dialog" : "complementary", {
+      name: "routing-notes.md",
+    });
+    await expect(panel.getByRole("heading", { name: "Routing notes", exact: true })).toBeVisible();
+  });
+
+  test("a file over 50 MB is refused in plain words, and nothing uploads", async ({ page }) => {
+    await openChat(page);
+    // A File that claims 51 MB without holding the bytes: the composer reads only its size before refusing it.
+    const files = await page.evaluateHandle(() => {
+      const huge = new File(["x"], "archive.zip", { type: "application/zip" });
+      Object.defineProperty(huge, "size", { value: 51 * 1024 * 1024 });
+      const transfer = new DataTransfer();
+      transfer.items.add(huge);
+      return transfer;
+    });
+    await page.getByRole("region", { name: "Conversation with atlas" }).dispatchEvent("drop", {
+      dataTransfer: files,
+    });
+    await expect(
+      page.getByRole("status").filter({
+        hasText: "archive.zip is larger than the 50 MB upload limit, so it wasn't attached.",
+      }),
+    ).toBeVisible();
+    await expect(page.getByRole("list", { name: "Attached files" })).toHaveCount(0);
+    await expectNoAxeViolations(page);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "upload limit" })).toHaveCount(0);
+  });
+
+  test("drop anywhere on the chat, with an overlay while a file is over it", async ({ page }) => {
     await openChat(page);
     const files = await page.evaluateHandle(
       (bytes) => {
@@ -136,7 +206,7 @@ test.describe("images", () => {
       },
       [...PNG],
     );
-    const overlay = page.getByText("Drop images to attach");
+    const overlay = page.getByText("Drop files to attach");
     await expect(overlay).toHaveCount(0);
 
     // Over the conversation, nowhere near the composer.
@@ -151,10 +221,9 @@ test.describe("images", () => {
     expect(covering.y + covering.height / 2).toBeCloseTo(place.y + place.height / 2, 0);
     await feed.dispatchEvent("drop", { dataTransfer: files });
     await expect(overlay).toHaveCount(0);
-    await expect(page.getByRole("img", { name: "Image 1" })).toBeVisible();
-    await expect(page.locator("form.composer").getByRole("alert")).toContainText(
-      "notes.txt can't be attached. Attach a JPEG, PNG, GIF or WebP image.",
-    );
+    const attached = page.getByRole("list", { name: "Attached files" });
+    await expect(attached.getByRole("listitem")).toHaveCount(2);
+    await expect(attached.locator('[data-state="ready"]')).toHaveCount(2);
 
     // Over the header, where nothing used to take files.
     await page.getByRole("heading", { level: 1, name: "atlas" }).dispatchEvent("dragover", {
@@ -164,7 +233,7 @@ test.describe("images", () => {
     await page.getByRole("heading", { level: 1, name: "atlas" }).dispatchEvent("drop", {
       dataTransfer: files,
     });
-    await expect(page.getByRole("img", { name: "Image 2" })).toBeVisible();
+    await expect(attached.getByRole("listitem")).toHaveCount(4);
   });
 
   test("a file dropped where nothing takes it doesn't make the browser leave the app", async ({

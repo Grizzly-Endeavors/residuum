@@ -53,6 +53,26 @@ describe("messages waiting for the agent", () => {
     expect(screen.getByText("Alex · telegram · direct message")).toBeInTheDocument();
   });
 
+  it("shows the files a waiting message came with, as chips", () => {
+    show([
+      {
+        ...LOGS,
+        attachments: [
+          {
+            item_id: "20260314_chat_attachment_spec_pdf",
+            filename: "spec.pdf",
+            size: 2048,
+            content_type: "application/pdf",
+            path: "inbox/agent/attachments/20260314_chat_attachment_spec_pdf/spec.pdf",
+          },
+        ],
+      },
+    ]);
+    const files = screen.getByRole("list", { name: "Attachments" });
+    expect(files).toHaveTextContent("spec.pdf");
+    expect(files).toHaveTextContent("2.0 KB");
+  });
+
   it("asks nothing of a message while the agent's connection is down", () => {
     show([LOGS], true);
     expect(screen.getByRole("button", { name: "Send now" })).toBeDisabled();

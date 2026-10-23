@@ -65,6 +65,40 @@ describe("when converted history says a message was sent", () => {
   });
 });
 
+describe("a user's message in history", () => {
+  const attachment = {
+    item_id: "item-1",
+    filename: "notes.md",
+    size: 12,
+    content_type: "text/markdown",
+    path: "inbox/agent/attachments/item-1/notes.md",
+  };
+
+  it("keeps its images and attachments, so a reload shows them", () => {
+    const { items } = convertHistory(
+      [
+        message("user", "See these", {
+          images: [{ media_type: "image/png", data: "AAAA" }],
+          attachments: [attachment],
+        }),
+      ],
+      { mode: "main" },
+    );
+    expect(items[0]).toMatchObject({
+      kind: "user",
+      content: "See these",
+      images: [{ media_type: "image/png", data: "AAAA" }],
+      attachments: [attachment],
+    });
+  });
+
+  it("carries no image or attachment fields when the message had none", () => {
+    const { items } = convertHistory([message("user", "Plain")], { mode: "main" });
+    expect(items[0]).not.toHaveProperty("images");
+    expect(items[0]).not.toHaveProperty("attachments");
+  });
+});
+
 describe("the times in the store's history", () => {
   it("shows an archived episode's messages with no time, and the recent ones with theirs", () => {
     const store = new FeedStore();

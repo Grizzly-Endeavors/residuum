@@ -1,24 +1,14 @@
 // Words and choices the open thread and the composers share: how a list of
-// agents reads, which attachments open beside the thread, the lines that say
-// what a file may weigh and when the recipients will see what is sent, and
-// the key that sends.
+// agents reads, the lines that say what a file may weigh and when the
+// recipients will see what is sent, and the key that sends.
 
 import { UPLOAD_LIMIT_LABEL } from "../../lib/api";
-import type { MailAttachment, MailSeen } from "../../lib/hub-types";
+import type { MailSeen } from "../../lib/hub-types";
 
 /** Names as a sentence lists them: "atlas", "atlas and scout", "atlas, scout and wren". */
 export function joinNames(names: readonly string[], word = "and"): string {
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} ${word} ${names[names.length - 1] ?? ""}`;
-}
-
-/** Extensions the file panel shows as text, so the attachment opens beside the thread. */
-const PANEL_EXTENSIONS = [".md", ".txt"];
-
-/** The attachment opens in the file panel rather than downloading. */
-export function opensInPanel(attachment: Pick<MailAttachment, "filename">): boolean {
-  const name = attachment.filename.toLowerCase();
-  return PANEL_EXTENSIONS.some((extension) => name.endsWith(extension));
 }
 
 /** The thread's line under its subject: who is in it and how many messages it holds. */
