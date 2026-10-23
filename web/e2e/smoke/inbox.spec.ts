@@ -107,6 +107,17 @@ function toastWith(page: Page, text: string): Locator {
   return page.locator(".ui-toast", { hasText: text });
 }
 
+/** The URLs of the requests the page makes with `method` to `path`, filled in as they happen. */
+function requestsTo(page: Page, method: string, path: string): string[] {
+  const urls: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === method && new URL(request.url()).pathname === path) {
+      urls.push(request.url());
+    }
+  });
+  return urls;
+}
+
 /** The phone shows the list or the thread, so it goes back to the list to see a row. */
 async function toList(page: Page, isMobile: boolean): Promise<void> {
   if (isMobile) await conversation(page).getByRole("button", { name: "Back to list" }).click();
@@ -129,6 +140,8 @@ test.describe("the folders and the agent filter", () => {
     await expect(folder(page, "Inbox")).toHaveAccessibleName("Inbox 2 unread");
     await expect(folder(page, "Inbox")).toHaveAttribute("aria-current", "page");
     await expect(inboxLink(page, isMobile)).toHaveAccessibleName("Inbox 2 unread");
+    // The list with its rows, on a phone as well as a desktop.
+    await expectNoAxeViolations(page);
 
     // Sent holds what you wrote, worded by who it went to.
     await folder(page, "Sent").click();
@@ -339,7 +352,10 @@ test.describe("Archive and Move to Inbox", () => {
 
     await moved.getByRole("button", { name: "Undo" }).click();
     await expect(row(page, "Daily Digest", "atlas")).toBeVisible();
+    // "Not in the Inbox" means something only once the Inbox has loaded: five of its six seeded threads.
     await folder(page, "Inbox").click();
+    await expect.poll(() => address(page)).toBe("/inbox");
+    await expect(rows(page)).toHaveCount(5);
     await expect(row(page, "Daily Digest", "atlas")).toHaveCount(0);
   });
 
@@ -424,6 +440,7 @@ test.describe("New message", () => {
     mock,
     isMobile,
   }) => {
+    const sends = requestsTo(page, "POST", "/api/hub/mail/send");
     await page.goto("/inbox");
     await page.getByRole("button", { name: "New message" }).click();
     await expect.poll(() => address(page)).toBe("/inbox?compose=1");
@@ -443,17 +460,23 @@ test.describe("New message", () => {
       "true",
     );
 
-    // Enter in the Subject moves on to the message instead of sending.
-    await compose.getByRole("textbox", { name: "Subject" }).fill("Release checklist");
-    await compose.getByRole("textbox", { name: "Subject" }).press("Enter");
-    await expect(compose.getByRole("textbox", { name: /^Message/ })).toBeFocused();
-    await expect(compose).toBeVisible();
-    expect(address(page)).toBe("/inbox?compose=1");
-    await expect(compose.getByRole("heading", { name: "Release checklist" })).toBeVisible();
-
+    // The message is complete before Enter, so only Enter itself could send it. In the
+    // Subject it moves on to the message instead.
     await compose
       .getByRole("textbox", { name: /^Message/ })
       .fill("Please **review** the checklist before Friday.");
+    await compose.getByRole("textbox", { name: "Subject" }).fill("Release checklist");
+    await compose.getByRole("textbox", { name: "Subject" }).press("Enter");
+    await expect(compose.getByRole("textbox", { name: /^Message/ })).toBeFocused();
+    // The keypress belongs to the Subject, so the message doesn't gain a line break.
+    await expect(compose.getByRole("textbox", { name: /^Message/ })).toHaveValue(
+      "Please **review** the checklist before Friday.",
+    );
+    await expect(compose).toBeVisible();
+    await expect.poll(() => address(page)).toBe("/inbox?compose=1");
+    await expect(compose.getByRole("heading", { name: "Release checklist" })).toBeVisible();
+    expect(sends).toEqual([]);
+
     await picker(page).setInputFiles({
       name: "checklist.txt",
       mimeType: "text/plain",
@@ -475,6 +498,8 @@ test.describe("New message", () => {
     await expect(thread.getByText("to atlas and scout")).toBeVisible();
     await expect(thread.getByText("review", { exact: true })).toBeVisible();
     await expect(thread.getByRole("button", { name: "Open checklist.txt" })).toBeVisible();
+    // One send, the Send button's: a send from Enter would be a second request, or would have left the form before the click.
+    expect(sends).toHaveLength(1);
 
     await toList(page, isMobile);
     await expect(folder(page, "Sent")).toHaveAttribute("aria-current", "page");
@@ -499,46 +524,87 @@ test.describe("New message", () => {
     expect(address(page)).toBe("/inbox?compose=1&to=atlas");
   });
 
-  test("a file over 50 MB is refused before anything uploads, and the rest still attach", async ({
+  test("a file over 50 MB is refused before anything uploads, and the rest of the pick attaches", async ({
     page,
   }) => {
-    const uploads: string[] = [];
-    page.on("request", (request) => {
-      if (request.url().includes("/api/hub/uploads")) uploads.push(request.url());
-    });
+    const uploads = requestsTo(page, "POST", "/api/hub/uploads");
     await page.goto("/inbox?compose=1&to=atlas");
     const compose = page.getByRole("form", { name: "New message" });
     await expect(compose).toContainText("Any file, up to 50 MB each.");
 
-    // Playwright won't hand a browser a buffer this big, so the page makes the file.
+    // Playwright won't hand a browser a buffer this big, so the page makes the files.
     await picker(page).evaluate((input: HTMLInputElement, bytes: number) => {
       const files = new DataTransfer();
       files.items.add(
         new File([new Uint8Array(bytes)], "huge-video.mov", { type: "video/quicktime" }),
       );
+      files.items.add(new File(["small enough"], "notes.txt", { type: "text/plain" }));
       input.files = files.files;
       input.dispatchEvent(new Event("change", { bubbles: true }));
     }, MAX_UPLOAD_BYTES + 1);
 
+    // The big file is named and left out; the small one from the same pick is attached.
     await expect(
       compose.getByText(
         "huge-video.mov is larger than the 50 MB upload limit, so it wasn't attached.",
       ),
     ).toBeVisible();
-    await expect(compose.getByRole("list", { name: "Attached files" })).toHaveCount(0);
-    expect(uploads).toEqual([]);
+    const staged = compose.getByRole("list", { name: "Attached files" });
+    await expect(staged.getByRole("button", { name: "Remove notes.txt" })).toBeVisible();
+    await expect(staged.getByRole("listitem")).toHaveCount(1);
+    // The small file's upload is done, and was the only one that started.
+    await expect(staged.getByRole("progressbar")).toHaveCount(0);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]).toContain("filename=notes.txt");
 
     await compose.getByRole("button", { name: "Dismiss" }).click();
     await expect(compose.getByText(/larger than the 50 MB upload limit/)).toHaveCount(0);
+    await expect(staged.getByRole("button", { name: "Remove notes.txt" })).toBeVisible();
+  });
 
-    // A file within the limit attaches as usual, and uploads.
-    await picker(page).setInputFiles({
-      name: "notes.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from("small enough"),
+  test("Send waits for a file that is still uploading, and sends once it has", async ({ page }) => {
+    const sends = requestsTo(page, "POST", "/api/hub/mail/send");
+    // The upload is held at the network until the test lets it through.
+    let finishUpload = (): void => undefined;
+    const uploadMayFinish = new Promise<void>((resolve) => {
+      finishUpload = resolve;
     });
-    await expect(compose.getByRole("button", { name: "Remove notes.txt" })).toBeVisible();
-    await expect.poll(() => uploads.length).toBe(1);
+    await page.route(/\/api\/hub\/uploads/, async (route) => {
+      await uploadMayFinish;
+      await route.continue();
+    });
+    await page.goto("/inbox?compose=1&to=atlas");
+    const compose = page.getByRole("form", { name: "New message" });
+    await compose.getByRole("textbox", { name: "Subject" }).fill("Notes from the call");
+    await compose.getByRole("textbox", { name: /^Message/ }).fill("The notes are attached.");
+    await picker(page).setInputFiles({
+      name: "call-notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Agreed on the rollout order.\n"),
+    });
+    const staged = compose.getByRole("list", { name: "Attached files" });
+    await expect(
+      staged.getByRole("progressbar", { name: "Uploading call-notes.txt" }),
+    ).toBeVisible();
+
+    const send = compose.getByRole("button", { name: "Send" });
+    await send.click();
+    // Send is waiting, not refused: it says so, and nothing is sent while the file is on its way.
+    await expect(compose.getByText("Sending once the files finish uploading.")).toBeVisible();
+    await expect(send).toHaveAttribute("aria-busy", "true");
+    await expect(compose.getByRole("alert")).toHaveCount(0);
+    expect(sends).toEqual([]);
+    expect(address(page)).toBe("/inbox?compose=1&to=atlas");
+
+    finishUpload();
+    await expect
+      .poll(() => address(page))
+      .toMatch(/^\/inbox\?folder=sent&thread=atlas\/agent\/[^/&]+$/);
+    await expect(heading(page, "Notes from the call")).toBeVisible();
+    await expect(
+      conversation(page).getByRole("button", { name: "Open call-notes.txt" }),
+    ).toBeVisible();
+    expect(sends).toHaveLength(1);
   });
 
   test("leaving with text written asks first", async ({ page, isMobile }) => {
@@ -798,6 +864,58 @@ test.describe("when something fails", () => {
     await page.unroute(replying);
     await reply.getByRole("button", { name: "Send" }).click();
     await expect(conversation(page).getByRole("article")).toHaveCount(5);
+  });
+
+  test("a file that fails to upload offers Try again, and the message waits for it", async ({
+    page,
+  }) => {
+    const sends = requestsTo(page, "POST", "/api/hub/mail/send");
+    const uploading = /\/api\/hub\/uploads/;
+    await page.route(uploading, (route) =>
+      route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"busy"}' }),
+    );
+    await page.goto("/inbox?compose=1&to=atlas");
+    const compose = page.getByRole("form", { name: "New message" });
+    await compose.getByRole("textbox", { name: "Subject" }).fill("Notes from the call");
+    await compose.getByRole("textbox", { name: /^Message/ }).fill("The notes are attached.");
+    await picker(page).setInputFiles({
+      name: "call-notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Agreed on the rollout order.\n"),
+    });
+
+    // The chip says it failed and offers Try again beside Remove.
+    const chip = compose.getByRole("list", { name: "Attached files" }).getByRole("listitem");
+    await expect(chip.getByRole("status")).toContainText("Couldn't upload call-notes.txt.");
+    const tryAgain = chip.getByRole("button", { name: "Try again call-notes.txt" });
+    await expect(tryAgain).toBeVisible();
+    await expect(chip.getByRole("button", { name: "Remove call-notes.txt" })).toBeVisible();
+
+    // A message with a file that didn't upload is not sent, and says why.
+    await compose.getByRole("button", { name: "Send" }).click();
+    await expect(compose.getByRole("alert")).toHaveText(
+      "call-notes.txt didn't upload. Try it again or remove it, then send.",
+    );
+    expect(sends).toEqual([]);
+    expect(address(page)).toBe("/inbox?compose=1&to=atlas");
+
+    // Once the network is back, Try again uploads the file, and the message goes with it.
+    await page.unroute(uploading);
+    await tryAgain.click();
+    await expect(tryAgain).toHaveCount(0);
+    await expect(chip.getByRole("progressbar")).toHaveCount(0);
+    await expect(chip.getByRole("status")).toHaveCount(0);
+    await expect(chip.getByRole("button", { name: "Remove call-notes.txt" })).toBeVisible();
+
+    await compose.getByRole("button", { name: "Send" }).click();
+    await expect
+      .poll(() => address(page))
+      .toMatch(/^\/inbox\?folder=sent&thread=atlas\/agent\/[^/&]+$/);
+    await expect(heading(page, "Notes from the call")).toBeVisible();
+    await expect(
+      conversation(page).getByRole("button", { name: "Open call-notes.txt" }),
+    ).toBeVisible();
+    expect(sends).toHaveLength(1);
   });
 });
 
