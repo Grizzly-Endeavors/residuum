@@ -862,6 +862,9 @@ export class FeedStore {
       timestamp,
       messageId: msg.id,
       ...(msg.images === undefined || msg.images.length === 0 ? {} : { images: msg.images }),
+      ...(msg.attachments === undefined || msg.attachments.length === 0
+        ? {}
+        : { attachments: msg.attachments }),
       ...(msg.sender === undefined ? {} : { sender: msg.sender }),
       turnId: msg.turn_id,
       ...(joins ? { midTurn: true } : {}),

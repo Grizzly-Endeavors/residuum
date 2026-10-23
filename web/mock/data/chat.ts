@@ -77,7 +77,33 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
     },
     {
       role: "user",
-      content: "Good. Let's keep iterating on the notification routing doc.",
+      content:
+        "Good. Let's keep iterating on the notification routing doc.\n" +
+        "[Attachment: routing-notes.md (1840 bytes) → inbox/agent/attachments/mock-chat-notes/routing-notes.md]\n" +
+        "[Attachment: routing-spec.pdf (48213 bytes) → inbox/agent/attachments/mock-chat-spec/routing-spec.pdf]",
+      // A 1×1 PNG, the picture the message carried.
+      images: [
+        {
+          media_type: "image/png",
+          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        },
+      ],
+      attachments: [
+        {
+          item_id: "mock-chat-notes",
+          filename: "routing-notes.md",
+          size: 1840,
+          content_type: "text/markdown",
+          path: "inbox/agent/attachments/mock-chat-notes/routing-notes.md",
+        },
+        {
+          item_id: "mock-chat-spec",
+          filename: "routing-spec.pdf",
+          size: 48213,
+          content_type: "application/pdf",
+          path: "inbox/agent/attachments/mock-chat-spec/routing-spec.pdf",
+        },
+      ],
       timestamp: daysAgoAt(0, 10, 5),
       visibility: "user",
     },

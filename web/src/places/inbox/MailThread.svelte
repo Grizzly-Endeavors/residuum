@@ -10,7 +10,8 @@
   import { toast } from "../../lib/toast.svelte";
   import { AttachmentChip, Banner, Button, IconButton, Skeleton } from "../../lib/ui";
   import ReplyComposer from "./ReplyComposer.svelte";
-  import { joinNames, opensInPanel, seenLine, threadMeta } from "./thread-model";
+  import { opensInPanel } from "../../lib/message-attachments";
+  import { joinNames, seenLine, threadMeta } from "./thread-model";
 
   // One conversation, open: its subject, Archive or Move to Inbox, every
   // message oldest first with its attachments and, on yours, who has seen

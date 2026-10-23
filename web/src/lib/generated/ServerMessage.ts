@@ -2,6 +2,7 @@
 import type { AgentSender } from "./AgentSender";
 import type { AutoModeVerdict } from "./AutoModeVerdict";
 import type { ImageAttachment } from "./ImageAttachment";
+import type { MessageAttachment } from "./MessageAttachment";
 import type { MessageSender } from "./MessageSender";
 import type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 import type { PostTurnActivityKind } from "./PostTurnActivityKind";
@@ -182,21 +183,25 @@ content: string,
 /**
  * Images attached to the message.
  */
-images?: Array<ImageAttachment>, 
+images?: Array<ImageAttachment>,
+/**
+ * Files attached to the message, each saved as a companion agent-inbox item.
+ */
+attachments?: Array<MessageAttachment>,
 /**
  * The person who sent it, for interfaces that identify one.
  */
-sender?: MessageSender, 
+sender?: MessageSender,
 /**
  * The agent that sent it, for a teammate's or a session's message,
  * with the session's run id for a session. Its `content` then starts
  * with the header that tells the agent who wrote it.
  */
-agent_sender?: AgentSender, 
+agent_sender?: AgentSender,
 /**
  * Endpoint the message arrived on.
  */
-endpoint: string, } | { "type": "text_delta", 
+endpoint: string, } | { "type": "text_delta",
 /**
  * Correlation ID of the turn.
  */

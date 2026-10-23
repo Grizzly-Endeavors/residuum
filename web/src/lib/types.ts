@@ -3,6 +3,7 @@
 import type {
   AgentSender,
   ImageAttachment as _ImageAttachment,
+  MessageAttachment as _MessageAttachment,
   MessageSender,
   SessionSummary as _SessionSummary,
   RepoStats as _RepoStats,
@@ -19,6 +20,7 @@ export type {
   TurnOrigin,
   Visibility,
   ImageAttachment,
+  MessageAttachment,
   OutboundA2aTaskSummary,
   SessionCategory,
   SessionCommandErrorCode,
@@ -73,6 +75,7 @@ export type {
 
 // Local aliases for use within this file
 type ImageAttachment = _ImageAttachment;
+type MessageAttachment = _MessageAttachment;
 type SessionSummary = _SessionSummary;
 type RepoStats = _RepoStats;
 
@@ -109,6 +112,10 @@ export interface RecentMessage {
   thinking?: string[];
   timestamp: string;
   visibility: "user" | "background";
+  /** Images the user's message carried, kept in history for a reload. */
+  images?: ImageAttachment[];
+  /** Files the user's message carried, each saved as a companion agent-inbox item. */
+  attachments?: MessageAttachment[];
   sender?: MessageSender;
   /** The agent that sent this message, for one agent's message to another. */
   agent_sender?: AgentSender;
@@ -604,6 +611,7 @@ export interface UserFeedItem extends FeedItemBase {
   kind: "user";
   content: string;
   images?: ImageAttachment[];
+  attachments?: MessageAttachment[];
   sender?: MessageSender;
   turn?: TurnRef;
   /** The message's id, for one that arrived live: a turn snapshot names the messages it holds by it. */
