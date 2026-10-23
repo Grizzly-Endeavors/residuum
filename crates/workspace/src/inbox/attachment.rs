@@ -2,11 +2,12 @@
 //!
 //! Each inbound attachment is filed under a companion agent-inbox item, in that
 //! item's own directory: `inbox/agent/attachments/<item id>/<filename>`.
-//! [`reserve_attachment_item`] claims that directory on disk before the download
-//! starts, and every save goes through the [`AttachmentItem`], so a file can only
-//! land in its item's directory. A caller whose save fails calls
-//! [`AttachmentItem::discard`]. Supported image formats are base64-encoded for
-//! inline delivery to the model.
+//! [`reserve_attachment_item`] claims that directory on disk (a [`ClaimedItem`])
+//! before the download starts, and every save goes through the [`AttachmentItem`],
+//! so a file can only land in its item's directory. A caller whose save fails
+//! calls [`AttachmentItem::discard`]; an item dropped without being finalized or
+//! discarded releases its claim too. Supported image formats are base64-encoded
+//! for inline delivery to the model.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -17,9 +18,7 @@ use tokio::io::AsyncWriteExt;
 
 use residuum_inference::ImageData;
 
-use super::{
-    agent_inbox_attachments_rel, claim_item_id, dedupe_filename, sanitize_attachment_filename,
-};
+use super::{ClaimedItem, dedupe_filename, sanitize_attachment_filename};
 
 /// Images larger than 20 MB are saved but not sent inline to the model.
 pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;
@@ -85,6 +84,8 @@ impl AttachmentKind {
 #[derive(Debug)]
 pub struct SavedAttachment {
     local_path: PathBuf,
+    /// The file's name in the item's directory (the last component of `local_path`).
+    file_name: String,
     size: u32,
 }
 
@@ -104,21 +105,16 @@ impl SavedAttachment {
 
 /// The companion inbox item an attachment is filed under.
 ///
-/// Reserved by [`reserve_attachment_item`], which claims the item's attachment
-/// directory on disk. The item's JSON is written only by finalizing it, after
-/// the file is saved. A save that fails leaves the directory claimed until the
-/// caller calls [`AttachmentItem::discard`].
+/// Reserved by [`reserve_attachment_item`], which claims the item's id and
+/// attachment directory on disk. The item's JSON is written only by finalizing
+/// it, after the file is saved. A save that fails leaves the directory claimed
+/// until the caller calls [`AttachmentItem::discard`] (or drops the item).
 #[derive(Debug)]
 pub struct AttachmentItem {
-    inbox_dir: PathBuf,
-    /// Filename stem of the item, which also names its attachment directory.
-    id: String,
-    /// The item's JSON filename (`<id>.json`).
-    filename: String,
+    claim: ClaimedItem,
     title: String,
     source: String,
     timestamp: NaiveDateTime,
-    attachments_dir: PathBuf,
 }
 
 /// A file being streamed into an [`AttachmentItem`]'s directory, for downloads
@@ -126,6 +122,7 @@ pub struct AttachmentItem {
 pub struct AttachmentWriter {
     file: tokio::fs::File,
     local_path: PathBuf,
+    file_name: String,
 }
 
 impl AttachmentWriter {
@@ -159,6 +156,7 @@ impl AttachmentWriter {
             .len();
         Ok(SavedAttachment {
             local_path: self.local_path,
+            file_name: self.file_name,
             size: u32::try_from(len).unwrap_or(u32::MAX),
         })
     }
@@ -175,7 +173,8 @@ impl AttachmentItem {
         info: &AttachmentInfo,
         bytes: &[u8],
     ) -> Result<SavedAttachment, String> {
-        let local_path = unique_attachment_path(&self.attachments_dir, &info.filename).await?;
+        let (file_name, local_path) =
+            unique_attachment_path(self.claim.attachments_dir(), &info.filename).await?;
 
         tokio::fs::write(&local_path, bytes).await.map_err(|e| {
             format!(
@@ -187,6 +186,7 @@ impl AttachmentItem {
 
         Ok(SavedAttachment {
             local_path,
+            file_name,
             size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
         })
     }
@@ -222,7 +222,8 @@ impl AttachmentItem {
     /// # Errors
     /// Returns an error if the directory cannot be created or the file cannot be created.
     pub async fn create_writer(&self, info: &AttachmentInfo) -> Result<AttachmentWriter, String> {
-        let local_path = unique_attachment_path(&self.attachments_dir, &info.filename).await?;
+        let (file_name, local_path) =
+            unique_attachment_path(self.claim.attachments_dir(), &info.filename).await?;
         let file = tokio::fs::File::create(&local_path).await.map_err(|e| {
             format!(
                 "failed to create file '{}' at {}: {e}",
@@ -230,25 +231,19 @@ impl AttachmentItem {
                 local_path.display(),
             )
         })?;
-        Ok(AttachmentWriter { file, local_path })
+        Ok(AttachmentWriter {
+            file,
+            local_path,
+            file_name,
+        })
     }
 
-    /// Remove the item's attachment directory and anything partly written in it,
-    /// after the attachment failed to save. Nothing is removed when the directory
-    /// is already gone. A failed removal is logged, not returned: the failure that
-    /// led here is already reported to the user.
-    pub async fn discard(&self) {
-        match tokio::fs::remove_dir_all(&self.attachments_dir).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(
-                    path = %self.attachments_dir.display(),
-                    error = %e,
-                    "failed to remove attachment dir of a failed inbox item"
-                );
-            }
-        }
+    /// Release the item's claim: remove its attachment directory and anything
+    /// partly written in it, after the attachment failed to save. Nothing is
+    /// removed when the directory is already gone. A failed removal is logged,
+    /// not returned: the failure that led here is already reported to the user.
+    pub async fn discard(self) {
+        self.claim.release().await;
     }
 
     /// Finalize a saved attachment: append its metadata line to `content`, encode
@@ -304,45 +299,40 @@ impl AttachmentItem {
     /// the item body.
     ///
     /// A failed save is logged, not returned: the file is already on disk and
-    /// named in the message, so the agent still has it.
+    /// named in the message, so the claimed directory and the file in it are
+    /// kept for the agent.
     pub async fn file_companion_item(
         self,
         saved: &SavedAttachment,
         info: &AttachmentInfo,
         author: &str,
     ) {
-        let Some(file_name_os) = saved.local_path.file_name() else {
-            tracing::warn!(
-                path = %saved.local_path.display(),
-                "attachment path has no filename, skipping companion item"
-            );
-            return;
-        };
-        let file_name = file_name_os.to_string_lossy().to_string();
         let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
         let companion = crate::inbox::InboxItem {
-            title: self.title.clone(),
+            title: self.title,
             body: format!(
                 "From: {author}\nSize: {} bytes\nContent-Type: {content_type_str}",
                 saved.size,
             ),
-            source: self.source.clone(),
+            source: self.source,
             timestamp: self.timestamp,
             read: false,
-            attachments: vec![agent_inbox_attachments_rel().join(&self.id).join(file_name)],
+            attachments: vec![self.claim.recorded_attachment_path(&saved.file_name)],
         };
-        if let Err(e) = crate::inbox::save_item(&self.inbox_dir, &self.filename, &companion).await {
+        let mut claim = self.claim;
+        if let Err(e) = claim.save(&companion).await {
             tracing::warn!(
                 filename = %info.filename,
                 error = %e,
-                "failed to create companion inbox item for attachment"
+                "failed to create companion inbox item for attachment; keeping the saved file"
             );
+            claim.keep();
         }
     }
 }
 
 /// Reserve the companion inbox item for an attachment arriving on `platform`,
-/// claiming its attachment directory on disk.
+/// claiming its id and attachment directory on disk.
 ///
 /// The claim is atomic, so reservations that overlap, even for the same title on
 /// the same day, get distinct items. The caller must save the file through the
@@ -359,31 +349,26 @@ pub async fn reserve_attachment_item(
 ) -> Result<AttachmentItem, String> {
     let title = format!("{platform} {}: {}", kind.title_word(), info.filename);
     let timestamp = residuum_core::time::now_local(tz);
-    let filename = claim_item_id(inbox_dir, &title, timestamp)
+    let claim = ClaimedItem::claim(inbox_dir, &title, timestamp)
         .await
         .map_err(|e| format!("failed to reserve inbox item for '{}': {e}", info.filename))?;
-    let id = filename.trim_end_matches(".json").to_string();
-    let attachments_dir = inbox_dir.join("attachments").join(&id);
     Ok(AttachmentItem {
-        inbox_dir: inbox_dir.to_path_buf(),
-        id,
-        filename,
+        claim,
         title,
         source: platform.to_lowercase(),
         timestamp,
-        attachments_dir,
     })
 }
 
-/// Choose the path a file called `filename` is saved to in `dir`, creating `dir`
-/// if needed.
+/// Choose the name and path a file called `filename` is saved to in `dir`,
+/// creating `dir` if needed.
 ///
 /// The name is sanitized, then `_2`, `_3`, ... is appended before the extension
 /// while `dir` already holds a file of that name.
 ///
 /// # Errors
 /// Returns an error if the directory cannot be created or read.
-async fn unique_attachment_path(dir: &Path, filename: &str) -> Result<PathBuf, String> {
+async fn unique_attachment_path(dir: &Path, filename: &str) -> Result<(String, PathBuf), String> {
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| format!("failed to create attachment dir {}: {e}", dir.display()))?;
@@ -401,7 +386,8 @@ async fn unique_attachment_path(dir: &Path, filename: &str) -> Result<PathBuf, S
     }
 
     let name = dedupe_filename(&sanitize_attachment_filename(filename), &existing);
-    Ok(dir.join(name))
+    let path = dir.join(&name);
+    Ok((name, path))
 }
 
 /// Format a metadata line for a successfully saved attachment.
@@ -478,6 +464,7 @@ mod tests {
     fn format_attachment_line_output() {
         let saved = SavedAttachment {
             local_path: PathBuf::from("/workspace/inbox/20260222_120000_photo.jpg"),
+            file_name: "20260222_120000_photo.jpg".to_string(),
             size: 1024,
         };
         let info = AttachmentInfo {
@@ -543,15 +530,16 @@ mod tests {
         .unwrap();
 
         assert_ne!(
-            first.attachments_dir, second.attachments_dir,
+            first.claim.attachments_dir(),
+            second.claim.attachments_dir(),
             "two reservations must never share an attachment directory"
         );
         assert!(
-            first.attachments_dir.is_dir(),
+            first.claim.attachments_dir().is_dir(),
             "first claim should be on disk"
         );
         assert!(
-            second.attachments_dir.is_dir(),
+            second.claim.attachments_dir().is_dir(),
             "second claim should be on disk"
         );
 
@@ -597,7 +585,7 @@ mod tests {
         .unwrap();
         let mut writer = item.create_writer(&info).await.unwrap();
         writer.file_mut().write_all(b"partial").await.unwrap();
-        let attachments_dir = item.attachments_dir.clone();
+        let attachments_dir = item.claim.attachments_dir().to_path_buf();
         assert!(
             attachments_dir.is_dir(),
             "claimed dir should exist before discard"
@@ -632,13 +620,52 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::fs::remove_dir_all(&item.attachments_dir)
-            .await
-            .unwrap();
+        let attachments_dir = item.claim.attachments_dir().to_path_buf();
+        tokio::fs::remove_dir_all(&attachments_dir).await.unwrap();
 
         item.discard().await;
 
-        assert!(!item.attachments_dir.exists());
+        assert!(!attachments_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn dropping_an_unfinalized_item_releases_its_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = pdf_info();
+        let item = reserve_only(dir.path(), &info).await;
+        let attachments_dir = item.claim.attachments_dir().to_path_buf();
+        item.save_bytes(&info, b"half done").await.unwrap();
+
+        drop(item);
+
+        assert!(
+            !attachments_dir.exists(),
+            "an item that is neither finalized nor discarded must not leave its directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_companion_save_keeps_the_saved_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = pdf_info();
+        let (item, saved) = reserve_and_save(dir.path(), &info, b"pdf bytes").await;
+        let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
+        // A directory where the item's JSON belongs makes the companion save fail.
+        tokio::fs::create_dir(inbox_dir.join(item.claim.filename()))
+            .await
+            .unwrap();
+        let mut content = String::new();
+
+        item.finalize(&saved, &info, &mut content, "author").await;
+
+        assert!(
+            saved.local_path.is_file(),
+            "the file named in the message stays on disk when its item cannot be saved"
+        );
+        assert!(
+            content.contains(&saved.local_path.display().to_string()),
+            "the message still names the file: {content}"
+        );
     }
 
     #[tokio::test]
@@ -865,8 +892,14 @@ mod tests {
         let first = item.save_bytes(&info, b"one").await.unwrap();
         let second = item.save_bytes(&info, b"two").await.unwrap();
 
-        assert_eq!(first.local_path, item.attachments_dir.join("notes.txt"));
-        assert_eq!(second.local_path, item.attachments_dir.join("notes_2.txt"));
+        assert_eq!(
+            first.local_path,
+            item.claim.attachments_dir().join("notes.txt")
+        );
+        assert_eq!(
+            second.local_path,
+            item.claim.attachments_dir().join("notes_2.txt")
+        );
         assert_eq!(
             tokio::fs::read_to_string(&first.local_path).await.unwrap(),
             "one",
@@ -1012,44 +1045,6 @@ mod tests {
         assert!(
             result.is_none(),
             "non-image content type should not be encoded"
-        );
-    }
-
-    #[tokio::test]
-    async fn finalize_attachment_no_path_filename_skips_inbox_item() {
-        let dir = tempfile::tempdir().unwrap();
-        let info = AttachmentInfo {
-            filename: "doc.pdf".to_string(),
-            size: 100,
-            content_type: Some("application/pdf".to_string()),
-        };
-        let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
-        let item = reserve_attachment_item(
-            &inbox_dir,
-            &info,
-            "Discord",
-            AttachmentKind::Attachment,
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
-        let saved = SavedAttachment {
-            local_path: PathBuf::from("/"),
-            size: 100,
-        };
-        let mut content = String::new();
-
-        let result = item.finalize(&saved, &info, &mut content, "author").await;
-
-        assert!(
-            result.is_none(),
-            "non-image with no path filename should return None"
-        );
-        let items = crate::inbox::list_items(&inbox_dir).await.unwrap();
-        assert!(
-            items.is_empty(),
-            "no inbox item should be created when path has no filename"
         );
     }
 }

@@ -634,7 +634,6 @@ async fn two_items_with_one_title_on_one_day_both_survive_with_their_attachments
             .unwrap();
         let (filename, failures) = residuum_workspace::inbox::quick_add_with_attachments(
             &layout.user_inbox_dir(),
-            &layout.user_inbox_attachments_dir(),
             "Daily report",
             body,
             "agent",

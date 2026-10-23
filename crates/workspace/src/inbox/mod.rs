@@ -2,6 +2,7 @@
 //!
 //! Items are stored as individual JSON files in the workspace `inbox/` directory.
 //! External systems can add items by dropping `.json` files into the directory.
+//! Every item the process creates starts as a [`ClaimedItem`], which holds its id.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -11,22 +12,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use residuum_bus::attachment::FileAttachment;
-use residuum_config::WorkspaceLayout;
 
 pub mod attachment;
+mod claim;
 
-/// Workspace-root-relative directory that user inbox attachments are copied into,
-/// one subdirectory per item ID. Items record their attachments relative to the
-/// workspace root, so this is taken from the layout rooted at the empty path.
-fn user_inbox_attachments_rel() -> PathBuf {
-    WorkspaceLayout::new(PathBuf::new()).user_inbox_attachments_dir()
-}
-
-/// Workspace-root-relative directory that agent inbox attachments are written into,
-/// one subdirectory per item ID. See [`user_inbox_attachments_rel`].
-fn agent_inbox_attachments_rel() -> PathBuf {
-    WorkspaceLayout::new(PathBuf::new()).agent_inbox_attachments_dir()
-}
+pub use claim::ClaimedItem;
 
 /// A single inbox item stored as a JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,8 +34,8 @@ pub struct InboxItem {
     pub read: bool,
     /// Paths to related files, relative to the workspace root at the time they were
     /// attached. Consumers should treat only the final path component (the filename)
-    /// as meaningful — see `copy_attachments` for how these are populated and
-    /// `archive_item` for why the directory portion can go stale.
+    /// as meaningful — see [`ClaimedItem::recorded_attachment_path`] for how these
+    /// are populated and `archive_item` for why the directory portion can go stale.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<PathBuf>,
 }
@@ -137,133 +127,6 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     }
 }
 
-/// Generate a filename for an inbox item, the same as [`generate_filename`],
-/// but appending `_2`, `_3`, ... before `.json` when that stem already exists
-/// in `inbox_dir` or in the archive that pairs with it.
-///
-/// `generate_filename` stays pure and deterministic — the same title on the
-/// same day always produces the same stem. This is the one place that checks
-/// disk, so two items with the same title on the same day get distinct ids
-/// instead of the second one silently overwriting the first through
-/// `save_item`'s atomic rename. The archive counts too: an archived item keeps
-/// its id, so a new item that reused it would overwrite the archived one when
-/// it was archived in turn, and restoring the old one would overwrite the new.
-#[must_use]
-pub async fn unique_filename(inbox_dir: &Path, title: &str, now: NaiveDateTime) -> String {
-    let archive_dir = archive_sibling(inbox_dir);
-    let base = generate_filename(title, now);
-    if !id_in_use(inbox_dir, archive_dir.as_deref(), &base).await {
-        return base;
-    }
-
-    let stem = base.trim_end_matches(".json");
-    let mut suffix: u32 = 2;
-    loop {
-        let candidate = format!("{stem}_{suffix}.json");
-        if !id_in_use(inbox_dir, archive_dir.as_deref(), &candidate).await {
-            return candidate;
-        }
-        suffix += 1;
-    }
-}
-
-/// The archive directory that pairs with a workspace inbox directory:
-/// `<root>/inbox/<kind>` archives to `<root>/archive/inbox/<kind>`, the layout
-/// `WorkspaceLayout` defines. `None` for a directory that isn't laid out that
-/// way, which then has no archive to check.
-fn archive_sibling(inbox_dir: &Path) -> Option<PathBuf> {
-    let kind = inbox_dir.file_name()?;
-    let inbox = inbox_dir.parent()?;
-    if inbox.file_name()? != "inbox" {
-        return None;
-    }
-    Some(inbox.parent()?.join("archive").join("inbox").join(kind))
-}
-
-/// Whether `filename` is taken in the inbox or, when there is one, its archive.
-///
-/// An id is taken by its item JSON, and by its `attachments/<id>/` directory in
-/// either place: a reservation claims that directory before its JSON is saved,
-/// so the directory alone already belongs to the id.
-async fn id_in_use(inbox_dir: &Path, archive_dir: Option<&Path>, filename: &str) -> bool {
-    let stem = filename.trim_end_matches(".json");
-    if file_exists(inbox_dir, filename).await
-        || path_exists(&inbox_dir.join("attachments").join(stem)).await
-    {
-        return true;
-    }
-    match archive_dir {
-        Some(dir) => {
-            file_exists(dir, filename).await
-                || path_exists(&dir.join("attachments").join(stem)).await
-        }
-        None => false,
-    }
-}
-
-async fn file_exists(dir: &Path, filename: &str) -> bool {
-    path_exists(&dir.join(filename)).await
-}
-
-async fn path_exists(path: &Path) -> bool {
-    tokio::fs::try_exists(path).await.unwrap_or(false)
-}
-
-/// Reserve an inbox item id for `title` at `now` and claim its attachment
-/// directory on disk, returning the item's JSON filename.
-///
-/// Walks the same candidates as [`unique_filename`], but claims the one it
-/// picks by creating `inbox/attachments/<id>/` with a create-new operation.
-/// Creation is atomic, so two reservations racing for the same id cannot both
-/// win: the loser sees `AlreadyExists` and moves on to the next suffix. The
-/// caller owns the claimed directory from then on, and must either save the
-/// item's attachment into it or remove it.
-///
-/// # Errors
-/// Returns an error if the attachments directory cannot be created, or if
-/// claiming a directory fails for any reason other than it already existing.
-pub(super) async fn claim_item_id(
-    inbox_dir: &Path,
-    title: &str,
-    now: NaiveDateTime,
-) -> Result<String, String> {
-    let archive_dir = archive_sibling(inbox_dir);
-    let attachments_root = inbox_dir.join("attachments");
-    tokio::fs::create_dir_all(&attachments_root)
-        .await
-        .map_err(|e| {
-            format!(
-                "failed to create attachments dir {}: {e}",
-                attachments_root.display()
-            )
-        })?;
-
-    let base = generate_filename(title, now);
-    let stem = base.trim_end_matches(".json").to_string();
-    let mut suffix: u32 = 1;
-    loop {
-        let candidate_stem = if suffix == 1 {
-            stem.clone()
-        } else {
-            format!("{stem}_{suffix}")
-        };
-        let filename = format!("{candidate_stem}.json");
-        if !id_in_use(inbox_dir, archive_dir.as_deref(), &filename).await {
-            match tokio::fs::create_dir(attachments_root.join(&candidate_stem)).await {
-                Ok(()) => return Ok(filename),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => {
-                    return Err(format!(
-                        "failed to claim inbox item id {candidate_stem} in {}: {e}",
-                        attachments_root.display()
-                    ));
-                }
-            }
-        }
-        suffix += 1;
-    }
-}
-
 /// Default an inbox item's title from its body: the first line, in full.
 /// Shared by every caller that lets a title be omitted — the WS `/inbox`
 /// command, chat-interface inbox commands, and the `POST /api/agents/{name}/agent-inbox`
@@ -275,12 +138,12 @@ pub fn derive_title(body: &str) -> String {
     body.lines().next().unwrap_or("Inbox message").to_string()
 }
 
-/// Add an inbox item in one call: generates a filename, builds the item, and saves.
+/// Add an inbox item in one call: claims an id, builds the item, and saves.
 ///
 /// Returns the filename for confirmation messages.
 ///
 /// # Errors
-/// Returns an error if the item cannot be saved.
+/// Returns an error if an id cannot be claimed or the item cannot be saved.
 #[tracing::instrument(skip_all, fields(source = %source))]
 pub async fn quick_add(
     inbox_dir: &Path,
@@ -289,39 +152,29 @@ pub async fn quick_add(
     source: &str,
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<String> {
-    let now = residuum_core::time::now_local(tz);
-    let filename = unique_filename(inbox_dir, title, now).await;
-    let item = InboxItem {
-        title: title.to_string(),
-        body: body.to_string(),
-        source: source.to_string(),
-        timestamp: now,
-        read: false,
-        attachments: Vec::new(),
-    };
-    save_item(inbox_dir, &filename, &item).await?;
-    tracing::debug!(filename = %filename, title = %title, "inbox item created via quick_add");
+    let (filename, _) = quick_add_with_attachments(inbox_dir, title, body, source, tz, &[]).await?;
     Ok(filename)
 }
 
-/// Add a user inbox item with attachments in one call: copies the attachment files
-/// into the item's own directory, generates a filename, builds the item, and saves.
+/// Add an inbox item with attachments in one call: claims an id, copies the
+/// attachment files into the item's own directory, builds the item, and saves.
 ///
-/// Behaves exactly like `quick_add` when `attachment_paths` is empty. Otherwise, see
-/// `copy_attachments` for how the files are copied and named. The item is saved with
-/// whichever attachments succeeded even if some failed; the second return value
-/// describes each failure so the caller can tell the user about it.
+/// With an empty `attachment_paths` this adds a plain item (see [`quick_add`]).
+/// Otherwise, see `copy_attachments` for how the files are copied and named. The
+/// item is saved with whichever attachments succeeded even if some failed; the
+/// second return value describes each failure so the caller can tell the user
+/// about it. The files go into `attachments/<id>/` of `inbox_dir`, and the item
+/// records them relative to the workspace root.
 ///
 /// Returns the filename for confirmation messages, and a description of each
 /// attachment that failed to copy (empty if all succeeded).
 ///
 /// # Errors
-/// Returns an error if the item cannot be saved, or an attachment directory
-/// cannot be created.
+/// Returns an error if an id cannot be claimed or the item cannot be saved. The
+/// copies made for an item that cannot be saved are removed.
 #[tracing::instrument(skip_all, fields(source = %source))]
 pub async fn quick_add_with_attachments(
     inbox_dir: &Path,
-    attachments_dir: &Path,
     title: &str,
     body: &str,
     source: &str,
@@ -329,11 +182,23 @@ pub async fn quick_add_with_attachments(
     attachment_paths: &[PathBuf],
 ) -> anyhow::Result<(String, Vec<String>)> {
     let now = residuum_core::time::now_local(tz);
-    let filename = unique_filename(inbox_dir, title, now).await;
-    let item_id = filename.trim_end_matches(".json");
+    add_item(inbox_dir, title, body, source, now, attachment_paths).await
+}
 
-    let (attachments, failures) =
-        copy_attachments(attachments_dir, item_id, attachment_paths).await?;
+/// [`quick_add_with_attachments`] for an item created at `now`.
+async fn add_item(
+    inbox_dir: &Path,
+    title: &str,
+    body: &str,
+    source: &str,
+    now: NaiveDateTime,
+    attachment_paths: &[PathBuf],
+) -> anyhow::Result<(String, Vec<String>)> {
+    let mut claim = ClaimedItem::claim(inbox_dir, title, now)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    let (attachments, failures) = copy_attachments(&claim, attachment_paths).await;
 
     let item = InboxItem {
         title: title.to_string(),
@@ -343,19 +208,20 @@ pub async fn quick_add_with_attachments(
         read: false,
         attachments,
     };
-    save_item(inbox_dir, &filename, &item).await?;
+    claim.save(&item).await?;
+    let filename = claim.filename();
     tracing::debug!(
         filename = %filename,
         title = %title,
         attachment_count = attachment_paths.len(),
         failure_count = failures.len(),
-        "inbox item created via quick_add_with_attachments"
+        "inbox item created"
     );
     Ok((filename, failures))
 }
 
-/// Copy attachment source files into an item's own attachment directory
-/// (`attachments_dir/<item_id>/`), keyed by item ID so the item survives its
+/// Copy attachment source files into the claimed item's own attachment
+/// directory (`attachments/<id>/`), keyed by item ID so the item survives its
 /// sources being moved or deleted.
 ///
 /// Each source path is validated (must exist and be readable — there is no
@@ -368,52 +234,36 @@ pub async fn quick_add_with_attachments(
 ///
 /// A source that fails validation or copy is skipped, not fatal to the whole
 /// batch: the item still gets every attachment that did succeed. Returns the
-/// successfully-copied attachments plus a description of each one that
-/// failed, so the caller can tell the user what happened to each file.
-///
-/// # Errors
-/// Returns an error only if the item's attachment directory itself cannot be
-/// created — a per-file failure is reported in the second return value
-/// instead.
-#[tracing::instrument(skip_all, fields(item_id = %item_id, count = source_paths.len()))]
-pub async fn copy_attachments(
-    attachments_dir: &Path,
-    item_id: &str,
+/// successfully-copied attachments, as the paths to record in the item, plus a
+/// description of each one that failed, so the caller can tell the user what
+/// happened to each file.
+#[tracing::instrument(skip_all, fields(item_id = %claim.id(), count = source_paths.len()))]
+async fn copy_attachments(
+    claim: &ClaimedItem,
     source_paths: &[PathBuf],
-) -> anyhow::Result<(Vec<PathBuf>, Vec<String>)> {
-    use anyhow::Context as _;
-
-    if source_paths.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-
-    let item_dir = attachments_dir.join(item_id);
-    tokio::fs::create_dir_all(&item_dir)
-        .await
-        .with_context(|| format!("failed to create attachment dir {}", item_dir.display()))?;
-
+) -> (Vec<PathBuf>, Vec<String>) {
     let mut used_names: HashSet<String> = HashSet::new();
     let mut recorded = Vec::new();
     let mut failures = Vec::new();
 
     for source in source_paths {
-        match copy_one_attachment(source, &item_dir, &mut used_names).await {
+        match copy_one_attachment(source, claim.attachments_dir(), &mut used_names).await {
             Ok(unique_name) => {
-                recorded.push(user_inbox_attachments_rel().join(item_id).join(unique_name));
+                recorded.push(claim.recorded_attachment_path(&unique_name));
             }
             Err(e) => {
                 tracing::warn!(
-                    item_id = %item_id,
+                    item_id = %claim.id(),
                     source = %source.display(),
                     error = %e,
                     "failed to copy one inbox attachment; continuing with the rest"
                 );
-                failures.push(format!("couldn't attach '{}': {e}", source.display()));
+                failures.push(format!("couldn't attach '{}': {e:#}", source.display()));
             }
         }
     }
 
-    Ok((recorded, failures))
+    (recorded, failures)
 }
 
 /// Validate and copy a single attachment source into `item_dir`, returning the
@@ -423,8 +273,6 @@ async fn copy_one_attachment(
     item_dir: &Path,
     used_names: &mut HashSet<String>,
 ) -> anyhow::Result<String> {
-    use anyhow::Context as _;
-
     let attachment = FileAttachment::from_path(source)
         .await
         .map_err(anyhow::Error::msg)?;
@@ -433,13 +281,22 @@ async fn copy_one_attachment(
     let unique = dedupe_filename(&sanitized, used_names);
     let dest = item_dir.join(&unique);
 
-    tokio::fs::copy(source, &dest).await.with_context(|| {
-        format!(
+    if let Err(e) = tokio::fs::copy(source, &dest).await {
+        // A copy that fails partway leaves a truncated file in the item's directory;
+        // remove it so the directory holds only the files the item records.
+        match tokio::fs::remove_file(&dest).await {
+            Ok(()) => {}
+            Err(rm) if rm.kind() == std::io::ErrorKind::NotFound => {}
+            Err(rm) => {
+                tracing::warn!(path = %dest.display(), error = %rm, "failed to remove a partly copied inbox attachment");
+            }
+        }
+        return Err(anyhow::Error::new(e).context(format!(
             "failed to copy attachment from {} to {}",
             source.display(),
             dest.display()
-        )
-    })?;
+        )));
+    }
 
     used_names.insert(unique.clone());
     Ok(unique)
@@ -741,7 +598,7 @@ pub async fn restore_item(
 }
 
 /// Fail when `target` exists, so a move never replaces a different item that
-/// has the same id. Items saved with [`unique_filename`] never share an id
+/// has the same id. Items claimed with [`ClaimedItem`] never share an id
 /// across the inbox and its archive; this stops one that does (from before ids
 /// were unique, or placed by hand) from silently destroying the other.
 async fn ensure_absent(target: &Path, place: &str, item_id: &str) -> anyhow::Result<()> {
@@ -816,55 +673,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn claim_item_id_gives_same_title_reservations_distinct_dirs() {
-        let dir = tempfile::tempdir().unwrap();
-        let inbox = dir.path().join("inbox/agent");
-        tokio::fs::create_dir_all(&inbox).await.unwrap();
-        let title = "Discord attachment: image.png";
-
-        let first = claim_item_id(&inbox, title, test_now()).await.unwrap();
-        let second = claim_item_id(&inbox, title, test_now()).await.unwrap();
-
-        assert_eq!(first, "20260225_discord_attachment_image_png.json");
-        assert_eq!(second, "20260225_discord_attachment_image_png_2.json");
-        for filename in [&first, &second] {
-            let stem = filename.trim_end_matches(".json");
-            assert!(
-                inbox.join("attachments").join(stem).is_dir(),
-                "claimed directory should exist for {filename}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn claim_item_id_skips_an_id_whose_directory_is_held_without_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let inbox = dir.path().join("inbox/agent");
-        tokio::fs::create_dir_all(inbox.join("attachments/20260225_held"))
-            .await
-            .unwrap();
-
-        let claimed = claim_item_id(&inbox, "held", test_now()).await.unwrap();
-
-        assert_eq!(claimed, "20260225_held_2.json");
-    }
-
-    #[tokio::test]
-    async fn claim_item_id_skips_an_id_whose_archived_directory_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let inbox = dir.path().join("inbox/agent");
-        let archived_dir = dir
-            .path()
-            .join("archive/inbox/agent/attachments/20260225_gone");
-        tokio::fs::create_dir_all(&inbox).await.unwrap();
-        tokio::fs::create_dir_all(&archived_dir).await.unwrap();
-
-        let claimed = claim_item_id(&inbox, "gone", test_now()).await.unwrap();
-
-        assert_eq!(claimed, "20260225_gone_2.json");
-    }
-
     #[test]
     fn derive_title_falls_back_on_empty_body() {
         assert_eq!(derive_title(""), "Inbox message");
@@ -929,93 +737,6 @@ mod tests {
             "title part should be at most 60 chars: {} (len={})",
             title_part,
             title_part.len()
-        );
-    }
-
-    #[tokio::test]
-    async fn unique_filename_no_collision_matches_generate_filename() {
-        let dir = tempfile::tempdir().unwrap();
-        let now = test_now();
-        assert_eq!(
-            unique_filename(dir.path(), "hello world", now).await,
-            generate_filename("hello world", now),
-            "existing ids must keep resolving the same way when there is no collision"
-        );
-    }
-
-    #[tokio::test]
-    async fn unique_filename_appends_suffix_on_collision() {
-        let dir = tempfile::tempdir().unwrap();
-        let now = test_now();
-        let base = generate_filename("daily report", now);
-        save_item(dir.path(), &base, &make_item("daily report", 8, false))
-            .await
-            .unwrap();
-
-        let second = unique_filename(dir.path(), "daily report", now).await;
-        assert_ne!(second, base, "colliding stem must get a distinct filename");
-        assert_eq!(second, base.replace(".json", "_2.json"));
-    }
-
-    #[tokio::test]
-    async fn unique_filename_skips_multiple_existing_suffixes() {
-        let dir = tempfile::tempdir().unwrap();
-        let now = test_now();
-        let base = generate_filename("daily report", now);
-        let suffix_2 = base.replace(".json", "_2.json");
-        save_item(dir.path(), &base, &make_item("daily report", 8, false))
-            .await
-            .unwrap();
-        save_item(dir.path(), &suffix_2, &make_item("daily report", 9, false))
-            .await
-            .unwrap();
-
-        let third = unique_filename(dir.path(), "daily report", now).await;
-        assert_eq!(third, base.replace(".json", "_3.json"));
-    }
-
-    #[test]
-    fn archive_sibling_follows_the_workspace_layout() {
-        let layout = residuum_config::WorkspaceLayout::new("/tmp/ws");
-        assert_eq!(
-            archive_sibling(&layout.user_inbox_dir()),
-            Some(layout.user_inbox_archive_dir()),
-            "the user inbox archives where the layout says"
-        );
-        assert_eq!(
-            archive_sibling(&layout.agent_inbox_dir()),
-            Some(layout.agent_inbox_archive_dir()),
-            "the agent inbox archives where the layout says"
-        );
-        assert_eq!(
-            archive_sibling(Path::new("/tmp/ws/notes")),
-            None,
-            "a directory outside the layout has no archive to check"
-        );
-    }
-
-    #[tokio::test]
-    async fn unique_filename_avoids_ids_held_by_the_archive() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = residuum_config::WorkspaceLayout::new(dir.path());
-        tokio::fs::create_dir_all(layout.user_inbox_archive_dir())
-            .await
-            .unwrap();
-        let now = test_now();
-        let base = generate_filename("daily report", now);
-        save_item(
-            &layout.user_inbox_archive_dir(),
-            &base,
-            &make_item("daily report", 8, true),
-        )
-        .await
-        .unwrap();
-
-        let next = unique_filename(&layout.user_inbox_dir(), "daily report", now).await;
-        assert_eq!(
-            next,
-            base.replace(".json", "_2.json"),
-            "an archived item keeps its id, so a new item can't reuse it"
         );
     }
 
@@ -1155,9 +876,7 @@ mod tests {
     #[tokio::test]
     async fn quick_add_with_attachments_same_title_same_day_uses_distinct_attachment_dirs() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        let attachments_dir = dir.path().join("attachments");
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let inbox_dir = residuum_config::WorkspaceLayout::new(dir.path()).user_inbox_dir();
 
         let source_a = dir.path().join("a.txt");
         let source_b = dir.path().join("b.txt");
@@ -1166,7 +885,6 @@ mod tests {
 
         let (first, first_failures) = quick_add_with_attachments(
             &inbox_dir,
-            &attachments_dir,
             "daily report",
             "first body",
             "agent",
@@ -1177,7 +895,6 @@ mod tests {
         .unwrap();
         let (second, second_failures) = quick_add_with_attachments(
             &inbox_dir,
-            &attachments_dir,
             "daily report",
             "second body",
             "agent",
@@ -1209,6 +926,7 @@ mod tests {
         assert_eq!(first_item.body, "first body");
         assert_eq!(second_item.body, "second body");
 
+        let attachments_dir = inbox_dir.join("attachments");
         assert_eq!(
             tokio::fs::read(attachments_dir.join(first_id).join("a.txt"))
                 .await
@@ -1222,6 +940,115 @@ mod tests {
                 .unwrap(),
             b"second"
         );
+    }
+
+    #[tokio::test]
+    async fn add_item_skips_an_id_another_writer_has_claimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = residuum_config::WorkspaceLayout::new(dir.path()).user_inbox_dir();
+        // Another writer with the same title is mid-way through its own add: it
+        // holds the id and has already put its file in the id's directory.
+        let mut held = ClaimedItem::claim(&inbox_dir, "daily report", test_now())
+            .await
+            .unwrap();
+        tokio::fs::write(held.attachments_dir().join("a.txt"), b"held")
+            .await
+            .unwrap();
+        let source = dir.path().join("a.txt");
+        tokio::fs::write(&source, b"added").await.unwrap();
+
+        let (added, failures) = add_item(
+            &inbox_dir,
+            "daily report",
+            "added body",
+            "agent",
+            test_now(),
+            &[source],
+        )
+        .await
+        .unwrap();
+
+        assert!(failures.is_empty(), "expected {failures:?} to be empty");
+        assert_eq!(
+            added, "20260225_daily_report_2.json",
+            "the claimed id is not reused"
+        );
+        let mut held_item = make_item("daily report", 9, false);
+        held_item.body = "held body".to_string();
+        held_item.attachments = vec![held.recorded_attachment_path("a.txt")];
+        held.save(&held_item).await.unwrap();
+
+        let held_loaded = load_item(&inbox_dir.join("20260225_daily_report.json"))
+            .await
+            .unwrap();
+        let added_loaded = load_item(&inbox_dir.join(&added)).await.unwrap();
+        assert_eq!(
+            held_loaded.body, "held body",
+            "the held item was not replaced"
+        );
+        assert_eq!(added_loaded.body, "added body");
+        assert_eq!(
+            tokio::fs::read(inbox_dir.join("attachments/20260225_daily_report/a.txt"))
+                .await
+                .unwrap(),
+            b"held",
+            "the held item's file is untouched"
+        );
+        assert_eq!(
+            tokio::fs::read(inbox_dir.join("attachments/20260225_daily_report_2/a.txt"))
+                .await
+                .unwrap(),
+            b"added",
+            "the added item's file is in its own directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_adds_with_one_title_keep_both_items_and_their_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = residuum_config::WorkspaceLayout::new(dir.path()).user_inbox_dir();
+        let sources_a = [dir.path().join("a.txt")];
+        let sources_b = [dir.path().join("b.txt")];
+        tokio::fs::write(&sources_a[0], b"from a").await.unwrap();
+        tokio::fs::write(&sources_b[0], b"from b").await.unwrap();
+
+        let (a, b) = tokio::join!(
+            add_item(
+                &inbox_dir,
+                "daily report",
+                "body a",
+                "agent",
+                test_now(),
+                &sources_a
+            ),
+            add_item(
+                &inbox_dir,
+                "daily report",
+                "body b",
+                "agent",
+                test_now(),
+                &sources_b
+            ),
+        );
+        let (a, _) = a.unwrap();
+        let (b, _) = b.unwrap();
+
+        assert_ne!(a, b, "concurrent adds must not share an id");
+        for (filename, body, file, content) in [
+            (&a, "body a", "a.txt", b"from a"),
+            (&b, "body b", "b.txt", b"from b"),
+        ] {
+            let item = load_item(&inbox_dir.join(filename)).await.unwrap();
+            assert_eq!(item.body, body, "{filename} kept its own body");
+            let id = filename.trim_end_matches(".json");
+            assert_eq!(
+                tokio::fs::read(inbox_dir.join("attachments").join(id).join(file))
+                    .await
+                    .unwrap(),
+                content,
+                "{filename} kept its own file"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1574,18 +1401,27 @@ mod tests {
         assert_eq!(dedupe_filename("README", &used), "README_2");
     }
 
-    #[tokio::test]
-    async fn copy_attachments_empty_is_noop() {
-        let dir = tempfile::tempdir().unwrap();
-        let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[])
+    /// Claim an id in the user inbox of a workspace rooted at `root`.
+    async fn claim_in_user_inbox(root: &Path) -> ClaimedItem {
+        let inbox = residuum_config::WorkspaceLayout::new(root).user_inbox_dir();
+        ClaimedItem::claim(&inbox, "item1", test_now())
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn copy_attachments_empty_copies_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let claim = claim_in_user_inbox(dir.path()).await;
+
+        let (recorded, failures) = copy_attachments(&claim, &[]).await;
+
         assert!(recorded.is_empty(), "expected {recorded:?} to be empty");
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
-        assert!(
-            !attachments_dir.exists(),
-            "no directory should be created when there are no attachments"
+        assert_eq!(
+            std::fs::read_dir(claim.attachments_dir()).unwrap().count(),
+            0,
+            "nothing should be written when there are no attachments"
         );
     }
 
@@ -1597,22 +1433,20 @@ mod tests {
         let source_file = source_dir.join("report.pdf");
         tokio::fs::write(&source_file, b"pdf bytes").await.unwrap();
 
-        let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(
-            &attachments_dir,
-            "item1",
-            std::slice::from_ref(&source_file),
-        )
-        .await
-        .unwrap();
+        let claim = claim_in_user_inbox(dir.path()).await;
+        let (recorded, failures) =
+            copy_attachments(&claim, std::slice::from_ref(&source_file)).await;
 
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(
             recorded,
-            vec![PathBuf::from("inbox/user/attachments/item1/report.pdf")]
+            vec![PathBuf::from(format!(
+                "inbox/user/attachments/{}/report.pdf",
+                claim.id()
+            ))]
         );
 
-        let copied = attachments_dir.join("item1").join("report.pdf");
+        let copied = claim.attachments_dir().join("report.pdf");
         assert!(copied.exists(), "attachment should be copied");
         assert!(source_file.exists(), "source file should be left in place");
         let copied_bytes = tokio::fs::read(&copied).await.unwrap();
@@ -1625,18 +1459,12 @@ mod tests {
         let source_file = dir.path().join("ephemeral.txt");
         tokio::fs::write(&source_file, b"gone soon").await.unwrap();
 
-        let attachments_dir = dir.path().join("attachments");
-        copy_attachments(
-            &attachments_dir,
-            "item1",
-            std::slice::from_ref(&source_file),
-        )
-        .await
-        .unwrap();
+        let claim = claim_in_user_inbox(dir.path()).await;
+        copy_attachments(&claim, std::slice::from_ref(&source_file)).await;
 
         tokio::fs::remove_file(&source_file).await.unwrap();
 
-        let copied = attachments_dir.join("item1").join("ephemeral.txt");
+        let copied = claim.attachments_dir().join("ephemeral.txt");
         assert!(
             copied.exists(),
             "copied attachment should survive source deletion"
@@ -1655,14 +1483,12 @@ mod tests {
         tokio::fs::write(&file_a, b"first").await.unwrap();
         tokio::fs::write(&file_b, b"second").await.unwrap();
 
-        let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[file_a, file_b])
-            .await
-            .unwrap();
+        let claim = claim_in_user_inbox(dir.path()).await;
+        let (recorded, failures) = copy_attachments(&claim, &[file_a, file_b]).await;
 
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(recorded.len(), 2);
-        let item_dir = attachments_dir.join("item1");
+        let item_dir = claim.attachments_dir();
         assert!(item_dir.join("report.pdf").exists());
         assert!(
             item_dir.join("report_2.pdf").exists(),
@@ -1689,22 +1515,24 @@ mod tests {
         let nested = dir.path().join("a/b/c");
         tokio::fs::create_dir_all(&nested).await.unwrap();
         let source_file = nested.join("passwd");
-        tokio::fs::write(&source_file, b"not actually /etc/passwd")
+        tokio::fs::write(&source_file, b"not a system file")
             .await
             .unwrap();
 
-        let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[source_file])
-            .await
-            .unwrap();
+        let claim = claim_in_user_inbox(dir.path()).await;
+        let (recorded, failures) = copy_attachments(&claim, &[source_file]).await;
 
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(
             recorded,
-            vec![PathBuf::from("inbox/user/attachments/item1/passwd")]
+            vec![PathBuf::from(format!(
+                "inbox/user/attachments/{}/passwd",
+                claim.id()
+            ))]
         );
-        let item_dir = attachments_dir.join("item1");
-        let entries: Vec<_> = std::fs::read_dir(&item_dir).unwrap().collect();
+        let entries: Vec<_> = std::fs::read_dir(claim.attachments_dir())
+            .unwrap()
+            .collect();
         assert_eq!(entries.len(), 1, "only the sanitized file should exist");
     }
 
@@ -1719,10 +1547,8 @@ mod tests {
         file.set_len(30 * 1024 * 1024).await.unwrap();
         drop(file);
 
-        let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[source_file])
-            .await
-            .unwrap();
+        let claim = claim_in_user_inbox(dir.path()).await;
+        let (recorded, failures) = copy_attachments(&claim, &[source_file]).await;
 
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(recorded.len(), 1);
@@ -1735,19 +1561,20 @@ mod tests {
         tokio::fs::write(&good, b"here").await.unwrap();
         let missing = dir.path().join("does_not_exist.txt");
 
-        let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[good, missing])
-            .await
-            .unwrap();
+        let claim = claim_in_user_inbox(dir.path()).await;
+        let (recorded, failures) = copy_attachments(&claim, &[good, missing]).await;
 
         assert_eq!(
             recorded,
-            vec![PathBuf::from("inbox/user/attachments/item1/good.txt")],
+            vec![PathBuf::from(format!(
+                "inbox/user/attachments/{}/good.txt",
+                claim.id()
+            ))],
             "the good file should still be copied despite the other failing"
         );
         assert_eq!(failures.len(), 1, "the missing source should be reported");
         assert!(
-            attachments_dir.join("item1").join("good.txt").exists(),
+            claim.attachments_dir().join("good.txt").exists(),
             "the successfully-copied file must not be removed because another file failed"
         );
     }
@@ -1755,13 +1582,10 @@ mod tests {
     #[tokio::test]
     async fn quick_add_with_attachments_empty_matches_quick_add() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        let attachments_dir = dir.path().join("attachments");
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let inbox_dir = residuum_config::WorkspaceLayout::new(dir.path()).user_inbox_dir();
 
         let (filename, failures) = quick_add_with_attachments(
             &inbox_dir,
-            &attachments_dir,
             "no attachments here",
             "body text",
             "agent",
@@ -1779,24 +1603,22 @@ mod tests {
             "expected {:?} to be empty",
             item.attachments
         );
+        let item_id = filename.trim_end_matches(".json");
         assert!(
-            !attachments_dir.exists(),
-            "no attachments directory should be created"
+            !inbox_dir.join("attachments").join(item_id).exists(),
+            "an item without attachments leaves no attachments directory"
         );
     }
 
     #[tokio::test]
     async fn quick_add_with_attachments_records_and_saves() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        let attachments_dir = dir.path().join("attachments");
+        let inbox_dir = residuum_config::WorkspaceLayout::new(dir.path()).user_inbox_dir();
         let source_file = dir.path().join("photo.jpg");
-        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
         tokio::fs::write(&source_file, b"jpeg bytes").await.unwrap();
 
         let (filename, failures) = quick_add_with_attachments(
             &inbox_dir,
-            &attachments_dir,
             "with a photo",
             "body text",
             "agent",
@@ -1813,6 +1635,33 @@ mod tests {
         assert_eq!(
             item.attachments[0],
             PathBuf::from(format!("inbox/user/attachments/{item_id}/photo.jpg"))
+        );
+    }
+
+    #[tokio::test]
+    async fn quick_add_with_only_unreadable_attachments_saves_an_item_without_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = residuum_config::WorkspaceLayout::new(dir.path()).user_inbox_dir();
+        let missing = dir.path().join("does_not_exist.txt");
+
+        let (filename, failures) = quick_add_with_attachments(
+            &inbox_dir,
+            "nothing to attach",
+            "body text",
+            "agent",
+            chrono_tz::UTC,
+            &[missing],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(failures.len(), 1, "the missing source should be reported");
+        let item = load_item(&inbox_dir.join(&filename)).await.unwrap();
+        assert!(item.attachments.is_empty());
+        let item_id = filename.trim_end_matches(".json");
+        assert!(
+            !inbox_dir.join("attachments").join(item_id).exists(),
+            "no file was copied, so the item's directory is removed"
         );
     }
 

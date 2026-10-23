@@ -172,7 +172,6 @@ fn register_session_workspace_tools(
         shared.layout.agent_inbox_dir(),
         shared.layout.agent_inbox_archive_dir(),
         shared.layout.user_inbox_dir(),
-        shared.layout.user_inbox_attachments_dir(),
         shared.tz,
     );
     // Workspace checkpoint history (workspace repository only)

@@ -154,7 +154,6 @@ fn register_main_workspace_tools(
         layout.agent_inbox_dir(),
         layout.agent_inbox_archive_dir(),
         layout.user_inbox_dir(),
-        layout.user_inbox_attachments_dir(),
         tz,
     );
 }

@@ -63,13 +63,7 @@ pub fn reload_timezone_tools(
         models,
     )));
     tools.register(Box::new(actions::ListActionsTool::new(store, tz)));
-    register_user_inbox_add(
-        tools,
-        injections,
-        layout.user_inbox_dir(),
-        layout.user_inbox_attachments_dir(),
-        tz,
-    );
+    register_user_inbox_add(tools, injections, layout.user_inbox_dir(), tz);
 }
 
 /// Reload the `ollama_web_search` tool in place from the current
@@ -106,10 +100,9 @@ fn register_user_inbox_add(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
     user_inbox_dir: PathBuf,
-    user_inbox_attachments_dir: PathBuf,
     tz: chrono_tz::Tz,
 ) {
-    let tool = inbox::UserInboxAddTool::new(user_inbox_dir, user_inbox_attachments_dir, tz);
+    let tool = inbox::UserInboxAddTool::new(user_inbox_dir, tz);
     let tool = match &injections.publisher {
         Some(publisher) => tool.with_publisher(publisher.clone()),
         None => tool,
@@ -227,7 +220,6 @@ pub fn register_inbox_tools(
     agent_inbox_dir: PathBuf,
     agent_archive_dir: PathBuf,
     user_inbox_dir: PathBuf,
-    user_inbox_attachments_dir: PathBuf,
     tz: chrono_tz::Tz,
 ) {
     tools.register(Box::new(inbox::InboxListTool::new(
@@ -243,13 +235,7 @@ pub fn register_inbox_tools(
         agent_inbox_dir,
         agent_archive_dir,
     )));
-    register_user_inbox_add(
-        tools,
-        injections,
-        user_inbox_dir,
-        user_inbox_attachments_dir,
-        tz,
-    );
+    register_user_inbox_add(tools, injections, user_inbox_dir, tz);
 }
 
 /// Register `list_endpoints` and `list_conversations` for discovering
@@ -550,7 +536,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         let inbox = layout.user_inbox_dir();
-        let attachments = layout.user_inbox_attachments_dir();
         std::fs::create_dir_all(&inbox).unwrap();
         let bus = residuum_bus::spawn_broker();
         let injections = RegistryInjections {
@@ -564,7 +549,6 @@ mod tests {
             dir.path().join("inbox/agent"),
             dir.path().join("archive/inbox/agent"),
             inbox,
-            attachments,
             chrono_tz::UTC,
         );
         assert!(adds_and_announces(&registry, &bus).await, "at registration");

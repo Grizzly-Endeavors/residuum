@@ -377,7 +377,6 @@ impl Tool for InboxRestoreTool {
 /// Tool for adding items to the user's inbox.
 pub struct UserInboxAddTool {
     user_inbox_dir: PathBuf,
-    user_inbox_attachments_dir: PathBuf,
     tz: chrono_tz::Tz,
     /// Where each saved item is announced, so the hub learns of it without
     /// waiting for a file change. `None` announces nothing.
@@ -387,14 +386,9 @@ pub struct UserInboxAddTool {
 impl UserInboxAddTool {
     /// Create a new `UserInboxAddTool`.
     #[must_use]
-    pub fn new(
-        user_inbox_dir: PathBuf,
-        user_inbox_attachments_dir: PathBuf,
-        tz: chrono_tz::Tz,
-    ) -> Self {
+    pub fn new(user_inbox_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
         Self {
             user_inbox_dir,
-            user_inbox_attachments_dir,
             tz,
             publisher: None,
         }
@@ -477,7 +471,6 @@ impl Tool for UserInboxAddTool {
 
         let (filename, failures) = inbox::quick_add_with_attachments(
             &self.user_inbox_dir,
-            &self.user_inbox_attachments_dir,
             title,
             body,
             "agent",
@@ -535,7 +528,7 @@ mod tests {
             "inbox_restore"
         );
         assert_eq!(
-            UserInboxAddTool::new(dir.clone(), dir.join("attachments"), chrono_tz::UTC).name(),
+            UserInboxAddTool::new(dir.clone(), chrono_tz::UTC).name(),
             "user_inbox_add"
         );
     }
@@ -557,7 +550,7 @@ mod tests {
         let restore_tool = InboxRestoreTool::new(dir.clone(), archive);
         assert_eq!(restore_tool.definition().name, restore_tool.name());
 
-        let user_add = UserInboxAddTool::new(dir.clone(), dir.join("attachments"), chrono_tz::UTC);
+        let user_add = UserInboxAddTool::new(dir.clone(), chrono_tz::UTC);
         assert_eq!(user_add.definition().name, user_add.name());
     }
 
@@ -804,11 +797,7 @@ mod tests {
         let attachments_dir = dir.path().join("inbox/user/attachments");
         tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
 
-        let tool = UserInboxAddTool::new(
-            user_inbox_dir.clone(),
-            attachments_dir.clone(),
-            chrono_tz::UTC,
-        );
+        let tool = UserInboxAddTool::new(user_inbox_dir.clone(), chrono_tz::UTC);
         let result = tool
             .execute(serde_json::json!({"title": "plain reminder", "body": "just text"}))
             .await
@@ -827,9 +816,12 @@ mod tests {
             "confirmation message should not report a copy count when none were given: {}",
             result.output
         );
+        let id = result
+            .output
+            .trim_start_matches("Added item to user inbox with ID: ");
         assert!(
-            !attachments_dir.exists(),
-            "no attachments directory should be created"
+            !attachments_dir.join(id).exists(),
+            "an item without attachments leaves no attachments directory"
         );
     }
 
@@ -844,12 +836,8 @@ mod tests {
             .await
             .unwrap();
 
-        let tool = UserInboxAddTool::new(
-            user_inbox_dir.clone(),
-            user_inbox_dir.join("attachments"),
-            chrono_tz::UTC,
-        )
-        .with_publisher(bus.publisher());
+        let tool = UserInboxAddTool::new(user_inbox_dir.clone(), chrono_tz::UTC)
+            .with_publisher(bus.publisher());
         let result = tool
             .execute(serde_json::json!({"title": "heads up", "body": "look"}))
             .await
@@ -890,7 +878,7 @@ mod tests {
             .await
             .unwrap();
 
-        let tool = UserInboxAddTool::new(blocked.join("user"), blocked.join("a"), chrono_tz::UTC)
+        let tool = UserInboxAddTool::new(blocked.join("user"), chrono_tz::UTC)
             .with_publisher(bus.publisher());
         let result = tool
             .execute(serde_json::json!({"title": "lost", "body": "never saved"}))
@@ -907,17 +895,12 @@ mod tests {
     async fn user_inbox_add_with_attachments_copies_file() {
         let dir = tempfile::tempdir().unwrap();
         let user_inbox_dir = dir.path().join("inbox/user");
-        let attachments_dir = dir.path().join("inbox/user/attachments");
         tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
 
         let source_file = dir.path().join("export.csv");
         tokio::fs::write(&source_file, b"a,b,c").await.unwrap();
 
-        let tool = UserInboxAddTool::new(
-            user_inbox_dir.clone(),
-            attachments_dir.clone(),
-            chrono_tz::UTC,
-        );
+        let tool = UserInboxAddTool::new(user_inbox_dir.clone(), chrono_tz::UTC);
         let result = tool
             .execute(serde_json::json!({
                 "title": "weekly export",
@@ -954,10 +937,9 @@ mod tests {
     async fn user_inbox_add_missing_attachment_source_still_saves_the_item() {
         let dir = tempfile::tempdir().unwrap();
         let user_inbox_dir = dir.path().join("inbox/user");
-        let attachments_dir = dir.path().join("inbox/user/attachments");
         tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
 
-        let tool = UserInboxAddTool::new(user_inbox_dir.clone(), attachments_dir, chrono_tz::UTC);
+        let tool = UserInboxAddTool::new(user_inbox_dir.clone(), chrono_tz::UTC);
         let result = tool
             .execute(serde_json::json!({
                 "title": "broken",
