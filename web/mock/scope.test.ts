@@ -20,6 +20,7 @@ describe("isFileDataRoute", () => {
     "/inbox/2026-09-30-note/archive",
     "/inbox/2026-09-30-note/restore",
     "/inbox/2026-09-30-note/attachments/0",
+    "/inbox/agent/2026-09-30-note/attachments/0",
     "/inbox/archive/read",
   ])("takes %s", (route) => {
     expect(isFileDataRoute(route)).toBe(true);
@@ -42,6 +43,7 @@ describe("isFileDataRoute", () => {
     "/a2a/outbound",
     "/inbox/item",
     "/inbox/item/unknown",
+    "/inbox/agent/item/attachments",
     "/inbox/item/attachments",
     "/inbox/item/attachments/0/extra",
     "/inbox/",

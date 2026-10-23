@@ -265,7 +265,14 @@ function agentReply(
 ): void {
   const { state } = agentNamed(hub, message.agent);
   const attachments = (message.files ?? []).map((file) =>
-    storeAttachment(state, "user", message.id, file.filename, file.bytes),
+    storeAttachment(
+      state,
+      "user",
+      message.id,
+      file.filename,
+      file.bytes,
+      message.archived === true,
+    ),
   );
   const list = message.archived === true ? state.inboxArchive : state.inboxItems;
   list.push({

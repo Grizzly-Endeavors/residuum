@@ -50,7 +50,8 @@ export function isFileDataRoute(sub: string): boolean {
     case "a2a":
       return rest.length === 2 && rest[0] === "agents" && rest[1] === "raw";
     case "inbox":
-      // The inbox, the archive, `{id}/(read|archive|restore)`, `{id}/attachments/{index}`.
+      // The inbox, the archive, `{id}/(read|archive|restore)`, `{id}/attachments/{index}`,
+      // and the attachments of an item in the agent's own inbox, `agent/{id}/attachments/{index}`.
       switch (rest.length) {
         case 0:
           return true;
@@ -60,6 +61,8 @@ export function isFileDataRoute(sub: string): boolean {
           return INBOX_ITEM_ACTIONS.has(rest[1] ?? "");
         case 3:
           return rest[1] === "attachments";
+        case 4:
+          return rest[0] === "agent" && rest[2] === "attachments";
         default:
           return false;
       }

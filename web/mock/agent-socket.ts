@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "../src/lib/generated/protocol";
+import { agentInboxItemId, deriveTitle } from "./agent-inbox";
 import { arrivedThroughArtifactsOrigin } from "./artifacts-origin";
 import { createChatSimulator } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
@@ -234,9 +235,19 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         reply({ type: "notice", message: `Command '${msg.name}' executed. (mock)` });
         break;
 
-      case "inbox_add":
-        reply({ type: "notice", message: "[inbox] item added" });
+      case "inbox_add": {
+        // `/inbox <text>` is a message you sent the agent, so it shows in Sent.
+        const title = deriveTitle(msg.body);
+        state.agentInbox.push({
+          id: agentInboxItemId([state], title),
+          title,
+          body: msg.body,
+          source: "cli",
+          timestamp: hub.env.clock.iso(),
+        });
+        reply({ type: "notice", message: "Added a note to the inbox." });
         break;
+      }
     }
   }
 

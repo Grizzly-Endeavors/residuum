@@ -31,6 +31,11 @@ export function agentInboxItemId(states: readonly MockState[], title: string): s
   return id;
 }
 
+/** The title of an item added without one: the first line of its body, in full (the backend's `derive_title`). */
+export function deriveTitle(body: string): string {
+  return body === "" ? "Inbox message" : (body.split(/\r?\n/)[0] ?? "");
+}
+
 /**
  * `POST .../agent-inbox`: add an item to the agent's own inbox, for it to
  * triage later. The body is `{ title?, body }`, and the title defaults to the
@@ -61,7 +66,7 @@ async function addAgentInboxItem({ req, res, state }: RouteContext): Promise<voi
     return;
   }
   const given = stringField(body, "title");
-  const title = given !== undefined && given.trim() !== "" ? given : (content.split("\n")[0] ?? "");
+  const title = given !== undefined && given.trim() !== "" ? given : deriveTitle(content);
   const id = agentInboxItemId([state], title);
   state.agentInbox.push({
     id,
