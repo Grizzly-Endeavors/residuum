@@ -57,6 +57,7 @@ mod overview_schedule;
 mod pairing;
 mod push;
 mod session_relay;
+mod uploads;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
@@ -464,6 +465,8 @@ struct Harness {
     push: Arc<crate::push::PushService>,
     pairing: residuum_net::pairing::DevicePairing,
     root: tempfile::TempDir,
+    /// The upload store the hub serves, for a test to resolve what it staged.
+    uploads: crate::uploads::UploadStore,
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
     team_bus: residuum_bus::BusHandle,
@@ -514,6 +517,7 @@ impl Harness {
             TeamOverview::with_window(TEST_BOOT_ID, Arc::clone(&shared), OVERVIEW_WINDOW);
         let push = crate::push::PushService::new(&hub_dir, None);
         let pairing = residuum_net::pairing::DevicePairing::open(&hub_dir);
+        let uploads = crate::uploads::UploadStore::open(&hub_dir).unwrap();
         let hub = HubHttpState {
             assets: crate::testing::fixture_assets,
             hub_dir: hub_dir.clone(),
@@ -556,6 +560,7 @@ impl Harness {
             system_one: residuum_inference::system_one::SystemOneService::new(None),
             pairing: pairing.clone(),
             remote_access: residuum_net::remote_access::slot::RemoteAccessSlot::new(root.path()),
+            uploads: uploads.clone(),
         };
         let app = hub_router(shared, hub);
         Self {
@@ -564,6 +569,7 @@ impl Harness {
             push,
             pairing,
             root,
+            uploads,
             reload_rx,
             shutdown_rx,
             team_bus,

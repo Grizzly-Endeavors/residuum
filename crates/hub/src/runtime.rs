@@ -1053,6 +1053,7 @@ pub fn build_app(
         system_one: Arc::clone(&services.system_one),
         pairing: services.pairing.clone(),
         remote_access: services.remote_access.clone(),
+        uploads: services.uploads.clone(),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
