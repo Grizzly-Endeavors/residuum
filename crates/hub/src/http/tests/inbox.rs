@@ -23,6 +23,7 @@ async fn add_item(h: &Harness, agent: &str, id: &str, when: NaiveDateTime, read:
         timestamp: when,
         read,
         attachments: Vec::new(),
+        in_reply_to: None,
     };
     residuum_workspace::inbox::save_item(&inbox, &format!("{id}.json"), &item)
         .await
@@ -40,6 +41,7 @@ async fn add_archived_item(h: &Harness, agent: &str, id: &str, when: NaiveDateTi
         timestamp: when,
         read: true,
         attachments: Vec::new(),
+        in_reply_to: None,
     };
     residuum_workspace::inbox::save_item(&archive, &format!("{id}.json"), &item)
         .await
@@ -419,6 +421,7 @@ async fn marking_an_archived_item_read_changes_it_in_the_archive() {
         timestamp: at(1, 8, 0),
         read: false,
         attachments: Vec::new(),
+        in_reply_to: None,
     };
     residuum_workspace::inbox::save_item(&archive, "old.json", &item)
         .await
@@ -632,14 +635,17 @@ async fn two_items_with_one_title_on_one_day_both_survive_with_their_attachments
         tokio::fs::create_dir_all(layout.user_inbox_dir())
             .await
             .unwrap();
-        let (filename, failures) = residuum_workspace::inbox::quick_add_with_attachments(
+        let (filename, failures) = residuum_workspace::inbox::add_user_inbox_item(
             &layout.user_inbox_dir(),
             &layout.user_inbox_attachments_dir(),
-            "Daily report",
-            body,
-            "agent",
+            residuum_workspace::inbox::NewUserInboxItem {
+                title: "Daily report",
+                body,
+                source: "agent",
+                in_reply_to: None,
+                attachments: &[source],
+            },
             chrono_tz::UTC,
-            &[source],
         )
         .await
         .unwrap();
