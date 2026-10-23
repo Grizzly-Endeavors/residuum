@@ -15,7 +15,7 @@
   // Cancel asks the place to close it; the place's guard asks about text.
 
   interface Props {
-    /** Recipients to start with, when the draft isn't open already. */
+    /** Recipients to address the draft to: one with nothing written is addressed to them, and one with something written gains them. */
     to: string[];
     onsent: (threadId: string) => void;
     oncancel: () => void;
@@ -23,7 +23,7 @@
 
   let { to, onsent, oncancel }: Props = $props();
 
-  // Opened once: a draft already being written keeps its own recipients.
+  // Opened once: a draft already being written keeps what was written.
   const draft = untrack(() => mail.openNewMessage(to));
 
   /** Every agent, and any recipient the draft holds that the list doesn't (yet). */
