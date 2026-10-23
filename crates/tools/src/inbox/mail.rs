@@ -30,18 +30,9 @@ impl MailAccess {
         layout: &WorkspaceLayout,
         tz: chrono_tz::Tz,
     ) -> Self {
-        let agent = layout
-            .root()
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
         Self {
             directory,
-            own: Mailbox {
-                agent,
-                dir: layout.root().to_path_buf(),
-                timezone: tz,
-            },
+            own: Mailbox::for_workspace(layout, tz),
         }
     }
 
@@ -70,7 +61,7 @@ impl MailAccess {
                 every_agent: true,
             },
             _ => MailView {
-                directory: Arc::new(OwnMailboxOnly(self.own.clone())),
+                directory: Arc::new(self.own.clone()),
                 every_agent: false,
             },
         }
@@ -82,19 +73,6 @@ pub(super) struct MailView {
     pub directory: Arc<dyn MailboxDirectory>,
     /// Whether `directory` reaches every agent, not just this one.
     pub every_agent: bool,
-}
-
-/// A directory holding only this agent's own mailbox.
-struct OwnMailboxOnly(Mailbox);
-
-impl MailboxDirectory for OwnMailboxOnly {
-    fn mailboxes(&self) -> Vec<Mailbox> {
-        vec![self.0.clone()]
-    }
-
-    fn mailbox(&self, agent: &str) -> Option<Mailbox> {
-        (self.0.agent == agent).then(|| self.0.clone())
-    }
 }
 
 /// An inbox item found by its ref.

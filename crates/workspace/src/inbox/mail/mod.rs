@@ -20,6 +20,8 @@
 
 use std::path::PathBuf;
 
+use residuum_config::WorkspaceLayout;
+
 mod handle;
 mod send;
 mod thread;
@@ -47,6 +49,36 @@ pub struct Mailbox {
     pub dir: PathBuf,
     /// The timezone the naive local times stored in the agent's items are in.
     pub timezone: chrono_tz::Tz,
+}
+
+impl Mailbox {
+    /// The mailbox of the agent whose workspace is `layout`, whose items are
+    /// stored in `tz`. Its folder name is the workspace directory's name.
+    #[must_use]
+    pub fn for_workspace(layout: &WorkspaceLayout, tz: chrono_tz::Tz) -> Self {
+        let agent = layout
+            .root()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self {
+            agent,
+            dir: layout.root().to_path_buf(),
+            timezone: tz,
+        }
+    }
+}
+
+/// One mailbox is a directory of one agent: what an agent reaches on its own,
+/// without the hub's directory.
+impl MailboxDirectory for Mailbox {
+    fn mailboxes(&self) -> Vec<Mailbox> {
+        vec![self.clone()]
+    }
+
+    fn mailbox(&self, agent: &str) -> Option<Mailbox> {
+        (self.agent == agent).then(|| self.clone())
+    }
 }
 
 /// The agents whose workspaces hold mail. The hub implements it on its agent

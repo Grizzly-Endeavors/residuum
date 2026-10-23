@@ -367,17 +367,33 @@ async fn handle_client_message(
         }
         ClientMessage::InboxAdd { body } => {
             tracing::info!("inbox add requested by client");
-            let dir = state.agent_inbox_dir.clone();
-            let tz = state.tz;
+            // A note is mail from the user to this agent, so it shows in Sent.
+            let mailbox =
+                residuum_workspace::inbox::mail::Mailbox::for_workspace(&state.layout, state.tz);
             let tx = local_tx.clone();
             residuum_core::util::spawn_in_span(async move {
-                let title = residuum_workspace::inbox::derive_title(&body);
-                match residuum_workspace::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
-                    Ok(_filename) => {
+                let note = residuum_workspace::inbox::mail::OutgoingMail {
+                    to: vec![mailbox.agent.clone()],
+                    title: String::new(),
+                    body,
+                    source: residuum_workspace::inbox::mail::UserMailSource::Cli,
+                    in_reply_to: None,
+                    attachments: Vec::new(),
+                };
+                match residuum_workspace::inbox::mail::send_mail(&mailbox, note).await {
+                    Ok(_sent) => {
                         tx.send(ServerMessage::Notice {
                             message: "Added a note to the inbox.".to_string(),
                             reload: None,
                             reload_of: None,
+                        })
+                        .ok();
+                    }
+                    Err(residuum_workspace::inbox::mail::SendMailError::BlankBody) => {
+                        tx.send(ServerMessage::Error {
+                            reply_to: None,
+                            message: "A note needs some text.".to_string(),
+                            details: None,
                         })
                         .ok();
                     }
@@ -1085,7 +1101,10 @@ mod tests {
     #[tokio::test]
     async fn inbox_add_success_notice_reads_as_plain_language() {
         let dir = tempfile::tempdir().unwrap();
-        let state = make_test_gateway_state(dir.path());
+        // The workspace directory's name is the agent's folder name, which a
+        // mail ref must be able to carry.
+        let workspace = dir.path().join("atlas");
+        let state = make_test_gateway_state(&workspace);
         std::fs::create_dir_all(&state.agent_inbox_dir).unwrap();
         let (local_tx, mut local_rx) = mpsc::unbounded_channel();
         let verbose = AtomicBool::new(false);
@@ -1111,6 +1130,30 @@ mod tests {
             matches!(&msg, ServerMessage::Notice { message, .. } if message == "Added a note to the inbox."),
             "expected a plain-language Notice, got {msg:?}"
         );
+
+        // The note is the user's mail to this agent, so it is a Sent thread.
+        let mailbox =
+            residuum_workspace::inbox::mail::Mailbox::for_workspace(&state.layout, state.tz);
+        let index = residuum_workspace::inbox::mail::MailIndex::load(&mailbox).await;
+        let sent: Vec<_> = index
+            .threads(&residuum_workspace::inbox::mail::ThreadFilter {
+                folder: Some(residuum_workspace::inbox::mail::MailFolder::Sent),
+                agent: None,
+            })
+            .collect();
+        let [thread] = sent.as_slice() else {
+            panic!("one Sent thread for the note, found {}", sent.len());
+        };
+        assert_eq!(thread.subject(), "remember this");
+        assert_eq!(thread.root().to, std::slice::from_ref(&mailbox.agent));
+        let item = residuum_workspace::inbox::load_item(
+            &state
+                .agent_inbox_dir
+                .join(format!("{}.json", thread.root().item_ref.id())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(item.source, "cli", "a terminal note is stored as cli mail");
     }
 
     #[tokio::test]
