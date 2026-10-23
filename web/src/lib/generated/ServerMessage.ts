@@ -257,11 +257,11 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details?: string, } | { "type": "message_refused",
+details?: string, } | { "type": "message_refused", 
 /**
  * The refused message's id.
  */
-id: string,
+id: string, 
 /**
  * Plain-language reason, with what to do next.
  */
