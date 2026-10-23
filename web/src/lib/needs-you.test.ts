@@ -96,12 +96,14 @@ describe("deriveNeedsYou", () => {
     ]);
     expect(needs.count).toBe(6);
     expect(needs.moreInInbox).toBe(0);
+    expect(needs.moreInInboxExact).toBe(true);
   });
 
   it("is empty when nothing needs the user", () => {
     expect(deriveNeedsYou({ agents: [agent("atlas")], overviews: {}, unreadThreads: [] })).toEqual({
       items: [],
       moreInInbox: 0,
+      moreInInboxExact: true,
       count: 0,
     });
   });
@@ -119,14 +121,17 @@ describe("deriveNeedsYou", () => {
     expect(needs.count).toBe(0);
   });
 
-  it("shows the five newest unread threads and counts the rest under them, not toward the count", () => {
-    const unread = Array.from({ length: 7 }, (_, n) =>
-      thread("atlas", `i${String(n)}`, `2026-03-14T0${String(9 - n)}:00:00Z`),
+  const unreadThreads = (n: number): MailThreadSummary[] =>
+    Array.from({ length: n }, (_, i) =>
+      thread("atlas", `i${String(i)}`, `2026-03-14T0${String(9 - i)}:00:00Z`),
     );
+
+  it("shows the five newest unread threads and counts the threads under them, not toward the count", () => {
     const needs = deriveNeedsYou({
       agents: [agent("atlas")],
-      overviews: { atlas: overview("atlas", { inbox_unread: 9 }) },
-      unreadThreads: unread,
+      overviews: { atlas: overview("atlas", { inbox_unread: 7 }) },
+      unreadThreads: unreadThreads(7),
+      unreadThreadsComplete: true,
     });
     expect(needs.items.map((i) => i.key)).toEqual([
       "inbox:atlas/user/i0",
@@ -135,8 +140,59 @@ describe("deriveNeedsYou", () => {
       "inbox:atlas/user/i3",
       "inbox:atlas/user/i4",
     ]);
-    expect(needs.moreInInbox).toBe(4);
+    expect(needs.moreInInbox).toBe(2);
+    expect(needs.moreInInboxExact).toBe(true);
     expect(needs.count).toBe(5);
+  });
+
+  it("counts threads, not the unread messages several of them hold", () => {
+    // Six unread threads, the first five holding two unread messages each.
+    const needs = deriveNeedsYou({
+      agents: [agent("atlas")],
+      overviews: { atlas: overview("atlas", { inbox_unread: 11 }) },
+      unreadThreads: unreadThreads(6),
+      unreadThreadsComplete: true,
+    });
+    expect(needs.moreInInbox).toBe(1);
+    expect(needs.moreInInboxExact).toBe(true);
+  });
+
+  it("gives no number for the threads beyond the newest page, only that there are more", () => {
+    // The page held five unread threads and isn't the last; the 9 unread messages don't say how many threads there are.
+    const needs = deriveNeedsYou({
+      agents: [agent("atlas")],
+      overviews: { atlas: overview("atlas", { inbox_unread: 9 }) },
+      unreadThreads: unreadThreads(5),
+      unreadThreadsComplete: false,
+    });
+    expect(needs.items).toHaveLength(5);
+    expect(needs.moreInInbox).toBeGreaterThan(0);
+    expect(needs.moreInInboxExact).toBe(false);
+    expect(needs.count).toBe(5);
+  });
+
+  it("knows nothing is beyond the page when every unread message belongs to a thread on it", () => {
+    const needs = deriveNeedsYou({
+      agents: [agent("atlas")],
+      overviews: { atlas: overview("atlas", { inbox_unread: 3 }) },
+      unreadThreads: unreadThreads(3),
+      unreadThreadsComplete: false,
+    });
+    expect(needs.moreInInbox).toBe(0);
+    expect(needs.moreInInboxExact).toBe(true);
+    expect(needs.count).toBe(3);
+  });
+
+  it("says unread mail waits when the newest page held none of it", () => {
+    const needs = deriveNeedsYou({
+      agents: [agent("atlas")],
+      overviews: { atlas: overview("atlas", { inbox_unread: 2 }) },
+      unreadThreads: [],
+      unreadThreadsComplete: false,
+    });
+    expect(needs.items).toEqual([]);
+    expect(needs.moreInInbox).toBeGreaterThan(0);
+    expect(needs.moreInInboxExact).toBe(false);
   });
 
   it("counts unread inbox items before their threads arrive", () => {
@@ -146,7 +202,8 @@ describe("deriveNeedsYou", () => {
       unreadThreads: [],
     });
     expect(needs.items.map((i) => i.kind)).toEqual(["failed"]);
-    expect(needs.moreInInbox).toBe(2);
+    expect(needs.moreInInbox).toBeGreaterThan(0);
+    expect(needs.moreInInboxExact).toBe(false);
     expect(needs.count).toBe(3);
   });
 
@@ -176,6 +233,7 @@ describe("deriveNeedsYou", () => {
       unreadThreadsComplete: true,
     });
     expect(needs.moreInInbox).toBe(0);
+    expect(needs.moreInInboxExact).toBe(true);
     expect(needs.count).toBe(1);
   });
 

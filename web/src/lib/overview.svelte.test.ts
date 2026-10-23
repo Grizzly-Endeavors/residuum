@@ -316,35 +316,36 @@ describe("OverviewStore frames", () => {
 });
 
 describe("OverviewStore inbox threads", () => {
-  it("fetches the newest unread threads when a count changes, paging until it has five", async () => {
+  it("fetches one page of the inbox when a count changes, and keeps its unread threads", async () => {
     answers.overview = {
       boot_id: BOOT,
-      agents: [overviewOf("atlas", { inbox_unread: 6 }), overviewOf("scout")],
+      agents: [overviewOf("atlas", { inbox_unread: 9 }), overviewOf("scout")],
     };
-    answers.mail = (url) =>
-      url.searchParams.get("before") === null
-        ? {
-            threads: [inboxThread("a"), inboxThread("b", false), inboxThread("c")],
-            next: "cursor-1",
-          }
-        : {
-            threads: [inboxThread("d"), inboxThread("e"), inboxThread("f"), inboxThread("g")],
-            next: "cursor-2",
-          };
+    answers.mail = () => ({
+      threads: [
+        inboxThread("a"),
+        inboxThread("b", false),
+        ...["c", "d", "e", "f", "g"].map((id) => inboxThread(id)),
+      ],
+      next: "cursor-1",
+    });
     connect();
     await waitFor(() => {
-      expect(store.unreadThreads.map((t) => t.subject)).toEqual(["a", "c", "d", "e", "f"]);
+      expect(store.unreadThreads.map((t) => t.subject)).toEqual(["a", "c", "d", "e", "f", "g"]);
     });
+    // However long the inbox is, a count change asks for its newest page and no more.
     expect(requests.filter((r) => r.includes("/mail/"))).toEqual([
       "GET /api/hub/mail/threads?folder=inbox&limit=50",
-      "GET /api/hub/mail/threads?folder=inbox&before=cursor-1&limit=50",
     ]);
     expect(store.unreadThreadsComplete).toBe(false);
+    expect(store.needsYou.items.filter((item) => item.kind === "inbox")).toHaveLength(5);
     expect(store.needsYou.count).toBe(5);
-    expect(store.needsYou.moreInInbox).toBe(1);
+    // The page isn't the last, so the link says there is more without a number.
+    expect(store.needsYou.moreInInbox).toBeGreaterThan(0);
+    expect(store.needsYou.moreInInboxExact).toBe(false);
 
     // A frame with the same counts asks for nothing; a changed count asks again.
-    hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 6 }) });
+    hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 9 }) });
     const asked = requests.length;
     hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 0 }) });
     await waitFor(() => {
@@ -363,6 +364,7 @@ describe("OverviewStore inbox threads", () => {
     });
     expect(store.unreadThreadsComplete).toBe(true);
     expect(store.needsYou.moreInInbox).toBe(0);
+    expect(store.needsYou.moreInInboxExact).toBe(true);
     expect(store.needsYou.count).toBe(1);
   });
 

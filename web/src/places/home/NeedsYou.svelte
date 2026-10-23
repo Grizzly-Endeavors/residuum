@@ -28,6 +28,12 @@
   const uid = $props.id();
   const needs = $derived(overview.needsYou);
 
+  /** The link under the list: threads still unread in the Inbox, counted only when the whole Inbox was searched. */
+  const moreInInboxText = $derived.by(() => {
+    if (needs.moreInInboxExact) return `${String(needs.moreInInbox)} more in Inbox`;
+    return needs.items.some((item) => item.kind === "inbox") ? "More in Inbox" : "Unread in Inbox";
+  });
+
   /** The action in flight on each item, by item key. */
   let pending = $state<Record<string, string | undefined>>({});
 
@@ -169,8 +175,7 @@
         href={formatLocation(locationAt(INBOX))}
         onclick={(event) => followLink(event, INBOX)}
       >
-        {needs.moreInInbox}
-        {needs.items.some((item) => item.kind === "inbox") ? "more" : "unread"} in Inbox
+        {moreInInboxText}
       </a>
     {/if}
   {/if}

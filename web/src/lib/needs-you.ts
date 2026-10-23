@@ -62,8 +62,18 @@ export type NeedsYouItem =
 export interface NeedsYou {
   /** Error first, then warn, then info; newest first within each. */
   items: NeedsYouItem[];
-  /** Unread inbox items beyond the threads listed. */
+  /**
+   * Unread inbox threads waiting beyond the ones listed: 0 when none are, and
+   * at least 1 when the Inbox link shows. Threads, never the unread messages
+   * in them. It is the whole number only when `moreInInboxExact` is set.
+   */
   moreInInbox: number;
+  /**
+   * `moreInInbox` is the whole number of threads beyond the ones listed. When
+   * it is not, the search didn't see the whole Inbox, so the link can say that
+   * there is more but not how much.
+   */
+  moreInInboxExact: boolean;
   /**
    * The rail's Home count: one per item, with the inbox counted up to the
    * five the list shows, whether or not their threads have loaded.
@@ -74,7 +84,11 @@ export interface NeedsYou {
 export interface NeedsYouInput {
   agents: readonly AgentSummary[];
   overviews: Readonly<Record<string, AgentOverview>>;
-  /** The newest unread inbox threads across agents, newest first. */
+  /**
+   * Every unread inbox thread the search found, across agents, newest first.
+   * The search looks at the newest page of the Inbox, which may not reach
+   * its end.
+   */
   unreadThreads: readonly MailThreadSummary[];
   /**
    * `unreadThreads` holds every unread thread: the search reached the end of
@@ -155,9 +169,10 @@ export function deriveNeedsYou({
 
   const known = new Set(agents.map((agent) => agent.name));
   // A thread only agents that no longer exist took part in has nowhere to open.
-  const inbox = unreadThreads
-    .filter((thread) => thread.unread && thread.participants.some((name) => known.has(name)))
-    .slice(0, INBOX_THREADS_SHOWN);
+  const unread = unreadThreads.filter(
+    (thread) => thread.unread && thread.participants.some((name) => known.has(name)),
+  );
+  const inbox = unread.slice(0, INBOX_THREADS_SHOWN);
   for (const thread of inbox) {
     items.push({
       kind: "inbox",
@@ -170,11 +185,19 @@ export function deriveNeedsYou({
 
   items.sort(byNeed);
   const listedProblems = items.length - inbox.length;
+  // Every unread thread is known when the search reached the end of the Inbox,
+  // or when the unread messages the agents count are no more than the threads
+  // found (each unread thread holds at least one, so none can be elsewhere).
+  const everyThreadSeen = unreadThreadsComplete || inboxUnread <= unread.length;
+  const beyondListed = unread.length - inbox.length;
   return {
     items,
-    moreInInbox: unreadThreadsComplete ? 0 : Math.max(0, inboxUnread - inbox.length),
+    // Unread messages say nothing about how many threads are left, so without
+    // the whole Inbox the number is only a floor of one.
+    moreInInbox: everyThreadSeen ? beyondListed : Math.max(1, beyondListed),
+    moreInInboxExact: everyThreadSeen,
     count:
       listedProblems +
-      (unreadThreadsComplete ? inbox.length : Math.min(INBOX_THREADS_SHOWN, inboxUnread)),
+      (everyThreadSeen ? inbox.length : Math.min(INBOX_THREADS_SHOWN, inboxUnread)),
   };
 }

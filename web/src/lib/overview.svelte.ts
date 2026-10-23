@@ -27,14 +27,14 @@ import type {
   TeamEvent,
 } from "./hub-types";
 import type { OutboundA2aTaskSummary } from "./types";
-import { deriveNeedsYou, INBOX_THREADS_SHOWN, type NeedsYou } from "./needs-you";
+import { deriveNeedsYou, type NeedsYou } from "./needs-you";
 import { notifications } from "./notifications.svelte";
 import { unreachableAgentMessage } from "./sessions.svelte";
 
 /** How many team events the store keeps, newest first. */
 const MAX_EVENTS = 50;
 
-/** How many inbox threads one request asks for while looking for the newest unread ones. */
+/** How many inbox threads the one request for the newest unread ones asks for. */
 const INBOX_PAGE = 50;
 
 /** What the store reads from the hub store. */
@@ -64,9 +64,9 @@ export class OverviewStore {
   eventsLoaded = $state(false);
   eventsError = $state<string | null>(null);
 
-  /** The newest unread inbox threads across agents, at most five. */
+  /** The unread threads among the newest page of the inbox, across agents, newest first. */
   unreadThreads = $state<MailThreadSummary[]>([]);
-  /** `unreadThreads` is every unread thread: the search reached the end of the inbox. */
+  /** `unreadThreads` is every unread thread: that page was the last of the inbox. */
   unreadThreadsComplete = $state(false);
   unreadThreadsError = $state<string | null>(null);
 
@@ -243,8 +243,9 @@ export class OverviewStore {
   }
 
   /**
-   * Fetch the newest unread inbox threads, paging until five are found or the
-   * inbox ends. A failure lands in `unreadThreadsError`.
+   * Fetch the unread threads of the newest page of the inbox: one request,
+   * however long the inbox is. `unreadThreadsComplete` says whether that page
+   * was the last. A failure lands in `unreadThreadsError`.
    */
   async refreshUnreadThreads(): Promise<void> {
     const request = ++this.unreadRequest;
@@ -256,16 +257,10 @@ export class OverviewStore {
       return;
     }
     try {
-      const found: MailThreadSummary[] = [];
-      let before: string | undefined;
-      do {
-        const page = await fetchMailThreads({ folder: "inbox", limit: INBOX_PAGE, before });
-        found.push(...page.threads.filter((thread) => thread.unread));
-        before = page.next ?? undefined;
-      } while (found.length < INBOX_THREADS_SHOWN && before !== undefined);
+      const page = await fetchMailThreads({ folder: "inbox", limit: INBOX_PAGE });
       if (request !== this.unreadRequest) return;
-      this.unreadThreads = found.slice(0, INBOX_THREADS_SHOWN);
-      this.unreadThreadsComplete = before === undefined && found.length <= INBOX_THREADS_SHOWN;
+      this.unreadThreads = page.threads.filter((thread) => thread.unread);
+      this.unreadThreadsComplete = page.next === null;
       this.unreadThreadsError = null;
     } catch (err) {
       if (request !== this.unreadRequest) return;
