@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn unbound_handle_knows_no_mailboxes() {
         let handle = MailboxDirectoryHandle::unbound();
-        assert!(handle.mailboxes().is_empty());
+        assert_eq!(handle.mailboxes(), Vec::<Mailbox>::new());
         assert!(handle.mailbox("atlas").is_none());
     }
 
@@ -84,7 +84,11 @@ mod tests {
         assert!(handle.mailbox("nova").is_none());
 
         drop(directory);
-        assert!(handle.mailboxes().is_empty(), "the host is gone");
+        assert_eq!(
+            handle.mailboxes(),
+            Vec::<Mailbox>::new(),
+            "the host is gone"
+        );
     }
 
     #[test]
