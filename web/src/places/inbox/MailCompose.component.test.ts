@@ -154,12 +154,12 @@ describe("New message", () => {
     expect(mail.newMessage?.body).toBe("Draft");
   });
 
-  it("keeps a draft already being written, recipients and all", () => {
+  it("keeps a draft already being written, and adds the recipients it is opened for", () => {
     const draft = mail.openNewMessage(["scout"]);
     draft.body = "Started earlier";
     compose(["atlas"]);
     expect(chosen("scout")).toBe(true);
-    expect(chosen("atlas")).toBe(false);
+    expect(chosen("atlas")).toBe(true);
     expect(screen.getByRole("textbox", { name: /^Message/ })).toHaveProperty(
       "value",
       "Started earlier",

@@ -6,7 +6,10 @@
 // message, a reply per thread) with their staged attachments. Counts aren't
 // kept here: the overview store has them, and the list and the open thread
 // are fetched again when they change. Every failure lands in state the place
-// shows with Try again; nothing here navigates.
+// shows with Try again; nothing here navigates. A fetch that was already out
+// when the user changed something locally (archived a thread, sent a reply)
+// answers for the world before the change, so it is asked again instead of
+// being shown.
 
 import {
   ApiError,
@@ -23,6 +26,7 @@ import {
 import { userErrorMessage } from "./errors";
 import type { MailFolder, MailMessage, MailThread, MailThreadSummary } from "./hub-types";
 import type { AppLocation } from "./routes";
+import { toast } from "./toast.svelte";
 
 /** Which threads the list shows: one folder, for one agent or every agent. */
 export interface MailList {
@@ -242,12 +246,15 @@ export class MailDraft {
   }
 
   /**
-   * Wait for the uploads still running, then the ids of every attachment, or
-   * null with `sendError` set when one didn't upload.
+   * Wait for the uploads still running, including those of files attached
+   * while waiting, then the ids of every attachment, or null with `sendError`
+   * set when one didn't upload.
    */
   async uploadIds(): Promise<string[] | null> {
-    await Promise.all(this.attachments.map((attachment) => attachment.done));
-    const failed = this.attachments.filter((attachment) => attachment.uploadId === null);
+    while (this.uploading) {
+      await Promise.all(this.attachments.map((attachment) => attachment.done));
+    }
+    const failed = this.attachments.filter((attachment) => attachment.status === "failed");
     if (failed.length > 0) {
       const names = listing(failed.map((attachment) => attachment.filename));
       this.sendError = `${names} didn't upload. Try ${failed.length === 1 ? "it" : "them"} again or remove ${failed.length === 1 ? "it" : "them"}, then send.`;
@@ -280,7 +287,7 @@ export class ReplyDraft extends MailDraft {
 /** A New message: its recipients and subject as well as its body. */
 export class NewMessageDraft extends MailDraft {
   to = $state<string[]>([]);
-  /** May stay empty: the thread then shows as "(no subject)". */
+  /** May stay empty: the hub then takes the first line of the body as the subject. */
   subject = $state("");
 
   constructor(to: readonly string[] = []) {
@@ -344,6 +351,12 @@ export class MailStore {
 
   private listRequest = 0;
   private openRequest = 0;
+  /** Counts the local changes to the list's threads (read, archived, restored), so a fetch that was out meanwhile is asked again. */
+  private listVersion = 0;
+  /** Counts the local changes to the open thread (read, archived, restored, a reply added), for the same reason. */
+  private threadVersion = 0;
+  /** The list fetch in flight, so Show older pages from the cursor it brings. */
+  private reloading: Promise<void> | null = null;
   /** Threads whose read is in flight, so a second open doesn't ask again. */
   private reading: string[] = [];
   /** The unread counts the list was last fetched for; null while the Inbox isn't open. */
@@ -389,31 +402,54 @@ export class MailStore {
     const list = this.list;
     if (list === null) return Promise.resolve();
     const request = ++this.listRequest;
-    const limit = Math.min(MAX_PAGE_SIZE, Math.max(PAGE_SIZE, this.threads.length));
     this.loadingMore = false;
-    return (async () => {
-      try {
+    const fetching = this.fetchList(list, request);
+    this.reloading = fetching;
+    void fetching.then(() => {
+      if (this.reloading === fetching) this.reloading = null;
+    });
+    return fetching;
+  }
+
+  /**
+   * Ask for the list as far as it has been paged. An answer that was out while
+   * the user changed a thread (archived it, read it) is from before the change
+   * and would undo it, so it is dropped and the list is asked for again.
+   */
+  private async fetchList(list: MailList, request: number): Promise<void> {
+    try {
+      for (;;) {
+        const version = this.listVersion;
+        const limit = Math.min(MAX_PAGE_SIZE, Math.max(PAGE_SIZE, this.threads.length));
         const page = await fetchMailThreads(query(list, limit));
         if (request !== this.listRequest) return;
+        if (version !== this.listVersion) continue;
         this.threads = page.threads;
         this.next = page.next;
         this.loaded = true;
         this.loadError = null;
-      } catch (err) {
-        if (request !== this.listRequest) return;
-        this.loadError = userErrorMessage(err, { action: LOAD_FAILED[list.folder] });
+        return;
       }
-    })();
+    } catch (err) {
+      if (request !== this.listRequest) return;
+      this.loadError = userErrorMessage(err, { action: LOAD_FAILED[list.folder] });
+    }
   }
 
-  /** Fetch the next older page ("Show older"). A failure lands in `moreError`. */
+  /**
+   * Fetch the next older page ("Show older"). A fetch of the list still out
+   * comes first, so the page follows the cursor it brings. A failure lands in
+   * `moreError`.
+   */
   async loadMore(): Promise<void> {
-    const { list, next: before } = this;
-    if (list === null || before === null || this.loadingMore) return;
+    if (this.loadingMore || this.olderPage() === null) return;
     const request = this.listRequest;
     this.loadingMore = true;
     try {
-      const page = await fetchMailThreads(query(list, PAGE_SIZE, before));
+      if (this.reloading !== null) await this.reloading;
+      const older = this.olderPage();
+      if (request !== this.listRequest || older === null) return;
+      const page = await fetchMailThreads(query(older.list, PAGE_SIZE, older.before));
       if (request !== this.listRequest) return;
       const held = this.threads.map((summary) => summary.thread_id);
       this.threads = [...this.threads, ...page.threads.filter((s) => !held.includes(s.thread_id))];
@@ -425,6 +461,12 @@ export class MailStore {
     } finally {
       if (request === this.listRequest) this.loadingMore = false;
     }
+  }
+
+  /** The shown list and where its next older page starts, or null when no list is shown or it ends. */
+  private olderPage(): { list: MailList; before: string } | null {
+    const { list, next } = this;
+    return list === null || next === null ? null : { list, before: next };
   }
 
   /** The list's summary of a thread, when the loaded pages hold it. */
@@ -490,15 +532,25 @@ export class MailStore {
     return thread === null ? null : (this.replies[thread.thread_id] ?? null);
   }
 
-  /** Fetch the open thread again in place, keeping it on screen; a failure keeps what is shown. */
+  /**
+   * Fetch the open thread again in place, keeping it on screen; a failure keeps
+   * what is shown. An answer that was out while the user changed the thread (a
+   * reply sent, the thread read or archived) is from before the change, so it
+   * is dropped and the thread is asked for again.
+   */
   private async refreshThread(): Promise<void> {
     const held = this.thread;
     if (held === null || this.threadStatus !== "ready") return;
     const request = this.openRequest;
     try {
-      const thread = await fetchMailThread(held.thread_id);
-      if (request !== this.openRequest) return;
-      this.shown(thread);
+      for (;;) {
+        const version = this.threadVersion;
+        const thread = await fetchMailThread(held.thread_id);
+        if (request !== this.openRequest) return;
+        if (version !== this.threadVersion) continue;
+        this.shown(thread);
+        return;
+      }
     } catch (err) {
       // What is shown is still the thread as it last stood; the next change tries again.
       userErrorMessage(err, { action: "Couldn't refresh the open conversation." });
@@ -598,6 +650,8 @@ export class MailStore {
    * hold (an Undo) is fetched again so it lands in its place.
    */
   private moved(threadId: string, archived: boolean): void {
+    this.listVersion++;
+    this.threadVersion++;
     const thread = this.thread;
     if (thread?.thread_id === threadId) {
       this.thread = {
@@ -616,7 +670,13 @@ export class MailStore {
       }
       return;
     }
-    const updated = { ...summary, archived, in_inbox: !archived };
+    // Only an active message from an agent makes a thread unread, so an archived one never is.
+    const updated = {
+      ...summary,
+      archived,
+      in_inbox: !archived,
+      unread: !archived && summary.unread,
+    };
     this.threads = inFolder(updated, list.folder)
       ? this.threads.map((held) => (held.thread_id === threadId ? updated : held))
       : this.threads.filter((held) => held.thread_id !== threadId);
@@ -628,6 +688,8 @@ export class MailStore {
     wasUnread: boolean,
     refs: readonly string[],
   ): void {
+    this.listVersion++;
+    this.threadVersion++;
     if (wasUnread) {
       this.threads = this.threads.map((summary) =>
         summary.thread_id === threadId ? { ...summary, unread: !read } : summary,
@@ -647,27 +709,40 @@ export class MailStore {
   // ── Drafts ─────────────────────────────────────────────────────────
 
   /**
-   * Open the New message, addressed to `to`. One already being written is
-   * kept as it is, so a reload of the address doesn't lose it.
+   * Open the New message, addressed to `to`. A draft with nothing written yet
+   * (no text, subject or attachments) is addressed to `to` afresh, so a link
+   * to a different agent never opens one addressed elsewhere. One with
+   * something written is kept, and gains the recipients it lacks.
    */
   openNewMessage(to: readonly string[] = []): NewMessageDraft {
     const held = this.newMessage;
-    if (held !== null) return held;
-    const draft = new NewMessageDraft(to);
-    this.newMessage = draft;
-    return draft;
+    if (held === null) {
+      const draft = new NewMessageDraft(to);
+      this.newMessage = draft;
+      return draft;
+    }
+    if (!held.dirty) held.to = [...to];
+    else held.to = [...held.to, ...to.filter((name) => !held.to.includes(name))];
+    return held;
   }
 
-  /** Throw the New message away. */
+  /**
+   * Let go of the New message. One whose send is still going (waiting for its
+   * uploads, or on the wire) is not emptied: the send carries on with what it
+   * has, and `sendNewMessage` says how it ended.
+   */
   discardNewMessage(): void {
-    this.newMessage?.clear();
+    const draft = this.newMessage;
     this.newMessage = null;
+    if (draft !== null && !draft.sending) draft.clear();
   }
 
   /**
    * Send the New message once its uploads finish. Resolves to the thread it
-   * started, or null with `sendError` set (or the draft invalid). The list is
-   * fetched again so the thread shows in Sent.
+   * started, for the place to open, or null when it didn't go (`sendError`
+   * says why, or the draft is invalid) or went after the user had already left
+   * the New message, which a notice reports instead: the place has nothing to
+   * open then. The list is fetched again so the thread shows in Sent.
    */
   async sendNewMessage(): Promise<string | null> {
     const draft = this.newMessage;
@@ -681,19 +756,37 @@ export class MailStore {
     draft.sendError = null;
     try {
       const attachments = await draft.uploadIds();
-      if (attachments === null) return null;
+      if (attachments === null) {
+        if (this.newMessage !== draft) {
+          toast.error(
+            `Your message to ${listing(draft.to)} wasn't sent because a file didn't upload.`,
+          );
+        }
+        return null;
+      }
+      const recipients = [...draft.to];
       const { thread_id } = await sendMail({
-        to: [...draft.to],
+        to: recipients,
         subject: draft.subject.trim(),
         body: draft.body,
         attachments,
       });
-      if (this.newMessage === draft) this.newMessage = null;
+      const stillOpen = this.newMessage === draft;
+      if (stillOpen) this.newMessage = null;
       draft.clear();
       void this.reload();
-      return thread_id;
+      if (stillOpen) return thread_id;
+      toast.success(`Sent to ${listing(recipients)}.`);
+      return null;
     } catch (err) {
-      draft.sendError = userErrorMessage(err, { action: "Couldn't send your message." });
+      if (this.newMessage === draft) {
+        draft.sendError = userErrorMessage(err, { action: "Couldn't send your message." });
+      } else {
+        // The draft is out of sight, so a notice is the only way to hear it didn't go.
+        toast.error(
+          userErrorMessage(err, { action: `Your message to ${listing(draft.to)} wasn't sent.` }),
+        );
+      }
       return null;
     } finally {
       draft.sending = false;
@@ -729,8 +822,10 @@ export class MailStore {
       const attachments = await draft.uploadIds();
       if (attachments === null) return false;
       const { message } = await replyToMailThread(threadId, { body: draft.body, attachments });
+      this.threadVersion++;
       const thread = this.thread;
-      if (thread?.thread_id === threadId) {
+      // A fetch of the thread that landed first may already hold the reply.
+      if (thread?.thread_id === threadId && !thread.messages.some((m) => m.ref === message.ref)) {
         this.thread = { ...thread, messages: [...thread.messages, message] };
       }
       draft.clear();
@@ -758,12 +853,17 @@ export class MailStore {
    * What going to `target` would lose, for `router.guard` (null when the page
    * itself goes away): the New message when `target` doesn't keep it open,
    * and every reply when the page goes away. Replies otherwise stay with their
-   * threads in memory.
+   * threads in memory. Going to another place while the New message is being
+   * sent loses nothing: the send carries on, so it is not asked about.
    */
   draftLoss(target: AppLocation | null): string | null {
     const losses: string[] = [];
     const keepsNewMessage = target?.place.kind === "inbox" && target.place.compose !== null;
-    if (this.newMessage?.dirty === true && !keepsNewMessage) losses.push("an unsent new message");
+    const writing = this.newMessage;
+    const goingAnyway = target !== null && writing?.sending === true;
+    if (writing?.dirty === true && !goingAnyway && !keepsNewMessage) {
+      losses.push("an unsent new message");
+    }
     if (target === null) {
       const replies = Object.values(this.replies).filter((draft) => draft.dirty).length;
       if (replies === 1) losses.push("an unsent reply");

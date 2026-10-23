@@ -3,6 +3,7 @@ import { MAX_UPLOAD_BYTES } from "./api";
 import type { MailMessage, MailThread, MailThreadPage, MailThreadSummary } from "./hub-types";
 import { mailboxOf, MailStore } from "./mail.svelte";
 import { INBOX, locationAt } from "./routes";
+import { toast } from "./toast.svelte";
 import { waitFor } from "../test/wait";
 
 function summary(id: string, overrides: Partial<MailThreadSummary> = {}): MailThreadSummary {
@@ -282,6 +283,108 @@ describe("the list", () => {
     expect(store.threads).toHaveLength(2);
   });
 
+  describe("a fetch of the list that was out while the user changed something", () => {
+    const all = { folder: "inbox", agent: null } as const;
+
+    it("doesn't bring back a thread archived meanwhile", async () => {
+      const store = new MailStore();
+      listAnswer = () => page([summary(ID), summary("scout/user/b")]);
+      await store.show(all);
+      const stale = deferred<Response>();
+      listAnswer = () => stale.promise;
+      const reloading = store.reload();
+
+      expect(await store.archive(ID)).toBe(true);
+      expect(store.threads.map((t) => t.thread_id)).toEqual(["scout/user/b"]);
+      listAnswer = () => page([summary("scout/user/b")]);
+      stale.resolve(page([summary(ID), summary("scout/user/b")]));
+      await reloading;
+
+      expect(store.threads.map((t) => t.thread_id)).toEqual(["scout/user/b"]);
+      expect(requests.filter((r) => r.startsWith("GET /api/hub/mail/threads?"))).toHaveLength(3);
+    });
+
+    it("doesn't take a thread restored meanwhile out of the archive again", async () => {
+      const store = new MailStore();
+      const archived = summary(ID, { archived: true, in_inbox: false });
+      listAnswer = () => page([archived, summary("scout/user/b", { archived: true })]);
+      await store.show({ folder: "archived", agent: null });
+      const stale = deferred<Response>();
+      listAnswer = () => stale.promise;
+      const reloading = store.reload();
+
+      await store.restore(ID);
+      listAnswer = () => page([summary("scout/user/b", { archived: true })]);
+      stale.resolve(page([archived, summary("scout/user/b", { archived: true })]));
+      await reloading;
+
+      expect(store.threads.map((t) => t.thread_id)).toEqual(["scout/user/b"]);
+    });
+
+    it("doesn't make a thread read meanwhile unread again", async () => {
+      const store = new MailStore();
+      listAnswer = () => page([summary(ID, { unread: true })]);
+      await store.show(all);
+      const stale = deferred<Response>();
+      listAnswer = () => stale.promise;
+      const reloading = store.reload();
+
+      expect(await store.markRead(ID)).toBe(true);
+      listAnswer = () => page([summary(ID, { unread: false })]);
+      stale.resolve(page([summary(ID, { unread: true })]));
+      await reloading;
+
+      expect(store.summaryOf(ID)?.unread).toBe(false);
+      expect(requests.filter((r) => r.startsWith("GET /api/hub/mail/threads?"))).toHaveLength(3);
+    });
+
+    it("lets Show older wait for it and page from the cursor it brings", async () => {
+      const store = new MailStore();
+      listAnswer = () => page([summary("atlas/user/a"), summary("atlas/user/b")], "cursor-1");
+      await store.show(all);
+      const stale = deferred<Response>();
+      listAnswer = (url) =>
+        url.searchParams.get("before") === null ? stale.promise : page([summary("atlas/user/c")]);
+      const reloading = store.reload();
+
+      const more = store.loadMore();
+      expect(store.loadingMore).toBe(true);
+      expect(requests.filter((r) => r.includes("before="))).toEqual([]);
+
+      stale.resolve(page([summary("atlas/user/a"), summary("atlas/user/b")], "cursor-2"));
+      await reloading;
+      await more;
+
+      expect(requests.at(-1)).toBe(
+        "GET /api/hub/mail/threads?folder=inbox&before=cursor-2&limit=50",
+      );
+      expect(store.threads.map((t) => t.thread_id)).toEqual([
+        "atlas/user/a",
+        "atlas/user/b",
+        "atlas/user/c",
+      ]);
+      expect(store.next).toBeNull();
+      expect(store.loadingMore).toBe(false);
+    });
+
+    it("lets Show older stop when the fetch finds the list ended", async () => {
+      const store = new MailStore();
+      listAnswer = () => page([summary(ID)], "cursor-1");
+      await store.show(all);
+      const stale = deferred<Response>();
+      listAnswer = () => stale.promise;
+      const reloading = store.reload();
+      const more = store.loadMore();
+
+      stale.resolve(page([summary(ID)]));
+      await reloading;
+      await more;
+
+      expect(requests.filter((r) => r.includes("before="))).toEqual([]);
+      expect(store.loadingMore).toBe(false);
+    });
+  });
+
   it("drops an answer for a list that is no longer shown", async () => {
     const store = new MailStore();
     const slow = deferred<Response>();
@@ -538,6 +641,16 @@ describe("archiving and restoring", () => {
     ]);
   });
 
+  it("shows an archived thread as read in a list that still holds it", async () => {
+    const store = new MailStore();
+    listAnswer = () => page([summary(ID, { in_sent: true, unread: true })]);
+    await store.show({ folder: "sent", agent: null });
+
+    await store.archive(ID);
+
+    expect(store.summaryOf(ID)).toMatchObject({ archived: true, unread: false });
+  });
+
   it("keeps one action at a time on a thread", async () => {
     const store = new MailStore();
     const held = deferred<Response>();
@@ -718,16 +831,44 @@ describe("attachments", () => {
 });
 
 describe("a new message", () => {
-  it("keeps the New message being written when it opens again", () => {
+  it("addresses a New message with nothing written to whoever it is opened for", () => {
     const store = new MailStore();
     const draft = store.openNewMessage(["atlas"]);
-    draft.body = "Hi";
+
+    // Recipients alone are not something the user wrote.
     expect(store.openNewMessage(["scout"])).toBe(draft);
-    expect(draft.to).toEqual(["atlas"]);
+    expect(draft.to).toEqual(["scout"]);
+    expect(store.openNewMessage()).toBe(draft);
+    expect(draft.to).toEqual([]);
 
     store.discardNewMessage();
     expect(store.newMessage).toBeNull();
     expect(store.openNewMessage(["scout"]).to).toEqual(["scout"]);
+  });
+
+  it("keeps what was written in a New message, and adds the recipients it lacks", () => {
+    const store = new MailStore();
+    const draft = store.openNewMessage(["atlas"]);
+    draft.body = "Hi";
+
+    expect(store.openNewMessage(["scout", "atlas"])).toBe(draft);
+    expect(draft.to).toEqual(["atlas", "scout"]);
+    expect(draft.body).toBe("Hi");
+
+    expect(store.openNewMessage()).toBe(draft);
+    expect(draft.to).toEqual(["atlas", "scout"]);
+  });
+
+  it("counts a subject or an attachment as something written", () => {
+    const store = new MailStore();
+    const subject = store.openNewMessage(["atlas"]);
+    subject.subject = "Plan";
+    expect(store.openNewMessage(["scout"]).to).toEqual(["atlas", "scout"]);
+
+    store.discardNewMessage();
+    const attached = store.openNewMessage(["atlas"]);
+    attached.attach([fileOf("a.txt")]);
+    expect(store.openNewMessage(["scout"]).to).toEqual(["atlas", "scout"]);
   });
 
   it("needs a recipient and a body, and allows an empty subject", async () => {
@@ -813,6 +954,115 @@ describe("a new message", () => {
     expect(draft.body).toBe("Hi");
     expect(draft.sending).toBe(false);
   });
+
+  it("waits for a file attached while it waits, rather than reporting it as failed", async () => {
+    const store = new MailStore();
+    const draft = store.openNewMessage(["atlas"]);
+    draft.body = "Two files";
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    uploadAnswer = (filename) => (filename === "a.txt" ? first.promise : second.promise);
+    draft.attach([fileOf("a.txt")]);
+
+    const sending = store.sendNewMessage();
+    draft.attach([fileOf("b.txt")]);
+    first.resolve(json({ id: "upload_a", filename: "a.txt", size: 1 }));
+    await waitFor(() => {
+      expect(draft.attachments[0]?.status).toBe("uploaded");
+    });
+    expect(draft.sendError).toBeNull();
+    expect(requests).not.toContain("POST /api/hub/mail/send");
+
+    second.resolve(json({ id: "upload_b", filename: "b.txt", size: 1 }));
+    expect(await sending).toBe("atlas/agent/new");
+    expect(bodies["POST /api/hub/mail/send"]).toMatchObject({
+      attachments: ["upload_a", "upload_b"],
+    });
+  });
+
+  describe("when the user leaves while it is being sent", () => {
+    it("goes on sending what was written, resolves nothing to open, and says it went", async () => {
+      const success = vi.spyOn(toast, "success").mockImplementation(() => 0);
+      const store = new MailStore();
+      const draft = store.openNewMessage(["atlas", "scout"]);
+      draft.body = "Still going";
+      const held = deferred<Response>();
+      uploadAnswer = () => held.promise;
+      draft.attach([fileOf("plan.md")]);
+      const sending = store.sendNewMessage();
+
+      store.discardNewMessage();
+      expect(store.newMessage).toBeNull();
+      held.resolve(json({ id: "upload_9", filename: "plan.md", size: 1 }));
+
+      expect(await sending).toBeNull();
+      expect(bodies["POST /api/hub/mail/send"]).toEqual({
+        to: ["atlas", "scout"],
+        subject: "",
+        body: "Still going",
+        attachments: ["upload_9"],
+      });
+      expect(success).toHaveBeenCalledWith("Sent to atlas and scout.");
+      expect(store.newMessage).toBeNull();
+    });
+
+    it("says so when it didn't go, since nothing else shows it", async () => {
+      const error = vi.spyOn(toast, "error").mockImplementation(() => 0);
+      const store = new MailStore();
+      const draft = store.openNewMessage(["atlas"]);
+      draft.body = "Lost?";
+      sendAnswer = () => fail(400, "There is no agent named 'atlas'.");
+      const held = deferred<Response>();
+      uploadAnswer = () => held.promise;
+      draft.attach([fileOf("a.txt")]);
+      const sending = store.sendNewMessage();
+
+      store.discardNewMessage();
+      held.resolve(json({ id: "upload_1", filename: "a.txt", size: 1 }));
+
+      expect(await sending).toBeNull();
+      expect(error).toHaveBeenCalledWith(
+        "Your message to atlas wasn't sent. There is no agent named 'atlas'.",
+      );
+    });
+
+    it("says so when a file didn't upload", async () => {
+      const error = vi.spyOn(toast, "error").mockImplementation(() => 0);
+      const store = new MailStore();
+      const draft = store.openNewMessage(["atlas"]);
+      draft.body = "Lost?";
+      const held = deferred<Response>();
+      uploadAnswer = () => held.promise;
+      draft.attach([fileOf("a.txt")]);
+      const sending = store.sendNewMessage();
+
+      store.discardNewMessage();
+      held.resolve(fail(500));
+
+      expect(await sending).toBeNull();
+      expect(error).toHaveBeenCalledWith(
+        "Your message to atlas wasn't sent because a file didn't upload.",
+      );
+      expect(requests).not.toContain("POST /api/hub/mail/send");
+    });
+
+    it("doesn't ask about the draft, which is going, but does when the page itself goes away", async () => {
+      const store = new MailStore();
+      const draft = store.openNewMessage(["atlas"]);
+      draft.body = "Going";
+      const held = deferred<Response>();
+      uploadAnswer = () => held.promise;
+      draft.attach([fileOf("a.txt")]);
+      const sending = store.sendNewMessage();
+      const list = locationAt(INBOX);
+
+      expect(store.draftLoss(list)).toBeNull();
+      expect(store.draftLoss(null)).toBe("An unsent new message");
+
+      held.resolve(json({ id: "upload_1", filename: "a.txt", size: 1 }));
+      await sending;
+    });
+  });
 });
 
 describe("replies", () => {
@@ -838,6 +1088,92 @@ describe("replies", () => {
     expect(draft.attachments).toEqual([]);
     await waitFor(() => {
       expect(requests.at(-1)).toBe("GET /api/hub/mail/threads?folder=inbox&limit=50");
+    });
+  });
+
+  describe("a fetch of the open thread that was out while the user changed it", () => {
+    const refreshing = async (store: MailStore, stale: Promise<Response>): Promise<void> => {
+      threadAnswer = () => json(thread(ID, [agentMessage(ID)]));
+      await store.open(ID);
+      store.followCounts("atlas=0");
+      threadAnswer = () => stale;
+      store.followCounts("atlas=1");
+      await waitFor(() => {
+        expect(requests.filter((r) => r === `GET /api/hub/mail/threads/${ENCODED}`)).toHaveLength(
+          2,
+        );
+      });
+    };
+
+    it("doesn't drop a reply sent meanwhile", async () => {
+      const store = new MailStore();
+      const stale = deferred<Response>();
+      await refreshing(store, stale.promise);
+      const draft = store.openReply;
+      if (draft === null) throw new Error("no reply draft");
+      draft.body = "Thanks";
+
+      expect(await store.sendReply(ID)).toBe(true);
+      expect(store.thread?.messages.map((m) => m.ref)).toEqual([ID, "atlas/agent/reply"]);
+      threadAnswer = () =>
+        json(thread(ID, [agentMessage(ID), userMessage("atlas/agent/reply", { body: "Thanks" })]));
+      stale.resolve(json(thread(ID, [agentMessage(ID)])));
+
+      await waitFor(() => {
+        expect(requests.filter((r) => r === `GET /api/hub/mail/threads/${ENCODED}`)).toHaveLength(
+          3,
+        );
+      });
+      await waitFor(() => {
+        expect(store.thread?.messages.map((m) => m.ref)).toEqual([ID, "atlas/agent/reply"]);
+      });
+    });
+
+    it("doesn't undo an archive made meanwhile", async () => {
+      const store = new MailStore();
+      const stale = deferred<Response>();
+      await refreshing(store, stale.promise);
+
+      await store.archive(ID);
+      expect(store.thread && mailboxOf(store.thread)).toBe("archived");
+      threadAnswer = () => json(thread(ID, [agentMessage(ID, { archived: true })]));
+      stale.resolve(json(thread(ID, [agentMessage(ID)])));
+
+      await waitFor(() => {
+        expect(requests.filter((r) => r === `GET /api/hub/mail/threads/${ENCODED}`)).toHaveLength(
+          3,
+        );
+      });
+      await waitFor(() => {
+        expect(store.thread && mailboxOf(store.thread)).toBe("archived");
+      });
+    });
+
+    it("doesn't add a reply twice when a fetch already brought it", async () => {
+      const store = new MailStore();
+      threadAnswer = () => json(thread(ID, [agentMessage(ID)]));
+      await store.open(ID);
+      const draft = store.openReply;
+      if (draft === null) throw new Error("no reply draft");
+      draft.body = "Thanks";
+      const sent = userMessage("atlas/agent/reply", { body: "Thanks" });
+      const held = deferred<Response>();
+      replyAnswer = () => held.promise;
+      const sending = store.sendReply(ID);
+      await waitFor(() => {
+        expect(requests).toContain(`POST /api/hub/mail/threads/${ENCODED}/reply`);
+      });
+
+      threadAnswer = () => json(thread(ID, [agentMessage(ID), sent]));
+      store.followCounts("atlas=0");
+      store.followCounts("atlas=1");
+      await waitFor(() => {
+        expect(store.thread?.messages).toHaveLength(2);
+      });
+      held.resolve(json({ message: sent }));
+
+      expect(await sending).toBe(true);
+      expect(store.thread?.messages.map((m) => m.ref)).toEqual([ID, "atlas/agent/reply"]);
     });
   });
 

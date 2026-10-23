@@ -100,7 +100,7 @@ Opening a conversation shows its messages oldest first, each marked as yours or 
 
 ### Writing
 
-**New message** (in the place header, and in an agent's chat as **New message to** that agent) opens a message in the pane beside the list. **To** takes one or more agents (the filtered agent is filled in), and the message has a subject, a Markdown body and attachments. The subject may be empty. The body may not. Sending opens the conversation in Sent; the hub files one copy in each recipient's inbox. Cancelling drops the draft. Leaving a New message that has text or files asks first, and closing or reloading the page with any unsent draft asks too.
+**New message** (in the place header, and in an agent's chat as **New message to** that agent) opens a message in the pane beside the list. **To** takes one or more agents (the filtered agent is filled in), and the message has a subject, a Markdown body and attachments. The subject may be empty, and the first line of the body is then the subject. The body may not be empty. Sending opens the conversation in Sent; the hub files one copy in each recipient's inbox. Cancelling drops the draft. Leaving a New message that has text or files asks first, unless it is already being sent (the send carries on, and a notice says whether it went), and closing or reloading the page with any unsent draft asks too.
 
 A file attached to a message or reply uploads when it is chosen, shows its progress on its chip, and can be removed first. A failed upload shows **Try again** on its chip, and **Send** waits for uploads still running and won't go while one has failed. A file over 50 MB is refused before it uploads, with a message naming the file and the limit.
 
