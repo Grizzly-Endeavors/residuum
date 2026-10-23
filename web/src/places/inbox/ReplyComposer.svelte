@@ -4,8 +4,9 @@
   import { toast } from "../../lib/toast.svelte";
   import { Button, TextField } from "../../lib/ui";
   import AttachFiles from "./AttachFiles.svelte";
+  import ComposerHint from "./ComposerHint.svelte";
   import DraftAttachments from "./DraftAttachments.svelte";
-  import { deliveryHint, joinNames } from "./thread-model";
+  import { deliveryHint, joinNames, sendOnModEnter } from "./thread-model";
 
   // The reply at the foot of an open thread, to everyone in it. The text and
   // files live in the store's draft for the thread, so they survive moving
@@ -26,13 +27,6 @@
     const to = [...recipients];
     if (await mail.sendReply(draft.threadId)) toast.success(`Sent to ${joinNames(to)}.`);
   }
-
-  function keydown(event: KeyboardEvent): void {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      void send();
-    }
-  }
 </script>
 
 <form class="reply" aria-label="Reply to the thread" onsubmit={(event) => void send(event)}>
@@ -47,7 +41,7 @@
     rows={4}
     placeholder="Reply to everyone in this thread…"
     bind:value={draft.body}
-    onkeydown={keydown}
+    onkeydown={(event) => sendOnModEnter(event, () => void send())}
   />
   <DraftAttachments {draft} />
   {#if draft.sendError !== null}
@@ -55,11 +49,7 @@
   {/if}
   <div class="reply-foot">
     <AttachFiles {draft} />
-    <span class="reply-hint">
-      {draft.sending && draft.uploading
-        ? "Sending once the files finish uploading. "
-        : ""}{deliveryHint(recipients)}
-    </span>
+    <ComposerHint waiting={draft.sending && draft.uploading} delivery={deliveryHint(recipients)} />
     <Button type="submit" variant="primary" icon="send" disabled={blank} loading={draft.sending}>
       Send
     </Button>
@@ -100,12 +90,5 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-8) var(--space-10);
-  }
-
-  .reply-hint {
-    flex: 1;
-    min-width: 120px;
-    color: var(--color-text-3);
-    font-size: var(--font-size-xs);
   }
 </style>

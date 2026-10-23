@@ -2,9 +2,30 @@
 // the mail store singleton the views share.
 
 import { vi } from "vitest";
-import type { MailMessage, MailThread } from "../lib/hub-types";
+import type { MailMessage, MailThread, MailThreadSummary } from "../lib/hub-types";
 import { mail } from "../lib/mail.svelte";
 import { jsonResponse, mockFetch } from "./component";
+
+/** A list row: a read one-message thread in the inbox, with the first agent of `id` in it. */
+export function mailSummary(
+  id: string,
+  overrides: Partial<MailThreadSummary> = {},
+): MailThreadSummary {
+  return {
+    thread_id: id,
+    subject: `Subject of ${id}`,
+    participants: [id.split("/")[0] ?? "atlas"],
+    message_count: 1,
+    latest_at: "2026-03-14T11:00:00Z",
+    snippet: `Snippet of ${id}`,
+    unread: false,
+    has_attachments: false,
+    in_inbox: true,
+    in_sent: false,
+    archived: false,
+    ...overrides,
+  };
+}
 
 export function agentMessage(ref: string, overrides: Partial<MailMessage> = {}): MailMessage {
   return {
@@ -87,12 +108,17 @@ export { jsonResponse };
 /** Put the shared store back as a fresh page has it. */
 export function resetMail(): void {
   mail.close();
+  mail.leave();
   mail.discardNewMessage();
   mail.replies = {};
   mail.pending = {};
   mail.problems = {};
   mail.list = null;
   mail.threads = [];
+  mail.next = null;
   mail.loaded = false;
+  mail.loadError = null;
+  mail.loadingMore = false;
+  mail.moreError = null;
   vi.restoreAllMocks();
 }

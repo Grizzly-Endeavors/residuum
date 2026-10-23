@@ -1,37 +1,35 @@
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { MailThreadSummary } from "../../lib/hub-types";
+import type { MailFolder, MailThreadSummary } from "../../lib/hub-types";
 import { render, screen } from "../../test/component";
+import { mailSummary } from "../../test/mail";
 import MailThreadRow from "./MailThreadRow.svelte";
 
 const NOW = Date.parse("2026-03-14T12:00:00Z");
 
 function summary(overrides: Partial<MailThreadSummary> = {}): MailThreadSummary {
-  return {
-    thread_id: "atlas/agent/20260311_wiki_audit",
+  return mailSummary("atlas/agent/20260311_wiki_audit", {
     subject: "Wiki audit: stale pages",
     participants: ["atlas", "scout"],
     message_count: 4,
     latest_at: "2026-03-14T09:00:00Z",
     snippet: "Thanks both, I'll merge the list.",
-    unread: false,
-    has_attachments: false,
-    in_inbox: true,
     in_sent: true,
-    archived: false,
     ...overrides,
-  };
+  });
 }
 
 function row(
   overrides: Partial<MailThreadSummary> = {},
   selected = false,
+  folder: MailFolder = "inbox",
 ): { link: HTMLElement; onopen: Mock<(event: MouseEvent) => void> } {
   const onopen = vi.fn((event: MouseEvent) => {
     event.preventDefault();
   });
   render(MailThreadRow, {
     summary: summary(overrides),
+    folder,
     href: "/inbox?thread=x",
     selected,
     now: NOW,
@@ -52,6 +50,11 @@ describe("MailThreadRow", () => {
     expect(link.querySelector("time")).toHaveAttribute("datetime", "2026-03-14T09:00:00Z");
     expect(link).not.toHaveAttribute("aria-current");
     expect(link).not.toHaveAttribute("data-unread");
+  });
+
+  it("reads To the agents in Sent, where the mail went", () => {
+    const { link } = row({}, false, "sent");
+    expect(link).toHaveTextContent("To atlas, scout");
   });
 
   it("marks an unread thread for sight and for screen readers", () => {
