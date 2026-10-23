@@ -206,7 +206,7 @@
   /** When the list made way for what opened, focus follows it there instead of being dropped. */
   async function focusPaneWhenAlone(): Promise<void> {
     await tick();
-    if (listElement !== undefined && listElement.offsetParent === null) paneElement?.focus();
+    if (listElement && getComputedStyle(listElement).display === "none") paneElement?.focus();
   }
 </script>
 
