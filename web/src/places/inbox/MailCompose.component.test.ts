@@ -142,7 +142,7 @@ describe("New message", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Couldn't send your message.");
     expect(onsent).not.toHaveBeenCalled();
-    expect(screen.getByRole("textbox", { name: /^Message/ }).value).toBe("Hello?");
+    expect(screen.getByRole("textbox", { name: /^Message/ })).toHaveProperty("value", "Hello?");
   });
 
   it("asks the place to close it from Cancel and from Back, keeping the draft for it to decide", async () => {
@@ -160,7 +160,10 @@ describe("New message", () => {
     compose(["atlas"]);
     expect(chosen("scout")).toBe(true);
     expect(chosen("atlas")).toBe(false);
-    expect(screen.getByRole("textbox", { name: /^Message/ }).value).toBe("Started earlier");
+    expect(screen.getByRole("textbox", { name: /^Message/ })).toHaveProperty(
+      "value",
+      "Started earlier",
+    );
   });
 
   it("attaches files, refusing one over the limit, and sends with the uploaded ones", async () => {

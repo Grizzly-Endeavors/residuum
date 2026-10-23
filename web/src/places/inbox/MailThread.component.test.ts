@@ -2,6 +2,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_UPLOAD_BYTES } from "../../lib/api";
 import type { MailThread as Thread } from "../../lib/hub-types";
+import { mail } from "../../lib/mail.svelte";
 import { notifications } from "../../lib/notifications.svelte";
 import { router } from "../../lib/router.svelte";
 import { toast, type ToastAction } from "../../lib/toast.svelte";
@@ -80,7 +81,9 @@ function serve(current: () => Thread): void {
   });
 }
 
+/** Open the thread as the place does, through the store, and show it. */
 function show(onback = vi.fn()): ReturnType<typeof vi.fn> {
+  void mail.open(ID);
   render(MailThread, { threadId: ID, onback });
   return onback;
 }
@@ -145,6 +148,15 @@ describe("an open thread", () => {
     await screen.findByRole("heading", { name: "Wiki audit" });
     expect(screen.getByText("Seen by atlas, not yet by scout")).toBeTruthy();
     expect(screen.getAllByText(/Seen by|Not seen yet/)).toHaveLength(1);
+  });
+
+  it("doesn't show another thread the store still holds", async () => {
+    serve(() => mailThread("scout/user/other", [agentMessage("scout/user/other")]));
+    void mail.open("scout/user/other");
+    render(MailThread, { threadId: ID, onback: vi.fn() });
+    await settle();
+    expect(screen.queryByRole("heading", { name: "Wiki audit" })).toBeNull();
+    expect(screen.getByText("Loading the conversation")).toBeTruthy();
   });
 
   it("goes back to the list from Back", async () => {
@@ -302,7 +314,7 @@ describe("the reply", () => {
     });
     expect(posted("/reply")[0]?.body).toEqual({ body: "Thanks both.", attachments: [] });
     expect(success).toHaveBeenCalledWith("Sent to atlas and scout.");
-    expect(screen.getByRole("textbox", { name: "Reply" }).value).toBe("");
+    expect(screen.getByRole("textbox", { name: "Reply" })).toHaveProperty("value", "");
   });
 
   it("keeps the text and says why when the send fails", async () => {
@@ -312,15 +324,19 @@ describe("the reply", () => {
     await userEvent.type(await screen.findByRole("textbox", { name: "Reply" }), "Still there?");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Couldn't send your reply.");
-    expect(screen.getByRole("textbox", { name: "Reply" }).value).toBe("Still there?");
+    expect(screen.getByRole("textbox", { name: "Reply" })).toHaveProperty("value", "Still there?");
   });
 
   it("keeps the draft when the view is shown again", async () => {
+    void mail.open(ID);
     const first = render(MailThread, { threadId: ID, onback: vi.fn() });
     await userEvent.type(await screen.findByRole("textbox", { name: "Reply" }), "Half a thought");
     first.unmount();
     show();
-    expect((await screen.findByRole("textbox", { name: "Reply" })).value).toBe("Half a thought");
+    expect(await screen.findByRole("textbox", { name: "Reply" })).toHaveProperty(
+      "value",
+      "Half a thought",
+    );
   });
 });
 

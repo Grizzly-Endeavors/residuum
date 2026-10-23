@@ -3,7 +3,7 @@
   import { hub } from "../../lib/hub.svelte";
   import { mail } from "../../lib/mail.svelte";
   import { toast } from "../../lib/toast.svelte";
-  import { Button, IconButton, keyboardScrollable, TextField } from "../../lib/ui";
+  import { Button, IconButton, TextField } from "../../lib/ui";
   import AttachFiles from "./AttachFiles.svelte";
   import DraftAttachments from "./DraftAttachments.svelte";
   import { deliveryHint, joinNames } from "./thread-model";
@@ -55,87 +55,83 @@
   }
 </script>
 
-<section class="mail-compose" aria-label="New message" {@attach keyboardScrollable}>
-  <form class="compose-inner" aria-labelledby={titleId} onsubmit={(event) => void send(event)}>
-    <header class="compose-head">
-      <IconButton
-        icon="back"
-        label="Back to the list"
-        variant="quiet"
-        size="sm"
-        onclick={oncancel}
-      />
-      <div class="compose-title">
-        <h2 id={titleId} tabindex="-1">{subject === "" ? "New message" : subject}</h2>
-        <p class="compose-state">Not sent yet</p>
+<form class="mail-compose" aria-labelledby={titleId} onsubmit={(event) => void send(event)}>
+  <header class="compose-head">
+    <IconButton
+      class="compose-back"
+      icon="back"
+      label="Back to the list"
+      variant="quiet"
+      size="sm"
+      onclick={oncancel}
+    />
+    <div class="compose-title">
+      <h2 id={titleId} tabindex="-1">{subject === "" ? "New message" : subject}</h2>
+      <p class="compose-state">Not sent yet</p>
+    </div>
+  </header>
+
+  <div class="compose-fields">
+    <fieldset class="compose-to">
+      <legend>To</legend>
+      <div class="compose-agents">
+        {#each choices as choice (choice.name)}
+          {@const chosen = draft.to.includes(choice.name)}
+          <Button
+            size="sm"
+            pressed={chosen}
+            icon={chosen ? "check" : undefined}
+            onclick={() => toggle(choice.name)}
+          >
+            {choice.name}{#if choice.stopped}<span class="compose-stopped">stopped</span>{/if}
+          </Button>
+        {:else}
+          <p class="compose-none">There are no agents to send it to yet.</p>
+        {/each}
       </div>
-    </header>
+    </fieldset>
+    <TextField label="Subject" placeholder="What is it about?" bind:value={draft.subject} />
+    <TextField
+      label="Message"
+      hint="Markdown works here: lists, links, code."
+      multiline
+      rows={10}
+      placeholder="Write your message…"
+      bind:value={draft.body}
+    />
+    <DraftAttachments {draft} />
+  </div>
 
-    <div class="compose-fields">
-      <fieldset class="compose-to">
-        <legend>To</legend>
-        <div class="compose-agents">
-          {#each choices as choice (choice.name)}
-            {@const chosen = draft.to.includes(choice.name)}
-            <Button
-              size="sm"
-              pressed={chosen}
-              icon={chosen ? "check" : undefined}
-              onclick={() => toggle(choice.name)}
-            >
-              {choice.name}{#if choice.stopped}<span class="compose-stopped">stopped</span>{/if}
-            </Button>
-          {:else}
-            <p class="compose-none">There are no agents to send it to yet.</p>
-          {/each}
-        </div>
-      </fieldset>
-      <TextField label="Subject" placeholder="What is it about?" bind:value={draft.subject} />
-      <TextField
-        label="Message"
-        hint="Markdown works here: lists, links, code."
-        multiline
-        rows={10}
-        placeholder="Write your message…"
-        bind:value={draft.body}
-      />
-      <DraftAttachments {draft} />
-    </div>
-
-    {#if draft.sendError !== null}
-      <p class="compose-error" role="alert">{draft.sendError}</p>
-    {/if}
-    <div class="compose-foot">
-      <AttachFiles {draft} />
-      <span class="compose-hint">
-        {draft.sending && draft.uploading ? "Sending once the files finish uploading. " : ""}{draft
-          .to.length > 0
-          ? deliveryHint(draft.to)
-          : "Any file, up to 50 MB each."}
-      </span>
-      <Button variant="quiet" onclick={oncancel}>Cancel</Button>
-      <Button type="submit" variant="primary" icon="send" loading={draft.sending}>Send</Button>
-    </div>
-  </form>
-</section>
+  {#if draft.sendError !== null}
+    <p class="compose-error" role="alert">{draft.sendError}</p>
+  {/if}
+  <div class="compose-foot">
+    <AttachFiles {draft} />
+    <span class="compose-hint">
+      {draft.sending && draft.uploading ? "Sending once the files finish uploading. " : ""}{draft.to
+        .length > 0
+        ? deliveryHint(draft.to)
+        : "Any file, up to 50 MB each."}
+    </span>
+    <Button variant="quiet" onclick={oncancel}>Cancel</Button>
+    <Button type="submit" variant="primary" icon="send" loading={draft.sending}>Send</Button>
+  </div>
+</form>
 
 <style>
+  /* The place frames it: its padding, reading width and scrolling. */
   .mail-compose {
-    height: 100%;
-    min-width: 0;
-    overflow-y: auto;
-    background: var(--color-stone-0);
-    container-type: inline-size;
-  }
-
-  .compose-inner {
     display: flex;
     flex-direction: column;
     gap: var(--space-14);
-    width: 100%;
-    max-width: var(--layout-reading-width);
-    margin: 0 auto;
-    padding: var(--space-20) var(--space-24) var(--space-32);
+    min-width: 0;
+  }
+
+  /* With the list beside it (the place's split width), the list is the way back. */
+  @container mail (min-width: 780px) {
+    .mail-compose :global(.compose-back) {
+      display: none;
+    }
   }
 
   .compose-head {
@@ -222,11 +218,5 @@
     min-width: 120px;
     color: var(--color-text-3);
     font-size: var(--font-size-xs);
-  }
-
-  @container (max-width: 520px) {
-    .compose-inner {
-      padding: var(--space-12) var(--space-16) var(--space-24);
-    }
   }
 </style>

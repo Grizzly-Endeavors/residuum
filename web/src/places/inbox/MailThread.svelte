@@ -8,22 +8,15 @@
   import { notifications } from "../../lib/notifications.svelte";
   import { messageTimeLabel } from "../../lib/time";
   import { toast } from "../../lib/toast.svelte";
-  import {
-    AttachmentChip,
-    Banner,
-    Button,
-    EmptyState,
-    IconButton,
-    keyboardScrollable,
-    Skeleton,
-  } from "../../lib/ui";
+  import { AttachmentChip, Banner, Button, IconButton, Skeleton } from "../../lib/ui";
   import ReplyComposer from "./ReplyComposer.svelte";
   import { joinNames, opensInPanel, seenLine } from "./thread-model";
 
   // One conversation, open: its subject, Archive or Move to Inbox, every
   // message oldest first with its attachments and, on yours, who has seen
-  // it, and the reply to everyone at the foot. The thread is opened through
-  // the store; the place keeps the address and leaves when it is gone.
+  // it, and the reply to everyone at the foot. The place opens the thread
+  // through the store, keeps the address, shows a thread that is gone, and
+  // frames this view (its padding, reading width and scrolling).
 
   interface Props {
     threadId: string;
@@ -32,12 +25,13 @@
 
   let { threadId, onback }: Props = $props();
 
-  // The place may have asked for this ref already; asking again while it loads would fetch twice.
-  $effect(() => {
-    if (mail.openRef !== threadId) void mail.open(threadId);
+  // Only the thread this view was given: while the place opens another, the last one doesn't linger.
+  const thread = $derived.by(() => {
+    const held = mail.thread;
+    if (held === null) return null;
+    const ours = held.thread_id === threadId || held.messages.some((m) => m.ref === threadId);
+    return ours ? held : null;
   });
-
-  const thread = $derived(mail.thread);
   const mailbox = $derived(thread === null ? null : mailboxOf(thread));
   const pending = $derived(thread === null ? undefined : mail.pending[thread.thread_id]);
   const problem = $derived(thread === null ? undefined : mail.problems[thread.thread_id]);
@@ -81,172 +75,157 @@
   }
 </script>
 
-<section class="mail-thread" aria-label="Conversation" {@attach keyboardScrollable}>
-  <div class="thread-inner">
-    {#if thread !== null && mail.threadStatus === "ready"}
-      {@const open = thread}
-      <header class="thread-head">
-        <IconButton
-          icon="back"
-          label="Back to the list"
-          variant="quiet"
+<section class="mail-thread" aria-label="Conversation">
+  {#if thread !== null && mail.threadStatus === "ready"}
+    {@const open = thread}
+    <header class="thread-head">
+      <IconButton
+        class="thread-back"
+        icon="back"
+        label="Back to the list"
+        variant="quiet"
+        size="sm"
+        onclick={onback}
+      />
+      <div class="thread-title">
+        <h2 tabindex="-1">{displaySubject(open.subject)}</h2>
+        <p class="thread-with">With {joinNames(open.participants)}</p>
+      </div>
+      {#if mailbox === "inbox"}
+        <Button
           size="sm"
-          onclick={onback}
-        />
-        <div class="thread-title">
-          <h2 tabindex="-1">{displaySubject(open.subject)}</h2>
-          <p class="thread-with">With {joinNames(open.participants)}</p>
-        </div>
-        {#if mailbox === "inbox"}
-          <Button
-            size="sm"
-            icon="archive"
-            loading={pending === "archive"}
-            onclick={() => void move(open, "archive")}>Archive</Button
-          >
-        {:else if mailbox === "archived"}
-          <Button
-            size="sm"
-            icon="restore"
-            loading={pending === "restore"}
-            onclick={() => void move(open, "restore")}>Move to Inbox</Button
-          >
-        {/if}
-      </header>
-
-      {#if problem !== undefined}
-        <Banner tone="error">
-          {problem.message}
-          {#snippet actions()}
-            <Button variant="quiet" size="sm" onclick={() => void retry(open)}>Try again</Button>
-          {/snippet}
-        </Banner>
-      {/if}
-
-      <ol class="thread-messages" aria-label="Messages">
-        {#each open.messages as message (message.ref)}
-          {@const agent = sender(message)}
-          <li>
-            <article class="message" data-from={agent === null ? "you" : "agent"}>
-              <header class="message-head">
-                <span class="message-from">{agent ?? "You"}</span>
-                {#if agent === null}
-                  <span class="message-to">to {joinNames(message.to)}</span>
-                {/if}
-                <time class="message-when" datetime={message.at}>
-                  {messageTimeLabel(message.at)}
-                </time>
-              </header>
-              {#if message.body.trim() !== ""}
-                <div class="message-body">
-                  <!-- An agent's paths open its file beside the thread, so the Inbox stays. -->
-                  <Prose
-                    content={message.body}
-                    {agent}
-                    openPath={agent === null
-                      ? undefined
-                      : (path) => openAgentFileInPanel(agent, path)}
-                  />
-                </div>
-              {/if}
-              {#if message.attachments.length > 0}
-                <ul class="message-files" aria-label="Attachments">
-                  {#each message.attachments as attachment (attachment.url)}
-                    <li>
-                      {#if opensInPanel(attachment)}
-                        <AttachmentChip
-                          filename={attachment.filename}
-                          size={attachment.size}
-                          contentType={attachment.content_type}
-                          onopen={() => openAttachment(attachment)}
-                        />
-                      {:else}
-                        <AttachmentChip
-                          filename={attachment.filename}
-                          size={attachment.size}
-                          contentType={attachment.content_type}
-                          href={attachment.url}
-                        />
-                      {/if}
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if agent === null && message.seen_by.length > 0}
-                <p class="message-seen">
-                  <span class="seen-marks" aria-hidden="true">
-                    {#each message.seen_by as mark (mark.agent)}
-                      <span class="seen-mark" data-seen={mark.seen || undefined}>
-                        <Icon name={mark.seen ? "check" : "clock"} size={13} />
-                      </span>
-                    {/each}
-                  </span>
-                  {seenLine(message.seen_by)}
-                </p>
-              {/if}
-            </article>
-          </li>
-        {/each}
-      </ol>
-
-      {#if reply !== null && reply.threadId === open.thread_id}
-        <ReplyComposer draft={reply} recipients={open.recipients_for_reply} />
-      {/if}
-    {:else if mail.threadStatus === "error"}
-      <header class="thread-head">
-        <IconButton
-          icon="back"
-          label="Back to the list"
-          variant="quiet"
+          icon="archive"
+          loading={pending === "archive"}
+          onclick={() => void move(open, "archive")}>Archive</Button
+        >
+      {:else if mailbox === "archived"}
+        <Button
           size="sm"
-          onclick={onback}
-        />
-      </header>
+          icon="restore"
+          loading={pending === "restore"}
+          onclick={() => void move(open, "restore")}>Move to Inbox</Button
+        >
+      {/if}
+    </header>
+
+    {#if problem !== undefined}
       <Banner tone="error">
-        {mail.threadError}
+        {problem.message}
         {#snippet actions()}
-          <Button variant="quiet" size="sm" onclick={() => void mail.retryOpen()}>Try again</Button>
+          <Button variant="quiet" size="sm" onclick={() => void retry(open)}>Try again</Button>
         {/snippet}
       </Banner>
-    {:else if mail.threadStatus === "missing"}
-      <header class="thread-head">
-        <IconButton
-          icon="back"
-          label="Back to the list"
-          variant="quiet"
-          size="sm"
-          onclick={onback}
-        />
-      </header>
-      <EmptyState>That conversation isn't there any more.</EmptyState>
-    {:else}
-      <div class="thread-loading">
-        <Skeleton shape="text" width="60%" label="Loading the conversation" />
-        <Skeleton shape="block" height="140px" />
-        <Skeleton shape="block" height="96px" />
-      </div>
     {/if}
-  </div>
+
+    <ol class="thread-messages" aria-label="Messages">
+      {#each open.messages as message (message.ref)}
+        {@const agent = sender(message)}
+        <li>
+          <article class="message" data-from={agent === null ? "you" : "agent"}>
+            <header class="message-head">
+              <span class="message-from">{agent ?? "You"}</span>
+              {#if agent === null}
+                <span class="message-to">to {joinNames(message.to)}</span>
+              {/if}
+              <time class="message-when" datetime={message.at}>
+                {messageTimeLabel(message.at)}
+              </time>
+            </header>
+            {#if message.body.trim() !== ""}
+              <div class="message-body">
+                <!-- An agent's paths open its file beside the thread, so the Inbox stays. -->
+                <Prose
+                  content={message.body}
+                  {agent}
+                  openPath={agent === null
+                    ? undefined
+                    : (path) => openAgentFileInPanel(agent, path)}
+                />
+              </div>
+            {/if}
+            {#if message.attachments.length > 0}
+              <ul class="message-files" aria-label="Attachments">
+                {#each message.attachments as attachment (attachment.url)}
+                  <li>
+                    {#if opensInPanel(attachment)}
+                      <AttachmentChip
+                        filename={attachment.filename}
+                        size={attachment.size}
+                        contentType={attachment.content_type}
+                        onopen={() => openAttachment(attachment)}
+                      />
+                    {:else}
+                      <AttachmentChip
+                        filename={attachment.filename}
+                        size={attachment.size}
+                        contentType={attachment.content_type}
+                        href={attachment.url}
+                      />
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            {#if agent === null && message.seen_by.length > 0}
+              <p class="message-seen">
+                <span class="seen-marks" aria-hidden="true">
+                  {#each message.seen_by as mark (mark.agent)}
+                    <span class="seen-mark" data-seen={mark.seen || undefined}>
+                      <Icon name={mark.seen ? "check" : "clock"} size={13} />
+                    </span>
+                  {/each}
+                </span>
+                {seenLine(message.seen_by)}
+              </p>
+            {/if}
+          </article>
+        </li>
+      {/each}
+    </ol>
+
+    {#if reply !== null && reply.threadId === open.thread_id}
+      <ReplyComposer draft={reply} recipients={open.recipients_for_reply} />
+    {/if}
+  {:else if mail.threadStatus === "error"}
+    <header class="thread-head">
+      <IconButton
+        class="thread-back"
+        icon="back"
+        label="Back to the list"
+        variant="quiet"
+        size="sm"
+        onclick={onback}
+      />
+    </header>
+    <Banner tone="error">
+      {mail.threadError}
+      {#snippet actions()}
+        <Button variant="quiet" size="sm" onclick={() => void mail.retryOpen()}>Try again</Button>
+      {/snippet}
+    </Banner>
+  {:else}
+    <div class="thread-loading">
+      <Skeleton shape="text" width="60%" label="Loading the conversation" />
+      <Skeleton shape="block" height="140px" />
+      <Skeleton shape="block" height="96px" />
+    </div>
+  {/if}
 </section>
 
 <style>
-  /* The open conversation sits on the page stone; its messages and reply are cards on it. */
+  /* The conversation sits on the page stone; its messages and reply are cards on it. */
   .mail-thread {
-    height: 100%;
-    min-width: 0;
-    overflow-y: auto;
-    background: var(--color-stone-0);
-    container-type: inline-size;
-  }
-
-  .thread-inner {
     display: flex;
     flex-direction: column;
     gap: var(--space-14);
-    width: 100%;
-    max-width: var(--layout-reading-width);
-    margin: 0 auto;
-    padding: var(--space-20) var(--space-24) var(--space-32);
+    min-width: 0;
+  }
+
+  /* With the list beside the thread (the place's split width), the list is the way back. */
+  @container mail (min-width: 780px) {
+    .mail-thread :global(.thread-back) {
+      display: none;
+    }
   }
 
   .thread-head {
@@ -363,11 +342,5 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-14);
-  }
-
-  @container (max-width: 520px) {
-    .thread-inner {
-      padding: var(--space-12) var(--space-16) var(--space-24);
-    }
   }
 </style>
