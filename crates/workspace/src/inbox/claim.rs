@@ -80,6 +80,21 @@ impl ClaimedItem {
         title: &str,
         now: NaiveDateTime,
     ) -> Result<Vec<Self>, String> {
+        Self::claim_in_all_with(inbox_dirs, title, now, Self::try_claim).await
+    }
+
+    /// [`Self::claim_in_all`] with the per-inbox claim step supplied, so a test
+    /// can fail one inbox's claim without filesystem permissions.
+    async fn claim_in_all_with<P, F>(
+        inbox_dirs: &[P],
+        title: &str,
+        now: NaiveDateTime,
+        claim_one: F,
+    ) -> Result<Vec<Self>, String>
+    where
+        P: AsRef<Path>,
+        F: AsyncFn(&Path, Option<&Path>, &str) -> Result<Option<Self>, String>,
+    {
         let dirs: Vec<&Path> = inbox_dirs.iter().map(AsRef::<Path>::as_ref).collect();
         if dirs.is_empty() {
             return Err("no inbox to claim an item id in".to_string());
@@ -128,7 +143,7 @@ impl ClaimedItem {
             let mut claimed: Vec<Self> = Vec::with_capacity(dirs.len());
             let mut taken = false;
             for (dir, archive) in dirs.iter().zip(&archives) {
-                match Self::try_claim(dir, archive.as_deref(), &id).await {
+                match claim_one(dir, archive.as_deref(), &id).await {
                     Ok(Some(claim)) => claimed.push(claim),
                     Ok(None) => {
                         taken = true;
@@ -815,36 +830,33 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn claim_in_all_releases_its_claims_when_a_later_inbox_fails() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         let user = layout.user_inbox_dir();
         let agent = layout.agent_inbox_dir();
-        let agent_attachments = agent.join("attachments");
-        tokio::fs::create_dir_all(&agent_attachments).await.unwrap();
-        // The user inbox is claimed first, so its claim must be released when the
-        // agent inbox cannot create its directory.
         tokio::fs::create_dir_all(&user).await.unwrap();
-        std::fs::set_permissions(&agent_attachments, std::fs::Permissions::from_mode(0o555))
-            .unwrap();
+        tokio::fs::create_dir_all(&agent).await.unwrap();
 
-        // Root ignores directory permissions, so the failure cannot be produced
-        // there; the probe detects that and the test has nothing to check.
-        let writable_when_read_only = std::fs::create_dir(agent_attachments.join("probe")).is_ok();
-        if writable_when_read_only {
-            std::fs::remove_dir(agent_attachments.join("probe")).unwrap();
-            std::fs::set_permissions(&agent_attachments, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-            return;
-        }
-
-        let result = ClaimedItem::claim_in_all(&[&user, &agent], "failing", test_now()).await;
-        std::fs::set_permissions(&agent_attachments, std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        // The user inbox is claimed first, so its claim must be released when the
+        // agent inbox's claim fails with an I/O error.
+        let result = ClaimedItem::claim_in_all_with(
+            &[&user, &agent],
+            "failing",
+            test_now(),
+            async |inbox: &Path, archive: Option<&Path>, id: &str| {
+                if inbox == agent.as_path() {
+                    let io_err = std::io::Error::other("injected failure");
+                    return Err(format!(
+                        "failed to claim inbox item id {id} at {}: {io_err}",
+                        inbox.join("attachments").join(id).display()
+                    ));
+                }
+                ClaimedItem::try_claim(inbox, archive, id).await
+            },
+        )
+        .await;
 
         let err = result.unwrap_err();
         assert!(
