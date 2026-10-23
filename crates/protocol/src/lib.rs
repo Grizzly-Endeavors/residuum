@@ -26,9 +26,9 @@ pub enum ClientMessage {
         id: String,
         /// The user message content.
         content: String,
-        /// Optional image attachments (base64-encoded).
+        /// Upload ids of the files attached to the message, from `POST /api/hub/uploads`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        images: Vec<ImageData>,
+        attachments: Vec<String>,
     },
     /// Turn tool call/result events on or off for this connection (verbose mode). The web UI
     /// turns them on at every connect, since its activity line is built from them.
@@ -1153,8 +1153,8 @@ mod tests {
         assert!(
             matches!(
                 &msg,
-                ClientMessage::SendMessage { id, content, images }
-                    if id == "abc-123" && content == "hello" && images.is_empty()
+                ClientMessage::SendMessage { id, content, attachments }
+                    if id == "abc-123" && content == "hello" && attachments.is_empty()
             ),
             "should deserialize to SendMessage with correct fields"
         );
@@ -1640,28 +1640,39 @@ mod tests {
     }
 
     #[test]
-    fn client_message_send_message_with_images_roundtrip() {
+    fn client_message_send_message_with_attachments_roundtrip() {
         let msg = ClientMessage::SendMessage {
-            id: "img-1".to_string(),
+            id: "att-1".to_string(),
             content: "look at this".to_string(),
-            images: vec![ImageData {
-                media_type: "image/png".to_string(),
-                data: "aGVsbG8=".to_string(),
-            }],
+            attachments: vec!["0123456789abcdef0123456789abcdef".to_string()],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(
-            json.contains("\"images\""),
-            "images field should be serialized when non-empty"
+            json.contains("\"attachments\":[\"0123456789abcdef0123456789abcdef\"]"),
+            "attachments field should be serialized when non-empty, got {json}"
         );
         let deserialized: ClientMessage = serde_json::from_str(&json).unwrap();
         assert!(
             matches!(
                 &deserialized,
-                ClientMessage::SendMessage { id, content, images }
-                    if id == "img-1" && content == "look at this" && images.len() == 1
+                ClientMessage::SendMessage { id, content, attachments }
+                    if id == "att-1" && content == "look at this" && attachments.len() == 1
             ),
-            "should survive serialization round-trip with images"
+            "should survive serialization round-trip with attachments"
+        );
+    }
+
+    #[test]
+    fn client_message_send_message_without_attachments_omits_the_field() {
+        let msg = ClientMessage::SendMessage {
+            id: "plain-1".to_string(),
+            content: "hi".to_string(),
+            attachments: Vec::new(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("attachments"),
+            "an empty attachments list should not be serialized, got {json}"
         );
     }
 

@@ -305,6 +305,7 @@ fn build_gateway_state(
         command_tx: core.command_tx.clone(),
         stop_tx: core.stop_tx.clone(),
         agent_inbox_dir: parts.layout.agent_inbox_dir(),
+        uploads: services.uploads.clone(),
         tz: parts.tz,
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),

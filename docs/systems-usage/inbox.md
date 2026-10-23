@@ -137,6 +137,8 @@ A workbench artifact can file an agent-inbox item with `POST /api/agents/{name}/
 
 A file that a Discord, Telegram, Teams or A2A message carries gets its own companion agent-inbox item, and each file an A2A task's remote agent returns gets one as well, titled `A2A artifact: <filename>`. The file sits in that item's attachment directory, so archiving the item moves the file with it (see [a2a.md](a2a.md)).
 
+A file sent with a message in the web chat gets the same kind of item, titled `Chat attachment: <filename>` with source `chat` and the author line `Web chat`. The chat sends the upload ids from [Staged uploads](hub-http.md#staged-uploads), and the gateway copies each staged file into its item's attachment directory before it publishes the message. The message text gets an `[Attachment: <filename> (<size> bytes) → <path>]` line for each file, and a supported image is also given to the model inline. A message naming an upload that is no longer staged, or a file that fails to copy, is refused whole with a plain-language error, and no item is left behind. The staged uploads are removed once the message is published.
+
 ## Web Inbox
 
 The Inbox place (`/inbox`, **Inbox** at the top of the left-hand rail) is a mail client over every agent's mail. It reads and writes through the hub's `/api/hub/mail/*` routes, which work from the agents' files, so a stopped or failed agent's mail is listed, read, archived and answered like a running agent's. What counts as a conversation is in [Threads](#threads) and [Folders and State](#folders-and-state), and how files reach a message is in [Uploads and Attachments](#uploads-and-attachments).

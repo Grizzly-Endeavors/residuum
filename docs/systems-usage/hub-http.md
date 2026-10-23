@@ -88,6 +88,8 @@ Errors are `{ "error": message }`: `400` for a `folder` other than the three, an
 
 A staged upload is kept for 24 hours and removed after that. The hub removes expired uploads at startup and before each new upload is staged. Each upload is one directory holding its content, as a file under the name the client gave it, and a `meta.json` with its filename, size, content type, and creation time.
 
+The web chat names its files the same way. Its WebSocket `send_message` frame carries `attachments`, a list of upload ids (omitted when empty), and never file bytes. The gateway resolves every id before it copies any file. Repeated ids count once. An unknown or expired id refuses the whole message with an `error` frame, and so does a file that fails to copy. Each file that is copied becomes a companion agent-inbox item, as described in [inbox.md](inbox.md#uploads-and-attachments). Once the message is published, the gateway removes each staged upload it used. A refused message keeps its uploads, so the client can retry the send.
+
 ### Web Push devices
 
 The push routes register browsers and installed apps for notifications and say how delivery to each is going (see [Notifications](notifications.md#web-push) for what is sent, the signing key, and how failures are handled). They are open over the relay tunnel, so a phone on Residuum Cloud manages its own notifications.
