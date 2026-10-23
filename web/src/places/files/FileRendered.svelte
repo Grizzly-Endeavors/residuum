@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { openAgentFileInPanel } from "../../feed/feed-links";
   import Prose from "../../feed/Prose.svelte";
   import { splitFrontmatter } from "./frontmatter";
   import type { FileSource } from "./file-source";
@@ -6,7 +7,9 @@
   // A file's content as read, not edited: Markdown through `feed/Prose.svelte`
   // (the same sanitizer and image rules as a reply), its leading frontmatter
   // as a key/value block, or plain text with its characters shown as written.
-  // Relative links to other Markdown files open them in the same tree.
+  // Relative links to other Markdown files open them in the same tree. In a
+  // panel that names its agent, a link opens as that agent's file in the same
+  // way, so the place under the panel (the Inbox) stays.
 
   interface Props {
     /** The file's text. */
@@ -17,11 +20,19 @@
     source: FileSource;
     /** `markdown` renders the text; `text` shows it as it is, wrapped and unformatted. */
     mode: "markdown" | "text";
+    /** The panel names the file's agent, so a link opens as that agent's file whatever place the panel is beside. */
+    agentNamed?: boolean;
   }
 
-  let { content, path, source, mode }: Props = $props();
+  let { content, path, source, mode, agentNamed = false }: Props = $props();
 
   const split = $derived(mode === "markdown" ? splitFrontmatter(content) : null);
+  const openAgentPath = $derived.by(() => {
+    const { agent } = source;
+    return agentNamed && agent !== null
+      ? (linked: string): void => openAgentFileInPanel(agent, linked)
+      : undefined;
+  });
 </script>
 
 {#if mode === "text"}
@@ -43,6 +54,7 @@
       agent={source.agent}
       teamFolder={source.scope === "team"}
       filePath={path}
+      openPath={openAgentPath}
       size="compact"
     />
   </div>

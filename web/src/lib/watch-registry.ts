@@ -7,8 +7,9 @@
 // part registers as an owner and sets its own prefixes; the registry sends
 // the union and hands every change to the owners whose prefixes it concerns.
 //
-// There is one registry per socket: the bound agent's (`ws.watches`) and the
-// hub's team watch (`hub.teamWatches`).
+// There is one registry per socket: the bound agent's (`ws.watches`), the
+// hub's team watch (`hub.teamWatches`), and one for each watch-only connection
+// to another agent (`agent-watches.svelte.ts`).
 
 import type { HubServerMessage } from "./hub-types";
 import type { ServerMessage, WorkspaceChange, WorkspaceResyncReason } from "./types";

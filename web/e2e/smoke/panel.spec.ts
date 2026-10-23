@@ -107,6 +107,9 @@ test("a linked file opens in the panel, and Esc closes it by replacing the URL",
   const panel = contextPanel(page, isMobile, "index.md");
   await expect(panel).toBeVisible();
   await expect(panel.getByText("team/wiki/index.md").first()).toBeVisible();
+  // A Markdown file opens rendered; Edit opens the editor on its text.
+  await expect(panel.getByRole("heading", { name: "Wiki Index" })).toBeVisible();
+  await panel.getByRole("button", { name: "Edit" }).click();
   await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
   await scanPanel(page, isMobile);
 
@@ -121,7 +124,9 @@ test("a linked file opens in the panel, and Esc closes it by replacing the URL",
 
 test("on Shared files, a file is read from the team's folder", async ({ page, isMobile }) => {
   await page.goto("/team/files?panel=file:wiki/index.md");
-  await expect(contextPanel(page, isMobile, "index.md")).toBeVisible();
+  const panel = contextPanel(page, isMobile, "index.md");
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: "Edit" }).click();
   await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
 });
 

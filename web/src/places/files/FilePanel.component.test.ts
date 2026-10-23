@@ -233,10 +233,47 @@ describe("a Markdown file in the panel", () => {
     expect(screen.queryByRole("heading", { name: /type/ })).toBeNull();
   });
 
-  it("opens a non-Markdown file in the editor, with no Edit toggle", async () => {
-    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
-    expect(await screen.findByRole("textbox", { name: "Contents of readme.txt" })).toBeTruthy();
+  it("opens a file that is neither Markdown nor text in the editor, with no Edit toggle", async () => {
+    files["notes/data.json"] = '{"a": 1}\n';
+    render(FilePanelHarness, { source: ATLAS, path: "notes/data.json" });
+    expect(await screen.findByRole("textbox", { name: "Contents of data.json" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+});
+
+describe("a plain text file in the panel", () => {
+  it("opens as written, with no Markdown formatting, until Edit is pressed", async () => {
+    files["notes/readme.txt"] = "# not a heading\n- not a list\n  indented *plain*\n";
+    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
+
+    const text = await screen.findByText("# not a heading", { exact: false });
+    expect(text.tagName).toBe("PRE");
+    expect(text.textContent).toBe("# not a heading\n- not a list\n  indented *plain*\n");
+    expect(screen.queryByRole("heading", { name: "not a heading" })).toBeNull();
+    expect(screen.queryByRole("listitem")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("edits through the same Edit toggle, keeping unsaved edits in the rendered text", async () => {
+    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
+    const editor = await openEditor("readme.txt");
+    await userEvent.type(editor, "more");
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByText("plain text", { exact: false }).textContent).toBe("plain text\nmore");
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(files["notes/readme.txt"]).toBe("plain text\nmore");
+  });
+
+  it("says an empty file is empty", async () => {
+    files["notes/readme.txt"] = "";
+    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
+    expect(await screen.findByText("Nothing written yet. Edit to add text.")).toBeTruthy();
   });
 });
 
@@ -262,6 +299,28 @@ describe("relative links in a rendered Markdown file", () => {
       path: "notes/refs/config.md",
       agent: null,
     });
+  });
+
+  it("opens a link as the same agent's file when the panel names its agent, wherever it is", async () => {
+    await router.replacePlace(INBOX);
+    files["notes/plan.md"] = "See [the config](refs/config.md) and `notes/other.md`.\n";
+    const openPanel = vi.spyOn(router, "openPanel");
+    const openPlace = vi.spyOn(router, "openPlace");
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md", agentNamed: true });
+
+    await userEvent.click(await screen.findByRole("link", { name: "the config" }));
+    expect(openPanel).toHaveBeenLastCalledWith({
+      kind: "file",
+      path: "notes/refs/config.md",
+      agent: "atlas",
+    });
+    await userEvent.click(screen.getByText("notes/other.md"));
+    expect(openPanel).toHaveBeenLastCalledWith({
+      kind: "file",
+      path: "notes/other.md",
+      agent: "atlas",
+    });
+    expect(openPlace).not.toHaveBeenCalled();
   });
 
   it("keeps a link that climbs out of the workspace as a link in a new tab", async () => {

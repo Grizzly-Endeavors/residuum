@@ -306,6 +306,42 @@ describe("stopped and failed agents over HTTP", () => {
     expect(config.body).toContain("[");
   });
 
+  // A mail attachment of a stopped agent opens in the file panel beside its thread.
+  it.each(["drifter", "brittle"])(
+    "reads, saves and checks %s's own workspace files, as the backend does for an agent that isn't running",
+    async (agent) => {
+      const read = await fetch(at(agent, "/workspace/file?path=SOUL.md"));
+      expect(read.status).toBe(200);
+      const version = read.headers.get("etag") ?? "";
+      expect(version).not.toBe("");
+      expect(await read.text()).toContain("# Soul");
+      expect(await fetchText(at(agent, "/workspace/file?path=missing.md"))).toMatchObject({
+        status: 404,
+      });
+
+      const checked = await fetchJson(at(agent, "/workspace/validate"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "notes/today.md", content: "# Today\n" }),
+      });
+      expect(checked).toEqual({ status: 200, body: { diagnostics: [] } });
+
+      const saved = await fetchJson(at(agent, "/workspace/file"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "If-Match": version },
+        body: JSON.stringify({ path: "SOUL.md", content: `# Soul of ${agent}\n` }),
+      });
+      expect(saved.status).toBe(200);
+      expect((await fetchText(at(agent, "/workspace/file?path=SOUL.md"))).body).toBe(
+        `# Soul of ${agent}\n`,
+      );
+      // A stopped agent's write is to its own workspace and no one else's.
+      expect((await fetchText(at("atlas", "/workspace/file?path=SOUL.md"))).body).toContain(
+        "# Soul\n",
+      );
+    },
+  );
+
   it.each([
     ["drifter", "stopped"],
     ["brittle", "failed"],

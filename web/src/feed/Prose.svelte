@@ -10,7 +10,9 @@
   // folder, whose paths name no agent's workspace) such code is not a link.
   // A relative link to a Markdown file opens that file in the panel when
   // `filePath` names the file the text is in, in the agent's workspace or the
-  // team's folder; any other link keeps its own behavior.
+  // team's folder; any other link keeps its own behavior. `openPath` replaces
+  // what clicking an agent's path does, for text that sits where the default
+  // (the agent's own place) is wrong.
 
   interface Props {
     content: string;
@@ -20,6 +22,8 @@
     teamFolder?: boolean;
     /** The workspace path (or team-folder path) of the file the text is in, for its relative links. */
     filePath?: string;
+    /** Opens a path in `agent`'s workspace when its link is clicked. By default the agent's own place shows it. */
+    openPath?: (path: string) => void;
     /** `compact` for text inside a card. */
     size?: "message" | "compact";
     /** The text is still arriving: a blinking caret follows its last word. */
@@ -31,6 +35,7 @@
     agent,
     teamFolder = false,
     filePath,
+    openPath,
     size = "message",
     streaming = false,
   }: Props = $props();
@@ -107,7 +112,9 @@
     if (link === null || newTab || event.defaultPrevented) return;
     if (agent !== null) {
       event.preventDefault();
-      openPathInPanel(agent, link.dataset.path ?? "");
+      const path = link.dataset.path ?? "";
+      if (openPath === undefined) openPathInPanel(agent, path);
+      else openPath(path);
     } else if (inTeam) {
       event.preventDefault();
       openTeamPathInPanel(link.dataset.path ?? "");
