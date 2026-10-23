@@ -7,9 +7,14 @@ import type {
   MailThread,
   MailThreadSummary,
 } from "../src/lib/hub-types";
-import type { UserInboxAttachment, UserInboxItem } from "../src/lib/types";
 import { attachmentPath, attachmentUrl, type InboxSide } from "./inbox";
-import type { MockAgent, MockAgentInboxItem, MockHub } from "./state";
+import type {
+  MockAgent,
+  MockAgentInboxItem,
+  MockHub,
+  UserInboxAttachment,
+  UserInboxItem,
+} from "./state";
 import { byName } from "./util";
 
 /**

@@ -4,7 +4,6 @@ import { chatRoutes } from "./chat";
 import { cloudRoutes } from "./cloud";
 import { configRoutes } from "./config";
 import { controlRoutes } from "./controls";
-import { hubInboxRoutes } from "./hub-inbox";
 import { inboxRoutes } from "./inbox";
 import { lifecycleRoutes } from "./lifecycle";
 import { mailRoutes } from "./mail";
@@ -29,7 +28,6 @@ export const apiRoutes: readonly Route[] = [
   ...configRoutes,
   ...chatRoutes,
   ...inboxRoutes,
-  ...hubInboxRoutes,
   ...mailRoutes,
   ...pushRoutes,
   ...pairingRoutes,

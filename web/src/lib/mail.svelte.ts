@@ -137,7 +137,9 @@ export class StagedAttachment {
   /** Settles when the current upload attempt does, whichever way it goes. */
   done: Promise<void> = Promise.resolve();
   /** Taken off the draft: a late upload answer changes nothing. */
-  removed = false;
+  private removed = false;
+  /** Cancels the upload attempt in flight. */
+  private controller: AbortController | null = null;
 
   constructor(readonly file: File) {
     this.filename = file.name;
@@ -149,9 +151,11 @@ export class StagedAttachment {
     if (this.status === "uploaded") return this.done;
     this.status = "uploading";
     this.error = null;
+    const controller = new AbortController();
+    this.controller = controller;
     this.done = (async () => {
       try {
-        const staged = await uploadFile(this.file, this.filename);
+        const staged = await uploadFile(this.file, this.filename, { signal: controller.signal });
         if (this.removed) return;
         this.uploadId = staged.id;
         this.status = "uploaded";
@@ -162,6 +166,12 @@ export class StagedAttachment {
       }
     })();
     return this.done;
+  }
+
+  /** Take it off the draft: an upload still running is cancelled, and nothing it answers later counts. */
+  remove(): void {
+    this.removed = true;
+    this.controller?.abort();
   }
 }
 
@@ -218,7 +228,7 @@ export class MailDraft {
   removeAttachment(key: string): void {
     const attachment = this.attachments.find((held) => held.key === key);
     if (attachment === undefined) return;
-    attachment.removed = true;
+    attachment.remove();
     this.attachments = this.attachments.filter((held) => held !== attachment);
   }
 
@@ -248,7 +258,7 @@ export class MailDraft {
 
   /** Empty the draft after it was sent. */
   clear(): void {
-    for (const attachment of this.attachments) attachment.removed = true;
+    for (const attachment of this.attachments) attachment.remove();
     this.body = "";
     this.attachments = [];
     this.attachNotice = null;

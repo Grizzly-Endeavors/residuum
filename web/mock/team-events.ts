@@ -15,13 +15,12 @@ import type {
   TeamEventTarget,
 } from "../src/lib/hub-types";
 import { agentLabel } from "../src/lib/agent-name";
-import type { UserInboxAttachment, UserInboxItem } from "../src/lib/types";
 import type { MockEnv } from "./env";
 import { json, parseJsonObject, readBody, stringField } from "./http";
 import { keepStandIn, mockAttachment } from "./inbox";
 import { findEntry, replyTitle, subjectOf } from "./mail-threads";
 import type { Route, RouteContext } from "./routes";
-import type { MockAgent, MockState } from "./state";
+import type { MockAgent, MockState, UserInboxAttachment, UserInboxItem } from "./state";
 
 /**
  * The team event log of the hub, `crates/hub/src/team_events/`: what happened across

@@ -1,5 +1,5 @@
-import type { UserInboxItem } from "../../src/lib/types";
 import type { MockClock } from "../env";
+import type { UserInboxItem } from "../state";
 
 /** The sample inbox: one unread item and one read item. */
 export function createInboxItems(clock: MockClock): UserInboxItem[] {

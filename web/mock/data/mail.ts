@@ -1,6 +1,5 @@
-import type { UserInboxAttachment } from "../../src/lib/types";
 import { PNG_PIXEL, storeAttachment } from "../inbox";
-import type { MockAgent, MockHub } from "../state";
+import type { MockAgent, MockHub, UserInboxAttachment } from "../state";
 
 /**
  * The mail the scenario starts with, on top of each agent's sample inbox

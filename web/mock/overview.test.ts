@@ -509,12 +509,18 @@ describe("the overview routes", () => {
       (await nextFrame("atlas", (overview) => overview.inbox_unread === before + 1)).name,
     ).toBe("atlas");
 
-    await fetch(`${mock.baseUrl}/api/hub/inbox/atlas/${saved.id}/read`, { method: "PUT" });
+    // A thread action answers with no body.
+    const act = (action: string): Promise<Response> =>
+      fetch(
+        `${mock.baseUrl}/api/hub/mail/threads/${encodeURIComponent(`atlas/user/${saved.id}`)}/${action}`,
+        { method: "POST" },
+      );
+    await act("read");
     await nextFrame("atlas", (overview) => overview.inbox_unread === before);
 
-    await post(`/api/hub/inbox/atlas/${saved.id}/archive`);
-    await post(`/api/hub/inbox/atlas/${saved.id}/restore`);
-    await fetch(`${mock.baseUrl}/api/hub/inbox/atlas/${saved.id}/read`, { method: "PUT" });
+    await act("archive");
+    await act("restore");
+    await act("read");
     expect((await overviewOf("atlas")).inbox_unread).toBe(before);
   });
 

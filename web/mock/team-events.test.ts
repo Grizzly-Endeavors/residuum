@@ -323,7 +323,7 @@ describe("the team event routes", () => {
       summary: "atlas added an item to your inbox",
       target: { kind: "inbox_item", agent: "atlas", item_id: id },
     });
-    const inbox = await fetchJson(`${mock.baseUrl}/api/hub/inbox?agent=atlas`);
+    const inbox = await fetchJson(`${mock.baseUrl}/api/hub/mail/threads?agent=atlas`);
     expect(JSON.stringify(inbox.body)).toContain(id);
   });
 

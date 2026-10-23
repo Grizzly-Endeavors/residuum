@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { MailThreadPage } from "../src/lib/hub-types";
+import { MAIL_SEED } from "./data/mail";
 import { isRefusal, isFileDataRoute, scopeRequest } from "./scope";
 import {
   fetchJson,
@@ -98,9 +100,6 @@ describe("scopeRequest", () => {
       "/api/hub/status",
       "/api/hub/events",
       "/api/hub/overview",
-      "/api/hub/inbox",
-      "/api/hub/inbox/unread",
-      "/api/hub/inbox/atlas/note/read",
       "/api/hub/mail/threads",
       "/api/hub/mail/threads/atlas%2Fuser%2Fnote",
       "/api/hub/mail/threads/atlas%2Fuser%2Fnote/archive",
@@ -270,6 +269,8 @@ describe("stopped and failed agents over HTTP", () => {
 
   const at = (agent: string, route: string): string =>
     `${harness.baseUrl}/api/agents/${agent}${route}`;
+  const inboxThreads = (agent: string): string =>
+    `${harness.baseUrl}/api/hub/mail/threads?folder=inbox&agent=${agent}`;
 
   it.each(["drifter", "brittle"])("serves %s's file-only routes, with no data", async (agent) => {
     expect(await fetchJson(at(agent, "/chat/history"))).toEqual({
@@ -284,7 +285,17 @@ describe("stopped and failed agents over HTTP", () => {
       status: 200,
       body: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
     });
-    expect(await fetchJson(at(agent, "/inbox"))).toEqual({ status: 200, body: [] });
+    expect(await fetchJson(at(agent, "/inbox/mock_1/attachments/0"))).toEqual({
+      status: 404,
+      body: {
+        error:
+          "This attachment is no longer available. It may have been removed from its inbox item.",
+      },
+    });
+    expect(await fetchJson(inboxThreads(agent))).toEqual({
+      status: 200,
+      body: { threads: [], next: null },
+    });
     expect(await fetchText(at(agent, "/a2a/agents/raw"))).toEqual({
       status: 200,
       body: '{"agents":{}}',
@@ -363,11 +374,12 @@ describe("stopped and failed agents over HTTP", () => {
     });
   });
 
-  it("serves the inbox handlers the stopped agent's own state", async () => {
-    const atlas = await fetchJson(at("atlas", "/inbox"));
-    expect((atlas.body as unknown[]).length).toBeGreaterThan(0);
-    await fetchJson(`${harness.baseUrl}/api/hub/agents/atlas/stop`, { method: "POST" });
-    expect(await fetchJson(at("atlas", "/inbox"))).toEqual(atlas);
+  it("serves a stopped agent's attachments from its own inbox", async () => {
+    const attachment = at("scout", `/inbox/${MAIL_SEED.wikiAudit.replyId}/attachments/0`);
+    const running = await fetchText(attachment);
+    expect(running.status).toBe(200);
+    await fetchJson(`${harness.baseUrl}/api/hub/agents/scout/stop`, { method: "POST" });
+    expect(await fetchText(attachment)).toEqual(running);
   });
 
   it("keeps a stopped agent's conversation readable", async () => {
@@ -385,8 +397,8 @@ describe("stopped and failed agents over HTTP", () => {
       messages: { content: string }[];
     };
     expect(history.messages.at(-1)?.content).toContain("Hi, this is drifter");
-    const inbox = (await fetchJson(at("drifter", "/inbox"))).body as unknown[];
-    expect(inbox.length).toBeGreaterThan(0);
+    const inbox = (await fetchJson(inboxThreads("drifter"))).body as MailThreadPage;
+    expect(inbox.threads.length).toBeGreaterThan(0);
   });
 
   it("refuses a failed start and keeps the agent without a conversation", async () => {

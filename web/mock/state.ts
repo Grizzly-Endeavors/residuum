@@ -14,12 +14,7 @@ import type {
   LogLine,
 } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
-import type {
-  RecentMessage,
-  UserInboxAttachment,
-  UserInboxItem,
-  WorkspaceEntry,
-} from "../src/lib/types";
+import type { RecentMessage, WorkspaceEntry } from "../src/lib/types";
 import { loadAsset } from "./assets";
 import { seedCheckpoints, type MockCheckpoints } from "./checkpoints";
 import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
@@ -47,6 +42,27 @@ export interface MockAgentKey {
 export interface MockA2aKey {
   description: string;
   created_at: string;
+}
+
+/** A file attached to an item an agent sent the user. `url` is filled in when the item is listed. */
+export interface UserInboxAttachment {
+  filename: string;
+  mime_type: string;
+  size: number;
+  url: string;
+}
+
+/** An item an agent sent the user, as the mock keeps it in `inboxItems` or `inboxArchive`. */
+export interface UserInboxItem {
+  id: string;
+  title: string;
+  body: string;
+  source: string;
+  timestamp: string;
+  read: boolean;
+  attachments: UserInboxAttachment[];
+  /** The ref (`<agent>/<user|agent>/<id>`) of the message this one answers; absent for a message that starts a thread. */
+  in_reply_to?: string;
 }
 
 /**

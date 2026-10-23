@@ -85,6 +85,23 @@ describe("agent socket", () => {
       await scout.close();
     });
 
+    it("doesn't count a watch-only socket as a client, and doesn't reset unread", async () => {
+      const scout = harness.hub.agents.get("scout");
+      if (scout === undefined) throw new Error("no scout");
+      harness.hub.addUnread(scout);
+      const watcher = await harness.openSocket("/api/agents/scout/ws?watch_only=true");
+      await watcher.settled();
+      expect(scout.unread).toBe(1);
+      expect(scout.connectedClients()).toBe(0);
+      await watcher.close();
+
+      const page = await harness.openSocket("/api/agents/scout/ws");
+      await page.settled();
+      expect(scout.unread).toBe(0);
+      expect(scout.connectedClients()).toBe(1);
+      await page.close();
+    });
+
     it("drops a page's connections when the agent's state asks to", async () => {
       harness.hub.agents.get("atlas")?.state.dropSockets();
       await socket.closed;
