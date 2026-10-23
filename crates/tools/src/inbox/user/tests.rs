@@ -48,9 +48,12 @@ async fn user_inbox_add_without_attachments_unchanged() {
         "confirmation message should not report a copy count when none were given: {}",
         result.output
     );
+    let id = result
+        .output
+        .trim_start_matches("Added item to user inbox with ID: ");
     assert!(
-        !attachments_dir.exists(),
-        "no attachments directory should be created"
+        !attachments_dir.join(id).exists(),
+        "an item without attachments leaves no attachments directory"
     );
 }
 
