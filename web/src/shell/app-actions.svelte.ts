@@ -15,7 +15,7 @@ import type { InstallOffer } from "../lib/install";
 import type { IconName } from "../lib/icons";
 import { notifications } from "../lib/notifications.svelte";
 import { router } from "../lib/router.svelte";
-import { HOME, type Place } from "../lib/routes";
+import { HOME, INBOX, type Place } from "../lib/routes";
 import {
   AGENT_SECTIONS,
   ALL_SCOPE,
@@ -36,8 +36,6 @@ export const installHelp = $state({ open: false });
 
 /** Whether Show connection status is open. */
 export const connectionStatusDialog = $state({ open: false });
-
-const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 
 function open(place: Place): () => void {
   return () => void router.openPlace(place);
@@ -188,7 +186,7 @@ function lifecycle(): AppAction[] {
   });
 }
 
-function chat(shell: ShellActions): AppAction[] {
+function chat(): AppAction[] {
   const agent = ws.agent;
   return chatActions({
     agent,
@@ -214,7 +212,9 @@ function chat(shell: ShellActions): AppAction[] {
       if (router.viewedAgent === name) void router.openPanel(panel);
       else void router.openPlace({ kind: "chat", agent: name }, { panel });
     },
-    askForInboxNote: shell.addInboxNote,
+    composeMailTo: (name) => {
+      void router.openPlace({ ...INBOX, compose: { to: [name] } });
+    },
     showConnectionStatus: () => {
       connectionStatusDialog.open = true;
     },
@@ -276,7 +276,7 @@ export function registerAppActions(shell: ShellActions): () => void {
     actionRegistry.register("sessions", sessions),
     actionRegistry.register("settings", () => settings(shell)),
     actionRegistry.register("actions", () => [
-      ...chat(shell),
+      ...chat(),
       ...lifecycle(),
       {
         id: "agent:create",

@@ -809,6 +809,7 @@ mod tests {
             Arc::clone(&hub),
             messenger,
             dir.join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         (hub, tracker)

@@ -1,7 +1,7 @@
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "../../lib/router.svelte";
-import { HOME, type AppLocation } from "../../lib/routes";
+import { HOME, INBOX, type AppLocation } from "../../lib/routes";
 import { toast } from "../../lib/toast.svelte";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import FilePanelHarness from "../../test/ui/FilePanelHarness.svelte";
@@ -33,10 +33,10 @@ function serve(): void {
 }
 
 /** Where the router would go: a place, with or without a file in the panel. */
-function at(place: AppLocation["place"], path?: string): AppLocation {
+function at(place: AppLocation["place"], path?: string, agent: string | null = null): AppLocation {
   return {
     place,
-    panel: path === undefined ? null : { kind: "file", path },
+    panel: path === undefined ? null : { kind: "file", path, agent },
     settings: null,
   };
 }
@@ -233,10 +233,47 @@ describe("a Markdown file in the panel", () => {
     expect(screen.queryByRole("heading", { name: /type/ })).toBeNull();
   });
 
-  it("opens a non-Markdown file in the editor, with no Edit toggle", async () => {
-    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
-    expect(await screen.findByRole("textbox", { name: "Contents of readme.txt" })).toBeTruthy();
+  it("opens a file that is neither Markdown nor text in the editor, with no Edit toggle", async () => {
+    files["notes/data.json"] = '{"a": 1}\n';
+    render(FilePanelHarness, { source: ATLAS, path: "notes/data.json" });
+    expect(await screen.findByRole("textbox", { name: "Contents of data.json" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+});
+
+describe("a plain text file in the panel", () => {
+  it("opens as written, with no Markdown formatting, until Edit is pressed", async () => {
+    files["notes/readme.txt"] = "# not a heading\n- not a list\n  indented *plain*\n";
+    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
+
+    const text = await screen.findByText("# not a heading", { exact: false });
+    expect(text.tagName).toBe("PRE");
+    expect(text.textContent).toBe("# not a heading\n- not a list\n  indented *plain*\n");
+    expect(screen.queryByRole("heading", { name: "not a heading" })).toBeNull();
+    expect(screen.queryByRole("listitem")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("edits through the same Edit toggle, keeping unsaved edits in the rendered text", async () => {
+    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
+    const editor = await openEditor("readme.txt");
+    await userEvent.type(editor, "more");
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByText("plain text", { exact: false }).textContent).toBe("plain text\nmore");
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(files["notes/readme.txt"]).toBe("plain text\nmore");
+  });
+
+  it("says an empty file is empty", async () => {
+    files["notes/readme.txt"] = "";
+    render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
+    expect(await screen.findByText("Nothing written yet. Edit to add text.")).toBeTruthy();
   });
 });
 
@@ -257,7 +294,33 @@ describe("relative links in a rendered Markdown file", () => {
 
     await userEvent.click(await screen.findByRole("link", { name: "the config" }));
 
-    expect(openPanel).toHaveBeenCalledWith({ kind: "file", path: "notes/refs/config.md" });
+    expect(openPanel).toHaveBeenCalledWith({
+      kind: "file",
+      path: "notes/refs/config.md",
+      agent: null,
+    });
+  });
+
+  it("opens a link as the same agent's file when the panel names its agent, wherever it is", async () => {
+    await router.replacePlace(INBOX);
+    files["notes/plan.md"] = "See [the config](refs/config.md) and `notes/other.md`.\n";
+    const openPanel = vi.spyOn(router, "openPanel");
+    const openPlace = vi.spyOn(router, "openPlace");
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md", agentNamed: true });
+
+    await userEvent.click(await screen.findByRole("link", { name: "the config" }));
+    expect(openPanel).toHaveBeenLastCalledWith({
+      kind: "file",
+      path: "notes/refs/config.md",
+      agent: "atlas",
+    });
+    await userEvent.click(screen.getByText("notes/other.md"));
+    expect(openPanel).toHaveBeenLastCalledWith({
+      kind: "file",
+      path: "notes/other.md",
+      agent: "atlas",
+    });
+    expect(openPlace).not.toHaveBeenCalled();
   });
 
   it("keeps a link that climbs out of the workspace as a link in a new tab", async () => {
@@ -299,6 +362,23 @@ describe("the unsaved-edit guard", () => {
     render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
     await userEvent.type(await openEditor(), "edit");
     expect(router.guard.losses(at({ kind: "chat", agent: "atlas" }, "notes/plan.md"))).toEqual([]);
+  });
+
+  it("reads a panel that names its agent from that agent, whatever place it is beside", async () => {
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+    await userEvent.type(await openEditor(), "edit");
+    const loss = ["Unsaved changes to plan.md"];
+
+    expect(router.guard.losses(at(INBOX, "notes/plan.md", "atlas"))).toEqual([]);
+    expect(
+      router.guard.losses(at({ kind: "chat", agent: "scout" }, "notes/plan.md", "atlas")),
+    ).toEqual([]);
+    expect(router.guard.losses(at(INBOX, "notes/plan.md", "scout"))).toEqual(loss);
+    expect(router.guard.losses(at(INBOX, "notes/other.md", "atlas"))).toEqual(loss);
+    expect(router.guard.losses(at({ kind: "shared-files" }, "notes/plan.md", "atlas"))).toEqual([]);
+    expect(router.guard.losses(at({ kind: "chat", agent: "scout" }, "notes/plan.md"))).toEqual(
+      loss,
+    );
   });
 
   it("stops asking once the panel is gone", async () => {

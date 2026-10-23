@@ -1,6 +1,6 @@
 //! The per-agent routes that only read and write the agent's files (chat
-//! history and usage, the user inbox, the raw A2A client settings, and the
-//! file links: workspace links and token links), and the state they run on.
+//! history and usage, the inbox attachments, the raw A2A client settings,
+//! and the file links: workspace links and token links), and the state they run on.
 //!
 //! The state holds no open checkpoint repositories. The one handler that
 //! takes a checkpoint, the raw A2A settings write, opens them when it runs,
@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::routing::{get, post, put};
+use axum::routing::{get, put};
 
 use crate::file_server::{self, FileRegistry};
 use residuum_bus::control::ReloadSender;
@@ -51,9 +51,8 @@ impl CheckpointAccess {
 /// Shared state for the file-only agent routes.
 #[derive(Clone)]
 pub struct AgentFilesState {
-    /// This agent's name, used in the attachment URLs an inbox listing hands
-    /// out and in the app address a workspace file link that can't be served
-    /// sends a browser to.
+    /// This agent's name, used in the app address a missing inbox attachment
+    /// or a workspace file link that can't be served sends a browser to.
     pub agent_name: String,
     /// Path to the workspace root directory.
     pub workspace_dir: PathBuf,
@@ -143,14 +142,13 @@ pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
         .route("/api/usage", get(chat::api_usage))
         .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
         .route("/api/a2a/agents/raw", put(a2a::api_a2a_agents_raw_put))
-        .route("/api/inbox", get(inbox::api_inbox_list))
-        .route("/api/inbox/archive", get(inbox::api_inbox_archive_list))
-        .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
-        .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
-        .route("/api/inbox/{id}/restore", post(inbox::api_inbox_restore))
         .route(
             "/api/inbox/{id}/attachments/{index}",
             get(inbox::api_inbox_attachment),
+        )
+        .route(
+            "/api/inbox/agent/{id}/attachments/{index}",
+            get(inbox::api_agent_inbox_attachment),
         )
         .with_state(state)
         .merge(file_links)

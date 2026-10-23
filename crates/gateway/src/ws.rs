@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket};
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -20,18 +20,28 @@ use residuum_net::workbench::ArtifactsOrigin;
 use residuum_protocol::{ClientMessage, ServerMessage};
 use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
+/// Query parameters of the agent `/ws` upgrade.
+#[derive(serde::Deserialize)]
+pub(super) struct SocketQuery {
+    /// `true` for a socket that only follows files; any other value is ignored.
+    watch_only: Option<String>,
+}
+
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<GatewayState>,
     through_artifacts_origin: Option<Extension<ArtifactsOrigin>>,
+    Query(query): Query<SocketQuery>,
 ) -> impl IntoResponse {
     // The upgraded connection runs in a task axum spawns with no span of its
     // own; carrying the request's keeps the agent's `agent` log field on it.
     let span = tracing::Span::current();
-    // A workbench page's socket isn't the user looking at the chat, so it
-    // doesn't count as a client (see `handle_connection`).
-    let counts_as_client = through_artifacts_origin.is_none();
+    // A workbench page's socket, or one that only follows files, isn't the
+    // user looking at the chat, so it doesn't count as a client (see
+    // `handle_connection`).
+    let watch_only = query.watch_only.as_deref() == Some("true");
+    let counts_as_client = through_artifacts_origin.is_none() && !watch_only;
     ws.on_upgrade(move |socket| handle_connection(socket, state, counts_as_client).instrument(span))
 }
 
@@ -49,8 +59,9 @@ pub(super) async fn ws_handler(
 /// verbose mode is off.
 ///
 /// `counts_as_client` is false for a connection opened through the artifacts
-/// origin: it neither resets the agent's unread count nor counts as someone
-/// being connected.
+/// origin or with `watch_only=true`: it neither resets the agent's unread
+/// count nor counts as someone being connected. Subscriptions and watches
+/// work the same either way.
 async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_client: bool) {
     // While a client connection is open the agent's unread count stays at
     // zero: a client is there to show new messages.
@@ -367,17 +378,33 @@ async fn handle_client_message(
         }
         ClientMessage::InboxAdd { body } => {
             tracing::info!("inbox add requested by client");
-            let dir = state.agent_inbox_dir.clone();
-            let tz = state.tz;
+            // A note is mail from the user to this agent, so it shows in Sent.
+            let mailbox =
+                residuum_workspace::inbox::mail::Mailbox::for_workspace(&state.layout, state.tz);
             let tx = local_tx.clone();
             residuum_core::util::spawn_in_span(async move {
-                let title = residuum_workspace::inbox::derive_title(&body);
-                match residuum_workspace::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
-                    Ok(_filename) => {
+                let note = residuum_workspace::inbox::mail::OutgoingMail {
+                    to: vec![mailbox.agent.clone()],
+                    title: String::new(),
+                    body,
+                    source: residuum_workspace::inbox::mail::UserMailSource::Cli,
+                    in_reply_to: None,
+                    attachments: Vec::new(),
+                };
+                match residuum_workspace::inbox::mail::send_mail(&mailbox, note).await {
+                    Ok(_sent) => {
                         tx.send(ServerMessage::Notice {
                             message: "Added a note to the inbox.".to_string(),
                             reload: None,
                             reload_of: None,
+                        })
+                        .ok();
+                    }
+                    Err(residuum_workspace::inbox::mail::SendMailError::BlankBody) => {
+                        tx.send(ServerMessage::Error {
+                            reply_to: None,
+                            message: "A note needs some text.".to_string(),
+                            details: None,
                         })
                         .ok();
                     }
@@ -660,6 +687,7 @@ fn validate_images(images: &[ImageData]) -> Result<(), String> {
 mod tests {
     use super::*;
     use residuum_core::testing::wait;
+    use tokio_tungstenite::tungstenite::Message as WireMessage;
 
     #[test]
     fn set_verbose_updates_flag() {
@@ -953,6 +981,86 @@ mod tests {
         (state, receivers)
     }
 
+    /// Serve [`ws_handler`] for `state` on a loopback port.
+    async fn serve_ws_handler(state: GatewayState) -> std::net::SocketAddr {
+        let app = axum::Router::new()
+            .route("/ws", axum::routing::get(ws_handler))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        addr
+    }
+
+    /// Open a socket to `path` and return it once its first `pong` arrives.
+    /// The connection sends that pong from its read loop, which runs after
+    /// the handler has done its activity accounting, so the counts can be
+    /// read as soon as this returns.
+    async fn open_socket_past_handshake(
+        addr: std::net::SocketAddr,
+        path: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let (mut socket, _response) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}{path}"))
+                .await
+                .unwrap();
+        let ping = serde_json::to_string(&ClientMessage::Ping).unwrap();
+        socket.send(WireMessage::text(ping)).await.unwrap();
+        let reply = wait::guarded("a pong on the socket", socket.next())
+            .await
+            .expect("socket closed")
+            .expect("socket error");
+        let expected = serde_json::to_string(&ServerMessage::Pong).unwrap();
+        match reply {
+            WireMessage::Text(text) => assert_eq!(text.as_str(), expected),
+            other @ (WireMessage::Binary(_)
+            | WireMessage::Ping(_)
+            | WireMessage::Pong(_)
+            | WireMessage::Close(_)
+            | WireMessage::Frame(_)) => panic!("expected a text pong, got {other:?}"),
+        }
+        socket
+    }
+
+    /// How many clients the agent counts as connected once a socket opened
+    /// on `path` has answered a ping.
+    async fn connected_clients_after_socket_on(path: &str) -> usize {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let activity = Arc::clone(&state.activity);
+        let addr = serve_ws_handler(state).await;
+        let _socket = open_socket_past_handshake(addr, path).await;
+        activity.connected_clients()
+    }
+
+    #[tokio::test]
+    async fn a_watch_only_socket_does_not_count_as_a_connected_client() {
+        assert_eq!(
+            connected_clients_after_socket_on("/ws?watch_only=true").await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_socket_without_watch_only_counts_as_a_connected_client() {
+        assert_eq!(connected_clients_after_socket_on("/ws").await, 1);
+    }
+
+    #[tokio::test]
+    async fn any_other_watch_only_value_counts_as_a_connected_client() {
+        assert_eq!(
+            connected_clients_after_socket_on("/ws?watch_only=false").await,
+            1
+        );
+        assert_eq!(
+            connected_clients_after_socket_on("/ws?watch_only=yes").await,
+            1
+        );
+    }
+
     async fn next_server_message(
         local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
     ) -> ServerMessage {
@@ -1085,7 +1193,10 @@ mod tests {
     #[tokio::test]
     async fn inbox_add_success_notice_reads_as_plain_language() {
         let dir = tempfile::tempdir().unwrap();
-        let state = make_test_gateway_state(dir.path());
+        // The workspace directory's name is the agent's folder name, which a
+        // mail ref must be able to carry.
+        let workspace = dir.path().join("atlas");
+        let state = make_test_gateway_state(&workspace);
         std::fs::create_dir_all(&state.agent_inbox_dir).unwrap();
         let (local_tx, mut local_rx) = mpsc::unbounded_channel();
         let verbose = AtomicBool::new(false);
@@ -1111,15 +1222,41 @@ mod tests {
             matches!(&msg, ServerMessage::Notice { message, .. } if message == "Added a note to the inbox."),
             "expected a plain-language Notice, got {msg:?}"
         );
+
+        // The note is the user's mail to this agent, so it is a Sent thread.
+        let mailbox =
+            residuum_workspace::inbox::mail::Mailbox::for_workspace(&state.layout, state.tz);
+        let index = residuum_workspace::inbox::mail::MailIndex::load(&mailbox).await;
+        let sent: Vec<_> = index
+            .threads(&residuum_workspace::inbox::mail::ThreadFilter {
+                folder: Some(residuum_workspace::inbox::mail::MailFolder::Sent),
+                agent: None,
+            })
+            .collect();
+        let [thread] = sent.as_slice() else {
+            panic!("one Sent thread for the note, found {}", sent.len());
+        };
+        assert_eq!(thread.subject(), "remember this");
+        assert_eq!(thread.root().to, std::slice::from_ref(&mailbox.agent));
+        let item = residuum_workspace::inbox::load_item(
+            &state
+                .agent_inbox_dir
+                .join(format!("{}.json", thread.root().item_ref.id())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(item.source, "cli", "a terminal note is stored as cli mail");
     }
 
     #[tokio::test]
     async fn inbox_add_failure_keeps_the_cause_out_of_the_message() {
         let dir = tempfile::tempdir().unwrap();
         let state = make_test_gateway_state(dir.path());
-        // `agent_inbox_dir` is never created, so the save underneath
-        // `quick_add` fails and the client should see a plain-language
-        // notice with the cause moved to `details`.
+        // A regular file sits where `agent_inbox_dir` belongs, so claiming an
+        // item id underneath `quick_add` fails and the client should see a
+        // plain-language notice with the cause moved to `details`.
+        std::fs::create_dir_all(dir.path().join("inbox")).unwrap();
+        std::fs::write(dir.path().join("inbox/agent"), b"not a directory").unwrap();
         let (local_tx, mut local_rx) = mpsc::unbounded_channel();
         let verbose = AtomicBool::new(false);
         let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());

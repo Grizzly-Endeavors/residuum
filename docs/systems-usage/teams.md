@@ -69,7 +69,7 @@ Long replies are split into chunks of about 20 KB (Teams rejects larger activiti
 
 ## Attachments
 
-Files shared in a DM or in a message that @mentions the bot are downloaded into the agent inbox (`inbox/agent/`) and noted in the message, with an inbox item alongside; supported images under the inline limit are also shown to the model. Inline images pasted into a chat are fetched with the bot's token.
+Files shared in a DM or in a message that @mentions the bot are downloaded into the attachments directory of an agent inbox item (`inbox/agent/attachments/<item id>/`) and noted in the message, with that item in the agent inbox alongside; supported images under the inline limit are also shown to the model. Inline images pasted into a chat are fetched with the bot's token.
 
 The agent cannot send files over Teams: bots can only deliver files through a consent-card upload flow, which this interface does not implement. When the agent sends a file to Teams, the text goes through with a note giving the file's path, and the file stays available in the web UI.
 

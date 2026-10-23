@@ -13,6 +13,7 @@ use tracing::Instrument as _;
 
 use crate::push::PushService;
 use crate::update::SharedUpdateStatus;
+use crate::uploads::UploadStore;
 use residuum_a2a::SharedA2aKeys;
 use residuum_bus::BusHandle;
 use residuum_checkpoints::SharedCheckpointRepos;
@@ -195,6 +196,9 @@ pub struct HubServices {
     /// The agent host, for agent tools that create or delete teammates. The
     /// host binds itself when it is built.
     pub directory: residuum_background::team::DirectoryHandle,
+    /// The agent host as every agent's mailbox, for the agents' mail-aware
+    /// inbox tools. The host binds itself when it is built.
+    pub mailboxes: residuum_workspace::inbox::mail::MailboxDirectoryHandle,
     /// Web Push: registered devices and delivery. Triggers send through it.
     pub push: Arc<PushService>,
     /// The System 1 (decision model) client every agent shares, with its
@@ -206,6 +210,9 @@ pub struct HubServices {
     /// Remote access over the secure tunnel: its status and actions. The
     /// tunnel task installs the running manager into it.
     pub remote_access: residuum_net::remote_access::slot::RemoteAccessSlot,
+    /// The staged uploads, shared by the hub routes and every send that
+    /// consumes one.
+    pub uploads: UploadStore,
 }
 
 impl HubServices {
@@ -251,6 +258,15 @@ impl HubServices {
         let team_feed = Arc::new(TeamChangeFeed::start(team_paths.root().to_path_buf()).await);
         let directory = residuum_background::team::DirectoryHandle::unbound();
         let remote_access = residuum_net::remote_access::slot::RemoteAccessSlot::new(&hub_dir);
+        let uploads = UploadStore::open(&hub_dir).map_err(|e| {
+            FatalError::Config(format!(
+                "failed to open the upload store under {}: {e}",
+                hub_dir.display()
+            ))
+        })?;
+        if let Err(err) = uploads.prune(chrono::Utc::now()).await {
+            tracing::warn!(error = %err, "failed to prune expired staged uploads at startup");
+        }
         let sibling_fanout = residuum_a2a::SiblingFanout::new_shared();
         residuum_a2a::spawn_sibling_discovery(
             Arc::clone(&sibling_fanout),
@@ -276,8 +292,10 @@ impl HubServices {
             sibling_fanout,
             team_router: residuum_background::team::TeamRouter::new_shared(directory.clone()),
             directory,
+            mailboxes: residuum_workspace::inbox::mail::MailboxDirectoryHandle::unbound(),
             pairing,
             remote_access,
+            uploads,
         })
     }
 

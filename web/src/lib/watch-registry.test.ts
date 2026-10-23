@@ -212,6 +212,28 @@ describe("WatchRegistry connection", () => {
     expect(heard).toEqual(["before", "during"]);
   });
 
+  it("tells an owner that read before any connection watched it about the first one, once", () => {
+    const { registry } = setup();
+    const heard: string[] = [];
+    const owner = (name: string): WatchHandler => ({
+      changed: () => {},
+      reconnected: () => heard.push(name),
+    });
+    registry.register(owner("read first"), { readBeforeWatching: true }).set(["wiki"]);
+    registry.register(owner("plain")).set(["notes"]);
+
+    registry.connected();
+    expect(heard).toEqual(["read first"]);
+
+    // It joins an open connection watched from the start, so that is no reconnect for it.
+    registry.register(owner("joined"), { readBeforeWatching: true }).set(["inbox"]);
+    expect(heard).toEqual(["read first"]);
+
+    registry.disconnected();
+    registry.connected();
+    expect(heard).toEqual(["read first", "read first", "plain", "joined"]);
+  });
+
   it("tells the other owners of a reconnect when one of them throws, then reports it", () => {
     const { registry } = setup();
     const heard: string[] = [];

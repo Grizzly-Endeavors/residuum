@@ -234,6 +234,7 @@ async fn fixture() -> std::io::Result<Fixture> {
         Arc::clone(&hub),
         Arc::clone(&messenger),
         dir.path().join("inbox"),
+        chrono_tz::UTC,
     )
     .await;
     Ok(Fixture {

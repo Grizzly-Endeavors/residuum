@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { INBOX } from "../../lib/routes";
 import {
   configFileAt,
   historyLocation,
   isIdentityFile,
+  panelFileSource,
   parentDir,
   sameSource,
   type FileSource,
@@ -91,5 +93,29 @@ describe("paths and sources", () => {
     expect(sameSource(ATLAS, { agent: "scout", scope: "agent" })).toBe(false);
     expect(sameSource(TEAM, ATLAS)).toBe(false);
     expect(sameSource(null, TEAM)).toBe(false);
+  });
+});
+
+describe("a file panel's source", () => {
+  const unnamed = { kind: "file", path: "a.md", agent: null } as const;
+  const named = { kind: "file", path: "a.md", agent: "atlas" } as const;
+
+  it("is the place's tree when the panel names no agent", () => {
+    expect(panelFileSource({ kind: "chat", agent: "scout" }, unnamed)).toEqual({
+      agent: "scout",
+      scope: "agent",
+    });
+    expect(panelFileSource({ kind: "shared-files" }, unnamed)).toEqual(TEAM);
+    expect(panelFileSource(INBOX, unnamed)).toBeNull();
+  });
+
+  it("is the named agent's workspace whatever the place is", () => {
+    for (const place of [
+      INBOX,
+      { kind: "chat", agent: "scout" },
+      { kind: "shared-files" },
+    ] as const) {
+      expect(panelFileSource(place, named)).toEqual(ATLAS);
+    }
   });
 });

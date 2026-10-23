@@ -1,6 +1,7 @@
 // The primitive controls every surface is built from. They style themselves
 // with tokens only.
 
+export { default as AttachmentChip } from "./AttachmentChip.svelte";
 export { default as Badge } from "./Badge.svelte";
 export { default as Banner } from "./Banner.svelte";
 export { default as Button } from "./Button.svelte";

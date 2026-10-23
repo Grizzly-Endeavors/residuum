@@ -4,12 +4,14 @@ import {
   correctForArtifacts,
   formatLocation,
   HOME,
+  INBOX,
   isAgentName,
   isArtifactName,
   locationAt,
   locationsEqual,
   panelAllowed,
   parseUrl,
+  userInboxRef,
   viewedAgentOf,
   type AppLocation,
   type Panel,
@@ -33,7 +35,7 @@ const session = (agent: string, runId: string): Panel => ({ kind: "session", age
 describe("places", () => {
   it.each<[string, Place]>([
     ["/home", { kind: "home" }],
-    ["/inbox", { kind: "inbox", agent: null, tab: "active", item: null }],
+    ["/inbox", INBOX],
     ["/agent/scout", { kind: "chat", agent: "scout" }],
     ["/agent/scout/activity", { kind: "activity", agent: "scout" }],
     ["/agent/scout/schedule", { kind: "schedule", agent: "scout" }],
@@ -60,7 +62,7 @@ describe("places", () => {
     expect(viewedAgentOf(HOME)).toBeNull();
     expect(viewedAgentOf({ kind: "workbench", artifact: null })).toBeNull();
     expect(viewedAgentOf({ kind: "shared-files" })).toBeNull();
-    expect(viewedAgentOf({ kind: "inbox", agent: "scout", tab: "active", item: null })).toBeNull();
+    expect(viewedAgentOf({ ...INBOX, agent: "scout" })).toBeNull();
   });
 
   it("decodes encoded segments", () => {
@@ -125,29 +127,122 @@ describe("unknown routes", () => {
 });
 
 describe("the inbox parameters", () => {
-  it("reads the agent filter, the archive tab and an open item", () => {
-    expect(read("/inbox?agent=atlas&tab=archived&item=atlas:note-1").location.place).toEqual({
+  it("reads the folder, the agent filter and an open thread", () => {
+    expect(
+      read("/inbox?folder=sent&agent=atlas&thread=atlas%2Fuser%2Fnote-1").location.place,
+    ).toEqual({
       kind: "inbox",
+      folder: "sent",
       agent: "atlas",
-      tab: "archived",
-      item: { agent: "atlas", id: "note-1" },
+      thread: "atlas/user/note-1",
+      compose: null,
     });
   });
 
-  it("keeps an item's id whole when it has colons or needs encoding", () => {
-    const { location, url } = read("/inbox?item=atlas:2026-09-30T10:00:00%20x");
-    expect(location.place).toEqual({
-      kind: "inbox",
-      agent: null,
-      tab: "active",
-      item: { agent: "atlas", id: "2026-09-30T10:00:00 x" },
+  it("leaves the folder out for the inbox and reads each folder", () => {
+    expect(where("/inbox?folder=inbox")).toBe("/inbox");
+    for (const folder of ["sent", "archived"] as const) {
+      expect(read(`/inbox?folder=${folder}`).location.place).toEqual({ ...INBOX, folder });
+      expect(where(`/inbox?folder=${folder}`)).toBe(`/inbox?folder=${folder}`);
+    }
+  });
+
+  it("writes a thread encoded in full and reads it back, encoded or not", () => {
+    const place: Place = { ...INBOX, thread: "scout/agent/2026-09-30T10:00:00 x" };
+    const url = formatLocation(locationAt(place));
+    expect(url).toBe("/inbox?thread=scout%2Fagent%2F2026-09-30T10%3A00%3A00%20x");
+    expect(read(url).location.place).toEqual(place);
+    expect(read("/inbox?thread=atlas/user/a").location.place).toEqual({
+      ...INBOX,
+      thread: "atlas/user/a",
     });
+    expect(where("/inbox?thread=atlas/user/a")).toBe("/inbox?thread=atlas%2Fuser%2Fa");
+  });
+
+  it("keeps the ref of any message in a thread whole", () => {
+    expect(userInboxRef("atlas", "a:b")).toBe("atlas/user/a:b");
+    const { location, url } = read("/inbox?thread=atlas%2Fagent%2Fa%3Ab");
+    expect(location.place).toEqual({ ...INBOX, thread: "atlas/agent/a:b" });
     expect(where(url)).toBe(url);
+  });
+
+  it("reads an open New message with its recipients", () => {
+    const { location, url } = read("/inbox?compose=1&to=atlas,scout");
+    expect(location.place).toEqual({ ...INBOX, compose: { to: ["atlas", "scout"] } });
+    expect(url).toBe("/inbox?compose=1&to=atlas,scout");
+    expect(read("/inbox?compose=1&to=atlas%2Cscout").location.place).toEqual(location.place);
+  });
+
+  it("opens an empty New message, and keeps the list it opened over", () => {
+    expect(read("/inbox?compose=1").location.place).toEqual({ ...INBOX, compose: { to: [] } });
+    expect(where("/inbox?compose=1")).toBe("/inbox?compose=1");
+    expect(where("/inbox?folder=sent&agent=atlas&compose=1&to=scout")).toBe(
+      "/inbox?folder=sent&agent=atlas&compose=1&to=scout",
+    );
+  });
+
+  it("lists each recipient once, and drops names that can't be an agent's", () => {
+    expect(read("/inbox?compose=1&to=atlas,Bad_Name,,scout,atlas,hub").location.place).toEqual({
+      ...INBOX,
+      compose: { to: ["atlas", "scout"] },
+    });
+  });
+
+  it("takes a New message over a thread, and ignores recipients with no New message", () => {
+    expect(where("/inbox?thread=atlas%2Fuser%2Fa&compose=1&to=scout")).toBe(
+      "/inbox?compose=1&to=scout",
+    );
+    expect(where("/inbox?to=atlas")).toBe("/inbox");
+    expect(where("/inbox?compose=yes&to=atlas")).toBe("/inbox");
+    const both: Place = { ...INBOX, thread: "atlas/user/a", compose: { to: ["scout"] } };
+    expect(formatLocation(locationAt(both))).toBe("/inbox?compose=1&to=scout");
+  });
+
+  it("reads the old links: the archive tab and an item are a folder and a thread", () => {
+    expect(read("/inbox?agent=atlas&tab=archived&item=atlas:note-1").location.place).toEqual({
+      kind: "inbox",
+      folder: "archived",
+      agent: "atlas",
+      thread: "atlas/user/note-1",
+      compose: null,
+    });
+    expect(where("/inbox?agent=atlas&tab=archived&item=atlas:note-1")).toBe(
+      "/inbox?folder=archived&agent=atlas&thread=atlas%2Fuser%2Fnote-1",
+    );
+    expect(where("/inbox?tab=active")).toBe("/inbox");
+  });
+
+  it("keeps an old item's id whole when it has colons or needs encoding", () => {
+    const { location, url } = read("/inbox?item=atlas:2026-09-30T10:00:00%20x");
+    expect(location.place).toEqual({ ...INBOX, thread: "atlas/user/2026-09-30T10:00:00 x" });
+    expect(where(url)).toBe(url);
+  });
+
+  it("prefers the current parameters to the old ones", () => {
+    expect(
+      read("/inbox?folder=sent&tab=archived&thread=scout%2Fagent%2Fb&item=atlas:a").location.place,
+    ).toEqual({ ...INBOX, folder: "sent", thread: "scout/agent/b" });
+    expect(read("/inbox?thread=nonsense&item=atlas:a").location.place).toEqual({
+      ...INBOX,
+      thread: "atlas/user/a",
+    });
   });
 
   it("removes a parameter that can't be read", () => {
     expect(where("/inbox?agent=Bad_Name")).toBe("/inbox");
+    expect(where("/inbox?folder=other")).toBe("/inbox");
     expect(where("/inbox?tab=other")).toBe("/inbox");
+    for (const thread of [
+      "",
+      "nonsense",
+      "atlas%2Fuser",
+      "atlas%2Fuser%2F",
+      "atlas%2Fother%2Fa",
+      "Bad_Name%2Fuser%2Fa",
+      "atlas%2Fuser%2Fa%2Fb",
+    ]) {
+      expect(where(`/inbox?thread=${thread}`)).toBe("/inbox");
+    }
     expect(where("/inbox?item=nocolon")).toBe("/inbox");
     expect(where("/inbox?item=:id")).toBe("/inbox");
     expect(where("/inbox?item=atlas:")).toBe("/inbox");
@@ -155,13 +250,19 @@ describe("the inbox parameters", () => {
   });
 
   it("writes the parameters in a fixed order", () => {
-    const place: Place = {
-      kind: "inbox",
+    const thread: Place = {
+      ...INBOX,
+      folder: "archived",
       agent: "atlas",
-      tab: "archived",
-      item: { agent: "scout", id: "x" },
+      thread: "scout/user/x",
     };
-    expect(formatLocation(locationAt(place))).toBe("/inbox?agent=atlas&tab=archived&item=scout:x");
+    expect(formatLocation(locationAt(thread))).toBe(
+      "/inbox?folder=archived&agent=atlas&thread=scout%2Fuser%2Fx",
+    );
+    const compose: Place = { ...INBOX, folder: "sent", agent: "atlas", compose: { to: ["scout"] } };
+    expect(formatLocation(locationAt(compose))).toBe(
+      "/inbox?folder=sent&agent=atlas&compose=1&to=scout",
+    );
   });
 });
 
@@ -173,9 +274,24 @@ describe("the panel parameter", () => {
     ["/agent/scout/files?panel=session:scout:run-1", session("scout", "run-1")],
     ["/team/workbench?panel=session:atlas:run-2", session("atlas", "run-2")],
     ["/team/workbench/tip-splitter?panel=session:atlas:run-2", session("atlas", "run-2")],
-    ["/agent/scout?panel=file:SOUL.md", { kind: "file", path: "SOUL.md" }],
-    ["/agent/scout/files?panel=file:team/USER.md", { kind: "file", path: "team/USER.md" }],
-    ["/team/files?panel=file:notes/plan.md", { kind: "file", path: "notes/plan.md" }],
+    ["/agent/scout?panel=file:SOUL.md", { kind: "file", path: "SOUL.md", agent: null }],
+    [
+      "/agent/scout/files?panel=file:team/USER.md",
+      { kind: "file", path: "team/USER.md", agent: null },
+    ],
+    ["/team/files?panel=file:notes/plan.md", { kind: "file", path: "notes/plan.md", agent: null }],
+    [
+      "/agent/scout?panel=agent-file:atlas:SOUL.md",
+      { kind: "file", path: "SOUL.md", agent: "atlas" },
+    ],
+    [
+      "/team/files?panel=agent-file:atlas:files/a:b.md",
+      { kind: "file", path: "files/a:b.md", agent: "atlas" },
+    ],
+    [
+      "/inbox?panel=agent-file:atlas:inbox/user/20260314/report.md",
+      { kind: "file", path: "inbox/user/20260314/report.md", agent: "atlas" },
+    ],
     ["/agent/scout?panel=size", { kind: "size" }],
     ["/agent/scout/files?panel=size", { kind: "size" }],
     ["/agent/scout/activity?panel=new-session:scout", { kind: "new-session", agent: "scout" }],
@@ -204,6 +320,9 @@ describe("the panel parameter", () => {
       "/team/files?panel=session:scout:run-1",
       "/team/workbench?panel=new-session:scout",
       "/home?panel=new-session:scout",
+      "/home?panel=agent-file:atlas:a.md",
+      "/team/workbench?panel=agent-file:atlas:a.md",
+      "/inbox?panel=file:a.md",
       "/agent/scout?panel=file:",
     ]) {
       expect(read(url).location.panel).toBeNull();
@@ -224,6 +343,11 @@ describe("the panel parameter", () => {
       "session:Bad_Name:run-1",
       "size:extra",
       "file",
+      "agent-file",
+      "agent-file:atlas",
+      "agent-file:atlas:",
+      "agent-file::a.md",
+      "agent-file:Bad_Name:a.md",
       "new-session",
       "new-session:",
       "new-session:Bad_Name",
@@ -234,7 +358,7 @@ describe("the panel parameter", () => {
 
   it("decodes an encoded value and writes the separators readably", () => {
     const { location, url } = read("/agent/scout/files?panel=file%3Anotes%2Fmy%20plan.md");
-    expect(location.panel).toEqual({ kind: "file", path: "notes/my plan.md" });
+    expect(location.panel).toEqual({ kind: "file", path: "notes/my plan.md", agent: null });
     expect(url).toBe("/agent/scout/files?panel=file:notes/my%20plan.md");
     expect(where(url)).toBe(url);
   });
@@ -256,8 +380,23 @@ describe("the panel parameter", () => {
       panelAllowed({ kind: "workbench", artifact: null }, { kind: "new-session", agent: "atlas" }),
     ).toBe(false);
     expect(panelAllowed(HOME, { kind: "size" })).toBe(false);
-    expect(panelAllowed({ kind: "shared-files" }, { kind: "file", path: "a" })).toBe(true);
+    expect(panelAllowed({ kind: "shared-files" }, { kind: "file", path: "a", agent: null })).toBe(
+      true,
+    );
     expect(panelAllowed({ kind: "shared-files" }, { kind: "size" })).toBe(false);
+  });
+
+  it("shows a file that names its agent on the Inbox, and one that doesn't only where it has a tree", () => {
+    const named: Panel = { kind: "file", path: "a.md", agent: "atlas" };
+    const unnamed: Panel = { kind: "file", path: "a.md", agent: null };
+    expect(panelAllowed(INBOX, named)).toBe(true);
+    expect(panelAllowed({ ...INBOX, thread: "atlas/user/a" }, named)).toBe(true);
+    expect(panelAllowed(INBOX, unnamed)).toBe(false);
+    expect(panelAllowed(HOME, named)).toBe(false);
+    expect(panelAllowed({ kind: "workbench", artifact: null }, named)).toBe(false);
+    expect(panelAllowed({ kind: "chat", agent: "scout" }, named)).toBe(true);
+    expect(panelAllowed({ kind: "shared-files" }, named)).toBe(true);
+    expect(panelAllowed(INBOX, { kind: "size" })).toBe(false);
   });
 });
 
@@ -479,12 +618,69 @@ describe("corrections for agents that don't exist", () => {
     ]);
   });
 
-  it("removes an inbox filter or item for an agent that doesn't exist", () => {
-    expect(correct("/inbox?agent=ghost&item=phantom:1")).toEqual({
+  it("removes an inbox filter for an agent that doesn't exist, keeping the thread", () => {
+    expect(correct("/inbox?agent=ghost&thread=atlas%2Fuser%2F1")).toEqual({
+      url: "/inbox?thread=atlas%2Fuser%2F1",
+      notices: [`There's no agent named "ghost".`],
+    });
+    expect(correct("/inbox?agent=atlas&thread=atlas%2Fuser%2F1").url).toBe(
+      "/inbox?agent=atlas&thread=atlas%2Fuser%2F1",
+    );
+  });
+
+  it("closes a thread whose ref names an agent that doesn't exist, keeping the list", () => {
+    expect(correct("/inbox?folder=archived&agent=atlas&thread=ghost%2Fuser%2F1")).toEqual({
+      url: "/inbox?folder=archived&agent=atlas",
+      notices: [`There's no agent named "ghost".`],
+    });
+    expect(correct("/inbox?item=ghost:1")).toEqual({
       url: "/inbox",
+      notices: [`There's no agent named "ghost".`],
+    });
+    expect(correct("/inbox?thread=scout%2Fagent%2F1").url).toBe("/inbox?thread=scout%2Fagent%2F1");
+  });
+
+  it("names a missing agent once across the filter and the thread", () => {
+    expect(correct("/inbox?agent=ghost&thread=ghost%2Fuser%2F1").notices).toEqual([
+      `There's no agent named "ghost".`,
+    ]);
+  });
+
+  it("removes the recipients of a New message that don't exist", () => {
+    expect(correct("/inbox?folder=sent&compose=1&to=atlas,ghost,phantom")).toEqual({
+      url: "/inbox?folder=sent&compose=1&to=atlas",
       notices: [`There's no agent named "ghost".`, `There's no agent named "phantom".`],
     });
-    expect(correct("/inbox?agent=atlas&item=atlas:1").url).toBe("/inbox?agent=atlas&item=atlas:1");
+    expect(correct("/inbox?compose=1&to=ghost")).toEqual({
+      url: "/inbox?compose=1",
+      notices: [`There's no agent named "ghost".`],
+    });
+    expect(correct("/inbox?compose=1&to=atlas,scout").url).toBe("/inbox?compose=1&to=atlas,scout");
+  });
+
+  it("names a missing agent once across the filter and the recipients", () => {
+    expect(correct("/inbox?agent=ghost&compose=1&to=ghost,atlas")).toEqual({
+      url: "/inbox?compose=1&to=atlas",
+      notices: [`There's no agent named "ghost".`],
+    });
+  });
+
+  it("removes a file panel that names an agent that doesn't exist", () => {
+    expect(correct("/inbox?panel=agent-file:ghost:a.md")).toEqual({
+      url: "/inbox",
+      notices: [`There's no agent named "ghost".`],
+    });
+    expect(correct("/inbox?panel=agent-file:atlas:a.md").url).toBe(
+      "/inbox?panel=agent-file:atlas:a.md",
+    );
+    expect(correct("/agent/scout?panel=file:a.md").url).toBe("/agent/scout?panel=file:a.md");
+  });
+
+  it("removes a file panel that its place can no longer show", () => {
+    expect(correct("/agent/ghost?panel=agent-file:atlas:a.md")).toEqual({
+      url: "/home",
+      notices: [`There's no agent named "ghost".`],
+    });
   });
 
   it("removes a session panel for an agent that doesn't exist", () => {
@@ -525,16 +721,18 @@ describe("corrections for artifacts that don't exist", () => {
 describe("formatting", () => {
   const locations: AppLocation[] = [
     locationAt(HOME),
-    locationAt({
-      kind: "inbox",
-      agent: "atlas",
-      tab: "archived",
-      item: { agent: "scout", id: "a:b c" },
-    }),
+    locationAt({ ...INBOX, folder: "archived", agent: "atlas", thread: "scout/user/a:b c" }),
+    locationAt({ ...INBOX, folder: "sent", compose: { to: ["atlas", "scout"] } }),
+    locationAt({ ...INBOX, compose: { to: [] } }),
+    {
+      place: { ...INBOX, thread: "atlas/agent/20260314-a b" },
+      panel: { kind: "file", path: "inbox/user/a b/report v2.md", agent: "atlas" },
+      settings: null,
+    },
     locationAt({ kind: "chat", agent: "scout" }),
     {
       place: { kind: "files", agent: "scout" },
-      panel: { kind: "file", path: "a b/c?d&e.md" },
+      panel: { kind: "file", path: "a b/c?d&e.md", agent: null },
       settings: null,
     },
     {
@@ -552,7 +750,11 @@ describe("formatting", () => {
       panel: session("atlas", "r"),
       settings: { scope: "_all", section: "raw" },
     },
-    { place: { kind: "shared-files" }, panel: { kind: "file", path: "x.md" }, settings: null },
+    {
+      place: { kind: "shared-files" },
+      panel: { kind: "file", path: "x.md", agent: null },
+      settings: null,
+    },
   ];
 
   it.each(locations.map((location) => [formatLocation(location), location] as const))(

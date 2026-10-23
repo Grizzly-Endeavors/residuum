@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use residuum_bus::origin::{ConversationContext, MessageOrigin};
 use residuum_inference::{ImageData, MessageSender};
 use residuum_workspace::inbox::attachment::{
-    AttachmentInfo, finalize_attachment, format_failed_attachment_line, save_attachment_bytes,
+    AttachmentInfo, AttachmentKind, format_failed_attachment_line, reserve_attachment_item,
 };
 
 use super::TeamsRuntime;
@@ -469,27 +469,35 @@ async fn collect_attachments(
                 .map_or(0, |b| u32::try_from(b.len()).unwrap_or(u32::MAX)),
             content_type,
         };
+        let item = match reserve_attachment_item(
+            &rt.inbox_dir,
+            &info,
+            "Teams",
+            AttachmentKind::Attachment,
+            rt.tz,
+        )
+        .await
+        {
+            Ok(item) => item,
+            Err(reason) => {
+                tracing::warn!(filename = %info.filename, error = %reason, "failed to reserve inbox item for teams attachment");
+                content.push('\n');
+                content.push_str(&format_failed_attachment_line(&info, &reason));
+                continue;
+            }
+        };
         let saved = match bytes {
-            Ok(bytes) => save_attachment_bytes(&info, &bytes, &rt.inbox_dir).await,
+            Ok(bytes) => item.save_bytes(&info, &bytes).await,
             Err(e) => Err(e),
         };
         match saved {
             Ok(saved) => {
-                if let Some(image) = finalize_attachment(
-                    &saved,
-                    &info,
-                    content,
-                    sender_name,
-                    &rt.inbox_dir,
-                    rt.tz,
-                    "Teams",
-                )
-                .await
-                {
+                if let Some(image) = item.finalize(&saved, &info, content, sender_name).await {
                     images.push(image);
                 }
             }
             Err(reason) => {
+                item.discard().await;
                 tracing::warn!(filename = %info.filename, error = %reason, "failed to download teams attachment");
                 content.push('\n');
                 content.push_str(&format_failed_attachment_line(&info, &reason));

@@ -27,7 +27,7 @@ use super::types::{
 use super::{disk, outbound, upcoming};
 use crate::AgentDirectory;
 use crate::agent_watch::MainTurnEnded;
-use crate::inbox::count_unread;
+use crate::mail::count_unread;
 use residuum_background::team::AgentState;
 use residuum_core::time::format_rfc3339;
 use residuum_memory::types::Visibility;

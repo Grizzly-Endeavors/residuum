@@ -106,25 +106,10 @@ fn encodings(value: &str) -> Vec<String> {
         STANDARD_NO_PAD.encode(bytes),
         URL_SAFE.encode(bytes),
         URL_SAFE_NO_PAD.encode(bytes),
-        percent_encode(bytes),
+        residuum_core::util::percent_encode_unreserved(bytes),
     ] {
         if !out.contains(&encoded) {
             out.push(encoded);
-        }
-    }
-    out
-}
-
-/// RFC 3986 percent-encoding: every byte outside the unreserved set becomes
-/// `%XX`.
-fn percent_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len());
-    for &b in bytes {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(char::from(b));
-        } else {
-            _ = write!(out, "%{b:02X}");
         }
     }
     out

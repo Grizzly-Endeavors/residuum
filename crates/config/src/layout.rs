@@ -155,10 +155,24 @@ impl WorkspaceLayout {
         self.root.join("inbox/user")
     }
 
+    /// Path to the directory holding copied attachment files for agent inbox items,
+    /// one subdirectory per item ID.
+    #[must_use]
+    pub fn agent_inbox_attachments_dir(&self) -> PathBuf {
+        self.root.join("inbox/agent/attachments")
+    }
+
     /// Path to the agent inbox archive directory.
     #[must_use]
     pub fn agent_inbox_archive_dir(&self) -> PathBuf {
         self.root.join("archive/inbox/agent")
+    }
+
+    /// Path to the archived counterpart of `agent_inbox_attachments_dir` — where an
+    /// item's attachment subdirectory moves to when the item itself is archived.
+    #[must_use]
+    pub fn agent_inbox_archive_attachments_dir(&self) -> PathBuf {
+        self.root.join("archive/inbox/agent/attachments")
     }
 
     /// Path to the user inbox archive directory.
@@ -329,6 +343,7 @@ impl WorkspaceLayout {
             self.user_inbox_dir(),
             self.agent_inbox_archive_dir(),
             self.user_inbox_archive_dir(),
+            self.agent_inbox_attachments_dir(),
             self.user_inbox_attachments_dir(),
             self.config_dir(),
             self.a2a_dir(),
@@ -382,6 +397,16 @@ mod tests {
             layout.user_inbox_archive_dir(),
             PathBuf::from("/tmp/ws/archive/inbox/user"),
             "user_inbox_archive_dir path"
+        );
+        assert_eq!(
+            layout.agent_inbox_attachments_dir(),
+            PathBuf::from("/tmp/ws/inbox/agent/attachments"),
+            "agent_inbox_attachments_dir path"
+        );
+        assert_eq!(
+            layout.agent_inbox_archive_attachments_dir(),
+            PathBuf::from("/tmp/ws/archive/inbox/agent/attachments"),
+            "agent_inbox_archive_attachments_dir path"
         );
         assert_eq!(
             layout.user_inbox_attachments_dir(),

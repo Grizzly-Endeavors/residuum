@@ -104,7 +104,7 @@ pub struct PushPayload {
     pub title: String,
     /// Plain text, at most 120 characters.
     pub body: String,
-    /// The app path a click opens, such as `/inbox?item=scout:note-1`.
+    /// The app path a click opens, such as `/inbox?thread=scout%2Fuser%2Fnote-1`.
     pub target: String,
     /// Notifications with the same tag replace each other.
     pub tag: String,
@@ -523,7 +523,7 @@ mod tests {
             "scout",
             "Weekly digest",
             "From scout: three new papers",
-            "/inbox?item=scout:digest-1",
+            "/inbox?thread=scout%2Fuser%2Fnote-1",
             "inbox:scout:digest-1",
             4,
         );
@@ -535,7 +535,7 @@ mod tests {
                 "agent": "scout",
                 "title": "Weekly digest",
                 "body": "From scout: three new papers",
-                "target": "/inbox?item=scout:digest-1",
+                "target": "/inbox?thread=scout%2Fuser%2Fnote-1",
                 "tag": "inbox:scout:digest-1",
                 "badge": 4,
             })

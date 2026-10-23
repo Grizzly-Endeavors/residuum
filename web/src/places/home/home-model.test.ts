@@ -228,9 +228,10 @@ describe("team events", () => {
     });
     expect(eventLocation({ kind: "inbox_item", agent: "atlas", item_id: "i1" }).place).toEqual({
       kind: "inbox",
+      folder: "inbox",
       agent: null,
-      tab: "active",
-      item: { agent: "atlas", id: "i1" },
+      thread: "atlas/user/i1",
+      compose: null,
     });
   });
 

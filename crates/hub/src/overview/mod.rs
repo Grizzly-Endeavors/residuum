@@ -19,7 +19,7 @@ mod tracker;
 pub mod types;
 pub mod upcoming;
 
-pub use preview::{PREVIEW_CHARS, plain_preview};
+pub use preview::{PREVIEW_CHARS, plain_preview, plain_preview_within};
 pub use service::{COALESCE_WINDOW, TeamOverview};
 pub use tracker::OverviewTracker;
 pub use types::{

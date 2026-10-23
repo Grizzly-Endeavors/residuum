@@ -14,7 +14,7 @@ import type {
   LogLine,
 } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
-import type { RecentMessage, UserInboxItem, WorkspaceEntry } from "../src/lib/types";
+import type { RecentMessage, WorkspaceEntry } from "../src/lib/types";
 import { loadAsset } from "./assets";
 import { seedCheckpoints, type MockCheckpoints } from "./checkpoints";
 import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
@@ -44,13 +44,54 @@ export interface MockA2aKey {
   created_at: string;
 }
 
-/** An item in an agent's own inbox, which a workbench artifact can add to. */
+/** A file attached to an item an agent sent the user. `url` is filled in when the item is listed. */
+export interface UserInboxAttachment {
+  filename: string;
+  mime_type: string;
+  size: number;
+  url: string;
+}
+
+/** An item an agent sent the user, as the mock keeps it in `inboxItems` or `inboxArchive`. */
+export interface UserInboxItem {
+  id: string;
+  title: string;
+  body: string;
+  source: string;
+  timestamp: string;
+  read: boolean;
+  attachments: UserInboxAttachment[];
+  /** The ref (`<agent>/<user|agent>/<id>`) of the message this one answers; absent for a message that starts a thread. */
+  in_reply_to?: string;
+}
+
+/**
+ * An item in an agent's own inbox. A workbench artifact adds items with
+ * `source` `artifact:<name>`; a message the user sends is a copy with source
+ * `web` or `cli`, and the fields after `timestamp` are the ones such a
+ * message uses.
+ */
 export interface MockAgentInboxItem {
   id: string;
   title: string;
   body: string;
   source: string;
   timestamp: string;
+  /** The ref (`<agent>/<user|agent>/<id>`) of the message this one answers. */
+  in_reply_to?: string;
+  /** The files sent with it, which the agent's attachment route serves. */
+  attachments?: UserInboxAttachment[];
+  /** Whether the agent has read it; unread when absent. */
+  read?: boolean;
+  /** Whether the agent has archived it. */
+  archived?: boolean;
+}
+
+/** A file a client staged with `POST /api/hub/uploads`, waiting for the message that names it. */
+export interface MockUpload {
+  id: string;
+  filename: string;
+  bytes: Buffer;
 }
 
 export interface MockState {
@@ -73,8 +114,12 @@ export interface MockState {
   inboxItems: UserInboxItem[];
   /** The items the user archived, which `restore` brings back to `inboxItems`. */
   inboxArchive: UserInboxItem[];
-  /** What a workbench artifact added to the agent's own inbox (`POST /api/agent-inbox`), oldest first. */
+  /** What a workbench artifact added to the agent's own inbox (`POST /api/agent-inbox`), and the messages the user sent it, oldest first. */
   agentInbox: MockAgentInboxItem[];
+  /** The bytes of attachments that are not text, by workspace path (`inbox/<user|agent>/attachments/<id>/<file>`). Text attachments are workspace files. */
+  attachmentBytes: Map<string, Buffer>;
+  /** The files staged for a message, by upload id. Only the hub's state holds any. */
+  uploads: Map<string, MockUpload>;
   /** The pulses and scheduled actions the Scheduled view lists. */
   scheduled: MockScheduled;
   /** What the hub knows about updates, for the update routes. */
@@ -163,6 +208,8 @@ export interface MockAgent {
   state: MockState;
   /** How many web clients have this agent's WebSocket open. Set by the agent socket. */
   connectedClients: () => number;
+  /** The workspace prefixes the agent's open sockets watch, merged and sorted. Set by the agent socket. */
+  watchedPrefixes: () => string[];
   /** Have the main conversation take a message another channel brought, as a turn from that channel. Set by the agent socket. */
   receiveMessage: (content: string, source: { endpoint: string; sender?: MessageSender }) => void;
   /** Close the agent's WebSocket route and its connections. Set by the agent socket. */
@@ -371,6 +418,8 @@ export function createState(
     inboxItems: [],
     inboxArchive: [],
     agentInbox: [],
+    attachmentBytes: new Map(),
+    uploads: new Map(),
     scheduled: { pulses: [], actions: [], fires: [], lastFires: {} },
     update: { latest: null, lastChecked: null },
     cloud: { tunnel: null, viaTunnel: false, signIns: [], signInsStarted: 0 },

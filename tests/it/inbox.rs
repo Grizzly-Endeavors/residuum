@@ -20,9 +20,9 @@ use chrono::NaiveDate;
 use tempfile::tempdir;
 
 use residuum::inbox::{
-    self, InboxItem, archive_item, count_unread, generate_filename, list_items, load_item,
-    mark_read, quick_add, save_item,
+    self, InboxItem, archive_item, generate_filename, list_items, load_item, mark_read, quick_add,
 };
+use residuum_workspace::testing::save_item_for_tests;
 
 fn make_item(title: &str, read: bool) -> InboxItem {
     InboxItem {
@@ -35,6 +35,7 @@ fn make_item(title: &str, read: bool) -> InboxItem {
             .unwrap(),
         read,
         attachments: Vec::new(),
+        in_reply_to: None,
     }
 }
 
@@ -49,6 +50,7 @@ fn make_item_at(title: &str, hour: u32, read: bool) -> InboxItem {
             .unwrap(),
         read,
         attachments: Vec::new(),
+        in_reply_to: None,
     }
 }
 
@@ -63,7 +65,7 @@ async fn full_lifecycle_add_list_read_archive() {
 
     // Add
     let filename = "20260225_lifecycle_test.json";
-    save_item(&inbox_dir, filename, &make_item("lifecycle test", false))
+    save_item_for_tests(&inbox_dir, filename, &make_item("lifecycle test", false))
         .await
         .unwrap();
 
@@ -95,38 +97,6 @@ async fn full_lifecycle_add_list_read_archive() {
     assert!(remaining.is_empty(), "inbox should be empty after archive");
 }
 
-// ── count_unread correctness ─────────────────────────────────────────────
-
-#[tokio::test]
-async fn count_unread_correctness() {
-    let dir = tempdir().unwrap();
-    let inbox_dir = dir.path();
-
-    assert_eq!(count_unread(inbox_dir).await, 0, "empty dir = 0");
-
-    save_item(inbox_dir, "a.json", &make_item("a", false))
-        .await
-        .unwrap();
-    save_item(inbox_dir, "b.json", &make_item("b", false))
-        .await
-        .unwrap();
-    save_item(inbox_dir, "c.json", &make_item("c", true))
-        .await
-        .unwrap();
-
-    assert_eq!(count_unread(inbox_dir).await, 2, "2 unread, 1 read");
-
-    mark_read(inbox_dir, "a").await.unwrap();
-    assert_eq!(count_unread(inbox_dir).await, 1, "1 unread after marking a");
-
-    mark_read(inbox_dir, "b").await.unwrap();
-    assert_eq!(
-        count_unread(inbox_dir).await,
-        0,
-        "0 unread after marking all"
-    );
-}
-
 // ── list_items ignores archive and non-JSON ──────────────────────────────
 
 #[tokio::test]
@@ -136,7 +106,7 @@ async fn list_items_ignores_archive_and_non_json() {
     tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
     // Valid inbox item
-    save_item(&inbox_dir, "valid.json", &make_item("valid", false))
+    save_item_for_tests(&inbox_dir, "valid.json", &make_item("valid", false))
         .await
         .unwrap();
 
@@ -151,7 +121,7 @@ async fn list_items_ignores_archive_and_non_json() {
     // Archive subdirectory with JSON
     let archive = inbox_dir.join("archive");
     tokio::fs::create_dir_all(&archive).await.unwrap();
-    save_item(&archive, "archived.json", &make_item("archived", false))
+    save_item_for_tests(&archive, "archived.json", &make_item("archived", false))
         .await
         .unwrap();
 
@@ -167,7 +137,7 @@ async fn attachments_roundtrip_empty() {
     let dir = tempdir().unwrap();
     let inbox_dir = dir.path();
 
-    save_item(inbox_dir, "empty.json", &make_item("no attach", false))
+    save_item_for_tests(inbox_dir, "empty.json", &make_item("no attach", false))
         .await
         .unwrap();
     let loaded = load_item(&inbox_dir.join("empty.json")).await.unwrap();
@@ -188,7 +158,7 @@ async fn attachments_roundtrip_populated() {
         PathBuf::from("inbox/photo.jpg"),
         PathBuf::from("inbox/doc.pdf"),
     ];
-    save_item(inbox_dir, "with.json", &with_attach)
+    save_item_for_tests(inbox_dir, "with.json", &with_attach)
         .await
         .unwrap();
     let loaded = load_item(&inbox_dir.join("with.json")).await.unwrap();
@@ -270,13 +240,13 @@ async fn list_items_sorted_newest_first() {
     let dir = tempdir().unwrap();
     let inbox_dir = dir.path();
 
-    save_item(inbox_dir, "early.json", &make_item_at("early", 8, false))
+    save_item_for_tests(inbox_dir, "early.json", &make_item_at("early", 8, false))
         .await
         .unwrap();
-    save_item(inbox_dir, "late.json", &make_item_at("late", 20, false))
+    save_item_for_tests(inbox_dir, "late.json", &make_item_at("late", 20, false))
         .await
         .unwrap();
-    save_item(inbox_dir, "mid.json", &make_item_at("mid", 14, false))
+    save_item_for_tests(inbox_dir, "mid.json", &make_item_at("mid", 14, false))
         .await
         .unwrap();
 
@@ -323,8 +293,9 @@ async fn companion_inbox_item_structure() {
             .unwrap(),
         read: false,
         attachments: vec![PathBuf::from("inbox/20260225_150000_photo.jpg")],
+        in_reply_to: None,
     };
-    save_item(inbox_dir, "companion.json", &companion)
+    save_item_for_tests(inbox_dir, "companion.json", &companion)
         .await
         .unwrap();
 

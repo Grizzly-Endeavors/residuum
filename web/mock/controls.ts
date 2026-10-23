@@ -309,6 +309,20 @@ function connectedPages({ res, hub, query }: RouteContext): void {
 }
 
 /**
+ * `GET ?agent=name`: the workspace paths the agent's sockets watch right now,
+ * merged and sorted, as `{ prefixes }`. A test that changes a file waits for
+ * its path to be here, so the change reaches a page that is already watching.
+ */
+function watchedPrefixes({ res, hub, query }: RouteContext): void {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (agent === undefined) {
+    json(res, 404, { error: "mock: no such agent" });
+    return;
+  }
+  json(res, 200, { prefixes: agent.watchedPrefixes() });
+}
+
+/**
  * `{ path, content }`: an agent writes the team file at `path` (`team/workbench/tip-splitter.html`),
  * or removes it, folders included, when `content` is `null`. The mock's files change and its sockets
  * send what the real system would (see `changeTeamFile`); the answer says what was sent.
@@ -432,4 +446,5 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/time/step", handler: stepTime },
   { method: "POST", pattern: "/api/mock/turn-hold", handler: holdTurns },
   { method: "GET", pattern: "/api/mock/connected-pages", handler: connectedPages },
+  { method: "GET", pattern: "/api/mock/watches", handler: watchedPrefixes },
 ];

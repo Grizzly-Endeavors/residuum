@@ -418,7 +418,12 @@ mod tests {
     #[test]
     fn validate_agent_toml_resolves_secrets_from_hub_store() {
         let dir = tempfile::tempdir().unwrap();
-        let hub = test_hub();
+        // Its own hub dir: the secret store written here must not be read by
+        // other tests that share `test_hub()`'s directory.
+        let hub = HubConfig {
+            config_dir: dir.path().join("hub"),
+            ..test_hub()
+        };
         std::fs::create_dir_all(&hub.config_dir).unwrap();
         let mut store = super::super::secrets::SecretStore::load(&hub.config_dir).unwrap();
         store

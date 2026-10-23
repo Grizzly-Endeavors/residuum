@@ -66,7 +66,7 @@
   function openCardFile(): void {
     void router.openPlace(
       { kind: "files", agent },
-      { panel: { kind: "file", path: "config/agent-card.json" } },
+      { panel: { kind: "file", path: "config/agent-card.json", agent: null } },
     );
   }
 </script>

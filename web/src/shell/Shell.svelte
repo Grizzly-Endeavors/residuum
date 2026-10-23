@@ -4,7 +4,6 @@
   import { showAppBadge } from "../lib/app-badge";
   import { hub } from "../lib/hub.svelte";
   import { LazyComponent } from "../lib/lazy-component.svelte";
-  import { notifications } from "../lib/notifications.svelte";
   import { overview } from "../lib/overview.svelte";
   import { remoteAccess } from "../lib/remote-access.svelte";
   import { router } from "../lib/router.svelte";
@@ -26,7 +25,6 @@
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import FeedbackDialog from "./FeedbackDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
-  import InboxNoteDialog from "./InboxNoteDialog.svelte";
   import InstallHelpDialog from "./InstallHelpDialog.svelte";
   import PanelHost from "./panel/PanelHost.svelte";
   import PlaceHost from "./PlaceHost.svelte";
@@ -61,7 +59,6 @@
   let feedbackOpen = $state(false);
   let feedbackTab = $state<FeedbackTab>("bug");
   let paletteOpen = $state(false);
-  let inboxNoteAgent = $state<string | null>(null);
   let createOpen = $state(false);
   let sideRail = $state<HTMLElement>();
 
@@ -114,25 +111,12 @@
       drawerOpen = false;
       createOpen = true;
     },
-    addInboxNote: (agent) => {
-      inboxNoteAgent = agent;
-    },
   };
 
   /** A new agent's rail row takes focus, where the rail shows beside the main region (not on phones). */
   async function focusCreatedAgent(name: string): Promise<void> {
     await tick();
     sideRail?.querySelector<HTMLElement>(`[data-rail-agent="${CSS.escape(name)}"]`)?.focus();
-  }
-
-  function addInboxNote(text: string): void {
-    inboxNoteAgent = null;
-    const action = actionRegistry.all.find((candidate) => candidate.id === "chat:inbox");
-    if (action?.disabled !== undefined) {
-      notifications.surface("error", `Couldn't add the note: ${action.disabled}.`);
-    } else if (action !== undefined) {
-      void actionRegistry.run(action, text);
-    }
   }
 
   // Whatever an action opens or wherever it goes, the drawer it may have been
@@ -237,11 +221,6 @@
 />
 <InstallHelpDialog bind:open={installHelp.open} />
 <FeedbackDialog bind:open={feedbackOpen} bind:tab={feedbackTab} />
-<InboxNoteDialog
-  agent={inboxNoteAgent}
-  onadd={addInboxNote}
-  onclose={() => (inboxNoteAgent = null)}
-/>
 <ConfirmHost />
 
 <style>

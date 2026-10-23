@@ -435,6 +435,21 @@ fn build_harness_runtime(
     ))
 }
 
+async fn load_harness_tracker(
+    layout: &WorkspaceLayout,
+    a2a_hub: &Arc<residuum::a2a::A2aClientHub>,
+    messenger: &Arc<AgentMessenger>,
+) -> Arc<residuum::a2a::RemoteTaskTracker> {
+    residuum::a2a::RemoteTaskTracker::load(
+        layout.a2a_outbound_json(),
+        Arc::clone(a2a_hub),
+        Arc::clone(messenger),
+        layout.agent_inbox_dir(),
+        chrono_tz::UTC,
+    )
+    .await
+}
+
 async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let (tempdir, workspace_dir, layout, skill_state) = setup_workspace(&opts).await;
 
@@ -488,13 +503,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     );
 
     let a2a_hub = residuum::a2a::A2aClientHub::new_shared();
-    let a2a_tracker = residuum::a2a::RemoteTaskTracker::load(
-        layout.a2a_outbound_json(),
-        Arc::clone(&a2a_hub),
-        Arc::clone(&messenger),
-        layout.agent_inbox_dir(),
-    )
-    .await;
+    let a2a_tracker = load_harness_tracker(&layout, &a2a_hub, &messenger).await;
 
     let (queue, seen, model_gate) = start_scripted_sessions(
         Arc::clone(&runtime),
@@ -633,6 +642,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         build: residuum_core::testing::HARNESS_BUILD,
         web_search_backend: None,
         model_catalog: residuum::config::ModelCatalog::default().into_shared(),
+        mailboxes: None,
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
         lifecycle: residuum::tools::LifecycleAccess::new(

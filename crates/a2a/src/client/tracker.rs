@@ -85,9 +85,11 @@ pub struct RemoteTaskTracker {
     store: RwLock<OutboundStore>,
     hub: Arc<A2aClientHub>,
     messenger: Arc<AgentMessenger>,
-    /// Where inbound-style attachments (large text parts, file parts) from a
-    /// remote agent's artifacts are saved.
+    /// The agent inbox. Each artifact file is filed under its own companion
+    /// item, in `attachments/<item id>/` beneath it.
     inbox_dir: PathBuf,
+    /// Timezone the companion inbox items are timestamped in.
+    timezone: chrono_tz::Tz,
     /// Cancelled when the agent that owns this tracker stops, which ends
     /// every task watcher it started.
     shutdown: tokio_util::sync::CancellationToken,
@@ -103,6 +105,7 @@ impl RemoteTaskTracker {
         hub: Arc<A2aClientHub>,
         messenger: Arc<AgentMessenger>,
         inbox_dir: PathBuf,
+        timezone: chrono_tz::Tz,
     ) -> Arc<Self> {
         let mut store = match tokio::fs::read_to_string(&path).await {
             Ok(raw) => match serde_json::from_str::<OutboundStore>(&raw) {
@@ -145,6 +148,7 @@ impl RemoteTaskTracker {
             hub,
             messenger,
             inbox_dir,
+            timezone,
             shutdown: tokio_util::sync::CancellationToken::new(),
         })
     }
@@ -870,13 +874,14 @@ impl RemoteTaskTracker {
             write!(body, "\n{note}").ok();
         }
         for artifact in artifacts {
-            self.append_artifact(&mut body, &artifact).await;
+            self.append_artifact(&mut body, &task.agent, &artifact)
+                .await;
         }
         self.deliver_to_sender(&task.sender_address, &task.agent, task.hop_count, body)
             .await;
     }
 
-    async fn append_artifact(&self, body: &mut String, artifact: &a2a::Artifact) {
+    async fn append_artifact(&self, body: &mut String, agent: &str, artifact: &a2a::Artifact) {
         for part in &artifact.parts {
             match &part.content {
                 a2a::PartContent::Text(text) if text.len() <= INLINE_TEXT_LIMIT => {
@@ -887,15 +892,22 @@ impl RemoteTaskTracker {
                     body.push_str(text);
                 }
                 a2a::PartContent::Text(text) => {
-                    self.save_bytes_and_note(body, artifact, part, text.clone().into_bytes())
-                        .await;
+                    self.save_bytes_and_note(
+                        body,
+                        agent,
+                        artifact,
+                        part,
+                        text.clone().into_bytes(),
+                    )
+                    .await;
                 }
                 a2a::PartContent::Raw(bytes) => {
-                    self.save_bytes_and_note(body, artifact, part, bytes.clone())
+                    self.save_bytes_and_note(body, agent, artifact, part, bytes.clone())
                         .await;
                 }
                 a2a::PartContent::Url(url) => {
-                    self.save_url_and_note(body, artifact, part, url).await;
+                    self.save_url_and_note(body, agent, artifact, part, url)
+                        .await;
                 }
                 a2a::PartContent::Data(value) => {
                     write!(body, "\n\n[Artifact data: {value}]").ok();
@@ -914,6 +926,7 @@ impl RemoteTaskTracker {
     async fn save_bytes_and_note(
         &self,
         body: &mut String,
+        agent: &str,
         artifact: &a2a::Artifact,
         part: &a2a::Part,
         bytes: Vec<u8>,
@@ -924,17 +937,22 @@ impl RemoteTaskTracker {
             size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
             content_type: part.media_type.clone(),
         };
-        match attachment::save_attachment_bytes(&info, &bytes, &self.inbox_dir).await {
+        let item = match self.reserve_artifact(&info).await {
+            Ok(item) => item,
+            Err(e) => {
+                Self::note_failed_artifact(body, agent, &filename, "save", &e);
+                return;
+            }
+        };
+        let saved = item.save_bytes(&info, &bytes).await;
+        match saved {
             Ok(saved) => {
-                write!(
-                    body,
-                    "\n\n{}",
-                    attachment::format_attachment_line(&saved, &info)
-                )
-                .ok();
+                self.note_saved_artifact(body, agent, &saved, &info, item)
+                    .await;
             }
             Err(e) => {
-                write!(body, "\n\n[Artifact: {filename} — failed to save: {e}]").ok();
+                item.discard().await;
+                Self::note_failed_artifact(body, agent, &filename, "save", &e);
             }
         }
     }
@@ -942,6 +960,7 @@ impl RemoteTaskTracker {
     async fn save_url_and_note(
         &self,
         body: &mut String,
+        agent: &str,
         artifact: &a2a::Artifact,
         part: &a2a::Part,
         url: &str,
@@ -952,19 +971,81 @@ impl RemoteTaskTracker {
             size: 0,
             content_type: part.media_type.clone(),
         };
-        match attachment::download_attachment(&info, url, &self.inbox_dir).await {
+        let item = match self.reserve_artifact(&info).await {
+            Ok(item) => item,
+            Err(e) => {
+                Self::note_failed_artifact(body, agent, &filename, "download", &e);
+                return;
+            }
+        };
+        let downloaded = item.download(&info, url).await;
+        match downloaded {
             Ok(saved) => {
-                write!(
-                    body,
-                    "\n\n{}",
-                    attachment::format_attachment_line(&saved, &info)
-                )
-                .ok();
+                self.note_saved_artifact(body, agent, &saved, &info, item)
+                    .await;
             }
             Err(e) => {
-                write!(body, "\n\n[Artifact: {filename} — failed to download: {e}]").ok();
+                item.discard().await;
+                Self::note_failed_artifact(body, agent, &filename, "download", &e);
             }
         }
+    }
+
+    /// Name an artifact that failed to `action` ("save" or "download") in the
+    /// message body, and log why it failed.
+    fn note_failed_artifact(
+        body: &mut String,
+        agent: &str,
+        filename: &str,
+        action: &str,
+        reason: &str,
+    ) {
+        tracing::warn!(
+            agent = %agent,
+            filename = %filename,
+            action,
+            error = %reason,
+            "failed to store a2a artifact"
+        );
+        write!(
+            body,
+            "\n\n[Artifact: {filename} — failed to {action}: {reason}]"
+        )
+        .ok();
+    }
+
+    /// Reserve the companion agent-inbox item for an artifact file.
+    async fn reserve_artifact(
+        &self,
+        info: &AttachmentInfo,
+    ) -> Result<attachment::AttachmentItem, String> {
+        attachment::reserve_attachment_item(
+            &self.inbox_dir,
+            info,
+            "A2A",
+            attachment::AttachmentKind::Artifact,
+            self.timezone,
+        )
+        .await
+    }
+
+    /// Name a saved artifact file in the message body and file it under its
+    /// companion agent-inbox item.
+    async fn note_saved_artifact(
+        &self,
+        body: &mut String,
+        agent: &str,
+        saved: &attachment::SavedAttachment,
+        info: &AttachmentInfo,
+        item: attachment::AttachmentItem,
+    ) {
+        write!(
+            body,
+            "\n\n{}",
+            attachment::format_attachment_line(saved, info)
+        )
+        .ok();
+        item.file_companion_item(saved, info, agent).await;
     }
 }
 
@@ -977,6 +1058,7 @@ mod tests {
     use residuum_background::store::SessionStore;
     use residuum_bus::testing::bus_barrier;
     use residuum_core::testing::wait;
+    use std::path::Path;
 
     fn messenger() -> (Arc<AgentMessenger>, residuum_bus::BusHandle) {
         let bus_handle = residuum_bus::spawn_broker();
@@ -993,6 +1075,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_artifact_is_filed_under_its_own_agent_inbox_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let (messenger, _bus) = messenger();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            A2aClientHub::new_shared(),
+            messenger,
+            inbox_dir.clone(),
+            chrono_tz::UTC,
+        )
+        .await;
+        let artifact = a2a::Artifact {
+            artifact_id: "artifact-1".to_string(),
+            name: Some("report".to_string()),
+            description: None,
+            parts: vec![a2a::Part::raw(b"bytes".to_vec()).with_filename("report.bin")],
+            metadata: None,
+            extensions: None,
+        };
+
+        let mut body = String::from("body");
+        tracker
+            .append_artifact(&mut body, "remote-agent", &artifact)
+            .await;
+
+        let mut item_paths = Vec::new();
+        let mut entries = tokio::fs::read_dir(&inbox_dir).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                item_paths.push(path);
+            }
+        }
+        let [item_path] = item_paths.as_slice() else {
+            panic!("one companion item per artifact file: {item_paths:?}");
+        };
+        let id = item_path
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let item = residuum_workspace::inbox::load_item(item_path)
+            .await
+            .unwrap();
+        assert_eq!(item.title, "A2A artifact: report.bin");
+        assert_eq!(item.source, "a2a");
+        let body_text = &item.body;
+        assert!(body_text.contains("From: remote-agent"), "{body_text}");
+        assert!(body_text.contains("Size: 5 bytes"), "{body_text}");
+        let [recorded] = item.attachments.as_slice() else {
+            panic!("one attachment recorded: {:?}", item.attachments);
+        };
+        assert!(
+            recorded.ends_with(Path::new("attachments").join(&id).join("report.bin")),
+            "item should record its file under its own directory: {}",
+            recorded.display()
+        );
+
+        let saved = inbox_dir.join("attachments").join(&id).join("report.bin");
+        assert_eq!(tokio::fs::read(&saved).await.unwrap(), b"bytes");
+        assert!(
+            body.contains(&saved.display().to_string()),
+            "body should point at the saved path: {body}"
+        );
+    }
+
+    #[tokio::test]
     async fn track_persists_and_resumes_on_reload() {
         let dir = tempfile::tempdir().unwrap();
         let outbound_path = dir.path().join("outbound.json");
@@ -1006,6 +1157,7 @@ mod tests {
             Arc::clone(&hub),
             Arc::clone(&messenger),
             inbox_dir.clone(),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1026,7 +1178,8 @@ mod tests {
         );
 
         // Rebuild the tracker from the persisted file, as a restart would.
-        let rebuilt = RemoteTaskTracker::load(outbound_path, hub, messenger, inbox_dir).await;
+        let rebuilt =
+            RemoteTaskTracker::load(outbound_path, hub, messenger, inbox_dir, chrono_tz::UTC).await;
         assert_eq!(
             rebuilt.context_for("main", "laptop").await,
             Some("ctx-1".to_string())
@@ -1045,6 +1198,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1080,6 +1234,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1127,6 +1282,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1201,7 +1357,14 @@ mod tests {
 
         let hub = A2aClientHub::new_shared();
         let (messenger, _bus) = messenger();
-        let tracker = RemoteTaskTracker::load(path, hub, messenger, dir.path().join("inbox")).await;
+        let tracker = RemoteTaskTracker::load(
+            path,
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+            chrono_tz::UTC,
+        )
+        .await;
         assert!(tracker.get("old-task").await.is_none());
     }
 
@@ -1215,6 +1378,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         let result = tracker.cancel_open_task("main", "laptop").await.unwrap();
@@ -1238,6 +1402,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1271,6 +1436,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1331,6 +1497,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1386,6 +1553,7 @@ mod tests {
             hub,
             messenger,
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         tracker
@@ -1413,9 +1581,14 @@ mod tests {
         hub: Arc<A2aClientHub>,
         messenger: Arc<AgentMessenger>,
     ) -> Arc<RemoteTaskTracker> {
-        let tracker =
-            RemoteTaskTracker::load(dir.join("outbound.json"), hub, messenger, dir.join("inbox"))
-                .await;
+        let tracker = RemoteTaskTracker::load(
+            dir.join("outbound.json"),
+            hub,
+            messenger,
+            dir.join("inbox"),
+            chrono_tz::UTC,
+        )
+        .await;
         tracker
             .track(
                 &SessionAddress::from("main"),

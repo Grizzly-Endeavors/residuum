@@ -11,6 +11,7 @@ use crate::overview::TeamOverview;
 use crate::push::PushService;
 use crate::team_events::TeamEventLog;
 use crate::update::SharedUpdateStatus;
+use crate::uploads::UploadStore;
 use crate::web::WebAssetSource;
 use residuum_bus::BusHandle;
 use residuum_bus::control::ReloadSender;
@@ -108,6 +109,9 @@ pub struct HubHttpState {
     pub pairing: residuum_net::pairing::DevicePairing,
     /// Remote access over the secure tunnel: its status and actions.
     pub remote_access: residuum_net::remote_access::slot::RemoteAccessSlot,
+    /// The staged uploads `POST /api/hub/uploads` writes, which sends later
+    /// consume.
+    pub uploads: UploadStore,
     /// The embedded web app, which the static routes serve.
     pub assets: WebAssetSource,
 }

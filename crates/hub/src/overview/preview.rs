@@ -16,6 +16,13 @@ const ELLIPSIS: char = '…';
 /// trailing `…` when it is longer. Empty when the text has nothing to show.
 #[must_use]
 pub fn plain_preview(markdown: &str) -> String {
+    plain_preview_within(markdown, PREVIEW_CHARS)
+}
+
+/// [`plain_preview`] cut to `max_chars` characters instead, the ellipsis
+/// included.
+#[must_use]
+pub fn plain_preview_within(markdown: &str, max_chars: usize) -> String {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut text = String::new();
@@ -36,7 +43,10 @@ pub fn plain_preview(markdown: &str) -> String {
             | Event::TaskListMarker(_) => {}
         }
     }
-    cut(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+    cut(
+        &text.split_whitespace().collect::<Vec<_>>().join(" "),
+        max_chars,
+    )
 }
 
 /// Whether `end` closes something inside a line of text.
@@ -53,11 +63,11 @@ fn is_inline(end: TagEnd) -> bool {
     )
 }
 
-/// `line`, or its start and an ellipsis when it is over the limit.
-fn cut(line: &str) -> String {
-    if line.chars().count() <= PREVIEW_CHARS {
+/// `line`, or its start and an ellipsis when it is over `max_chars`.
+fn cut(line: &str, max_chars: usize) -> String {
+    if line.chars().count() <= max_chars {
         return line.to_string();
     }
-    let start: String = line.chars().take(PREVIEW_CHARS - 1).collect();
+    let start: String = line.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{}{ELLIPSIS}", start.trim_end())
 }

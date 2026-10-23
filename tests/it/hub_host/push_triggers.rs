@@ -281,7 +281,7 @@ async fn an_item_an_agent_files_is_one_push_whose_badge_is_every_agents_unread_c
             "agent": "scout",
             "title": "Heads up",
             "body": "From scout: look at this",
-            "target": format!("/inbox?item=scout:{item_id}"),
+            "target": format!("/inbox?thread=scout%2Fuser%2F{item_id}"),
             "tag": tag,
             "badge": 2,
         })

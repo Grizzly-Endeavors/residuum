@@ -377,6 +377,9 @@ impl AgentHost {
             services
                 .directory
                 .bind(Weak::clone(me) as Weak<dyn TeamDirectory>);
+            services.mailboxes.bind(
+                Weak::clone(me) as Weak<dyn residuum_workspace::inbox::mail::MailboxDirectory>
+            );
             Self {
                 me: Weak::clone(me),
                 services,
@@ -1815,7 +1818,7 @@ impl AgentHost {
         Ok(crate::web::agent_repair_api_router(state))
     }
 
-    /// The agent's chat history, usage, user inbox, A2A settings, and file
+    /// The agent's chat history, usage, inbox attachments, A2A settings, and file
     /// link routes, over its files on disk (the token links from the ones it
     /// saved in its `file_links.json`). Unlike
     /// [`Self::repair_router_for`] it opens no checkpoint repository: the one
@@ -1993,6 +1996,19 @@ impl TeamDirectory for AgentHost {
             );
         }
         result
+    }
+}
+
+/// The agents' mailboxes, for mail read and sent from the hub and from the
+/// agents' tools: each agent's directory in any state, read in the hub's
+/// timezone.
+impl residuum_workspace::inbox::mail::MailboxDirectory for AgentHost {
+    fn mailboxes(&self) -> Vec<residuum_workspace::inbox::mail::Mailbox> {
+        crate::mail::AgentMailboxes(self).mailboxes()
+    }
+
+    fn mailbox(&self, agent: &str) -> Option<residuum_workspace::inbox::mail::Mailbox> {
+        crate::mail::AgentMailboxes(self).mailbox(agent)
     }
 }
 

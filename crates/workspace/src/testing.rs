@@ -1,11 +1,26 @@
 //! Test fixtures for code that works on the hub's directories. Behind
 //! `test-support`, and compiled for this crate's own tests.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use residuum_config::paths::TeamPaths;
 
+use crate::inbox::InboxItem;
+use crate::inbox::mail::{Mailbox, MailboxDirectory};
 use crate::team_files::TeamWriteCoordinator;
+
+/// Write `item` as `filename` in `inbox_dir` without claiming an id, for a
+/// fixture that needs an item already in place.
+///
+/// # Errors
+/// Returns an error if the item cannot be serialized or written.
+pub async fn save_item_for_tests(
+    inbox_dir: &Path,
+    filename: &str,
+    item: &InboxItem,
+) -> anyhow::Result<()> {
+    crate::inbox::save_item(inbox_dir, filename, item).await
+}
 
 /// A hub directory with a team directory and any number of agent directories,
 /// and the coordinator every writer of the team directory shares.
@@ -60,5 +75,42 @@ impl TeamHub {
 impl Default for TeamHub {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A fixed set of mailboxes, for tests of code that reads mail through a
+/// [`MailboxDirectory`].
+#[derive(Debug, Clone, Default)]
+pub struct StaticMailboxDirectory {
+    mailboxes: Vec<Mailbox>,
+}
+
+impl StaticMailboxDirectory {
+    /// A directory of `mailboxes`, kept sorted by agent name.
+    pub fn new(mailboxes: impl IntoIterator<Item = Mailbox>) -> Self {
+        let mut mailboxes: Vec<Mailbox> = mailboxes.into_iter().collect();
+        mailboxes.sort_by(|a, b| a.agent.cmp(&b.agent));
+        Self { mailboxes }
+    }
+
+    /// The mailboxes of `agents` under `hub`'s directory, in UTC, each
+    /// agent's directory created.
+    #[must_use]
+    pub fn for_team_hub(hub: &TeamHub, agents: &[&str]) -> Self {
+        Self::new(agents.iter().map(|agent| Mailbox {
+            agent: (*agent).to_string(),
+            dir: hub.agent_dir(agent),
+            timezone: chrono_tz::UTC,
+        }))
+    }
+}
+
+impl MailboxDirectory for StaticMailboxDirectory {
+    fn mailboxes(&self) -> Vec<Mailbox> {
+        self.mailboxes.clone()
+    }
+
+    fn mailbox(&self, agent: &str) -> Option<Mailbox> {
+        self.mailboxes.iter().find(|m| m.agent == agent).cloned()
     }
 }

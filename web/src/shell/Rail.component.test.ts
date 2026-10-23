@@ -34,7 +34,6 @@ function actions(): ShellActions {
     openNotifications: vi.fn(),
     openFeedback: vi.fn(),
     createAgent: vi.fn(),
-    addInboxNote: vi.fn(),
   };
 }
 

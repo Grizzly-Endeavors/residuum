@@ -20,7 +20,10 @@ use residuum::background::team::{
 use residuum::checkpoints::{
     CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
-use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
+use residuum::hub::mail::{
+    MailAttachment, MailMessage, MailReplyResponse, MailSeen, MailSendResponse, MailSender,
+    MailThread, MailThreadPage, MailThreadSummary,
+};
 use residuum::hub::overview::{AgentOverview, OverviewResponse};
 use residuum::hub::push::{
     PatchPushDeviceRequest, PushDevice, PushDeviceList, PushDeviceResponse, PushEvent, PushFailure,
@@ -34,7 +37,6 @@ use residuum::hub::types::{
     AgentActivity, AgentListResponse, AgentPatch, DeletedAgent, DeletedAgentListResponse,
     HubClientMessage, HubEvent, HubSocketFrame, NoticeLevel, RestoreAgentRequest,
 };
-use residuum::inbox::InboxAttachment;
 use residuum::inference::ImageData;
 use residuum::interfaces::teams::setup_types::{
     AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine, LogStream,
@@ -134,16 +136,21 @@ fn export_protocol_types() {
     Actor::export_all(&cfg).unwrap();
     NoticeLevel::export_all(&cfg).unwrap();
 
-    // The cross-agent inbox: `HubInboxPage` (with its `HubInboxItem` and
-    // `InboxAttachment` items) answers `GET /api/hub/inbox`,
-    // `HubInboxUnread` answers `GET /api/hub/inbox/unread`, and
-    // `HubInboxItem` is the `item` of the per-item routes. `InboxStatus`
-    // is the `status` query parameter.
-    HubInboxPage::export_all(&cfg).unwrap();
-    HubInboxItem::export_all(&cfg).unwrap();
-    InboxAttachment::export_all(&cfg).unwrap();
-    HubInboxUnread::export_all(&cfg).unwrap();
-    InboxStatus::export_all(&cfg).unwrap();
+    // Mail: `MailThreadPage` (with its `MailThreadSummary` items) answers
+    // `GET /api/hub/mail/threads`, `MailThread` (with its `MailMessage`,
+    // `MailSender`, `MailSeen` and `MailAttachment` parts) answers
+    // `GET /api/hub/mail/threads/{ref}`, `MailSendResponse` answers
+    // `POST /api/hub/mail/send`, and `MailReplyResponse` answers
+    // `POST /api/hub/mail/threads/{ref}/reply`.
+    MailThreadPage::export_all(&cfg).unwrap();
+    MailThreadSummary::export_all(&cfg).unwrap();
+    MailThread::export_all(&cfg).unwrap();
+    MailMessage::export_all(&cfg).unwrap();
+    MailSender::export_all(&cfg).unwrap();
+    MailSeen::export_all(&cfg).unwrap();
+    MailAttachment::export_all(&cfg).unwrap();
+    MailSendResponse::export_all(&cfg).unwrap();
+    MailReplyResponse::export_all(&cfg).unwrap();
 
     // Device pairing: `PairingStateResponse` answers `GET
     // /api/hub/pairing/state`; `CreatePairingRequestBody` and

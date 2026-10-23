@@ -91,7 +91,7 @@ describe("a finished run of steps", () => {
     await userEvent.click(link);
     expect(openPlace).toHaveBeenCalledWith(
       { kind: "chat", agent: "atlas" },
-      { panel: { kind: "file", path: "team/wiki/on-call.md" } },
+      { panel: { kind: "file", path: "team/wiki/on-call.md", agent: null } },
     );
   });
 

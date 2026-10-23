@@ -11,7 +11,7 @@
   import { NewSession } from "../../places/activity/new-session.svelte";
   import SessionPanel from "../../places/activity/SessionPanel.svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
-  import { fileSourceFor } from "../../places/files/file-source";
+  import { panelFileSource } from "../../places/files/file-source";
 
   // The context panel, open while the URL names a `panel` its place can show
   // (the router removes any other). Each kind's content renders inside the
@@ -19,7 +19,7 @@
   // loads the first time a file opens, and the new-session panel the first
   // time a session is started from Activity.
 
-  const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string }>(
+  const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string; agentNamed: boolean }>(
     () => import("../../places/files/FilePanel.svelte"),
     "the file",
   );
@@ -29,7 +29,7 @@
   );
 
   const panel = $derived(router.panel);
-  const fileSource = $derived(fileSourceFor(router.place));
+  const fileSource = $derived(panel?.kind === "file" ? panelFileSource(router.place, panel) : null);
   const fileTree = $derived(
     panel?.kind === "file" && fileSource !== null
       ? `${fileSource.scope}:${fileSource.agent ?? ""}`
@@ -117,7 +117,7 @@
         {#if filePanel.component !== null}
           {@const FilePanel = filePanel.component}
           {#key fileBuffer}
-            <FilePanel buffer={fileBuffer} path={panel.path} />
+            <FilePanel buffer={fileBuffer} path={panel.path} agentNamed={panel.agent !== null} />
           {/key}
         {:else}
           <div class="panel-loading"><Skeleton lines={8} label="Loading the file" /></div>

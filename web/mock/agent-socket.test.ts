@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseClientMessage } from "./agent-socket";
 import {
   advanceMockTime,
+  fetchJson,
   startMockServer,
   type Frame,
   type MockServerHarness,
@@ -85,6 +86,23 @@ describe("agent socket", () => {
       await scout.close();
     });
 
+    it("doesn't count a watch-only socket as a client, and doesn't reset unread", async () => {
+      const scout = harness.hub.agents.get("scout");
+      if (scout === undefined) throw new Error("no scout");
+      harness.hub.addUnread(scout);
+      const watcher = await harness.openSocket("/api/agents/scout/ws?watch_only=true");
+      await watcher.settled();
+      expect(scout.unread).toBe(1);
+      expect(scout.connectedClients()).toBe(0);
+      await watcher.close();
+
+      const page = await harness.openSocket("/api/agents/scout/ws");
+      await page.settled();
+      expect(scout.unread).toBe(0);
+      expect(scout.connectedClients()).toBe(1);
+      await page.close();
+    });
+
     it("drops a page's connections when the agent's state asks to", async () => {
       harness.hub.agents.get("atlas")?.state.dropSockets();
       await socket.closed;
@@ -124,7 +142,18 @@ describe("agent socket", () => {
       socket.send({ type: "inbox_add", body: "remember the milk" });
       expect(await socket.nextOfType("notice")).toEqual({
         type: "notice",
-        message: "[inbox] item added",
+        message: "Added a note to the inbox.",
+      });
+    });
+
+    it("saves an inbox add in the agent's own inbox as a message from the terminal, titled by its first line", async () => {
+      socket.send({ type: "inbox_add", body: "remember the milk\nand the eggs" });
+      await socket.nextOfType("notice");
+
+      expect(harness.hub.agents.get("atlas")?.state.agentInbox.at(-1)).toMatchObject({
+        title: "remember the milk",
+        body: "remember the milk\nand the eggs",
+        source: "cli",
       });
     });
 
@@ -157,6 +186,23 @@ describe("agent socket", () => {
           'Couldn\'t watch the workspace: can\'t watch "../secrets": watch paths must stay inside the workspace (no "..").',
       });
       expect(frames[0]).not.toHaveProperty("details");
+    });
+
+    it("reports what its sockets watch, merged, at /api/mock/watches", async () => {
+      const watched = async (): Promise<unknown> =>
+        (await fetchJson(`${harness.baseUrl}/api/mock/watches?agent=atlas`)).body;
+      expect(await watched()).toEqual({ prefixes: [] });
+
+      socket.send({ type: "watch_workspace", prefixes: ["notes/plan.md", "memory"] });
+      const watcher = await harness.openSocket("/api/agents/atlas/ws?watch_only=true");
+      watcher.send({ type: "watch_workspace", prefixes: ["notes/plan.md", "inbox"] });
+      await socket.settled();
+      await watcher.settled();
+      expect(await watched()).toEqual({ prefixes: ["inbox", "memory", "notes/plan.md"] });
+
+      await watcher.close();
+      expect(await watched()).toEqual({ prefixes: ["memory", "notes/plan.md"] });
+      expect((await fetchJson(`${harness.baseUrl}/api/mock/watches?agent=ghost`)).status).toBe(404);
     });
 
     it("starts a session when the message begins with spawn", async () => {

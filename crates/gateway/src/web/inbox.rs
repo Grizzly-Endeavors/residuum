@@ -19,6 +19,10 @@ pub(crate) fn agent_inbox_api_router(state: GatewayState) -> axum::Router {
         .with_state(state)
 }
 
+/// The source of an item posted without the artifact identity header: an API
+/// client the request doesn't name.
+const API_SOURCE: &str = "api";
+
 /// Request body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Deserialize)]
 pub(super) struct AgentInboxAddRequest {
@@ -39,8 +43,10 @@ pub(super) struct AgentInboxAddResponse {
 /// `POST /api/agents/{name}/agent-inbox` — add an item to the agent's inbox, the same
 /// place the WS `/inbox` command and the notification router's `inbox`
 /// target write to. The source is `artifact:<name>` when the request carries
-/// the artifact identity header (set by the workbench SDK), `"web"`
-/// otherwise.
+/// the artifact identity header (set by the workbench SDK), `"api"`
+/// otherwise. Neither is a user-mail source: the user's own messages go
+/// through the hub's mail routes, so nothing this endpoint writes shows as
+/// mail the user sent.
 ///
 /// # Errors
 /// `400` for a blank body or an invalid identity header, `500` if the item
@@ -63,7 +69,7 @@ pub(super) async fn api_agent_inbox_add(
         .unwrap_or_else(|| residuum_workspace::inbox::derive_title(&req.body));
     let source = match super::artifact_identity::artifact_identity(&headers) {
         Ok(Some(name)) => format!("artifact:{name}"),
-        Ok(None) => "web".to_string(),
+        Ok(None) => API_SOURCE.to_string(),
         Err(message) => return Err((StatusCode::BAD_REQUEST, message)),
     };
 
@@ -158,7 +164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_inbox_add_defaults_title_and_web_source() {
+    async fn agent_inbox_add_defaults_title_and_api_source() {
         let dir = tempfile::tempdir().unwrap();
         let state = make_gateway_state(dir.path());
 
@@ -179,7 +185,11 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].0, response.0.id);
         assert_eq!(items[0].1.title, "First line of the item");
-        assert_eq!(items[0].1.source, "web");
+        assert_eq!(items[0].1.source, "api");
+        assert!(
+            !residuum_workspace::inbox::mail::is_user_mail_source(&items[0].1.source),
+            "a posted item is never the user's mail"
+        );
     }
 
     #[tokio::test]
