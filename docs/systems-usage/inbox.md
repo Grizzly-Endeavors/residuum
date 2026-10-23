@@ -25,7 +25,7 @@ The web UI's Inbox, Sent and Archived folders show mail only:
 - **Messages the user sent an agent** are agent-inbox items whose source is `web` or `cli`. A message sent to several agents is one copy per recipient (see [Copies of one message](#copies-of-one-message)).
 - **Messages an agent sent the user** are user-inbox items. Every user-inbox item is mail.
 
-Every other agent-inbox item is not mail and never appears in a thread: pulse, action, `scheduled` and webhook results, `system` items, `artifact:<name>` items, and the companion items of chat and A2A files. These stay in the agent inbox for the agent to triage, and the agent's `inbox_list` and `inbox_read` still show them.
+Every other agent-inbox item is not mail and never appears in a thread: pulse, action, `scheduled` and webhook results, `system` items, `artifact:<name>` and `api` items, and the companion items of chat and A2A files. These stay in the agent inbox for the agent to triage, and the agent's `inbox_list` and `inbox_read` still show them.
 
 ## Refs
 
@@ -54,13 +54,13 @@ Each item is a JSON file. There is **no `id` field in the JSON body**. The ID is
 ```
 
 - `timestamp` is a naive local time to the minute, in the hub's timezone. The API reports it as RFC 3339 with an offset.
-- `source` names where the item came from: `web` or `cli` for the user's messages, `artifact:<name>` for a workbench artifact, and the producing label otherwise (a job, a webhook, a platform).
+- `source` names where the item came from: `web` or `cli` for the user's messages, `artifact:<name>` for a workbench artifact, `api` for another client of the agent-inbox endpoint, and the producing label otherwise (a job, a webhook, a platform).
 - `in_reply_to` is present only on an item that answers a message. It holds that message's ref.
 - `attachments` lists each copied file's path, relative to the workspace root. Only the filename is authoritative: the directory can go stale once an item is archived, so consumers resolve each attachment by filename against the item's current location.
 
 Filenames are generated from the date and the sanitized title (`{YYYYMMDD}_{title}`, at most 60 title characters). Titles that are blank fall back to the first line of the body.
 
-IDs are unique within an agent across both its inbox and its archive. When the generated stem is taken, `_2`, `_3`, ... is appended, so two same-titled items on one day each keep their own file and attachment directory, and an archived item's ID is never reused. Archiving and restoring never replace a different item that has the same ID. If the destination already holds that ID, the move fails with an error naming the conflict, and both items stay put. The API answers that with `409`.
+IDs are unique within an agent across both its inbox and its archive. When the generated stem is taken, `_2`, `_3`, ... is appended, so two same-titled items on one day each keep their own file and attachment directory, and an archived item's ID is never reused. The ID is claimed on disk before the item is written, by creating the item's `attachments/{id}/` directory, so writers running at the same moment never get the same ID. An item saved with no attachments has that directory removed, and a claim that is abandoned (a cancelled task, a failed save) removes it too. Every writer claims its ID this way: mail sends and replies, the `/inbox` chat command, `user_inbox_add`, the notification router, `POST /api/agents/{name}/agent-inbox`, and the companion items of chat and A2A files. Archiving and restoring never replace a different item that has the same ID. If the destination already holds that ID, the move fails with an error naming the conflict, and both items stay put. The API answers that with `409`.
 
 ## Threads
 
@@ -94,7 +94,9 @@ Participants are every agent that wrote in the thread plus every agent a message
 
 ## Sending and Replying
 
-**New message.** The web UI's New message composes an empty thread with `to` (one or more agents), a subject, a body and attachments. The subject becomes each copy's title, and a blank subject takes the first line of the body. The send is all or nothing. The ID is free in every recipient's agent inbox and archive, as an item and as an attachment directory. If any copy or attachment fails, the copies already written are removed.
+**New message.** The web UI's New message composes an empty thread with `to` (one or more agents), a subject, a body and attachments. The subject becomes each copy's title, and a blank subject takes the first line of the body. The send is all or nothing. One ID is claimed in every recipient's agent inbox at once, free there and in each archive, as an item and as an attachment directory, so two sends with the same subject at the same moment get different IDs. If any copy or attachment fails, the claims are released and the copies already written are removed.
+
+**The `/inbox` chat command** sends its note as a message from the user to the agent it was typed to, with source `cli`. The note is titled with its first line and shows in Sent like any other message.
 
 **Reply.** A reply carries a body and attachments. Its recipients are computed on the server as reply-all: every agent that wrote in the thread, plus every agent a message of the user's in it went to. The reply answers the latest message, and its title is `Re: <subject>`, with repeated `Re:` prefixes collapsed rather than stacked.
 
@@ -131,7 +133,7 @@ Neither `user_inbox_list` nor `inbox_read` changes the user's read or archived s
 
 The notification router files each substantive `scheduled` result and each substantive webhook-triggered `external` result as an agent-inbox item, with the result's summary as the body and its source label as the source (see [notifications.md](notifications.md)). A conversation-triggered `external` result (A2A, or a non-owner Discord, Telegram or Teams chat) files nothing: its output already went back to the conversation it came from, and its observations are merged into memory as an episode. `artifact` and `spawned` session results are relayed elsewhere (see [background-tasks.md](background-tasks.md#result-routing)).
 
-A workbench artifact can file an agent-inbox item with `POST /api/agents/{name}/agent-inbox` (body `{ title?, body }`). The title defaults to the body's first line, and a blank body is refused with `400`. The item's source is `artifact:<name>` when the request carries the `X-Residuum-Artifact` header that the workbench SDK sends, and `web` otherwise. An artifact cannot write to the user inbox.
+A workbench artifact can file an agent-inbox item with `POST /api/agents/{name}/agent-inbox` (body `{ title?, body }`). The title defaults to the body's first line, and a blank body is refused with `400`. The item's source is `artifact:<name>` when the request carries the `X-Residuum-Artifact` header that the workbench SDK sends, and `api` otherwise. Neither is mail: the user's own messages go through the hub's mail routes. An artifact cannot write to the user inbox.
 
 A file that a Discord, Telegram, Teams or A2A message carries gets its own companion agent-inbox item, and each file an A2A task's remote agent returns gets one as well, titled `A2A artifact: <filename>`. The file sits in that item's attachment directory, so archiving the item moves the file with it (see [a2a.md](a2a.md)).
 

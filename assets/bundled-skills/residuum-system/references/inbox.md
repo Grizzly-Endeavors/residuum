@@ -78,7 +78,7 @@ The notification router creates an item in the **agent inbox** (`inbox/agent/`) 
 
 ## Workbench Artifacts
 
-A workbench artifact can file an agent-inbox item directly with `POST /api/agents/<agent>/agent-inbox` (`{ title?, body }`), the same queue `inbox_list`/`inbox_read`/`inbox_archive` work from. Its title defaults to the body's first line, in full, and a blank body is refused. The item's source records which artifact sent it (`artifact:<name>`) or `web` for a direct web UI call. There is no equivalent for the user inbox — an artifact still has no way to write there.
+A workbench artifact can file an agent-inbox item directly with `POST /api/agents/<agent>/agent-inbox` (`{ title?, body }`), the same queue `inbox_list`/`inbox_read`/`inbox_archive` work from. Its title defaults to the body's first line, in full, and a blank body is refused. The item's source records which artifact sent it (`artifact:<name>`), or `api` for a request without the artifact header. Neither is the user's mail. There is no equivalent for the user inbox — an artifact still has no way to write there.
 
 ## Gotchas
 
