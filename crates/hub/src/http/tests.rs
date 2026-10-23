@@ -1344,9 +1344,13 @@ async fn seed_inbox_item(agent_dir: &Path, id: &str, title: &str, attachment: &[
             "inbox/user/attachments/{id}/note.txt"
         ))],
     };
-    residuum_workspace::inbox::save_item(&layout.user_inbox_dir(), &format!("{id}.json"), &item)
-        .await
-        .unwrap();
+    residuum_workspace::testing::save_item_for_tests(
+        &layout.user_inbox_dir(),
+        &format!("{id}.json"),
+        &item,
+    )
+    .await
+    .unwrap();
 }
 
 /// The JSON a listing shows for [`seed_inbox_item`]'s item `id` of agent

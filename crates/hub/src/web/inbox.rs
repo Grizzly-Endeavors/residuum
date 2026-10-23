@@ -310,7 +310,7 @@ mod tests {
             read: false,
             attachments,
         };
-        residuum_workspace::inbox::save_item(
+        residuum_workspace::testing::save_item_for_tests(
             &layout.user_inbox_dir(),
             &format!("{id}.json"),
             &item,
@@ -542,9 +542,13 @@ mod tests {
                 "archive/inbox/user/attachments/item1/note.txt",
             )],
         };
-        residuum_workspace::inbox::save_item(&layout.user_inbox_archive_dir(), "item1.json", &item)
-            .await
-            .unwrap();
+        residuum_workspace::testing::save_item_for_tests(
+            &layout.user_inbox_archive_dir(),
+            "item1.json",
+            &item,
+        )
+        .await
+        .unwrap();
 
         let state = make_state(dir.path().to_path_buf());
         let response = api_inbox_attachment(

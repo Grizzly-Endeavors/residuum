@@ -24,7 +24,7 @@ async fn add_item(h: &Harness, agent: &str, id: &str, when: NaiveDateTime, read:
         read,
         attachments: Vec::new(),
     };
-    residuum_workspace::inbox::save_item(&inbox, &format!("{id}.json"), &item)
+    residuum_workspace::testing::save_item_for_tests(&inbox, &format!("{id}.json"), &item)
         .await
         .unwrap();
 }
@@ -41,7 +41,7 @@ async fn add_archived_item(h: &Harness, agent: &str, id: &str, when: NaiveDateTi
         read: true,
         attachments: Vec::new(),
     };
-    residuum_workspace::inbox::save_item(&archive, &format!("{id}.json"), &item)
+    residuum_workspace::testing::save_item_for_tests(&archive, &format!("{id}.json"), &item)
         .await
         .unwrap();
 }
@@ -420,7 +420,7 @@ async fn marking_an_archived_item_read_changes_it_in_the_archive() {
         read: false,
         attachments: Vec::new(),
     };
-    residuum_workspace::inbox::save_item(&archive, "old.json", &item)
+    residuum_workspace::testing::save_item_for_tests(&archive, "old.json", &item)
         .await
         .unwrap();
 

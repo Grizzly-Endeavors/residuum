@@ -28,6 +28,8 @@ use super::{InboxItem, generate_filename, save_item};
 /// completes the claim. A claim that is dropped without being saved or released
 /// (a cancelled task, a failed save) removes its directory, so nothing is left
 /// behind. [`Self::release`] removes it explicitly, and [`Self::keep`] leaves it.
+/// A saved item without attachments has no directory, only its JSON, so the JSON
+/// is checked again after the directory is created.
 ///
 /// To give one item the same id in several inboxes (a send to several
 /// recipients), claim all of them at once with [`Self::claim_in_all`]: if the id
@@ -82,15 +84,6 @@ impl ClaimedItem {
         if dirs.is_empty() {
             return Err("no inbox to claim an item id in".to_string());
         }
-        let mut seen: HashSet<&Path> = HashSet::new();
-        for dir in &dirs {
-            if !seen.insert(*dir) {
-                return Err(format!(
-                    "inbox directory {} was given more than once to claim an item id in",
-                    dir.display()
-                ));
-            }
-        }
         for dir in &dirs {
             let attachments_root = dir.join("attachments");
             tokio::fs::create_dir_all(&attachments_root)
@@ -102,7 +95,26 @@ impl ClaimedItem {
                     )
                 })?;
         }
-        let archives: Vec<Option<PathBuf>> = dirs.iter().copied().map(archive_sibling).collect();
+        // Compare the inboxes as the filesystem resolves them, so one inbox spelled
+        // two ways (relative, `..`, a symlink) is still rejected: its second claim
+        // would always find the first one's directory and never succeed.
+        let mut resolved: HashSet<PathBuf> = HashSet::with_capacity(dirs.len());
+        let mut archives: Vec<Option<PathBuf>> = Vec::with_capacity(dirs.len());
+        for dir in &dirs {
+            let canonical = tokio::fs::canonicalize(dir).await.map_err(|e| {
+                format!(
+                    "failed to resolve inbox dir {} to claim an item id in: {e}",
+                    dir.display()
+                )
+            })?;
+            if !resolved.insert(canonical.clone()) {
+                return Err(format!(
+                    "inbox directory {} was given more than once to claim an item id in",
+                    dir.display()
+                ));
+            }
+            archives.push(archive_sibling(&canonical));
+        }
 
         let base = generate_filename(title, now);
         let stem = base.trim_end_matches(".json");
@@ -145,20 +157,49 @@ impl ClaimedItem {
         if id_in_use(inbox_dir, archive_dir, id).await {
             return Ok(None);
         }
+        Self::claim_dir(inbox_dir, archive_dir, id).await
+    }
+
+    /// Create `id`'s attachments directory in `inbox_dir`, or `None` when the id
+    /// is taken once the directory is in place.
+    ///
+    /// [`ClaimedItem::save`] writes the item's JSON before it removes an empty
+    /// directory, so a writer that saved between the check in [`Self::try_claim`]
+    /// and the create above leaves the id held by its JSON alone. That JSON is
+    /// checked again here, and the directory this claim just created is removed
+    /// rather than overwriting the saved item.
+    async fn claim_dir(
+        inbox_dir: &Path,
+        archive_dir: Option<&Path>,
+        id: &str,
+    ) -> Result<Option<Self>, String> {
         let attachments_dir = inbox_dir.join("attachments").join(id);
         match tokio::fs::create_dir(&attachments_dir).await {
-            Ok(()) => Ok(Some(Self {
-                inbox_dir: inbox_dir.to_path_buf(),
-                id: id.to_string(),
-                attachments_dir,
-                armed: true,
-            })),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
-            Err(e) => Err(format!(
-                "failed to claim inbox item id {id} at {}: {e}",
-                attachments_dir.display()
-            )),
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
+            Err(e) => {
+                return Err(format!(
+                    "failed to claim inbox item id {id} at {}: {e}",
+                    attachments_dir.display()
+                ));
+            }
         }
+        if json_in_use(inbox_dir, archive_dir, id).await {
+            if let Err(e) = tokio::fs::remove_dir(&attachments_dir).await {
+                tracing::warn!(
+                    path = %attachments_dir.display(),
+                    error = %e,
+                    "failed to remove a claimed attachments dir whose id a save had taken"
+                );
+            }
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            inbox_dir: inbox_dir.to_path_buf(),
+            id: id.to_string(),
+            attachments_dir,
+            armed: true,
+        }))
     }
 
     /// The claimed id: the item's filename without `.json`.
@@ -345,8 +386,19 @@ async fn id_in_use(inbox_dir: &Path, archive_dir: Option<&Path>, id: &str) -> bo
 }
 
 async fn holds_id(dir: &Path, id: &str) -> bool {
-    path_exists(&dir.join(format!("{id}.json"))).await
-        || path_exists(&dir.join("attachments").join(id)).await
+    json_in_use(dir, None, id).await || path_exists(&dir.join("attachments").join(id)).await
+}
+
+/// Whether an item JSON named `id` exists in the inbox or, when there is one, its archive.
+async fn json_in_use(inbox_dir: &Path, archive_dir: Option<&Path>, id: &str) -> bool {
+    let json = format!("{id}.json");
+    if path_exists(&inbox_dir.join(&json)).await {
+        return true;
+    }
+    match archive_dir {
+        Some(dir) => path_exists(&dir.join(&json)).await,
+        None => false,
+    }
 }
 
 async fn path_exists(path: &Path) -> bool {
@@ -711,15 +763,93 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let inbox = workspace_inbox(dir.path()).await;
 
+        let respelled = inbox.join("../agent");
+
         let none: [&Path; 0] = [];
         let empty = ClaimedItem::claim_in_all(&none, "x", test_now()).await;
         let repeated = ClaimedItem::claim_in_all(&[&inbox, &inbox], "x", test_now()).await;
+        let respelled_repeat =
+            ClaimedItem::claim_in_all(&[&inbox, &respelled], "x", test_now()).await;
 
         assert!(empty.is_err(), "no inbox to claim in");
         assert!(repeated.is_err(), "the same inbox twice would never agree");
         assert!(
+            respelled_repeat.is_err(),
+            "the same inbox spelled another way would never agree either"
+        );
+        assert!(
             !inbox.join("attachments/20260225_x").exists(),
             "a rejected request claims nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_dir_releases_its_directory_when_a_save_took_the_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = workspace_inbox(dir.path()).await;
+        // A saved item without attachments: its JSON is the only trace of the id.
+        save_item(&inbox, "20260225_raced.json", &item("raced"))
+            .await
+            .unwrap();
+
+        let claim = ClaimedItem::claim_dir(&inbox, None, "20260225_raced")
+            .await
+            .unwrap();
+
+        assert!(claim.is_none(), "the saved item keeps its id");
+        assert!(
+            !inbox.join("attachments/20260225_raced").exists(),
+            "the directory this claim created is removed"
+        );
+        assert_eq!(
+            load_item(&inbox.join("20260225_raced.json"))
+                .await
+                .unwrap()
+                .title,
+            "raced",
+            "the saved item is left as it was"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claim_in_all_releases_its_claims_when_a_later_inbox_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let user = layout.user_inbox_dir();
+        let agent = layout.agent_inbox_dir();
+        let agent_attachments = agent.join("attachments");
+        tokio::fs::create_dir_all(&agent_attachments).await.unwrap();
+        // The user inbox is claimed first, so its claim must be released when the
+        // agent inbox cannot create its directory.
+        tokio::fs::create_dir_all(&user).await.unwrap();
+        std::fs::set_permissions(&agent_attachments, std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+
+        // Root ignores directory permissions, so the failure cannot be produced
+        // there; the probe detects that and the test has nothing to check.
+        let writable_when_read_only = std::fs::create_dir(agent_attachments.join("probe")).is_ok();
+        if writable_when_read_only {
+            std::fs::remove_dir(agent_attachments.join("probe")).unwrap();
+            std::fs::set_permissions(&agent_attachments, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            return;
+        }
+
+        let result = ClaimedItem::claim_in_all(&[&user, &agent], "failing", test_now()).await;
+        std::fs::set_permissions(&agent_attachments, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("failed to claim inbox item id"),
+            "the error names the failed claim: {err}"
+        );
+        assert!(
+            !user.join("attachments/20260225_failing").exists(),
+            "the user inbox's claim is released when the agent inbox fails"
         );
     }
 
