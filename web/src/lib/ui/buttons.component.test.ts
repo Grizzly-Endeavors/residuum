@@ -81,6 +81,16 @@ describe("Button", () => {
     const button = container.querySelector("button");
     expect(button?.firstElementChild?.tagName.toLowerCase()).toBe("svg");
   });
+
+  it("reports its pressed state when it is a toggle, and none otherwise", () => {
+    render(Button, { variant: "quiet", pressed: true, children: label("Edit") });
+    expect(screen.getByRole("button", { name: "Edit" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("leaves aria-pressed off a button that is not a toggle", () => {
+    render(Button, { children: label("Save") });
+    expect(screen.getByRole("button", { name: "Save" })).not.toHaveAttribute("aria-pressed");
+  });
 });
 
 describe("IconButton", () => {
