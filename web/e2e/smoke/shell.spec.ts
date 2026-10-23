@@ -50,7 +50,7 @@ const PLACES: readonly PlaceCase[] = [
     name: "Inbox",
     link: /^Inbox/,
     path: "/inbox",
-    shows: (page) => page.getByRole("region", { name: "Inbox" }),
+    shows: (page) => page.getByRole("heading", { name: "Inbox", level: 1 }),
   },
   {
     name: "Chat",

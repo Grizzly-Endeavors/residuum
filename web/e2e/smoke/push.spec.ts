@@ -192,7 +192,10 @@ test.describe("the worker's notifications", { tag: "@preview" }, () => {
   const targets: readonly [string, (page: Page) => Locator][] = [
     [
       "/inbox?thread=atlas%2Fuser%2Fmock_1",
-      (p) => p.getByText("Reminder to trigger the deployment pipeline"),
+      (p) =>
+        p
+          .getByRole("region", { name: "Conversation", exact: true })
+          .getByRole("heading", { name: "Deploy tomorrow", level: 2 }),
     ],
     ["/agent/brittle", (p) => p.getByRole("region", { name: "brittle couldn't start" })],
     ["/agent/atlas/activity", (p) => p.getByRole("heading", { name: "Running now" })],
