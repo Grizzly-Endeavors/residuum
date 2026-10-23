@@ -30,6 +30,8 @@
   const folder = $derived(place.folder);
   const agent = $derived(place.agent);
   const composing = $derived(place.compose !== null);
+  /** The New message's recipients as text, so a place rebuilt with the same ones leaves the draft alone. */
+  const composeTo = $derived(place.compose === null ? null : place.compose.to.join(","));
   /** The ref of the open thread; a New message closes it. */
   const ref = $derived(place.compose === null ? place.thread : null);
   const itemOpen = $derived(composing || ref !== null);
@@ -106,10 +108,12 @@
 
   // A New message in the URL is the store's draft; one that closes without
   // sending (Cancel, Back, or leaving once the guard was answered) is dropped.
+  // A New message for other agents while one is open reaches the store too,
+  // which adds them to a draft with content and re-addresses an empty one.
   $effect(() => {
-    const open = composing;
+    const recipients = composeTo;
     untrack(() => {
-      if (open && place.compose !== null) mail.openNewMessage(place.compose.to);
+      if (recipients !== null && place.compose !== null) mail.openNewMessage(place.compose.to);
       else mail.discardNewMessage();
     });
   });

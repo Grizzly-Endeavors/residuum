@@ -451,6 +451,51 @@ describe("Inbox", () => {
     mail.discardNewMessage();
   });
 
+  describe("a New message opened for other agents while one is open", () => {
+    it("adds them to a draft with text and keeps the text", async () => {
+      serve();
+      const view = show(inbox({ compose: { to: ["atlas"] } }));
+      await userEvent.type(screen.getByRole("textbox", { name: /^Message/ }), "Half a thought");
+
+      const next = inbox({ compose: { to: ["scout"] } });
+      at(next);
+      await view.rerender({ place: next });
+
+      expect(chosen("atlas")).toBe(true);
+      expect(chosen("scout")).toBe(true);
+      expect(screen.getByRole("textbox", { name: /^Message/ })).toHaveProperty(
+        "value",
+        "Half a thought",
+      );
+    });
+
+    it("re-addresses an empty draft to them", async () => {
+      serve();
+      const view = show(inbox({ compose: { to: ["atlas"] } }));
+
+      const next = inbox({ compose: { to: ["scout"] } });
+      at(next);
+      await view.rerender({ place: next });
+
+      expect(chosen("scout")).toBe(true);
+      expect(chosen("atlas")).toBe(false);
+    });
+
+    it("leaves a draft alone when the place is rebuilt with the same recipients", async () => {
+      serve();
+      const view = show(inbox({ compose: { to: ["atlas"] } }));
+      await userEvent.click(screen.getByRole("button", { name: /^atlas/ }));
+      await userEvent.click(screen.getByRole("button", { name: /^scout/ }));
+      expect(chosen("scout")).toBe(true);
+      expect(chosen("atlas")).toBe(false);
+
+      await view.rerender({ place: inbox({ compose: { to: ["atlas"] } }) });
+
+      expect(chosen("scout")).toBe(true);
+      expect(chosen("atlas")).toBe(false);
+    });
+  });
+
   describe("a New message after the Inbox was left", () => {
     it("is addressed to the agents it is opened for, not those of the draft left behind", () => {
       serve();
