@@ -698,7 +698,10 @@ mod tests {
             .expect("a large attachment should be accepted");
         let saved_len = tokio::fs::metadata(saved.local_path()).await.unwrap().len();
         assert_eq!(saved_len, body.len() as u64);
-        assert_eq!(saved.size(), body.len() as u32);
+        assert_eq!(
+            saved.size(),
+            u32::try_from(body.len()).expect("test body fits in u32")
+        );
     }
 
     #[test]
