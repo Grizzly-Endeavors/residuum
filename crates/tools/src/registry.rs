@@ -92,6 +92,9 @@ pub struct SessionTools {
     /// The main agent's Auto Mode, shared so session tool calls are checked
     /// against the same live rules. `None` in tests that need no checks.
     pub auto_mode: Option<SharedAutoMode>,
+    /// Every agent's mailbox, shared with main, for the mail-aware inbox
+    /// tools. `None` limits them to this agent's own inboxes.
+    pub mailboxes: Option<Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>>,
 }
 
 impl SessionToolFactory for SessionTools {
@@ -117,6 +120,7 @@ impl SessionToolFactory for SessionTools {
             tools_path: Some(Arc::clone(&self.tools_path)),
             checkpoints: Some(Arc::clone(&self.checkpoints)),
             publisher: Some(self.publisher.clone()),
+            mailboxes: self.mailboxes.clone(),
         };
         register_session_workspace_tools(&mut registry, &injections, self, &scope);
         register_session_agent_tools(&mut registry, self, &scope);
@@ -166,15 +170,7 @@ fn register_session_workspace_tools(
         shared.layout.episodes_dir(),
         shared.layout.sessions_dir(),
     );
-    registration::register_inbox_tools(
-        tools,
-        injections,
-        shared.layout.agent_inbox_dir(),
-        shared.layout.agent_inbox_archive_dir(),
-        shared.layout.user_inbox_dir(),
-        shared.layout.user_inbox_attachments_dir(),
-        shared.tz,
-    );
+    registration::register_inbox_tools(tools, injections, &shared.layout, shared.tz);
     // Workspace checkpoint history (workspace repository only)
     registration::register_workspace_checkpoint_tools(
         tools,

@@ -419,7 +419,7 @@ On error: action not found, or save failure.
 
 ## `inbox_list`
 
-**Source:** `inbox.rs` · `InboxListTool`
+**Source:** `inbox/agent.rs` · `InboxListTool`
 
 **Description sent to LLM:**
 > List inbox items. Shows unread/read status, title, source, and timestamp for each item.
@@ -447,38 +447,57 @@ When no items match: `"No inbox items found."` (or `"No archived items found."` 
 
 ## `inbox_read`
 
-**Source:** `inbox.rs` · `InboxReadTool`
+**Source:** `inbox/agent.rs` · `InboxReadTool`
 
 **Description sent to LLM:**
-> Read a single inbox item by filename stem. Marks the item as read and returns its full content.
+> Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
 
 ### Input
 
-| Parameter | Type   | Required | Description                                              |
-|-----------|--------|----------|----------------------------------------------------------|
-| `id`      | string | yes      | Filename stem of the inbox item (without .json extension) |
+| Parameter | Type   | Required | Description |
+|-----------|--------|----------|-------------|
+| `id`      | string | yes      | Filename stem of an item in your own agent inbox (without .json extension), or a full ref `<agent>/<user\|agent>/<id>` as `user_inbox_list` and `inbox_read` show it |
+
+An `id` without a `/` is a stem and names `<this agent>/agent/<id>`; a trailing `.json` is dropped. The item is looked up in the active inbox first, then the archive.
 
 ### Output
 
-On success: formatted item content:
+On success: the item, then its thread when it is part of a mail thread (a user message, or an agent's message to the user, linked by `in_reply_to`) with more than one message:
 ```
+Ref: {agent}/{user|agent}/{id}
 Title: {title}
 Source: {source}
 Time: {timestamp}
-Attachments: {paths}  (only if non-empty)
+Archived: yes            (only for an archived item)
+In reply to: {ref}       (only when the item answers a message)
+Attachments: {paths}     (only if non-empty; absolute for another agent's item)
 
 {body}
+
+Thread "{subject}": message {k} of {n}.
+
+Earlier messages, oldest first:     (only when k > 1)
+
+--- From {the user[, to a, b] | agent} · {timestamp} · Ref: {ref}
+Title: {title}
+{body}
+
+Later messages (read with inbox_read): {ref}, {ref}     (only when k < n)
 ```
 
-On error: item not found or read failure.
+On error:
+- `id` is neither a valid stem nor a valid ref → invalid arguments
+- No such agent, or no such item active or archived → `"failed to read inbox item '{id}': there is no agent named '{agent}'"` / `"... no inbox item {ref} was found"`. Without the hub's mailbox directory (see below) the message for another agent's item adds a note that only this agent's own inboxes could be read.
 
-**Side effect:** Marks the item as read on disk.
+**Side effect:** Marks the item read on disk only when it is an active item of this agent's own agent inbox. Another agent's item, an archived item and any user-inbox item are left as they are.
+
+**Reach:** The tool reads every agent's workspace through the hub's mailbox directory (`MailboxDirectory`, injected as `RegistryInjections::mailboxes`). Without one (a registry built in tests, or while the hub is shutting down) it reads only this agent's own inboxes, and threads show only the messages stored there.
 
 ---
 
 ## `inbox_archive`
 
-**Source:** `inbox.rs` · `InboxArchiveTool`
+**Source:** `inbox/agent.rs` · `InboxArchiveTool`
 
 **Description sent to LLM:**
 > Archive one or more inbox items by filename stem. Moves them to the archive directory.
@@ -503,7 +522,7 @@ On total failure: error with failure details.
 
 ## `inbox_restore`
 
-**Source:** `inbox.rs` · `InboxRestoreTool`
+**Source:** `inbox/agent.rs` · `InboxRestoreTool`
 
 **Description sent to LLM:**
 > Restore one or more archived inbox items by filename stem. Moves them back to the active inbox. Use inbox_list with archived=true to find the filename stem to restore.
@@ -528,30 +547,66 @@ On total failure: error with failure details.
 
 ## `user_inbox_add`
 
-**Source:** `inbox.rs` · `UserInboxAddTool`
+**Source:** `inbox/user.rs` · `UserInboxAddTool`
 
 **Description sent to LLM:**
-> Add a new item to the user's inbox. Use this to explicitly send notes, reminders, or items for the human user to review later.
+> Add a new item to the user's inbox. Use this to explicitly send notes, reminders, or items for the human user to review later. Set in_reply_to to answer a message in its mail thread instead of starting a new one.
 
 ### Input
 
-| Parameter     | Type             | Required | Description                        |
-|---------------|------------------|----------|-------------------------------------|
-| `title`       | string           | yes      | A short summary of the item        |
-| `body`        | string           | yes      | The detailed content of the item   |
+| Parameter     | Type             | Required | Description |
+|---------------|------------------|----------|-------------|
+| `title`       | string           | unless `in_reply_to` is set | A short summary of the item. A reply without one (or with a blank one) is titled `Re: <thread subject>`, with leading `Re:`s collapsed so they don't stack. |
+| `body`        | string           | yes      | The detailed content of the item |
+| `in_reply_to` | string           | no       | The ref (`<agent>/<user\|agent>/<id>`) of the mail message this item answers, which threads it under that message. A bare id names an item in this agent's own user inbox. |
 | `attachments` | array\<string\>  | no       | Paths to files already written to disk to attach to this item. Each file is copied into the item's own storage, so it's safe even if the source is later moved or deleted. |
 
 ### Output
 
 On success, no `attachments` given: `"Added item to user inbox with ID: {filename stem}"`
 
-On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`. If any attachment in the batch failed (e.g. a missing source path), the same success output continues with a `"Some attachments could not be copied (the item was still added):"` section naming each one.
+On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`.
 
-On error:
-- Missing `title` or `body`
+A reply adds a line: `"In reply to {ref} in the thread \"{subject}\", titled \"{title}\"."`. If any attachment in the batch failed (e.g. a missing source path), the output continues with a `"Some attachments could not be copied (the item was still added):"` section naming each one.
+
+On error (nothing is written):
+- Missing `body`; missing or blank `title` without `in_reply_to` → `"title is required unless in_reply_to is set"`
+- `in_reply_to` that is not a valid ref → `"in_reply_to '{raw}' is not a valid inbox ref: {reason}"`
+- `in_reply_to` naming no mail message in any agent's mailbox → `"in_reply_to: no mail message {ref} was found. ..."`, plus the own-inboxes-only note when the hub's mailbox directory is not available
 - Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated (must exist and be readable — there is no size cap on a local file) and copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. A file that fails to copy is skipped, not fatal to the item — the item is saved with whichever attachments did succeed, and the tool result names what failed. Once the item is saved, its ID is published on the agent's bus for the hub's watcher; an item that fails to save publishes nothing. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
+**Side effect:** Writes a new `.json` file to this agent's `inbox/user/` (creating the directory when missing), tagged with source `"agent"` and, for a reply, `in_reply_to` set to the given ref. When `attachments` is given, each file is validated (must exist and be readable — there is no size cap on a local file) and copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. A file that fails to copy is skipped, not fatal to the item — the item is saved with whichever attachments did succeed, and the tool result names what failed. Once the item is saved, its ID is published on the agent's bus for the hub's watcher; an item that fails to save publishes nothing. The user reads, archives and answers these items in the web UI's mail view; agents list every agent's items with `user_inbox_list` and read one with `inbox_read`, and neither changes them.
+
+---
+
+## `user_inbox_list`
+
+**Source:** `inbox/user.rs` · `UserInboxListTool`
+
+**Description sent to LLM:**
+> List the items every agent has added to the user's inbox, newest first: each item's ref, title, agent, time, read and archived state, and the message it answers. Read-only. Check it before adding an item so you don't repeat what an agent already sent; read one with inbox_read and its ref. Shows at most 100 items.
+
+### Input
+
+| Parameter          | Type    | Required | Description |
+|--------------------|---------|----------|-------------|
+| `agent`            | string  | no       | Only this agent's items (its folder name, the first part of a ref). |
+| `include_archived` | boolean | no       | Include items the user archived (default false). |
+
+### Output
+
+On success:
+```
+{N} user inbox item(s), newest first:
+  [{read|unread}[, archived]] {ref} — {title} ({agent}, {timestamp})[, in reply to {ref}]
+```
+`N` counts every matching item. When more than 100 match, only the 100 newest are listed, followed by `"Showing the 100 newest of {N} items. Narrow the list with agent to see older ones."`. With no match: `"No user inbox items found."`. Times are each agent's stored local times.
+
+Notes follow the listing after a blank line: one per agent whose inbox could not be read (its items are missing), and, without the hub's mailbox directory, that only this agent's own inboxes could be read.
+
+On error (`is_error = true`): `"there is no agent named '{agent}'"` for an unknown `agent` filter.
+
+**Side effect:** None. Read and archived state is the user's; the tool never changes it.
 
 ---
 
