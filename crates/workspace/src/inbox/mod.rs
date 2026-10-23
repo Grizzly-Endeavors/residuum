@@ -498,10 +498,19 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
 /// is returned.
 ///
 /// # Errors
-/// Returns an error if the item's JSON or its attachments directory exists and
-/// cannot be removed.
+/// Returns an error if `item_id` is not one plain filename stem (an empty or
+/// `.` id names the whole `attachments/` directory, and one with a separator or
+/// `..` a path outside the item), or if the item's JSON or its attachments
+/// directory exists and cannot be removed.
 pub async fn remove_item(inbox_dir: &Path, item_id: &str) -> anyhow::Result<()> {
     use anyhow::Context as _;
+
+    if let Err(problem) = item_ref::validate_item_id(item_id) {
+        anyhow::bail!(
+            "refusing to remove inbox item with invalid id '{item_id}' from {}: {problem}",
+            inbox_dir.display()
+        );
+    }
 
     let json = inbox_dir.join(format!("{item_id}.json"));
     let attachments = inbox_dir.join("attachments").join(item_id);
@@ -1871,6 +1880,37 @@ mod tests {
 
         remove_item(&inbox, "never_saved").await.unwrap();
         remove_item(&inbox, "never_saved").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_item_refuses_an_id_that_is_not_one_plain_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox/agent");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        save_item(&inbox, "keep.json", &make_item("keep", 12, false))
+            .await
+            .unwrap();
+        let kept_attachments = inbox.join("attachments").join("keep");
+        tokio::fs::create_dir_all(&kept_attachments).await.unwrap();
+        tokio::fs::write(kept_attachments.join("note.txt"), b"hello")
+            .await
+            .unwrap();
+
+        for bad_id in ["", ".", "..", "keep/..", "../agent", "a/b", "a\\b"] {
+            let err = remove_item(&inbox, bad_id)
+                .await
+                .expect_err("an invalid id is refused");
+            assert!(
+                err.to_string().contains("invalid id"),
+                "expected an invalid-id error for {bad_id:?}, got {err}"
+            );
+        }
+
+        assert!(inbox.join("keep.json").exists(), "the other item is kept");
+        assert!(
+            kept_attachments.join("note.txt").exists(),
+            "the other item's attachments are kept"
+        );
     }
 
     #[tokio::test]

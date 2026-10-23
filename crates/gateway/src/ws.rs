@@ -109,15 +109,19 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     // Forwarding task: bus subscribers + local channel → WebSocket client
     let fwd_handle = residuum_core::util::spawn_in_span(async move {
         loop {
+            // Local frames first: a `message_refused` for a failed publish is
+            // queued as the bus shuts down, and an unbiased pick could take the
+            // ended bus subscription and stop before writing it.
             let msg = tokio::select! {
-                bus_msg = subs.recv() => {
-                    match bus_msg {
+                biased;
+                msg = local_rx.recv() => {
+                    match msg {
                         Some(m) => Some(m),
                         None => break,
                     }
                 }
-                msg = local_rx.recv() => {
-                    match msg {
+                bus_msg = subs.recv() => {
+                    match bus_msg {
                         Some(m) => Some(m),
                         None => break,
                     }
@@ -187,9 +191,34 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
         }
     }
 
-    // Clean up: abort forwarding task when client disconnects
-    fwd_handle.abort();
+    // Dropping the senders lets the forwarder write what is already queued
+    // (above all the `message_refused` for a failed publish, which ends this
+    // loop) and then close the socket. Aborting it outright lost that frame,
+    // so the client saw a bare close and its message vanished unrefused.
+    drop(local_tx);
+    drop(close_tx);
+    finish_forwarding(fwd_handle).await;
     tracing::debug!("client disconnected");
+}
+
+/// How long the forwarder gets to write its queued frames once the read loop
+/// has ended, before it is aborted.
+const FORWARDER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Wait for the forwarding task to flush its queued frames and close the
+/// socket, aborting it if a stuck socket keeps it past
+/// [`FORWARDER_DRAIN_TIMEOUT`].
+async fn finish_forwarding(mut fwd_handle: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(FORWARDER_DRAIN_TIMEOUT, &mut fwd_handle)
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            timeout = ?FORWARDER_DRAIN_TIMEOUT,
+            "websocket forwarder did not flush its queued frames in time; aborting it"
+        );
+        fwd_handle.abort();
+    }
 }
 
 /// Hand the client's Close frame to the forwarding task, which owns the send
@@ -1133,6 +1162,17 @@ mod tests {
         msg: ClientMessage,
         state: &GatewayState,
     ) -> mpsc::UnboundedReceiver<ServerMessage> {
+        let (keep_going, local_rx) = handle_on_connection_with_outcome(msg, state).await;
+        assert!(keep_going, "the connection should stay open");
+        local_rx
+    }
+
+    /// [`handle_on_connection`], also returning whether the connection's read
+    /// loop goes on.
+    async fn handle_on_connection_with_outcome(
+        msg: ClientMessage,
+        state: &GatewayState,
+    ) -> (bool, mpsc::UnboundedReceiver<ServerMessage>) {
         let (local_tx, local_rx) = mpsc::unbounded_channel();
         let verbose = AtomicBool::new(false);
         let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
@@ -1147,8 +1187,7 @@ mod tests {
             },
         )
         .await;
-        assert!(keep_going);
-        local_rx
+        (keep_going, local_rx)
     }
 
     #[tokio::test]
@@ -1346,7 +1385,7 @@ mod tests {
         // bus does.
         state.publisher = residuum_bus::Publisher::noop();
 
-        let mut local = handle_on_connection(
+        let (keep_going, mut local) = handle_on_connection_with_outcome(
             ClientMessage::SendMessage {
                 id: "chat-4".into(),
                 content: "photo".into(),
@@ -1355,6 +1394,7 @@ mod tests {
             &state,
         )
         .await;
+        assert!(!keep_going, "a stopped bus ends the connection");
 
         let reply = next_server_message(&mut local).await;
         assert!(
@@ -1382,6 +1422,63 @@ mod tests {
             state.uploads.resolve(&photo_id).await.is_ok(),
             "the staged upload is kept for a resend"
         );
+    }
+
+    #[tokio::test]
+    async fn a_publish_failure_refusal_reaches_the_socket_before_it_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = make_test_gateway_state(dir.path());
+        // A publisher not backed by a broker fails every publish, as a stopped
+        // bus does, which ends the connection.
+        state.publisher = residuum_bus::Publisher::noop();
+        let addr = serve_ws_handler(state).await;
+        let mut socket = open_socket_past_handshake(addr, "/ws").await;
+
+        let send = serde_json::to_string(&ClientMessage::SendMessage {
+            id: "chat-5".into(),
+            content: "hello".into(),
+            attachments: Vec::new(),
+        })
+        .unwrap();
+        socket.send(WireMessage::text(send)).await.unwrap();
+
+        let refusal = serde_json::to_string(&ServerMessage::MessageRefused {
+            id: "chat-5".into(),
+            message: "Your message didn't reach the agent. Send it again.".into(),
+        })
+        .unwrap();
+        loop {
+            let Some(Ok(frame)) = wait::guarded("the refusal on the socket", socket.next()).await
+            else {
+                panic!("the socket ended before the refusal arrived");
+            };
+            match frame {
+                WireMessage::Text(text) => {
+                    if text.as_str() == refusal {
+                        break;
+                    }
+                }
+                WireMessage::Ping(_) | WireMessage::Pong(_) => {}
+                other
+                @ (WireMessage::Binary(_) | WireMessage::Close(_) | WireMessage::Frame(_)) => {
+                    panic!("expected the refusal before the close, got {other:?}")
+                }
+            }
+        }
+
+        // The connection still ends after the refusal.
+        loop {
+            match wait::guarded("the socket to close", socket.next()).await {
+                None | Some(Err(_) | Ok(WireMessage::Close(_))) => break,
+                Some(Ok(
+                    WireMessage::Text(_)
+                    | WireMessage::Binary(_)
+                    | WireMessage::Ping(_)
+                    | WireMessage::Pong(_)
+                    | WireMessage::Frame(_),
+                )) => {}
+            }
+        }
     }
 
     #[tokio::test]
