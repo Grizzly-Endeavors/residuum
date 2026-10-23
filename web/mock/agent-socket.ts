@@ -178,7 +178,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         // Files come as uploads staged on the hub; one that isn't staged refuses the whole message.
         const saved = saveChatAttachments(hub, agent, msg.content, msg.attachments ?? []);
         if (saved === null) {
-          reply({ type: "error", reply_to: msg.id, message: UPLOAD_GONE });
+          reply({ type: "message_refused", id: msg.id, message: UPLOAD_GONE });
           break;
         }
         if (msg.content.toLowerCase().startsWith("spawn")) {

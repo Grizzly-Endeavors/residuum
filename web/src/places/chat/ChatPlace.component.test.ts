@@ -563,13 +563,19 @@ describe("dropping files", () => {
     expect(attached).toHaveTextContent("report.pdf");
   });
 
-  it("sends a message's files as their uploads, and puts them back when the agent refuses it", async () => {
+  it("sends a message's files as their uploads, and puts them back, uploading again, when the agent refuses it", async () => {
     Element.prototype.scrollIntoView = vi.fn();
-    mockFetch((url) =>
-      url.startsWith("/api/hub/uploads")
-        ? jsonResponse({ id: "upload_7", filename: "report.pdf", size: 4 })
-        : jsonResponse({}, 404),
-    );
+    // The first upload answers at once; the one after the refusal waits for `finish`.
+    let uploads = 0;
+    let finish: (response: Response) => void = () => {};
+    mockFetch((url) => {
+      if (!url.startsWith("/api/hub/uploads")) return jsonResponse({}, 404);
+      uploads += 1;
+      if (uploads === 1) return jsonResponse({ id: "upload_7", filename: "report.pdf", size: 4 });
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    });
     setViewedAgent("atlas");
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
@@ -592,14 +598,62 @@ describe("dropping files", () => {
     await userEvent.type(box, "And then");
 
     ws.transport.onMessage?.({
-      type: "error",
-      reply_to: frame?.type === "send_message" ? frame.id : "",
+      type: "message_refused",
+      id: frame?.type === "send_message" ? frame.id : "",
       message: "An attached file isn't available anymore. Attach it again, then send.",
     });
     await settle();
     expect(box).toHaveValue("Read this\n\nAnd then");
     expect(screen.getByRole("list", { name: "Attached files" })).toHaveTextContent("report.pdf");
     expect(ws.store.feed.filter((item) => item.kind === "user")).toEqual([]);
+    expect(ws.store.feed.some((item) => item.kind === "turn-failure")).toBe(false);
+
+    // The hub's copy may be gone, so the file uploads again before it can go.
+    expect(screen.getByRole("progressbar", { name: "Uploading report.pdf" })).toBeInTheDocument();
+    await userEvent.type(box, "{Enter}");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Wait for report.pdf to finish uploading, then send.",
+    );
+    const sendsSoFar = send.mock.calls.filter(([sent]) => sent.type === "send_message").length;
+    expect(sendsSoFar).toBe(1);
+
+    finish(jsonResponse({ id: "upload_8", filename: "report.pdf", size: 4 }));
+    await waitFor(() => {
+      expect(screen.queryByRole("progressbar")).toBeNull();
+    });
+    await userEvent.type(box, "{Enter}");
+    const again = send.mock.calls
+      .map(([sent]) => sent)
+      .filter((sent) => sent.type === "send_message");
+    expect(again).toHaveLength(2);
+    expect(again[1]).toMatchObject({
+      content: "Read this\n\nAnd then",
+      attachments: ["upload_8"],
+    });
+  });
+
+  it("keeps a message and a turn-failure card when an error names it before the agent confirmed it", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const send = vi.spyOn(ws.transport, "send");
+    const box = screen.getByRole("combobox", { name: "Message atlas" });
+    await userEvent.type(box, "Hello{Enter}");
+    const frame = send.mock.calls
+      .map(([sent]) => sent)
+      .find((sent) => sent.type === "send_message");
+
+    // The turn failed so fast that its error overtook the message's confirmation.
+    ws.transport.onMessage?.({
+      type: "error",
+      reply_to: frame?.type === "send_message" ? frame.id : "",
+      message: "The model isn't reachable.",
+    });
+    await settle();
+    expect(box).toHaveValue("");
+    expect(ws.store.feed.filter((item) => item.kind === "user")).toHaveLength(1);
+    expect(ws.store.feed.some((item) => item.kind === "turn-failure")).toBe(true);
   });
 
   it("drops the overlay when the files leave the place", async () => {

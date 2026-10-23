@@ -11,7 +11,6 @@
   import { userErrorMessage } from "../../lib/errors";
   import { notifications } from "../../lib/notifications.svelte";
   import { openSessionByAddress } from "../../lib/session-address";
-  import { draftAttachments, readDraft, saveDraft } from "../../lib/composer-drafts";
   import type { StagedAttachment } from "../../lib/staged-attachments.svelte";
   import type { WaitingMessage } from "../../lib/types";
   import { Button, EmptyState, Skeleton } from "../../lib/ui";
@@ -90,20 +89,15 @@
   }
 
   // A message the agent refused goes back in the box, files and all. With no
-  // box showing (the agent stopped meanwhile), it waits in the agent's draft.
-  $effect(() =>
-    ws.onRefusedSend((refused) => {
-      if (composer !== undefined) {
-        composer.restore(refused.content, refused.attachments);
-        return;
-      }
-      const typed = readDraft(agent);
-      if (refused.content !== "") {
-        saveDraft(agent, typed.trim() === "" ? refused.content : `${refused.content}\n\n${typed}`);
-      }
-      draftAttachments(agent).restore(refused.attachments);
-    }),
-  );
+  // box showing (the agent stopped meanwhile, or another place is open), the
+  // coordinator puts it in the agent's draft instead.
+  $effect(() => {
+    const shown = composer;
+    if (shown === undefined) return;
+    return ws.onRefusedSend((refused) => {
+      shown.restore(refused.content, refused.attachments);
+    });
+  });
 
   // ── Messages the agent hasn't read yet ─────────────────────────────
 

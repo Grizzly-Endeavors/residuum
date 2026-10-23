@@ -27,7 +27,8 @@ export const UPLOAD_GONE = "An attached file isn't available anymore. Attach it 
 /**
  * Save the uploads a chat message names (`send_message`'s `attachments`) as
  * the backend does: each becomes an item of its own in the agent's inbox
- * (source `chat`, titled `Chat attachment: <name>`) holding the file, and the
+ * (source `chat`, titled `Chat attachment: <name>`, its body naming the sender
+ * `Web chat`, the size and the type) holding the file, and the
  * message text gains a line naming it. Every id is resolved before anything is
  * saved, so one that isn't staged saves nothing and returns `null`. The used
  * uploads are taken off the hub.
@@ -56,7 +57,7 @@ export function saveChatAttachments(
     agent.state.agentInbox.push({
       id,
       title,
-      body: "",
+      body: `From: Web chat\nSize: ${String(upload.bytes.length)} bytes\nContent-Type: ${stored.mime_type}`,
       source: "chat",
       timestamp: hub.env.clock.iso(),
       attachments: [stored],

@@ -3,7 +3,7 @@
 // kept for the life of the page only, since a file can't be put in storage,
 // and their uploads carry on while the chat shows another agent.
 
-import { StagedAttachments } from "./staged-attachments.svelte";
+import { StagedAttachments, type StagedAttachment } from "./staged-attachments.svelte";
 
 const STORAGE_PREFIX = "residuum-draft:";
 
@@ -37,6 +37,23 @@ export function draftAttachments(agent: string): StagedAttachments {
     attachments.set(agent, staged);
   }
   return staged;
+}
+
+/**
+ * Put a message that didn't go back in `agent`'s draft, for when no composer
+ * is showing: its text ahead of anything typed since, its files ahead of any
+ * attached since.
+ */
+export function restoreDraft(
+  agent: string,
+  content: string,
+  files: readonly StagedAttachment[],
+): void {
+  if (content !== "") {
+    const typed = readDraft(agent);
+    saveDraft(agent, typed.trim() === "" ? content : `${content}\n\n${typed}`);
+  }
+  draftAttachments(agent).restore(files);
 }
 
 /** Throw away every agent's attached files, cancelling uploads still running. */

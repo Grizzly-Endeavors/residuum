@@ -1,22 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   deliveryHint,
-  joinNames,
   moveOnEnter,
   seenLine,
   sendOnModEnter,
   threadMeta,
   uploadLimitHint,
 } from "./thread-model";
-
-describe("joinNames", () => {
-  it("lists names as a sentence does", () => {
-    expect(joinNames([])).toBe("");
-    expect(joinNames(["atlas"])).toBe("atlas");
-    expect(joinNames(["atlas", "scout"])).toBe("atlas and scout");
-    expect(joinNames(["atlas", "scout", "wren"], "or")).toBe("atlas, scout or wren");
-  });
-});
 
 describe("threadMeta", () => {
   it("names you and the agents, with the message count", () => {

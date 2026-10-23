@@ -7,13 +7,8 @@
   import AttachFiles from "./AttachFiles.svelte";
   import ComposerHint from "./ComposerHint.svelte";
   import StagedFiles from "../../composer/StagedFiles.svelte";
-  import {
-    deliveryHint,
-    joinNames,
-    moveOnEnter,
-    PICK_AGENT_HINT,
-    sendOnModEnter,
-  } from "./thread-model";
+  import { joinNames } from "../../lib/words";
+  import { deliveryHint, moveOnEnter, PICK_AGENT_HINT, sendOnModEnter } from "./thread-model";
 
   // New message, shown as a thread not sent yet: who it goes to (one agent
   // or more), a subject, the Markdown body and attachments. The draft is the

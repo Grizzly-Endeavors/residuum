@@ -11,7 +11,8 @@
   import { AttachmentChip, Banner, Button, IconButton, Skeleton } from "../../lib/ui";
   import ReplyComposer from "./ReplyComposer.svelte";
   import { opensInPanel } from "../../lib/message-attachments";
-  import { joinNames, seenLine, threadMeta } from "./thread-model";
+  import { joinNames } from "../../lib/words";
+  import { seenLine, threadMeta } from "./thread-model";
 
   // One conversation, open: its subject, Archive or Move to Inbox, every
   // message oldest first with its attachments and, on yours, who has seen

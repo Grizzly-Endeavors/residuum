@@ -41,6 +41,7 @@ import {
 } from "./config-coordinator";
 import { userErrorMessage, userErrorReason } from "./errors";
 import { hub } from "./hub.svelte";
+import { joinNames } from "./words";
 import {
   fieldRefKey,
   keyPathOf,
@@ -381,11 +382,6 @@ export class ConflictUnanswered extends Error {}
 /** A file's name in a message. */
 function fileLabel(file: ConfigFile): string {
   return file.kind === "hub" ? "the install-wide config.toml" : configFileName(file);
-}
-
-function joinNames(names: readonly string[]): string {
-  if (names.length <= 2) return names.join(" and ");
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
 }
 
 function sentence(text: string): string {

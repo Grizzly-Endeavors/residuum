@@ -467,6 +467,12 @@ export class FeedStore {
         }
         break;
 
+      case "message_refused":
+        // Never delivered, so it started no turn and fails none. The toast
+        // and the composer's copy are WsCoordinator's.
+        this.withdrawRefused(msg.id);
+        break;
+
       case "notice":
       case "reloading":
         // Surfaced by WsCoordinator; no chat-state side effect.
@@ -754,11 +760,13 @@ export class FeedStore {
   }
 
   /**
-   * The agent refused a message this page sent (`error` naming it, before
-   * anything said the agent took it in): it comes off the feed, or off the
-   * waiting messages, since it never went. The composer gets it back.
+   * The agent refused a message this page sent (`message_refused`): it comes
+   * off the feed, or off the waiting messages, since it never went. The
+   * composer gets it back. Its id no longer counts as shown, so should the
+   * same message come back from the agent after all, its bubble shows.
    */
   withdrawRefused(id: string): void {
+    this.sentIds.delete(id);
     if (this.waiting.some((message) => message.id === id)) {
       this.waiting = this.waiting.filter((message) => message.id !== id);
       return;

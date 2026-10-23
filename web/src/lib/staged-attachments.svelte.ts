@@ -9,15 +9,10 @@
 
 import { MAX_UPLOAD_BYTES, UPLOAD_LIMIT_LABEL, uploadFile } from "./api";
 import { userErrorMessage } from "./errors";
+import { joinNames } from "./words";
 
 /** How far a staged attachment has got: uploading, staged on the hub, or failed. */
 export type AttachmentStatus = "uploading" | "uploaded" | "failed";
-
-/** `names` as a sentence lists them: "a", "a and b", "a, b and c". */
-export function listing(names: readonly string[]): string {
-  if (names.length <= 1) return names.join("");
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
-}
 
 let attachmentCount = 0;
 
@@ -53,18 +48,36 @@ export class StagedAttachment {
   /** Upload the file, or upload it again after a failure. */
   upload(): Promise<void> {
     if (this.status === "uploaded") return this.done;
+    return this.startUpload();
+  }
+
+  /**
+   * Upload the file again, even though it was uploaded: the hub's copy may be
+   * gone, as when a message sent with it was refused. The file is uploading
+   * until the new copy is staged, and the old id no longer counts.
+   */
+  uploadAgain(): Promise<void> {
+    if (this.removed) return this.done;
+    this.controller?.abort();
+    this.uploadId = null;
+    return this.startUpload();
+  }
+
+  private startUpload(): Promise<void> {
     this.status = "uploading";
     this.error = null;
     const controller = new AbortController();
     this.controller = controller;
+    // Only the latest attempt's answer counts: one superseded by `uploadAgain` changes nothing.
+    const superseded = (): boolean => this.removed || this.controller !== controller;
     this.done = (async () => {
       try {
         const staged = await uploadFile(this.file, this.filename, { signal: controller.signal });
-        if (this.removed) return;
+        if (superseded()) return;
         this.uploadId = staged.id;
         this.status = "uploaded";
       } catch (err) {
-        if (this.removed) return;
+        if (superseded()) return;
         this.error = userErrorMessage(err, { action: `Couldn't upload ${this.filename}.` });
         this.status = "failed";
       }
@@ -100,11 +113,11 @@ export class StagedAttachments {
     const failed = this.failed;
     if (failed.length > 0) {
       const one = failed.length === 1;
-      return `${listing(failed.map((attachment) => attachment.filename))} didn't upload. Try ${one ? "it" : "them"} again or remove ${one ? "it" : "them"}, then send.`;
+      return `${joinNames(failed.map((attachment) => attachment.filename))} didn't upload. Try ${one ? "it" : "them"} again or remove ${one ? "it" : "them"}, then send.`;
     }
     const uploading = this.attachments.filter((attachment) => attachment.status === "uploading");
     if (uploading.length > 0) {
-      const names = listing(uploading.map((attachment) => attachment.filename));
+      const names = joinNames(uploading.map((attachment) => attachment.filename));
       return `Wait for ${names} to finish uploading, then send.`;
     }
     return null;
@@ -135,7 +148,7 @@ export class StagedAttachments {
     this.notice =
       refused.length === 0
         ? null
-        : `${listing(refused)} ${one ? "is" : "are"} larger than the ${UPLOAD_LIMIT_LABEL} upload limit, so ${one ? "it wasn't" : "they weren't"} attached.`;
+        : `${joinNames(refused)} ${one ? "is" : "are"} larger than the ${UPLOAD_LIMIT_LABEL} upload limit, so ${one ? "it wasn't" : "they weren't"} attached.`;
     if (added.length > 0) this.attachments = [...this.attachments, ...added];
   }
 

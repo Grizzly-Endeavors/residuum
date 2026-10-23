@@ -24,8 +24,9 @@ import {
 import { userErrorMessage } from "./errors";
 import type { MailFolder, MailMessage, MailThread, MailThreadSummary } from "./hub-types";
 import type { AppLocation } from "./routes";
-import { listing, StagedAttachments } from "./staged-attachments.svelte";
+import { StagedAttachments } from "./staged-attachments.svelte";
 import { toast } from "./toast.svelte";
+import { joinNames } from "./words";
 
 /** Which threads the list shows: one folder, for one agent or every agent. */
 export interface MailList {
@@ -639,7 +640,7 @@ export class MailStore {
       if (attachments === null) {
         if (this.newMessage !== draft) {
           toast.error(
-            `Your message to ${listing(draft.to)} wasn't sent because a file didn't upload.`,
+            `Your message to ${joinNames(draft.to)} wasn't sent because a file didn't upload.`,
           );
         }
         return null;
@@ -656,7 +657,7 @@ export class MailStore {
       draft.clear();
       void this.reload();
       if (stillOpen) return thread_id;
-      toast.success(`Sent to ${listing(recipients)}.`);
+      toast.success(`Sent to ${joinNames(recipients)}.`);
       return null;
     } catch (err) {
       if (this.newMessage === draft) {
@@ -664,7 +665,7 @@ export class MailStore {
       } else {
         // The draft is out of sight, so a notice is the only way to hear it didn't go.
         toast.error(
-          userErrorMessage(err, { action: `Your message to ${listing(draft.to)} wasn't sent.` }),
+          userErrorMessage(err, { action: `Your message to ${joinNames(draft.to)} wasn't sent.` }),
         );
       }
       return null;

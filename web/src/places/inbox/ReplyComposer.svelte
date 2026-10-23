@@ -6,7 +6,8 @@
   import AttachFiles from "./AttachFiles.svelte";
   import ComposerHint from "./ComposerHint.svelte";
   import StagedFiles from "../../composer/StagedFiles.svelte";
-  import { deliveryHint, joinNames, sendOnModEnter } from "./thread-model";
+  import { joinNames } from "../../lib/words";
+  import { deliveryHint, sendOnModEnter } from "./thread-model";
 
   // The reply at the foot of an open thread, to everyone in it. The text and
   // files live in the store's draft for the thread, so they survive moving

@@ -228,9 +228,9 @@ describe("agent socket", () => {
 
     it("refuses a message that names an upload that isn't staged", async () => {
       socket.send({ type: "send_message", id: "m1", content: "Read this", attachments: ["gone"] });
-      expect(await socket.nextOfType("error")).toEqual({
-        type: "error",
-        reply_to: "m1",
+      expect(await socket.nextOfType("message_refused")).toEqual({
+        type: "message_refused",
+        id: "m1",
         message: "An attached file isn't available anymore. Attach it again, then send.",
       });
       expect((await socket.settled()).map((frame) => frame.type)).not.toContain("user_message");
