@@ -1,15 +1,13 @@
 //! Sending the user's mail: one message, one copy per recipient.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::Utc;
 use residuum_config::WorkspaceLayout;
 
 use super::{MailThread, Mailbox, MailboxDirectory};
-use crate::inbox::{
-    InboxItem, InboxKind, InboxRef, copy_attachments, derive_title, generate_filename, save_item,
-};
+use crate::inbox::{ClaimedItem, InboxItem, InboxKind, InboxRef, copy_attachments, derive_title};
 
 /// Where a user-authored agent-inbox item was written from. Only items with
 /// one of these sources are mail; every other agent-inbox item is not.
@@ -129,11 +127,11 @@ pub enum SendMailError {
 }
 
 /// Send `mail`: write one copy to each recipient's `inbox/agent/`, all with
-/// the same id (free in every recipient's inbox and archive), each with its
-/// own copy of the attachments.
+/// one id claimed in every recipient's inbox at once (see
+/// [`ClaimedItem::claim_in_all`]), each with its own copy of the attachments.
 ///
-/// Every copy is written or none is: on a failure partway, the copies and
-/// attachment files already written are removed.
+/// Every copy is written or none is: on a failure partway, the claims not yet
+/// saved are released and the copies already saved are removed.
 ///
 /// # Errors
 /// [`SendMailError::NoRecipients`], [`SendMailError::BlankBody`] and
@@ -166,62 +164,59 @@ pub async fn send_mail(
         mail.title.clone()
     };
     let now = Utc::now();
-    let id = free_id(&mailboxes, &title, now).await?;
+    // The id's date comes from the first recipient's clock; every copy shares it.
+    let id_time = mailboxes.first().map_or_else(
+        || now.naive_utc(),
+        |m| now.with_timezone(&m.timezone).naive_local(),
+    );
+    let inbox_dirs: Vec<PathBuf> = mailboxes
+        .iter()
+        .map(|m| WorkspaceLayout::new(&m.dir).agent_inbox_dir())
+        .collect();
+    let claims = ClaimedItem::claim_in_all(&inbox_dirs, &title, id_time)
+        .await
+        .map_err(|e| SendMailError::Write(anyhow::anyhow!(e)))?;
+    let id = claims.first().map(|c| c.id().to_string()).ok_or_else(|| {
+        SendMailError::Write(anyhow::anyhow!("claiming a mail id returned no claim"))
+    })?;
 
-    // Everything that can fail without writing is done before the first copy
-    // is written, so every error after that point rolls back.
+    // A ref that can't be built fails here, while every claim is still
+    // unsaved and dropping them leaves nothing behind.
     let mut copies = mailboxes
         .iter()
         .map(|m| InboxRef::new(&m.agent, InboxKind::Agent, &id))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| SendMailError::Write(e.into()))?;
     copies.sort();
-    let message = copies.first().cloned().ok_or(SendMailError::NoRecipients)?;
+    let Some(message) = copies.first().cloned() else {
+        return Err(SendMailError::NoRecipients);
+    };
 
-    let mut written = Vec::new();
-    let result = write_copies(&mailboxes, &mail, &title, &id, now, &mut written).await;
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "sending mail failed; removing the copies already written");
-        roll_back(&written).await;
-        return Err(e);
-    }
+    write_copies(&mailboxes, claims, &mail, &title, now).await?;
 
     tracing::info!(message = %message, copies = copies.len(), "mail sent");
     Ok(SentMail { message, copies })
 }
 
-/// A path `send_mail` wrote, to remove if a later copy fails.
-enum Written {
-    File(PathBuf),
-    Dir(PathBuf),
-}
-
+/// Fill each recipient's claim with its attachments, then save every copy.
+/// Attachments are copied for every claim before any copy is saved, so an
+/// attachment failure leaves only unsaved claims, which dropping removes. A
+/// save that fails after earlier copies were saved removes those copies.
 async fn write_copies(
     mailboxes: &[Mailbox],
+    claims: Vec<ClaimedItem>,
     mail: &OutgoingMail,
     title: &str,
-    id: &str,
     now: chrono::DateTime<Utc>,
-    written: &mut Vec<Written>,
 ) -> Result<(), SendMailError> {
-    for mailbox in mailboxes {
-        let layout = WorkspaceLayout::new(&mailbox.dir);
-        let inbox_dir = layout.agent_inbox_dir();
-        tokio::fs::create_dir_all(&inbox_dir).await.map_err(|e| {
-            SendMailError::Write(anyhow::anyhow!(
-                "failed to create {}: {e}",
-                inbox_dir.display()
-            ))
-        })?;
-        let attachments_dir = layout.agent_inbox_attachments_dir();
-        if !mail.attachments.is_empty() {
-            written.push(Written::Dir(attachments_dir.join(id)));
-        }
-        let (attachments, failures) =
-            copy_attachments(&attachments_dir, InboxKind::Agent, id, &mail.attachments)
-                .await
-                .map_err(SendMailError::Write)?;
+    let mut filled = Vec::with_capacity(claims.len());
+    for (mailbox, claim) in mailboxes.iter().zip(claims) {
+        let (attachments, failures) = copy_attachments(&claim, &mail.attachments).await;
         if !failures.is_empty() {
+            tracing::warn!(
+                failures = failures.len(),
+                "a mail attachment couldn't be copied; sending nothing"
+            );
             return Err(SendMailError::Attachment(failures.join("; ")));
         }
         let item = InboxItem {
@@ -233,78 +228,39 @@ async fn write_copies(
             attachments,
             in_reply_to: mail.in_reply_to.as_ref().map(ToString::to_string),
         };
-        let filename = format!("{id}.json");
-        save_item(&inbox_dir, &filename, &item)
-            .await
-            .map_err(SendMailError::Write)?;
-        written.push(Written::File(inbox_dir.join(filename)));
+        filled.push((claim, item));
+    }
+
+    let mut saved: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(filled.len());
+    for (mut claim, item) in filled {
+        if let Err(e) = claim.save(&item).await {
+            tracing::warn!(error = %e, "saving a mail copy failed; removing the copies already saved");
+            remove_saved(&saved).await;
+            return Err(SendMailError::Write(e));
+        }
+        saved.push((
+            claim.inbox_dir().join(claim.filename()),
+            claim.attachments_dir().to_path_buf(),
+        ));
     }
     Ok(())
 }
 
-async fn roll_back(written: &[Written]) {
-    for path in written {
-        let (result, path) = match path {
-            Written::File(p) => (tokio::fs::remove_file(p).await, p),
-            Written::Dir(p) => (tokio::fs::remove_dir_all(p).await, p),
-        };
-        if let Err(e) = result
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::error!(path = %path.display(), error = %e, "couldn't remove part of a mail that failed to send");
-        }
-    }
-}
-
-/// The first id from `title` (`generate_filename`, then `_2`, `_3`, ...) that
-/// no recipient uses in its agent inbox or archive, as an item or an
-/// attachment directory. An inbox that can't be checked is an error, not a
-/// taken id: treating it as taken would retry forever.
-async fn free_id(
-    mailboxes: &[Mailbox],
-    title: &str,
-    now: chrono::DateTime<Utc>,
-) -> Result<String, SendMailError> {
-    let local = mailboxes.first().map_or_else(
-        || now.naive_utc(),
-        |m| now.with_timezone(&m.timezone).naive_local(),
-    );
-    let base = generate_filename(title, local);
-    let stem = base.trim_end_matches(".json").to_string();
-    let mut candidate = stem.clone();
-    let mut suffix: u32 = 2;
-    while id_taken(mailboxes, &candidate)
-        .await
-        .map_err(SendMailError::Write)?
-    {
-        candidate = format!("{stem}_{suffix}");
-        suffix += 1;
-    }
-    Ok(candidate)
-}
-
-async fn id_taken(mailboxes: &[Mailbox], id: &str) -> anyhow::Result<bool> {
-    for mailbox in mailboxes {
-        let layout = WorkspaceLayout::new(&mailbox.dir);
-        for archived in [false, true] {
-            let items = InboxKind::Agent.items_dir(&layout, archived);
-            let attachments = InboxKind::Agent.attachments_dir(&layout, archived);
-            if exists(&items.join(format!("{id}.json"))).await?
-                || exists(&attachments.join(id)).await?
+/// Remove saved copies (each item file and its attachment directory) of a
+/// mail whose later copy failed to save.
+async fn remove_saved(saved: &[(PathBuf, PathBuf)]) {
+    for (item, attachments) in saved {
+        for (path, result) in [
+            (item, tokio::fs::remove_file(item).await),
+            (attachments, tokio::fs::remove_dir_all(attachments).await),
+        ] {
+            if let Err(e) = result
+                && e.kind() != std::io::ErrorKind::NotFound
             {
-                return Ok(true);
+                tracing::error!(path = %path.display(), error = %e, "couldn't remove part of a mail that failed to send");
             }
         }
     }
-    Ok(false)
-}
-
-async fn exists(path: &Path) -> anyhow::Result<bool> {
-    use anyhow::Context as _;
-
-    tokio::fs::try_exists(path)
-        .await
-        .with_context(|| format!("failed to check whether {} exists", path.display()))
 }
 
 #[cfg(test)]
@@ -449,11 +405,84 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, SendMailError::Write(_)), "{err:?}");
-        assert!(
-            !WorkspaceLayout::new(fx.dir("atlas"))
-                .agent_inbox_dir()
-                .exists()
+        assert_nothing_left(&fx, "atlas");
+    }
+
+    /// `agent`'s agent inbox holds no item and no claimed attachment dir.
+    fn assert_nothing_left(fx: &Fixture, agent: &str) {
+        let layout = WorkspaceLayout::new(fx.dir(agent));
+        let items = std::fs::read_dir(layout.agent_inbox_dir()).map_or(0, |entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                .count()
+        });
+        assert_eq!(items, 0, "{agent} keeps no item");
+        let claims =
+            std::fs::read_dir(layout.agent_inbox_attachments_dir()).map_or(0, Iterator::count);
+        assert_eq!(claims, 0, "{agent} keeps no claimed id");
+    }
+
+    #[tokio::test]
+    async fn concurrent_sends_with_one_title_get_distinct_ids() {
+        let fx = Fixture::new(&["atlas", "scout"]);
+        let (a, b) = tokio::join!(
+            send_mail(&fx.directory, mail(&["atlas", "scout"], "Status", "first")),
+            send_mail(&fx.directory, mail(&["scout", "atlas"], "Status", "second")),
         );
+        let (a, b) = (a.unwrap(), b.unwrap());
+
+        assert_ne!(
+            a.message.id(),
+            b.message.id(),
+            "each send claims its own id"
+        );
+        for (sent, body) in [(&a, "first"), (&b, "second")] {
+            for copy in &sent.copies {
+                assert_eq!(fx.load(copy).await.0.body, body, "{copy}");
+            }
+        }
+        let index = MailIndex::load(&fx.directory).await;
+        assert_eq!(
+            index
+                .threads(&ThreadFilter {
+                    folder: Some(super::super::MailFolder::Sent),
+                    agent: None,
+                })
+                .count(),
+            2,
+            "both messages are in Sent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_copy_that_cannot_be_saved_removes_the_copies_already_saved() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fx = Fixture::new(&["atlas", "scout"]);
+        let scout_inbox = WorkspaceLayout::new(fx.dir("scout")).agent_inbox_dir();
+        tokio::fs::create_dir_all(scout_inbox.join("attachments"))
+            .await
+            .unwrap();
+        // The id can still be claimed in scout's `attachments/`, but its item
+        // file can't be written next to it.
+        std::fs::set_permissions(&scout_inbox, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(scout_inbox.join("probe"), b"").is_ok() {
+            // Permissions don't bind this user (root), so the failure can't be staged.
+            return;
+        }
+        let mut outgoing = mail(&["atlas", "scout"], "T", "b");
+        let source = fx.dir("scout").join("note.txt");
+        tokio::fs::write(&source, b"hello").await.unwrap();
+        outgoing.attachments = vec![source];
+
+        let err = send_mail(&fx.directory, outgoing).await.unwrap_err();
+        std::fs::set_permissions(&scout_inbox, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(matches!(err, SendMailError::Write(_)), "{err:?}");
+        assert_nothing_left(&fx, "atlas");
+        assert_nothing_left(&fx, "scout");
     }
 
     #[tokio::test]

@@ -412,10 +412,6 @@ pub fn format_failed_attachment_line(info: &AttachmentInfo, reason: &str) -> Str
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::indexing_slicing,
-    reason = "test code uses indexing for clarity"
-)]
 mod tests {
     use super::*;
 

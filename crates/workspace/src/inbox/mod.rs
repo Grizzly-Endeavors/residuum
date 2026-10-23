@@ -1635,7 +1635,7 @@ mod tests {
 
         assert_eq!(failures.len(), 1, "the missing source should be reported");
         let item = load_item(&inbox_dir.join(&filename)).await.unwrap();
-        assert!(item.attachments.is_empty());
+        assert_eq!(item.attachments, Vec::<PathBuf>::new());
         let item_id = filename.trim_end_matches(".json");
         assert!(
             !inbox_dir.join("attachments").join(item_id).exists(),

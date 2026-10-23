@@ -374,6 +374,7 @@ mod tests {
             timestamp: test_now(),
             read: false,
             attachments: Vec::new(),
+            in_reply_to: None,
         }
     }
 
@@ -695,8 +696,8 @@ mod tests {
 
         let ids: Vec<&str> = claims.iter().map(ClaimedItem::id).collect();
         assert_eq!(ids, ["20260225_hello_2", "20260225_hello_2"]);
-        assert_eq!(claims.first().unwrap().inbox_dir(), user);
-        assert_eq!(claims.get(1).unwrap().inbox_dir(), agent);
+        let dirs: Vec<&Path> = claims.iter().map(ClaimedItem::inbox_dir).collect();
+        assert_eq!(dirs, [user.as_path(), agent.as_path()]);
         assert!(
             !user.join("attachments/20260225_hello").exists(),
             "the id that was only free in the user inbox is not left claimed there"
