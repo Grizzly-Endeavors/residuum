@@ -787,6 +787,10 @@ mod tests {
     async fn claim_dir_releases_its_directory_when_a_save_took_the_id() {
         let dir = tempfile::tempdir().unwrap();
         let inbox = workspace_inbox(dir.path()).await;
+        // `claim_in_all` creates the attachments root before `claim_dir` runs.
+        tokio::fs::create_dir_all(inbox.join("attachments"))
+            .await
+            .unwrap();
         // A saved item without attachments: its JSON is the only trace of the id.
         save_item(&inbox, "20260225_raced.json", &item("raced"))
             .await
