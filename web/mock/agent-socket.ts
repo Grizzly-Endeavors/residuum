@@ -152,6 +152,8 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   state.messageMain = chat.receiveFromSession;
   agent.connectedClients = () =>
     [...wss.clients].filter((client) => !notClients.has(client)).length;
+  agent.watchedPrefixes = () =>
+    [...new Set([...wss.clients].flatMap((client) => watching.get(client) ?? []))].sort();
   agent.dispose = () => {
     stopRouting();
     state.dropSockets();

@@ -25,8 +25,9 @@ export interface WatchHandler {
   unavailable?: (message: string) => void;
   /**
    * The socket connected again after a connection this owner watched through
-   * had dropped. Changes made while it was down were never reported, so the
-   * owner's view may be stale.
+   * had dropped, or (for an owner registered with `readBeforeWatching`) for
+   * the first time. Changes made while no connection watched were never
+   * reported, so the owner's view may be stale.
    */
   reconnected?: () => void;
 }
@@ -54,6 +55,14 @@ export interface WatchOwnerOptions {
    * is always live).
    */
   agent?: string;
+  /**
+   * The owner read what it watches before any connection watched it, and its
+   * socket may open only later (the agent was stopped, or another agent's
+   * socket was in use). The first connection then counts as a reconnect: the
+   * owner hears `reconnected`, since a change made in between was never
+   * reported.
+   */
+  readBeforeWatching?: boolean;
 }
 
 export interface WatchRegistryOptions {
@@ -73,6 +82,8 @@ interface OwnerState {
   released: boolean;
   /** It was live while a connection was open, so a later connection is a reconnect for it. */
   watched: boolean;
+  /** It read its files before any connection watched them, so even its first connection is a reconnect. */
+  readonly readBeforeWatching: boolean;
 }
 
 function sameSet(a: readonly string[], b: readonly string[]): boolean {
@@ -98,6 +109,7 @@ export class WatchRegistry {
       prefixes: [],
       released: false,
       watched: false,
+      readBeforeWatching: options.readBeforeWatching ?? false,
     };
     this.owners.add(owner);
     if (this.open) owner.watched = this.live().includes(owner);
@@ -141,7 +153,7 @@ export class WatchRegistry {
     this.sent = this.union();
     if (this.sent.length > 0) this.options.send([...this.sent]);
     const live = this.live();
-    const missed = live.filter((owner) => owner.watched);
+    const missed = live.filter((owner) => owner.watched || owner.readBeforeWatching);
     for (const owner of live) owner.watched = true;
     this.deliver(
       missed.map((owner) => ({

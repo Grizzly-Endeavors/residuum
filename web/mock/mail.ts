@@ -101,17 +101,17 @@ function listThreads(ctx: RouteContext): void {
     fail(ctx, 400, `the folder must be 'inbox', 'sent' or 'archived', not '${folderParam}'`);
     return;
   }
+  const agent = ctx.query.get("agent");
+  if (agent !== null && !ctx.hub.agents.has(agent)) {
+    fail(ctx, 400, `there is no agent named '${agent}'`);
+    return;
+  }
   const limit = requestedLimit(ctx);
   if (limit === null) return;
   const beforeParam = ctx.query.get("before");
   const before = beforeParam === null ? null : parseCursor(beforeParam);
   if (beforeParam !== null && before === null) {
-    fail(ctx, 400, "the before cursor isn't one this inbox returned");
-    return;
-  }
-  const agent = ctx.query.get("agent");
-  if (agent !== null && !ctx.hub.agents.has(agent)) {
-    fail(ctx, 400, `there is no agent named '${agent}'`);
+    fail(ctx, 400, "the before cursor isn't one this list returned");
     return;
   }
 
@@ -439,14 +439,15 @@ async function sendMail(ctx: RouteContext): Promise<void> {
 
 /** `POST /api/hub/mail/threads/{thread_id}/reply`: reply to everyone in the thread. Answers the message added. */
 async function replyToThread(ctx: RouteContext): Promise<void> {
+  // An unknown thread answers 404 before the body is looked at.
+  const thread = requestedThread(ctx);
+  if (thread === null) return;
   const body = await requestBody(ctx);
   if (body === null) return;
   const content = textField(ctx, body, "body");
   if (content === null) return;
   const attachments = listField(ctx, body, "attachments", []);
   if (attachments === null) return;
-  const thread = requestedThread(ctx);
-  if (thread === null) return;
 
   const uploads = stagedUploads(ctx, attachments);
   if (uploads === null) return;

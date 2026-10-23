@@ -43,19 +43,22 @@ test("an agent's file opens beside the Inbox, follows the disk, and its links st
   await expect(plan.getByText("First draft.")).toBeVisible();
   expect(address(page)).toBe("/inbox?panel=agent-file:scout:notes/plan.md");
 
-  // The page is told of the change over its own connection to scout, once that is up.
+  // The page's own connection to scout is up once the mock reports it watching the file.
   await expect
     .poll(
       async () => {
-        await mock.post("/api/mock/agent-file", {
-          params: { agent: "scout" },
-          data: { path: "notes/plan.md", content: "# Plan\n\nSecond draft.\n" },
-        });
-        return plan.getByText("Second draft.").isVisible();
+        const res = await page.request.get("/api/mock/watches?agent=scout");
+        return ((await res.json()) as { prefixes: string[] }).prefixes;
       },
-      { message: "the page should be told that plan.md changed on disk" },
+      { message: "the page should be watching plan.md over its own connection to scout" },
     )
-    .toBe(true);
+    .toContain("notes/plan.md");
+
+  await mock.post("/api/mock/agent-file", {
+    params: { agent: "scout" },
+    data: { path: "notes/plan.md", content: "# Plan\n\nSecond draft.\n" },
+  });
+  await expect(plan.getByText("Second draft.")).toBeVisible();
 });
 
 test("a stopped agent's text file loads as written and saves", async ({ page, isMobile, mock }) => {

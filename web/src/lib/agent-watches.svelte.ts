@@ -11,9 +11,12 @@
 // - Otherwise through a connection of its own to that agent, which carries the
 //   watch and nothing else. It is open only while an owner is registered, the
 //   agent is not the bound one and the hub lists it running; it closes when
-//   the last owner lets go or the agent stops, and opens again when the agent
-//   runs. A stopped agent has no change feed to follow, and its files are
-//   still read and written through the hub's file routes.
+//   the last owner lets go (unless another registers in the same flush, as a
+//   panel does when it moves to the next file of the same agent) or the agent
+//   stops, and opens again when the agent runs. A stopped agent has no change
+//   feed to follow, and its files are still read and written through the
+//   hub's file routes. The first time such a connection opens, its owners are
+//   told to read again, since they read before it was watching.
 //
 // The connection asks to be left out of the agent's count of open pages
 // (`?watch_only=true`), so a watched agent's unread count and its pushes carry
@@ -82,6 +85,11 @@ class AgentWatchConnection {
     return untrack(() => --this.owners > 0);
   }
 
+  /** Some owner is registered. */
+  get held(): boolean {
+    return untrack(() => this.owners > 0);
+  }
+
   /** Close the connection for good. */
   close(): void {
     this.stopFollowing();
@@ -120,7 +128,8 @@ export function watchAgentWorkspace(agent: string, handler: WatchHandler): Watch
     connections[agent] = connection;
   }
   connection.add();
-  const own = connection.registry.register(handler);
+  // The file was read before the connection watched it, and the connection may open only later.
+  const own = connection.registry.register(handler, { readBeforeWatching: true });
   const held = connection;
   let released = false;
 
@@ -139,8 +148,13 @@ export function watchAgentWorkspace(agent: string, handler: WatchHandler): Watch
       bound.release();
       own.release();
       if (held.remove()) return;
-      held.close();
-      if (connections[agent] === held) connections[agent] = undefined;
+      // Moving to another file of the same agent releases this owner and registers
+      // the next in one flush: the connection closes only if nobody took it up by then.
+      queueMicrotask(() => {
+        if (held.held) return;
+        held.close();
+        if (connections[agent] === held) connections[agent] = undefined;
+      });
     },
   };
 }

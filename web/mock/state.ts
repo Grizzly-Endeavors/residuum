@@ -208,6 +208,8 @@ export interface MockAgent {
   state: MockState;
   /** How many web clients have this agent's WebSocket open. Set by the agent socket. */
   connectedClients: () => number;
+  /** The workspace prefixes the agent's open sockets watch, merged and sorted. Set by the agent socket. */
+  watchedPrefixes: () => string[];
   /** Have the main conversation take a message another channel brought, as a turn from that channel. Set by the agent socket. */
   receiveMessage: (content: string, source: { endpoint: string; sender?: MessageSender }) => void;
   /** Close the agent's WebSocket route and its connections. Set by the agent socket. */

@@ -252,6 +252,19 @@ describe("the mail routes", () => {
         expect((res.body as { error: string }).error, query).toContain(mentions);
       }
     });
+
+    it("checks the folder, then the agent, the limit and the cursor, as the backend does", async () => {
+      const worst = "folder=trash&agent=ghost&limit=0&before=garbage";
+      const errorOf = async (query: string): Promise<string> =>
+        ((await get(`/api/hub/mail/threads?${query}`)).body as { error: string }).error;
+
+      expect(await errorOf(worst)).toContain("folder");
+      expect(await errorOf("agent=ghost&limit=0&before=garbage")).toContain("ghost");
+      expect(await errorOf("limit=0&before=garbage")).toContain("limit");
+      expect(await errorOf("before=garbage")).toBe(
+        "the before cursor isn't one this list returned",
+      );
+    });
   });
 
   describe("one thread", () => {
@@ -1048,9 +1061,24 @@ describe("the mail routes", () => {
       expect((unreadable.body as { error: string }).error).toMatch(
         /^The message couldn't be read: .*`body`/,
       );
-      // The body is read before the thread is looked up.
-      expect((await post(threadPath("scout/user/nothing", "reply"), {})).status).toBe(400);
       expect((await thread(WIKI.threadId)).messages).toHaveLength(4);
+    });
+
+    it("looks the thread up before it reads the body, as the backend does", async () => {
+      const ref = "scout/user/nothing";
+      for (const body of [{}, { body: 7 }, { body: " ", attachments: ["upload_9999"] }]) {
+        const res = await post(threadPath(ref, "reply"), body);
+        expect(res.status, JSON.stringify(body)).toBe(404);
+        expect(res.body).toEqual({
+          error: `There is no message '${ref}'. It may have been deleted.`,
+        });
+      }
+      const unreadable = await fetchJson(url(threadPath(ref, "reply")), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{not json",
+      });
+      expect(unreadable.status).toBe(404);
     });
 
     it("sends a reply that leaves out the attachments", async () => {

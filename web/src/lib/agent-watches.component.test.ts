@@ -164,7 +164,8 @@ describe("following an agent's workspace", () => {
     const first = socketsOf("scout")[0];
     if (first === undefined) throw new Error("no connection to scout");
     first.simulateOpen();
-    expect(heard.reconnects).toBe(0);
+    // The first connection counts too: the file was read before it opened.
+    expect(heard.reconnects).toBe(1);
 
     first.simulateClose();
     await vi.advanceTimersByTimeAsync(2000);
@@ -172,8 +173,80 @@ describe("following an agent's workspace", () => {
     if (second === undefined) throw new Error("no second connection to scout");
     second.simulateOpen();
 
-    expect(heard.reconnects).toBe(1);
+    expect(heard.reconnects).toBe(2);
     expect(watchFrames(second)).toEqual([{ type: "watch_workspace", prefixes: ["notes/a.md"] }]);
+  });
+
+  it("tells a handler to read again when the agent it waited for starts and the connection first opens", async () => {
+    setViewedAgent("atlas");
+    const { handler, heard } = listener();
+    follow("drifter", handler).set(["notes/a.md"]);
+    await settle();
+    expect(heard.reconnects).toBe(0);
+
+    hub.handleFrame({ type: "agent_state", agent: agent("drifter", "running") });
+    await settle();
+    const [own] = socketsOf("drifter");
+    if (own === undefined) throw new Error("no connection to drifter");
+    own.simulateOpen();
+
+    expect(heard.reconnects).toBe(1);
+  });
+
+  it("doesn't tell a handler that joins an open connection to read again", async () => {
+    setViewedAgent("atlas");
+    follow("scout").set(["notes/a.md"]);
+    await settle();
+    const [own] = socketsOf("scout");
+    if (own === undefined) throw new Error("no connection to scout");
+    own.simulateOpen();
+
+    const { handler, heard } = listener();
+    follow("scout", handler).set(["notes/b.md"]);
+    await settle();
+
+    expect(socketsOf("scout")).toHaveLength(1);
+    expect(heard.reconnects).toBe(0);
+  });
+
+  it("keeps the connection when the next file of the same agent follows at once", async () => {
+    setViewedAgent("atlas");
+    const first = follow("scout");
+    first.set(["notes/a.md"]);
+    await settle();
+    const [own] = socketsOf("scout");
+    if (own === undefined) throw new Error("no connection to scout");
+    own.simulateOpen();
+
+    // A link in the panel: the effect lets go of one file and takes up the next in one flush.
+    first.release();
+    const { handler, heard } = listener();
+    const next = follow("scout", handler);
+    next.set(["notes/b.md"]);
+    await settle();
+
+    expect(socketsOf("scout")).toHaveLength(1);
+    expect(own.readyState).toBe(FakeWebSocket.OPEN);
+    expect(watchFrames(own).at(-1)).toEqual({ type: "watch_workspace", prefixes: ["notes/b.md"] });
+    own.simulateMessage({ type: "workspace_changed", changes: [modified("notes/b.md")] });
+    expect(heard.changes).toEqual(["notes/b.md"]);
+    expect(heard.reconnects).toBe(0);
+  });
+
+  it("closes the connection once nothing takes it up after the last owner lets go", async () => {
+    setViewedAgent("atlas");
+    const only = follow("scout");
+    only.set(["notes/a.md"]);
+    await settle();
+    const [own] = socketsOf("scout");
+    if (own === undefined) throw new Error("no connection to scout");
+    own.simulateOpen();
+
+    only.release();
+    expect(own.readyState).toBe(FakeWebSocket.OPEN);
+    await settle();
+
+    expect(own.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
   it("shares one connection between owners, and closes it when the last lets go", async () => {

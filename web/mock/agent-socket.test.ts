@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseClientMessage } from "./agent-socket";
 import {
   advanceMockTime,
+  fetchJson,
   startMockServer,
   type Frame,
   type MockServerHarness,
@@ -185,6 +186,23 @@ describe("agent socket", () => {
           'Couldn\'t watch the workspace: can\'t watch "../secrets": watch paths must stay inside the workspace (no "..").',
       });
       expect(frames[0]).not.toHaveProperty("details");
+    });
+
+    it("reports what its sockets watch, merged, at /api/mock/watches", async () => {
+      const watched = async (): Promise<unknown> =>
+        (await fetchJson(`${harness.baseUrl}/api/mock/watches?agent=atlas`)).body;
+      expect(await watched()).toEqual({ prefixes: [] });
+
+      socket.send({ type: "watch_workspace", prefixes: ["notes/plan.md", "memory"] });
+      const watcher = await harness.openSocket("/api/agents/atlas/ws?watch_only=true");
+      watcher.send({ type: "watch_workspace", prefixes: ["notes/plan.md", "inbox"] });
+      await socket.settled();
+      await watcher.settled();
+      expect(await watched()).toEqual({ prefixes: ["inbox", "memory", "notes/plan.md"] });
+
+      await watcher.close();
+      expect(await watched()).toEqual({ prefixes: ["memory", "notes/plan.md"] });
+      expect((await fetchJson(`${harness.baseUrl}/api/mock/watches?agent=ghost`)).status).toBe(404);
     });
 
     it("starts a session when the message begins with spawn", async () => {
