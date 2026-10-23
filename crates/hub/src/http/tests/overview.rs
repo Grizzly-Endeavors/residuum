@@ -95,6 +95,7 @@ async fn place_item(h: &Harness, agent: &str, id: &str) {
         timestamp: minute(8, 0),
         read: false,
         attachments: Vec::new(),
+        in_reply_to: None,
     };
     residuum_workspace::inbox::save_item(&inbox, &format!("{id}.json"), &item)
         .await

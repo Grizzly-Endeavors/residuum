@@ -35,6 +35,7 @@ fn make_item(title: &str, read: bool) -> InboxItem {
             .unwrap(),
         read,
         attachments: Vec::new(),
+        in_reply_to: None,
     }
 }
 
@@ -49,6 +50,7 @@ fn make_item_at(title: &str, hour: u32, read: bool) -> InboxItem {
             .unwrap(),
         read,
         attachments: Vec::new(),
+        in_reply_to: None,
     }
 }
 
@@ -291,6 +293,7 @@ async fn companion_inbox_item_structure() {
             .unwrap(),
         read: false,
         attachments: vec![PathBuf::from("inbox/20260225_150000_photo.jpg")],
+        in_reply_to: None,
     };
     save_item(inbox_dir, "companion.json", &companion)
         .await

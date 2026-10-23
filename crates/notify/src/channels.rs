@@ -69,6 +69,7 @@ impl NotificationChannel for InboxChannel {
             timestamp: now,
             read: false,
             attachments: Vec::new(),
+            in_reply_to: None,
         };
 
         let filename = inbox::unique_filename(&self.inbox_dir, &notification.title, now).await;

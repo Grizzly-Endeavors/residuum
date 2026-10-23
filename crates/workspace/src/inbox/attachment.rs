@@ -324,6 +324,7 @@ pub async fn file_companion_item(
         timestamp: item.timestamp,
         read: false,
         attachments: vec![agent_inbox_attachments_rel().join(&item.id).join(file_name)],
+        in_reply_to: None,
     };
     if let Err(e) = crate::inbox::save_item(&item.inbox_dir, &item.filename, &companion).await {
         tracing::warn!(
@@ -335,6 +336,10 @@ pub async fn file_companion_item(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code uses indexing for clarity"
+)]
 mod tests {
     use super::*;
 

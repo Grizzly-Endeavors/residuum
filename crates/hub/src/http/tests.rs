@@ -1349,6 +1349,7 @@ async fn seed_inbox_item(agent_dir: &Path, id: &str, title: &str, attachment: &[
         attachments: vec![PathBuf::from(format!(
             "inbox/user/attachments/{id}/note.txt"
         ))],
+        in_reply_to: None,
     };
     residuum_workspace::inbox::save_item(&layout.user_inbox_dir(), &format!("{id}.json"), &item)
         .await

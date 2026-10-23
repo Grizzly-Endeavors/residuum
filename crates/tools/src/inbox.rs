@@ -475,14 +475,17 @@ impl Tool for UserInboxAddTool {
             })
             .unwrap_or_default();
 
-        let (filename, failures) = inbox::quick_add_with_attachments(
+        let (filename, failures) = inbox::add_user_inbox_item(
             &self.user_inbox_dir,
             &self.user_inbox_attachments_dir,
-            title,
-            body,
-            "agent",
+            inbox::NewUserInboxItem {
+                title,
+                body,
+                source: "agent",
+                in_reply_to: None,
+                attachments: &attachment_paths,
+            },
             self.tz,
-            &attachment_paths,
         )
         .await
         .map_err(|e| {

@@ -14,6 +14,10 @@ use residuum_bus::attachment::FileAttachment;
 use residuum_config::WorkspaceLayout;
 
 pub mod attachment;
+mod item_ref;
+pub mod mail;
+
+pub use item_ref::{InboxKind, InboxRef, InboxRefError};
 
 /// Workspace-root-relative directory that user inbox attachments are copied into,
 /// one subdirectory per item ID. Items record their attachments relative to the
@@ -48,6 +52,12 @@ pub struct InboxItem {
     /// `archive_item` for why the directory portion can go stale.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<PathBuf>,
+    /// The ref (see [`InboxRef`]) of the message this one answers, which
+    /// threads it under that message in the mail view. Kept as the string
+    /// that was stored; [`mail`] parses it and treats one that doesn't parse
+    /// or resolve as no parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
 }
 
 /// An attachment of a user inbox item as a client sees it: what it needs to
@@ -231,19 +241,35 @@ pub async fn quick_add(
         timestamp: now,
         read: false,
         attachments: Vec::new(),
+        in_reply_to: None,
     };
     save_item(inbox_dir, &filename, &item).await?;
     tracing::debug!(filename = %filename, title = %title, "inbox item created via quick_add");
     Ok(filename)
 }
 
-/// Add a user inbox item with attachments in one call: copies the attachment files
-/// into the item's own directory, generates a filename, builds the item, and saves.
+/// What [`add_user_inbox_item`] writes: the item's words, where it came
+/// from, the message it answers, and the files to attach.
+#[derive(Debug, Clone, Copy)]
+pub struct NewUserInboxItem<'a> {
+    /// Short summary of the item.
+    pub title: &'a str,
+    /// Full body text.
+    pub body: &'a str,
+    /// Origin label (`"agent"` for the agent's own tool).
+    pub source: &'a str,
+    /// The message this item answers, which threads it under that message.
+    pub in_reply_to: Option<&'a InboxRef>,
+    /// Local files to copy into the item's own attachment directory.
+    pub attachments: &'a [PathBuf],
+}
+
+/// Add a user inbox item in one call: copies the attachment files into the
+/// item's own directory, generates a filename, builds the item, and saves.
 ///
-/// Behaves exactly like `quick_add` when `attachment_paths` is empty. Otherwise, see
-/// `copy_attachments` for how the files are copied and named. The item is saved with
-/// whichever attachments succeeded even if some failed; the second return value
-/// describes each failure so the caller can tell the user about it.
+/// See `copy_attachments` for how the files are copied and named. The item is
+/// saved with whichever attachments succeeded even if some failed; the second
+/// return value describes each failure so the caller can tell the user about it.
 ///
 /// Returns the filename for confirmation messages, and a description of each
 /// attachment that failed to copy (empty if all succeeded).
@@ -251,45 +277,44 @@ pub async fn quick_add(
 /// # Errors
 /// Returns an error if the item cannot be saved, or an attachment directory
 /// cannot be created.
-#[tracing::instrument(skip_all, fields(source = %source))]
-pub async fn quick_add_with_attachments(
+#[tracing::instrument(skip_all, fields(source = %new.source))]
+pub async fn add_user_inbox_item(
     inbox_dir: &Path,
     attachments_dir: &Path,
-    title: &str,
-    body: &str,
-    source: &str,
+    new: NewUserInboxItem<'_>,
     tz: chrono_tz::Tz,
-    attachment_paths: &[PathBuf],
 ) -> anyhow::Result<(String, Vec<String>)> {
     let now = residuum_core::time::now_local(tz);
-    let filename = unique_filename(inbox_dir, title, now).await;
+    let filename = unique_filename(inbox_dir, new.title, now).await;
     let item_id = filename.trim_end_matches(".json");
 
     let (attachments, failures) =
-        copy_attachments(attachments_dir, item_id, attachment_paths).await?;
+        copy_attachments(attachments_dir, InboxKind::User, item_id, new.attachments).await?;
 
     let item = InboxItem {
-        title: title.to_string(),
-        body: body.to_string(),
-        source: source.to_string(),
+        title: new.title.to_string(),
+        body: new.body.to_string(),
+        source: new.source.to_string(),
         timestamp: now,
         read: false,
         attachments,
+        in_reply_to: new.in_reply_to.map(ToString::to_string),
     };
     save_item(inbox_dir, &filename, &item).await?;
     tracing::debug!(
         filename = %filename,
-        title = %title,
-        attachment_count = attachment_paths.len(),
+        title = %new.title,
+        attachment_count = new.attachments.len(),
         failure_count = failures.len(),
-        "inbox item created via quick_add_with_attachments"
+        "user inbox item created"
     );
     Ok((filename, failures))
 }
 
 /// Copy attachment source files into an item's own attachment directory
 /// (`attachments_dir/<item_id>/`), keyed by item ID so the item survives its
-/// sources being moved or deleted.
+/// sources being moved or deleted. `kind` is the inbox `attachments_dir`
+/// belongs to, which sets the workspace-relative path each copy is recorded at.
 ///
 /// Each source path is validated (must exist and be readable — there is no
 /// size cap, since these are already-local files, not something arriving
@@ -311,6 +336,7 @@ pub async fn quick_add_with_attachments(
 #[tracing::instrument(skip_all, fields(item_id = %item_id, count = source_paths.len()))]
 pub async fn copy_attachments(
     attachments_dir: &Path,
+    kind: InboxKind,
     item_id: &str,
     source_paths: &[PathBuf],
 ) -> anyhow::Result<(Vec<PathBuf>, Vec<String>)> {
@@ -325,6 +351,10 @@ pub async fn copy_attachments(
         .await
         .with_context(|| format!("failed to create attachment dir {}", item_dir.display()))?;
 
+    let recorded_root = match kind {
+        InboxKind::User => user_inbox_attachments_rel(),
+        InboxKind::Agent => agent_inbox_attachments_rel(),
+    };
     let mut used_names: HashSet<String> = HashSet::new();
     let mut recorded = Vec::new();
     let mut failures = Vec::new();
@@ -332,7 +362,7 @@ pub async fn copy_attachments(
     for source in source_paths {
         match copy_one_attachment(source, &item_dir, &mut used_names).await {
             Ok(unique_name) => {
-                recorded.push(user_inbox_attachments_rel().join(item_id).join(unique_name));
+                recorded.push(recorded_root.join(item_id).join(unique_name));
             }
             Err(e) => {
                 tracing::warn!(
@@ -731,6 +761,7 @@ mod tests {
                 .unwrap(),
             read,
             attachments: Vec::new(),
+            in_reply_to: None,
         }
     }
 
@@ -1037,7 +1068,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quick_add_with_attachments_same_title_same_day_uses_distinct_attachment_dirs() {
+    async fn add_user_inbox_item_same_title_same_day_uses_distinct_attachment_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let inbox_dir = dir.path().join("inbox");
         let attachments_dir = dir.path().join("attachments");
@@ -1048,25 +1079,31 @@ mod tests {
         tokio::fs::write(&source_a, b"first").await.unwrap();
         tokio::fs::write(&source_b, b"second").await.unwrap();
 
-        let (first, first_failures) = quick_add_with_attachments(
+        let (first, first_failures) = add_user_inbox_item(
             &inbox_dir,
             &attachments_dir,
-            "daily report",
-            "first body",
-            "agent",
+            NewUserInboxItem {
+                title: "daily report",
+                body: "first body",
+                source: "agent",
+                in_reply_to: None,
+                attachments: &[source_a],
+            },
             chrono_tz::UTC,
-            &[source_a],
         )
         .await
         .unwrap();
-        let (second, second_failures) = quick_add_with_attachments(
+        let (second, second_failures) = add_user_inbox_item(
             &inbox_dir,
             &attachments_dir,
-            "daily report",
-            "second body",
-            "agent",
+            NewUserInboxItem {
+                title: "daily report",
+                body: "second body",
+                source: "agent",
+                in_reply_to: None,
+                attachments: &[source_b],
+            },
             chrono_tz::UTC,
-            &[source_b],
         )
         .await
         .unwrap();
@@ -1462,9 +1499,10 @@ mod tests {
     async fn copy_attachments_empty_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[])
-            .await
-            .unwrap();
+        let (recorded, failures) =
+            copy_attachments(&attachments_dir, InboxKind::User, "item1", &[])
+                .await
+                .unwrap();
         assert!(recorded.is_empty(), "expected {recorded:?} to be empty");
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert!(
@@ -1484,6 +1522,7 @@ mod tests {
         let attachments_dir = dir.path().join("attachments");
         let (recorded, failures) = copy_attachments(
             &attachments_dir,
+            InboxKind::User,
             "item1",
             std::slice::from_ref(&source_file),
         )
@@ -1512,6 +1551,7 @@ mod tests {
         let attachments_dir = dir.path().join("attachments");
         copy_attachments(
             &attachments_dir,
+            InboxKind::User,
             "item1",
             std::slice::from_ref(&source_file),
         )
@@ -1540,9 +1580,14 @@ mod tests {
         tokio::fs::write(&file_b, b"second").await.unwrap();
 
         let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[file_a, file_b])
-            .await
-            .unwrap();
+        let (recorded, failures) = copy_attachments(
+            &attachments_dir,
+            InboxKind::User,
+            "item1",
+            &[file_a, file_b],
+        )
+        .await
+        .unwrap();
 
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(recorded.len(), 2);
@@ -1578,9 +1623,10 @@ mod tests {
             .unwrap();
 
         let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[source_file])
-            .await
-            .unwrap();
+        let (recorded, failures) =
+            copy_attachments(&attachments_dir, InboxKind::User, "item1", &[source_file])
+                .await
+                .unwrap();
 
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(
@@ -1604,9 +1650,10 @@ mod tests {
         drop(file);
 
         let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[source_file])
-            .await
-            .unwrap();
+        let (recorded, failures) =
+            copy_attachments(&attachments_dir, InboxKind::User, "item1", &[source_file])
+                .await
+                .unwrap();
 
         assert!(failures.is_empty(), "expected {failures:?} to be empty");
         assert_eq!(recorded.len(), 1);
@@ -1620,9 +1667,10 @@ mod tests {
         let missing = dir.path().join("does_not_exist.txt");
 
         let attachments_dir = dir.path().join("attachments");
-        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[good, missing])
-            .await
-            .unwrap();
+        let (recorded, failures) =
+            copy_attachments(&attachments_dir, InboxKind::User, "item1", &[good, missing])
+                .await
+                .unwrap();
 
         assert_eq!(
             recorded,
@@ -1637,20 +1685,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quick_add_with_attachments_empty_matches_quick_add() {
+    async fn add_user_inbox_item_empty_matches_quick_add() {
         let dir = tempfile::tempdir().unwrap();
         let inbox_dir = dir.path().join("inbox");
         let attachments_dir = dir.path().join("attachments");
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
-        let (filename, failures) = quick_add_with_attachments(
+        let (filename, failures) = add_user_inbox_item(
             &inbox_dir,
             &attachments_dir,
-            "no attachments here",
-            "body text",
-            "agent",
+            NewUserInboxItem {
+                title: "no attachments here",
+                body: "body text",
+                source: "agent",
+                in_reply_to: None,
+                attachments: &[],
+            },
             chrono_tz::UTC,
-            &[],
         )
         .await
         .unwrap();
@@ -1670,7 +1721,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quick_add_with_attachments_records_and_saves() {
+    async fn add_user_inbox_item_records_and_saves() {
         let dir = tempfile::tempdir().unwrap();
         let inbox_dir = dir.path().join("inbox");
         let attachments_dir = dir.path().join("attachments");
@@ -1678,14 +1729,17 @@ mod tests {
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
         tokio::fs::write(&source_file, b"jpeg bytes").await.unwrap();
 
-        let (filename, failures) = quick_add_with_attachments(
+        let (filename, failures) = add_user_inbox_item(
             &inbox_dir,
             &attachments_dir,
-            "with a photo",
-            "body text",
-            "agent",
+            NewUserInboxItem {
+                title: "with a photo",
+                body: "body text",
+                source: "agent",
+                in_reply_to: None,
+                attachments: &[source_file],
+            },
             chrono_tz::UTC,
-            &[source_file],
         )
         .await
         .unwrap();

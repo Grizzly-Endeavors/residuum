@@ -309,6 +309,7 @@ mod tests {
             timestamp: residuum_core::time::now_local(chrono_tz::UTC),
             read: false,
             attachments,
+            in_reply_to: None,
         };
         residuum_workspace::inbox::save_item(
             &layout.user_inbox_dir(),
@@ -541,6 +542,7 @@ mod tests {
             attachments: vec![std::path::PathBuf::from(
                 "archive/inbox/user/attachments/item1/note.txt",
             )],
+            in_reply_to: None,
         };
         residuum_workspace::inbox::save_item(&layout.user_inbox_archive_dir(), "item1.json", &item)
             .await
