@@ -19,7 +19,7 @@
   // loads the first time a file opens, and the new-session panel the first
   // time a session is started from Activity.
 
-  const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string }>(
+  const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string; agentNamed: boolean }>(
     () => import("../../places/files/FilePanel.svelte"),
     "the file",
   );
@@ -117,7 +117,7 @@
         {#if filePanel.component !== null}
           {@const FilePanel = filePanel.component}
           {#key fileBuffer}
-            <FilePanel buffer={fileBuffer} path={panel.path} />
+            <FilePanel buffer={fileBuffer} path={panel.path} agentNamed={panel.agent !== null} />
           {/key}
         {:else}
           <div class="panel-loading"><Skeleton lines={8} label="Loading the file" /></div>

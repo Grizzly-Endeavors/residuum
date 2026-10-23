@@ -34,6 +34,14 @@ export async function expectFileOpen(page: Page, name: string): Promise<Locator>
   return mounted(page.getByRole("textbox", { name: `Contents of ${name}` }));
 }
 
+/**
+ * The context panel of the file `name`, once the file view's code has loaded and it has mounted:
+ * its title. A Markdown or text file opens rendered, so this is for a spec that doesn't need the editor.
+ */
+export async function expectFilePanelOpen(page: Page, name: string): Promise<Locator> {
+  return mounted(page.getByRole("heading", { name, exact: true, level: 2 }));
+}
+
 /** The setup wizard's heading, once its code has loaded and it has mounted. */
 export async function expectSetupOpen(page: Page): Promise<Locator> {
   return mounted(page.getByRole("heading", { name: "Welcome to Residuum", level: 1 }));

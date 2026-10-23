@@ -25,6 +25,15 @@ export function openPathInPanel(agent: string, path: string): void {
   else void router.openPlace({ kind: "chat", agent }, { panel: filePanel(path) });
 }
 
+/**
+ * Open `path` in `agent`'s workspace as a file panel that names its agent, so
+ * the place under the panel stays whatever it is: the panel reads that agent's
+ * tree beside any place that can show one.
+ */
+export function openAgentFileInPanel(agent: string, path: string): void {
+  void router.openPanel({ kind: "file", path, agent });
+}
+
 /** The address a path in the team's folder points at, for opening it in a new tab. */
 export function teamPathHref(path: string): string {
   return formatLocation({

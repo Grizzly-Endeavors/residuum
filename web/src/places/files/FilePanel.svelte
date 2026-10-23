@@ -1,11 +1,11 @@
 <script lang="ts">
+  import { watchAgentWorkspace } from "../../lib/agent-watches.svelte";
   import { configCoordinator } from "../../lib/config-coordinator";
   import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
   import { Badge, Banner, Button, Dialog, EmptyState, Skeleton } from "../../lib/ui";
   import type { WatchHandler, WatchOwner } from "../../lib/watch-registry";
   import { normalizeWatchPrefix } from "../../lib/workspace-watch";
-  import { ws } from "../../lib/ws.svelte";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import { panelFile, type FileBuffer } from "./file-buffer.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
@@ -14,21 +14,23 @@
   import TextEditor from "./TextEditor.svelte";
 
   // A file in the context panel, from the Files places' trees and from
-  // `panel=file:` links: the editor with live validation, Save and Discard,
-  // the save conflict, and the file's history. A Markdown file shows rendered
-  // until Edit opens the editor, and the rendered view shows the buffer's text,
-  // edits included, with the file's problems in a banner that opens the
-  // editor. Unsaved edits are asked about before anything closes the panel or
-  // shows another file.
+  // `panel=file:` and `panel=agent-file:` links: the editor with live
+  // validation, Save and Discard, the save conflict, and the file's history. A
+  // Markdown or plain text file shows rendered until Edit opens the editor,
+  // and the rendered view shows the buffer's text, edits included, with the
+  // file's problems in a banner that opens the editor. Unsaved edits are asked
+  // about before anything closes the panel or shows another file.
 
   interface Props {
     /** The open file, which outlives this view while the panel stays open. */
     buffer: FileBuffer;
     /** The path the URL names. */
     path: string;
+    /** The URL names the file's agent (`panel=agent-file:`), so links in the file open as that agent's files. */
+    agentNamed?: boolean;
   }
 
-  let { buffer, path }: Props = $props();
+  let { buffer, path, agentNamed = false }: Props = $props();
 
   /** How long after the last keystroke the text is checked: long enough not to fire on every character. */
   const VALIDATE_DEBOUNCE_MS = 500;
@@ -36,8 +38,14 @@
   const source = $derived(buffer.source);
   let historyOpen = $state(false);
 
-  const isMarkdown = $derived(/\.md$/i.test(buffer.path));
-  const rendered = $derived(isMarkdown && !buffer.editing);
+  /** How a file that reads before it edits is shown: Markdown formatted, plain text as written. */
+  const renderMode = $derived.by((): "markdown" | "text" | null => {
+    if (/\.md$/i.test(buffer.path)) return "markdown";
+    return /\.txt$/i.test(buffer.path) ? "text" : null;
+  });
+  const rendered = $derived(renderMode !== null && !buffer.editing);
+  /** Live updates are off for the file's agent, so the file may change without this view hearing. */
+  let followOff = $state(false);
 
   const inFolder = $derived(buffer.path.includes("/"));
 
@@ -66,15 +74,25 @@
   );
 
   // Follow the file on disk: through the agent's socket, or the hub's team
-  // watch for the team's folder. After a resync or a reconnect, read it again.
+  // watch for the team's folder. An agent's file is followed while the agent
+  // runs, whichever agent the app is on; a stopped agent's file is read and
+  // saved all the same. After a resync or a reconnect, read it again.
   $effect(() => {
     const prefix = source.scope === "team" ? `team/${buffer.path}` : buffer.path;
+    followOff = false;
     if (buffer.path === "" || normalizeWatchPrefix(prefix) === null) return;
     const refresh = (): void => void buffer.refresh();
-    const handler: WatchHandler = { changed: refresh, resync: refresh, reconnected: refresh };
+    const handler: WatchHandler = {
+      changed: refresh,
+      resync: refresh,
+      reconnected: refresh,
+      unavailable: () => {
+        followOff = true;
+      },
+    };
     let owner: WatchOwner | null = null;
     if (source.scope === "team") owner = hub.teamWatches.register(handler);
-    else if (source.agent !== null) owner = ws.watches.register(handler, { agent: source.agent });
+    else if (source.agent !== null) owner = watchAgentWorkspace(source.agent, handler);
     owner?.set([prefix]);
     return () => owner?.release();
   });
@@ -121,7 +139,7 @@
 {/snippet}
 
 {#snippet actions()}
-  {#if isMarkdown}
+  {#if renderMode !== null}
     <Button
       class="file-panel-edit"
       variant="quiet"
@@ -171,7 +189,13 @@
     {:else if buffer.error}
       <Banner tone="warn" edge ondismiss={() => (buffer.error = "")}>{buffer.error}</Banner>
     {/if}
-    {#if rendered}
+    {#if followOff}
+      <Banner tone="info" edge>
+        Live updates are off{source.agent === null ? "" : ` for ${hub.shownName(source.agent)}`}, so
+        changes made elsewhere won't show here until you open {buffer.name} again.
+      </Banner>
+    {/if}
+    {#if rendered && renderMode !== null}
       {#if problemCount > 0}
         <Banner tone="warn" edge>
           {problemCount === 1
@@ -188,7 +212,13 @@
         {#if buffer.text.trim() === ""}
           <p class="file-panel-empty">Nothing written yet. Edit to add text.</p>
         {:else}
-          <FileRendered content={buffer.text} path={buffer.path} {source} mode="markdown" />
+          <FileRendered
+            content={buffer.text}
+            path={buffer.path}
+            {source}
+            mode={renderMode}
+            {agentNamed}
+          />
         {/if}
       </div>
     {:else}

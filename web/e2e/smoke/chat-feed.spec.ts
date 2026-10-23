@@ -395,6 +395,9 @@ test.describe("path links", () => {
     await expect(page).toHaveURL(
       /\/agent\/atlas\?panel=file:team\/wiki\/notification-fallbacks\.md$/,
     );
+    // A Markdown file opens rendered; Edit opens the editor on its text.
+    await expect(page.getByRole("heading", { name: "Fallbacks", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
     await expect(await expectFileOpen(page, "notification-fallbacks.md")).toHaveValue(
       /# Fallbacks/,
     );
