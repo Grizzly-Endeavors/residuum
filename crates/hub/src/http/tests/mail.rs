@@ -69,7 +69,7 @@ async fn add_agent_message(h: &Harness, message: AgentMessage<'_>) {
         attachments,
         in_reply_to: message.in_reply_to.map(str::to_string),
     };
-    residuum_workspace::inbox::save_item(&dir, &format!("{}.json", message.id), &item)
+    residuum_workspace::testing::save_item_for_tests(&dir, &format!("{}.json", message.id), &item)
         .await
         .unwrap();
 }
@@ -188,7 +188,7 @@ async fn the_snippet_is_the_start_of_the_latest_message_as_plain_text() {
         attachments: Vec::new(),
         in_reply_to: None,
     };
-    residuum_workspace::inbox::save_item(&layout.user_inbox_dir(), "long.json", &item)
+    residuum_workspace::testing::save_item_for_tests(&layout.user_inbox_dir(), "long.json", &item)
         .await
         .unwrap();
 

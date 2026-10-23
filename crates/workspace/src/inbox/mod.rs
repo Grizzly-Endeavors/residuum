@@ -321,7 +321,11 @@ fn dedupe_filename(name: &str, used: &HashSet<String>) -> String {
 /// # Errors
 /// Returns an error if serialization or file operations fail.
 #[tracing::instrument(skip_all, fields(filename = %filename))]
-pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> anyhow::Result<()> {
+pub(crate) async fn save_item(
+    inbox_dir: &Path,
+    filename: &str,
+    item: &InboxItem,
+) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
     let target = inbox_dir.join(filename);

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use residuum_config::WorkspaceLayout;
 use residuum_workspace::inbox::mail::MailboxDirectory;
-use residuum_workspace::inbox::{InboxItem, InboxKind, list_items_or_empty, load_item, save_item};
+use residuum_workspace::inbox::{InboxItem, InboxKind, list_items_or_empty, load_item};
+use residuum_workspace::testing::save_item_for_tests;
 use residuum_workspace::testing::{StaticMailboxDirectory, TeamHub};
 
 use super::MailAccess;
@@ -108,7 +109,7 @@ impl MailHub {
             .kind
             .items_dir(&self.layout(&item.agent), item.archived);
         tokio::fs::create_dir_all(&dir).await.unwrap();
-        save_item(&dir, &format!("{}.json", item.id), &item.contents)
+        save_item_for_tests(&dir, &format!("{}.json", item.id), &item.contents)
             .await
             .unwrap();
     }

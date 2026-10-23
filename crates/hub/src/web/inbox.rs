@@ -207,7 +207,7 @@ mod tests {
             attachments,
             in_reply_to: None,
         };
-        residuum_workspace::inbox::save_item(dir, &format!("{id}.json"), &item)
+        residuum_workspace::testing::save_item_for_tests(dir, &format!("{id}.json"), &item)
             .await
             .unwrap();
     }

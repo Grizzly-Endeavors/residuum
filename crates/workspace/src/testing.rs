@@ -1,12 +1,26 @@
 //! Test fixtures for code that works on the hub's directories. Behind
 //! `test-support`, and compiled for this crate's own tests.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use residuum_config::paths::TeamPaths;
 
+use crate::inbox::InboxItem;
 use crate::inbox::mail::{Mailbox, MailboxDirectory};
 use crate::team_files::TeamWriteCoordinator;
+
+/// Write `item` as `filename` in `inbox_dir` without claiming an id, for a
+/// fixture that needs an item already in place.
+///
+/// # Errors
+/// Returns an error if the item cannot be serialized or written.
+pub async fn save_item_for_tests(
+    inbox_dir: &Path,
+    filename: &str,
+    item: &InboxItem,
+) -> anyhow::Result<()> {
+    crate::inbox::save_item(inbox_dir, filename, item).await
+}
 
 /// A hub directory with a team directory and any number of agent directories,
 /// and the coordinator every writer of the team directory shares.

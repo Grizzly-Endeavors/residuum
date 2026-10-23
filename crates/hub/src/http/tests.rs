@@ -1351,9 +1351,13 @@ async fn seed_inbox_item(agent_dir: &Path, id: &str, title: &str, attachment: &[
         ))],
         in_reply_to: None,
     };
-    residuum_workspace::inbox::save_item(&layout.user_inbox_dir(), &format!("{id}.json"), &item)
-        .await
-        .unwrap();
+    residuum_workspace::testing::save_item_for_tests(
+        &layout.user_inbox_dir(),
+        &format!("{id}.json"),
+        &item,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
