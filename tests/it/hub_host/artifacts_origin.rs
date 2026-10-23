@@ -302,39 +302,40 @@ async fn hub_routes_with_path_parameters_answer_on_the_artifacts_port() {
     let http = reqwest::Client::new();
     let url = |path: &str| format!("http://{artifacts}{path}");
 
-    // Two parameters: the agent and the item.
+    // One parameter holding a percent-encoded ref.
     let read = http
-        .put(url("/api/hub/inbox/scout/20260930_pelican/read"))
+        .post(url(
+            "/api/hub/mail/threads/scout%2Fuser%2F20260930_pelican/read",
+        ))
         .send()
         .await
         .unwrap();
     assert_eq!(
         read.status().as_u16(),
-        200,
+        204,
         "{}",
         read.text().await.unwrap()
     );
-    let unread: Value = http
-        .get(url("/api/hub/inbox/unread"))
+    let thread: Value = http
+        .get(url("/api/hub/mail/threads/scout%2Fuser%2F20260930_pelican"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(
-        unread,
-        json!({ "total": 1, "by_agent": { "quiet": 1, "scout": 0 } })
-    );
+    assert_eq!(thread["thread_id"], "scout/user/20260930_pelican");
 
     let archived = http
-        .post(url("/api/hub/inbox/quiet/20260930_heron/archive"))
+        .post(url(
+            "/api/hub/mail/threads/quiet%2Fuser%2F20260930_heron/archive",
+        ))
         .send()
         .await
         .unwrap();
-    assert_eq!(archived.status().as_u16(), 200);
+    assert_eq!(archived.status().as_u16(), 204);
     let in_archive = http
-        .get(url("/api/hub/inbox?status=archived"))
+        .get(url("/api/hub/mail/threads?folder=archived"))
         .send()
         .await
         .unwrap()
@@ -343,11 +344,13 @@ async fn hub_routes_with_path_parameters_answer_on_the_artifacts_port() {
         .unwrap();
     assert!(in_archive.contains("20260930_heron"), "{in_archive}");
     let restored = http
-        .post(url("/api/hub/inbox/quiet/20260930_heron/restore"))
+        .post(url(
+            "/api/hub/mail/threads/quiet%2Fuser%2F20260930_heron/restore",
+        ))
         .send()
         .await
         .unwrap();
-    assert_eq!(restored.status().as_u16(), 200);
+    assert_eq!(restored.status().as_u16(), 204);
 
     // One parameter: the agent, on routes that change its state.
     for (action, state) in [

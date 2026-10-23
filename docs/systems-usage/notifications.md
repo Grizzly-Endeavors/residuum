@@ -127,7 +127,7 @@ Four things send a push, each once by its own rule. A message goes to the device
 
 | Event | Sent when | Title | Body | A click opens | Tag |
 |-------|-----------|-------|------|---------------|-----|
-| `inbox_item` | an agent files an item with `user_inbox_add` | the item's title | "From <agent>: " and the start of the item's body | the item in the inbox, `/inbox?item=<agent>:<id>` | `inbox:<agent>:<id>` |
+| `inbox_item` | an agent files an item with `user_inbox_add` | the item's title | "From <agent>: " and the start of the item's body | the item's thread in the inbox, `/inbox?thread=<agent>%2Fuser%2F<id>` | `inbox:<agent>:<id>` |
 | `agent_failed` | an agent enters the `failed` state, whether starting or running | "<agent> couldn't start", or "<agent> stopped unexpectedly" when it was running | a line chosen by the kind of error: its settings need fixing, another agent is using its Teams port, an internal error, or a pointer to Residuum for anything else | the agent's chat, `/agent/<agent>` | `failed:<agent>` |
 | `outbound_unreachable` | a task the agent sent to a remote agent has been unreachable past the tracker's 10-minute threshold, once per streak, when the tracker's notice for it goes out | "<agent> can't reach <remote>" | "A task has been waiting since <time>.", the time the streak began in the hub's timezone, with the date when it isn't today | the agent's Activity, `/agent/<agent>/activity` | `outbound:<agent>:<task id>` |
 | `reply_while_away` | a main turn the user was part of ends with a reply no client was there to see, once per turn | "<agent> replied" | the reply as a one-line plain preview | the agent's chat, `/agent/<agent>` | `reply:<agent>` (a later reply replaces an earlier one) |

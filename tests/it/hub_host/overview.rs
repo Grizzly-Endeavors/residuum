@@ -265,7 +265,7 @@ async fn the_unread_count_follows_the_inbox_tool_a_hand_placed_file_and_the_hubs
 
     let response = hub
         .http
-        .put(hub.url("/api/hub/inbox/scout/20260930_hand-placed/read"))
+        .post(hub.url("/api/hub/mail/threads/scout%2Fuser%2F20260930_hand-placed/read"))
         .send()
         .await
         .unwrap();

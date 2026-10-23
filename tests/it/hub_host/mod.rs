@@ -595,7 +595,7 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
 
     let (running_usage_status, running_usage) = hub.get("/api/agents/scout/usage").await;
     assert_eq!(running_usage_status, 200, "{running_usage}");
-    let (running_inbox_status, running_inbox) = hub.get("/api/agents/scout/inbox").await;
+    let (running_inbox_status, running_inbox) = hub.get("/api/hub/mail/threads?agent=scout").await;
     assert_eq!(running_inbox_status, 200, "{running_inbox}");
     assert!(
         running_inbox.contains("20260930_pelican"),
@@ -615,12 +615,14 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
         (200, running_usage)
     );
     assert_eq!(
-        hub.get("/api/agents/scout/inbox").await,
+        hub.get("/api/hub/mail/threads?agent=scout").await,
         (200, running_inbox)
     );
-    let (archive_status, archive) = hub.get("/api/agents/scout/inbox/archive").await;
+    let (archive_status, archive) = hub
+        .get("/api/hub/mail/threads?agent=scout&folder=archived")
+        .await;
     assert_eq!(archive_status, 200, "{archive}");
-    assert_eq!(archive, "[]");
+    assert_eq!(archive, r#"{"threads":[],"next":null}"#);
     let (a2a_status, a2a) = hub.get("/api/agents/scout/a2a/agents/raw").await;
     assert_eq!(a2a_status, 200, "{a2a}");
     assert_eq!(a2a, r#"{"agents":{}}"#);
@@ -636,7 +638,7 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
 
     // Starting it again serves the same files through the same routes.
     hub.host.start("scout").await.unwrap();
-    assert_eq!(hub.get("/api/agents/scout/inbox").await.0, 200);
+    assert_eq!(hub.get("/api/hub/mail/threads?agent=scout").await.0, 200);
     let (status_status, status_body) = hub.get("/api/agents/scout/status").await;
     assert_eq!(status_status, 200, "{status_body}");
 }
@@ -675,7 +677,7 @@ async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     assert_eq!(hub.get("/api/agents/scout/files/not-a-token").await.0, 404);
 }
 
-/// Assert that the agent's history, usage, inbox, and raw A2A settings
+/// Assert that the agent's history, usage, mail, and raw A2A settings
 /// answer with what is on disk.
 async fn assert_file_routes_answer(hub: &Fixture, name: &str) {
     let (history_status, history) = hub.get(&format!("/api/agents/{name}/chat/history")).await;
@@ -683,11 +685,11 @@ async fn assert_file_routes_answer(hub: &Fixture, name: &str) {
     assert!(history.contains("remember the pelican"), "{history}");
     let (usage_status, usage) = hub.get(&format!("/api/agents/{name}/usage")).await;
     assert_eq!(usage_status, 200, "{usage}");
-    let (inbox_status, inbox) = hub.get(&format!("/api/agents/{name}/inbox")).await;
+    let (inbox_status, inbox) = hub
+        .get(&format!("/api/hub/mail/threads?agent={name}"))
+        .await;
     assert_eq!(inbox_status, 200, "{inbox}");
     assert!(inbox.contains("20260930_pelican"), "{inbox}");
-    let (archive_status, archive) = hub.get(&format!("/api/agents/{name}/inbox/archive")).await;
-    assert_eq!(archive_status, 200, "{archive}");
     let (a2a_status, a2a) = hub.get(&format!("/api/agents/{name}/a2a/agents/raw")).await;
     assert_eq!(a2a_status, 200, "{a2a}");
     let (plan_status, plan) = hub
@@ -2815,7 +2817,7 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
 
 mod agent_watch;
 mod artifacts_origin;
-mod hub_inbox;
+mod hub_mail;
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes parsed JSON for clarity"
