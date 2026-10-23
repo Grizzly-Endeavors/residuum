@@ -20,8 +20,8 @@ use chrono::NaiveDate;
 use tempfile::tempdir;
 
 use residuum::inbox::{
-    self, InboxItem, archive_item, count_unread, generate_filename, list_items, load_item,
-    mark_read, quick_add, save_item,
+    self, InboxItem, archive_item, generate_filename, list_items, load_item, mark_read, quick_add,
+    save_item,
 };
 
 fn make_item(title: &str, read: bool) -> InboxItem {
@@ -93,38 +93,6 @@ async fn full_lifecycle_add_list_read_archive() {
     // List should be empty now
     let remaining = list_items(&inbox_dir).await.unwrap();
     assert!(remaining.is_empty(), "inbox should be empty after archive");
-}
-
-// ── count_unread correctness ─────────────────────────────────────────────
-
-#[tokio::test]
-async fn count_unread_correctness() {
-    let dir = tempdir().unwrap();
-    let inbox_dir = dir.path();
-
-    assert_eq!(count_unread(inbox_dir).await, 0, "empty dir = 0");
-
-    save_item(inbox_dir, "a.json", &make_item("a", false))
-        .await
-        .unwrap();
-    save_item(inbox_dir, "b.json", &make_item("b", false))
-        .await
-        .unwrap();
-    save_item(inbox_dir, "c.json", &make_item("c", true))
-        .await
-        .unwrap();
-
-    assert_eq!(count_unread(inbox_dir).await, 2, "2 unread, 1 read");
-
-    mark_read(inbox_dir, "a").await.unwrap();
-    assert_eq!(count_unread(inbox_dir).await, 1, "1 unread after marking a");
-
-    mark_read(inbox_dir, "b").await.unwrap();
-    assert_eq!(
-        count_unread(inbox_dir).await,
-        0,
-        "0 unread after marking all"
-    );
 }
 
 // ── list_items ignores archive and non-JSON ──────────────────────────────

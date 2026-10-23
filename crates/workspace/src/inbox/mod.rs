@@ -516,18 +516,6 @@ pub async fn list_items_or_empty(inbox_dir: &Path) -> anyhow::Result<Vec<(String
     list_items(inbox_dir).await
 }
 
-/// Count unread inbox items.
-#[tracing::instrument(skip_all, fields(path = %inbox_dir.display()))]
-pub async fn count_unread(inbox_dir: &Path) -> usize {
-    match list_items(inbox_dir).await {
-        Ok(items) => items.iter().filter(|(_, i)| !i.read).count(),
-        Err(e) => {
-            tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to list inbox items for unread count");
-            0
-        }
-    }
-}
-
 /// Mark an inbox item as read and save it back atomically.
 ///
 /// # Errors
@@ -1248,43 +1236,6 @@ mod tests {
         let items = list_items(dir.path()).await.unwrap();
         assert_eq!(items.len(), 1, "should skip .json-named directories");
         assert_eq!(items[0].1.title, "active");
-    }
-
-    #[tokio::test]
-    async fn count_unread_accuracy() {
-        let dir = tempfile::tempdir().unwrap();
-
-        save_item(dir.path(), "unread1.json", &make_item("a", 12, false))
-            .await
-            .unwrap();
-        save_item(dir.path(), "unread2.json", &make_item("b", 12, false))
-            .await
-            .unwrap();
-        save_item(dir.path(), "read1.json", &make_item("c", 12, true))
-            .await
-            .unwrap();
-
-        assert_eq!(
-            count_unread(dir.path()).await,
-            2,
-            "should count only unread items"
-        );
-    }
-
-    #[tokio::test]
-    async fn count_unread_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(count_unread(dir.path()).await, 0);
-    }
-
-    #[tokio::test]
-    async fn count_unread_missing_dir() {
-        let missing = Path::new("/tmp/nonexistent_inbox_dir_test");
-        assert_eq!(
-            count_unread(missing).await,
-            0,
-            "missing dir should return 0"
-        );
     }
 
     #[tokio::test]
