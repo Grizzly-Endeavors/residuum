@@ -11,12 +11,14 @@
   let {
     source,
     path,
+    agentNamed = false,
     layout = "wide",
     onclose = () => {},
     buffer: given,
   }: {
     source: FileSource;
     path: string;
+    agentNamed?: boolean;
     layout?: PanelLayout;
     onclose?: () => void;
     buffer?: FileBuffer;
@@ -30,5 +32,5 @@
 </script>
 
 <aside aria-labelledby="panel-title">
-  <FilePanel {buffer} {path} />
+  <FilePanel {buffer} {path} {agentNamed} />
 </aside>
