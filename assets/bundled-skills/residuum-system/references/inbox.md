@@ -35,7 +35,9 @@ Each item is a JSON file. There is **no `id` field in the JSON body** — the it
 
 ## Mail threads
 
-The user's mail with the agents is made of inbox items: a message the user sends an agent from the web UI (or the CLI) is an item in that agent's agent inbox with source `web` or `cli`, one copy per recipient; a message an agent sends the user is an item in that agent's user inbox. Items linked by `in_reply_to` form a thread, across agents and across the archive, and the thread's subject is its first message's title. The user's replies arrive in your agent inbox with `in_reply_to` naming the message they answer.
+The user's mail with the agents is made of inbox items: a message the user sends an agent from the web UI (or the CLI) is an item in that agent's agent inbox with source `web` or `cli`, one copy per recipient; a message an agent sends the user is an item in that agent's user inbox. Items linked by `in_reply_to` form a thread, across agents and across the archive, and the thread's subject is its first message's title. The user's replies arrive in your agent inbox with `in_reply_to` naming the message they answer. A message the user sends several agents is one copy per recipient, all with the same ID, and the user sees it as one message. Only items with source `web` or `cli` are the user's mail; other agent-inbox items (scheduled results, webhooks, pulses, artifacts, file companions) are never part of a thread.
+
+Your reply to the user goes to the user only. The user's reply-all can name every agent that wrote in the thread, and agents that need to coordinate use `message_agent`.
 
 IDs are unique within an agent. A filename is the date plus the sanitized title; when that stem is already taken, by an item in the inbox or in its archive, `_2`, `_3`, ... is appended, so two items with the same title on one day don't overwrite each other and an archived item's ID is never reused. `user_inbox_add` returns the ID it used, which may carry such a suffix.
 

@@ -74,7 +74,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the shared team directory, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
 | [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `team/workbench/` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
-| [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add` | *(none)* |
+| [Inbox](inbox.md) | Mail between the user and the agents, and agent triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore`, `user_inbox_add`, `user_inbox_list` | *(none)* |
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
 | [Skills](skills.md) | Loadable instruction modules | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` |
 | [Tool PATH](tools.md) | Runtime-extensible PATH for spawned CLIs (exec + MCP stdio) | *(automatic — no tools)* | `[tools]` in `config.toml`, `~/.residuum/hub/bin` |
