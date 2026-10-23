@@ -1,11 +1,11 @@
 <script lang="ts">
+  import { openAgentFileInPanel } from "../../feed/feed-links";
   import Prose from "../../feed/Prose.svelte";
   import type { MailAttachment, MailMessage, MailThread } from "../../lib/hub-types";
   import { Icon } from "../../lib/icons";
   import { displaySubject } from "../../lib/mail-subject";
   import { mail, mailboxOf } from "../../lib/mail.svelte";
   import { notifications } from "../../lib/notifications.svelte";
-  import { router } from "../../lib/router.svelte";
   import { messageTimeLabel } from "../../lib/time";
   import { toast } from "../../lib/toast.svelte";
   import {
@@ -77,7 +77,7 @@
   }
 
   function openAttachment(attachment: MailAttachment): void {
-    void router.openPanel({ kind: "file", path: attachment.path, agent: attachment.agent });
+    openAgentFileInPanel(attachment.agent, attachment.path);
   }
 </script>
 
@@ -139,7 +139,14 @@
               </header>
               {#if message.body.trim() !== ""}
                 <div class="message-body">
-                  <Prose content={message.body} {agent} />
+                  <!-- An agent's paths open its file beside the thread, so the Inbox stays. -->
+                  <Prose
+                    content={message.body}
+                    {agent}
+                    openPath={agent === null
+                      ? undefined
+                      : (path) => openAgentFileInPanel(agent, path)}
+                  />
                 </div>
               {/if}
               {#if message.attachments.length > 0}
@@ -273,7 +280,11 @@
     list-style: none;
   }
 
-  /* An agent's message is a card; yours is in the moss tint the chat gives your messages. */
+  /*
+   * An agent's message is a stone-1 card and yours a stone-2 one, named in
+   * moss as the chat marks you. Not the chat's moss tint: an attachment
+   * chip's control-border ring falls under 3:1 on it.
+   */
   .message {
     display: flex;
     flex-direction: column;
@@ -283,7 +294,7 @@
     background: var(--color-stone-1);
 
     &[data-from="you"] {
-      background: var(--color-moss-tint);
+      background: var(--color-stone-2);
     }
   }
 
@@ -297,9 +308,12 @@
   .message-from {
     color: var(--color-text);
     font-weight: var(--font-weight-semibold);
+
+    [data-from="you"] & {
+      color: var(--color-moss-text);
+    }
   }
 
-  /* text-2, not text-3: the meta also sits on your moss-tinted messages. */
   .message-to {
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
@@ -307,7 +321,7 @@
 
   .message-when {
     margin-left: auto;
-    color: var(--color-text-2);
+    color: var(--color-text-3);
     font-size: var(--font-size-xs);
     font-variant-numeric: tabular-nums;
   }

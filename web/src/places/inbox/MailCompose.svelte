@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { hub } from "../../lib/hub.svelte";
-  import { Icon } from "../../lib/icons";
   import { mail } from "../../lib/mail.svelte";
   import { toast } from "../../lib/toast.svelte";
   import { Button, IconButton, keyboardScrollable, TextField } from "../../lib/ui";
@@ -78,8 +77,12 @@
         <div class="compose-agents">
           {#each choices as choice (choice.name)}
             {@const chosen = draft.to.includes(choice.name)}
-            <Button size="sm" aria-pressed={chosen} onclick={() => toggle(choice.name)}>
-              {#if chosen}<Icon name="check" size={14} />{/if}
+            <Button
+              size="sm"
+              pressed={chosen}
+              icon={chosen ? "check" : undefined}
+              onclick={() => toggle(choice.name)}
+            >
               {choice.name}{#if choice.stopped}<span class="compose-stopped">stopped</span>{/if}
             </Button>
           {:else}
