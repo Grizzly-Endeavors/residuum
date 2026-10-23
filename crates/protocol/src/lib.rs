@@ -1532,7 +1532,7 @@ mod tests {
     fn server_message_serialize_message_refused() {
         let msg = ServerMessage::MessageRefused {
             id: "id-1".to_string(),
-            message: "An attached file isn't available anymore.".to_string(),
+            message: "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.".to_string(),
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(
@@ -1540,7 +1540,7 @@ mod tests {
             serde_json::json!({
                 "type": "message_refused",
                 "id": "id-1",
-                "message": "An attached file isn't available anymore.",
+                "message": "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
             }),
             "message_refused should carry the send's id and the reason"
         );
