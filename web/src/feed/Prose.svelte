@@ -6,12 +6,13 @@
   // Message text as sanitized Markdown. Each code block has a Copy button,
   // and inline code that is a whole workspace path opens that file in the
   // context panel, in `agent`'s workspace. Other links open in a new tab,
-  // so following one never takes the app away.
+  // so following one never takes the app away. With no agent (the team's
+  // folder, whose paths name no agent's workspace) such code is not a link.
 
   interface Props {
     content: string;
-    /** The agent whose workspace the message's paths are in. */
-    agent: string;
+    /** The agent whose workspace the message's paths are in, or null where the paths name none. */
+    agent: string | null;
     /** `compact` for text inside a card. */
     size?: "message" | "compact";
     /** The text is still arriving: a blinking caret follows its last word. */
@@ -30,7 +31,12 @@
   const owner = $derived(agent);
 
   function render(node: HTMLElement): void {
-    node.replaceChildren(renderMarkdown(source, { pathHref: (path) => pathHref(owner, path) }));
+    const linkAgent = owner;
+    node.replaceChildren(
+      renderMarkdown(source, {
+        pathHref: linkAgent === null ? undefined : (path) => pathHref(linkAgent, path),
+      }),
+    );
   }
 
   const COPY_FEEDBACK_MS = 2000;
@@ -65,7 +71,7 @@
     }
     const link = event.target.closest<HTMLAnchorElement>("a[data-path]");
     const newTab = event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey;
-    if (link === null || newTab || event.defaultPrevented) return;
+    if (agent === null || link === null || newTab || event.defaultPrevented) return;
     event.preventDefault();
     openPathInPanel(agent, link.dataset.path ?? "");
   }

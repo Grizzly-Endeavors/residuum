@@ -51,6 +51,8 @@ export class FileBuffer {
   changedOnDisk = $state<"changed" | "removed" | null>(null);
   /** A save found the file changed since it was read, and waits for the user's answer. */
   conflict = $state<((answer: ConflictAnswer) => void) | null>(null);
+  /** The editor is open, rather than a Markdown file's rendered view. Kept here, so a redrawn panel keeps it. */
+  editing = $state(false);
 
   readonly dirty = $derived(this.status === "ready" && this.text !== this.saved);
   readonly name = $derived(fileName(this.path));
@@ -77,6 +79,7 @@ export class FileBuffer {
 
   /** Show `path`, read from disk, dropping the edits to the file shown. */
   async open(path: string): Promise<void> {
+    if (path !== this.path) this.editing = false;
     this.path = path;
     this.status = "loading";
     this.text = "";

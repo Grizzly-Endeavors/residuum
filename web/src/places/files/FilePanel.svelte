@@ -1,6 +1,7 @@
 <script lang="ts">
   import { configCoordinator } from "../../lib/config-coordinator";
   import { hub } from "../../lib/hub.svelte";
+  import Prose from "../../feed/Prose.svelte";
   import { router } from "../../lib/router.svelte";
   import { Badge, Banner, Button, Dialog, EmptyState, Skeleton } from "../../lib/ui";
   import type { WatchHandler, WatchOwner } from "../../lib/watch-registry";
@@ -14,8 +15,10 @@
 
   // A file in the context panel, from the Files places' trees and from
   // `panel=file:` links: the editor with live validation, Save and Discard,
-  // the save conflict, and the file's history. Unsaved edits are asked about
-  // before anything closes the panel or shows another file.
+  // the save conflict, and the file's history. A Markdown file shows rendered
+  // until Edit opens the editor, and the rendered view shows the buffer's text,
+  // edits included. Unsaved edits are asked about before anything closes the
+  // panel or shows another file.
 
   interface Props {
     /** The open file, which outlives this view while the panel stays open. */
@@ -31,6 +34,9 @@
 
   const source = $derived(buffer.source);
   let historyOpen = $state(false);
+
+  const isMarkdown = $derived(/\.md$/i.test(buffer.path));
+  const rendered = $derived(isMarkdown && !buffer.editing);
 
   const inFolder = $derived(buffer.path.includes("/"));
 
@@ -102,14 +108,24 @@
   title={buffer.name}
   code
   meta={inFolder ? folder : undefined}
-  actions={buffer.status === "ready" ? history : undefined}
+  actions={buffer.status === "ready" ? actions : undefined}
 />
 
 {#snippet folder()}
   <code class="file-panel-path">{buffer.path}</code>
 {/snippet}
 
-{#snippet history()}
+{#snippet actions()}
+  {#if isMarkdown}
+    <Button
+      class="file-panel-edit"
+      variant="quiet"
+      size="sm"
+      icon="edit"
+      aria-pressed={!rendered}
+      onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
+    >
+  {/if}
   <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
     >History</Button
   >
@@ -148,14 +164,24 @@
     {:else if buffer.error}
       <Banner tone="warn" edge ondismiss={() => (buffer.error = "")}>{buffer.error}</Banner>
     {/if}
-    <TextEditor
-      layout="panel"
-      name={buffer.name}
-      value={buffer.text}
-      problems={buffer.diagnostics}
-      oninput={(text) => (buffer.text = text)}
-      onkeydown={saveOnShortcut}
-    />
+    {#if rendered}
+      <div class="file-panel-rendered">
+        {#if buffer.text.trim() === ""}
+          <p class="file-panel-empty">Nothing written yet. Edit to add text.</p>
+        {:else}
+          <Prose content={buffer.text} agent={source.agent} size="compact" />
+        {/if}
+      </div>
+    {:else}
+      <TextEditor
+        layout="panel"
+        name={buffer.name}
+        value={buffer.text}
+        problems={buffer.diagnostics}
+        oninput={(text) => (buffer.text = text)}
+        onkeydown={saveOnShortcut}
+      />
+    {/if}
     {#if buffer.dirty}
       <div class="file-panel-save">
         <span class="file-panel-save-note"><Badge tone="accent" dot>Unsaved changes</Badge></span>
@@ -205,6 +231,24 @@
 
   .file-panel-path {
     font-size: var(--font-size-xs);
+  }
+
+  /* Pressed reads as the icon buttons do: the vein tint under the label. */
+  :global(.file-panel-edit[aria-pressed="true"]) {
+    background: var(--color-vein-tint);
+    color: var(--color-text);
+  }
+
+  .file-panel-rendered {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: var(--space-16) var(--space-18);
+  }
+
+  .file-panel-empty {
+    margin: 0;
+    color: var(--color-text-3);
   }
 
   .file-panel-save {
