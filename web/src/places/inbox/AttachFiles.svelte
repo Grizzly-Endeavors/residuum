@@ -1,22 +1,22 @@
 <script lang="ts">
-  import type { MailDraft } from "../../lib/mail.svelte";
+  import type { StagedAttachments } from "../../lib/staged-attachments.svelte";
   import { Button } from "../../lib/ui";
 
   // "Attach files": a button over a hidden file picker. What is picked goes
-  // to the draft, which refuses files over the upload limit and starts
+  // to the message's files, which refuse any over the upload limit and start
   // uploading the rest at once.
 
   interface Props {
-    draft: MailDraft;
+    files: StagedAttachments;
   }
 
-  let { draft }: Props = $props();
+  let { files }: Props = $props();
 
   let picker = $state<HTMLInputElement>();
 
   function picked(): void {
-    const files = picker?.files;
-    if (files !== null && files !== undefined && files.length > 0) draft.attach(files);
+    const chosen = picker?.files;
+    if (chosen !== null && chosen !== undefined && chosen.length > 0) files.attach(chosen);
     // Cleared so picking the same file again (after removing it) still reports a change.
     if (picker !== undefined) picker.value = "";
   }

@@ -189,6 +189,11 @@ images?: Array<ImageAttachment>,
  */
 attachments?: Array<MessageAttachment>,
 /**
+ * Files attached to the message, each saved as a companion agent-inbox
+ * item.
+ */
+attachments?: Array<MessageAttachment>, 
+/**
  * The person who sent it, for interfaces that identify one.
  */
 sender?: MessageSender,

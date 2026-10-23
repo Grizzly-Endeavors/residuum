@@ -741,11 +741,19 @@ describe("chat turns", () => {
     });
   });
 
-  describe("images sent with a message", () => {
+  describe("files sent with a message", () => {
     it("are in the message every page is told of", () => {
-      const images = [{ media_type: "image/png", data: "AAAA" }];
-      chat.send({ type: "send_message", id: "m1", content: "What is this?", images });
-      expect(frames[0]).toMatchObject({ type: "user_message", images });
+      const attachments = [
+        {
+          item_id: "20260314_chat_attachment_notes_pdf",
+          filename: "notes.pdf",
+          size: 4,
+          content_type: "application/pdf",
+          path: "inbox/agent/attachments/20260314_chat_attachment_notes_pdf/notes.pdf",
+        },
+      ];
+      chat.send({ type: "send_message", id: "m1", content: "What is this?" }, attachments);
+      expect(frames[0]).toMatchObject({ type: "user_message", attachments });
     });
   });
 

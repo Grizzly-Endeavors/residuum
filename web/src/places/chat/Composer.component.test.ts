@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { actionRegistry, type AppAction } from "../../lib/action-registry.svelte";
-import { readDraft, saveDraft, saveDraftImages } from "../../lib/composer-drafts";
+import { clearDraftAttachments, readDraft, saveDraft } from "../../lib/composer-drafts";
+import type { StagedAttachment } from "../../lib/staged-attachments.svelte";
 import {
   jsonResponse,
   mockFetch,
@@ -10,6 +11,7 @@ import {
   settle,
   stubPointer,
   stubWebSocket,
+  type FetchHandler,
 } from "../../test/component";
 import Composer from "./Composer.svelte";
 import { waitFor } from "../../test/wait";
@@ -56,6 +58,31 @@ function composer(props: Props = {}): Rendered {
   return { onsend, onstop, box };
 }
 
+function picker(): HTMLInputElement {
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  if (input === null) throw new Error("no file picker");
+  return input;
+}
+
+function pdf(name: string): File {
+  return new File(["%PDF"], name, { type: "application/pdf" });
+}
+
+function uploaded(id: string, filename: string): Response {
+  return jsonResponse({ id, filename, size: 4 });
+}
+
+/** Answer the hub's upload route with `answer`, and everything else (the model control's read) with 404. */
+function answerUploads(answer: FetchHandler): void {
+  mockFetch((url, init) =>
+    url.startsWith("/api/hub/uploads") ? answer(url, init) : jsonResponse({}, 404),
+  );
+}
+
+function attachedList(): HTMLElement {
+  return screen.getByRole("list", { name: "Attached files" });
+}
+
 /** Whether the device reports a coarse pointer, as a touch screen does. */
 let coarsePointer = false;
 
@@ -84,7 +111,7 @@ afterEach(() => {
   summarize.mockReset();
   saveDraft("atlas", "");
   saveDraft("scout", "");
-  saveDraftImages("atlas", []);
+  clearDraftAttachments();
 });
 
 describe("sending", () => {
@@ -93,7 +120,7 @@ describe("sending", () => {
     await userEvent.type(box, "Check the wiki{Shift>}{Enter}{/Shift}index");
     expect(box).toHaveValue("Check the wiki\nindex");
     await userEvent.keyboard("{Enter}");
-    expect(onsend).toHaveBeenCalledWith("Check the wiki\nindex", undefined);
+    expect(onsend).toHaveBeenCalledWith("Check the wiki\nindex", []);
     expect(box).toHaveValue("");
   });
 
@@ -104,19 +131,18 @@ describe("sending", () => {
     expect(onsend).not.toHaveBeenCalled();
   });
 
-  it("keeps the text and the images in the box when the line couldn't go", async () => {
+  it("keeps the text and the files in the box when the line couldn't go", async () => {
+    answerUploads(() => uploaded("upload_1", "notes.pdf"));
     const { onsend, box } = composer();
     onsend.mockReturnValue(false);
-    const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
-    if (picker === null) throw new Error("no file picker");
-    await userEvent.upload(picker, new File(["png"], "shot.png", { type: "image/png" }));
+    await userEvent.upload(picker(), pdf("notes.pdf"));
     await waitFor(() => {
-      expect(screen.getAllByRole("img")).toHaveLength(1);
+      expect(screen.queryByRole("progressbar")).toBeNull();
     });
     await userEvent.type(box, "/stop now{Enter}");
     expect(onsend).toHaveBeenCalledOnce();
     expect(box).toHaveValue("/stop now");
-    expect(screen.getAllByRole("img")).toHaveLength(1);
+    expect(attachedList()).toHaveTextContent("notes.pdf");
     expect(readDraft("atlas")).toBe("/stop now");
   });
 
@@ -158,7 +184,7 @@ describe("sending", () => {
     const send = screen.getByRole("button", { name: "Send" });
     expect(send).toHaveFocus();
     await userEvent.keyboard("{Enter}");
-    expect(onsend).toHaveBeenCalledWith("Steer left", undefined);
+    expect(onsend).toHaveBeenCalledWith("Steer left", []);
     expect(box).toHaveFocus();
 
     await userEvent.click(screen.getByRole("button", { name: "Stop reply" }));
@@ -258,35 +284,165 @@ describe("the / menu", () => {
   });
 });
 
-describe("images", () => {
-  const png = (name = "shot.png"): File => new File(["png"], name, { type: "image/png" });
-
-  it("attaches images to send, and each can be removed", async () => {
-    const { onsend } = composer();
-    const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
-    if (picker === null) throw new Error("no file picker");
-    await userEvent.upload(picker, [png("a.png"), png("b.png")]);
-    await waitFor(() => {
-      expect(screen.getAllByRole("img")).toHaveLength(2);
+describe("files", () => {
+  it("takes any kind of file from the paperclip, and uploads each at once", async () => {
+    const posted: string[] = [];
+    answerUploads((url) => {
+      posted.push(url);
+      return uploaded("upload_1", "build.log");
     });
-    await userEvent.click(screen.getByRole("button", { name: "Remove image 2" }));
-    expect(screen.getAllByRole("img")).toHaveLength(1);
+    composer();
+    await userEvent.click(screen.getByRole("button", { name: "Attach files" }));
+    expect(picker()).not.toHaveAttribute("accept");
 
-    await userEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(onsend).toHaveBeenCalledWith("", [{ media_type: "image/png", data: "cG5n" }]);
-    expect(screen.queryByRole("img")).toBeNull();
+    await userEvent.upload(picker(), new File(["log"], "build.log", { type: "text/x-log" }));
+
+    expect(attachedList()).toHaveTextContent("build.log");
+    await waitFor(() => {
+      expect(posted).toEqual(["/api/hub/uploads?filename=build.log"]);
+    });
   });
 
-  it("says why a file can't be attached", async () => {
-    composer();
-    const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
-    if (picker === null) throw new Error("no file picker");
-    await userEvent.upload(picker, new File(["%PDF"], "notes.pdf", { type: "application/pdf" }), {
-      applyAccept: false,
+  it("sends the uploaded files with the message, and empties the box", async () => {
+    answerUploads(() => uploaded("upload_1", "notes.pdf"));
+    const { onsend, box } = composer();
+    await userEvent.upload(picker(), pdf("notes.pdf"));
+    await waitFor(() => {
+      expect(screen.queryByRole("progressbar")).toBeNull();
     });
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "notes.pdf can't be attached. Attach a JPEG, PNG, GIF or WebP image.",
+
+    await userEvent.type(box, "Read this{Enter}");
+
+    expect(onsend).toHaveBeenCalledOnce();
+    const [text, attachments] = onsend.mock.calls[0] as [string, StagedAttachment[]];
+    expect(text).toBe("Read this");
+    expect(attachments.map((attachment) => attachment.uploadId)).toEqual(["upload_1"]);
+    expect(box).toHaveValue("");
+    expect(screen.queryByRole("list", { name: "Attached files" })).toBeNull();
+  });
+
+  it("sends a file with no text", async () => {
+    answerUploads(() => uploaded("upload_1", "notes.pdf"));
+    const { onsend } = composer();
+    await userEvent.upload(picker(), pdf("notes.pdf"));
+    await waitFor(() => {
+      expect(screen.queryByRole("progressbar")).toBeNull();
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onsend).toHaveBeenCalledWith("", [expect.objectContaining({ uploadId: "upload_1" })]);
+  });
+
+  it("holds Send while a file is uploading, says why, and lets it go once it's up", async () => {
+    let finish: (response: Response) => void = () => {};
+    answerUploads(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
     );
+    const { onsend, box } = composer();
+    await userEvent.upload(picker(), pdf("notes.pdf"));
+    expect(screen.getByRole("progressbar", { name: "Uploading notes.pdf" })).toBeInTheDocument();
+
+    await userEvent.type(box, "Read this{Enter}");
+    expect(onsend).not.toHaveBeenCalled();
+    expect(box).toHaveValue("Read this");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Wait for notes.pdf to finish uploading, then send.",
+    );
+
+    finish(uploaded("upload_1", "notes.pdf"));
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+    await userEvent.keyboard("{Enter}");
+    expect(onsend).toHaveBeenCalledOnce();
+  });
+
+  it("holds Send while a file failed, until it is tried again", async () => {
+    let answer = (): Response => jsonResponse({ error: "disk full" }, 500);
+    answerUploads(() => answer());
+    const { onsend, box } = composer();
+    await userEvent.upload(picker(), pdf("notes.pdf"));
+    expect(await screen.findByText(/Couldn't upload notes\.pdf/)).toBeInTheDocument();
+
+    await userEvent.type(box, "Read this{Enter}");
+    expect(onsend).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "notes.pdf didn't upload. Try it again or remove it, then send.",
+    );
+
+    answer = () => uploaded("upload_2", "notes.pdf");
+    await userEvent.click(screen.getByRole("button", { name: "Try again notes.pdf" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onsend).toHaveBeenCalledWith("Read this", [
+      expect.objectContaining({ uploadId: "upload_2" }),
+    ]);
+  });
+
+  it("removes a file, cancelling its upload", async () => {
+    let signal: AbortSignal | undefined;
+    answerUploads((_url, init) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>(() => {});
+    });
+    const { onsend, box } = composer();
+    await userEvent.upload(picker(), pdf("notes.pdf"));
+    await userEvent.click(screen.getByRole("button", { name: "Remove notes.pdf" }));
+
+    expect(signal?.aborted).toBe(true);
+    expect(screen.queryByRole("list", { name: "Attached files" })).toBeNull();
+    await userEvent.type(box, "Just text{Enter}");
+    expect(onsend).toHaveBeenCalledWith("Just text", []);
+  });
+
+  it("refuses a file over 50 MB in plain words, and uploads nothing", async () => {
+    const posted: string[] = [];
+    answerUploads((url) => {
+      posted.push(url);
+      return uploaded("upload_1", "film.mov");
+    });
+    composer();
+    const film = pdf("film.mov");
+    Object.defineProperty(film, "size", { value: 50 * 1024 * 1024 + 1 });
+    await userEvent.upload(picker(), film);
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "film.mov is larger than the 50 MB upload limit, so it wasn't attached.",
+    );
+    expect(screen.queryByRole("list", { name: "Attached files" })).toBeNull();
+    expect(posted).toEqual([]);
+  });
+
+  it("takes pasted files", async () => {
+    answerUploads(() => uploaded("upload_1", "shot.png"));
+    const { box } = composer();
+    await userEvent.click(box);
+    await userEvent.paste({
+      files: [new File(["png"], "shot.png", { type: "image/png" })],
+    } as unknown as DataTransfer);
+    expect(attachedList()).toHaveTextContent("shot.png");
+    expect(box).toHaveValue("");
+  });
+
+  it("keeps the agent's files when the composer comes back", async () => {
+    answerUploads(() => uploaded("upload_1", "notes.pdf"));
+    const first = render(Composer, {
+      agent: "atlas",
+      replying: false,
+      reconnecting: false,
+      queued: 0,
+      onsend: vi.fn(() => true),
+      onstop: vi.fn(),
+    });
+    await userEvent.upload(picker(), pdf("notes.pdf"));
+    first.unmount();
+
+    composer();
+    expect(attachedList()).toHaveTextContent("notes.pdf");
   });
 });
 
@@ -415,7 +571,7 @@ describe("Enter", () => {
     const { onsend, box } = composer();
     expect(box).not.toHaveAttribute("enterkeyhint");
     await userEvent.type(box, "Hello{Enter}");
-    expect(onsend).toHaveBeenCalledWith("Hello", undefined);
+    expect(onsend).toHaveBeenCalledWith("Hello", []);
   });
 
   it("is a new line on a touch screen, where only Send sends", async () => {
@@ -427,7 +583,7 @@ describe("Enter", () => {
     expect(onsend).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(onsend).toHaveBeenCalledWith("First\nsecond", undefined);
+    expect(onsend).toHaveBeenCalledWith("First\nsecond", []);
   });
 
   it("still lets Enter run the highlighted action of the / menu on a touch screen", async () => {

@@ -25,7 +25,7 @@ import type {
   UserFeedItem,
   DividerFeedItem,
   ToolCallState,
-  ImageAttachment,
+  MessageAttachment,
   FileAttachmentFeedItem,
   RecentHistorySegment,
   EpisodeHistorySegment,
@@ -715,16 +715,17 @@ export class FeedStore {
    */
   pushUserMessage(
     content: string,
-    images?: ImageAttachment[],
+    attachments?: MessageAttachment[],
     id?: string,
     delivered = true,
   ): void {
+    const files = attachments === undefined || attachments.length === 0 ? {} : { attachments };
     if (id !== undefined && this.activeTurnId !== null) {
       this.sentIds.add(id);
       this.waiting.push({
         id,
         content,
-        ...(images === undefined || images.length === 0 ? {} : { images }),
+        ...files,
         endpoint: "ws",
         connection: delivered ? this.connection : this.connection + 1,
       });
@@ -744,12 +745,33 @@ export class FeedStore {
       id: nextFeedId(),
       kind: "user",
       content,
-      images,
+      ...files,
       timestamp,
       ...(id === undefined ? {} : { messageId: id }),
       ...this.reachedLiveTurn(),
     });
     this.isProcessing = true;
+  }
+
+  /**
+   * The agent refused a message this page sent (`error` naming it, before
+   * anything said the agent took it in): it comes off the feed, or off the
+   * waiting messages, since it never went. The composer gets it back.
+   */
+  withdrawRefused(id: string): void {
+    if (this.waiting.some((message) => message.id === id)) {
+      this.waiting = this.waiting.filter((message) => message.id !== id);
+      return;
+    }
+    const index = this.feed.findLastIndex((item) => item.kind === "user" && item.messageId === id);
+    if (index !== -1) this.feed.splice(index, 1);
+    if (this.activeTurnId === null && this.sentTurnId === id) {
+      // The turn the message was about to start never will.
+      if (this.turnStart !== null && this.turnStart >= this.feed.length) this.turnStart = null;
+      this.sentTurnId = null;
+      this.liveBaseline = null;
+      this.isProcessing = false;
+    }
   }
 
   /**
@@ -832,7 +854,10 @@ export class FeedStore {
     const waited = this.waiting.some((message) => message.id === msg.id);
     if (waited) this.waiting = this.waiting.filter((message) => message.id !== msg.id);
     // A snapshot draws the turn again, this page's own messages included.
-    if (!waited && this.replayClock === null && this.sentIds.has(msg.id)) return;
+    if (!waited && this.replayClock === null && this.sentIds.has(msg.id)) {
+      this.confirmSentAttachments(msg);
+      return;
+    }
     const joins = this.activeTurnId === msg.turn_id;
     const timestamp = localTimestampAt(this.now());
     if (!joins) {
@@ -913,17 +938,30 @@ export class FeedStore {
         item.midTurn !== true &&
         item.sender === undefined,
     );
-    const images = asked?.images === undefined ? [] : $state.snapshot(asked.images);
+    const resendable =
+      asked !== undefined &&
+      (asked.images === undefined || asked.images.length === 0) &&
+      (asked.attachments === undefined || asked.attachments.length === 0);
     this.feed.push({
       id: nextFeedId(),
       kind: "turn-failure",
       turnId,
       message,
       ...(details === undefined || details === "" ? {} : { details }),
-      ...(asked === undefined
-        ? {}
-        : { retry: { content: asked.content, ...(images.length > 0 ? { images } : {}) } }),
+      ...(resendable ? { retry: { content: asked.content } } : {}),
     });
+  }
+
+  /**
+   * The agent took in a message this page sent and already shows: the files
+   * it saved replace the ones the page showed as it sent them.
+   */
+  private confirmSentAttachments(msg: UserMessageFrame): void {
+    if (msg.attachments === undefined || msg.attachments.length === 0) return;
+    const shown = this.feed.findLast(
+      (item): item is UserFeedItem => item.kind === "user" && item.messageId === msg.id,
+    );
+    if (shown !== undefined) shown.attachments = msg.attachments;
   }
 
   /** The turn ended: settle calls still waiting on results, and record how it ended. */

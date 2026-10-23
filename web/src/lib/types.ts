@@ -611,6 +611,11 @@ export interface UserFeedItem extends FeedItemBase {
   kind: "user";
   content: string;
   images?: ImageAttachment[];
+  /**
+   * Files that came with it. This page's own message shows what it sent
+   * (`item_id` and `path` empty) until the agent's `user_message` names the
+   * saved files.
+   */
   attachments?: MessageAttachment[];
   sender?: MessageSender;
   turn?: TurnRef;
@@ -628,6 +633,8 @@ export interface WaitingMessage {
   id: string;
   content: string;
   images?: ImageAttachment[];
+  /** Files sent with it, as this page sent them. */
+  attachments?: MessageAttachment[];
   sender?: MessageSender;
   /** Where it arrived: `ws` for the web, or a chat interface. */
   endpoint: string;
@@ -762,10 +769,12 @@ export interface TurnFailureFeedItem extends FeedItemBase {
   /** The full technical cause chain, when there is one. */
   details?: string;
   /**
-   * What the user sent to start the turn, for Try again. Absent when the page
-   * doesn't hold that message or it wasn't the user's own.
+   * What the user wrote to start the turn, for Try again. Absent when the page
+   * doesn't hold that message, it wasn't the user's own, or it carried images
+   * or files: a message carries files as uploads, which were used up when it
+   * first went.
    */
-  retry?: { content: string; images?: ImageAttachment[] };
+  retry?: { content: string };
 }
 
 export type FeedItem =
