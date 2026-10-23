@@ -682,6 +682,8 @@ fn build_spawn_context(
         tz: rt.tz,
         depth_cap: new_cfg.background.subagent_depth_cap,
         auto_mode: Some(Arc::clone(&rt.auto_mode)),
+        // The same mailboxes main's tools were given at startup.
+        mailboxes: rt.tool_injections.mailboxes.clone(),
     });
 
     Arc::new(SpawnContext {

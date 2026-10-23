@@ -258,6 +258,7 @@ impl RegistryHarness {
             tz: chrono_tz::UTC,
             depth_cap: self.cfg.background.subagent_depth_cap,
             auto_mode: None,
+            mailboxes: None,
         };
         session_tools.build(SessionToolScope {
             own_address: SessionAddress::from(address),

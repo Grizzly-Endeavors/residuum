@@ -59,6 +59,9 @@ pub struct ToolRegistryDeps<'a> {
     /// explicit model against — the same instance sessions fork with and
     /// config reloads update.
     pub model_catalog: &'a residuum_config::SharedModelCatalog,
+    /// Every agent's mailbox, for the mail-aware inbox tools. `None` limits
+    /// them to this agent's own inboxes.
+    pub mailboxes: Option<Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>>,
 }
 
 /// Main's tools for managing sessions and teammates: `stop_agent`,
@@ -148,15 +151,7 @@ fn register_main_workspace_tools(
         tz,
     );
     registration::register_skill_tools(tools, Arc::clone(deps.skill_state));
-    registration::register_inbox_tools(
-        tools,
-        injections,
-        layout.agent_inbox_dir(),
-        layout.agent_inbox_archive_dir(),
-        layout.user_inbox_dir(),
-        layout.user_inbox_attachments_dir(),
-        tz,
-    );
+    registration::register_inbox_tools(tools, injections, layout, tz);
 }
 
 /// Build main's tool registry with all default and domain-specific tools.
@@ -180,6 +175,7 @@ pub fn init_tool_registry(
         tools_path: Some(Arc::clone(deps.tools_path)),
         checkpoints: Some(Arc::clone(deps.checkpoints)),
         publisher: Some(deps.publisher.clone()),
+        mailboxes: deps.mailboxes.clone(),
     };
     let mut tools = ToolRegistry::new();
     tools.set_agent_keys(Arc::clone(deps.agent_keys));
@@ -324,6 +320,7 @@ mod tests {
             hub_dir: &h.hub_dir,
             lifecycle: &h.lifecycle,
             model_catalog: &model_catalog,
+            mailboxes: None,
         };
         let (main_tools, _, _) =
             init_tool_registry(&h.cfg, &h.layout, &h.hybrid_searcher, chrono_tz::UTC, &deps);
