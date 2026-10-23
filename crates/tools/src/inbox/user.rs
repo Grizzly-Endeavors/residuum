@@ -165,21 +165,9 @@ impl Tool for UserInboxAddTool {
             })
             .unwrap_or_default();
 
-        let layout = self.mail.own_layout();
-        let user_inbox_dir = layout.user_inbox_dir();
-        tokio::fs::create_dir_all(&user_inbox_dir)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, dir = %user_inbox_dir.display(), "failed to create the user inbox directory");
-                ToolError::Execution(format!(
-                    "failed to add item to user inbox: could not create {}: {e}",
-                    user_inbox_dir.display()
-                ))
-            })?;
-        let (filename, failures) = inbox::add_user_inbox_item(
-            &user_inbox_dir,
-            &layout.user_inbox_attachments_dir(),
-            inbox::NewUserInboxItem {
+        let (filename, failures) = inbox::add_item(
+            &self.mail.own_layout().user_inbox_dir(),
+            inbox::NewInboxItem {
                 title: &title,
                 body,
                 source: "agent",

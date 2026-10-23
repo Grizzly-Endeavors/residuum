@@ -56,24 +56,20 @@ impl NotificationChannel for InboxChannel {
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         let source_label = format!("{}:{}", notification.source.as_str(), notification.title);
 
-        let now = residuum_core::time::now_local(self.tz);
         let event_time = notification
             .timestamp
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
         let body = format!("[Originally at {event_time}]\n{}", notification.content);
-        let item = inbox::InboxItem {
-            title: notification.title.clone(),
-            body,
-            source: source_label,
-            timestamp: now,
-            read: false,
-            attachments: Vec::new(),
-            in_reply_to: None,
-        };
 
-        let filename = inbox::unique_filename(&self.inbox_dir, &notification.title, now).await;
-        inbox::save_item(&self.inbox_dir, &filename, &item).await?;
+        inbox::quick_add(
+            &self.inbox_dir,
+            &notification.title,
+            &body,
+            &source_label,
+            self.tz,
+        )
+        .await?;
 
         Ok(())
     }

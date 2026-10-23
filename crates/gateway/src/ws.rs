@@ -1117,9 +1117,11 @@ mod tests {
     async fn inbox_add_failure_keeps_the_cause_out_of_the_message() {
         let dir = tempfile::tempdir().unwrap();
         let state = make_test_gateway_state(dir.path());
-        // `agent_inbox_dir` is never created, so the save underneath
-        // `quick_add` fails and the client should see a plain-language
-        // notice with the cause moved to `details`.
+        // A regular file sits where `agent_inbox_dir` belongs, so claiming an
+        // item id underneath `quick_add` fails and the client should see a
+        // plain-language notice with the cause moved to `details`.
+        std::fs::create_dir_all(dir.path().join("inbox")).unwrap();
+        std::fs::write(dir.path().join("inbox/agent"), b"not a directory").unwrap();
         let (local_tx, mut local_rx) = mpsc::unbounded_channel();
         let verbose = AtomicBool::new(false);
         let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());

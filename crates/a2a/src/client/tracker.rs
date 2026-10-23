@@ -937,15 +937,22 @@ impl RemoteTaskTracker {
             size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
             content_type: part.media_type.clone(),
         };
-        let item =
-            attachment::reserve_artifact_item(&self.inbox_dir, &info, "A2A", self.timezone).await;
-        match attachment::save_attachment_bytes(&info, &bytes, item.attachments_dir()).await {
+        let item = match self.reserve_artifact(&info).await {
+            Ok(item) => item,
+            Err(e) => {
+                Self::note_failed_artifact(body, agent, &filename, "save", &e);
+                return;
+            }
+        };
+        let saved = item.save_bytes(&info, &bytes).await;
+        match saved {
             Ok(saved) => {
                 self.note_saved_artifact(body, agent, &saved, &info, item)
                     .await;
             }
             Err(e) => {
-                write!(body, "\n\n[Artifact: {filename} — failed to save: {e}]").ok();
+                item.discard().await;
+                Self::note_failed_artifact(body, agent, &filename, "save", &e);
             }
         }
     }
@@ -964,17 +971,62 @@ impl RemoteTaskTracker {
             size: 0,
             content_type: part.media_type.clone(),
         };
-        let item =
-            attachment::reserve_artifact_item(&self.inbox_dir, &info, "A2A", self.timezone).await;
-        match attachment::download_attachment(&info, url, item.attachments_dir()).await {
+        let item = match self.reserve_artifact(&info).await {
+            Ok(item) => item,
+            Err(e) => {
+                Self::note_failed_artifact(body, agent, &filename, "download", &e);
+                return;
+            }
+        };
+        let downloaded = item.download(&info, url).await;
+        match downloaded {
             Ok(saved) => {
                 self.note_saved_artifact(body, agent, &saved, &info, item)
                     .await;
             }
             Err(e) => {
-                write!(body, "\n\n[Artifact: {filename} — failed to download: {e}]").ok();
+                item.discard().await;
+                Self::note_failed_artifact(body, agent, &filename, "download", &e);
             }
         }
+    }
+
+    /// Name an artifact that failed to `action` ("save" or "download") in the
+    /// message body, and log why it failed.
+    fn note_failed_artifact(
+        body: &mut String,
+        agent: &str,
+        filename: &str,
+        action: &str,
+        reason: &str,
+    ) {
+        tracing::warn!(
+            agent = %agent,
+            filename = %filename,
+            action,
+            error = %reason,
+            "failed to store a2a artifact"
+        );
+        write!(
+            body,
+            "\n\n[Artifact: {filename} — failed to {action}: {reason}]"
+        )
+        .ok();
+    }
+
+    /// Reserve the companion agent-inbox item for an artifact file.
+    async fn reserve_artifact(
+        &self,
+        info: &AttachmentInfo,
+    ) -> Result<attachment::AttachmentItem, String> {
+        attachment::reserve_attachment_item(
+            &self.inbox_dir,
+            info,
+            "A2A",
+            attachment::AttachmentKind::Artifact,
+            self.timezone,
+        )
+        .await
     }
 
     /// Name a saved artifact file in the message body and file it under its
@@ -993,7 +1045,7 @@ impl RemoteTaskTracker {
             attachment::format_attachment_line(saved, info)
         )
         .ok();
-        attachment::file_companion_item(saved, info, agent, item).await;
+        item.file_companion_item(saved, info, agent).await;
     }
 }
 
