@@ -793,4 +793,6 @@ export interface UserInboxItem {
   timestamp: string;
   read: boolean;
   attachments: UserInboxAttachment[];
+  /** The ref (`<agent>/<user|agent>/<id>`) of the message this one answers; absent for a message that starts a thread. */
+  in_reply_to?: string;
 }

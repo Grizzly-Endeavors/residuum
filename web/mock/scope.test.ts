@@ -99,6 +99,11 @@ describe("scopeRequest", () => {
       "/api/hub/inbox",
       "/api/hub/inbox/unread",
       "/api/hub/inbox/atlas/note/read",
+      "/api/hub/mail/threads",
+      "/api/hub/mail/threads/atlas%2Fuser%2Fnote",
+      "/api/hub/mail/threads/atlas%2Fuser%2Fnote/archive",
+      "/api/hub/mail/send",
+      "/api/hub/uploads",
       "/api/hub/config/raw",
       "/api/team/workspace/files",
     ]) {

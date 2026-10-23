@@ -2,6 +2,7 @@ import type { UserInboxAttachment, UserInboxItem } from "../src/lib/types";
 import { json, text } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState } from "./state";
+import { writeFile } from "./workspace-tree";
 
 /**
  * The user inbox routes. An agent's inbox items are in `state.inboxItems` and
@@ -11,7 +12,7 @@ import type { MockState } from "./state";
  */
 
 /** A 1x1 PNG: what an image attachment serves. */
-const PNG_PIXEL = Buffer.from(
+export const PNG_PIXEL = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   "base64",
 );
@@ -41,19 +42,120 @@ export function toApiInboxItem(state: MockState, item: UserInboxItem): UserInbox
   };
 }
 
-/** What an attachment serves: the mock keeps no files, so it is a stand-in of the attachment's type. */
-function attachmentBody(attachment: Pick<UserInboxAttachment, "filename" | "mime_type">): Buffer {
+/** The content types the backend names a file's type by, from its extension. */
+const MIME_TYPES: Readonly<Record<string, string>> = {
+  md: "text/markdown",
+  txt: "text/plain",
+  csv: "text/csv",
+  html: "text/html",
+  json: "application/json",
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  svg: "image/svg+xml",
+  zip: "application/zip",
+};
+
+/** The type of a file by its extension, as the backend detects it. */
+export function mimeTypeOf(filename: string): string {
+  const extension = filename.slice(filename.lastIndexOf(".") + 1).toLowerCase();
+  return MIME_TYPES[extension] ?? "application/octet-stream";
+}
+
+/** Whether a file of this type is kept as text in the workspace, where the file panel can open it. */
+function isText(mimeType: string): boolean {
+  return mimeType.startsWith("text/") || mimeType === "application/json";
+}
+
+/** Which of an agent's two inbox directories an attachment is in: `user` holds what the agent sent the user, `agent` what was sent to the agent. */
+export type InboxSide = "user" | "agent";
+
+/** Where an item's attachment is in the agent's workspace. */
+export function attachmentPath(side: InboxSide, id: string, filename: string): string {
+  return `inbox/${side}/attachments/${id}/${filename}`;
+}
+
+/**
+ * Keep a file as an item's attachment: a text file is a workspace file, so the
+ * file panel opens it by `attachmentPath`; any other kind is held by its bytes.
+ * The attachment's `url` is filled in when the item is listed.
+ */
+export function storeAttachment(
+  state: MockState,
+  side: InboxSide,
+  id: string,
+  filename: string,
+  bytes: Buffer,
+): UserInboxAttachment {
+  const mimeType = mimeTypeOf(filename);
+  const path = attachmentPath(side, id, filename);
+  if (isText(mimeType)) writeFile(state, path, bytes.toString("utf8"));
+  else state.attachmentBytes.set(path, bytes);
+  return { filename, mime_type: mimeType, size: bytes.length, url: "" };
+}
+
+/** What an attachment nobody stored serves: a stand-in of the attachment's type. */
+function standInBody(attachment: Pick<UserInboxAttachment, "filename" | "mime_type">): Buffer {
   if (attachment.mime_type === "image/png") return PNG_PIXEL;
   return Buffer.from(`Mock attachment: ${attachment.filename}\n`);
 }
 
+/** What an attachment serves: the file as it was stored, else a stand-in. */
+function attachmentBody(
+  state: MockState,
+  side: InboxSide,
+  id: string,
+  attachment: UserInboxAttachment,
+): Buffer {
+  const path = attachmentPath(side, id, attachment.filename);
+  const stored = state.workspaceFileContents[path];
+  if (stored !== undefined) return Buffer.from(stored);
+  return state.attachmentBytes.get(path) ?? standInBody(attachment);
+}
+
 /**
- * An attachment of a new item, sized as what it serves. Its `url` is filled in
- * when the item is listed.
+ * An attachment of a new item that nobody stored a file for, sized as the
+ * stand-in it serves. Its `url` is filled in when the item is listed.
  */
 export function mockAttachment(filename: string, mimeType: string): UserInboxAttachment {
-  const size = attachmentBody({ filename, mime_type: mimeType }).length;
+  const size = standInBody({ filename, mime_type: mimeType }).length;
   return { filename, mime_type: mimeType, size, url: "" };
+}
+
+/** Put an attachment made by `mockAttachment` in the workspace, where the file panel opens a text one by its path. */
+export function keepStandIn(
+  state: MockState,
+  side: InboxSide,
+  id: string,
+  attachment: UserInboxAttachment,
+): void {
+  if (!isText(attachment.mime_type)) return;
+  writeFile(
+    state,
+    attachmentPath(side, id, attachment.filename),
+    standInBody(attachment).toString("utf8"),
+  );
+}
+
+/**
+ * The attachments of the item `id` and the side it is on: an item the agent
+ * sent the user, active or archived, else a message sent to the agent.
+ */
+function attachmentsOf(
+  state: MockState,
+  id: string,
+): { side: InboxSide; attachments: readonly UserInboxAttachment[] } | undefined {
+  const sent = [...state.inboxItems, ...state.inboxArchive].find((item) => item.id === id);
+  if (sent !== undefined) return { side: "user", attachments: sent.attachments };
+  const received = state.agentInbox.find(
+    (item) => item.id === id && item.attachments !== undefined,
+  );
+  if (received?.attachments !== undefined) {
+    return { side: "agent", attachments: received.attachments };
+  }
+  return undefined;
 }
 
 function newestFirst(items: readonly UserInboxItem[]): UserInboxItem[] {
@@ -119,7 +221,10 @@ function moveItem(
   json(ctx.res, 200, null);
 }
 
-/** Serve one attachment of an item in the inbox, or else in the archive, so a link outlives archiving. */
+/**
+ * Serve one attachment of an item in the inbox, or else in the archive, so a
+ * link outlives archiving, or else of a message the user sent the agent.
+ */
 function serveAttachment(ctx: RouteContext): void {
   const id = itemId(ctx);
   const indexText = decodedParam(ctx, 1);
@@ -128,15 +233,14 @@ function serveAttachment(ctx: RouteContext): void {
     ctx.res.end(`Invalid URL: Cannot parse \`${indexText}\` to a \`usize\``);
     return;
   }
-  const { inboxItems, inboxArchive } = ctx.state;
-  const item = [...inboxItems, ...inboxArchive].find((candidate) => candidate.id === id);
-  const attachment = item?.attachments[Number(indexText)];
-  if (attachment === undefined) {
+  const found = attachmentsOf(ctx.state, id);
+  const attachment = found?.attachments[Number(indexText)];
+  if (found === undefined || attachment === undefined) {
     ctx.res.writeHead(404);
     ctx.res.end();
     return;
   }
-  const body = attachmentBody(attachment);
+  const body = attachmentBody(ctx.state, found.side, id, attachment);
   // A quote or backslash would end the header's quoted filename early.
   const filename = attachment.filename.replace(/["\\]/g, "");
   ctx.res.writeHead(200, {

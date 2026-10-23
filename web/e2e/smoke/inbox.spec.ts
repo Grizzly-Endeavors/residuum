@@ -6,8 +6,20 @@ import { expect, test } from "../support/fixtures";
  * The Inbox: every agent's user inbox in one list. The scenario gives atlas
  * and scout each an unread "Deploy tomorrow", a read "Daily Digest" and an
  * archived "Last week's digest"; drifter and brittle have never run, so their
- * inboxes are empty.
+ * inboxes are empty. The scenario's mail threads add read messages from agents
+ * (see `mock/data/mail.ts`): two replies to the wiki audit and a research
+ * message in the active list, and atlas's reply on the backup question in the
+ * archive.
  */
+
+/** Every active item of every agent: the sample inboxes' four and the mail threads' three. */
+const ACTIVE_ITEMS = 7;
+
+/** scout's active items: the sample inbox's two, its wiki audit reply and its research message. */
+const SCOUT_ITEMS = 4;
+
+/** The archive once one more item is in it: the sample archives' two and atlas's backup reply. */
+const ARCHIVED_AFTER_ONE_MORE = 4;
 
 function inbox(page: Page): Locator {
   return page.getByRole("region", { name: "Inbox" });
@@ -44,7 +56,7 @@ test("lists every agent's items, and opening one marks it read and drops the cou
   isMobile,
 }) => {
   await page.goto("/inbox");
-  await expect(inbox(page).getByRole("listitem")).toHaveCount(4);
+  await expect(inbox(page).getByRole("listitem")).toHaveCount(ACTIVE_ITEMS);
   await expect(inboxLink(page, isMobile)).toHaveAccessibleName("Inbox 2 unread");
   await expect(itemButton(page, "Deploy tomorrow", "atlas")).toHaveAccessibleName(/, unread$/);
   await expectNoAxeViolations(page);
@@ -99,7 +111,7 @@ test("archives an item, finds it in the archive, and moves it back", async ({ pa
 
   await inbox(page).getByRole("tab", { name: "Archived" }).click();
   await expect.poll(() => address(page)).toBe("/inbox?tab=archived");
-  await expect(inbox(page).getByRole("listitem")).toHaveCount(3);
+  await expect(inbox(page).getByRole("listitem")).toHaveCount(ARCHIVED_AFTER_ONE_MORE);
   await itemButton(page, "Daily Digest", "atlas").click();
   await expectNoAxeViolations(page);
   await item(page, "Daily Digest", "atlas")
@@ -132,7 +144,7 @@ test("the agent filter shows one agent's items", async ({ page }) => {
   await filter.selectOption("scout");
 
   await expect.poll(() => address(page)).toBe("/inbox?agent=scout");
-  await expect(inbox(page).getByRole("listitem")).toHaveCount(2);
+  await expect(inbox(page).getByRole("listitem")).toHaveCount(SCOUT_ITEMS);
   await expect(item(page, "Deploy tomorrow", "atlas")).toHaveCount(0);
 
   await filter.selectOption("drifter");
@@ -140,7 +152,7 @@ test("the agent filter shows one agent's items", async ({ page }) => {
 
   await filter.selectOption("");
   await expect.poll(() => address(page)).toBe("/inbox");
-  await expect(inbox(page).getByRole("listitem")).toHaveCount(4);
+  await expect(inbox(page).getByRole("listitem")).toHaveCount(ACTIVE_ITEMS);
 });
 
 test("a link opens its item, and one to an item that's gone says so", async ({ page }) => {
@@ -189,7 +201,7 @@ test("a stopped agent's item opens, and its attachment downloads", async ({ page
 
 test("a new item appears while the Inbox is open", async ({ page, mock }) => {
   await page.goto("/inbox");
-  await expect(inbox(page).getByRole("listitem")).toHaveCount(4);
+  await expect(inbox(page).getByRole("listitem")).toHaveCount(ACTIVE_ITEMS);
 
   await mock.post("/api/mock/user-inbox-add", {
     params: { agent: "scout" },
@@ -210,7 +222,7 @@ test("a list that can't load says so, and Try again loads it", async ({ page }) 
 
   await page.unroute(/\/api\/hub\/inbox\?/);
   await problem.getByRole("button", { name: "Try again" }).click();
-  await expect(inbox(page).getByRole("listitem")).toHaveCount(4);
+  await expect(inbox(page).getByRole("listitem")).toHaveCount(ACTIVE_ITEMS);
 });
 
 test("an archive that fails stays put and can be tried again", async ({ page }) => {

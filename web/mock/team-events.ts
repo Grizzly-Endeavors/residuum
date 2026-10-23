@@ -18,7 +18,8 @@ import { agentLabel } from "../src/lib/agent-name";
 import type { UserInboxAttachment, UserInboxItem } from "../src/lib/types";
 import type { MockEnv } from "./env";
 import { json, parseJsonObject, readBody, stringField } from "./http";
-import { mockAttachment } from "./inbox";
+import { keepStandIn, mockAttachment } from "./inbox";
+import { findEntry, replyTitle, subjectOf } from "./mail-threads";
 import type { Route, RouteContext } from "./routes";
 import type { MockAgent, MockState } from "./state";
 
@@ -482,8 +483,11 @@ function attachmentsField(body: Record<string, unknown>): UserInboxAttachment[] 
 /**
  * `POST /api/mock/user-inbox-add`, a test control: the agent (`?agent=`, else
  * the first running one) saves an item in the user's inbox the way its
- * `user_inbox_add` tool does. The body is `{ title?, body?, attachments? }`,
- * with each attachment `{ filename, mime_type? }`. Answers `{ id }`.
+ * `user_inbox_add` tool does. The body is `{ title?, body?, attachments?,
+ * in_reply_to? }`, with each attachment `{ filename, mime_type? }`, and
+ * `in_reply_to` the ref of the message it answers (the title then defaults to
+ * `Re: <subject>`). A text attachment is a workspace file the file panel
+ * opens. Answers `{ id }`.
  */
 async function addUserInboxItem(ctx: RouteContext): Promise<void> {
   const agent = ctx.hub.agents.get(ctx.state.agentName);
@@ -501,7 +505,15 @@ async function addUserInboxItem(ctx: RouteContext): Promise<void> {
     json(ctx.res, 400, { error: `mock: ${err instanceof Error ? err.message : String(err)}` });
     return;
   }
-  const title = stringField(body, "title") ?? `A note from ${agent.name}`;
+  const inReplyTo = stringField(body, "in_reply_to");
+  const replied = inReplyTo === undefined ? undefined : findEntry(ctx.hub, inReplyTo);
+  if (inReplyTo !== undefined && replied === undefined) {
+    json(ctx.res, 400, { error: `mock: ${inReplyTo} is not a message in any inbox` });
+    return;
+  }
+  const title =
+    stringField(body, "title") ??
+    (replied === undefined ? `A note from ${agent.name}` : replyTitle(subjectOf(replied.thread)));
   const item: UserInboxItem = {
     id: userInboxItemId(agent.state, title),
     title,
@@ -510,7 +522,9 @@ async function addUserInboxItem(ctx: RouteContext): Promise<void> {
     timestamp: ctx.hub.env.clock.iso(),
     read: false,
     attachments,
+    ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
   };
+  for (const attachment of attachments) keepStandIn(agent.state, "user", item.id, attachment);
   agent.state.inboxItems.unshift(item);
   ctx.hub.teamEvents.userInboxAdded(agent, item.id);
   ctx.hub.overview.changed(agent);
