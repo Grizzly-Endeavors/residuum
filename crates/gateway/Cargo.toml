@@ -68,6 +68,7 @@ ctor = { workspace = true }
 rustls = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = { workspace = true }
 tower = { workspace = true }
 wiremock = { workspace = true }
 
