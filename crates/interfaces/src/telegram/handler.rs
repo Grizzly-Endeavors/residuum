@@ -713,8 +713,8 @@ async fn handle_attachment(
     tz: chrono_tz::Tz,
 ) {
     use residuum_workspace::inbox::attachment::{
-        AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
-        reserve_attachment_item, unique_attachment_path,
+        AttachmentInfo, AttachmentKind, SavedAttachment, format_failed_attachment_line,
+        reserve_attachment_item,
     };
     use teloxide_core::net::Download;
 
@@ -726,7 +726,23 @@ async fn handle_attachment(
         content_type: meta.content_type.clone(),
     };
 
-    let item = reserve_attachment_item(inbox_dir, &info, "Telegram", tz).await;
+    let item =
+        match reserve_attachment_item(inbox_dir, &info, "Telegram", AttachmentKind::Attachment, tz)
+            .await
+        {
+            Ok(item) => item,
+            Err(reason) => {
+                tracing::warn!(
+                    filename = %filename,
+                    error = %reason,
+                    "failed to reserve inbox item for telegram attachment"
+                );
+                let line = format_failed_attachment_line(&info, &reason);
+                content.push('\n');
+                content.push_str(&line);
+                return;
+            }
+        };
 
     // Two-step Telegram download: get_file → download_file
     let download_result: Result<SavedAttachment, String> = async {
@@ -735,34 +751,25 @@ async fn handle_attachment(
             .await
             .map_err(|e| format!("failed to get file info for '{filename}': {e}"))?;
 
-        let local_path = unique_attachment_path(item.attachments_dir(), filename).await?;
+        let mut writer = item.create_writer(&info).await?;
 
-        let mut dst = tokio::fs::File::create(&local_path)
-            .await
-            .map_err(|e| format!("failed to create file '{filename}': {e}"))?;
-
-        bot.download_file(&file.path, &mut dst)
+        bot.download_file(&file.path, writer.file_mut())
             .await
             .map_err(|e| format!("failed to download '{filename}': {e}"))?;
-        // `tokio::fs::File` queues writes on a blocking thread and dropping it
-        // does not wait for them; flush so the attachment is complete on disk
-        // before anything reads it back.
-        tokio::io::AsyncWriteExt::flush(&mut dst)
-            .await
-            .map_err(|e| format!("failed to save '{filename}': {e}"))?;
 
-        Ok(SavedAttachment { local_path })
+        writer.finish().await
     }
     .await;
 
     match download_result {
         Ok(saved) => {
             let author = build_sender_name(from);
-            if let Some(img) = finalize_attachment(&saved, &info, content, &author, item).await {
+            if let Some(img) = item.finalize(&saved, &info, content, &author).await {
                 images.push(img);
             }
         }
         Err(reason) => {
+            item.discard().await;
             tracing::warn!(
                 filename = %filename,
                 error = %reason,

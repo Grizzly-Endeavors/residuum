@@ -24,8 +24,7 @@ use residuum_bus::control::{ServerCommand, StopRequest};
 use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin};
 use residuum_inference::{ImageData, MessageSender};
 use residuum_workspace::inbox::attachment::{
-    AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
-    reserve_attachment_item,
+    AttachmentInfo, AttachmentKind, format_failed_attachment_line, reserve_attachment_item,
 };
 
 use super::DiscordState;
@@ -343,16 +342,40 @@ async fn process_discord_attachments(
             content_type: attachment.content_type.clone(),
         };
 
-        let item = reserve_attachment_item(inbox_dir, &info, "Discord", tz).await;
-        match download_attachment(&info, &attachment.url, item.attachments_dir()).await {
+        let item = match reserve_attachment_item(
+            inbox_dir,
+            &info,
+            "Discord",
+            AttachmentKind::Attachment,
+            tz,
+        )
+        .await
+        {
+            Ok(item) => item,
+            Err(reason) => {
+                tracing::warn!(
+                    filename = %info.filename,
+                    error = %reason,
+                    "failed to reserve inbox item for discord attachment"
+                );
+                let line = format_failed_attachment_line(&info, &reason);
+                content.push('\n');
+                content.push_str(&line);
+                continue;
+            }
+        };
+        let downloaded = item.download(&info, &attachment.url).await;
+        match downloaded {
             Ok(saved) => {
-                if let Some(img) =
-                    finalize_attachment(&saved, &info, &mut content, author_name, item).await
+                if let Some(img) = item
+                    .finalize(&saved, &info, &mut content, author_name)
+                    .await
                 {
                     images.push(img);
                 }
             }
             Err(reason) => {
+                item.discard().await;
                 tracing::warn!(
                     filename = %info.filename,
                     error = %reason,

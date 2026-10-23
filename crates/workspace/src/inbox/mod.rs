@@ -181,20 +181,87 @@ fn archive_sibling(inbox_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Whether `filename` is taken in the inbox or, when there is one, its archive.
+///
+/// An id is taken by its item JSON, and by its `attachments/<id>/` directory in
+/// either place: a reservation claims that directory before its JSON is saved,
+/// so the directory alone already belongs to the id.
 async fn id_in_use(inbox_dir: &Path, archive_dir: Option<&Path>, filename: &str) -> bool {
-    if file_exists(inbox_dir, filename).await {
+    let stem = filename.trim_end_matches(".json");
+    if file_exists(inbox_dir, filename).await
+        || path_exists(&inbox_dir.join("attachments").join(stem)).await
+    {
         return true;
     }
     match archive_dir {
-        Some(dir) => file_exists(dir, filename).await,
+        Some(dir) => {
+            file_exists(dir, filename).await
+                || path_exists(&dir.join("attachments").join(stem)).await
+        }
         None => false,
     }
 }
 
 async fn file_exists(dir: &Path, filename: &str) -> bool {
-    tokio::fs::try_exists(dir.join(filename))
+    path_exists(&dir.join(filename)).await
+}
+
+async fn path_exists(path: &Path) -> bool {
+    tokio::fs::try_exists(path).await.unwrap_or(false)
+}
+
+/// Reserve an inbox item id for `title` at `now` and claim its attachment
+/// directory on disk, returning the item's JSON filename.
+///
+/// Walks the same candidates as [`unique_filename`], but claims the one it
+/// picks by creating `inbox/attachments/<id>/` with a create-new operation.
+/// Creation is atomic, so two reservations racing for the same id cannot both
+/// win: the loser sees `AlreadyExists` and moves on to the next suffix. The
+/// caller owns the claimed directory from then on, and must either save the
+/// item's attachment into it or remove it.
+///
+/// # Errors
+/// Returns an error if the attachments directory cannot be created, or if
+/// claiming a directory fails for any reason other than it already existing.
+pub(super) async fn claim_item_id(
+    inbox_dir: &Path,
+    title: &str,
+    now: NaiveDateTime,
+) -> Result<String, String> {
+    let archive_dir = archive_sibling(inbox_dir);
+    let attachments_root = inbox_dir.join("attachments");
+    tokio::fs::create_dir_all(&attachments_root)
         .await
-        .unwrap_or(false)
+        .map_err(|e| {
+            format!(
+                "failed to create attachments dir {}: {e}",
+                attachments_root.display()
+            )
+        })?;
+
+    let base = generate_filename(title, now);
+    let stem = base.trim_end_matches(".json").to_string();
+    let mut suffix: u32 = 1;
+    loop {
+        let candidate_stem = if suffix == 1 {
+            stem.clone()
+        } else {
+            format!("{stem}_{suffix}")
+        };
+        let filename = format!("{candidate_stem}.json");
+        if !id_in_use(inbox_dir, archive_dir.as_deref(), &filename).await {
+            match tokio::fs::create_dir(attachments_root.join(&candidate_stem)).await {
+                Ok(()) => return Ok(filename),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(format!(
+                        "failed to claim inbox item id {candidate_stem} in {}: {e}",
+                        attachments_root.display()
+                    ));
+                }
+            }
+        }
+        suffix += 1;
+    }
 }
 
 /// Default an inbox item's title from its body: the first line, in full.
@@ -548,8 +615,8 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
 ///
 /// If the item has an `attachments/<item_id>/` subdirectory sitting alongside its
 /// JSON file, that directory moves into the archive alongside it, so an archived
-/// item's attachments keep serving. This is a no-op for items with no such
-/// directory (an agent-inbox item or user-inbox item without attachments).
+/// item keeps its attachments (the user inbox's keep serving). This is a no-op
+/// for an item with no such directory, such as one without attachments.
 ///
 /// The attachment directory is moved before the JSON file: if the attachment move
 /// fails, the item is left untouched and archiving can be retried; if the JSON move
@@ -747,6 +814,55 @@ mod tests {
             long_line,
             "the title itself has no length cap; only the generated filename does"
         );
+    }
+
+    #[tokio::test]
+    async fn claim_item_id_gives_same_title_reservations_distinct_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox/agent");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        let title = "Discord attachment: image.png";
+
+        let first = claim_item_id(&inbox, title, test_now()).await.unwrap();
+        let second = claim_item_id(&inbox, title, test_now()).await.unwrap();
+
+        assert_eq!(first, "20260225_discord_attachment_image_png.json");
+        assert_eq!(second, "20260225_discord_attachment_image_png_2.json");
+        for filename in [&first, &second] {
+            let stem = filename.trim_end_matches(".json");
+            assert!(
+                inbox.join("attachments").join(stem).is_dir(),
+                "claimed directory should exist for {filename}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_item_id_skips_an_id_whose_directory_is_held_without_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox/agent");
+        tokio::fs::create_dir_all(inbox.join("attachments/20260225_held"))
+            .await
+            .unwrap();
+
+        let claimed = claim_item_id(&inbox, "held", test_now()).await.unwrap();
+
+        assert_eq!(claimed, "20260225_held_2.json");
+    }
+
+    #[tokio::test]
+    async fn claim_item_id_skips_an_id_whose_archived_directory_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox/agent");
+        let archived_dir = dir
+            .path()
+            .join("archive/inbox/agent/attachments/20260225_gone");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&archived_dir).await.unwrap();
+
+        let claimed = claim_item_id(&inbox, "gone", test_now()).await.unwrap();
+
+        assert_eq!(claimed, "20260225_gone_2.json");
     }
 
     #[test]
@@ -1740,8 +1856,8 @@ mod tests {
     #[tokio::test]
     async fn archive_item_without_attachments_dir_is_unaffected() {
         // Regression guard: archiving an item with no attachments/<id>/ directory
-        // (e.g. every agent-inbox item) must not error just because that directory
-        // doesn't exist.
+        // (an item with no attachments, agent or user inbox) must not error just
+        // because that directory doesn't exist.
         let dir = tempfile::tempdir().unwrap();
         let inbox = dir.path().join("inbox/agent");
         let archive = dir.path().join("archive/inbox/agent");

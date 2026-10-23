@@ -623,14 +623,32 @@ async fn append_raw_part(
         });
         return;
     }
-    let item = attachment::reserve_attachment_item(agent_inbox_dir, &info, "A2A", tz).await;
-    match attachment::save_attachment_bytes(&info, bytes, item.attachments_dir()).await {
+    let item = match attachment::reserve_attachment_item(
+        agent_inbox_dir,
+        &info,
+        "A2A",
+        attachment::AttachmentKind::Attachment,
+        tz,
+    )
+    .await
+    {
+        Ok(item) => item,
+        Err(e) => {
+            append_failed_attachment(content, &info, &e);
+            return;
+        }
+    };
+    let saved = item.save_bytes(&info, bytes).await;
+    match saved {
         Ok(saved) => {
             if let Some(image) = finalize_and_append(&saved, &info, content, item).await {
                 images.push(image);
             }
         }
-        Err(e) => append_failed_attachment(content, &info, &e),
+        Err(e) => {
+            item.discard().await;
+            append_failed_attachment(content, &info, &e);
+        }
     }
 }
 
@@ -658,14 +676,32 @@ async fn append_url_part(
         append_failed_attachment(content, &info, "only http(s) urls are supported");
         return;
     }
-    let item = attachment::reserve_attachment_item(agent_inbox_dir, &info, "A2A", tz).await;
-    match attachment::download_attachment(&info, url, item.attachments_dir()).await {
+    let item = match attachment::reserve_attachment_item(
+        agent_inbox_dir,
+        &info,
+        "A2A",
+        attachment::AttachmentKind::Attachment,
+        tz,
+    )
+    .await
+    {
+        Ok(item) => item,
+        Err(e) => {
+            append_failed_attachment(content, &info, &e);
+            return;
+        }
+    };
+    let downloaded = item.download(&info, url).await;
+    match downloaded {
         Ok(saved) => {
             if let Some(image) = finalize_and_append(&saved, &info, content, item).await {
                 images.push(image);
             }
         }
-        Err(e) => append_failed_attachment(content, &info, &e),
+        Err(e) => {
+            item.discard().await;
+            append_failed_attachment(content, &info, &e);
+        }
     }
 }
 
@@ -675,7 +711,7 @@ async fn finalize_and_append(
     content: &mut String,
     item: attachment::AttachmentItem,
 ) -> Option<ImageData> {
-    attachment::finalize_attachment(saved, info, content, "a2a caller", item).await
+    item.finalize(saved, info, content, "a2a caller").await
 }
 
 fn append_failed_attachment(content: &mut String, info: &AttachmentInfo, reason: &str) {
