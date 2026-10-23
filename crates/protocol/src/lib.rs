@@ -13,7 +13,7 @@ use residuum_bus::{
     PulseFireChange, PulseFireEvent, PulseFireOutcome, PulseFirePhase, PulseFireRun,
     PulseFireStatus, PulseOverlap, ReloadOutcome, ReloadedFiles, TurnOrigin,
 };
-use residuum_inference::{AgentSender, ImageData, MessageSender};
+use residuum_inference::{AgentSender, ImageData, MessageAttachment, MessageSender};
 
 /// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -711,6 +711,9 @@ pub enum ServerMessage {
         /// Images attached to the message.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageData>,
+        /// Files attached to the message, each saved as a companion agent-inbox item.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<MessageAttachment>,
         /// The person who sent it, for interfaces that identify one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -1248,6 +1251,7 @@ mod tests {
             turn_id: "turn-1".to_string(),
             content: "hello".to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
             sender: None,
             agent_sender: None,
             endpoint: "ws".to_string(),
@@ -1265,12 +1269,69 @@ mod tests {
     }
 
     #[test]
+    fn server_message_serialize_user_message_attachments() {
+        let msg = ServerMessage::UserMessage {
+            id: "m2".to_string(),
+            turn_id: "turn-2".to_string(),
+            content: "see attached".to_string(),
+            images: Vec::new(),
+            attachments: vec![MessageAttachment {
+                item_id: "item-1".to_string(),
+                filename: "notes.md".to_string(),
+                size: 12,
+                content_type: "text/markdown".to_string(),
+                path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+            }],
+            sender: None,
+            agent_sender: None,
+            endpoint: "chat".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "user_message",
+                "id": "m2",
+                "turn_id": "turn-2",
+                "content": "see attached",
+                "attachments": [{
+                    "item_id": "item-1",
+                    "filename": "notes.md",
+                    "size": 12,
+                    "content_type": "text/markdown",
+                    "path": "inbox/agent/attachments/item-1/notes.md",
+                }],
+                "endpoint": "chat",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_user_message_without_attachments_omits_the_field() {
+        let msg = ServerMessage::UserMessage {
+            id: "m3".to_string(),
+            turn_id: "turn-3".to_string(),
+            content: "plain".to_string(),
+            images: Vec::new(),
+            attachments: Vec::new(),
+            sender: None,
+            agent_sender: None,
+            endpoint: "ws".to_string(),
+        };
+        let value = serde_json::to_value(&msg).unwrap();
+        assert!(
+            value.get("attachments").is_none(),
+            "an empty attachments list should be skipped: {value}"
+        );
+    }
+
+    #[test]
     fn server_message_serialize_teammate_user_message() {
         let msg = ServerMessage::UserMessage {
             id: "bg-1".to_string(),
             turn_id: "bg-1".to_string(),
             content: "[Message from teammate agent:scout, not the user.]\nhi".to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
             sender: None,
             agent_sender: Some(AgentSender {
                 address: "agent:scout".to_string(),
@@ -1299,6 +1360,7 @@ mod tests {
             turn_id: "bg-2".to_string(),
             content: "[Agent Message from spawned-research (spawned)]\nfound it".to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
             sender: None,
             agent_sender: Some(AgentSender {
                 address: "spawned-research".to_string(),
