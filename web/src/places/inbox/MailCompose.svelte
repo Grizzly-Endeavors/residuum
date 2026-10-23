@@ -5,8 +5,9 @@
   import { toast } from "../../lib/toast.svelte";
   import { Button, IconButton, TextField } from "../../lib/ui";
   import AttachFiles from "./AttachFiles.svelte";
+  import ComposerHint from "./ComposerHint.svelte";
   import DraftAttachments from "./DraftAttachments.svelte";
-  import { deliveryHint, joinNames } from "./thread-model";
+  import { deliveryHint, joinNames, PICK_AGENT_HINT, sendOnModEnter } from "./thread-model";
 
   // New message, shown as a thread not sent yet: who it goes to (one agent
   // or more), a subject, the Markdown body and attachments. The draft is the
@@ -42,8 +43,8 @@
     if (draft.sendError !== null && draft.to.length > 0) draft.sendError = null;
   }
 
-  async function send(event: SubmitEvent): Promise<void> {
-    event.preventDefault();
+  async function send(event?: SubmitEvent): Promise<void> {
+    event?.preventDefault();
     const recipients = [...draft.to];
     const threadId = await mail.sendNewMessage();
     if (threadId === null) return;
@@ -55,7 +56,7 @@
 <form class="mail-compose" aria-label="New message" onsubmit={(event) => void send(event)}>
   <header class="compose-head">
     <IconButton
-      class="compose-back"
+      class="mail-back"
       icon="back"
       label="Back to list"
       variant="quiet"
@@ -64,7 +65,7 @@
     />
     <div class="compose-title">
       <h2 tabindex="-1">{subject === "" ? "New message" : subject}</h2>
-      <p class="compose-state">Not sent yet</p>
+      <p class="compose-state">New thread · not sent yet</p>
     </div>
   </header>
 
@@ -95,6 +96,7 @@
       rows={10}
       placeholder="Write your message…"
       bind:value={draft.body}
+      onkeydown={(event) => sendOnModEnter(event, () => void send())}
     />
     <DraftAttachments {draft} />
   </div>
@@ -104,12 +106,10 @@
   {/if}
   <div class="compose-foot">
     <AttachFiles {draft} />
-    <span class="compose-hint">
-      {draft.sending && draft.uploading ? "Sending once the files finish uploading. " : ""}{draft.to
-        .length > 0
-        ? deliveryHint(draft.to)
-        : "Any file, up to 50 MB each."}
-    </span>
+    <ComposerHint
+      waiting={draft.sending && draft.uploading}
+      delivery={draft.to.length > 0 ? deliveryHint(draft.to) : PICK_AGENT_HINT}
+    />
     <Button variant="quiet" onclick={oncancel}>Cancel</Button>
     <Button type="submit" variant="primary" icon="send" loading={draft.sending}>Send</Button>
   </div>
@@ -122,13 +122,6 @@
     flex-direction: column;
     gap: var(--space-14);
     min-width: 0;
-  }
-
-  /* With the list beside it (the place's split width), the list is the way back. */
-  @container mail (min-width: 780px) {
-    .mail-compose :global(.compose-back) {
-      display: none;
-    }
   }
 
   .compose-head {
@@ -208,12 +201,5 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-8) var(--space-10);
-  }
-
-  .compose-hint {
-    flex: 1;
-    min-width: 120px;
-    color: var(--color-text-3);
-    font-size: var(--font-size-xs);
   }
 </style>

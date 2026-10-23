@@ -20,7 +20,9 @@
   // message live in the URL. Opening a thread or a New message from the list
   // pushes, so Back closes it; switching threads, folders and the filter
   // replace. A file panel that shows one of the open thread's attachments
-  // belongs to the thread and closes with it.
+  // belongs to the thread and closes with it. Focus follows what opens: the
+  // pane's heading when the list made way for it or a message was sent, the
+  // row (or the list) when it closes.
 
   let { place }: { place: InboxPlace } = $props();
 
@@ -81,9 +83,12 @@
       mail.followCounts(counts);
     });
   });
+  // Leaving the Inbox ends what it held open. The guard has been answered by
+  // then, so an unsent New message goes with it rather than greeting the next one.
   $effect(() => () => {
     mail.leave();
     mail.close();
+    mail.discardNewMessage();
   });
 
   // Leaving with an unsent New message, or closing the page with an unsent
@@ -195,18 +200,92 @@
     (row ?? listElement)?.focus();
   }
 
-  /** The message went: open its thread in Sent. */
-  function sent(threadId: string): void {
-    void router.replacePlace(
+  /** The message went: open its thread in Sent, where focus lands on its heading. */
+  async function sent(threadId: string): Promise<void> {
+    const moved = await router.replacePlace(
       { ...place, folder: "sent", thread: threadId, compose: null },
       panelKept(),
     );
+    if (moved) await focusPane();
   }
+
+  /** Focus is owed to the pane's heading: something opened or replaced what it shows. */
+  let focusOwed = false;
+
+  /** The list has made way for the pane (below the split width one shows at a time). */
+  function listHidden(): boolean {
+    return listElement !== undefined && getComputedStyle(listElement).display === "none";
+  }
+
+  /** Nothing the user chose holds focus: it was dropped, is in the pane already, or is in a list now hidden. */
+  function focusIsLoose(): boolean {
+    const active = document.activeElement;
+    if (active === null || active === document.body) return true;
+    if (paneElement?.contains(active)) return true;
+    return listElement?.contains(active) === true && listHidden();
+  }
+
+  /**
+   * Move focus into the pane: to the open item's heading (the subject, or
+   * "New message"), and until a thread has loaded to its named region.
+   */
+  async function focusPane(): Promise<void> {
+    focusOwed = true;
+    await tick();
+    settleFocus(true);
+  }
+
+  /**
+   * Pay the focus owed: at once for the action that owes it, and again as
+   * the pane's content arrives, unless the user has moved focus elsewhere
+   * by then.
+   */
+  function settleFocus(atOnce = false): void {
+    if (!itemOpen) focusOwed = false;
+    if (!focusOwed || paneElement === undefined) return;
+    if (!atOnce && !focusIsLoose()) {
+      focusOwed = false;
+      return;
+    }
+    const heading = paneElement.querySelector<HTMLElement>("h2[tabindex='-1']");
+    if (heading !== null) {
+      heading.focus();
+      focusOwed = false;
+      return;
+    }
+    paneElement.querySelector<HTMLElement>("section[tabindex='-1']")?.focus();
+    if (missing || mail.threadStatus === "error") focusOwed = false;
+  }
+
+  // A thread's heading arrives after the thread loads.
+  $effect(() => {
+    void mail.thread;
+    void mail.threadStatus;
+    void itemOpen;
+    untrack(() => {
+      settleFocus();
+    });
+  });
 
   /** When the list made way for what opened, focus follows it there instead of being dropped. */
   async function focusPaneWhenAlone(): Promise<void> {
     await tick();
-    if (listElement && getComputedStyle(listElement).display === "none") paneElement?.focus();
+    if (listHidden()) await focusPane();
+  }
+
+  /**
+   * Page older threads in. The button leaves with the last page, so when it
+   * had focus, the first new row takes it (the list, if there is none).
+   */
+  async function showOlder(event: MouseEvent & { currentTarget: HTMLElement }): Promise<void> {
+    const button = event.currentTarget;
+    const focused = button === document.activeElement;
+    const held = mail.threads.length;
+    await mail.loadMore();
+    await tick();
+    if (!focused || button.isConnected) return;
+    const first = mail.threads[held];
+    (first === undefined ? listElement : document.getElementById(rowId(first.thread_id)))?.focus();
   }
 </script>
 
@@ -281,6 +360,7 @@
             <li>
               <MailThreadRow
                 {summary}
+                {folder}
                 {now}
                 href={formatLocation(locationAt(threadPlace(summary.thread_id)))}
                 selected={summary.thread_id === openId && !composing}
@@ -294,7 +374,8 @@
         {#if mail.moreError}
           <p class="mail-problem" role="alert">
             {mail.moreError}
-            <Button variant="quiet" size="sm" onclick={() => void mail.loadMore()}>Try again</Button
+            <Button variant="quiet" size="sm" onclick={(event) => void showOlder(event)}
+              >Try again</Button
             >
           </p>
         {:else if mail.next !== null}
@@ -303,7 +384,7 @@
               variant="quiet"
               size="sm"
               loading={mail.loadingMore}
-              onclick={() => void mail.loadMore()}>Show older</Button
+              onclick={(event) => void showOlder(event)}>Show older</Button
             >
           </div>
         {/if}
@@ -311,26 +392,32 @@
     </div>
   </section>
 
-  <div class="mail-pane" tabindex="-1" bind:this={paneElement}>
+  <div class="mail-pane" bind:this={paneElement}>
     <div class="mail-pane-frame">
       {#if place.compose !== null}
-        <MailCompose to={place.compose.to} onsent={sent} oncancel={() => void router.closeItem()} />
+        <MailCompose
+          to={place.compose.to}
+          onsent={(threadId) => void sent(threadId)}
+          oncancel={() => void backToList()}
+        />
       {:else if missing}
-        <EmptyState
-          variant="block"
-          icon="inbox"
-          title="That conversation isn't there any more"
-          headingLevel={2}
-        >
-          The link may name a message that was removed. The list shows what's there now.
-          {#snippet actions()}
-            <Button variant="secondary" icon="back" onclick={() => void backToList()}
-              >Back to list</Button
-            >
-          {/snippet}
-        </EmptyState>
-      {:else if ref !== null}
-        <MailThread threadId={openId ?? ref} onback={() => void backToList()} />
+        <section class="mail-missing" aria-label="Conversation not found" tabindex="-1">
+          <EmptyState
+            variant="block"
+            icon="inbox"
+            title="That conversation isn't there any more"
+            headingLevel={2}
+          >
+            The link may name a message that was removed. The list shows what's there now.
+            {#snippet actions()}
+              <Button variant="secondary" icon="back" onclick={() => void backToList()}
+                >Back to list</Button
+              >
+            {/snippet}
+          </EmptyState>
+        </section>
+      {:else if openId !== null}
+        <MailThread threadId={openId} onback={() => void backToList()} />
       {:else}
         <div class="mail-pane-idle">
           <EmptyState>Choose a conversation to read it here.</EmptyState>
@@ -458,10 +545,10 @@
     min-width: var(--layout-mail-thread-min-width);
     min-height: 0;
     overflow-y: auto;
+  }
 
-    &:focus {
-      outline: none;
-    }
+  .mail-missing:focus {
+    outline: none;
   }
 
   .mail-pane-frame {
@@ -477,8 +564,11 @@
     padding-top: var(--space-64);
   }
 
-  /* --layout-mail-list-width + --layout-mail-thread-min-width, less a pixel:
-     narrower than both side by side, one shows at a time. */
+  /* The split width is --layout-mail-list-width + --layout-mail-thread-min-width:
+     narrower than both side by side (a pixel less), one shows at a time. A
+     container query can't read the tokens, so the width is written out in
+     this file's two queries and nowhere else; mail-layout.test.ts checks them
+     against the tokens. */
   @container mail (max-width: 779px) {
     .mail-list {
       flex: 1;
@@ -492,6 +582,13 @@
 
     .mail[data-open] .mail-list,
     .mail:not([data-open]) .mail-pane {
+      display: none;
+    }
+  }
+
+  /* With the list beside the thread or New message, the list is the way back. */
+  @container mail (min-width: 780px) {
+    .mail :global(.mail-back) {
       display: none;
     }
   }

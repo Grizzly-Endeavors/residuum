@@ -10,13 +10,14 @@
   import { toast } from "../../lib/toast.svelte";
   import { AttachmentChip, Banner, Button, IconButton, Skeleton } from "../../lib/ui";
   import ReplyComposer from "./ReplyComposer.svelte";
-  import { joinNames, opensInPanel, seenLine } from "./thread-model";
+  import { joinNames, opensInPanel, seenLine, threadMeta } from "./thread-model";
 
   // One conversation, open: its subject, Archive or Move to Inbox, every
   // message oldest first with its attachments and, on yours, who has seen
   // it, and the reply to everyone at the foot. The place opens the thread
-  // through the store, keeps the address, shows a thread that is gone, and
-  // frames this view (its padding, reading width and scrolling).
+  // through the store, keeps the address, shows a thread that is gone, frames
+  // this view (its padding, reading width and scrolling) and focuses it: the
+  // subject once loaded, this named region until then.
 
   interface Props {
     threadId: string;
@@ -50,7 +51,7 @@
     onback();
     const undoAction = action === "archive" ? "restore" : "archive";
     toast.success(
-      action === "archive" ? `Archived “${subject}”.` : `Moved “${subject}” to the inbox.`,
+      action === "archive" ? `Archived “${subject}”.` : `Moved “${subject}” back to the inbox.`,
       { label: "Undo", onClick: () => void undo(id, undoAction) },
     );
   }
@@ -75,12 +76,12 @@
   }
 </script>
 
-<section class="mail-thread" aria-label="Conversation">
+<section class="mail-thread" aria-label="Conversation" tabindex="-1">
   {#if thread !== null && mail.threadStatus === "ready"}
     {@const open = thread}
     <header class="thread-head">
       <IconButton
-        class="thread-back"
+        class="mail-back"
         icon="back"
         label="Back to list"
         variant="quiet"
@@ -89,7 +90,7 @@
       />
       <div class="thread-title">
         <h2 tabindex="-1">{displaySubject(open.subject)}</h2>
-        <p class="thread-with">With {joinNames(open.participants)}</p>
+        <p class="thread-with">{threadMeta(open.participants, open.messages.length)}</p>
       </div>
       {#if mailbox === "inbox"}
         <Button
@@ -189,7 +190,7 @@
   {:else if mail.threadStatus === "error"}
     <header class="thread-head">
       <IconButton
-        class="thread-back"
+        class="mail-back"
         icon="back"
         label="Back to list"
         variant="quiet"
@@ -219,12 +220,9 @@
     flex-direction: column;
     gap: var(--space-14);
     min-width: 0;
-  }
 
-  /* With the list beside the thread (the place's split width), the list is the way back. */
-  @container mail (min-width: 780px) {
-    .mail-thread :global(.thread-back) {
-      display: none;
+    &:focus {
+      outline: none;
     }
   }
 
