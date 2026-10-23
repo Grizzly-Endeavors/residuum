@@ -493,6 +493,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         Arc::clone(&a2a_hub),
         Arc::clone(&messenger),
         layout.agent_inbox_dir(),
+        chrono_tz::UTC,
     )
     .await;
 

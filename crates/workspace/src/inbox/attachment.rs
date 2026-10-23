@@ -98,8 +98,30 @@ pub async fn reserve_attachment_item(
     platform: &str,
     tz: chrono_tz::Tz,
 ) -> AttachmentItem {
-    let timestamp = residuum_core::time::now_local(tz);
     let title = format!("{platform} attachment: {}", info.filename);
+    reserve_item(inbox_dir, platform, title, tz).await
+}
+
+/// Reserve the companion inbox item for a file a remote agent sent back as an
+/// artifact of a task it was given. Same layout as [`reserve_attachment_item`],
+/// titled `"{platform} artifact: {filename}"`.
+pub async fn reserve_artifact_item(
+    inbox_dir: &Path,
+    info: &AttachmentInfo,
+    platform: &str,
+    tz: chrono_tz::Tz,
+) -> AttachmentItem {
+    let title = format!("{platform} artifact: {}", info.filename);
+    reserve_item(inbox_dir, platform, title, tz).await
+}
+
+async fn reserve_item(
+    inbox_dir: &Path,
+    platform: &str,
+    title: String,
+    tz: chrono_tz::Tz,
+) -> AttachmentItem {
+    let timestamp = residuum_core::time::now_local(tz);
     let filename = crate::inbox::unique_filename(inbox_dir, &title, timestamp).await;
     let id = filename.trim_end_matches(".json").to_string();
     let attachments_dir = inbox_dir.join("attachments").join(&id);
@@ -267,12 +289,28 @@ pub async fn finalize_attachment(
         _ => None,
     };
 
+    file_companion_item(saved, info, author, item).await;
+
+    image
+}
+
+/// Save the companion inbox item that records a saved file at its path in
+/// `item.attachments_dir()`. `author` is the sender named in the item body.
+///
+/// A failed save is logged, not returned: the file is already on disk and named
+/// in the message, so the agent still has it.
+pub async fn file_companion_item(
+    saved: &SavedAttachment,
+    info: &AttachmentInfo,
+    author: &str,
+    item: AttachmentItem,
+) {
     let Some(file_name_os) = saved.local_path.file_name() else {
         tracing::warn!(
             path = %saved.local_path.display(),
             "attachment path has no filename, skipping companion item"
         );
-        return image;
+        return;
     };
     let file_name = file_name_os.to_string_lossy().to_string();
     let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
@@ -294,8 +332,6 @@ pub async fn finalize_attachment(
             "failed to create companion inbox item for attachment"
         );
     }
-
-    image
 }
 
 #[cfg(test)]

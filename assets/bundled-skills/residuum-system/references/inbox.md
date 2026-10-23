@@ -7,7 +7,7 @@ There are **two** inboxes, stored as individual JSON files under the workspace r
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
 | Attachments path | `inbox/agent/attachments/<item id>/` | `inbox/user/attachments/<item id>/` |
-| Write tool | *(external — notification router for `scheduled` and webhook-triggered `external` results, WS `/inbox`, `POST /api/agents/<agent>/agent-inbox`, and the companion item of each file a Discord, Telegram, Teams or A2A message carries)* | `user_inbox_add` |
+| Write tool | *(external — notification router for `scheduled` and webhook-triggered `external` results, WS `/inbox`, `POST /api/agents/<agent>/agent-inbox`, and the companion item of each file a Discord, Telegram, Teams or A2A message carries or an A2A task's remote agent returns as an artifact)* | `user_inbox_add` |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore` | *(none — consumed via the web UI)* |
 | Consumer | The agent itself | The user, via the web UI |
 

@@ -655,6 +655,7 @@ async fn init_a2a_client(
     layout: &WorkspaceLayout,
     agent_keys: &residuum_config::agent_keys::SharedAgentKeys,
     messenger: Arc<AgentMessenger>,
+    timezone: chrono_tz::Tz,
 ) -> (
     Arc<residuum_a2a::A2aClientHub>,
     Arc<residuum_a2a::RemoteTaskTracker>,
@@ -669,6 +670,7 @@ async fn init_a2a_client(
         Arc::clone(&hub),
         messenger,
         layout.agent_inbox_dir(),
+        timezone,
     )
     .await;
     tracker.spawn_resume_watchers().await;
@@ -1271,7 +1273,8 @@ async fn init_supporting_infra(
     .await;
     let tracing_client_context = init_tracing_client_context(cfg, shared.control.build);
     let path_policy = build_path_policy(cfg, layout, hub, &shared.team);
-    let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
+    let (a2a_hub, a2a_tracker) =
+        init_a2a_client(layout, &net.agent_keys, agent_messenger, cfg.timezone).await;
     let auto_mode = residuum_agent::auto_mode::AutoModeGate::new_shared(
         cfg.agent_name.clone(),
         cfg.auto_mode.clone(),

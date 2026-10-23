@@ -168,6 +168,7 @@ impl RegistryHarness {
             Arc::clone(&a2a_hub),
             Arc::clone(&agent_messenger),
             layout.agent_inbox_dir(),
+            chrono_tz::UTC,
         )
         .await;
         let checkpoints = Arc::new(

@@ -385,6 +385,7 @@ mod tests {
             Arc::clone(&hub),
             Arc::clone(&messenger),
             dir.path().join("inbox"),
+            chrono_tz::UTC,
         )
         .await;
         let tool = MessageAgentTool::new(
