@@ -186,7 +186,7 @@ function lifecycle(): AppAction[] {
   });
 }
 
-function chat(shell: ShellActions): AppAction[] {
+function chat(): AppAction[] {
   const agent = ws.agent;
   return chatActions({
     agent,
@@ -212,7 +212,9 @@ function chat(shell: ShellActions): AppAction[] {
       if (router.viewedAgent === name) void router.openPanel(panel);
       else void router.openPlace({ kind: "chat", agent: name }, { panel });
     },
-    askForInboxNote: shell.addInboxNote,
+    composeMailTo: (name) => {
+      void router.openPlace({ ...INBOX, compose: { to: [name] } });
+    },
     showConnectionStatus: () => {
       connectionStatusDialog.open = true;
     },
@@ -274,7 +276,7 @@ export function registerAppActions(shell: ShellActions): () => void {
     actionRegistry.register("sessions", sessions),
     actionRegistry.register("settings", () => settings(shell)),
     actionRegistry.register("actions", () => [
-      ...chat(shell),
+      ...chat(),
       ...lifecycle(),
       {
         id: "agent:create",

@@ -18,6 +18,4 @@ export interface ShellActions {
    * rail's "+" and the palette all open it through this.
    */
   createAgent: () => void;
-  /** Ask for a note to add to `agent`'s inbox. */
-  addInboxNote: (agent: string) => void;
 }

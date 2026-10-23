@@ -147,19 +147,15 @@ test("an agent's own palette lists its places and sessions, and opens a session 
   await expect.poll(() => address(page)).toMatch(/^\/agent\/atlas\/activity\?panel=session:atlas:/);
 });
 
-test("Add a note asks for its text when run from the palette", async ({ page, isMobile }) => {
+test("New message to an agent opens the compose view addressed to it from the palette", async ({
+  page,
+  isMobile,
+}) => {
   await page.goto("/agent/atlas");
   await openPalette(page, isMobile);
-  await page.keyboard.type("add a note");
+  await page.keyboard.type("new message to atlas");
   await page.keyboard.press("Enter");
-  const prompt = page.getByRole("dialog", { name: "Add a note to atlas's inbox" });
-  await expect(prompt).toBeVisible();
-  await expectNoAxeViolations(page, { within: OVERLAYS });
-  await prompt.getByRole("textbox", { name: "Note" }).fill("Check the wiki index");
-  await prompt.getByRole("button", { name: "Add note" }).click();
-  await expect(prompt).toBeHidden();
-  // One message: the agent's own, once the note is in its inbox.
-  await expect(page.getByText("[inbox] item added")).toBeVisible();
+  await expect.poll(() => address(page)).toBe("/inbox?compose=1&to=atlas");
 });
 
 test.describe("on a phone", () => {

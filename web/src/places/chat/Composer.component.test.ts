@@ -74,7 +74,7 @@ beforeEach(() => {
       command: "observe",
       run: summarize,
     }),
-    action({ id: "chat:inbox", label: "Add a note", command: "inbox", takesText: true }),
+    action({ id: "chat:inbox", label: "New message to atlas", command: "inbox", takesText: true }),
     action({ id: "chat:stop", label: "Stop reply", command: "stop", disabled: "Not replying" }),
   ]);
 });
