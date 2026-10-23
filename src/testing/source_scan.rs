@@ -566,6 +566,11 @@ const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
         2,
         "makes an object directory unwritable (0o500) and restores it (0o700) in a drop guard",
     ),
+    (
+        "crates/workspace/src/inbox/mail/send.rs",
+        2,
+        "makes an agent inbox directory read-only (0o555) and restores it (0o755) to fail a write",
+    ),
 ];
 
 /// A test making a file executable on its own: a `chmod`, or a mode literal

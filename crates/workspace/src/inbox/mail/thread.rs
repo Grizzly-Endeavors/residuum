@@ -95,14 +95,6 @@ pub struct MailMessage {
     pub seen_by: Vec<MailSeen>,
 }
 
-impl MailMessage {
-    /// Whether the user wrote it.
-    #[must_use]
-    pub fn is_from_user(&self) -> bool {
-        self.from == MailSender::User
-    }
-}
-
 /// A mail folder. A thread can be in Inbox and Sent at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailFolder {
