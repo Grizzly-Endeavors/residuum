@@ -110,6 +110,7 @@ describe("an open thread", () => {
   it("shows the subject and every message, oldest first, with who wrote to whom", async () => {
     show();
     expect(await screen.findByRole("heading", { name: "Wiki audit", level: 2 })).toBeTruthy();
+    expect(screen.getByText("You and atlas, scout · 3 messages")).toBeTruthy();
     const messages = screen.getAllByRole("article");
     expect(messages).toHaveLength(3);
     expect(messages[0]?.textContent).toContain("You");
@@ -231,7 +232,10 @@ describe("archive and restore", () => {
     await waitFor(() => {
       expect(posted("/restore")).toHaveLength(1);
     });
-    expect(success).toHaveBeenCalledWith("Moved “Wiki audit” to the inbox.", expect.anything());
+    expect(success).toHaveBeenCalledWith(
+      "Moved “Wiki audit” back to the inbox.",
+      expect.anything(),
+    );
     action?.onClick();
     await waitFor(() => {
       expect(posted("/archive")).toHaveLength(1);
@@ -288,7 +292,40 @@ describe("the reply", () => {
     show();
     const form = await screen.findByRole("form", { name: "Reply to the thread" });
     expect(form.textContent).toContain("To: atlas and scout");
-    expect(form.textContent).toContain("Each sees it next time it checks its inbox.");
+    expect(form.textContent).toContain("They’ll see this next time they check their inbox.");
+  });
+
+  it("states the upload limit before anything is attached", async () => {
+    show();
+    const form = await screen.findByRole("form", { name: "Reply to the thread" });
+    expect(form).toHaveTextContent(
+      "Any file, up to 50 MB each. They’ll see this next time they check their inbox.",
+    );
+  });
+
+  it("sends from the text box on Ctrl+Enter and on Cmd+Enter", async () => {
+    vi.spyOn(toast, "success").mockImplementation(() => 0);
+    answer = (request) =>
+      request.path.endsWith("/reply")
+        ? jsonResponse({
+            message: userMessage(`atlas/agent/new${String(posted("/reply").length)}`, {
+              seen_by: [],
+            }),
+          })
+        : undefined;
+    show();
+    const reply = await screen.findByRole("textbox", { name: "Reply" });
+    await userEvent.type(reply, "Thanks.{Control>}{Enter}{/Control}");
+    await waitFor(() => {
+      expect(posted("/reply")).toHaveLength(1);
+    });
+    expect(posted("/reply")[0]?.body).toEqual({ body: "Thanks.", attachments: [] });
+
+    await userEvent.type(reply, "Again.{Meta>}{Enter}{/Meta}");
+    await waitFor(() => {
+      expect(posted("/reply")).toHaveLength(2);
+    });
+    expect(posted("/reply")[1]?.body).toEqual({ body: "Again.", attachments: [] });
   });
 
   it("can't be sent while blank, and sends what is written to everyone", async () => {
@@ -366,14 +403,18 @@ describe("attaching files to the reply", () => {
       return undefined;
     };
     show();
-    await screen.findByRole("form", { name: "Reply to the thread" });
+    const form = await screen.findByRole("form", { name: "Reply to the thread" });
+    // The notice has a live region to land in before it is needed, so it is spoken when it shows.
+    const live = form.querySelector("[aria-live=polite]");
+    expect(live?.textContent).toBe("");
     await attach(file("log.txt"));
     expect(screen.getByRole("progressbar", { name: "Uploading log.txt" })).toBeTruthy();
     await userEvent.type(screen.getByRole("textbox", { name: "Reply" }), "Log attached.");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     await settle();
     expect(posted("/reply")).toHaveLength(0);
-    expect(screen.getByText(/Sending once the files finish uploading/)).toBeTruthy();
+    expect(live).toHaveTextContent("Sending once the files finish uploading.");
+    expect(form.querySelector("[aria-live=polite]")).toBe(live);
     finish(jsonResponse({ id: "upload_0001", filename: "log.txt", size: 10 }));
     await waitFor(() => {
       expect(posted("/reply")).toHaveLength(1);

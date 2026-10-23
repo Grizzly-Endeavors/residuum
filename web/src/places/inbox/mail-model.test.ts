@@ -1,65 +1,43 @@
 import { describe, expect, it } from "vitest";
-import type { MailMessage, MailThread, MailThreadSummary } from "../../lib/hub-types";
+import type { MailThreadSummary } from "../../lib/hub-types";
+import { agentMessage, mailSummary, mailThread } from "../../test/mail";
 import { emptyListText, panelOfThread, participantsLabel } from "./mail-model";
 
-function summary(participants: string[]): MailThreadSummary {
-  return {
-    thread_id: "atlas/user/a",
-    subject: "s",
-    participants,
-    message_count: 1,
-    latest_at: "2026-03-14T12:00:00Z",
-    snippet: "",
-    unread: false,
-    has_attachments: false,
-    in_inbox: true,
-    in_sent: false,
-    archived: false,
-  };
-}
-
-function message(attachments: MailMessage["attachments"]): MailMessage {
-  return {
-    ref: "atlas/user/a",
-    from: { kind: "agent", agent: "atlas" },
-    to: [],
-    at: "2026-03-14T12:00:00Z",
-    title: "s",
-    body: "b",
-    attachments,
-    in_reply_to: null,
-    read: true,
-    archived: false,
-    seen_by: [],
-  };
-}
-
-const thread: MailThread = {
-  thread_id: "atlas/user/a",
-  subject: "s",
-  participants: ["atlas"],
-  messages: [
-    message([
-      {
-        filename: "notes.md",
-        size: 10,
-        content_type: "text/markdown",
-        url: "/api/agents/atlas/inbox/a/attachments/0",
-        agent: "atlas",
-        path: "inbox/user/attachments/a/notes.md",
-      },
-    ]),
+const thread = mailThread(
+  "atlas/user/a",
+  [
+    agentMessage("atlas/user/a", {
+      attachments: [
+        {
+          filename: "notes.md",
+          size: 10,
+          content_type: "text/markdown",
+          url: "/api/agents/atlas/inbox/a/attachments/0",
+          agent: "atlas",
+          path: "inbox/user/attachments/a/notes.md",
+        },
+      ],
+    }),
   ],
-  recipients_for_reply: ["atlas"],
-};
+  { participants: ["atlas"], recipients_for_reply: ["atlas"] },
+);
 
 describe("participantsLabel", () => {
+  const withAgents = (participants: string[]): MailThreadSummary =>
+    mailSummary("atlas/user/a", { participants });
+
   it("names the agents in order", () => {
-    expect(participantsLabel(summary(["atlas", "scout"]))).toBe("atlas, scout");
+    expect(participantsLabel(withAgents(["atlas", "scout"]), "inbox")).toBe("atlas, scout");
+    expect(participantsLabel(withAgents(["atlas", "scout"]), "archived")).toBe("atlas, scout");
   });
 
-  it("reads You when no agent took part", () => {
-    expect(participantsLabel(summary([]))).toBe("You");
+  it("says Sent rows went to them", () => {
+    expect(participantsLabel(withAgents(["atlas", "scout"]), "sent")).toBe("To atlas, scout");
+  });
+
+  it("reads You when no agent took part, in any folder", () => {
+    expect(participantsLabel(withAgents([]), "inbox")).toBe("You");
+    expect(participantsLabel(withAgents([]), "sent")).toBe("You");
   });
 });
 

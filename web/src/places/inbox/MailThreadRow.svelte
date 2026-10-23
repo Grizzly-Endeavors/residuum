@@ -1,18 +1,20 @@
 <script lang="ts">
-  import type { MailThreadSummary } from "../../lib/hub-types";
+  import type { MailFolder, MailThreadSummary } from "../../lib/hub-types";
   import { Icon } from "../../lib/icons";
   import { displaySubject } from "../../lib/mail-subject";
   import { relativeTime } from "../../lib/time";
   import { VisuallyHidden } from "../../lib/ui";
   import { participantsLabel } from "./mail-model";
 
-  // One conversation in the Inbox's list: who it is with, when it last moved,
-  // its subject and the latest message's first line, with an unread mark and
-  // a paperclip when it carries files. The row is a link to the thread, so it
-  // also opens in a new tab.
+  // One conversation in the Inbox's list: who it is with (in Sent, who it went
+  // to), when it last moved, its subject and the latest message's first line,
+  // with an unread mark and a paperclip when it carries files. The row is a
+  // link to the thread, so it also opens in a new tab.
 
   interface Props {
     summary: MailThreadSummary;
+    /** The folder the list shows, which words who the row is with. */
+    folder: MailFolder;
     /** The thread's address in the app. */
     href: string;
     /** The thread is the one open beside the list. */
@@ -23,7 +25,7 @@
     onopen: (event: MouseEvent) => void;
   }
 
-  let { summary, href, selected, now, onopen }: Props = $props();
+  let { summary, folder, href, selected, now, onopen }: Props = $props();
 
   const subject = $derived(displaySubject(summary.subject));
   const when = $derived(new Date(summary.latest_at));
@@ -41,7 +43,7 @@
   <span class="mail-row-text">
     <span class="mail-row-top">
       <span class="mail-row-who">
-        {participantsLabel(summary)}
+        {participantsLabel(summary, folder)}
         {#if summary.message_count > 1}
           <span class="mail-row-count">{summary.message_count}</span>
           <VisuallyHidden>messages</VisuallyHidden>

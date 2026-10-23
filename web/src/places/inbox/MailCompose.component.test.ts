@@ -78,6 +78,53 @@ describe("New message", () => {
     expect(screen.getByRole("button", { name: /^drifter/ }).textContent).toContain("stopped");
   });
 
+  it("says it is a new thread that is not sent yet", () => {
+    compose(["atlas"]);
+    expect(screen.getByText("New thread · not sent yet")).toBeTruthy();
+  });
+
+  it("states the upload limit with or without a recipient, and says who will see it", async () => {
+    compose();
+    const form = screen.getByRole("form", { name: "New message" });
+    expect(form).toHaveTextContent("Any file, up to 50 MB each. Pick at least one agent.");
+
+    await userEvent.click(screen.getByRole("button", { name: /^atlas/ }));
+    expect(form).toHaveTextContent(
+      "Any file, up to 50 MB each. atlas will see this next time it checks its inbox.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^scout/ }));
+    expect(form).toHaveTextContent(
+      "Any file, up to 50 MB each. They’ll see this next time they check their inbox.",
+    );
+  });
+
+  it.each(["Control", "Meta"])(
+    "sends from the message on %s+Enter, as the reply does",
+    async (modifier) => {
+      vi.spyOn(toast, "success").mockImplementation(() => 0);
+      const { onsent } = compose(["atlas"]);
+      await userEvent.type(
+        screen.getByRole("textbox", { name: /^Message/ }),
+        `Quick one.{${modifier}>}{Enter}{/${modifier}}`,
+      );
+      await waitFor(() => {
+        expect(onsent).toHaveBeenCalledOnce();
+      });
+      expect(sends()).toHaveLength(1);
+      expect(sends()[0]?.body).toMatchObject({ body: "Quick one.", to: ["atlas"] });
+    },
+  );
+
+  it("says what is missing when Ctrl+Enter is pressed on a blank message", async () => {
+    compose(["atlas"]);
+    screen.getByRole("textbox", { name: /^Message/ }).focus();
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Write a message before sending it.",
+    );
+    expect(sends()).toHaveLength(0);
+  });
+
   it("titles itself with the subject as it is written", async () => {
     compose(["atlas"]);
     await userEvent.type(screen.getByRole("textbox", { name: "Subject" }), "Weekly plan");

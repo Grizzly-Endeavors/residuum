@@ -11,9 +11,14 @@ export const FOLDERS: readonly { folder: MailFolder; label: string }[] = [
   { folder: "archived", label: "Archived" },
 ];
 
-/** Who a thread is with, as its row names them: the agents, in the order they joined. */
-export function participantsLabel(summary: MailThreadSummary): string {
-  return summary.participants.length === 0 ? "You" : summary.participants.join(", ");
+/**
+ * Who a thread is with, as its row names them: the agents, in the order they
+ * joined. In Sent the row reads "To atlas, wren", since the mail went to them.
+ */
+export function participantsLabel(summary: MailThreadSummary, folder: MailFolder): string {
+  if (summary.participants.length === 0) return "You";
+  const agents = summary.participants.join(", ");
+  return folder === "sent" ? `To ${agents}` : agents;
 }
 
 /** What a list with no threads says, for its folder and agent filter. */
