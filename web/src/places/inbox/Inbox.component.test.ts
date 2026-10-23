@@ -336,7 +336,7 @@ describe("Inbox", () => {
         "true",
       );
     });
-    expect(screen.getByRole("article", { name: "Conversation" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Conversation" })).toBeTruthy();
 
     await userEvent.click(screen.getByRole("link", { name: /\(no subject\)/ }));
     expect(nav.replace).toHaveBeenCalledWith(inbox({ thread: DIGEST.thread_id }), {});
