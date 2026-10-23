@@ -24,3 +24,18 @@ export function openPathInPanel(agent: string, path: string): void {
   if (viewedAgentOf(router.place) === agent) void router.openPanel(filePanel(path));
   else void router.openPlace({ kind: "chat", agent }, { panel: filePanel(path) });
 }
+
+/** The address a path in the team's folder points at, for opening it in a new tab. */
+export function teamPathHref(path: string): string {
+  return formatLocation({
+    place: { kind: "shared-files" },
+    panel: filePanel(path),
+    settings: null,
+  });
+}
+
+/** Open `path`, relative to the team's folder, in the context panel of the Shared files place. */
+export function openTeamPathInPanel(path: string): void {
+  if (router.place.kind === "shared-files") void router.openPanel(filePanel(path));
+  else void router.openPlace({ kind: "shared-files" }, { panel: filePanel(path) });
+}

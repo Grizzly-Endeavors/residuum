@@ -19,12 +19,54 @@ export function isWorkspacePath(text: string): boolean {
   );
 }
 
+/** The links to a Markdown file's relative references to other files in the workspace. */
+export interface RelativeFileLinks {
+  /** The workspace path of the file shown; its folder is what the links are relative to. */
+  base: string;
+  /** The link for a workspace path, which opens that file. */
+  href: (path: string) => string;
+}
+
 export interface MarkdownOptions {
   /**
    * The link for inline code whose whole text is a workspace path. Without
    * it, paths stay plain code.
    */
   pathHref?: (path: string) => string;
+  /** Makes a relative link to another Markdown file in the workspace open that file. */
+  relativeFileLinks?: RelativeFileLinks;
+}
+
+/** Whether a link target is relative: no scheme, not rooted, not a fragment. */
+function isRelativeHref(href: string): boolean {
+  return !/^([a-z][a-z0-9+.-]*:|\/|#)/i.test(href);
+}
+
+/**
+ * The workspace path a relative link to a Markdown file names, resolved from
+ * the folder of `base`, or null when the link names no such file or climbs
+ * above the root. A query and a fragment are dropped.
+ */
+export function resolveRelativeFileLink(base: string, href: string): string | null {
+  if (!isRelativeHref(href)) return null;
+  let target: string;
+  try {
+    target = decodeURIComponent(href.split(/[?#]/)[0] ?? "");
+  } catch {
+    return null;
+  }
+  if (!/\.md$/i.test(target)) return null;
+  const segments = base.split("/").slice(0, -1);
+  for (const segment of target.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") {
+      segments.push(segment);
+      continue;
+    }
+    if (segments.length === 0) return null;
+    segments.pop();
+  }
+  return segments.length === 0 ? null : segments.join("/");
 }
 
 function escapeHtml(text: string): string {
@@ -240,7 +282,7 @@ function fitToPage(fragment: DocumentFragment): void {
  * body) shows as its plain text.
  */
 export function renderMarkdown(content: string, options: MarkdownOptions = {}): DocumentFragment {
-  const { pathHref } = options;
+  const { pathHref, relativeFileLinks } = options;
   const marked = new Marked({
     gfm: true,
     breaks: true,
@@ -251,6 +293,18 @@ export function renderMarkdown(content: string, options: MarkdownOptions = {}): 
         const label = language ? `Code, ${escapeHtml(language)}` : "Code";
         // The block scrolls sideways, so the keyboard has to be able to reach it.
         return `<div class="prose-code"><pre tabindex="0" role="group" aria-label="${label}"><code${langClass}>${escapeHtml(text)}\n</code></pre></div>\n`;
+      },
+      link({ href, title, tokens }: Tokens.Link): string {
+        const text = this.parser.parseInline(tokens);
+        const path =
+          relativeFileLinks === undefined
+            ? null
+            : resolveRelativeFileLink(relativeFileLinks.base, href);
+        if (relativeFileLinks !== undefined && path !== null) {
+          return `<a href="${escapeHtml(relativeFileLinks.href(path))}" data-path="${escapeHtml(path)}">${text}</a>`;
+        }
+        const titled = title ? ` title="${escapeHtml(title)}"` : "";
+        return `<a href="${escapeHtml(href)}"${titled}>${text}</a>`;
       },
       codespan({ text }: Tokens.Codespan): string {
         const code = `<code>${escapeHtml(text)}</code>`;

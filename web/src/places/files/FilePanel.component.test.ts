@@ -1,12 +1,12 @@
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { router } from "../../lib/router.svelte";
-import type { AppLocation } from "../../lib/routes";
+import { HOME, type AppLocation } from "../../lib/routes";
 import { toast } from "../../lib/toast.svelte";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import FilePanelHarness from "../../test/ui/FilePanelHarness.svelte";
 import { waitFor } from "../../test/wait";
-import { panelFile } from "./file-buffer.svelte";
+import { FileBuffer, panelFile } from "./file-buffer.svelte";
 
 const ATLAS = { agent: "atlas", scope: "agent" } as const;
 
@@ -160,20 +160,115 @@ describe("a Markdown file in the panel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByRole("button", { name: "Edit" }).getAttribute("aria-pressed")).toBe("false");
-    expect(document.querySelector(".prose")?.textContent).toContain("line three");
-    expect(document.querySelector(".prose em")?.textContent).toBe("bold");
+    expect(screen.getByText("line three", { exact: false })).toBeTruthy();
+    expect(screen.getByText("bold").tagName).toBe("EM");
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
     expect(files["notes/plan.md"]).toBe("line one\nline two\nline three\n");
 
     await userEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.queryByText("Unsaved changes")).toBeNull();
-    expect(document.querySelector(".prose em")).toBeNull();
+    expect(screen.queryByText("bold")).toBeNull();
+  });
+
+  it("keeps the editor open when the panel is drawn again with the same file", async () => {
+    const buffer = new FileBuffer(ATLAS);
+    await buffer.open("notes/plan.md");
+    const first = render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md", buffer });
+    await openEditor();
+    first.unmount();
+
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md", buffer });
+    expect(await screen.findByRole("textbox", { name: "Contents of plan.md" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("shows another Markdown file rendered, not in the editor", async () => {
+    files["notes/other.md"] = "# Other\n";
+    const { rerender } = render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+    await openEditor();
+
+    await rerender({ source: ATLAS, path: "notes/other.md" });
+    expect(await screen.findByRole("heading", { name: "Other" })).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("saves with Ctrl+S from the rendered view too", async () => {
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+    await userEvent.type(await openEditor(), "x");
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    await userEvent.keyboard("{Control>}s{/Control}");
+    await settle();
+    expect(files["notes/plan.md"]).toBe("line one\nline two\nline three\nx");
+  });
+
+  it("says the file has problems in the rendered view, and opens the editor to see them", async () => {
+    diagnostics = [
+      {
+        severity: "error",
+        message: "expected a value",
+        location: { kind: "line_column", line: 2, column: 6 },
+      },
+    ];
+    files["notes/plan.md"] = "# Plan\n";
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+
+    expect(await screen.findByText("This file has a problem.")).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Edit to see them" }));
+    const problems = await screen.findByRole("list", { name: "Problems in plan.md" });
+    expect(problems.textContent).toContain("expected a value");
+  });
+
+  it("shows frontmatter as its fields, with the body below them", async () => {
+    files["notes/plan.md"] = "---\ntype: Agent\ntitle: Atlas\n---\n# Body\n";
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+
+    expect(await screen.findByRole("heading", { name: "Body" })).toBeTruthy();
+    expect(screen.getByText("type")).toBeTruthy();
+    expect(screen.getByText("Agent")).toBeTruthy();
+    expect(screen.getByText("title")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /type/ })).toBeNull();
   });
 
   it("opens a non-Markdown file in the editor, with no Edit toggle", async () => {
     render(FilePanelHarness, { source: ATLAS, path: "notes/readme.txt" });
     expect(await screen.findByRole("textbox", { name: "Contents of readme.txt" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+});
+
+describe("relative links in a rendered Markdown file", () => {
+  beforeEach(async () => {
+    await router.replacePlace({ kind: "chat", agent: "atlas" });
+  });
+
+  afterEach(async () => {
+    await router.replacePlace(HOME);
+  });
+
+  it("opens a Markdown link in the panel, found from the file's own folder", async () => {
+    files["notes/plan.md"] = "See [the config](refs/config.md).\n";
+    files["notes/refs/config.md"] = "# Config\n";
+    const openPanel = vi.spyOn(router, "openPanel");
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+
+    await userEvent.click(await screen.findByRole("link", { name: "the config" }));
+
+    expect(openPanel).toHaveBeenCalledWith({ kind: "file", path: "notes/refs/config.md" });
+  });
+
+  it("keeps a link that climbs out of the workspace as a link in a new tab", async () => {
+    files["notes/plan.md"] = "Out: [secret](../../secret.md).\n";
+    const openPanel = vi.spyOn(router, "openPanel");
+    render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
+
+    const link = await screen.findByRole("link", { name: "secret" });
+    expect(link).toHaveAttribute("target", "_blank");
+    await userEvent.click(link);
+    expect(openPanel).not.toHaveBeenCalled();
   });
 });
 

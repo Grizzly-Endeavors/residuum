@@ -247,7 +247,7 @@ export class FileBuffer {
     this.changedOnDisk = null;
     toast.success(
       diagnostics.length > 0
-        ? `Saved ${this.name}, with problems noted below.`
+        ? `Saved ${this.name}, with problems noted in the panel.`
         : `Saved ${this.name}.`,
     );
   }

@@ -6,19 +6,27 @@
   import { providePanelFrame, type PanelLayout } from "../../shell/panel/panel-frame";
 
   // The file panel inside a panel frame, as the context panel hosts it, so its
-  // header finds one.
+  // header finds one. A test can pass the buffer, to show a redrawn panel
+  // with the file it already holds.
   let {
     source,
     path,
     layout = "wide",
     onclose = () => {},
-  }: { source: FileSource; path: string; layout?: PanelLayout; onclose?: () => void } = $props();
+    buffer: given,
+  }: {
+    source: FileSource;
+    path: string;
+    layout?: PanelLayout;
+    onclose?: () => void;
+    buffer?: FileBuffer;
+  } = $props();
 
   // Made once, from the props the test renders with.
   untrack(() => {
     providePanelFrame({ layout, titleId: "panel-title", close: onclose });
   });
-  const buffer = untrack(() => new FileBuffer(source));
+  const buffer = untrack(() => given ?? new FileBuffer(source));
 </script>
 
 <aside aria-labelledby="panel-title">

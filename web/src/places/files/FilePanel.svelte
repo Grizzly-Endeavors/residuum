@@ -1,7 +1,6 @@
 <script lang="ts">
   import { configCoordinator } from "../../lib/config-coordinator";
   import { hub } from "../../lib/hub.svelte";
-  import Prose from "../../feed/Prose.svelte";
   import { router } from "../../lib/router.svelte";
   import { Badge, Banner, Button, Dialog, EmptyState, Skeleton } from "../../lib/ui";
   import type { WatchHandler, WatchOwner } from "../../lib/watch-registry";
@@ -10,6 +9,7 @@
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import { panelFile, type FileBuffer } from "./file-buffer.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
+  import FileRendered from "./FileRendered.svelte";
   import { fileSourceFor, sameSource } from "./file-source";
   import TextEditor from "./TextEditor.svelte";
 
@@ -17,8 +17,9 @@
   // `panel=file:` links: the editor with live validation, Save and Discard,
   // the save conflict, and the file's history. A Markdown file shows rendered
   // until Edit opens the editor, and the rendered view shows the buffer's text,
-  // edits included. Unsaved edits are asked about before anything closes the
-  // panel or shows another file.
+  // edits included, with the file's problems in a banner that opens the
+  // editor. Unsaved edits are asked about before anything closes the panel or
+  // shows another file.
 
   interface Props {
     /** The open file, which outlives this view while the panel stays open. */
@@ -94,12 +95,16 @@
     return () => window.clearTimeout(timer);
   });
 
+  // Ctrl or Cmd+S saves the open file while it has edits, in either view and
+  // from anywhere in the app's window (the header's Edit button included), with
+  // the same save as the Save button. Without edits the browser keeps its own.
   function saveOnShortcut(event: KeyboardEvent): void {
-    if ((event.metaKey || event.ctrlKey) && event.key === "s") {
-      event.preventDefault();
-      void buffer.save();
-    }
+    if (!buffer.dirty || !(event.metaKey || event.ctrlKey) || event.key !== "s") return;
+    event.preventDefault();
+    void buffer.save();
   }
+
+  const problemCount = $derived(buffer.diagnostics.length);
 </script>
 
 <PanelHeader
@@ -122,7 +127,7 @@
       variant="quiet"
       size="sm"
       icon="edit"
-      aria-pressed={!rendered}
+      pressed={!rendered}
       onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
     >
   {/if}
@@ -130,6 +135,8 @@
     >History</Button
   >
 {/snippet}
+
+<svelte:window onkeydown={saveOnShortcut} />
 
 <div class="file-panel">
   {#if buffer.status === "loading"}
@@ -165,11 +172,23 @@
       <Banner tone="warn" edge ondismiss={() => (buffer.error = "")}>{buffer.error}</Banner>
     {/if}
     {#if rendered}
+      {#if problemCount > 0}
+        <Banner tone="warn" edge>
+          {problemCount === 1
+            ? "This file has a problem."
+            : `This file has ${problemCount} problems.`}
+          {#snippet actions()}
+            <Button variant="quiet" size="sm" onclick={() => (buffer.editing = true)}
+              >Edit to see them</Button
+            >
+          {/snippet}
+        </Banner>
+      {/if}
       <div class="file-panel-rendered">
         {#if buffer.text.trim() === ""}
           <p class="file-panel-empty">Nothing written yet. Edit to add text.</p>
         {:else}
-          <Prose content={buffer.text} agent={source.agent} size="compact" />
+          <FileRendered content={buffer.text} path={buffer.path} {source} mode="markdown" />
         {/if}
       </div>
     {:else}
@@ -179,7 +198,6 @@
         value={buffer.text}
         problems={buffer.diagnostics}
         oninput={(text) => (buffer.text = text)}
-        onkeydown={saveOnShortcut}
       />
     {/if}
     {#if buffer.dirty}
@@ -231,12 +249,6 @@
 
   .file-panel-path {
     font-size: var(--font-size-xs);
-  }
-
-  /* Pressed reads as the icon buttons do: the vein tint under the label. */
-  :global(.file-panel-edit[aria-pressed="true"]) {
-    background: var(--color-vein-tint);
-    color: var(--color-text);
   }
 
   .file-panel-rendered {
