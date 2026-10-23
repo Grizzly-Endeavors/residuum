@@ -364,6 +364,7 @@
     flex: none;
     flex-direction: column;
     width: var(--layout-mail-list-width);
+    min-width: 0;
     min-height: 0;
     border-right: 1px solid var(--color-line-soft);
 
