@@ -292,6 +292,10 @@ test.describe("an app update", { tag: "@preview" }, () => {
     test.skip(isMobile, "On a phone the editor is a sheet over the banner; the guard is the same.");
     await openWithWorker(page);
     await page.goto("/agent/atlas/files?panel=file:SOUL.md");
+    await page
+      .getByRole("complementary", { name: "SOUL.md" })
+      .getByRole("button", { name: "Edit", exact: true })
+      .click();
     const editor = page.getByRole("textbox", { name: "Contents of SOUL.md" });
     await editor.pressSequentially("Unsaved.");
     const first = (await activatedVersions(page)).current;
