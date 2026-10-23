@@ -35,6 +35,13 @@ export type { InboxStatus } from "./generated/InboxStatus";
 export type { LastMessage } from "./generated/LastMessage";
 export type { LastMessageRole } from "./generated/LastMessageRole";
 export type { LiveSession } from "./generated/LiveSession";
+export type { MailAttachment } from "./generated/MailAttachment";
+export type { MailMessage } from "./generated/MailMessage";
+export type { MailSeen } from "./generated/MailSeen";
+export type { MailSender } from "./generated/MailSender";
+export type { MailThread } from "./generated/MailThread";
+export type { MailThreadPage } from "./generated/MailThreadPage";
+export type { MailThreadSummary } from "./generated/MailThreadSummary";
 export type { NoticeLevel } from "./generated/NoticeLevel";
 export type { OutboundProblem } from "./generated/OutboundProblem";
 export type { OverviewResponse } from "./generated/OverviewResponse";
@@ -88,6 +95,9 @@ export type HubWorkspaceFrame = Extract<
 
 /** Server-to-client frames on `/api/hub/ws`. */
 export type HubServerMessage = HubSocketFrame | HubEvent | HubWorkspaceFrame;
+
+/** The folders of the mail inbox: `GET /api/hub/mail/threads?folder=`. */
+export type MailFolder = "inbox" | "sent" | "archived";
 
 /** Which file tree a workspace call addresses: an agent's, or the shared team's. */
 export type WorkspaceScope = "agent" | "team";
