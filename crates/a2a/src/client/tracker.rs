@@ -1058,6 +1058,7 @@ mod tests {
     use residuum_background::store::SessionStore;
     use residuum_bus::testing::bus_barrier;
     use residuum_core::testing::wait;
+    use std::path::Path;
 
     fn messenger() -> (Arc<AgentMessenger>, residuum_bus::BusHandle) {
         let bus_handle = residuum_bus::spawn_broker();
@@ -1128,10 +1129,10 @@ mod tests {
         let [recorded] = item.attachments.as_slice() else {
             panic!("one attachment recorded: {:?}", item.attachments);
         };
-        let recorded = recorded.to_string_lossy();
         assert!(
-            recorded.ends_with(&format!("attachments/{id}/report.bin")),
-            "item should record its file under its own directory: {recorded}"
+            recorded.ends_with(Path::new("attachments").join(&id).join("report.bin")),
+            "item should record its file under its own directory: {}",
+            recorded.display()
         );
 
         let saved = inbox_dir.join("attachments").join(&id).join("report.bin");
