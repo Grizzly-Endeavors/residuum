@@ -299,30 +299,12 @@ impl MailAttachment {
 /// for an agent-inbox item.
 #[must_use]
 pub fn attachment_url(item: &InboxRef, index: usize) -> String {
-    let agent = path_segment(item.agent());
-    let id = path_segment(item.id());
+    let agent = residuum_core::util::percent_encode_unreserved(item.agent().as_bytes());
+    let id = residuum_core::util::percent_encode_unreserved(item.id().as_bytes());
     match item.kind() {
         InboxKind::User => format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
         InboxKind::Agent => format!("/api/agents/{agent}/inbox/agent/{id}/attachments/{index}"),
     }
-}
-
-/// `value` escaped to be one segment of a URL path: every byte but the
-/// unreserved characters of RFC 3986 percent-encoded.
-fn path_segment(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            escaped.push(char::from(byte));
-        } else {
-            escaped.push('%');
-            for nibble in [byte >> 4, byte & 0x0F] {
-                let digit = char::from_digit(u32::from(nibble), 16).unwrap_or('0');
-                escaped.push(digit.to_ascii_uppercase());
-            }
-        }
-    }
-    escaped
 }
 
 /// The deep link into the Inbox that opens the thread holding `item`.
