@@ -142,6 +142,24 @@ pub async fn send_mail(
     directory: &dyn MailboxDirectory,
     mail: OutgoingMail,
 ) -> Result<SentMail, SendMailError> {
+    send_mail_with(
+        directory,
+        mail,
+        async |claim: &mut ClaimedItem, item: &InboxItem| claim.save(item).await,
+    )
+    .await
+}
+
+/// [`send_mail`] with the step that saves one recipient's copy supplied, so a
+/// test can fail a later copy's save without filesystem permissions.
+async fn send_mail_with<F>(
+    directory: &dyn MailboxDirectory,
+    mail: OutgoingMail,
+    save_copy: F,
+) -> Result<SentMail, SendMailError>
+where
+    F: AsyncFn(&mut ClaimedItem, &InboxItem) -> anyhow::Result<()>,
+{
     let recipients: BTreeSet<&str> = mail.to.iter().map(String::as_str).collect();
     if recipients.is_empty() {
         return Err(SendMailError::NoRecipients);
@@ -192,7 +210,7 @@ pub async fn send_mail(
         return Err(SendMailError::NoRecipients);
     };
 
-    write_copies(&mailboxes, claims, &mail, &title, now).await?;
+    write_copies(&mailboxes, claims, &mail, &title, now, save_copy).await?;
 
     tracing::info!(message = %message, copies = copies.len(), "mail sent");
     Ok(SentMail { message, copies })
@@ -202,13 +220,17 @@ pub async fn send_mail(
 /// Attachments are copied for every claim before any copy is saved, so an
 /// attachment failure leaves only unsaved claims, which dropping removes. A
 /// save that fails after earlier copies were saved removes those copies.
-async fn write_copies(
+async fn write_copies<F>(
     mailboxes: &[Mailbox],
     claims: Vec<ClaimedItem>,
     mail: &OutgoingMail,
     title: &str,
     now: chrono::DateTime<Utc>,
-) -> Result<(), SendMailError> {
+    save_copy: F,
+) -> Result<(), SendMailError>
+where
+    F: AsyncFn(&mut ClaimedItem, &InboxItem) -> anyhow::Result<()>,
+{
     let mut filled = Vec::with_capacity(claims.len());
     for (mailbox, claim) in mailboxes.iter().zip(claims) {
         let (attachments, failures) = copy_attachments(&claim, &mail.attachments).await;
@@ -233,7 +255,7 @@ async fn write_copies(
 
     let mut saved: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(filled.len());
     for (mut claim, item) in filled {
-        if let Err(e) = claim.save(&item).await {
+        if let Err(e) = save_copy(&mut claim, &item).await {
             tracing::warn!(error = %e, "saving a mail copy failed; removing the copies already saved");
             remove_saved(&saved).await;
             return Err(SendMailError::Write(e));
@@ -455,30 +477,29 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_copy_that_cannot_be_saved_removes_the_copies_already_saved() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let fx = Fixture::new(&["atlas", "scout"]);
         let scout_inbox = WorkspaceLayout::new(fx.dir("scout")).agent_inbox_dir();
-        tokio::fs::create_dir_all(scout_inbox.join("attachments"))
-            .await
-            .unwrap();
-        // The id can still be claimed in scout's `attachments/`, but its item
-        // file can't be written next to it.
-        std::fs::set_permissions(&scout_inbox, std::fs::Permissions::from_mode(0o555)).unwrap();
-        if std::fs::write(scout_inbox.join("probe"), b"").is_ok() {
-            // Permissions don't bind this user (root), so the failure can't be staged.
-            return;
-        }
         let mut outgoing = mail(&["atlas", "scout"], "T", "b");
         let source = fx.dir("scout").join("note.txt");
+        tokio::fs::create_dir_all(fx.dir("scout")).await.unwrap();
         tokio::fs::write(&source, b"hello").await.unwrap();
         outgoing.attachments = vec![source];
 
-        let err = send_mail(&fx.directory, outgoing).await.unwrap_err();
-        std::fs::set_permissions(&scout_inbox, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // atlas's copy is saved first, then scout's save fails.
+        let err = send_mail_with(
+            &fx.directory,
+            outgoing,
+            async |claim: &mut ClaimedItem, item: &InboxItem| {
+                if claim.inbox_dir() == scout_inbox.as_path() {
+                    anyhow::bail!("injected save failure");
+                }
+                claim.save(item).await
+            },
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(err, SendMailError::Write(_)), "{err:?}");
         assert_nothing_left(&fx, "atlas");
