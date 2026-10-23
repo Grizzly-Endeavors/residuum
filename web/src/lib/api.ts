@@ -1422,6 +1422,9 @@ export async function fetchTeamEvents(
 /** The largest file the hub stages for a message, in bytes. A larger upload is answered `413`. */
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
+/** `MAX_UPLOAD_BYTES` as the screens say it: "50 MB". */
+export const UPLOAD_LIMIT_LABEL = `${String(MAX_UPLOAD_BYTES / (1024 * 1024))} MB`;
+
 /** A file the hub has staged, to attach to a message by `id`. */
 export interface UploadedFile {
   id: string;

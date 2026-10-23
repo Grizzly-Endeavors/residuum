@@ -5,7 +5,7 @@
 // through `userErrorMessage`, which logs the raw error to the console and
 // returns plain language: what failed, and what to do about it.
 
-import { ApiError, MAX_UPLOAD_BYTES } from "./api";
+import { ApiError, UPLOAD_LIMIT_LABEL } from "./api";
 
 export interface ErrorMessageOptions {
   /** What failed, as a full sentence: "Couldn't load sessions." */
@@ -78,7 +78,7 @@ function errorReason(err: unknown, opts: ErrorMessageOptions): string {
       return "Residuum refused the request. Reload the page and try again.";
     case 413:
       // A proxy in front of Residuum can answer 413 with an HTML page, so the limit is stated here rather than read from the body.
-      return `That file is larger than the ${String(MAX_UPLOAD_BYTES / (1024 * 1024))} MB upload limit.`;
+      return `That file is larger than the ${UPLOAD_LIMIT_LABEL} upload limit.`;
     default:
       break;
   }

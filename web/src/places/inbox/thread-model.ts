@@ -3,7 +3,7 @@
 // what a file may weigh and when the recipients will see what is sent, and
 // the key that sends.
 
-import { MAX_UPLOAD_BYTES } from "../../lib/api";
+import { UPLOAD_LIMIT_LABEL } from "../../lib/api";
 import type { MailAttachment, MailSeen } from "../../lib/hub-types";
 
 /** Names as a sentence lists them: "atlas", "atlas and scout", "atlas, scout and wren". */
@@ -29,7 +29,7 @@ export function threadMeta(participants: readonly string[], messageCount: number
 
 /** What one file may weigh, as the composers say before anyone is refused. */
 export function uploadLimitHint(): string {
-  return `Any file, up to ${String(MAX_UPLOAD_BYTES / (1024 * 1024))} MB each.`;
+  return `Any file, up to ${UPLOAD_LIMIT_LABEL} each.`;
 }
 
 /**

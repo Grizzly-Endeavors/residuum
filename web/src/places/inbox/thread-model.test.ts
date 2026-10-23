@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_UPLOAD_BYTES } from "../../lib/api";
 import {
   deliveryHint,
   joinNames,
@@ -38,7 +37,6 @@ describe("threadMeta", () => {
 
 describe("uploadLimitHint", () => {
   it("states the upload limit in megabytes", () => {
-    expect(MAX_UPLOAD_BYTES).toBe(50 * 1024 * 1024);
     expect(uploadLimitHint()).toBe("Any file, up to 50 MB each.");
   });
 });

@@ -21,6 +21,7 @@ import {
   replyToMailThread,
   restoreMailThread,
   sendMail,
+  UPLOAD_LIMIT_LABEL,
   uploadFile,
 } from "./api";
 import { userErrorMessage } from "./errors";
@@ -75,8 +76,6 @@ const FAILED: Readonly<Record<ThreadAction, string>> = {
 };
 
 const GONE = "That conversation isn't there any more.";
-
-const UPLOAD_LIMIT = `${String(MAX_UPLOAD_BYTES / (1024 * 1024))} MB`;
 
 /** The folder a thread is in when its flags say so. */
 function inFolder(summary: MailThreadSummary, folder: MailFolder): boolean {
@@ -218,7 +217,7 @@ export class MailDraft {
     this.attachNotice =
       refused.length === 0
         ? null
-        : `${listing(refused)} ${refused.length === 1 ? "is" : "are"} larger than the ${UPLOAD_LIMIT} upload limit, so ${refused.length === 1 ? "it wasn't" : "they weren't"} attached.`;
+        : `${listing(refused)} ${refused.length === 1 ? "is" : "are"} larger than the ${UPLOAD_LIMIT_LABEL} upload limit, so ${refused.length === 1 ? "it wasn't" : "they weren't"} attached.`;
     if (added.length > 0) this.attachments = [...this.attachments, ...added];
   }
 

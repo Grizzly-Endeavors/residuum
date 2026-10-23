@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, uploadFile, validationFromApiError, workspaceConflictFromApiError } from "./api";
+import {
+  ApiError,
+  MAX_UPLOAD_BYTES,
+  UPLOAD_LIMIT_LABEL,
+  uploadFile,
+  validationFromApiError,
+  workspaceConflictFromApiError,
+} from "./api";
 
 describe("validationFromApiError", () => {
   it("returns the validation message from a 400 body", () => {
@@ -77,6 +84,13 @@ describe("workspaceConflictFromApiError", () => {
 
   it("ignores anything that is not an ApiError", () => {
     expect(workspaceConflictFromApiError(new Error("network down"))).toBeNull();
+  });
+});
+
+describe("UPLOAD_LIMIT_LABEL", () => {
+  it("says the upload limit in megabytes", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(50 * 1024 * 1024);
+    expect(UPLOAD_LIMIT_LABEL).toBe("50 MB");
   });
 });
 
