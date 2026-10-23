@@ -404,6 +404,13 @@ async fn an_unknown_or_unparseable_ref_is_a_json_404_on_every_thread_route() {
             StatusCode::NOT_FOUND,
         )
         .await;
+        h.expect(
+            Method::POST,
+            &format!("{base}/reply"),
+            Some(json!({ "not_a_body": true })),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
     }
 }
 

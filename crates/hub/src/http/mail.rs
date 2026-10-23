@@ -493,10 +493,11 @@ async fn reply_to_thread(
     Path(raw): Path<String>,
     request: Result<Json<ReplyRequest>, JsonRejection>,
 ) -> Result<Json<MailReplyResponse>, Refusal> {
-    let request = request_body(request)?;
+    // An unknown thread answers 404 before the body is looked at.
     let item = message_ref(&raw)?;
     let before = MailIndex::load(&state.mailboxes()).await;
     let thread = thread_of(&before, &item, &raw)?;
+    let request = request_body(request)?;
     let attachments = staged_files(&state.uploads, &request.attachments).await?;
     let mail = OutgoingMail::reply(thread, request.body, attachments, UserMailSource::Web);
     let sent = send_and_consume(&state, mail, &request.attachments).await?;
