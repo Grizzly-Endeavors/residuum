@@ -600,7 +600,8 @@ describe("dropping files", () => {
     ws.transport.onMessage?.({
       type: "message_refused",
       id: frame?.type === "send_message" ? frame.id : "",
-      message: "An attached file isn't available anymore. Attach it again, then send.",
+      message:
+        "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
     });
     await settle();
     expect(box).toHaveValue("Read this\n\nAnd then");

@@ -231,7 +231,8 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("message_refused")).toEqual({
         type: "message_refused",
         id: "m1",
-        message: "An attached file isn't available anymore. Attach it again, then send.",
+        message:
+          "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
       });
       expect((await socket.settled()).map((frame) => frame.type)).not.toContain("user_message");
     });

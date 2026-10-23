@@ -22,7 +22,8 @@ const INLINE_IMAGE_TYPES: ReadonlySet<string> = new Set([
 const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
 
 /** What the backend says when a chat message names an upload that isn't staged. */
-export const UPLOAD_GONE = "An attached file isn't available anymore. Attach it again, then send.";
+export const UPLOAD_GONE =
+  "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.";
 
 /**
  * Save the uploads a chat message names (`send_message`'s `attachments`) as

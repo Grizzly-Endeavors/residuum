@@ -110,7 +110,8 @@ describe("a message the agent refused", () => {
     socket.simulateMessage({
       type: "message_refused",
       id,
-      message: "An attached file isn't available anymore. Attach it again, then send.",
+      message:
+        "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
     });
     stop();
 

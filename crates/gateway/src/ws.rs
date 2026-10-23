@@ -270,6 +270,11 @@ async fn handle_client_message(
                 conversation: None,
                 agent_sender: None,
             };
+            let companion_item_ids: Vec<String> = attached
+                .attachments
+                .iter()
+                .map(|attachment| attachment.item_id.clone())
+                .collect();
             let msg_event = residuum_bus::MessageEvent {
                 id: id.clone(),
                 content: attached.content,
@@ -285,6 +290,7 @@ async fn handle_client_message(
                 .await
             {
                 tracing::warn!(error = %e, "failed to publish message to bus");
+                discard_companion_items(state, &companion_item_ids).await;
                 local_tx
                     .send(ServerMessage::MessageRefused {
                         id,
@@ -663,7 +669,7 @@ const CHAT_AUTHOR: &str = "Web chat";
 
 /// What a chat message says when one of its uploads is no longer staged.
 const UPLOAD_UNAVAILABLE_MESSAGE: &str =
-    "An attached file isn't available anymore. Attach it again, then send.";
+    "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.";
 
 /// A chat message once its uploads are saved into the agent's inbox.
 struct AttachedUploads {
@@ -801,6 +807,21 @@ async fn save_upload(state: &GatewayState, upload: &StagedUpload) -> Result<Copi
         Err(reason) => {
             item.discard().await;
             Err(reason)
+        }
+    }
+}
+
+/// Remove the companion items of a message that did not reach the bus, so a
+/// resend does not file each attachment a second time. The staged uploads stay
+/// for that resend. A failed removal is logged, and the item stays in the inbox.
+async fn discard_companion_items(state: &GatewayState, item_ids: &[String]) {
+    for id in item_ids {
+        if let Err(e) = residuum_workspace::inbox::remove_item(&state.agent_inbox_dir, id).await {
+            tracing::warn!(
+                item_id = %id,
+                error = %e,
+                "failed to remove a companion item of a chat message that did not publish"
+            );
         }
     }
 }
@@ -1313,6 +1334,53 @@ mod tests {
         assert!(
             state.uploads.resolve(&good_id).await.is_ok(),
             "the other staged upload is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_publish_failure_leaves_no_companion_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = make_test_gateway_state(dir.path());
+        let photo_id = stage_upload(&state, "photo.txt", b"photo bytes").await;
+        // A publisher not backed by a broker fails every publish, as a stopped
+        // bus does.
+        state.publisher = residuum_bus::Publisher::noop();
+
+        let mut local = handle_on_connection(
+            ClientMessage::SendMessage {
+                id: "chat-4".into(),
+                content: "photo".into(),
+                attachments: vec![photo_id.clone()],
+            },
+            &state,
+        )
+        .await;
+
+        let reply = next_server_message(&mut local).await;
+        assert!(
+            matches!(
+                &reply,
+                ServerMessage::MessageRefused { id, message }
+                    if id == "chat-4"
+                        && message == "Your message didn't reach the agent. Send it again."
+            ),
+            "expected the publish-failure refusal, got {reply:?}"
+        );
+
+        let items = residuum_workspace::inbox::list_items_or_empty(&state.agent_inbox_dir)
+            .await
+            .unwrap();
+        assert!(items.is_empty(), "the unpublished message leaves no item");
+        let attachments_dir = state.agent_inbox_dir.join("attachments");
+        let leftovers = if attachments_dir.exists() {
+            std::fs::read_dir(&attachments_dir).unwrap().count()
+        } else {
+            0
+        };
+        assert_eq!(leftovers, 0, "no attachment directory is left behind");
+        assert!(
+            state.uploads.resolve(&photo_id).await.is_ok(),
+            "the staged upload is kept for a resend"
         );
     }
 
