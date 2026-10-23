@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use residuum_agent::Tool;
 use residuum_inference::{ToolDefinition, ToolError, ToolResult};
-use residuum_workspace::inbox::mail::{MailIndex, MailMessage, MailSender};
+use residuum_workspace::inbox::mail::{MailIndex, MailMessage, MailSender, is_user_mail_source};
 use residuum_workspace::inbox::{self, InboxItem, InboxKind, InboxRef};
 
 use super::mail::{
@@ -100,7 +100,7 @@ impl Tool for InboxListTool {
 
         for (filename, item) in &filtered {
             let status = if item.read { "read" } else { "unread" };
-            let ts = item.timestamp.format("%Y-%m-%dT%H:%M");
+            let ts = item.timestamp.format(TIME_FORMAT);
             lines.push(format!(
                 "  [{status}] {filename} — {} ({}, {ts})",
                 item.title, item.source
@@ -278,8 +278,14 @@ impl Tool for InboxReadTool {
         }
 
         let mut output = item_section(&item_ref, &located, own);
-        let index = MailIndex::load(view.directory.as_ref()).await;
-        output.push_str(&thread_section(&index, &item_ref));
+        // An agent-inbox item that isn't user mail (a pulse, webhook or
+        // artifact item) is in no thread, so there is no mail to load for it.
+        let can_be_mail =
+            item_ref.kind() == InboxKind::User || is_user_mail_source(&located.item.source);
+        if can_be_mail {
+            let index = MailIndex::load(view.directory.as_ref()).await;
+            output.push_str(&thread_section(&index, &item_ref));
+        }
         Ok(ToolResult::success(output))
     }
 }
