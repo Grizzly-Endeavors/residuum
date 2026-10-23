@@ -159,7 +159,7 @@ test("Add a note asks for its text when run from the palette", async ({ page, is
   await prompt.getByRole("button", { name: "Add note" }).click();
   await expect(prompt).toBeHidden();
   // One message: the agent's own, once the note is in its inbox.
-  await expect(page.getByText("[inbox] item added")).toBeVisible();
+  await expect(page.getByText("Added a note to the inbox.")).toBeVisible();
 });
 
 test.describe("on a phone", () => {

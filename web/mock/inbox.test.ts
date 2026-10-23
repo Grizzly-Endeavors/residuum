@@ -159,7 +159,7 @@ describe("inbox routes", () => {
         { ...REPORT, url: "/api/agents/atlas/inbox/mock_1/attachments/0" },
         { ...CHART, url: "/api/agents/atlas/inbox/mock_1/attachments/1" },
       ]);
-      expect(item?.attachments[1]?.url).toBe(attachmentUrl("atlas", "mock_1", 1));
+      expect(item?.attachments[1]?.url).toBe(attachmentUrl("atlas", "user", "mock_1", 1));
     });
 
     it("serves an attachment by its position, inline, under its type", async () => {

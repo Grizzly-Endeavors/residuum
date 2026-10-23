@@ -124,7 +124,18 @@ describe("agent socket", () => {
       socket.send({ type: "inbox_add", body: "remember the milk" });
       expect(await socket.nextOfType("notice")).toEqual({
         type: "notice",
-        message: "[inbox] item added",
+        message: "Added a note to the inbox.",
+      });
+    });
+
+    it("saves an inbox add in the agent's own inbox as a message from the terminal, titled by its first line", async () => {
+      socket.send({ type: "inbox_add", body: "remember the milk\nand the eggs" });
+      await socket.nextOfType("notice");
+
+      expect(harness.hub.agents.get("atlas")?.state.agentInbox.at(-1)).toMatchObject({
+        title: "remember the milk",
+        body: "remember the milk\nand the eggs",
+        source: "cli",
       });
     });
 
