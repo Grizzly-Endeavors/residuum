@@ -73,6 +73,7 @@ impl JournalState {
                 id,
                 content,
                 images,
+                attachments,
                 sender,
                 endpoint,
             } => {
@@ -81,6 +82,7 @@ impl JournalState {
                         id: id.clone(),
                         content: content.clone(),
                         images: images.clone(),
+                        attachments: attachments.clone(),
                         sender: sender.clone(),
                         endpoint: endpoint.clone(),
                     });
@@ -481,6 +483,7 @@ mod tests {
             id: id.into(),
             content: format!("say {id}"),
             images: vec![],
+            attachments: vec![],
             sender: None,
             endpoint: "ws".into(),
         }
@@ -531,6 +534,32 @@ mod tests {
         journal.observe(&read("c", "c"));
         let actual = &waiting(&journal);
         assert!(actual.is_empty(), "expected {actual:?} to be empty");
+    }
+
+    #[test]
+    fn a_waiting_message_keeps_its_attachments_in_the_snapshot() {
+        let attachment = residuum_inference::MessageAttachment {
+            item_id: "item-1".to_string(),
+            filename: "notes.md".to_string(),
+            size: 12,
+            content_type: "text/markdown".to_string(),
+            path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+        };
+        let journal = TurnJournal::default();
+        journal.observe(&started("t1"));
+        journal.observe(&MainConversationEvent::MessageQueued {
+            id: "a".into(),
+            content: "see attached".into(),
+            images: vec![],
+            attachments: vec![attachment.clone()],
+            sender: None,
+            endpoint: "ws".into(),
+        });
+        let snapshot = journal.snapshot();
+        let [waiting] = snapshot.queued.as_slice() else {
+            panic!("expected one waiting message, got {:?}", snapshot.queued);
+        };
+        assert_eq!(waiting.attachments, vec![attachment]);
     }
 
     /// Observe `agent`'s message opening a turn, and check the snapshot keeps

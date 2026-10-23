@@ -128,6 +128,9 @@ pub struct QueuedMessage {
     /// Images attached to the message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageData>,
+    /// Files attached to the message, each saved as a companion agent-inbox item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachment>,
     /// The person who sent it, for interfaces that identify one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1292,6 +1295,39 @@ mod tests {
                 "type": "user_message",
                 "id": "m2",
                 "turn_id": "turn-2",
+                "content": "see attached",
+                "attachments": [{
+                    "item_id": "item-1",
+                    "filename": "notes.md",
+                    "size": 12,
+                    "content_type": "text/markdown",
+                    "path": "inbox/agent/attachments/item-1/notes.md",
+                }],
+                "endpoint": "chat",
+            })
+        );
+    }
+
+    #[test]
+    fn queued_message_serializes_its_attachments() {
+        let queued = QueuedMessage {
+            id: "m4".to_string(),
+            content: "see attached".to_string(),
+            images: Vec::new(),
+            attachments: vec![MessageAttachment {
+                item_id: "item-1".to_string(),
+                filename: "notes.md".to_string(),
+                size: 12,
+                content_type: "text/markdown".to_string(),
+                path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+            }],
+            sender: None,
+            endpoint: "chat".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&queued).unwrap(),
+            serde_json::json!({
+                "id": "m4",
                 "content": "see attached",
                 "attachments": [{
                     "item_id": "item-1",

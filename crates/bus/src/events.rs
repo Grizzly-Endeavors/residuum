@@ -1122,6 +1122,8 @@ pub enum MainConversationEvent {
         content: String,
         /// Images attached to it.
         images: Vec<ImageData>,
+        /// Files attached to it, each saved as a companion agent-inbox item.
+        attachments: Vec<MessageAttachment>,
         /// The person who sent it, for interfaces that identify one.
         sender: Option<MessageSender>,
         /// Endpoint it arrived on.
@@ -1234,6 +1236,7 @@ impl MainConversationEvent {
                 id: message.id.clone(),
                 content: message.content.clone(),
                 images: message.images.clone(),
+                attachments: message.attachments.clone(),
                 sender: message.origin.sender.clone(),
                 endpoint: message.origin.endpoint.clone(),
             })
@@ -1692,6 +1695,25 @@ mod tests {
             panic!("expected a single user message, got {messages:?}");
         };
         assert_eq!(user.attachments, vec![attachment]);
+    }
+
+    #[test]
+    fn a_waiting_message_carries_its_attachments() {
+        let attachment = residuum_inference::MessageAttachment {
+            item_id: "item-1".to_string(),
+            filename: "notes.md".to_string(),
+            size: 12,
+            content_type: "text/markdown".to_string(),
+            path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+        };
+        let mut message = inbound(None);
+        message.attachments = vec![attachment.clone()];
+        let Some(MainConversationEvent::MessageQueued { attachments, .. }) =
+            MainConversationEvent::message_queued(&message)
+        else {
+            panic!("expected a queued event for a person's message");
+        };
+        assert_eq!(attachments, vec![attachment]);
     }
 
     #[test]

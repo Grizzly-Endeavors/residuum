@@ -53,6 +53,7 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
             id,
             content,
             images,
+            attachments,
             sender,
             endpoint,
         } => ServerMessage::MessageQueued {
@@ -60,6 +61,7 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
                 id,
                 content,
                 images,
+                attachments,
                 sender,
                 endpoint,
             },
@@ -1207,6 +1209,29 @@ mod tests {
             error_details.as_deref(),
             Some("failed to build provider chain: no key")
         );
+    }
+
+    #[test]
+    fn a_message_queued_frame_carries_the_waiting_messages_attachments() {
+        let attachment = residuum_inference::MessageAttachment {
+            item_id: "item-1".to_string(),
+            filename: "notes.md".to_string(),
+            size: 12,
+            content_type: "text/markdown".to_string(),
+            path: "inbox/agent/attachments/item-1/notes.md".to_string(),
+        };
+        let frame = main_conversation_frame(MainConversationEvent::MessageQueued {
+            id: "a".into(),
+            content: "see attached".into(),
+            images: vec![],
+            attachments: vec![attachment.clone()],
+            sender: None,
+            endpoint: "ws".into(),
+        });
+        let ServerMessage::MessageQueued { message } = frame else {
+            panic!("expected a message_queued frame");
+        };
+        assert_eq!(message.attachments, vec![attachment]);
     }
 
     fn no_watch_set() -> tokio::sync::watch::Receiver<WatchSet> {
