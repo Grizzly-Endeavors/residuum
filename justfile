@@ -229,7 +229,7 @@ web-mock-serve port="5173" *args: _web-deps
 web-mock-preview port="4173" *args: _web-deps
     cd web && npm run build && MOCK_DETERMINISTIC=1 npm run preview:mock -- --port {{ port }} --strictPort "${@:2}"
 
-# Vite dev server proxying /api and /ws to a real backend on :7700 (start one with `just serve`)
+# Vite dev server proxying /api (WebSockets included) to a real backend on :7700 (start one with `just serve`)
 [group('web')]
 [positional-arguments]
 web-dev *args: _web-deps
