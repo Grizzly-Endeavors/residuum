@@ -114,6 +114,15 @@ impl EndpointRegistry {
             });
         }
 
+        if config.slack.is_some() {
+            entries.push(EndpointEntry {
+                id: EndpointId::from(residuum_config::SLACK_ENDPOINT),
+                topic: TopicId::Endpoint(EndpointName::from(residuum_config::SLACK_ENDPOINT)),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "Slack".to_string(),
+            });
+        }
+
         if config.teams.is_some() {
             entries.push(EndpointEntry {
                 id: EndpointId::from(residuum_config::TEAMS_ENDPOINT),
@@ -223,6 +232,7 @@ mod tests {
             cloud: None,
             discord: None,
             telegram: None,
+            slack: None,
             teams: None,
             a2a: residuum_config::A2aConfig::default(),
             webhooks: HashMap::new(),
@@ -328,9 +338,10 @@ mod tests {
         assert_eq!(ws.display_name, "WebSocket");
         assert!(ws.capabilities.contains(EndpointCapabilities::INTERACTIVE));
 
-        // discord/telegram not present
+        // discord/telegram/slack not present
         assert!(reg.get(&EndpointId::from("discord")).is_none());
         assert!(reg.get(&EndpointId::from("telegram")).is_none());
+        assert!(reg.get(&EndpointId::from("slack")).is_none());
     }
 
     #[test]
@@ -352,6 +363,31 @@ mod tests {
                 .capabilities
                 .contains(EndpointCapabilities::INTERACTIVE)
         );
+    }
+
+    #[test]
+    fn from_config_includes_slack_when_configured() {
+        let mut config = minimal_config();
+        assert!(reg_has_slack(&config).is_none());
+
+        config.slack = Some(residuum_config::SlackConfig {
+            bot_token: "xoxb-test".to_string(),
+            app_token: "xapp-test".to_string(),
+            respond_to_others: false,
+            working_reaction: Some("eyes".to_string()),
+            deliver_intermediate: false,
+        });
+        let slack = reg_has_slack(&config).unwrap();
+        assert_eq!(slack.display_name, "Slack");
+        assert!(
+            slack
+                .capabilities
+                .contains(EndpointCapabilities::INTERACTIVE)
+        );
+    }
+
+    fn reg_has_slack(config: &Config) -> Option<EndpointEntry> {
+        EndpointRegistry::from_config(config, &[]).get(&EndpointId::from("slack"))
     }
 
     #[test]

@@ -112,6 +112,11 @@ export interface ConfigFields {
   teams_context_messages: string;
   teams_deliver_intermediate: boolean;
   teams_port: string;
+  slack_bot_token: string;
+  slack_app_token: string;
+  slack_respond_to_others: boolean;
+  slack_working_reaction: string;
+  slack_deliver_intermediate: boolean;
   a2a_enabled: boolean;
   a2a_port: string;
   a2a_public_url: string;
@@ -218,6 +223,11 @@ export function defaultConfigFields(): ConfigFields {
     teams_context_messages: "",
     teams_deliver_intermediate: false,
     teams_port: "",
+    slack_bot_token: "",
+    slack_app_token: "",
+    slack_respond_to_others: false,
+    slack_working_reaction: "",
+    slack_deliver_intermediate: false,
     a2a_enabled: true,
     a2a_port: "",
     a2a_public_url: "",
@@ -426,6 +436,15 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.teams_context_messages = str(teams.context_messages);
     fields.teams_deliver_intermediate = bool(teams.deliver_intermediate, false);
     fields.teams_port = str(teams.port);
+  }
+
+  const slack = doc.slack as Record<string, unknown> | undefined;
+  if (slack) {
+    fields.slack_bot_token = str(slack.bot_token);
+    fields.slack_app_token = str(slack.app_token);
+    fields.slack_respond_to_others = bool(slack.respond_to_others, false);
+    fields.slack_working_reaction = str(slack.working_reaction);
+    fields.slack_deliver_intermediate = bool(slack.deliver_intermediate, false);
   }
 
   const a2a = doc.a2a as Record<string, unknown> | undefined;
@@ -992,6 +1011,27 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     default: false,
   },
   { key: "teams_port", path: ["teams", "port"], kind: "numberDefault", default: "7701" },
+
+  { key: "slack_bot_token", path: ["slack", "bot_token"], kind: "string" },
+  { key: "slack_app_token", path: ["slack", "app_token"], kind: "string" },
+  {
+    key: "slack_respond_to_others",
+    path: ["slack", "respond_to_others"],
+    kind: "bool",
+    default: false,
+  },
+  {
+    key: "slack_working_reaction",
+    path: ["slack", "working_reaction"],
+    kind: "stringDefault",
+    default: "eyes",
+  },
+  {
+    key: "slack_deliver_intermediate",
+    path: ["slack", "deliver_intermediate"],
+    kind: "bool",
+    default: false,
+  },
 
   { key: "a2a_enabled", path: ["a2a", "enabled"], kind: "bool", default: true },
   { key: "a2a_port", path: ["a2a", "port"], kind: "numberDefault", default: "7702" },

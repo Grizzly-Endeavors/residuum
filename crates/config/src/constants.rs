@@ -12,6 +12,9 @@ pub const WEB_UI_ENDPOINT: &str = "ws";
 /// Endpoint and interface name for Teams on the bus.
 pub const TEAMS_ENDPOINT: &str = "teams";
 
+/// Endpoint and interface name for Slack on the bus.
+pub const SLACK_ENDPOINT: &str = "slack";
+
 /// Default base URL for the Anthropic API.
 pub(super) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 

@@ -45,7 +45,7 @@ pub use constants::{
     DEFAULT_A2A_PORT, DEFAULT_CLOUD_RELAY_URL, DEFAULT_GATEWAY_PORT,
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
     DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
-    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS, DEFAULT_TEAMS_PORT, TEAMS_ENDPOINT,
+    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS, DEFAULT_TEAMS_PORT, SLACK_ENDPOINT, TEAMS_ENDPOINT,
     WEB_UI_ENDPOINT,
 };
 pub use deserialize::{AgentConfigFile, HubConfigFile, ProvidersFile};
@@ -65,7 +65,7 @@ pub use types::{
     BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
     IdleConfig, LearningConfig, LogLevel, MemoryConfig, ModelSelector, OtelEndpoint,
     ProviderNativeSearchConfig, RemoteAccessSettings, RepeatCallGuardConfig, RoleOverrides,
-    SearchConfig, SharedToolsPath, SkillDir, SkillSource, SkillsConfig, StandaloneBackendConfig,
-    SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
-    WebhookEntry, WebhookFormat, WebhookRouting, apply_tools_path,
+    SearchConfig, SharedToolsPath, SkillDir, SkillSource, SkillsConfig, SlackConfig,
+    StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig,
+    TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting, apply_tools_path,
 };

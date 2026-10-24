@@ -25,6 +25,7 @@ axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
+futures-util = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
 ring = { workspace = true }
@@ -36,6 +37,7 @@ tempfile = { workspace = true }
 teloxide-core = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 ts-rs = { workspace = true }

@@ -30,7 +30,7 @@ pub(super) enum IdleAction {
 /// Which subsystems differ between two `Config` snapshots.
 ///
 /// Only operations that are expensive or user-visibly disruptive get a
-/// dedicated flag: restarting the Discord/Telegram/Teams adapters and
+/// dedicated flag: restarting the Discord/Telegram/Slack/Teams adapters and
 /// rebuilding the A2A state. Idle timeout/channel changes also get a
 /// dedicated flag because they control which `IdleAction` variant
 /// `handle_root_reload` returns, not a rebuild. The gateway bind, the cloud
@@ -65,6 +65,8 @@ pub(super) struct ConfigDiff {
     pub discord_changed: bool,
     /// Telegram token added/removed/changed — restarting the adapter is user-visible.
     pub telegram_changed: bool,
+    /// Slack tokens/flags added/removed/changed — restarting the adapter is user-visible.
+    pub slack_changed: bool,
     /// Teams config (or the gateway bind it listens on) changed — restarts its listener.
     pub teams_changed: bool,
     /// A2A config (or the gateway bind it listens on) changed — restarts its listener.
@@ -93,6 +95,7 @@ impl ConfigDiff {
 pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     let discord_changed = old.discord != new.discord;
     let telegram_changed = old.telegram != new.telegram;
+    let slack_changed = old.slack != new.slack;
     let teams_changed =
         old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind);
     let a2a_changed =
@@ -120,6 +123,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         changed,
         discord_changed,
         telegram_changed,
+        slack_changed,
         teams_changed,
         a2a_changed,
         timezone_changed,
@@ -162,6 +166,9 @@ fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
     }
     if old.telegram != new.telegram {
         parts.push("telegram");
+    }
+    if old.slack != new.slack {
+        parts.push("slack");
     }
     if old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind) {
         parts.push("teams");
@@ -361,6 +368,9 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     if diff.telegram_changed {
         reload_telegram_adapter(rt, &new_cfg).await;
     }
+    if diff.slack_changed {
+        reload_slack_adapter(rt, &new_cfg).await;
+    }
     if diff.teams_changed {
         reload_teams_adapter(rt, &new_cfg).await;
     }
@@ -536,6 +546,9 @@ async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
     }
     if new_cfg.telegram.is_some() {
         reload_telegram_adapter(rt, new_cfg).await;
+    }
+    if new_cfg.slack.is_some() {
+        reload_slack_adapter(rt, new_cfg).await;
     }
     if new_cfg.teams.is_some() {
         reload_teams_adapter(rt, new_cfg).await;
@@ -996,6 +1009,33 @@ async fn reload_telegram_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
         .await;
 }
 
+/// Stop the existing Slack adapter (if running) and start a new one if configured.
+async fn reload_slack_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
+    let senders = chat_adapter_senders(rt);
+    rt.chat_adapters
+        .reload(
+            "slack",
+            new_cfg.slack.as_ref().map(|cfg| {
+                let cfg = cfg.clone();
+                let workspace_dir = new_cfg.workspace_dir.clone();
+                let tz = rt.tz;
+                move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                    let iface = residuum_interfaces::slack::SlackInterface::new(
+                        cfg,
+                        senders,
+                        workspace_dir,
+                        tz,
+                        rx,
+                    );
+                    if let Err(e) = iface.start().await {
+                        tracing::error!(error = %e, "slack interface failed after reload");
+                    }
+                }
+            }),
+        )
+        .await;
+}
+
 /// Stop the existing Teams adapter (if running) and start a new one if configured.
 async fn reload_teams_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
     let senders = chat_adapter_senders(rt);
@@ -1091,6 +1131,7 @@ mod tests {
             cloud: None,
             discord: None,
             telegram: None,
+            slack: None,
             teams: None,
             a2a: residuum_config::A2aConfig::default(),
             webhooks: std::collections::HashMap::new(),
@@ -1117,6 +1158,7 @@ mod tests {
     fn assert_no_disruptive_flags(diff: &ConfigDiff) {
         assert!(!diff.discord_changed, "should not flag discord restart");
         assert!(!diff.telegram_changed, "should not flag telegram restart");
+        assert!(!diff.slack_changed, "should not flag slack restart");
     }
 
     #[test]
@@ -1255,6 +1297,80 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(diff.telegram_changed);
         assert!(!diff.discord_changed);
+    }
+
+    fn slack_config() -> residuum_config::SlackConfig {
+        residuum_config::SlackConfig {
+            bot_token: "xoxb-token".to_string(),
+            app_token: "xapp-token".to_string(),
+            respond_to_others: false,
+            working_reaction: Some("eyes".to_string()),
+            deliver_intermediate: false,
+        }
+    }
+
+    #[test]
+    fn diff_config_detects_slack_addition() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.slack = Some(slack_config());
+
+        let diff = diff_config(&old, &new);
+        assert!(
+            diff.slack_changed,
+            "a [slack] section appearing is a change"
+        );
+        assert!(!diff.telegram_changed);
+        assert!(diff.summary().contains("slack"));
+    }
+
+    #[test]
+    fn diff_config_detects_slack_token_rotation() {
+        let mut old = test_config();
+        old.slack = Some(slack_config());
+        let mut new = old.clone();
+        new.slack = Some(residuum_config::SlackConfig {
+            bot_token: "xoxb-rotated".to_string(),
+            ..slack_config()
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.slack_changed, "a rotated token is a change");
+        assert!(!diff.telegram_changed);
+        assert!(diff.summary().contains("slack"));
+    }
+
+    #[test]
+    fn diff_config_detects_slack_flag_change() {
+        let mut old = test_config();
+        old.slack = Some(slack_config());
+        let mut new = old.clone();
+        new.slack = Some(residuum_config::SlackConfig {
+            respond_to_others: true,
+            ..slack_config()
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(
+            diff.slack_changed,
+            "a flags-only edit still restarts the adapter"
+        );
+        assert!(!diff.telegram_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_slack_removal() {
+        let mut old = test_config();
+        old.slack = Some(slack_config());
+        let mut new = old.clone();
+        new.slack = None;
+
+        let diff = diff_config(&old, &new);
+        assert!(
+            diff.slack_changed,
+            "dropping the [slack] section is a change"
+        );
+        assert!(diff.summary().contains("slack"));
     }
 
     fn teams_config() -> residuum_config::TeamsConfig {

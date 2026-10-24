@@ -1,4 +1,4 @@
-//! Discord, Telegram, Teams, webhooks, and idle settings.
+//! Discord, Telegram, Teams, Slack, webhooks, and idle settings.
 
 use std::collections::HashMap;
 
@@ -7,12 +7,13 @@ use super::super::constants::{
     DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES, WEB_UI_ENDPOINT,
 };
 use super::super::deserialize::{
-    AgentConfigFile, DiscordConfigFile, TeamsConfigFile, TelegramConfigFile, WebhookEntryFile,
+    AgentConfigFile, DiscordConfigFile, SlackConfigFile, TeamsConfigFile, TelegramConfigFile,
+    WebhookEntryFile,
 };
 use super::super::secrets::SecretStore;
 use super::super::types::{
-    DiscordConfig, IdleConfig, TeamsConfig, TelegramConfig, WebhookEntry, WebhookFormat,
-    WebhookRouting,
+    DiscordConfig, IdleConfig, SlackConfig, TeamsConfig, TelegramConfig, WebhookEntry,
+    WebhookFormat, WebhookRouting,
 };
 
 /// Resolve a bot token from the raw TOML value, with `${ENV_VAR}` / `secret:name`
@@ -56,6 +57,56 @@ pub(super) fn resolve_discord_config(
         }
         (None, None) => None,
     }
+}
+
+/// Resolve Slack configuration from the TOML section.
+///
+/// Token resolution: `bot_token` / `app_token` fields in TOML (with
+/// `${ENV_VAR}` / `secret:name` expansion). Both are required — the section
+/// resolves to `None` unless both are present.
+pub(super) fn resolve_slack_config(
+    section: Option<&SlackConfigFile>,
+    secrets: &SecretStore,
+) -> Option<SlackConfig> {
+    let bot_token = resolve_bot_token(section.and_then(|s| s.bot_token.as_deref()), secrets);
+    let app_token = resolve_bot_token(section.and_then(|s| s.app_token.as_deref()), secrets);
+
+    match (section, bot_token, app_token) {
+        (_, Some(bot), Some(app)) => Some(SlackConfig {
+            bot_token: bot,
+            app_token: app,
+            respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+            working_reaction: resolve_working_reaction(
+                section.and_then(|s| s.working_reaction.as_deref()),
+            ),
+            deliver_intermediate: section
+                .and_then(|s| s.deliver_intermediate)
+                .unwrap_or(false),
+        }),
+        (Some(_), _, _) => {
+            tracing::warn!(
+                section = "slack",
+                "section present but bot_token/app_token incomplete; set both in config"
+            );
+            None
+        }
+        (None, _, _) => None,
+    }
+}
+
+/// The working reaction Slack uses when `[slack] working_reaction` is unset:
+/// 👀, the acknowledgement Slack's own agent samples use.
+const DEFAULT_SLACK_WORKING_REACTION: &str = "eyes";
+
+/// Resolve `[slack] working_reaction`: unset is the default, `""` turns the
+/// reaction off, and surrounding colons (`":zap:"`, as Slack displays a
+/// shortcode) are tolerated — the API takes the bare name.
+fn resolve_working_reaction(raw: Option<&str>) -> Option<String> {
+    let Some(raw) = raw else {
+        return Some(DEFAULT_SLACK_WORKING_REACTION.to_string());
+    };
+    let name = raw.trim().trim_matches(':');
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Resolve Telegram configuration from the TOML section.
@@ -241,6 +292,7 @@ pub(super) fn resolve_idle_config(
     telegram: Option<&TelegramConfig>,
     discord: Option<&DiscordConfig>,
     teams: Option<&TeamsConfig>,
+    slack: Option<&SlackConfig>,
     notices: &mut Vec<String>,
 ) -> IdleConfig {
     let section = file.and_then(|f| f.idle.as_ref());
@@ -254,7 +306,8 @@ pub(super) fn resolve_idle_config(
         Some(channel @ "telegram") if telegram.is_some() => Ok(channel),
         Some(channel @ "discord") if discord.is_some() => Ok(channel),
         Some(channel @ "teams") if teams.is_some() => Ok(channel),
-        Some(channel @ ("telegram" | "discord" | "teams")) => Err((
+        Some(channel @ "slack") if slack.is_some() => Ok(channel),
+        Some(channel @ ("telegram" | "discord" | "teams" | "slack")) => Err((
             channel,
             format!("idle_channel \"{channel}\" configured but [{channel}] section is missing"),
         )),
@@ -284,29 +337,42 @@ pub(super) fn resolve_idle_config(
     }
 }
 
-/// Discord, Telegram, Teams, and the idle channel that names one of them.
+/// The chat interfaces an agent has configured, and the idle channel that
+/// names one of them.
+pub(super) struct ConfiguredChats {
+    pub(super) discord: Option<DiscordConfig>,
+    pub(super) telegram: Option<TelegramConfig>,
+    pub(super) teams: Option<TeamsConfig>,
+    pub(super) slack: Option<SlackConfig>,
+    pub(super) idle: IdleConfig,
+}
+
+/// Resolve every chat interface and the idle channel.
 ///
-/// Idle validation needs the three chat configs, so they are resolved together.
+/// Idle validation needs the chat configs, so they are resolved together.
 #[must_use]
 pub(super) fn resolve_configured_chats(
     file: Option<&AgentConfigFile>,
     secrets: &SecretStore,
     notices: &mut Vec<String>,
-) -> (
-    Option<DiscordConfig>,
-    Option<TelegramConfig>,
-    Option<TeamsConfig>,
-    IdleConfig,
-) {
+) -> ConfiguredChats {
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), secrets);
     let teams = resolve_teams_config(file.and_then(|f| f.teams.as_ref()), secrets, notices);
+    let slack = resolve_slack_config(file.and_then(|f| f.slack.as_ref()), secrets);
     let idle = resolve_idle_config(
         file,
         telegram.as_ref(),
         discord.as_ref(),
         teams.as_ref(),
+        slack.as_ref(),
         notices,
     );
-    (discord, telegram, teams, idle)
+    ConfiguredChats {
+        discord,
+        telegram,
+        teams,
+        slack,
+        idle,
+    }
 }

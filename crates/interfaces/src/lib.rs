@@ -12,6 +12,7 @@ pub(crate) mod context_buffer;
 pub mod discord;
 mod outbound;
 pub(crate) mod reply_targets;
+pub mod slack;
 pub mod teams;
 pub mod telegram;
 pub mod webhook;
