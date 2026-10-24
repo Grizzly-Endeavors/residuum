@@ -1185,6 +1185,61 @@ fn claim_failed_turn(
     Ok((failed, origin))
 }
 
+/// Where a main turn's messages begin in history (`before` is the history
+/// length before the turn was opened), the text of the message that opened
+/// it, and how the turn is opened. A new message's kickoff is prepared here;
+/// a rerun's message is already in history, so its turn begins at that
+/// message and takes in the failed attempt's work after it.
+fn open_main_turn<'a>(
+    start: MainTurnStart<'a>,
+    before: usize,
+    origin: &'a MessageOrigin,
+    rt: &mut AgentRuntime,
+) -> (usize, String, TurnOpening<'a>) {
+    let (turn_start, opening_text) = match &start {
+        MainTurnStart::Message(message) => {
+            prepare_kickoff(rt, message);
+            (before, message.content.clone())
+        }
+        MainTurnStart::Rerun(failed) => {
+            let text = rt
+                .agent
+                .messages_since(failed.kickoff_index())
+                .first()
+                .map(|opening| opening.content.clone())
+                .unwrap_or_default();
+            (failed.kickoff_index(), text)
+        }
+    };
+    let opening = match start {
+        MainTurnStart::Message(message) => TurnOpening::Message {
+            content: &message.content,
+            origin: Some(origin),
+            images: &message.images,
+        },
+        MainTurnStart::Rerun(failed) => TurnOpening::Rerun(failed),
+    };
+    (turn_start, opening_text, opening)
+}
+
+/// The end-of-turn evaluation a person's turn gets: the subconscious pass over
+/// what the turn added to history, then the learner nudge.
+async fn evaluate_person_turn(
+    rt: &mut AgentRuntime,
+    turn_start: usize,
+    reply_id: &str,
+    subconscious_scratch: Option<&Arc<std::sync::Mutex<residuum_agent::subconscious::TurnScratch>>>,
+) {
+    let turn_messages: Vec<_> = rt.agent.messages_since(turn_start).to_vec();
+    super::subconscious_hook::run_end_of_turn_subconscious(
+        rt,
+        &turn_messages,
+        reply_id,
+        subconscious_scratch,
+    );
+    maybe_nudge_learner(rt).await;
+}
+
 /// Run one main turn from its start to its leftovers: announce it, run it
 /// with interrupts, persist what it added to history, publish its outcome,
 /// and queue the messages that arrived too late for it. `reply_id` is the
@@ -1231,39 +1286,14 @@ async fn run_main_turn(
     .await;
 
     let before = rt.agent.message_count();
-    // Where the turn's messages begin in history, and the text of the message
-    // that opened it. A rerun's begin at its message, already in history, and
-    // take in the failed attempt's work after it.
-    let (turn_start, opening_text) = match &start {
-        MainTurnStart::Message(message) => {
-            prepare_kickoff(rt, message);
-            (before, message.content.clone())
-        }
-        MainTurnStart::Rerun(failed) => {
-            let text = rt
-                .agent
-                .messages_since(failed.kickoff_index())
-                .first()
-                .map(|opening| opening.content.clone())
-                .unwrap_or_default();
-            (failed.kickoff_index(), text)
-        }
-    };
-    let opening = match start {
-        MainTurnStart::Message(message) => TurnOpening::Message {
-            content: &message.content,
-            origin: Some(&origin),
-            images: &message.images,
-        },
-        MainTurnStart::Rerun(failed) => TurnOpening::Rerun(failed),
-    };
+    let (turn_start, opening_text, opening) = open_main_turn(start, before, &origin, rt);
 
     let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
     let live_output = LiveOutputEndpoint::new(output_endpoint);
     // A turn no person started follows the owner when one writes mid-turn.
-    let follow = is_background.then(|| OwnerFollow {
+    let follow = is_background.then_some(OwnerFollow {
         output: &live_output,
         correlation_id: reply_id,
         last_output_endpoint: &mut rt.last_output_endpoint,
@@ -1332,14 +1362,7 @@ async fn run_main_turn(
     // Background turns (including subconscious correction turns) are never
     // evaluated — this gate is what bounds the correction feedback loop.
     if !is_background {
-        let turn_messages: Vec<_> = rt.agent.messages_since(turn_start).to_vec();
-        super::subconscious_hook::run_end_of_turn_subconscious(
-            rt,
-            &turn_messages,
-            reply_id,
-            subconscious_scratch.as_ref(),
-        );
-        maybe_nudge_learner(rt).await;
+        evaluate_person_turn(rt, turn_start, reply_id, subconscious_scratch.as_ref()).await;
     }
 
     defer_late_messages(rt, leftover_interrupts, stop_requested).await;
@@ -3898,7 +3921,7 @@ mod tests {
             started: Arc::clone(&started),
         })
         .await;
-        let (failed, _) = rig
+        let (first_attempt, _) = rig
             .run(
                 TurnOpening::Message {
                     content: "hello",
@@ -3908,7 +3931,7 @@ mod tests {
                 "t1",
             )
             .await;
-        assert!(failed.is_err(), "the first model call failed");
+        assert!(first_attempt.is_err(), "the first model call failed");
         let failed = rig.agent.take_failed_turn("t1").expect("recorded");
         let stop_tx = rig.stop_tx();
         let rerun = residuum_core::util::spawn_in_span(async move {
@@ -3931,7 +3954,7 @@ mod tests {
                 .unwrap(),
             "a stop naming the failed turn's id reaches its rerun"
         );
-        let (rig, result) = wait::guarded("the stopped rerun to end", rerun)
+        let (rig_after, result) = wait::guarded("the stopped rerun to end", rerun)
             .await
             .unwrap();
         assert!(
@@ -3939,11 +3962,11 @@ mod tests {
             "the rerun was stopped before it replied"
         );
         assert!(
-            rig.agent.failed_turn().is_none(),
+            rig_after.agent.failed_turn().is_none(),
             "a stopped rerun did not fail, so there is nothing to retry"
         );
         assert_eq!(
-            history_mentions(&rig.agent, "hello"),
+            history_mentions(&rig_after.agent, "hello"),
             1,
             "the rerun added no message"
         );

@@ -2154,12 +2154,12 @@ mod tests {
         Err(InferenceError::Api("the model is down".to_string()))
     }
 
-    fn reply(text: &str) -> Step {
-        Ok(InferenceResponse::new(text.to_string(), vec![]))
+    fn reply(text: &str) -> InferenceResponse {
+        InferenceResponse::new(text.to_string(), vec![])
     }
 
-    fn echo_call() -> Step {
-        Ok(InferenceResponse::new(
+    fn echo_call() -> InferenceResponse {
+        InferenceResponse::new(
             String::new(),
             vec![ToolCall {
                 id: "call_1".to_string(),
@@ -2167,7 +2167,7 @@ mod tests {
                 arguments: serde_json::json!({}),
                 server: None,
             }],
-        ))
+        )
     }
 
     /// An agent with the echo tool whose model follows `script`, and the
@@ -2272,7 +2272,8 @@ mod tests {
     async fn a_failed_turn_runs_again_on_its_message_and_keeps_its_partial_work() {
         use residuum_inference::Role;
 
-        let (mut agent, requests) = scripted_agent(vec![echo_call(), model_down(), reply("done")]);
+        let (mut agent, requests) =
+            scripted_agent(vec![Ok(echo_call()), model_down(), Ok(reply("done"))]);
         agent.hop_counter().set(3);
         let failed = send(&mut agent, "check the logs", "t1", &[]).await;
         assert!(failed.is_err(), "the turn's second model call failed");
@@ -2322,7 +2323,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_turn_is_only_retryable_by_its_id_and_until_another_turn_starts() {
-        let (mut agent, _requests) = scripted_agent(vec![model_down(), reply("hi")]);
+        let (mut agent, _requests) = scripted_agent(vec![model_down(), Ok(reply("hi"))]);
         assert!(send(&mut agent, "first", "t1", &[]).await.is_err());
 
         assert!(agent.take_failed_turn("unknown").is_none());
@@ -2341,7 +2342,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_rerun_that_fails_is_recorded_again_and_can_be_retried() {
-        let (mut agent, _requests) = scripted_agent(vec![model_down(), model_down(), reply("ok")]);
+        let (mut agent, _requests) =
+            scripted_agent(vec![model_down(), model_down(), Ok(reply("ok"))]);
         assert!(send(&mut agent, "hello", "t1", &[]).await.is_err());
 
         assert!(retry(&mut agent, "t1").await.is_err());
@@ -2376,7 +2378,7 @@ mod tests {
             data: "aGVsbG8=".to_string(),
         };
         let content = "what is in these?\n\n[Attached file: notes.txt]\nthe notes";
-        let (mut agent, requests) = scripted_agent(vec![model_down(), reply("a pelican")]);
+        let (mut agent, requests) = scripted_agent(vec![model_down(), Ok(reply("a pelican"))]);
         assert!(
             send(&mut agent, content, "t1", std::slice::from_ref(&image))
                 .await

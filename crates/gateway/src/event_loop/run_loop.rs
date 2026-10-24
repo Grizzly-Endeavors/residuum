@@ -1318,12 +1318,12 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
         // first: their senders are waiting on a reply, and anything queued
         // on the bus arrived after them.
         if let Some(message) = next_deferred_message(&mut rt) {
-            if let Some(exit) = apply_bus_event(
+            if let Some(exit) = Box::pin(apply_bus_event(
                 Ok(Some(message)),
                 &mut rt,
                 &mut observe_deadline,
                 &mut idle_deadline,
-            )
+            ))
             .await
             {
                 return exit;
@@ -1346,7 +1346,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
             }
 
             event = rt.agent_subscriber.recv() => {
-                if let Some(exit) = apply_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
+                if let Some(exit) = Box::pin(apply_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline)).await {
                     return exit;
                 }
             }
