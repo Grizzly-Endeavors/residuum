@@ -2118,4 +2118,291 @@ mod tests {
             "system prompt should fall back to the cached soul snapshot"
         );
     }
+
+    /// A step of a [`ScriptedProvider`]'s script.
+    type Step = Result<InferenceResponse, InferenceError>;
+
+    /// A provider that answers each call with the next step of its script,
+    /// and records the messages every call carried.
+    struct ScriptedProvider {
+        script: std::sync::Mutex<std::collections::VecDeque<Step>>,
+        requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ScriptedProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.requests.lock().unwrap().push(messages.to_vec());
+            self.script
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(InferenceError::Api("the script ran out".to_string())))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    fn model_down() -> Step {
+        Err(InferenceError::Api("the model is down".to_string()))
+    }
+
+    fn reply(text: &str) -> Step {
+        Ok(InferenceResponse::new(text.to_string(), vec![]))
+    }
+
+    fn echo_call() -> Step {
+        Ok(InferenceResponse::new(
+            String::new(),
+            vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "echo".to_string(),
+                arguments: serde_json::json!({}),
+                server: None,
+            }],
+        ))
+    }
+
+    /// An agent with the echo tool whose model follows `script`, and the
+    /// messages each of its model calls carried.
+    fn scripted_agent(script: Vec<Step>) -> (Agent, Arc<std::sync::Mutex<Vec<Vec<Message>>>>) {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = ScriptedProvider {
+            script: std::sync::Mutex::new(script.into()),
+            requests: Arc::clone(&requests),
+        };
+        let agent = Agent::new(
+            Box::new(provider),
+            echo_registry(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::HopCounter::new(0),
+        );
+        (agent, requests)
+    }
+
+    /// A person's message from the web.
+    fn web_origin() -> MessageOrigin {
+        MessageOrigin {
+            endpoint: "ws".to_string(),
+            sender: None,
+            conversation: None,
+            agent_sender: None,
+        }
+    }
+
+    async fn send(
+        agent: &mut Agent,
+        text: &str,
+        correlation_id: &str,
+        images: &[residuum_inference::ImageData],
+    ) -> anyhow::Result<Vec<String>> {
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+        agent
+            .process_message(
+                text,
+                &publisher,
+                Some(&ep),
+                correlation_id,
+                Some(&web_origin()),
+                &PromptContext::default(),
+                &mut irx,
+                images,
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+    }
+
+    /// Take the failed latest turn `correlation_id` names and run it again.
+    async fn retry(agent: &mut Agent, correlation_id: &str) -> anyhow::Result<Vec<String>> {
+        let failed = agent
+            .take_failed_turn(correlation_id)
+            .expect("the failed latest turn is there to retry");
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+        let prompt_ctx = PromptContext::default();
+        let stop = CancellationToken::new();
+        agent
+            .rerun_turn(
+                failed,
+                TurnWiring {
+                    publisher: &publisher,
+                    output: Some(&ep).into(),
+                    prompt_ctx: &prompt_ctx,
+                    interrupt_rx: &mut irx,
+                    subconscious: None,
+                    stop_token: &stop,
+                },
+            )
+            .await
+    }
+
+    /// The roles of a request's messages after the system prompt.
+    fn conversation_roles(request: &[Message]) -> Vec<residuum_inference::Role> {
+        request
+            .iter()
+            .map(|m| m.role)
+            .filter(|role| *role != residuum_inference::Role::System)
+            .collect()
+    }
+
+    fn user_messages(agent: &Agent) -> usize {
+        agent
+            .messages_since(0)
+            .iter()
+            .filter(|m| m.role == residuum_inference::Role::User)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_runs_again_on_its_message_and_keeps_its_partial_work() {
+        use residuum_inference::Role;
+
+        let (mut agent, requests) = scripted_agent(vec![echo_call(), model_down(), reply("done")]);
+        agent.hop_counter().set(3);
+        let failed = send(&mut agent, "check the logs", "t1", &[]).await;
+        assert!(failed.is_err(), "the turn's second model call failed");
+        let recorded = agent.failed_turn().expect("the failure is recorded");
+        assert_eq!(recorded.correlation_id(), "t1");
+        assert_eq!(recorded.kickoff_index(), 0);
+        // The event loop resets the hop counter after every turn.
+        agent.hop_counter().set(0);
+
+        let replies = retry(&mut agent, "t1").await.unwrap();
+
+        assert_eq!(replies, vec!["done"]);
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            conversation_roles(&rerun_request),
+            [Role::User, Role::Assistant, Role::Tool],
+            "the rerun sends the recorded message and the failed attempt's tool call and result"
+        );
+        assert_eq!(
+            rerun_request
+                .iter()
+                .find(|m| m.role == Role::User)
+                .map(|m| m.content.as_str()),
+            Some("check the logs")
+        );
+        assert_eq!(user_messages(&agent), 1, "no message is added by the rerun");
+        let roles: Vec<_> = agent.messages_since(0).iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            [Role::User, Role::Assistant, Role::Tool, Role::Assistant],
+            "the partial work stays and the reply follows it"
+        );
+        assert_eq!(
+            agent.hop_counter().get(),
+            3,
+            "the rerun carries the hop count of the message that started the turn"
+        );
+        assert!(
+            agent.failed_turn().is_none(),
+            "a rerun that succeeds leaves nothing to retry"
+        );
+        assert!(
+            agent.take_failed_turn("t1").is_none(),
+            "a turn already retried can't be taken again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_is_only_retryable_by_its_id_and_until_another_turn_starts() {
+        let (mut agent, _requests) = scripted_agent(vec![model_down(), reply("hi")]);
+        assert!(send(&mut agent, "first", "t1", &[]).await.is_err());
+
+        assert!(agent.take_failed_turn("unknown").is_none());
+        assert_eq!(
+            agent.failed_turn().map(FailedTurn::correlation_id),
+            Some("t1"),
+            "naming another turn leaves the failed one in place"
+        );
+
+        send(&mut agent, "second", "t2", &[]).await.unwrap();
+        assert!(
+            agent.take_failed_turn("t1").is_none(),
+            "another turn ran since, so the failed one is no longer the latest"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rerun_that_fails_is_recorded_again_and_can_be_retried() {
+        let (mut agent, _requests) = scripted_agent(vec![model_down(), model_down(), reply("ok")]);
+        assert!(send(&mut agent, "hello", "t1", &[]).await.is_err());
+
+        assert!(retry(&mut agent, "t1").await.is_err());
+        let recorded = agent.failed_turn().expect("the failed rerun is recorded");
+        assert_eq!(recorded.correlation_id(), "t1");
+        assert_eq!(recorded.kickoff_index(), 0);
+
+        assert_eq!(retry(&mut agent, "t1").await.unwrap(), vec!["ok"]);
+        assert_eq!(user_messages(&agent), 1);
+    }
+
+    #[tokio::test]
+    async fn rewriting_history_forgets_the_failed_turn() {
+        let (mut agent, _requests) = scripted_agent(vec![model_down(), model_down()]);
+
+        assert!(send(&mut agent, "one", "t1", &[]).await.is_err());
+        agent.rotate_messages_after_observation();
+        assert!(
+            agent.failed_turn().is_none(),
+            "rotation may drop the message the failed turn started from"
+        );
+
+        assert!(send(&mut agent, "two", "t2", &[]).await.is_err());
+        agent.clear_messages();
+        assert!(agent.failed_turn().is_none(), "clearing drops it");
+    }
+
+    #[tokio::test]
+    async fn a_rerun_sends_the_attachments_already_in_history() {
+        let image = residuum_inference::ImageData {
+            media_type: "image/png".to_string(),
+            data: "aGVsbG8=".to_string(),
+        };
+        let content = "what is in these?\n\n[Attached file: notes.txt]\nthe notes";
+        let (mut agent, requests) = scripted_agent(vec![model_down(), reply("a pelican")]);
+        assert!(
+            send(&mut agent, content, "t1", std::slice::from_ref(&image))
+                .await
+                .is_err()
+        );
+
+        retry(&mut agent, "t1").await.unwrap();
+
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        let users: Vec<&Message> = rerun_request
+            .iter()
+            .filter(|m| m.role == residuum_inference::Role::User)
+            .collect();
+        let [opening] = users.as_slice() else {
+            panic!("the rerun sends the one recorded message: {users:?}");
+        };
+        assert_eq!(opening.content, content, "with the attached file's text");
+        let images: Vec<(&str, &str)> = opening
+            .images
+            .iter()
+            .map(|i| (i.media_type.as_str(), i.data.as_str()))
+            .collect();
+        assert_eq!(
+            images,
+            [(image.media_type.as_str(), image.data.as_str())],
+            "and its image"
+        );
+    }
 }

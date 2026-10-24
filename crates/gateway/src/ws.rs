@@ -1283,6 +1283,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_retry_reaches_the_event_loop_and_its_refusal_reaches_only_this_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, mut receivers) = make_test_gateway_state_with_receivers(dir.path());
+
+        let mut local =
+            handle_on_connection(ClientMessage::RetryTurn { id: "m1".into() }, &state).await;
+
+        let request = receivers.retry.try_recv().expect("a retry request");
+        assert_eq!(request.id, "m1");
+        request
+            .result_tx
+            .send(Err("the conversation moved on".to_string()))
+            .unwrap();
+        let reply = next_server_message(&mut local).await;
+        assert!(
+            matches!(
+                &reply,
+                ServerMessage::RetryRefused { id, message }
+                    if id == "m1" && message == "the conversation moved on"
+            ),
+            "expected RetryRefused, got {reply:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retry_the_agent_cannot_take_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, receivers) = make_test_gateway_state_with_receivers(dir.path());
+        // No event loop reads the channel any more.
+        drop(receivers);
+
+        let mut local =
+            handle_on_connection(ClientMessage::RetryTurn { id: "m1".into() }, &state).await;
+
+        let reply = next_server_message(&mut local).await;
+        assert!(
+            matches!(
+                &reply,
+                ServerMessage::RetryRefused { id, message }
+                    if id == "m1" && message == RETRY_NOT_DELIVERED
+            ),
+            "expected RetryRefused, got {reply:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn sending_a_waiting_message_now_stops_whichever_turn_is_running() {
         let dir = tempfile::tempdir().unwrap();
         let (state, mut receivers) = make_test_gateway_state_with_receivers(dir.path());

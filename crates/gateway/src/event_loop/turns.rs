@@ -3268,6 +3268,14 @@ mod tests {
             }
         }
 
+        fn stop_tx(&self) -> mpsc::Sender<StopRequest> {
+            self.keep_alive.1.clone()
+        }
+
+        fn retry_tx(&self) -> mpsc::Sender<RetryTurnRequest> {
+            self.keep_alive.3.clone()
+        }
+
         /// Run one turn and return the interrupts left queued when it ended.
         async fn run_turn(
             &mut self,
@@ -3275,6 +3283,27 @@ mod tests {
             correlation_id: &str,
             origin: Option<&MessageOrigin>,
         ) -> Vec<Interrupt> {
+            let (result, leftovers) = self
+                .run(
+                    TurnOpening::Message {
+                        content,
+                        origin,
+                        images: &[],
+                    },
+                    correlation_id,
+                )
+                .await;
+            result.expect("the turn completes");
+            leftovers
+        }
+
+        /// Run one turn opened by `opening`, and return its result and the
+        /// interrupts left queued when it ended.
+        async fn run(
+            &mut self,
+            opening: TurnOpening<'_>,
+            correlation_id: &str,
+        ) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
             let prompt_ctx = PromptContext {
                 skills: residuum_agent::context::SkillsContext {
                     index: None,
@@ -3285,11 +3314,7 @@ mod tests {
                 &mut self.agent,
                 &self.messenger,
                 &self.router,
-                TurnOpening::Message {
-                    content,
-                    origin,
-                    images: &[],
-                },
+                opening,
                 &self.publisher,
                 TurnOutput::Fixed(None),
                 correlation_id,
@@ -3303,8 +3328,7 @@ mod tests {
                 None,
             )
             .await;
-            result.expect("the turn completes");
-            leftovers
+            (result, leftovers)
         }
     }
 
@@ -3798,6 +3822,130 @@ mod tests {
                 residuum_inference::Role::User
             ],
             "the next turn sends the model the unanswered message and the new one"
+        );
+    }
+
+    /// A provider whose first model call fails and whose later calls
+    /// announce they started and then never answer, so only a stop ends them.
+    struct FailsThenHangs {
+        calls: std::sync::atomic::AtomicUsize,
+        started: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl residuum_inference::InferenceProvider for FailsThenHangs {
+        async fn complete(
+            &self,
+            _messages: &[residuum_inference::Message],
+            _tools: &[residuum_inference::ToolDefinition],
+            _options: &residuum_inference::CompletionOptions,
+        ) -> Result<residuum_inference::InferenceResponse, residuum_inference::InferenceError>
+        {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Err(residuum_inference::InferenceError::Api(
+                    "the model is down".to_string(),
+                ));
+            }
+            self.started.notify_one();
+            std::future::pending().await
+        }
+
+        fn model_name(&self) -> &'static str {
+            "fails-then-hangs"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retry_sent_while_a_turn_runs_is_refused_at_once() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut rig = TurnRig::new(GatedProvider {
+            gate: Arc::clone(&gate),
+            response: "done".to_string(),
+        })
+        .await;
+        let retry_tx = rig.retry_tx();
+        let turn = residuum_core::util::spawn_in_span(async move {
+            rig.run_turn("busy", "t-running", None).await;
+            rig
+        });
+
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        retry_tx
+            .send(RetryTurnRequest {
+                id: "t-failed".to_string(),
+                result_tx,
+            })
+            .await
+            .unwrap();
+        // The turn is held at its model call until the gate opens, so the
+        // answer can only come from the running turn's own loop.
+        let answer = wait::guarded("the running turn to answer the retry", result_rx)
+            .await
+            .unwrap();
+        assert_eq!(answer, Err(RETRY_REFUSED_TURN_RUNNING.to_string()));
+
+        gate.notify_one();
+        wait::guarded("the turn to end once the gate opens", turn)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_rerun_keeps_the_turn_id_and_is_stopped_by_it() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let mut rig = TurnRig::new(FailsThenHangs {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            started: Arc::clone(&started),
+        })
+        .await;
+        let (failed, _) = rig
+            .run(
+                TurnOpening::Message {
+                    content: "hello",
+                    origin: None,
+                    images: &[],
+                },
+                "t1",
+            )
+            .await;
+        assert!(failed.is_err(), "the first model call failed");
+        let failed = rig.agent.take_failed_turn("t1").expect("recorded");
+        let stop_tx = rig.stop_tx();
+        let rerun = residuum_core::util::spawn_in_span(async move {
+            let (result, _) = rig.run(TurnOpening::Rerun(failed), "t1").await;
+            (rig, result)
+        });
+
+        wait::guarded("the rerun to reach its model call", started.notified()).await;
+        let (matched_tx, matched_rx) = tokio::sync::oneshot::channel();
+        stop_tx
+            .send(StopRequest {
+                reply_to: Some("t1".to_string()),
+                result_tx: Some(matched_tx),
+            })
+            .await
+            .unwrap();
+        assert!(
+            wait::guarded("the stop to be answered", matched_rx)
+                .await
+                .unwrap(),
+            "a stop naming the failed turn's id reaches its rerun"
+        );
+        let (rig, result) = wait::guarded("the stopped rerun to end", rerun)
+            .await
+            .unwrap();
+        assert!(
+            result.expect("a stopped rerun is not a failure").is_empty(),
+            "the rerun was stopped before it replied"
+        );
+        assert!(
+            rig.agent.failed_turn().is_none(),
+            "a stopped rerun did not fail, so there is nothing to retry"
+        );
+        assert_eq!(
+            history_mentions(&rig.agent, "hello"),
+            1,
+            "the rerun added no message"
         );
     }
 }
