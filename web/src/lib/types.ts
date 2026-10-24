@@ -698,6 +698,11 @@ export interface ToolGroupFeedItem extends FeedItemBase {
   calls: ToolCallState[];
   /** The model call that made these tool calls, for calls from the live socket. */
   call?: number;
+  /**
+   * A rerun of the failed turn began after these calls. The rerun numbers its
+   * model calls from zero again, so its calls start a group of their own.
+   */
+  closed?: true;
 }
 
 export interface FileAttachmentFeedItem extends FeedItemBase {

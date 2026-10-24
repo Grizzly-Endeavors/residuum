@@ -368,6 +368,30 @@ describe("FeedStore when a turn fails", () => {
       ).toEqual(["assistant", "assistant"]);
     });
 
+    it("starts the rerun's tool calls in a group of their own", () => {
+      const store = new FeedStore();
+      const toolCall = (id: string): ServerMessage => ({
+        type: "tool_call",
+        reply_to: "web-a",
+        call: 0,
+        id,
+        name: "exec",
+        arguments: {},
+        server: null,
+      });
+      store.pushUserMessage("Tidy the wiki index", undefined, "web-a");
+      store.handleMessage(started("web-a"));
+      store.handleMessage(toolCall("c1"));
+      store.handleMessage(error("web-a", "provider returned 503"));
+      store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+      store.handleMessage(started("web-a"));
+      store.handleMessage(toolCall("c2"));
+
+      const groups = store.feed.filter((item) => item.kind === "tool-group");
+      expect(groups.map((group) => group.calls.map((call) => call.id))).toEqual([["c1"], ["c2"]]);
+    });
+
     it("asks again whether the turn changed anything once the rerun ends", () => {
       const store = new FeedStore();
       failedTurn(store);

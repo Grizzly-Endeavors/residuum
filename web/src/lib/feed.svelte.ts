@@ -324,7 +324,7 @@ export class FeedStore {
         this.captureBaseline(msg.reply_to);
         // A rerun of a failed turn starts under the same id: the failure
         // card gives way to it, and the rerun follows what the turn did before.
-        this.removeFailures(msg.reply_to);
+        if (this.removeFailures(msg.reply_to)) this.closeToolGroup(msg.reply_to);
         this.turnStart ??= this.feed.length;
         // The user message that started it arrived first.
         for (const item of this.feed.slice(this.turnStart)) item.turnId = msg.reply_to;
@@ -996,12 +996,30 @@ export class FeedStore {
     );
   }
 
-  /** The turn `turnId` runs again: its failure cards give way to the rerun. */
-  private removeFailures(turnId: string): void {
+  /**
+   * The turn `turnId` runs again: its failure cards give way to the rerun.
+   * Whether there were any.
+   */
+  private removeFailures(turnId: string): boolean {
+    let removed = false;
     for (let at = this.feed.length - 1; at >= 0; at--) {
       const item = this.feed[at];
-      if (item?.kind === "turn-failure" && item.turnId === turnId) this.feed.splice(at, 1);
+      if (item?.kind === "turn-failure" && item.turnId === turnId) {
+        this.feed.splice(at, 1);
+        removed = true;
+      }
     }
+    return removed;
+  }
+
+  /**
+   * A rerun of the turn `turnId` begins: the failed attempt's tool group at
+   * the tail, which the failure card no longer separates from the rerun,
+   * takes no more calls.
+   */
+  private closeToolGroup(turnId: string): void {
+    const last = this.feed.at(-1);
+    if (last?.kind === "tool-group" && last.turnId === turnId) last.closed = true;
   }
 
   /** The agent won't run the failed turn `turnId` again, for `reason`. */
