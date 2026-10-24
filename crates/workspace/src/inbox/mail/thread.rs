@@ -95,6 +95,20 @@ pub struct MailMessage {
     pub seen_by: Vec<MailSeen>,
 }
 
+impl MailMessage {
+    /// Whether the message's title, body or an attachment's filename holds
+    /// `query`, ignoring case. A blank `query` matches every message.
+    #[must_use]
+    pub fn matches_text(&self, query: &str) -> bool {
+        crate::inbox::text_matches(
+            query,
+            [self.title.as_str(), self.body.as_str()]
+                .into_iter()
+                .chain(self.attachments.iter().map(|a| a.filename.as_str())),
+        )
+    }
+}
+
 /// A mail folder. A thread can be in Inbox and Sent at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailFolder {
@@ -986,6 +1000,28 @@ mod tests {
             attachment.path,
             PathBuf::from("archive/inbox/user/attachments/files/notes.md")
         );
+    }
+
+    #[tokio::test]
+    async fn a_message_matches_text_in_its_title_body_and_attachment_filenames() {
+        let fx = Fixture::new(&["atlas"]);
+        let root = fx
+            .user_item("atlas", "files", "Quarterly Numbers", 9, None)
+            .await;
+        fx.attach_to_user_item("atlas", "files", "Summary.CSV", b"a,b")
+            .await;
+
+        let index = fx.index().await;
+        let message = index.thread_containing(&root).unwrap().root();
+        for query in ["quarterly", "NUMBERS BODY", "summary.csv", "csv", "  "] {
+            assert!(message.matches_text(query), "{query:?} should match");
+        }
+        for query in ["atlas", "files", "agent", "inbox/user"] {
+            assert!(
+                !message.matches_text(query),
+                "{query:?} is in no searched field"
+            );
+        }
     }
 
     #[tokio::test]

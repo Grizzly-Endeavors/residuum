@@ -4,6 +4,7 @@
 //! External systems can add items by dropping `.json` files into the directory.
 //! Every item the process creates starts as a [`ClaimedItem`], which holds its id.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,36 @@ pub struct InboxItem {
     /// or resolve as no parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<String>,
+}
+
+impl InboxItem {
+    /// Whether the item's title, body or an attachment's filename holds
+    /// `query`, ignoring case. A blank `query` matches every item.
+    #[must_use]
+    pub fn matches_text(&self, query: &str) -> bool {
+        let filenames = self
+            .attachments
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy());
+        text_matches(
+            query,
+            [self.title.as_str(), self.body.as_str()]
+                .into_iter()
+                .map(Cow::Borrowed)
+                .chain(filenames),
+        )
+    }
+}
+
+/// Whether any of `fields` holds `query`, ignoring case and the whitespace
+/// around the query. A blank `query` matches.
+fn text_matches<S: AsRef<str>>(query: &str, fields: impl IntoIterator<Item = S>) -> bool {
+    let wanted = query.trim().to_lowercase();
+    wanted.is_empty()
+        || fields
+            .into_iter()
+            .any(|field| field.as_ref().to_lowercase().contains(&wanted))
 }
 
 /// Generate a filename for an inbox item: `{YYYYMMDD}_{sanitized_title}.json`.
@@ -729,6 +760,32 @@ mod tests {
             attachments: Vec::new(),
             in_reply_to: None,
         }
+    }
+
+    #[test]
+    fn matches_text_looks_in_the_title_the_body_and_attachment_filenames() {
+        let mut item = make_item("Weekly Digest", 9, false);
+        item.body = "Revenue is up".to_string();
+        item.attachments = vec![PathBuf::from("inbox/attachments/id/Report-Q3.pdf")];
+
+        for query in ["digest", "WEEKLY", "revenue is", "report-q3", ".PDF"] {
+            assert!(item.matches_text(query), "{query:?} should match");
+        }
+        for query in ["inbox", "attachments", "test", "revenue is down"] {
+            assert!(
+                !item.matches_text(query),
+                "{query:?} is in no searched field"
+            );
+        }
+    }
+
+    #[test]
+    fn matches_text_ignores_a_blank_query_and_the_space_around_one() {
+        let item = make_item("Digest", 9, false);
+        assert!(item.matches_text(""));
+        assert!(item.matches_text("   "));
+        assert!(item.matches_text("  digest "));
+        assert!(!item.matches_text("  other "));
     }
 
     /// Save `item` as `file_name` in `dir`, creating `dir`.
