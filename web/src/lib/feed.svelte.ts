@@ -27,6 +27,7 @@ import type {
   ToolCallState,
   MessageAttachment,
   FileAttachmentFeedItem,
+  TurnFailureFeedItem,
   RecentHistorySegment,
   EpisodeHistorySegment,
   SessionUsageTotals,
@@ -321,6 +322,9 @@ export class FeedStore {
         this.activeTurnId = msg.reply_to;
         this.announce(workingAnnouncement(this.agentName()));
         this.captureBaseline(msg.reply_to);
+        // A rerun of a failed turn starts under the same id: the failure
+        // card gives way to it, and the rerun follows what the turn did before.
+        if (this.removeFailures(msg.reply_to)) this.closeToolGroup(msg.reply_to);
         this.turnStart ??= this.feed.length;
         // The user message that started it arrived first.
         for (const item of this.feed.slice(this.turnStart)) item.turnId = msg.reply_to;
@@ -471,6 +475,13 @@ export class FeedStore {
         // Never delivered, so it started no turn and fails none. The toast
         // and the composer's copy are WsCoordinator's.
         this.withdrawRefused(msg.id);
+        break;
+
+      case "retry_refused":
+        // The failed turn stays as it was, and its message is still there:
+        // only the card's offer to run it again goes, for the agent's reason.
+        // The toast is WsCoordinator's.
+        this.refuseRetry(msg.id, msg.message);
         break;
 
       case "notice":
@@ -800,9 +811,26 @@ export class FeedStore {
     this.connection++;
   }
 
-  /** The connection dropped: nothing asked of a waiting message will be answered. */
+  /**
+   * The connection dropped: nothing asked of a waiting message will be
+   * answered, nor will a Try again asked on a failed turn.
+   */
   forgetAsks(): void {
     for (const message of this.waiting) delete message.asked;
+    for (const item of this.feed) {
+      if (item.kind === "turn-failure" && item.retry !== undefined) delete item.retry.asked;
+    }
+  }
+
+  /** Try again was asked on the failed turn `turnId`, and the agent's answer is awaited. */
+  askRetry(turnId: string): void {
+    const failure = this.failureOf(turnId);
+    if (failure?.retry !== undefined) failure.retry.asked = true;
+  }
+
+  /** Whether the feed still shows the failure of the turn `turnId`. */
+  showsFailure(turnId: string): boolean {
+    return this.failureOf(turnId) !== undefined;
   }
 
   /** Something was asked of the waiting message `id`, and its answer is awaited. */
@@ -938,29 +966,66 @@ export class FeedStore {
 
   /**
    * Show that the turn `turnId` couldn't finish, as the last thing in it. When
-   * the user's own message began the turn, it is kept for Try again.
+   * the user's own message began the turn, the failure offers Try again, which
+   * has the agent rerun the turn on the message it holds.
    */
   private recordFailure(turnId: string, message: string, details: string | undefined): void {
     this.streams.finish(turnId, "interrupted");
     const asked = this.feed.findLast(
       (item): item is UserFeedItem =>
         item.kind === "user" &&
-        item.turnId === turnId &&
+        // A failure can overtake the turn's start, before the message is tied to the turn.
+        (item.turnId === turnId || item.messageId === turnId) &&
         item.midTurn !== true &&
         item.sender === undefined,
     );
-    const resendable =
-      asked !== undefined &&
-      (asked.images === undefined || asked.images.length === 0) &&
-      (asked.attachments === undefined || asked.attachments.length === 0);
     this.feed.push({
       id: nextFeedId(),
       kind: "turn-failure",
       turnId,
       message,
       ...(details === undefined || details === "" ? {} : { details }),
-      ...(resendable ? { retry: { content: asked.content } } : {}),
+      ...(asked === undefined ? {} : { retry: {} }),
     });
+  }
+
+  /** The latest failure card of the turn `turnId`. */
+  private failureOf(turnId: string): TurnFailureFeedItem | undefined {
+    return this.feed.findLast(
+      (item): item is TurnFailureFeedItem => item.kind === "turn-failure" && item.turnId === turnId,
+    );
+  }
+
+  /**
+   * The turn `turnId` runs again: its failure cards give way to the rerun.
+   * Whether there were any.
+   */
+  private removeFailures(turnId: string): boolean {
+    let removed = false;
+    for (let at = this.feed.length - 1; at >= 0; at--) {
+      const item = this.feed[at];
+      if (item?.kind === "turn-failure" && item.turnId === turnId) {
+        this.feed.splice(at, 1);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  /**
+   * A rerun of the turn `turnId` begins: the failed attempt's tool group at
+   * the tail, which the failure card no longer separates from the rerun,
+   * takes no more calls.
+   */
+  private closeToolGroup(turnId: string): void {
+    const last = this.feed.at(-1);
+    if (last?.kind === "tool-group" && last.turnId === turnId) last.closed = true;
+  }
+
+  /** The agent won't run the failed turn `turnId` again, for `reason`. */
+  private refuseRetry(turnId: string, reason: string): void {
+    const failure = this.failureOf(turnId);
+    if (failure !== undefined) failure.retry = { refused: reason };
   }
 
   /**
@@ -1026,13 +1091,25 @@ export class FeedStore {
    * id, so the feed can offer "Undo this turn" on it. A no-op when the
    * turn has no user message to anchor to (a background turn's own message
    * is a different kind), or the turn never got a start index at all.
+   *
+   * A rerun of a failed turn starts after the failed attempt's items, so its
+   * start index holds no user message: the message that began the turn is
+   * found by id instead. Tagging it afresh asks again whether the turn
+   * changed anything, now counting the rerun too.
    */
   private tagTurnStart(turnId: string): void {
     if (this.turnStart === null) return;
-    const item = this.feed[this.turnStart];
-    if (item?.kind === "user") {
-      item.turn = { turnId, changed: null };
-    }
+    const atStart = this.feed[this.turnStart];
+    const item =
+      atStart?.kind === "user"
+        ? atStart
+        : this.feed.findLast(
+            (candidate): candidate is UserFeedItem =>
+              candidate.kind === "user" &&
+              (candidate.turnId === turnId || candidate.messageId === turnId) &&
+              candidate.midTurn !== true,
+          );
+    if (item !== undefined) item.turn = { turnId, changed: null };
   }
 
   /**

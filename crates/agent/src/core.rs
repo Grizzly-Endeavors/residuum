@@ -82,6 +82,67 @@ pub struct Agent {
     /// for an agent with no workspace layout (test constructors) — totals
     /// then live only in memory for the process's lifetime.
     usage_totals_path: Option<std::path::PathBuf>,
+    /// The latest turn, while it is the latest and it failed. Set when a
+    /// turn fails; cleared when another turn starts, when a rerun of it
+    /// starts, and when history is cleared or rotated (the message the
+    /// record points at may be gone).
+    failed_turn: Option<FailedTurn>,
+}
+
+/// What a main-agent turn runs against besides the agent itself: where it
+/// publishes, the prompt context, and what interrupts and stops it.
+pub struct TurnWiring<'a> {
+    /// Publishes the turn's events.
+    pub publisher: &'a Publisher,
+    /// Where the turn's output goes.
+    pub output: TurnOutput<'a>,
+    /// The skills context for the system prompt.
+    pub prompt_ctx: &'a PromptContext<'a>,
+    /// Messages, findings and stops that reach the turn while it runs.
+    pub interrupt_rx: &'a mut dyn interrupt::InterruptSource,
+    /// The subconscious watching the turn, when one does.
+    pub subconscious: Option<&'a crate::subconscious::SubconsciousWatch>,
+    /// Cancels the turn's in-flight model call.
+    pub stop_token: &'a CancellationToken,
+}
+
+/// The agent's latest turn, which failed. The message that started it is
+/// still in history, so [`Agent::rerun_turn`] can run the turn again on it.
+/// Only a turn with an origin is recorded: a rerun runs under it.
+#[derive(Debug)]
+pub struct FailedTurn {
+    /// The turn's correlation id.
+    correlation_id: String,
+    /// Index in the recent history of the message that started the turn.
+    kickoff_index: usize,
+    /// Where the message that started the turn came from.
+    origin: MessageOrigin,
+    /// The hop count that message carried.
+    kickoff_hop: u32,
+    /// When the message before it arrived, for the rerun's status line.
+    previous_message_at: Option<chrono::NaiveDateTime>,
+}
+
+impl FailedTurn {
+    /// The failed turn's correlation id.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn correlation_id(&self) -> &str {
+        &self.correlation_id
+    }
+
+    /// Where the message that started the turn came from.
+    #[must_use]
+    pub fn origin(&self) -> &MessageOrigin {
+        &self.origin
+    }
+
+    /// Index in the agent's recent history of the message that started the
+    /// turn: the turn's messages are the ones from here on.
+    #[must_use]
+    pub fn kickoff_index(&self) -> usize {
+        self.kickoff_index
+    }
 }
 
 impl Agent {
@@ -120,6 +181,7 @@ impl Agent {
                 SessionUsageTotals::default(),
             )),
             usage_totals_path,
+            failed_turn: None,
         }
     }
 
@@ -266,6 +328,7 @@ impl Agent {
 
     /// Clear all in-memory messages (used after idle transition + observer).
     pub fn clear_messages(&mut self) {
+        self.forget_failed_turn("history cleared");
         self.recent_messages.clear();
     }
 
@@ -274,9 +337,37 @@ impl Agent {
     /// Extracts the last 3 text exchanges, clears the buffer, then prepends
     /// the retained exchanges so the agent keeps conversational context.
     pub fn rotate_messages_after_observation(&mut self) {
+        self.forget_failed_turn("history rotated after an observation");
         let retained = self.recent_messages.last_exchanges(3);
         self.recent_messages.clear();
         self.recent_messages.prepend(retained);
+    }
+
+    /// The latest turn, when it failed and can still be run again.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn failed_turn(&self) -> Option<&FailedTurn> {
+        self.failed_turn.as_ref()
+    }
+
+    /// Take the failed latest turn to run again, when `correlation_id` names
+    /// it. Taken, it is no longer there to retry: a rerun that fails records
+    /// itself again.
+    pub fn take_failed_turn(&mut self, correlation_id: &str) -> Option<FailedTurn> {
+        self.failed_turn
+            .take_if(|failed| failed.correlation_id == correlation_id)
+    }
+
+    /// Drop the failed-turn record: the conversation moved past it, or the
+    /// history it points into changed.
+    fn forget_failed_turn(&mut self, reason: &str) {
+        if let Some(failed) = self.failed_turn.take() {
+            tracing::debug!(
+                correlation_id = %failed.correlation_id,
+                reason,
+                "failed turn can no longer be retried"
+            );
+        }
     }
 
     /// Inject a system message directly into the conversation history.
@@ -294,6 +385,7 @@ impl Agent {
     /// (with its sender, images, and background context) is visible in the next
     /// turn without being lost.
     pub fn inject_inbound_message(&mut self, message: residuum_bus::MessageEvent) {
+        self.forget_failed_turn("a message entered the conversation");
         self.recent_messages.extend(message.into_history_messages());
     }
 
@@ -322,6 +414,10 @@ impl Agent {
     /// value. `correlation_id` names the turn in
     /// everything it publishes.
     ///
+    /// A turn that fails is recorded as the failed latest turn, when it has
+    /// an `origin` to run again under, and [`Self::rerun_turn`] can then run
+    /// it again on the message already in history.
+    ///
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors
     /// are unrecoverable.
@@ -344,11 +440,12 @@ impl Agent {
         stop_token: &CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
-        self.identity = self.load_identity_snapshot().await;
+        self.forget_failed_turn("another turn started");
         let now = residuum_core::time::now_local(self.tz);
+        let previous_message_at = self.last_user_message_at;
         let status_line = StatusLine {
             now,
-            last_message_at: self.last_user_message_at,
+            last_message_at: previous_message_at,
             message_source: origin.map(|o| o.endpoint.clone()),
         };
         self.last_user_message_at = Some(now);
@@ -364,9 +461,94 @@ impl Agent {
         } else {
             Message::user_with_images(user_input, images.to_vec())
         };
+        let kickoff_index = self.recent_messages.len();
         self.recent_messages
             .push(kickoff.with_sender(sender).with_agent_sender(agent_sender));
 
+        let kickoff_hop = self.hop_counter.get();
+        let wiring = TurnWiring {
+            publisher,
+            output: output_endpoint.into(),
+            prompt_ctx,
+            interrupt_rx,
+            subconscious,
+            stop_token,
+        };
+        let result = self
+            .run_turn_from(kickoff_index, correlation_id, &status_line, wiring)
+            .await;
+        if result.is_err()
+            && let Some(origin) = origin
+        {
+            self.failed_turn = Some(FailedTurn {
+                correlation_id: correlation_id.to_string(),
+                kickoff_index,
+                origin: origin.clone(),
+                kickoff_hop,
+                previous_message_at,
+            });
+        }
+        result
+    }
+
+    /// Run the failed latest turn again, taken with
+    /// [`Self::take_failed_turn`], on the message that started it, which is
+    /// still in history: no message is added. The failed attempt's work stays
+    /// in history and the rerun continues from it, under the same correlation
+    /// id. A rerun that fails is recorded as the failed latest turn again.
+    ///
+    /// # Errors
+    /// As [`Self::process_message`].
+    #[tracing::instrument(skip_all, fields(correlation_id = %failed.correlation_id))]
+    pub async fn rerun_turn(
+        &mut self,
+        failed: FailedTurn,
+        wiring: TurnWiring<'_>,
+    ) -> anyhow::Result<Vec<String>> {
+        tracing::info!(
+            kickoff_index = failed.kickoff_index,
+            "running the failed latest turn again"
+        );
+        // The rerun's inputs are the original turn's: the hop count its
+        // opening message carried, and the status line it was sent under.
+        self.hop_counter.bump(failed.kickoff_hop);
+        let status_line = StatusLine {
+            now: residuum_core::time::now_local(self.tz),
+            last_message_at: failed.previous_message_at,
+            message_source: Some(failed.origin.endpoint.clone()),
+        };
+        let result = self
+            .run_turn_from(
+                failed.kickoff_index,
+                &failed.correlation_id,
+                &status_line,
+                wiring,
+            )
+            .await;
+        if result.is_err() {
+            self.failed_turn = Some(failed);
+        }
+        result
+    }
+
+    /// Run a turn whose opening message sits at `kickoff_index` in history,
+    /// under `correlation_id`.
+    async fn run_turn_from(
+        &mut self,
+        kickoff_index: usize,
+        correlation_id: &str,
+        status_line: &StatusLine,
+        wiring: TurnWiring<'_>,
+    ) -> anyhow::Result<Vec<String>> {
+        self.identity = self.load_identity_snapshot().await;
+        let TurnWiring {
+            publisher,
+            output,
+            prompt_ctx,
+            interrupt_rx,
+            subconscious,
+            stop_token,
+        } = wiring;
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
         let usage_sink = MainUsageSink::new(
@@ -392,18 +574,19 @@ impl Agent {
             publisher,
             reply_audience: self.reply_audience.as_deref(),
             target: EventTarget::Endpoint {
-                output_endpoint: output_endpoint.into(),
+                output_endpoint: output,
                 correlation_id,
             },
             session_conversation: None,
         };
         execute_turn(
+            kickoff_index,
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
             &events,
-            Some(&status_line),
+            Some(status_line),
             interrupt_rx,
             subconscious,
         )
@@ -1953,6 +2136,323 @@ mod tests {
         assert!(
             calls[0][0].content.contains("cached soul"),
             "system prompt should fall back to the cached soul snapshot"
+        );
+    }
+
+    /// A step of a [`ScriptedProvider`]'s script.
+    type Step = Result<InferenceResponse, InferenceError>;
+
+    /// A provider that answers each call with the next step of its script,
+    /// and records the messages every call carried.
+    struct ScriptedProvider {
+        script: std::sync::Mutex<std::collections::VecDeque<Step>>,
+        requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ScriptedProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.requests.lock().unwrap().push(messages.to_vec());
+            self.script
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(InferenceError::Api("the script ran out".to_string())))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    fn model_down() -> Step {
+        Err(InferenceError::Api("the model is down".to_string()))
+    }
+
+    fn reply(text: &str) -> InferenceResponse {
+        InferenceResponse::new(text.to_string(), vec![])
+    }
+
+    fn echo_call() -> InferenceResponse {
+        InferenceResponse::new(
+            String::new(),
+            vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "echo".to_string(),
+                arguments: serde_json::json!({}),
+                server: None,
+            }],
+        )
+    }
+
+    /// An agent with the echo tool whose model follows `script`, and the
+    /// messages each of its model calls carried.
+    fn scripted_agent(script: Vec<Step>) -> (Agent, Arc<std::sync::Mutex<Vec<Vec<Message>>>>) {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = ScriptedProvider {
+            script: std::sync::Mutex::new(script.into()),
+            requests: Arc::clone(&requests),
+        };
+        let agent = Agent::new(
+            Box::new(provider),
+            echo_registry(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::HopCounter::new(0),
+        );
+        (agent, requests)
+    }
+
+    /// A person's message from the web.
+    fn web_origin() -> MessageOrigin {
+        MessageOrigin {
+            endpoint: "ws".to_string(),
+            sender: None,
+            conversation: None,
+            agent_sender: None,
+        }
+    }
+
+    async fn send(
+        agent: &mut Agent,
+        text: &str,
+        correlation_id: &str,
+        images: &[residuum_inference::ImageData],
+    ) -> anyhow::Result<Vec<String>> {
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+        agent
+            .process_message(
+                text,
+                &publisher,
+                Some(&ep),
+                correlation_id,
+                Some(&web_origin()),
+                &PromptContext::default(),
+                &mut irx,
+                images,
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+    }
+
+    /// Take the failed latest turn `correlation_id` names and run it again.
+    async fn retry(agent: &mut Agent, correlation_id: &str) -> anyhow::Result<Vec<String>> {
+        let failed = agent
+            .take_failed_turn(correlation_id)
+            .expect("the failed latest turn is there to retry");
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+        let prompt_ctx = PromptContext::default();
+        let stop = CancellationToken::new();
+        agent
+            .rerun_turn(
+                failed,
+                TurnWiring {
+                    publisher: &publisher,
+                    output: Some(&ep).into(),
+                    prompt_ctx: &prompt_ctx,
+                    interrupt_rx: &mut irx,
+                    subconscious: None,
+                    stop_token: &stop,
+                },
+            )
+            .await
+    }
+
+    /// The roles of a request's messages after the system prompt.
+    fn conversation_roles(request: &[Message]) -> Vec<residuum_inference::Role> {
+        request
+            .iter()
+            .map(|m| m.role)
+            .filter(|role| *role != residuum_inference::Role::System)
+            .collect()
+    }
+
+    fn user_messages(agent: &Agent) -> usize {
+        agent
+            .messages_since(0)
+            .iter()
+            .filter(|m| m.role == residuum_inference::Role::User)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_runs_again_on_its_message_and_keeps_its_partial_work() {
+        use residuum_inference::Role;
+
+        let (mut agent, requests) =
+            scripted_agent(vec![Ok(echo_call()), model_down(), Ok(reply("done"))]);
+        agent.hop_counter().set(3);
+        let failed = send(&mut agent, "check the logs", "t1", &[]).await;
+        assert!(failed.is_err(), "the turn's second model call failed");
+        let recorded = agent.failed_turn().expect("the failure is recorded");
+        assert_eq!(recorded.correlation_id(), "t1");
+        assert_eq!(recorded.kickoff_index(), 0);
+        // The event loop resets the hop counter after every turn.
+        agent.hop_counter().set(0);
+
+        let replies = retry(&mut agent, "t1").await.unwrap();
+
+        assert_eq!(replies, vec!["done"]);
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            conversation_roles(&rerun_request),
+            [Role::User, Role::Assistant, Role::Tool],
+            "the rerun sends the recorded message and the failed attempt's tool call and result"
+        );
+        assert_eq!(
+            rerun_request
+                .iter()
+                .find(|m| m.role == Role::User)
+                .map(|m| m.content.as_str()),
+            Some("check the logs")
+        );
+        assert_eq!(user_messages(&agent), 1, "no message is added by the rerun");
+        let roles: Vec<_> = agent.messages_since(0).iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            [Role::User, Role::Assistant, Role::Tool, Role::Assistant],
+            "the partial work stays and the reply follows it"
+        );
+        assert_eq!(
+            agent.hop_counter().get(),
+            3,
+            "the rerun carries the hop count of the message that started the turn"
+        );
+        assert!(
+            agent.failed_turn().is_none(),
+            "a rerun that succeeds leaves nothing to retry"
+        );
+        assert!(
+            agent.take_failed_turn("t1").is_none(),
+            "a turn already retried can't be taken again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_is_only_retryable_by_its_id_and_until_another_turn_starts() {
+        let (mut agent, _requests) = scripted_agent(vec![model_down(), Ok(reply("hi"))]);
+        assert!(send(&mut agent, "first", "t1", &[]).await.is_err());
+
+        assert!(agent.take_failed_turn("unknown").is_none());
+        assert_eq!(
+            agent.failed_turn().map(FailedTurn::correlation_id),
+            Some("t1"),
+            "naming another turn leaves the failed one in place"
+        );
+
+        send(&mut agent, "second", "t2", &[]).await.unwrap();
+        assert!(
+            agent.take_failed_turn("t1").is_none(),
+            "another turn ran since, so the failed one is no longer the latest"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rerun_that_fails_is_recorded_again_and_can_be_retried() {
+        let (mut agent, _requests) =
+            scripted_agent(vec![model_down(), model_down(), Ok(reply("ok"))]);
+        assert!(send(&mut agent, "hello", "t1", &[]).await.is_err());
+
+        assert!(retry(&mut agent, "t1").await.is_err());
+        let recorded = agent.failed_turn().expect("the failed rerun is recorded");
+        assert_eq!(recorded.correlation_id(), "t1");
+        assert_eq!(recorded.kickoff_index(), 0);
+
+        assert_eq!(retry(&mut agent, "t1").await.unwrap(), vec!["ok"]);
+        assert_eq!(user_messages(&agent), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_without_an_origin_is_not_recorded() {
+        let (mut agent, _requests) = scripted_agent(vec![model_down()]);
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+
+        let result = agent
+            .process_message(
+                "hello",
+                &publisher,
+                Some(&ep),
+                "t1",
+                None,
+                &PromptContext::default(),
+                &mut irx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            agent.failed_turn().is_none(),
+            "a rerun runs under the turn's origin, so one without it can't be retried"
+        );
+    }
+
+    #[tokio::test]
+    async fn rewriting_history_forgets_the_failed_turn() {
+        let (mut agent, _requests) = scripted_agent(vec![model_down(), model_down()]);
+
+        assert!(send(&mut agent, "one", "t1", &[]).await.is_err());
+        agent.rotate_messages_after_observation();
+        assert!(
+            agent.failed_turn().is_none(),
+            "rotation may drop the message the failed turn started from"
+        );
+
+        assert!(send(&mut agent, "two", "t2", &[]).await.is_err());
+        agent.clear_messages();
+        assert!(agent.failed_turn().is_none(), "clearing drops it");
+    }
+
+    #[tokio::test]
+    async fn a_rerun_sends_the_attachments_already_in_history() {
+        let image = residuum_inference::ImageData {
+            media_type: "image/png".to_string(),
+            data: "aGVsbG8=".to_string(),
+        };
+        let content = "what is in these?\n\n[Attached file: notes.txt]\nthe notes";
+        let (mut agent, requests) = scripted_agent(vec![model_down(), Ok(reply("a pelican"))]);
+        assert!(
+            send(&mut agent, content, "t1", std::slice::from_ref(&image))
+                .await
+                .is_err()
+        );
+
+        retry(&mut agent, "t1").await.unwrap();
+
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        let users: Vec<&Message> = rerun_request
+            .iter()
+            .filter(|m| m.role == residuum_inference::Role::User)
+            .collect();
+        let [opening] = users.as_slice() else {
+            panic!("the rerun sends the one recorded message: {users:?}");
+        };
+        assert_eq!(opening.content, content, "with the attached file's text");
+        let images: Vec<(&str, &str)> = opening
+            .images
+            .iter()
+            .map(|i| (i.media_type.as_str(), i.data.as_str()))
+            .collect();
+        assert_eq!(
+            images,
+            [(image.media_type.as_str(), image.data.as_str())],
+            "and its image"
         );
     }
 }

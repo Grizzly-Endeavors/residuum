@@ -288,7 +288,8 @@ export function feedItemSignature(item: FeedItem): string | null {
 
 /**
  * Append a live tool call to `feed`, joining the tool group at the tail if
- * there is one of the same turn and the same model call, and remember it in
+ * there is one of the same turn and the same model call that no rerun has
+ * closed, and remember it in
  * `pending` so its result can find it. `turnId` is the turn in flight, and
  * `modelCall` the model call that made the tool call, when known. `at` is
  * when the call was made.
@@ -310,7 +311,12 @@ export function appendToolCall(
     startedAt: at,
   };
   const last = feed[feed.length - 1];
-  if (last?.kind === "tool-group" && last.turnId === turnId && last.call === modelCall) {
+  if (
+    last?.kind === "tool-group" &&
+    last.closed !== true &&
+    last.turnId === turnId &&
+    last.call === modelCall
+  ) {
     last.calls.push(state);
   } else {
     feed.push({

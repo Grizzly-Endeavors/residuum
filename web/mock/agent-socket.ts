@@ -4,7 +4,7 @@ import type { ClientMessage, ServerMessage } from "../src/lib/generated/protocol
 import { agentInboxItemId, deriveTitle } from "./agent-inbox";
 import { arrivedThroughArtifactsOrigin } from "./artifacts-origin";
 import { saveChatAttachments, UPLOAD_GONE } from "./chat-attachments";
-import { createChatSimulator } from "./chat";
+import { createChatSimulator, RETRY_GONE } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
 import { sendSessionMessage, spawnSession, stopSession } from "./sessions";
 import { isSessionEventFrame } from "./session-relay";
@@ -75,6 +75,7 @@ export function parseClientMessage(raw: string): ClientMessage {
       return { type, reply_to: requiredString(body, "reply_to") };
     case "send_queued_now":
     case "withdraw_queued":
+    case "retry_turn":
       return { type, id: requiredString(body, "id") };
     case "session_send_message": {
       const messageId = stringField(body, "message_id");
@@ -190,6 +191,10 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
 
       case "cancel":
         chat.cancel(msg.reply_to);
+        break;
+
+      case "retry_turn":
+        if (!chat.retry(msg.id)) reply({ type: "retry_refused", id: msg.id, message: RETRY_GONE });
         break;
 
       case "send_queued_now":

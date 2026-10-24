@@ -113,7 +113,7 @@ test.describe("a turn that works in rounds", () => {
 });
 
 test.describe("a turn that couldn't finish", () => {
-  test("leaves its account in the feed once the toast is gone, and sends the message again", async ({
+  test("leaves its account in the feed once the toast is gone, and runs the turn again on the same message", async ({
     page,
     mock,
   }) => {
@@ -148,11 +148,49 @@ test.describe("a turn that couldn't finish", () => {
     await expectNoAxeViolations(page);
 
     await feed.getByRole("button", { name: "Try again" }).click();
-    await expect(feed.getByText("error: check the wiki")).toHaveCount(2);
-    // The resent turn has started once its head shows, so its timers are set.
+    // The turn runs again on the message the agent holds: no second bubble.
+    await expect(feed.getByText("error: check the wiki")).toHaveCount(1);
+    // The rerun has started once its head shows, and the account has given way to it.
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+    await expect(account).toHaveCount(0);
+    await mock.advance(60_000);
+    await expect(
+      feed.getByText("The routing doc sends urgent notices to every channel and the rest to one."),
+    ).toBeVisible();
+    await expect(feed.getByText("error: check the wiki")).toHaveCount(1);
+    await expect(account).toHaveCount(0);
+    await expect(feed.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  });
+
+  test("says why when the conversation has moved on and the turn can't run again", async ({
+    page,
+    mock,
+  }) => {
+    await openAtlas(page);
+    await mock.manualTime();
+    await send(page, "error: check the wiki");
+    const feed = conversation(page);
     await expect(feed.getByText("Working", { exact: true })).toBeVisible();
     await mock.advance(60_000);
-    await expect(account).toHaveCount(2);
+    const account = feed.getByText("atlas couldn't finish this reply");
+    await expect(account).toBeVisible();
+
+    // Another turn runs and finishes, so the failed one is no longer the latest.
+    await send(page, "check the wiki");
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+    await mock.advance(60_000);
+    await expect(account).toBeVisible();
+
+    await feed.getByRole("button", { name: "Try again" }).click();
+
+    const reason = "That message can't be retried anymore because the conversation has moved on.";
+    await expect(feed.getByText(reason)).toBeVisible();
+    await expect(feed.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    // The failed turn stays as it was, with its message and no new bubble.
+    await expect(account).toBeVisible();
+    await expect(feed.getByText("error: check the wiki", { exact: true })).toHaveCount(1);
+    await expect(page.getByRole("alert").filter({ hasText: reason })).toBeVisible();
+    await expectNoAxeViolations(page);
   });
 });
 

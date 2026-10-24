@@ -858,12 +858,19 @@ async fn finish_turn_with_notice(
 ///
 /// Returns an error when a model call fails, or when the model still returns
 /// an empty response with no tool calls once the turn's retries are used up.
+///
+/// `turn_start` is the index in `recent_messages` of the (first) message
+/// that triggered the turn. Everything after it already belongs to the turn:
+/// usually the triggering messages were pushed just before this call and are
+/// the last ones, while a rerun of a failed turn starts from the message that
+/// started it, with the failed attempt's work still in history after it.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 #[expect(
     clippy::too_many_arguments,
     reason = "turn execution context spans resources, contexts, and watchers"
 )]
 pub async fn execute_turn(
+    turn_start: usize,
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
@@ -875,8 +882,6 @@ pub async fn execute_turn(
 ) -> anyhow::Result<Vec<String>> {
     let mut texts: Vec<String> = Vec::new();
     let mut empty_retries: u32 = 0;
-    // Includes the triggering user message pushed just before this call.
-    let turn_start = recent_messages.len().saturating_sub(1);
     // This turn's own running totals for the activity line of the turn in
     // progress. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
     let mut turn_usage = TurnUsage::default();
@@ -2709,6 +2714,7 @@ mod tests {
             Box::pin(async {
                 tokio::join!(
                     execute_turn(
+                        recent.len() - 1,
                         &resources,
                         &memory_ctx,
                         &prompt_ctx,
@@ -3219,6 +3225,7 @@ mod tests {
         recent.push(Message::user("go"));
 
         let texts = execute_turn(
+            recent.len() - 1,
             &resources,
             &memory_ctx,
             &prompt_ctx,
@@ -3347,6 +3354,7 @@ mod tests {
         recent.push(Message::user("go"));
 
         let texts = execute_turn(
+            recent.len() - 1,
             &resources,
             &memory_ctx,
             &prompt_ctx,
@@ -3439,6 +3447,7 @@ mod tests {
         recent.push(Message::user("go"));
 
         let texts = execute_turn(
+            recent.len() - 1,
             &resources,
             &memory_ctx,
             &prompt_ctx,
@@ -3786,6 +3795,7 @@ mod tests {
         let texts = wait::guarded(
             "the repeat-call guard to end the turn",
             Box::pin(execute_turn(
+                recent.len() - 1,
                 &resources,
                 &memory_ctx,
                 &prompt_ctx,
@@ -3907,6 +3917,7 @@ mod tests {
         for (n, turn) in turns.into_iter().enumerate() {
             recent.push(turn);
             execute_turn(
+                recent.len() - 1,
                 &resources,
                 &MemoryContext {
                     observations: None,
@@ -4031,6 +4042,7 @@ mod tests {
         for n in 0..2 {
             recent.push(Message::user("go"));
             execute_turn(
+                recent.len() - 1,
                 &resources,
                 &MemoryContext {
                     observations: None,

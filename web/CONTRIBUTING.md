@@ -50,6 +50,8 @@ Chat replies are scripted by how a message starts (`mock/chat.ts`, `mock/chat-sc
 | `spawn`             | Starts a spawned session that reports back to the chat                                          |
 | `drop`              | Loses the connection mid-turn (`drop finish …`, `drop compress …` vary what happens while away) |
 
+A failed `error` turn can be retried until another turn starts: `retry_turn` with the failed message's id reruns it under the same id (a `turn_started` with no `user_message`), and the mock answers this time. A `retry_turn` for any other turn, or one sent while a turn runs, gets a `retry_refused` naming the id.
+
 A message sent to a session containing "busy" fails to deliver.
 
 ### Test controls

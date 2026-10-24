@@ -72,6 +72,11 @@ id: string, } | { "type": "withdraw_queued",
 /**
  * The waiting message's id.
  */
+id: string, } | { "type": "retry_turn", 
+/**
+ * Correlation ID of the failed turn: the `id` its `SendMessage` was
+ * sent with, and the `reply_to` of its `error` frame.
+ */
 id: string, } | { "type": "watch_workspace", 
 /**
  * Workspace-relative paths, matched by whole segments.

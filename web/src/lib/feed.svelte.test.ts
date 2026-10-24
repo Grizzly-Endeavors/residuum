@@ -264,7 +264,7 @@ describe("FeedStore when a turn fails", () => {
     });
   }
 
-  it("leaves an account of it in the turn, with its cause and what to send again", () => {
+  it("leaves an account of it in the turn, with its cause and Try again", () => {
     const store = new FeedStore();
     failingTurn(store);
     store.handleMessage(error("web-a", "provider returned 503"));
@@ -277,7 +277,7 @@ describe("FeedStore when a turn fails", () => {
       turnId: "web-a",
       message: "The model provider didn't answer.",
       details: "provider returned 503",
-      retry: { content: "Tidy the wiki index" },
+      retry: {},
     });
   });
 
@@ -299,7 +299,7 @@ describe("FeedStore when a turn fails", () => {
     expect(reloaded.feed.map((item) => item.kind)).toEqual(["user"]);
   });
 
-  it("offers no Try again for a message that carried files, whose uploads it used", () => {
+  it("offers Try again for a message that carried files too: the agent still holds them", () => {
     const store = new FeedStore();
     const file = {
       item_id: "",
@@ -316,9 +316,167 @@ describe("FeedStore when a turn fails", () => {
     });
     store.handleMessage(error("web-a"));
 
-    const failure = store.feed.at(-1);
-    expect(failure?.kind).toBe("turn-failure");
-    expect(failure).not.toHaveProperty("retry");
+    expect(store.feed.at(-1)).toMatchObject({ kind: "turn-failure", retry: {} });
+  });
+
+  describe("and the user tries again", () => {
+    const started = (id: string): ServerMessage => ({
+      type: "turn_started",
+      reply_to: id,
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+
+    function failedTurn(store: FeedStore, id = "web-a"): void {
+      failingTurn(store, id);
+      store.handleMessage(error(id, "provider returned 503"));
+      store.handleMessage({ type: "turn_ended", reply_to: id });
+    }
+
+    it("replaces the failure with the rerun, under the same message", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+      store.askRetry("web-a");
+
+      store.handleMessage(started("web-a"));
+
+      expect(store.isProcessing).toBe(true);
+      expect(store.activeTurnId).toBe("web-a");
+      expect(store.feed.map((item) => item.kind)).toEqual(["user", "assistant"]);
+    });
+
+    it("shows the rerun's reply in the same turn as what the failed attempt did", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+      store.handleMessage(started("web-a"));
+      store.handleMessage({
+        type: "response",
+        reply_to: "web-a",
+        call: 0,
+        endpoint: "ws",
+        content: "Done: the index is tidy.",
+      });
+      store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+      expect(store.feed.filter((item) => item.kind === "user")).toHaveLength(1);
+      expect(store.feed.some((item) => item.kind === "turn-failure")).toBe(false);
+      const entries = groupTurns(store.feed, store.activeTurnId);
+      expect(entries.map((entry) => entry.kind)).toEqual(["single", "turn"]);
+      const block = entries.at(-1);
+      if (block?.kind !== "turn") throw new Error("expected the turn's block");
+      expect(
+        block.parts.map((part) => (part.kind === "message" ? part.item.kind : part.kind)),
+      ).toEqual(["assistant", "assistant"]);
+    });
+
+    it("starts the rerun's tool calls in a group of their own", () => {
+      const store = new FeedStore();
+      const toolCall = (id: string): ServerMessage => ({
+        type: "tool_call",
+        reply_to: "web-a",
+        call: 0,
+        id,
+        name: "exec",
+        arguments: {},
+        server: null,
+      });
+      store.pushUserMessage("Tidy the wiki index", undefined, "web-a");
+      store.handleMessage(started("web-a"));
+      store.handleMessage(toolCall("c1"));
+      store.handleMessage(error("web-a", "provider returned 503"));
+      store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+      store.handleMessage(started("web-a"));
+      store.handleMessage(toolCall("c2"));
+
+      const groups = store.feed.filter((item) => item.kind === "tool-group");
+      expect(groups.map((group) => group.calls.map((call) => call.id))).toEqual([["c1"], ["c2"]]);
+    });
+
+    it("asks again whether the turn changed anything once the rerun ends", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+      const asked = store.feed.find((item) => item.kind === "user");
+      if (asked?.kind !== "user" || asked.turn === undefined) throw new Error("expected a tag");
+      // The failed attempt's check found nothing changed.
+      asked.turn.changed = false;
+
+      store.handleMessage(started("web-a"));
+      store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+      expect(asked.turn).toEqual({ turnId: "web-a", changed: null });
+    });
+
+    it("leaves the failures of other turns where they are", () => {
+      const store = new FeedStore();
+      failedTurn(store, "web-a");
+      failedTurn(store, "web-b");
+
+      store.handleMessage(started("web-b"));
+
+      expect(store.feed.filter((item) => item.kind === "turn-failure")).toMatchObject([
+        { turnId: "web-a" },
+      ]);
+    });
+
+    it("leaves the rerun's own failure with Try again, should it fail too", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+      store.handleMessage(started("web-a"));
+      store.handleMessage(error("web-a", "provider returned 504"));
+      store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+      const failures = store.feed.filter((item) => item.kind === "turn-failure");
+      expect(failures).toMatchObject([{ details: "provider returned 504", retry: {} }]);
+    });
+
+    it("waits for the agent's answer once asked, and offers Try again again if the connection drops first", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+
+      store.askRetry("web-a");
+      expect(store.feed.at(-1)).toMatchObject({ retry: { asked: true } });
+
+      store.forgetAsks();
+      expect(store.feed.at(-1)).toMatchObject({ retry: {} });
+      expect(store.feed.at(-1)).not.toHaveProperty("retry.asked");
+    });
+
+    it("gives the agent's reason on the failure when it won't rerun the turn", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+      store.askRetry("web-a");
+      const reason = "That message can't be retried anymore. Send it again to try once more.";
+
+      store.handleMessage({ type: "retry_refused", id: "web-a", message: reason });
+
+      expect(store.feed.at(-1)).toMatchObject({
+        kind: "turn-failure",
+        message: "The model provider didn't answer.",
+        retry: { refused: reason },
+      });
+      expect(store.feed.at(-1)).not.toHaveProperty("retry.asked");
+    });
+
+    it("keeps the user's message and the turn's state when the agent refuses", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+      const before = store.feed.map((item) => item.kind);
+
+      store.handleMessage({ type: "retry_refused", id: "web-a", message: "Not any more." });
+
+      expect(store.feed.map((item) => item.kind)).toEqual(before);
+      expect(store.feed.filter((item) => item.kind === "user")).toHaveLength(1);
+      expect(store.isProcessing).toBe(false);
+    });
+
+    it("ignores a refusal that names a turn the page shows no failure for", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+
+      store.handleMessage({ type: "retry_refused", id: "web-zzz", message: "Not any more." });
+
+      expect(store.feed.at(-1)).toMatchObject({ retry: {} });
+    });
   });
 
   it("shows the files of a message it sent as the agent saved them", () => {

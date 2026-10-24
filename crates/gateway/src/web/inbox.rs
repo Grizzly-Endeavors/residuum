@@ -131,6 +131,7 @@ mod tests {
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
+            retry_tx: core.retry_tx,
             agent_inbox_dir,
             uploads: residuum_hub::uploads::UploadStore::open(&workspace_dir.join("hub")).unwrap(),
             tz: chrono_tz::UTC,

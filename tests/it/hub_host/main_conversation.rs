@@ -427,3 +427,210 @@ async fn a_sessions_message_to_main_is_announced_with_its_run_ahead_of_the_turn_
         "{announced}"
     );
 }
+
+/// Have the agent's next `times` model calls fail, as a model that refuses
+/// the request does; calls after them get the usual reply.
+async fn script_failures(hub: &Fixture, agent: &str, times: u64) {
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": { "message": "the model refused the request" }
+        })))
+        .up_to_n_times(times)
+        .with_priority(1)
+        .mount(hub.mock(agent))
+        .await;
+}
+
+/// Every frame until the turn `turn_id` has both ended and reported its
+/// failure, which arrive on separate topics in either order.
+async fn frames_until_turn_fails(ws: &mut AgentSocket, turn_id: &str) -> Vec<Value> {
+    let mut frames = Vec::new();
+    let (mut ended, mut failed) = (false, false);
+    while !(ended && failed) {
+        let frame = next_frame(ws).await;
+        let ours = frame.get("reply_to").and_then(Value::as_str) == Some(turn_id);
+        match str_at(&frame, "type") {
+            "turn_ended" if ours => ended = true,
+            "error" if ours => failed = true,
+            _ => {}
+        }
+        frames.push(frame);
+    }
+    frames
+}
+
+/// Send `send_message` and wait for its turn to fail.
+async fn send_a_failing_message(ws: &mut AgentSocket, id: &str, content: &str) {
+    send(
+        ws,
+        json!({ "type": "send_message", "id": id, "content": content }),
+    )
+    .await;
+    frames_until_turn_fails(ws, id).await;
+}
+
+async fn retry(ws: &mut AgentSocket, id: &str) {
+    send(ws, json!({ "type": "retry_turn", "id": id })).await;
+}
+
+/// The next `retry_refused` frame, skipping the frames before it.
+async fn next_refusal(ws: &mut AgentSocket) -> Value {
+    loop {
+        let frame = next_frame(ws).await;
+        if str_at(&frame, "type") == "retry_refused" {
+            return frame;
+        }
+    }
+}
+
+/// The user messages a model request carried.
+fn user_messages_sent(request: &wiremock::Request) -> Vec<Value> {
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    array_at(&body, "messages")
+        .iter()
+        .filter(|message| message.get("role") == Some(&json!("user")))
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn a_retried_turn_runs_again_on_its_recorded_message_under_the_same_id() {
+    let hub = Fixture::new(&["scout"], "").await;
+    script_failures(&hub, "scout", 1).await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+    send_a_failing_message(&mut ws, "web-1", "hello").await;
+
+    retry(&mut ws, "web-1").await;
+    let frames = frames_until_turn_ends(&mut ws, Some("web-1")).await;
+
+    assert_kinds(
+        &frames,
+        &["turn_started", "response", "turn_ended"],
+        "the rerun echoes no new message",
+    );
+    assert_eq!(
+        str_at(frame_of(&frames, "turn_started"), "reply_to"),
+        "web-1"
+    );
+    let response = frame_of(&frames, "response");
+    assert_eq!(str_at(response, "reply_to"), "web-1");
+    assert_eq!(str_at(response, "content"), "scout here");
+
+    let requests = hub.mock("scout").received_requests().await.unwrap();
+    let rerun = requests.last().unwrap();
+    let users = user_messages_sent(rerun);
+    assert_eq!(
+        users.len(),
+        1,
+        "the rerun sends the recorded message once: {users:?}"
+    );
+    assert!(users[0].to_string().contains("hello"), "{users:?}");
+
+    let (status, body) = hub.get("/api/agents/scout/chat/history").await;
+    assert_eq!(status, 200, "{body}");
+    let history: Value = serde_json::from_str(&body).unwrap();
+    let of_turn: Vec<(&str, &str)> = array_at(&history, "messages")
+        .iter()
+        .filter(|message| message.get("turn_id") == Some(&json!("web-1")))
+        .map(|message| (str_at(message, "role"), str_at(message, "content")))
+        .collect();
+    assert_eq!(
+        of_turn,
+        [("user", "hello"), ("assistant", "scout here")],
+        "history holds the message once and the rerun's reply under the same turn"
+    );
+
+    retry(&mut ws, "web-1").await;
+    let refusal = next_refusal(&mut ws).await;
+    assert_eq!(
+        str_at(&refusal, "id"),
+        "web-1",
+        "a turn already retried can't be retried again"
+    );
+    assert!(!str_at(&refusal, "message").is_empty(), "{refusal}");
+}
+
+#[tokio::test]
+async fn a_retry_naming_any_turn_but_the_latest_failed_one_is_refused() {
+    let hub = Fixture::new(&["scout"], "").await;
+    script_failures(&hub, "scout", 1).await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+
+    retry(&mut ws, "never-sent").await;
+    assert_eq!(str_at(&next_refusal(&mut ws).await, "id"), "never-sent");
+
+    send_a_failing_message(&mut ws, "web-1", "hello").await;
+    send(
+        &mut ws,
+        json!({ "type": "send_message", "id": "web-2", "content": "anyone?" }),
+    )
+    .await;
+    frames_until_turn_ends(&mut ws, Some("web-2")).await;
+
+    retry(&mut ws, "web-1").await;
+    let refusal = next_refusal(&mut ws).await;
+    assert_eq!(
+        str_at(&refusal, "id"),
+        "web-1",
+        "another turn ran since, so the failed one is no longer the latest"
+    );
+    assert_eq!(
+        hub.mock("scout").received_requests().await.unwrap().len(),
+        2,
+        "no refused retry reached the model"
+    );
+}
+
+#[tokio::test]
+async fn a_rerun_that_fails_again_can_be_retried_again() {
+    let hub = Fixture::new(&["scout"], "").await;
+    script_failures(&hub, "scout", 2).await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+    send_a_failing_message(&mut ws, "web-1", "hello").await;
+
+    retry(&mut ws, "web-1").await;
+    let failed_again = frames_until_turn_fails(&mut ws, "web-1").await;
+    assert!(
+        failed_again
+            .iter()
+            .all(|frame| str_at(frame, "type") != "user_message"),
+        "{failed_again:?}"
+    );
+
+    retry(&mut ws, "web-1").await;
+    let frames = frames_until_turn_ends(&mut ws, Some("web-1")).await;
+    assert_kinds(
+        &frames,
+        &["turn_started", "response", "turn_ended"],
+        "the second rerun answers",
+    );
+}
+
+#[tokio::test]
+async fn a_retry_sent_while_a_turn_runs_is_refused_without_waiting_for_it() {
+    let hub = Fixture::new(&["scout"], "").await;
+    script_failures(&hub, "scout", 1).await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+    send_a_failing_message(&mut ws, "web-1", "hello").await;
+
+    hub.gate("scout").close();
+    send(
+        &mut ws,
+        json!({ "type": "send_message", "id": "web-2", "content": "anyone?" }),
+    )
+    .await;
+    hub.gate("scout").until_held(1).await;
+    retry(&mut ws, "web-1").await;
+    // The running turn is held at its model call, so the refusal comes
+    // while it runs, not after it.
+    let refusal = next_refusal(&mut ws).await;
+    assert_eq!(str_at(&refusal, "id"), "web-1");
+
+    hub.gate("scout").open_all();
+    frames_until_turn_ends(&mut ws, Some("web-2")).await;
+}

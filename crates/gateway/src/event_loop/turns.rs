@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use residuum_agent::context::{PromptContext, SkillsContext};
-use residuum_agent::{Agent, LiveOutputEndpoint, TurnOutput};
+use residuum_agent::{Agent, FailedTurn, LiveOutputEndpoint, TurnOutput, TurnWiring};
 use residuum_bus::interrupt::{Interrupt, InterruptSource};
 use residuum_bus::{
     EndpointName, ErrorEvent, MainConversationEvent, MessageEvent, NotifyName, Publisher,
@@ -14,7 +14,7 @@ use residuum_bus::{
 };
 
 use crate::queued_messages::{CheckpointTake, QueuedMessages};
-use crate::types::AgentRuntime;
+use crate::types::{AgentRuntime, RetryTurnRequest};
 use residuum_bus::control::StopRequest;
 use residuum_bus::origin::{BACKGROUND_ENDPOINT, MessageOrigin, chat_interface_endpoint};
 use residuum_config::Config;
@@ -461,6 +461,39 @@ fn handle_mid_turn_stop_request(
     }
 }
 
+/// What opens a main turn.
+enum TurnOpening<'m> {
+    /// A message starts the turn and joins history as it starts.
+    Message {
+        content: &'m str,
+        origin: Option<&'m MessageOrigin>,
+        images: &'m [ImageData],
+    },
+    /// The failed latest turn runs again on the message that started it,
+    /// already in history.
+    Rerun(FailedTurn),
+}
+
+/// Refuse a retry that arrived while a turn runs: the failed turn it names
+/// is no longer the latest, or is the one running again.
+fn refuse_retry_mid_turn(request: RetryTurnRequest, correlation_id: &str) {
+    tracing::info!(
+        requested = %request.id,
+        active = %correlation_id,
+        "refused a retry while a turn is running"
+    );
+    request
+        .result_tx
+        .send(Err(RETRY_REFUSED_TURN_RUNNING.to_string()))
+        .ok();
+}
+
+/// Why a retry sent while a turn runs is refused.
+const RETRY_REFUSED_TURN_RUNNING: &str = "The agent is working on a reply right now. Wait for it to finish, then try again if you still need to.";
+
+/// Why a retry is refused when the turn it names isn't the latest failed one.
+const RETRY_REFUSED_MOVED_ON: &str = "That message can't be retried anymore because the conversation has moved on. Send it again to try once more.";
+
 #[expect(
     clippy::too_many_arguments,
     reason = "publisher and topic params added during bus migration"
@@ -469,16 +502,15 @@ async fn run_agent_turn_with_interrupts(
     agent: &mut Agent,
     agent_messenger: &residuum_background::messaging::AgentMessenger,
     conversation_router: &Arc<residuum_background::ConversationRouter>,
-    content: &str,
+    opening: TurnOpening<'_>,
     publisher: &Publisher,
     output: TurnOutput<'_>,
     correlation_id: &str,
-    origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
-    images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     stop_rx: &mut mpsc::Receiver<StopRequest>,
     agent_stop_rx: &mut mpsc::Receiver<()>,
+    retry_rx: &mut mpsc::Receiver<RetryTurnRequest>,
     subconscious: Option<Arc<residuum_agent::subconscious::Subconscious>>,
     queued: &QueuedMessages,
     mut follow: Option<OwnerFollow<'_>>,
@@ -521,18 +553,48 @@ async fn run_agent_turn_with_interrupts(
     // consumed here and won't arrive again for the outer event loop.
     let mut stop_requested = false;
     let turn_result = {
-        let mut turn = std::pin::pin!(agent.process_message(
-            content,
-            publisher,
-            output,
-            correlation_id,
-            origin,
-            prompt_ctx,
-            &mut interrupt_rx,
-            images,
-            watch.as_ref(),
-            &stop_token,
-        ));
+        let interrupts = &mut interrupt_rx;
+        let watching = watch.as_ref();
+        let stop = &stop_token;
+        let mut turn = std::pin::pin!(async move {
+            match opening {
+                TurnOpening::Message {
+                    content,
+                    origin,
+                    images,
+                } => {
+                    agent
+                        .process_message(
+                            content,
+                            publisher,
+                            output,
+                            correlation_id,
+                            origin,
+                            prompt_ctx,
+                            interrupts,
+                            images,
+                            watching,
+                            stop,
+                        )
+                        .await
+                }
+                TurnOpening::Rerun(failed) => {
+                    agent
+                        .rerun_turn(
+                            failed,
+                            TurnWiring {
+                                publisher,
+                                output,
+                                prompt_ctx,
+                                interrupt_rx: interrupts,
+                                subconscious: watching,
+                                stop_token: stop,
+                            },
+                        )
+                        .await
+                }
+            }
+        });
         loop {
             tokio::select! {
                 result = &mut turn => break result,
@@ -551,6 +613,9 @@ async fn run_agent_turn_with_interrupts(
                 stop_req = stop_rx.recv() => {
                     handle_mid_turn_stop_request(stop_req, correlation_id, &stop_token, &interrupt_tx);
                 }
+                // Refused rather than held: by the time this turn ends, the
+                // failed turn it names is no longer the latest.
+                Some(request) = retry_rx.recv() => refuse_retry_mid_turn(request, correlation_id),
                 // The hub's stop request stops this turn the same way a user
                 // stop does (see `stop_turn_for_agent_stop`) and records that
                 // it fired, for the caller to act on once this call returns.
@@ -618,20 +683,23 @@ async fn publish_main_conversation(publisher: &Publisher, event: MainConversatio
     }
 }
 
-/// Announce a turn: its opening person's or agent's message and its start
-/// to the main conversation, whatever endpoint it is delivered to, and
-/// `TurnLifecycleEvent::Started` to the output endpoint when that is a chat
-/// interface (see [`chat_interface_endpoint`]).
+/// Announce a turn: its opening person's or agent's message (`opening`,
+/// absent for a rerun, whose message was announced when it first ran) and
+/// its start to the main conversation, whatever endpoint it is delivered to,
+/// and `TurnLifecycleEvent::Started` to the output endpoint when that is a
+/// chat interface (see [`chat_interface_endpoint`]).
 /// Also spawns the turn-start checkpoint, which captures the workspace state
 /// before anything this turn does, attributed as an outside edit.
 async fn publish_turn_started(
     rt: &AgentRuntime,
     output_endpoint: Option<&EndpointName>,
-    message: &MessageEvent,
+    correlation_id: &str,
+    opening: Option<&MessageEvent>,
     origin: TurnOrigin,
 ) {
-    let correlation_id = message.id.as_str();
-    if let Some(echo) = MainConversationEvent::user_message(message, correlation_id) {
+    if let Some(echo) =
+        opening.and_then(|message| MainConversationEvent::user_message(message, correlation_id))
+    {
         publish_main_conversation(&rt.publisher, echo).await;
     }
     publish_main_conversation(
@@ -1017,6 +1085,14 @@ fn prepare_kickoff(rt: &mut AgentRuntime, message: &MessageEvent) {
     rt.agent.hop_counter().bump(kickoff_hop);
 }
 
+/// What starts a main turn in the event loop.
+enum MainTurnStart<'m> {
+    /// A message reached the main conversation.
+    Message(&'m MessageEvent),
+    /// A person asked to run the failed latest turn again.
+    Rerun(FailedTurn),
+}
+
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
 ///
 /// Returns whether the hub's stop request interrupted this turn — the caller
@@ -1031,8 +1107,141 @@ pub async fn handle_inbound_message(
     observe_deadline: &mut Option<tokio::time::Instant>,
     idle_deadline: &mut Option<tokio::time::Instant>,
 ) -> bool {
-    let reply_id = message.id.clone();
     let origin = message.origin.clone();
+    run_main_turn(
+        MainTurnStart::Message(&message),
+        &message.id,
+        origin,
+        rt,
+        observe_deadline,
+        idle_deadline,
+    )
+    .await
+}
+
+/// Answer a request, made while no turn runs, to run the failed latest main
+/// turn again: rerun it on the message already in history under the same
+/// correlation id, or refuse when the request names any other turn (one that
+/// never failed, was retried already, or is no longer the latest). Messages
+/// waiting to start turns of their own never meet a retry here: the idle loop
+/// runs them first, and the turn they start moves the conversation on. The
+/// answer goes back on the request's channel before the rerun starts.
+///
+/// Returns whether the hub's stop request interrupted the rerun, as
+/// [`handle_inbound_message`] does.
+/// Drop the error notes already queued when a rerun is accepted. They report
+/// the failed attempt, which the failure card already shows; injected after
+/// the rerun's reply, they would stay in the conversation as a stale note.
+/// Returns how many were dropped.
+fn discard_queued_error_notes(errors: &mut Subscriber<ErrorEvent>) -> usize {
+    errors.drain().len()
+}
+
+#[tracing::instrument(skip_all, fields(correlation_id = %request.id))]
+pub async fn handle_retry_request(
+    request: RetryTurnRequest,
+    rt: &mut AgentRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+) -> bool {
+    let RetryTurnRequest { id, result_tx } = request;
+    let Some(failed) = rt.agent.take_failed_turn(&id) else {
+        tracing::info!(
+            reason = RETRY_REFUSED_MOVED_ON,
+            "refused a retry of a failed turn"
+        );
+        result_tx.send(Err(RETRY_REFUSED_MOVED_ON.to_string())).ok();
+        return false;
+    };
+    result_tx.send(Ok(())).ok();
+    let discarded = discard_queued_error_notes(&mut rt.error_subscriber);
+    if discarded > 0 {
+        tracing::debug!(
+            count = discarded,
+            "discarded error notes queued before a rerun"
+        );
+    }
+    let origin = failed.origin().clone();
+    run_main_turn(
+        MainTurnStart::Rerun(failed),
+        &id,
+        origin,
+        rt,
+        observe_deadline,
+        idle_deadline,
+    )
+    .await
+}
+
+/// Where a main turn's messages begin in history (`before` is the history
+/// length before the turn was opened), the text of the message that opened
+/// it, and how the turn is opened. A new message's kickoff is prepared here;
+/// a rerun's message is already in history, so its turn begins at that
+/// message and takes in the failed attempt's work after it.
+fn open_main_turn<'a>(
+    start: MainTurnStart<'a>,
+    before: usize,
+    origin: &'a MessageOrigin,
+    rt: &mut AgentRuntime,
+) -> (usize, String, TurnOpening<'a>) {
+    let (turn_start, opening_text) = match &start {
+        MainTurnStart::Message(message) => {
+            prepare_kickoff(rt, message);
+            (before, message.content.clone())
+        }
+        MainTurnStart::Rerun(failed) => {
+            let text = rt
+                .agent
+                .messages_since(failed.kickoff_index())
+                .first()
+                .map(|opening| opening.content.clone())
+                .unwrap_or_default();
+            (failed.kickoff_index(), text)
+        }
+    };
+    let opening = match start {
+        MainTurnStart::Message(message) => TurnOpening::Message {
+            content: &message.content,
+            origin: Some(origin),
+            images: &message.images,
+        },
+        MainTurnStart::Rerun(failed) => TurnOpening::Rerun(failed),
+    };
+    (turn_start, opening_text, opening)
+}
+
+/// The end-of-turn evaluation a person's turn gets: the subconscious pass over
+/// what the turn added to history, then the learner nudge.
+async fn evaluate_person_turn(
+    rt: &mut AgentRuntime,
+    turn_start: usize,
+    reply_id: &str,
+    subconscious_scratch: Option<&Arc<std::sync::Mutex<residuum_agent::subconscious::TurnScratch>>>,
+) {
+    let turn_messages: Vec<_> = rt.agent.messages_since(turn_start).to_vec();
+    super::subconscious_hook::run_end_of_turn_subconscious(
+        rt,
+        &turn_messages,
+        reply_id,
+        subconscious_scratch,
+    );
+    maybe_nudge_learner(rt).await;
+}
+
+/// Run one main turn from its start to its leftovers: announce it, run it
+/// with interrupts, persist what it added to history, publish its outcome,
+/// and queue the messages that arrived too late for it. `reply_id` is the
+/// turn's correlation id.
+///
+/// Returns whether the hub's stop request interrupted the turn.
+async fn run_main_turn(
+    start: MainTurnStart<'_>,
+    reply_id: &str,
+    origin: MessageOrigin,
+    rt: &mut AgentRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+) -> bool {
     let is_background = origin.endpoint == BACKGROUND_ENDPOINT;
     let visibility = if is_background {
         Visibility::Background
@@ -1051,25 +1260,30 @@ pub async fn handle_inbound_message(
     // ends, however the turn ends.
     let _busy = rt.activity.main_turn();
 
+    let opening_message = match &start {
+        MainTurnStart::Message(message) => Some(*message),
+        MainTurnStart::Rerun(_) => None,
+    };
     publish_turn_started(
         rt,
         output_endpoint.as_ref(),
-        &message,
+        reply_id,
+        opening_message,
         TurnOrigin::new(&origin, visibility.clone()),
     )
     .await;
 
     let before = rt.agent.message_count();
-    prepare_kickoff(rt, &message);
+    let (turn_start, opening_text, opening) = open_main_turn(start, before, &origin, rt);
 
     let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
     let live_output = LiveOutputEndpoint::new(output_endpoint);
     // A turn no person started follows the owner when one writes mid-turn.
-    let follow = is_background.then(|| OwnerFollow {
+    let follow = is_background.then_some(OwnerFollow {
         output: &live_output,
-        correlation_id: &reply_id,
+        correlation_id: reply_id,
         last_output_endpoint: &mut rt.last_output_endpoint,
         output_topic_override_tx: &rt.output_topic_override_tx,
         idle_timeout: rt.cfg.idle.timeout,
@@ -1081,16 +1295,15 @@ pub async fn handle_inbound_message(
             &mut rt.agent,
             &rt.agent_messenger,
             &rt.conversation_router,
-            &message.content,
+            opening,
             &rt.publisher,
             TurnOutput::Live(&live_output),
-            &reply_id,
-            Some(&origin),
+            reply_id,
             &prompt_ctx,
-            &message.images,
             &mut rt.agent_subscriber,
             &mut rt.stop_rx,
             &mut rt.agent_stop_rx,
+            &mut rt.retry_rx,
             (!is_background && rt.subconscious.mid_turn_enabled())
                 .then(|| Arc::clone(&rt.subconscious)),
             &rt.queued,
@@ -1100,17 +1313,18 @@ pub async fn handle_inbound_message(
     // Where the turn ended up delivering: the owner may have moved it.
     let delivered_to = live_output.get();
 
-    spawn_main_turn_end_checkpoint(rt, &reply_id, &turn_result);
+    spawn_main_turn_end_checkpoint(rt, reply_id, &turn_result);
 
     // The turn goes into history before clients hear it ended, so a page that
-    // reloads history on `turn_ended` finds the turn there.
+    // reloads history on `turn_ended` finds the turn there. Only what this
+    // run added is new: a rerun's message was recorded when it first ran.
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
     persist_and_maybe_observe(
         rt,
         &new_messages,
         visibility.clone(),
         observe_deadline,
-        Some(&reply_id),
+        Some(reply_id),
     )
     .await;
 
@@ -1119,7 +1333,7 @@ pub async fn handle_inbound_message(
         turn_result,
         &rt.publisher,
         delivered_to.as_ref(),
-        &reply_id,
+        reply_id,
         rt.tz,
         &TurnFailureReport {
             tracing_service: &rt.tracing_service,
@@ -1130,19 +1344,13 @@ pub async fn handle_inbound_message(
     .await;
 
     // A background turn was started by no user message.
-    let user_message = (!is_background).then(|| message.content.clone());
+    let user_message = (!is_background).then_some(opening_text);
     report_turn_end(&rt.activity, last_reply, user_message, visibility);
 
     // Background turns (including subconscious correction turns) are never
     // evaluated — this gate is what bounds the correction feedback loop.
     if !is_background {
-        super::subconscious_hook::run_end_of_turn_subconscious(
-            rt,
-            &new_messages,
-            &reply_id,
-            subconscious_scratch.as_ref(),
-        );
-        maybe_nudge_learner(rt).await;
+        evaluate_person_turn(rt, turn_start, reply_id, subconscious_scratch.as_ref()).await;
     }
 
     defer_late_messages(rt, leftover_interrupts, stop_requested).await;
@@ -1575,16 +1783,19 @@ mod tests {
             &mut rig.agent,
             &rig.messenger,
             &rig.router,
-            "a session finished",
+            TurnOpening::Message {
+                content: "a session finished",
+                origin: Some(&origin),
+                images: &[],
+            },
             &rig.publisher,
             TurnOutput::Live(&live),
             "bg-follow",
-            Some(&origin),
             &prompt_ctx,
-            &[],
             &mut rig.subscriber,
             &mut rig.stop_rx,
             &mut rig.agent_stop_rx,
+            &mut rig.retry_rx,
             None,
             &rig.queued,
             Some(OwnerFollow {
@@ -2369,6 +2580,7 @@ mod tests {
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
         let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
+        let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
         let prompt_ctx = PromptContext {
             skills: residuum_agent::context::SkillsContext {
@@ -2384,16 +2596,19 @@ mod tests {
                 &mut agent,
                 &turn_messenger,
                 &turn_conversation_router,
-                "hello",
+                TurnOpening::Message {
+                    content: "hello",
+                    origin: None,
+                    images: &[],
+                },
                 &publisher,
                 TurnOutput::Fixed(None),
                 "corr-hop",
-                None,
                 &prompt_ctx,
-                &[],
                 &mut agent_subscriber,
                 &mut stop_rx,
                 &mut agent_stop_rx,
+                &mut retry_rx,
                 None,
                 &QueuedMessages::default(),
                 None,
@@ -2472,6 +2687,7 @@ mod tests {
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(4);
         let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
+        let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
         // A stop request that arrived in the gap between the *previous*
         // turn's own select loop ending and this turn's own select loop
@@ -2497,16 +2713,19 @@ mod tests {
             &mut agent,
             &messenger,
             &conversation_router,
-            "hello",
+            TurnOpening::Message {
+                content: "hello",
+                origin: None,
+                images: &[],
+            },
             &publisher,
             TurnOutput::Fixed(None),
             "corr-stale-stop",
-            None,
             &prompt_ctx,
-            &[],
             &mut agent_subscriber,
             &mut stop_rx,
             &mut agent_stop_rx,
+            &mut retry_rx,
             None,
             &QueuedMessages::default(),
             None,
@@ -2578,6 +2797,7 @@ mod tests {
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
         let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
+        let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
         let prompt_ctx = PromptContext {
             skills: residuum_agent::context::SkillsContext {
@@ -2593,16 +2813,19 @@ mod tests {
                 &mut agent,
                 &turn_messenger,
                 &turn_conversation_router,
-                "hello",
+                TurnOpening::Message {
+                    content: "hello",
+                    origin: None,
+                    images: &[],
+                },
                 &publisher,
                 TurnOutput::Fixed(None),
                 "corr-route",
-                None,
                 &prompt_ctx,
-                &[],
                 &mut agent_subscriber,
                 &mut stop_rx,
                 &mut agent_stop_rx,
+                &mut retry_rx,
                 None,
                 &QueuedMessages::default(),
                 None,
@@ -3001,6 +3224,7 @@ mod tests {
         subscriber: Subscriber<MessageEvent>,
         stop_rx: mpsc::Receiver<StopRequest>,
         agent_stop_rx: mpsc::Receiver<()>,
+        retry_rx: mpsc::Receiver<RetryTurnRequest>,
         publisher: Publisher,
         messenger: Arc<residuum_background::messaging::AgentMessenger>,
         router: Arc<residuum_background::ConversationRouter>,
@@ -3012,6 +3236,7 @@ mod tests {
             residuum_bus::BusHandle,
             mpsc::Sender<StopRequest>,
             mpsc::Sender<()>,
+            mpsc::Sender<RetryTurnRequest>,
         ),
     }
 
@@ -3039,17 +3264,27 @@ mod tests {
             let subscriber = handle.subscribe(topics::UserMessage).await.unwrap();
             let (stop_tx, stop_rx) = mpsc::channel::<StopRequest>(1);
             let (agent_stop_tx, agent_stop_rx) = mpsc::channel::<()>(1);
+            let (retry_tx, retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
             Self {
                 agent: test_agent(provider),
                 subscriber,
                 stop_rx,
                 agent_stop_rx,
+                retry_rx,
                 publisher,
                 messenger,
                 router,
                 queued: Arc::default(),
-                keep_alive: (handle, stop_tx, agent_stop_tx),
+                keep_alive: (handle, stop_tx, agent_stop_tx, retry_tx),
             }
+        }
+
+        fn stop_tx(&self) -> mpsc::Sender<StopRequest> {
+            self.keep_alive.1.clone()
+        }
+
+        fn retry_tx(&self) -> mpsc::Sender<RetryTurnRequest> {
+            self.keep_alive.3.clone()
         }
 
         /// Run one turn and return the interrupts left queued when it ended.
@@ -3059,6 +3294,27 @@ mod tests {
             correlation_id: &str,
             origin: Option<&MessageOrigin>,
         ) -> Vec<Interrupt> {
+            let (result, leftovers) = self
+                .run(
+                    TurnOpening::Message {
+                        content,
+                        origin,
+                        images: &[],
+                    },
+                    correlation_id,
+                )
+                .await;
+            result.expect("the turn completes");
+            leftovers
+        }
+
+        /// Run one turn opened by `opening`, and return its result and the
+        /// interrupts left queued when it ended.
+        async fn run(
+            &mut self,
+            opening: TurnOpening<'_>,
+            correlation_id: &str,
+        ) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
             let prompt_ctx = PromptContext {
                 skills: residuum_agent::context::SkillsContext {
                     index: None,
@@ -3069,23 +3325,21 @@ mod tests {
                 &mut self.agent,
                 &self.messenger,
                 &self.router,
-                content,
+                opening,
                 &self.publisher,
                 TurnOutput::Fixed(None),
                 correlation_id,
-                origin,
                 &prompt_ctx,
-                &[],
                 &mut self.subscriber,
                 &mut self.stop_rx,
                 &mut self.agent_stop_rx,
+                &mut self.retry_rx,
                 None,
                 &self.queued,
                 None,
             )
             .await;
-            result.expect("the turn completes");
-            leftovers
+            (result, leftovers)
         }
     }
 
@@ -3381,6 +3635,7 @@ mod tests {
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
         let (agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
+        let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
         let prompt_ctx = PromptContext {
             skills: residuum_agent::context::SkillsContext {
@@ -3394,16 +3649,19 @@ mod tests {
                 &mut agent,
                 &messenger,
                 &conversation_router,
-                "hello",
+                TurnOpening::Message {
+                    content: "hello",
+                    origin: None,
+                    images: &[],
+                },
                 &publisher,
                 TurnOutput::Fixed(None),
                 "corr-shutdown",
-                None,
                 &prompt_ctx,
-                &[],
                 &mut agent_subscriber,
                 &mut stop_rx,
                 &mut agent_stop_rx,
+                &mut retry_rx,
                 None,
                 &QueuedMessages::default(),
                 None,
@@ -3575,6 +3833,167 @@ mod tests {
                 residuum_inference::Role::User
             ],
             "the next turn sends the model the unanswered message and the new one"
+        );
+    }
+
+    /// A provider whose first model call fails and whose later calls
+    /// announce they started and then never answer, so only a stop ends them.
+    struct FailsThenHangs {
+        calls: std::sync::atomic::AtomicUsize,
+        started: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl residuum_inference::InferenceProvider for FailsThenHangs {
+        async fn complete(
+            &self,
+            _messages: &[residuum_inference::Message],
+            _tools: &[residuum_inference::ToolDefinition],
+            _options: &residuum_inference::CompletionOptions,
+        ) -> Result<residuum_inference::InferenceResponse, residuum_inference::InferenceError>
+        {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Err(residuum_inference::InferenceError::Api(
+                    "the model is down".to_string(),
+                ));
+            }
+            self.started.notify_one();
+            std::future::pending().await
+        }
+
+        fn model_name(&self) -> &'static str {
+            "fails-then-hangs"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retry_sent_while_a_turn_runs_is_refused_at_once() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut rig = TurnRig::new(GatedProvider {
+            gate: Arc::clone(&gate),
+            response: "done".to_string(),
+        })
+        .await;
+        let retry_tx = rig.retry_tx();
+        let turn = residuum_core::util::spawn_in_span(async move {
+            rig.run_turn("busy", "t-running", None).await;
+            rig
+        });
+
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        retry_tx
+            .send(RetryTurnRequest {
+                id: "t-failed".to_string(),
+                result_tx,
+            })
+            .await
+            .unwrap();
+        // The turn is held at its model call until the gate opens, so the
+        // answer can only come from the running turn's own loop.
+        let answer = wait::guarded("the running turn to answer the retry", result_rx)
+            .await
+            .unwrap();
+        assert_eq!(answer, Err(RETRY_REFUSED_TURN_RUNNING.to_string()));
+
+        gate.notify_one();
+        wait::guarded("the turn to end once the gate opens", turn)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_rerun_keeps_the_turn_id_and_is_stopped_by_it() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let mut rig = TurnRig::new(FailsThenHangs {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            started: Arc::clone(&started),
+        })
+        .await;
+        // A person's message: only a turn with an origin is recorded for a retry.
+        let origin = origin_on("ws");
+        let (first_attempt, _) = rig
+            .run(
+                TurnOpening::Message {
+                    content: "hello",
+                    origin: Some(&origin),
+                    images: &[],
+                },
+                "t1",
+            )
+            .await;
+        assert!(first_attempt.is_err(), "the first model call failed");
+        let failed = rig.agent.take_failed_turn("t1").expect("recorded");
+        let stop_tx = rig.stop_tx();
+        let rerun = residuum_core::util::spawn_in_span(async move {
+            let (result, _) = rig.run(TurnOpening::Rerun(failed), "t1").await;
+            (rig, result)
+        });
+
+        wait::guarded("the rerun to reach its model call", started.notified()).await;
+        let (matched_tx, matched_rx) = tokio::sync::oneshot::channel();
+        stop_tx
+            .send(StopRequest {
+                reply_to: Some("t1".to_string()),
+                result_tx: Some(matched_tx),
+            })
+            .await
+            .unwrap();
+        assert!(
+            wait::guarded("the stop to be answered", matched_rx)
+                .await
+                .unwrap(),
+            "a stop naming the failed turn's id reaches its rerun"
+        );
+        let (rig_after, result) = wait::guarded("the stopped rerun to end", rerun)
+            .await
+            .unwrap();
+        assert!(
+            result.expect("a stopped rerun is not a failure").is_empty(),
+            "the rerun was stopped before it replied"
+        );
+        assert!(
+            rig_after.agent.failed_turn().is_none(),
+            "a stopped rerun did not fail, so there is nothing to retry"
+        );
+        assert_eq!(
+            history_mentions(&rig_after.agent, "hello"),
+            1,
+            "the rerun added no message"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rerun_discards_the_error_notes_queued_before_it() {
+        let handle = residuum_bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                ErrorEvent {
+                    correlation_id: "t1".to_string(),
+                    message: "the model call failed".to_string(),
+                    details: None,
+                },
+            )
+            .await
+            .unwrap();
+        // The broker handles commands in order, so once this barrier has
+        // been delivered the error above is already queued for `errors`.
+        bus_barrier(&handle).await;
+
+        assert_eq!(
+            discard_queued_error_notes(&mut errors),
+            1,
+            "the failed attempt's error note is dropped before the rerun"
+        );
+        assert_eq!(
+            discard_queued_error_notes(&mut errors),
+            0,
+            "nothing is left to drop once the queue is empty"
         );
     }
 }

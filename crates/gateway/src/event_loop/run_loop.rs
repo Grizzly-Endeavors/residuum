@@ -28,7 +28,7 @@ use residuum_proactivity::pulse::scheduler::PulseScheduler;
 use super::commands::handle_server_command;
 use super::http::{A2aServingDeps, build_agent_a2a, build_gateway_app, spawn_adapters};
 use super::pulse::{handle_pulse_fire_event, handle_pulse_result_event, handle_pulse_tick};
-use super::turns::handle_inbound_message;
+use super::turns::{handle_inbound_message, handle_retry_request};
 
 use crate::{actions, idle, reload, web};
 use residuum_hub::{config_watcher, last_known_good};
@@ -304,6 +304,7 @@ fn build_gateway_state(
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
         stop_tx: core.stop_tx.clone(),
+        retry_tx: core.retry_tx.clone(),
         agent_inbox_dir: parts.layout.agent_inbox_dir(),
         uploads: services.uploads.clone(),
         tz: parts.tz,
@@ -685,6 +686,7 @@ async fn build_runtime(
         reload_rx: receivers.reload,
         command_rx: receivers.command,
         stop_rx: receivers.stop,
+        retry_rx: receivers.retry,
         agent_stop_rx: channels.agent_stop_rx,
         pulse_scheduler: PulseScheduler::with_state_path(&pulse_state_path),
         pulse_fires: Arc::clone(&core.pulse_fires),
@@ -1198,6 +1200,23 @@ async fn apply_bus_event(
     }
 }
 
+/// Run or refuse a request to rerun the failed latest turn, made while no
+/// turn runs, and, when the hub's stop request interrupted the rerun, shut
+/// down and report the exit, as [`apply_bus_event`] does for a message.
+async fn apply_retry_request(
+    request: crate::types::RetryTurnRequest,
+    rt: &mut AgentRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+) -> Option<AgentExit> {
+    if handle_retry_request(request, rt, observe_deadline, idle_deadline).await {
+        graceful_shutdown(rt).await;
+        Some(AgentExit::Stopped)
+    } else {
+        None
+    }
+}
+
 /// Handle a stop request that arrived while the event loop is idle.
 ///
 /// A turn in progress blocks this whole select on the `agent_subscriber.recv()`
@@ -1299,12 +1318,12 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
         // first: their senders are waiting on a reply, and anything queued
         // on the bus arrived after them.
         if let Some(message) = next_deferred_message(&mut rt) {
-            if let Some(exit) = apply_bus_event(
+            if let Some(exit) = Box::pin(apply_bus_event(
                 Ok(Some(message)),
                 &mut rt,
                 &mut observe_deadline,
                 &mut idle_deadline,
-            )
+            ))
             .await
             {
                 return exit;
@@ -1327,7 +1346,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
             }
 
             event = rt.agent_subscriber.recv() => {
-                if let Some(exit) = apply_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
+                if let Some(exit) = Box::pin(apply_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline)).await {
                     return exit;
                 }
             }
@@ -1380,6 +1399,12 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
             // to stop.
             stop_req = rt.stop_rx.recv() => {
                 handle_idle_stop_request(stop_req);
+            }
+
+            Some(request) = rt.retry_rx.recv() => {
+                if let Some(exit) = apply_retry_request(request, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
+                    return exit;
+                }
             }
 
             (task_name, result) = rt.chat_adapters.next_exit() => {

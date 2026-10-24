@@ -32,6 +32,8 @@ pub(crate) struct GatewayCore {
     pub reload_tx: residuum_bus::control::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
+    /// Asks the event loop to rerun the failed latest main turn.
+    pub retry_tx: mpsc::Sender<RetryTurnRequest>,
     /// The agent's own `config/` directory (`~/.residuum/<agent>/config`).
     pub config_dir: std::path::PathBuf,
     /// The hub's directory (`~/.residuum/hub`).
@@ -46,11 +48,26 @@ pub(crate) struct GatewayCore {
     pub pulse_fires: Arc<crate::pulse_fires::PulseFires>,
 }
 
+/// A request to rerun the main agent's failed latest turn on the message
+/// that started it, which is already in history.
+///
+/// Travels its own channel, which both the idle event loop and a running
+/// turn's select loop watch, so a retry sent while a turn runs is refused at
+/// once instead of waiting behind the turn (as a `ServerCommand` would).
+pub(crate) struct RetryTurnRequest {
+    /// Correlation id of the failed turn.
+    pub id: String,
+    /// `Ok` once the rerun starts (its `turn_started` follows on the bus), or
+    /// the plain-language reason it was refused.
+    pub result_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+}
+
 /// Receiver halves consumed by the event loop.
 pub(crate) struct CoreReceivers {
     pub reload: residuum_bus::control::ReloadReceiver,
     pub command: mpsc::Receiver<ServerCommand>,
     pub stop: mpsc::Receiver<StopRequest>,
+    pub retry: mpsc::Receiver<RetryTurnRequest>,
 }
 
 impl GatewayCore {
@@ -63,6 +80,7 @@ impl GatewayCore {
             tokio::sync::mpsc::unbounded_channel::<residuum_bus::control::ReloadSignal>();
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
         let (stop_tx, stop_rx) = mpsc::channel::<StopRequest>(8);
+        let (retry_tx, retry_rx) = mpsc::channel::<RetryTurnRequest>(8);
         let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
 
@@ -70,6 +88,7 @@ impl GatewayCore {
             reload_tx,
             command_tx,
             stop_tx,
+            retry_tx,
             config_dir,
             hub_dir,
             bus_handle,
@@ -81,6 +100,7 @@ impl GatewayCore {
             reload: reload_rx,
             command: command_rx,
             stop: stop_rx,
+            retry: retry_rx,
         };
         (core, receivers)
     }
@@ -92,6 +112,8 @@ pub(crate) struct GatewayState {
     pub reload_tx: residuum_bus::control::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
+    /// Asks the event loop to rerun the failed latest main turn.
+    pub retry_tx: mpsc::Sender<RetryTurnRequest>,
     pub agent_inbox_dir: std::path::PathBuf,
     /// The hub's staged uploads, which a chat message's attachment ids name.
     pub uploads: residuum_hub::uploads::UploadStore,
@@ -269,6 +291,10 @@ pub(crate) struct AgentRuntime {
     /// event loop when idle (responds "nothing running") and by the active
     /// turn's own select loop while a turn is in progress.
     pub stop_rx: mpsc::Receiver<StopRequest>,
+    /// Requests to rerun the failed latest main turn. Watched by the outer
+    /// event loop, which runs or refuses them, and by the active turn, which
+    /// refuses them: a retry never waits for a turn to end.
+    pub retry_rx: mpsc::Receiver<RetryTurnRequest>,
     /// The hub asking this agent to stop (stop, restart, or hub shutdown).
     /// Watched by the outer loop and by the active turn, which it interrupts
     /// the way a user stop does.
