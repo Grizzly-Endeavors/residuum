@@ -186,13 +186,20 @@ fi
 # The wall-clock backlog only shrinks. A new entry, a raised count, or a new
 # allowed file would let a test go back to waiting on the clock; convert the
 # wait instead. The commit that creates the file is the one that sets it. A file
-# the commit renames keeps its entry under the new path, so RENAMES lists the
-# staged renames as old>new pairs and the check reads a renamed entry as the
-# one it replaces.
+# the commit renames keeps its entry under the new path, so the check reads the
+# staged renames as old>new pairs and a renamed entry as the one it replaces.
+#
+# A merge commit brings in the other parent's entries as they are, so on a merge
+# an entry is growth only when it grew against both parents: merging main into a
+# branch that predates an entry main added does not add it.
 BACKLOG=src/testing/wall_clock_backlog.rs
-BACKLOG_GROWTH=""
-RENAMES="$(with_git_env git diff --cached -M --name-status --diff-filter=R -- '*.rs' | awk -F '\t' '{ printf "%s>%s ", $2, $3 }')"
-with_git_env git cat-file -e "HEAD:$BACKLOG" 2>/dev/null && BACKLOG_GROWTH="$(with_git_env git diff --cached -U0 -- "$BACKLOG" | awk -v renames="$RENAMES" '
+
+# The staged backlog entries that grew against commit $1.
+backlog_growth_against() {
+    local base="$1" renames
+    with_git_env git cat-file -e "$base:$BACKLOG" 2>/dev/null || return 0
+    renames="$(with_git_env git diff --cached -M --name-status --diff-filter=R "$base" -- '*.rs' | awk -F '\t' '{ printf "%s>%s ", $2, $3 }')"
+    with_git_env git diff --cached -U0 "$base" -- "$BACKLOG" | awk -v renames="$renames" '
     BEGIN {
         pairs = split(renames, pair, " ")
         for (i = 1; i <= pairs; i++) {
@@ -216,7 +223,16 @@ with_git_env git cat-file -e "HEAD:$BACKLOG" 2>/dev/null && BACKLOG_GROWTH="$(wi
             if (!(from in removed) || (added[path] >= 0 && removed[from] >= 0 && added[path] > removed[from])) print line[path]
         }
     }
-')"
+'
+}
+
+BACKLOG_GROWTH=""
+if with_git_env git cat-file -e "HEAD:$BACKLOG" 2>/dev/null; then
+    BACKLOG_GROWTH="$(backlog_growth_against HEAD)"
+    if [ -n "$BACKLOG_GROWTH" ] && with_git_env git cat-file -e "MERGE_HEAD:$BACKLOG" 2>/dev/null; then
+        BACKLOG_GROWTH="$(comm -12 <(sort <<<"$BACKLOG_GROWTH") <(backlog_growth_against MERGE_HEAD | sort))"
+    fi
+fi
 if [ -n "$BACKLOG_GROWTH" ]; then
     echo -e "${RED}ERROR: $BACKLOG may only shrink.${NC}" >&2
     echo "Make the test wait on the event it checks instead (CONTRIBUTING.md, \"Waiting in tests\"):" >&2
