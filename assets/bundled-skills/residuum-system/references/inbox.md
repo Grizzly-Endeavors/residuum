@@ -45,7 +45,7 @@ IDs are unique within an agent. A filename is the date plus the sanitized title;
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `inbox_list` | `unread_only` (bool, optional), `archived` (bool, optional) | List agent inbox items. Defaults to showing all active items; set `unread_only: true` to filter. Set `archived: true` to list `archive/inbox/agent/` instead — this ignores `unread_only`, since everything there is already read. |
+| `inbox_list` | `unread_only` (bool, optional), `archived` (bool, optional), `query` (text, optional), `limit` (integer, optional), `before` (cursor, optional) | List agent inbox items, newest first, 50 per page (`limit`, at most 200). Defaults to showing active items; set `unread_only: true` to filter. Set `archived: true` to list `archive/inbox/agent/` instead — this ignores `unread_only`, since everything there is already read. `query` keeps the items whose title, body or attachment filenames contain the text, ignoring case. When more items follow, the listing ends with the `before` cursor to pass for the next page, along with the same filters. |
 | `inbox_read` | `id` (string — a filename stem of your agent inbox, or any item's ref) | Read one item: yours by ID, or any agent's agent-inbox or user-inbox item by ref. Shows its ref and, for mail, the thread's earlier messages oldest first and the refs of later ones. **Marks it as read** only when it is an active item of your own agent inbox. |
 | `inbox_archive` | `ids` (array of strings — filename stems) | Move one or more items from `inbox/agent/` to `archive/inbox/agent/`. |
 | `inbox_restore` | `ids` (array of strings — filename stems) | Move one or more items from `archive/inbox/agent/` back to `inbox/agent/`. Find the stem to restore with `inbox_list archived: true`. |
@@ -55,7 +55,7 @@ IDs are unique within an agent. A filename is the date plus the sanitized title;
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `user_inbox_add` | `title` (string; optional when `in_reply_to` is set), `body` (string), `in_reply_to` (ref, optional), `attachments` (paths, optional) | Write an item to your user inbox. With `in_reply_to` it answers that message in its thread, titled `Re: <subject>` unless you give a title; an unknown ref is refused and nothing is written. |
-| `user_inbox_list` | `agent` (folder name, optional), `include_archived` (bool, optional) | List every agent's user-inbox items newest first, with ref, title, agent, time, read and archived state, and the message each answers. Read-only; at most 100 items, with a note when more match. |
+| `user_inbox_list` | `agent` (folder name, optional), `include_archived` (bool, optional), `query` (text, optional), `limit` (integer, optional), `before` (cursor, optional) | List every agent's user-inbox items newest first, with ref, title, agent, time, read and archived state, and the message each answers. Read-only; 50 per page (`limit`, at most 200). `query` keeps the items whose title, body or attachment filenames contain the text, ignoring case, which finds an older item without paging to it. When more match, the listing ends with the `before` cursor to pass for the next page, along with the same filters. |
 
 Neither tool reads or changes the user's read and archived state: archiving and restoring user-inbox items is the user's, in the web UI.
 
@@ -68,7 +68,7 @@ Neither tool reads or changes the user's read and archived state: archiving and 
 
 ## Delivering to the User Inbox
 
-Use `user_inbox_add` (title + body) when a background task — most often a sub-agent that only talks to the user asynchronously — has findings the user should see but that don't need to interrupt a conversation. Before adding a new item, check what every agent has already sent (`user_inbox_list` with `include_archived: true`, then `inbox_read` on the relevant refs) so you don't repeat a suggestion the user already saw. To answer the user's mail, reply in its thread with `in_reply_to` set to the ref of the message you answer.
+Use `user_inbox_add` (title + body) when a background task — most often a sub-agent that only talks to the user asynchronously — has findings the user should see but that don't need to interrupt a conversation. Before adding a new item, check what every agent has already sent (`user_inbox_list` with `include_archived: true` and a `query` for the topic, then `inbox_read` on the relevant refs) so you don't repeat a suggestion the user already saw. To answer the user's mail, reply in its thread with `in_reply_to` set to the ref of the message you answer.
 
 Pass `attachments` — an array of paths to files you've already written to disk — when the finding is easier to review as a file than as inline text (an export, a screenshot, a generated report). Each file is copied into the item's own storage, so the original can safely be moved or deleted afterward. If an attachment can't be copied, the item is still created with the ones that were, and the result lists each file that failed, so send the missing file in a follow-up item if the user needs it.
 

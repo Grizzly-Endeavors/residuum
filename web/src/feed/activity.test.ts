@@ -53,6 +53,20 @@ describe("step labels", () => {
     expect(steps.map((s) => s.target?.kind)).toEqual(["query", "path", "code", "code"]);
   });
 
+  it("say what an inbox listing searched for", () => {
+    const steps = activitySteps([
+      call("inbox_list", { query: "invoice" }),
+      call("user_inbox_list", { query: "weekly digest" }),
+      call("user_inbox_list", { include_archived: true }),
+    ]);
+    expect(steps.map(stepText)).toEqual([
+      "Checked its inbox for “invoice”",
+      "Checked your inbox for “weekly digest”",
+      "Checked your inbox",
+    ]);
+    expect(steps.map((s) => s.icon)).toEqual(["inbox", "inbox", "inbox"]);
+  });
+
   it("read as ongoing while the call runs", () => {
     const [step] = activitySteps([
       call("read_file", { path: "team/wiki/index.md" }, { status: "running" }),

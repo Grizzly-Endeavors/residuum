@@ -422,7 +422,7 @@ On error: action not found, or save failure.
 **Source:** `inbox/agent.rs` · `InboxListTool`
 
 **Description sent to LLM:**
-> List inbox items. Shows unread/read status, title, source, and timestamp for each item.
+> List inbox items, newest first. Shows unread/read status, title, source, and timestamp for each item. Find an item by its words with query. Lists 50 items at a time (limit, at most 200); when more match, the result ends with the before cursor that lists the next page.
 
 ### Input
 
@@ -430,18 +430,31 @@ On error: action not found, or save failure.
 |---------------|---------|----------|---------------------------------------------------------------------------------------|
 | `unread_only` | boolean | no       | Only show unread items (default false). Ignored when `archived` is true.             |
 | `archived`    | boolean | no       | List archived items instead of active ones (default false). Pair with `inbox_restore`. |
+| `query`       | string  | no       | Only items whose title, body or attachment filenames contain this text, ignoring case. Ignored when blank. |
+| `limit`       | integer | no       | How many items one call lists (default 50, at most 200; a larger value counts as 200). |
+| `before`      | string  | no       | The cursor a previous call ended with. Lists the items after it, which are older. Leave out to start from the newest. |
 
 ### Output
 
-On success: count header followed by one entry per item:
+On success: count header followed by one entry per item, newest first (items with the same time are ordered by id):
 ```
-{N} inbox item(s):
+{N} inbox item(s), newest first:
   [{read|unread}] {filename} — {title} ({source}, {timestamp})
 ```
 
-With `archived: true`, the header reads `{N} archived item(s):` instead.
+With `archived: true`, the header reads `{N} archived item(s), newest first:` instead. With a `query`, `match` follows `item(s)`; with `before`, `after the cursor` follows that. `N` counts every item from the start of the page on, whatever the `limit`.
 
-When no items match: `"No inbox items found."` (or `"No archived items found."` with `archived: true`)
+When more items follow the page, the entries end with a line naming the cursor of the next page:
+```
+Showing {n} of {N}. For the next page, call again with before="{cursor}" and the same query, unread_only and archived.
+```
+The cursor is `{unix ms}:{agent}/agent/{id}`, the same form the hub's mail thread list uses; the time is the item's stored local time read in the agent's timezone.
+
+When no items are left to list: `"No inbox items found."` (or `"No archived items found."` with `archived: true`); with a `query` it reads `No inbox items match "{query}".`, and with `before` it ends `after the cursor.`
+
+An item whose file name can't be used as an item id is left out and named in a closing note.
+
+On error: `limit` is not a whole number of at least 1 (`"limit must be at least 1"`, `"limit must be a whole number, not {value}"`), or `before` is not a cursor a listing returned (`"the before cursor isn't one this list returned. ..."`).
 
 ---
 
@@ -584,7 +597,7 @@ On error (nothing is written):
 **Source:** `inbox/user.rs` · `UserInboxListTool`
 
 **Description sent to LLM:**
-> List the items every agent has added to the user's inbox, newest first: each item's ref, title, agent, time, read and archived state, and the message it answers. Read-only. Check it before adding an item so you don't repeat what an agent already sent; read one with inbox_read and its ref. Shows at most 100 items.
+> List the items every agent has added to the user's inbox, newest first: each item's ref, title, agent, time, read and archived state, and the message it answers. Read-only. Check it before adding an item so you don't repeat what an agent already sent; find an older item by its words with query, and read one with inbox_read and its ref. Lists 50 items at a time (limit, at most 200); when more match, the result ends with the before cursor that lists the next page.
 
 ### Input
 
@@ -592,6 +605,9 @@ On error (nothing is written):
 |--------------------|---------|----------|-------------|
 | `agent`            | string  | no       | Only this agent's items (its folder name, the first part of a ref). |
 | `include_archived` | boolean | no       | Include items the user archived (default false). |
+| `query`            | string  | no       | Only items whose title, body or attachment filenames contain this text, ignoring case. Ignored when blank. |
+| `limit`            | integer | no       | How many items one call lists (default 50, at most 200; a larger value counts as 200). |
+| `before`           | string  | no       | The cursor a previous call ended with. Lists the items after it, which are older. Leave out to start from the newest. |
 
 ### Output
 
@@ -600,11 +616,11 @@ On success:
 {N} user inbox item(s), newest first:
   [{read|unread}[, archived]] {ref} — {title} ({agent}, {timestamp})[, in reply to {ref}]
 ```
-`N` counts every matching item. When more than 100 match, only the 100 newest are listed, followed by `"Showing the 100 newest of {N} items. Narrow the list with agent to see older ones."`. With no match: `"No user inbox items found."`. Times are each agent's stored local times.
+Items with the same time are ordered by ref. With a `query`, `match` follows `item(s)`; with `before`, `after the cursor` follows that. `N` counts every matching item from the start of the page on, whatever the `limit`. When more items follow the page, the listing ends with `Showing {n} of {N}. For the next page, call again with before="{cursor}" and the same query, agent and include_archived.` The cursor is `{unix ms}:{ref}`, the same form the hub's mail thread list uses. With nothing left to list: `"No user inbox items found."`; with a `query` it reads `No user inbox items match "{query}".`, and with `before` it ends `after the cursor.` Times are each agent's stored local times.
 
 Notes follow the listing after a blank line: one per agent whose inbox could not be read (its items are missing), and, without the hub's mailbox directory, that only this agent's own inboxes could be read.
 
-On error (`is_error = true`): `"there is no agent named '{agent}'"` for an unknown `agent` filter.
+On error (`is_error = true`): `"there is no agent named '{agent}'"` for an unknown `agent` filter. A `limit` that is not a whole number of at least 1, or a `before` that is not a cursor a listing returned, is refused as invalid arguments (`"limit must be at least 1"`, `"the before cursor isn't one this list returned. ..."`).
 
 **Side effect:** None. Read and archived state is the user's; the tool never changes it.
 

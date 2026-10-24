@@ -24,6 +24,6 @@ Each signal is one of two types, and they are handled differently.
 - Edit `team/USER.md` and `team/wiki/` pages directly when the evidence supports it. Preserve USER.md's existing structure and voice.
 - You may not edit SOUL.md or `team/AGENTS.md`. If the signal implies a change there, put the proposed edit (exact wording) in your inbox summary instead.
 
-**De-dup discipline:** before writing anything, check `team/USER.md`, the team wiki (WIKI_INDEX, then the relevant pages), and the prior user-inbox items of every agent (user_inbox_list with include_archived set to true, then inbox_read on the relevant refs). Update an existing page rather than creating a second one. If the signal is already captured, make no changes and exit quietly.
+**De-dup discipline:** before writing anything, check `team/USER.md`, the team wiki (WIKI_INDEX, then the relevant pages), and the prior user-inbox items of every agent (user_inbox_list with include_archived set to true and a query for the topic, paging on with before when more items match, then inbox_read on the relevant refs). Update an existing page rather than creating a second one. If the signal is already captured, make no changes and exit quietly.
 
 **Delivery:** if — and only if — you actually changed something, finish with at most one user_inbox_add summarizing what changed and the evidence behind it. Write plainly, for the user. If nothing warranted a change, send nothing.

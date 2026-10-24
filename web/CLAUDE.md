@@ -3,7 +3,8 @@
 ## Key References
 
 - **[AESTHETIC.md](./AESTHETIC.md)** — The visual system: design tokens, surfaces and elevation, contrast rules, type (Onest and JetBrains Mono, with Cinzel for the wordmark only), shape and density, layout and breakpoints, motion, icons, the primitive controls and their overlay and keyboard behavior, and the base styles
-- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Development setup, mock mode, project structure, how the app works (routing, the shell, each place, the data layer, the Settings modal, the PWA), code quality commands, and testing (unit, component, end-to-end, accessibility, visual)
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — How the app is put together: project structure, routing and history, the shell, the service worker, the action registry, the data layer (sockets, config writes, the settings model), the Settings modal and each place
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Running the app against the mock or a real backend, code quality checks, and testing (unit, component, end-to-end, accessibility, visual, CI and stress)
 
 ## UI Changes
 

@@ -15,6 +15,8 @@
 //!   the user's messages.
 //! - [`send_mail`] writes one user-authored message to one or more agents, and
 //!   [`OutgoingMail::reply`] builds the reply-all to a thread.
+//! - [`MailCursor`] marks where a page of a newest-first list stopped, for the
+//!   hub's thread list and the agents' inbox listing tools.
 //!
 //! [`InboxRef`]: crate::inbox::InboxRef
 
@@ -22,11 +24,13 @@ use std::path::PathBuf;
 
 use residuum_config::WorkspaceLayout;
 
+mod cursor;
 mod handle;
 mod send;
 mod thread;
 mod update;
 
+pub use cursor::MailCursor;
 pub use handle::MailboxDirectoryHandle;
 pub use send::{
     OutgoingMail, SendMailError, SentMail, UserMailSource, is_user_mail_source, reply_subject,
