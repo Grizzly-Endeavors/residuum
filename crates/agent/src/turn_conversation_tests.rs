@@ -239,6 +239,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     let mut recent = RecentMessages::new();
     recent.push(Message::user("go"));
     let result = execute_turn(
+        recent.len() - 1,
         &resources,
         &MemoryContext {
             observations: None,

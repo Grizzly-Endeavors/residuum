@@ -396,6 +396,9 @@ async fn handle_client_message(
                 tracing::warn!("failed to dispatch stop request: channel closed or full");
             }
         }
+        ClientMessage::RetryTurn { id } => {
+            retry_turn(state, id, local_tx);
+        }
         ClientMessage::SendQueuedNow { id } => {
             send_queued_now(state, id, local_tx);
         }
@@ -534,6 +537,47 @@ async fn send_frame(
     };
     ws_tx.send(WsMessage::text(json)).await.is_ok()
 }
+
+/// Ask the event loop to rerun the failed latest turn `id` names. The rerun
+/// answers with its `turn_started` on the bus; a refusal is sent to this
+/// connection only, as `retry_refused`.
+fn retry_turn(state: &GatewayState, id: String, local_tx: &mpsc::UnboundedSender<ServerMessage>) {
+    tracing::info!(turn_id = %id, "retry of a failed turn requested by client");
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let request = crate::types::RetryTurnRequest {
+        id: id.clone(),
+        result_tx,
+    };
+    if let Err(e) = state.retry_tx.try_send(request) {
+        tracing::warn!(turn_id = %id, error = %e, "failed to dispatch a retry request: channel closed or full");
+        local_tx
+            .send(ServerMessage::RetryRefused {
+                id,
+                message: RETRY_NOT_DELIVERED.to_string(),
+            })
+            .ok();
+        return;
+    }
+    let local_tx = local_tx.clone();
+    residuum_core::util::spawn_in_span(async move {
+        let message = match result_rx.await {
+            Ok(Ok(())) => return,
+            Ok(Err(reason)) => reason,
+            Err(_) => {
+                tracing::warn!(turn_id = %id, "retry request dropped without an answer");
+                RETRY_NOT_DELIVERED.to_string()
+            }
+        };
+        local_tx
+            .send(ServerMessage::RetryRefused { id, message })
+            .ok();
+    });
+}
+
+/// A retry that never reached the agent, or that it dropped unanswered (it
+/// was stopping).
+const RETRY_NOT_DELIVERED: &str =
+    "The agent couldn't take the retry right now. Try again in a moment.";
 
 /// Send a waiting message now: it is held out of the running turn, which is
 /// stopped, so the message starts the next one. Whichever turn is running is
@@ -1040,6 +1084,7 @@ mod tests {
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
+            retry_tx: core.retry_tx,
             agent_inbox_dir: workspace_dir.join("inbox/agent"),
             uploads: residuum_hub::uploads::UploadStore::open(&workspace_dir.join("hub")).unwrap(),
             tz: chrono_tz::UTC,

@@ -425,8 +425,8 @@ async fn test_handle_connection(socket: axum::extract::ws::WebSocket, state: Tes
             }
             // SetVerbose (client-side), Reload, ServerCommand, InboxAdd,
             // Cancel, the session commands, workspace watching, turn
-            // resyncs and waiting-message commands are not handled in the
-            // test stub
+            // resyncs, waiting-message commands and turn retries are not
+            // handled in the test stub
             ClientMessage::SetVerbose { .. }
             | ClientMessage::Reload
             | ClientMessage::ServerCommand { .. }
@@ -437,6 +437,7 @@ async fn test_handle_connection(socket: axum::extract::ws::WebSocket, state: Tes
             | ClientMessage::WatchWorkspace { .. }
             | ClientMessage::SendQueuedNow { .. }
             | ClientMessage::WithdrawQueued { .. }
+            | ClientMessage::RetryTurn { .. }
             | ClientMessage::ResyncTurn => {}
         }
     }

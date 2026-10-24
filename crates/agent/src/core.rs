@@ -82,6 +82,65 @@ pub struct Agent {
     /// for an agent with no workspace layout (test constructors) — totals
     /// then live only in memory for the process's lifetime.
     usage_totals_path: Option<std::path::PathBuf>,
+    /// The latest turn, while it is the latest and it failed. Set when a
+    /// turn fails; cleared when another turn starts, when a rerun of it
+    /// starts, and when history is cleared or rotated (the message the
+    /// record points at may be gone).
+    failed_turn: Option<FailedTurn>,
+}
+
+/// What a main-agent turn runs against besides the agent itself: where it
+/// publishes, the prompt context, and what interrupts and stops it.
+pub struct TurnWiring<'a> {
+    /// Publishes the turn's events.
+    pub publisher: &'a Publisher,
+    /// Where the turn's output goes.
+    pub output: TurnOutput<'a>,
+    /// The skills context for the system prompt.
+    pub prompt_ctx: &'a PromptContext<'a>,
+    /// Messages, findings and stops that reach the turn while it runs.
+    pub interrupt_rx: &'a mut dyn interrupt::InterruptSource,
+    /// The subconscious watching the turn, when one does.
+    pub subconscious: Option<&'a crate::subconscious::SubconsciousWatch>,
+    /// Cancels the turn's in-flight model call.
+    pub stop_token: &'a CancellationToken,
+}
+
+/// The agent's latest turn, which failed. The message that started it is
+/// still in history, so [`Agent::rerun_turn`] can run the turn again on it.
+#[derive(Debug, Clone)]
+pub struct FailedTurn {
+    /// The turn's correlation id.
+    correlation_id: String,
+    /// Index in the recent history of the message that started the turn.
+    kickoff_index: usize,
+    /// Where the message that started the turn came from.
+    origin: Option<MessageOrigin>,
+    /// The hop count that message carried.
+    kickoff_hop: u32,
+    /// When the message before it arrived, for the rerun's status line.
+    previous_message_at: Option<chrono::NaiveDateTime>,
+}
+
+impl FailedTurn {
+    /// The failed turn's correlation id.
+    #[must_use]
+    pub fn correlation_id(&self) -> &str {
+        &self.correlation_id
+    }
+
+    /// Where the message that started the turn came from.
+    #[must_use]
+    pub fn origin(&self) -> Option<&MessageOrigin> {
+        self.origin.as_ref()
+    }
+
+    /// Index in the agent's recent history of the message that started the
+    /// turn: the turn's messages are the ones from here on.
+    #[must_use]
+    pub fn kickoff_index(&self) -> usize {
+        self.kickoff_index
+    }
 }
 
 impl Agent {
@@ -120,6 +179,7 @@ impl Agent {
                 SessionUsageTotals::default(),
             )),
             usage_totals_path,
+            failed_turn: None,
         }
     }
 
@@ -266,6 +326,7 @@ impl Agent {
 
     /// Clear all in-memory messages (used after idle transition + observer).
     pub fn clear_messages(&mut self) {
+        self.forget_failed_turn("history cleared");
         self.recent_messages.clear();
     }
 
@@ -274,9 +335,36 @@ impl Agent {
     /// Extracts the last 3 text exchanges, clears the buffer, then prepends
     /// the retained exchanges so the agent keeps conversational context.
     pub fn rotate_messages_after_observation(&mut self) {
+        self.forget_failed_turn("history rotated after an observation");
         let retained = self.recent_messages.last_exchanges(3);
         self.recent_messages.clear();
         self.recent_messages.prepend(retained);
+    }
+
+    /// The latest turn, when it failed and can still be run again.
+    #[must_use]
+    pub fn failed_turn(&self) -> Option<&FailedTurn> {
+        self.failed_turn.as_ref()
+    }
+
+    /// Take the failed latest turn to run again, when `correlation_id` names
+    /// it. Taken, it is no longer there to retry: a rerun that fails records
+    /// itself again.
+    pub fn take_failed_turn(&mut self, correlation_id: &str) -> Option<FailedTurn> {
+        self.failed_turn
+            .take_if(|failed| failed.correlation_id == correlation_id)
+    }
+
+    /// Drop the failed-turn record: the conversation moved past it, or the
+    /// history it points into changed.
+    fn forget_failed_turn(&mut self, reason: &str) {
+        if let Some(failed) = self.failed_turn.take() {
+            tracing::debug!(
+                correlation_id = %failed.correlation_id,
+                reason,
+                "failed turn can no longer be retried"
+            );
+        }
     }
 
     /// Inject a system message directly into the conversation history.
@@ -294,6 +382,7 @@ impl Agent {
     /// (with its sender, images, and background context) is visible in the next
     /// turn without being lost.
     pub fn inject_inbound_message(&mut self, message: residuum_bus::MessageEvent) {
+        self.forget_failed_turn("a message entered the conversation");
         self.recent_messages.extend(message.into_history_messages());
     }
 
@@ -322,6 +411,9 @@ impl Agent {
     /// value. `correlation_id` names the turn in
     /// everything it publishes.
     ///
+    /// A turn that fails is recorded as the failed latest turn, which
+    /// [`Self::rerun_turn`] can run again on the message already in history.
+    ///
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors
     /// are unrecoverable.
@@ -344,11 +436,12 @@ impl Agent {
         stop_token: &CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
-        self.identity = self.load_identity_snapshot().await;
+        self.forget_failed_turn("another turn started");
         let now = residuum_core::time::now_local(self.tz);
+        let previous_message_at = self.last_user_message_at;
         let status_line = StatusLine {
             now,
-            last_message_at: self.last_user_message_at,
+            last_message_at: previous_message_at,
             message_source: origin.map(|o| o.endpoint.clone()),
         };
         self.last_user_message_at = Some(now);
@@ -364,9 +457,74 @@ impl Agent {
         } else {
             Message::user_with_images(user_input, images.to_vec())
         };
+        let kickoff_index = self.recent_messages.len();
         self.recent_messages
             .push(kickoff.with_sender(sender).with_agent_sender(agent_sender));
 
+        let attempt = FailedTurn {
+            correlation_id: correlation_id.to_string(),
+            kickoff_index,
+            origin: origin.cloned(),
+            kickoff_hop: self.hop_counter.get(),
+            previous_message_at,
+        };
+        let wiring = TurnWiring {
+            publisher,
+            output: output_endpoint.into(),
+            prompt_ctx,
+            interrupt_rx,
+            subconscious,
+            stop_token,
+        };
+        self.run_recorded_turn(attempt, &status_line, wiring).await
+    }
+
+    /// Run the failed latest turn again, taken with
+    /// [`Self::take_failed_turn`], on the message that started it, which is
+    /// still in history: no message is added. The failed attempt's work stays
+    /// in history and the rerun continues from it, under the same correlation
+    /// id. A rerun that fails is recorded as the failed latest turn again.
+    ///
+    /// # Errors
+    /// As [`Self::process_message`].
+    #[tracing::instrument(skip_all, fields(correlation_id = %failed.correlation_id))]
+    pub async fn rerun_turn(
+        &mut self,
+        failed: FailedTurn,
+        wiring: TurnWiring<'_>,
+    ) -> anyhow::Result<Vec<String>> {
+        tracing::info!(
+            kickoff_index = failed.kickoff_index,
+            "running the failed latest turn again"
+        );
+        // The rerun's inputs are the original turn's: the hop count its
+        // opening message carried, and the status line it was sent under.
+        self.hop_counter.bump(failed.kickoff_hop);
+        let status_line = StatusLine {
+            now: residuum_core::time::now_local(self.tz),
+            last_message_at: failed.previous_message_at,
+            message_source: failed.origin.as_ref().map(|o| o.endpoint.clone()),
+        };
+        self.run_recorded_turn(failed, &status_line, wiring).await
+    }
+
+    /// Run a turn whose opening message sits at `attempt.kickoff_index`, and
+    /// record it as the failed latest turn when it fails.
+    async fn run_recorded_turn(
+        &mut self,
+        attempt: FailedTurn,
+        status_line: &StatusLine,
+        wiring: TurnWiring<'_>,
+    ) -> anyhow::Result<Vec<String>> {
+        self.identity = self.load_identity_snapshot().await;
+        let TurnWiring {
+            publisher,
+            output,
+            prompt_ctx,
+            interrupt_rx,
+            subconscious,
+            stop_token,
+        } = wiring;
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
         let usage_sink = MainUsageSink::new(
@@ -392,22 +550,27 @@ impl Agent {
             publisher,
             reply_audience: self.reply_audience.as_deref(),
             target: EventTarget::Endpoint {
-                output_endpoint: output_endpoint.into(),
-                correlation_id,
+                output_endpoint: output,
+                correlation_id: &attempt.correlation_id,
             },
             session_conversation: None,
         };
-        execute_turn(
+        let result = execute_turn(
+            attempt.kickoff_index,
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
             &events,
-            Some(&status_line),
+            Some(status_line),
             interrupt_rx,
             subconscious,
         )
-        .await
+        .await;
+        if result.is_err() {
+            self.failed_turn = Some(attempt);
+        }
+        result
     }
 
     /// Compute a per-section token breakdown for the current agent context.
