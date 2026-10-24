@@ -12,6 +12,7 @@ import {
   externalTurn,
   sessionMessageTurn,
   PIECE_MS,
+  retriedTurn,
   scenarioFor,
   type Scenario,
   type ScenarioStep,
@@ -131,6 +132,14 @@ function turnLengthMs(drop: boolean, finishWhileDown: boolean): number {
   return finishWhileDown ? 900 : 4000;
 }
 
+/**
+ * Why a failed turn can't be run again: it isn't the conversation's latest
+ * failure any more (another turn started, or it was already retried), or the
+ * agent is busy.
+ */
+export const RETRY_GONE =
+  "That message can't be retried anymore because the conversation has moved on. Send it again to try once more.";
+
 /** Where a turn's message came from: this page's own socket, or another channel. */
 export interface MessageSource {
   /** The endpoint the message arrived on: `ws`, `telegram`, ... */
@@ -149,6 +158,8 @@ export interface MessageSource {
 interface TurnInFlight {
   content: string;
   source: MessageSource;
+  /** The turn runs a failed turn's message again: history already holds the message. */
+  rerun: boolean;
   cancels: Array<() => void>;
   /** The sessions' messages the turn read while it ran, as history records them. */
   folded: RecentMessage[];
@@ -168,6 +179,11 @@ export interface ChatSimulator {
   receiveFromSession: (content: string, sender: AgentSender) => void;
   /** Stop the turn answering `replyTo`, if it is still running. */
   cancel: (replyTo: string) => void;
+  /**
+   * Run the failed turn `replyTo` again on its message (`retry_turn`); false
+   * when it can't be: it isn't the latest turn's failure, or the agent is busy.
+   */
+  retry: (replyTo: string) => boolean;
   /** Send a waiting message now (`send_queued_now`); false when it isn't waiting. */
   sendWaitingNow: (id: string) => boolean;
   /** Take back a waiting message (`withdraw_queued`); false when it isn't waiting. */
@@ -190,7 +206,9 @@ export interface ChatSimulator {
  *
  * Each turn reports its usage, and adds it to the conversation's totals. A
  * message starting with "remember" is followed by two seconds of memory work.
- * Other prefixes run the scripted turns of `chat-scenarios.ts`.
+ * Other prefixes run the scripted turns of `chat-scenarios.ts`. A turn that
+ * failed (`error`) can be run again (`retry_turn`) until another turn starts:
+ * the rerun keeps its id, announces no message, and ends with a reply.
  * A message starting with "markdown" is answered with `markdownShowcase`,
  * and one starting with "images" with `imageShowcase`, instead of the next
  * canned reply, which keeps its place.
@@ -208,6 +226,8 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
   const inFlight = new Map<string, TurnInFlight>();
   /** Messages that arrived while a turn ran, oldest first, waiting for the agent to read them. */
   const waiting: Array<{ id: string; content: string; source: MessageSource }> = [];
+  /** The latest turn, when it failed and nothing has started since: the one a retry runs again. */
+  let latestFailure: { id: string; content: string; source: MessageSource } | null = null;
   let responseIndex = 0;
   const WEB: MessageSource = { endpoint: "ws" };
 
@@ -235,7 +255,13 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
    * before its last message.
    */
   function recordTurn(turn: TurnInFlight, opening: RecentMessage, own: RecentMessage[]): void {
-    state.extraRecent.push(opening, ...own.slice(0, -1), ...turn.folded, ...own.slice(-1));
+    // A rerun's message was recorded when the turn first ran.
+    state.extraRecent.push(
+      ...(turn.rerun ? [] : [opening]),
+      ...own.slice(0, -1),
+      ...turn.folded,
+      ...own.slice(-1),
+    );
   }
 
   /** Add a turn's model calls and tools to the conversation's totals. */
@@ -249,8 +275,26 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     };
   }
 
-  /** The frames that start a turn: the message every page is told of, then the turn. */
-  function startFrames(replyTo: string, content: string, source: MessageSource): ServerMessage[] {
+  /**
+   * The frames that start a turn: the message every page is told of, then the
+   * turn. A rerun has no message to tell of.
+   */
+  function startFrames(
+    replyTo: string,
+    content: string,
+    source: MessageSource,
+    rerun = false,
+  ): ServerMessage[] {
+    const turnStarted: ServerMessage = {
+      type: "turn_started",
+      reply_to: replyTo,
+      origin: {
+        endpoint: source.endpoint,
+        ...(source.sender === undefined ? {} : { sender: source.sender }),
+        visibility: source.agentSender === undefined ? "user" : "background",
+      },
+    };
+    if (rerun) return [turnStarted];
     return [
       {
         type: "user_message",
@@ -267,15 +311,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         ...(source.agentSender === undefined ? {} : { agent_sender: source.agentSender }),
         endpoint: source.endpoint,
       },
-      {
-        type: "turn_started",
-        reply_to: replyTo,
-        origin: {
-          endpoint: source.endpoint,
-          ...(source.sender === undefined ? {} : { sender: source.sender }),
-          visibility: source.agentSender === undefined ? "user" : "background",
-        },
-      },
+      turnStarted,
     ];
   }
 
@@ -293,8 +329,9 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     content: string,
     scenario: Scenario,
     source: MessageSource,
+    rerun = false,
   ): void {
-    const turn: TurnInFlight = { content, source, cancels: [], folded: [] };
+    const turn: TurnInFlight = { content, source, rerun, cancels: [], folded: [] };
     inFlight.set(replyTo, turn);
     const later = (ms: number, action: () => void): void => {
       turn.cancels.push(env.after(ms, action));
@@ -319,7 +356,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       }
     };
 
-    emit(startFrames(replyTo, content, source));
+    emit(startFrames(replyTo, content, source, rerun));
     hub.setBusy(agent, true);
     schedule(scenario.steps);
     later(scenario.endAt, () => {
@@ -366,20 +403,18 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
             }
             emit([{ type: "turn_ended", reply_to: replyTo }]);
             settleTurn(scenario.failure !== null);
-            if (scenario.recorded.length === 0) {
-              recordTurn(turn, userRecord(content, source), []);
-            } else {
-              const ofTurn = {
-                timestamp: env.clock.iso(),
-                visibility: "user",
-                turn_id: replyTo,
-              } as const;
-              recordTurn(
-                turn,
-                { ...userRecord(content, source), turn_id: replyTo },
-                scenario.recorded.map((message) => ({ ...message, ...ofTurn })),
-              );
-            }
+            if (scenario.failure !== null) latestFailure = { id: replyTo, content, source };
+            // Like the backend, every message of the turn carries its correlation id.
+            const ofTurn = {
+              timestamp: env.clock.iso(),
+              visibility: "user",
+              turn_id: replyTo,
+            } as const;
+            recordTurn(
+              turn,
+              { ...userRecord(content, source), turn_id: replyTo },
+              scenario.recorded.map((message) => ({ ...message, ...ofTurn })),
+            );
             hub.overview.changed(agent);
             startNextWaiting();
           });
@@ -398,6 +433,8 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
   }
 
   function start(replyTo: string, content: string, source: MessageSource): void {
+    // Whatever failed before, the conversation has moved past it.
+    latestFailure = null;
     const scenario = scenarioOf(replyTo, content, source);
     if (scenario !== null) {
       runScenario(replyTo, content, scenario, source);
@@ -430,7 +467,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     const response = showcase ?? cannedResponses[responseIndex % cannedResponses.length] ?? "";
     if (showcase === undefined) responseIndex++;
 
-    const turn: TurnInFlight = { content, source, cancels: [], folded: [] };
+    const turn: TurnInFlight = { content, source, rerun: false, cancels: [], folded: [] };
     inFlight.set(replyTo, turn);
     const later = (ms: number, action: () => void): void => {
       turn.cancels.push(env.after(ms, action));
@@ -693,6 +730,20 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     turn.folded.push({ ...userRecord(content, source), turn_id: turnId });
   }
 
+  /**
+   * Run the failed turn again under its own id: no message is announced or
+   * recorded again, and the provider answers this time, so the rerun ends
+   * with a reply. False when the turn isn't the latest one's failure, or the
+   * agent is busy or has messages waiting.
+   */
+  function retry(replyTo: string): boolean {
+    const turn = latestFailure;
+    if (turn?.id !== replyTo || inFlight.size > 0 || waiting.length > 0) return false;
+    latestFailure = null;
+    runScenario(replyTo, turn.content, retriedTurn(replyTo, env.nextId), turn.source, true);
+    return true;
+  }
+
   function cancel(replyTo: string): void {
     const turn = inFlight.get(replyTo);
     if (turn === undefined) return;
@@ -727,5 +778,5 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     return true;
   }
 
-  return { send, receive, receiveFromSession, cancel, sendWaitingNow, withdrawWaiting };
+  return { send, receive, receiveFromSession, cancel, retry, sendWaitingNow, withdrawWaiting };
 }

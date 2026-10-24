@@ -38,7 +38,12 @@ body: string, } | { "type": "cancel",
  * `TurnStarted`/`TurnEnded`). A stop for a turn that has already
  * ended is silently ignored.
  */
-reply_to: string, } | { "type": "session_send_message", 
+reply_to: string, } | { "type": "retry_turn",
+/**
+ * The failed message's id: the `id` it was sent with, which is also the
+ * `reply_to` of the failed turn.
+ */
+id: string, } | { "type": "session_send_message",
 /**
  * Client-generated correlation ID for the reply.
  */

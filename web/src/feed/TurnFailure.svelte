@@ -6,20 +6,18 @@
   import { ws } from "../lib/ws.svelte";
 
   // The end of a turn that couldn't finish: what went wrong in plain words,
-  // the technical detail behind Details, and Try again, which sends what the
-  // user wrote once more. It stays after the toast for the failure is gone.
+  // the technical detail behind Details, and Try again, which has the agent
+  // run the turn again on the message it already holds (no message is sent,
+  // so no new bubble). It stays after the toast for the failure is gone, and
+  // gives way to the rerun when that starts. Should the agent decline, the
+  // button is replaced by its reason.
 
   let { item, agent }: { item: TurnFailureFeedItem; agent: string } = $props();
-
-  /** The user sent it again from here, so the message below it is the answer to the button. */
-  let sentAgain = $state(false);
 
   const retry = $derived(ws.agent === agent ? item.retry : undefined);
 
   function tryAgain(): void {
-    if (retry === undefined) return;
-    sentAgain = true;
-    ws.sendChat(retry.content);
+    ws.retryTurn(item.turnId);
   }
 </script>
 
@@ -28,7 +26,9 @@
   <div class="failure-body">
     <p class="failure-title">{hub.shownName(agent)} couldn't finish this reply</p>
     <p class="failure-message">{item.message}</p>
-    {#if retry !== undefined && !sentAgain}
+    {#if retry?.refused !== undefined}
+      <p class="failure-refusal">{retry.refused}</p>
+    {:else if retry !== undefined && retry.asked !== true}
       <div class="failure-actions">
         <Button variant="secondary" size="sm" icon="reload" onclick={tryAgain}>Try again</Button>
       </div>
@@ -85,6 +85,14 @@
 
   .failure-actions {
     margin-top: var(--space-4);
+  }
+
+  /* The agent's reason for not running the turn again, where the button was. */
+  .failure-refusal {
+    margin-top: var(--space-4);
+    color: var(--color-text);
+    --leading: var(--line-height-ui);
+    overflow-wrap: anywhere;
   }
 
   .failure-body :global(.ui-disclosure) {

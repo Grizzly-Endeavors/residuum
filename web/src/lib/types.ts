@@ -760,21 +760,30 @@ export interface StatusFeedItem extends FeedItemBase {
 /**
  * The end of a turn that couldn't finish, kept in the feed after its toast is
  * gone: what went wrong in plain words, the technical detail behind a
- * toggle, and a way to send the user's message again.
+ * toggle, and a way to have the agent run the turn again.
  */
 export interface TurnFailureFeedItem extends FeedItemBase {
   kind: "turn-failure";
+  /** The failed turn's correlation id: the id of the message that began it, which Try again names. */
+  turnId: string;
   /** The agent's plain-language account of what went wrong. */
   message: string;
   /** The full technical cause chain, when there is one. */
   details?: string;
   /**
-   * What the user wrote to start the turn, for Try again. Absent when the page
-   * doesn't hold that message, it wasn't the user's own, or it carried images
-   * or files: a message carries files as uploads, which were used up when it
-   * first went.
+   * Try again, which asks the agent to rerun the turn on the message it
+   * already holds, files and all. Absent when the page doesn't hold the
+   * message that began the turn, or it wasn't the user's own.
    */
-  retry?: { content: string };
+  retry?: TurnRetry;
+}
+
+/** Where Try again stands on a failed turn. Empty while it is on offer. */
+export interface TurnRetry {
+  /** Try again was asked, and the agent's answer (the rerun starting, or a refusal) is awaited. */
+  asked?: true;
+  /** Why the agent won't rerun the turn, in plain words, with what to do next. Try again is gone. */
+  refused?: string;
 }
 
 export type FeedItem =

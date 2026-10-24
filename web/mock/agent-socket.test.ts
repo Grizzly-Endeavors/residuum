@@ -20,6 +20,7 @@ describe("parseClientMessage", () => {
     [{ type: "server_command", name: "context", args: null }],
     [{ type: "inbox_add", body: "remember" }],
     [{ type: "cancel", reply_to: "m1" }],
+    [{ type: "retry_turn", id: "m1" }],
     [{ type: "session_send_message", id: "s1", address: "a", content: "hi" }],
     [{ type: "session_stop", id: "s2", address: "a" }],
     [{ type: "watch_workspace", prefixes: ["team", ""] }],
@@ -44,6 +45,7 @@ describe("parseClientMessage", () => {
     ['{"type":"send_message","id":5,"content":"x"}', "missing or invalid field `id`"],
     ['{"type":"set_verbose"}', "missing or invalid field `enabled`"],
     ['{"type":"cancel"}', "missing or invalid field `reply_to`"],
+    ['{"type":"retry_turn"}', "missing or invalid field `id`"],
     ['{"type":"watch_workspace","prefixes":[1]}', "missing or invalid field `prefixes`"],
     ['{"type":"watch_workspace"}', "missing or invalid field `prefixes`"],
   ])("refuses %s", (raw, reason) => {
@@ -235,6 +237,33 @@ describe("agent socket", () => {
           "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
       });
       expect((await socket.settled()).map((frame) => frame.type)).not.toContain("user_message");
+    });
+
+    it("runs a failed turn again on retry_turn, under the same id and without announcing the message", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "error please" });
+      await socket.nextOfType("error");
+      await socket.nextOfType("turn_ended");
+      const before = socket.frames.length;
+
+      socket.send({ type: "retry_turn", id: "m1" });
+      expect(await socket.nextOfType("turn_started")).toMatchObject({ reply_to: "m1" });
+      expect(await socket.nextOfType("response")).toMatchObject({ reply_to: "m1" });
+      await socket.nextOfType("turn_ended");
+
+      const rerun = socket.frames.slice(before).map((frame) => frame.type);
+      expect(rerun).not.toContain("user_message");
+      expect(rerun).not.toContain("retry_refused");
+    });
+
+    it("refuses retry_turn for a turn that isn't the latest failure, naming it", async () => {
+      socket.send({ type: "retry_turn", id: "m9" });
+      expect(await socket.nextOfType("retry_refused")).toEqual({
+        type: "retry_refused",
+        id: "m9",
+        message:
+          "That message can't be retried anymore because the conversation has moved on. Send it again to try once more.",
+      });
+      expect((await socket.settled()).map((frame) => frame.type)).not.toContain("turn_started");
     });
 
     it("starts a session when the message begins with spawn", async () => {

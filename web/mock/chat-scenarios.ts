@@ -446,6 +446,40 @@ export function externalTurn(replyTo: string, nextId: NextId): Scenario {
 }
 
 /**
+ * The rerun of a turn that failed (`retry_turn`): the provider answers this
+ * time, so the agent searches its notes again and gives its reply.
+ */
+export function retriedTurn(replyTo: string, nextId: NextId): Scenario {
+  const ctx: Context = { replyTo, nextId };
+  const search = scriptCall(
+    ctx,
+    "memory_search",
+    { query: "notification routing", limit: 5 },
+    '[{"text":"Found 3 relevant observations from recent conversations.","score":0.87}]',
+  );
+  const note = "Looking through recent notes again.";
+  const reply = "The routing doc sends urgent notices to every channel and the rest to one.";
+  const run = new Timeline(ctx);
+  const at = run.stream("text", 0, note, 20);
+  run.text(at + 20, 0, note);
+  run.call(at + 20, 0, search);
+  run.results(at + 420, search);
+  const finale = new Timeline(ctx);
+  const replyEnds = finale.stream("text", 1, reply, 0);
+  return {
+    steps: run.steps,
+    endAt: at + 460,
+    finale: finale.steps,
+    finaleMs: replyEnds + 40,
+    toolCalls: 1,
+    reply,
+    replyCall: 1,
+    failure: null,
+    recorded: [...recordCall(note, [search]), { role: "assistant", content: reply }],
+  };
+}
+
+/**
  * The turn a message from one of the agent's own sessions starts when no turn
  * is running: main takes in what the session at `address` reported, in one
  * model call and no tools.

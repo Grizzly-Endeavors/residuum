@@ -265,6 +265,14 @@ id: string,
 /**
  * Plain-language reason, with what to do next.
  */
+message: string, } | { "type": "retry_refused",
+/**
+ * The failed message's id, as the `RetryTurn` named it.
+ */
+id: string,
+/**
+ * Plain-language reason, with what to do next.
+ */
 message: string, } | { "type": "pong" } | { "type": "turn_snapshot", 
 /**
  * The turn, or `null` when none is running.

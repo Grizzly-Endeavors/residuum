@@ -5,7 +5,7 @@ import type { TurnFailureFeedItem } from "../lib/types";
 import TurnFailure from "./TurnFailure.svelte";
 
 const { ws } = vi.hoisted(() => ({
-  ws: { agent: "atlas" as string | null, sendChat: vi.fn() },
+  ws: { agent: "atlas" as string | null, retryTurn: vi.fn() },
 }));
 vi.mock("../lib/ws.svelte", () => ({ ws }));
 
@@ -15,12 +15,12 @@ const failure: TurnFailureFeedItem = {
   turnId: "t1",
   message: "The model provider didn't answer. Try sending your message again in a moment.",
   details: "model call failed after 3 attempts\n  caused by: provider returned 503",
-  retry: { content: "Tidy the wiki index" },
+  retry: {},
 };
 
 beforeEach(() => {
   ws.agent = "atlas";
-  ws.sendChat.mockReset();
+  ws.retryTurn.mockReset();
 });
 
 describe("a turn that couldn't finish", () => {
@@ -45,14 +45,23 @@ describe("a turn that couldn't finish", () => {
     expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
   });
 
-  it("sends the user's message again with Try again, once", async () => {
-    render(TurnFailure, {
-      item: { ...failure, retry: { content: "Tidy the wiki index" } },
-      agent: "atlas",
-    });
+  it("asks the agent to run the turn again with Try again, naming the turn", async () => {
+    render(TurnFailure, { item: failure, agent: "atlas" });
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    expect(ws.sendChat).toHaveBeenCalledExactlyOnceWith("Tidy the wiki index");
+    expect(ws.retryTurn).toHaveBeenCalledExactlyOnceWith("t1");
+  });
+
+  it("waits for the agent's answer once Try again is asked, without offering it again", () => {
+    render(TurnFailure, { item: { ...failure, retry: { asked: true } }, agent: "atlas" });
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.getByText(failure.message)).toBeVisible();
+  });
+
+  it("gives the agent's reason in place of Try again when it won't run the turn again", () => {
+    const reason = "That message can't be retried anymore because the conversation has moved on.";
+    render(TurnFailure, { item: { ...failure, retry: { refused: reason } }, agent: "atlas" });
+    expect(screen.getByText(reason)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 

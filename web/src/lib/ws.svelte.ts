@@ -128,6 +128,11 @@ class WsCoordinator {
       } else if (msg.type === "message_refused") {
         notifications.surface("error", msg.message);
         this.refuseSend(msg.id);
+      } else if (msg.type === "retry_refused") {
+        // The failure card says it too, beside the button it replaces; the
+        // toast is what a screen reader hears. Nothing of a send was
+        // refused, so the composer is left alone.
+        notifications.surface("error", msg.message);
       } else if (msg.type === "workspace_watch_unavailable") {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;
@@ -496,6 +501,17 @@ class WsCoordinator {
       id,
       delivered,
     );
+  }
+
+  /**
+   * Have the agent run the failed turn `turnId` again on the message it
+   * already holds: no new message goes, so no bubble is added and nothing is
+   * uploaded twice. The rerun's start takes the failure's place in the feed;
+   * should the agent refuse (`retry_refused`), the failure says why.
+   */
+  retryTurn(turnId: string): void {
+    this.store.askRetry(turnId);
+    this.transport.send({ type: "retry_turn", id: turnId });
   }
 
   /**

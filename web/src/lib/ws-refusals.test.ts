@@ -173,7 +173,71 @@ describe("an error naming a message the agent hasn't confirmed yet", () => {
 
     expect(refused).not.toHaveBeenCalled();
     expect(userMessages()).toEqual(["Hello"]);
-    expect(ws.store.feed.some((item) => item.kind === "turn-failure")).toBe(true);
+    expect(ws.store.feed.at(-1)).toMatchObject({ kind: "turn-failure", turnId: id, retry: {} });
+    expect(readDraft("scout")).toBe("");
+  });
+});
+
+describe("Try again on a turn that couldn't finish", () => {
+  /** A message sent, its turn started and failed: the id of the message. */
+  function failedTurn(content = "Read this"): string {
+    ws.sendChat(content);
+    const id = sentMessageId(socket);
+    socket.simulateMessage({
+      type: "turn_started",
+      reply_to: id,
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    socket.simulateMessage({ type: "error", reply_to: id, message: "The model isn't reachable." });
+    socket.simulateMessage({ type: "turn_ended", reply_to: id });
+    return id;
+  }
+
+  const sentTypes = (): string[] =>
+    socket.sentFrames().map((frame) => (frame as { type: string }).type);
+
+  it("asks the agent to run the turn again, sending no message and adding no bubble", () => {
+    const id = failedTurn();
+
+    ws.retryTurn(id);
+
+    expect(socket.sentFrames().at(-1)).toEqual({ type: "retry_turn", id });
+    expect(sentTypes().filter((type) => type === "send_message")).toHaveLength(1);
+    expect(userMessages()).toEqual(["Read this"]);
+    expect(ws.store.feed.at(-1)).toMatchObject({ kind: "turn-failure", retry: { asked: true } });
+  });
+
+  it("gives way to the rerun when the agent starts it", () => {
+    const id = failedTurn();
+    ws.retryTurn(id);
+
+    socket.simulateMessage({
+      type: "turn_started",
+      reply_to: id,
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+
+    expect(ws.store.feed.some((item) => item.kind === "turn-failure")).toBe(false);
+    expect(userMessages()).toEqual(["Read this"]);
+  });
+
+  it("shows the agent's reason on the failure and in a toast, leaving the composer alone", () => {
+    const refused = vi.fn();
+    const stop = ws.onRefusedSend(refused);
+    const id = failedTurn();
+    ws.retryTurn(id);
+    const reason = "That message can't be retried anymore. Send it again to try once more.";
+
+    socket.simulateMessage({ type: "retry_refused", id, message: reason });
+    stop();
+
+    expect(ws.store.feed.at(-1)).toMatchObject({
+      kind: "turn-failure",
+      retry: { refused: reason },
+    });
+    expect(notifications.history[0]).toMatchObject({ kind: "error", message: reason });
+    expect(refused).not.toHaveBeenCalled();
+    expect(userMessages()).toEqual(["Read this"]);
     expect(readDraft("scout")).toBe("");
   });
 });

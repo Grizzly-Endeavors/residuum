@@ -572,6 +572,88 @@ describe("chat turns", () => {
       expect(busy).toEqual([true, false]);
     });
 
+    describe("running a failed turn again", () => {
+      /** The failed turn's frames are over; what the rerun sends comes after. */
+      function failed(id = "m1"): void {
+        chat.send(message("error please", id));
+        vi.advanceTimersByTime(SCRIPT_MS);
+        frames.length = 0;
+      }
+
+      it("keeps the turn's id, announces no message, and ends with a reply", () => {
+        failed();
+
+        expect(chat.retry("m1")).toBe(true);
+        vi.advanceTimersByTime(SCRIPT_MS);
+
+        expect(outline()).toEqual([
+          "turn_started",
+          "stream:0",
+          "text:Looking",
+          "call:memory_search",
+          "result:memory_search",
+          "stream:1",
+          "turn_usage",
+          "response",
+          "turn_ended",
+        ]);
+        expect(frames.every((f) => !("reply_to" in f) || f.reply_to === "m1")).toBe(true);
+        expect(busy).toEqual([true, false, true, false]);
+        expect(unread).toBe(0);
+      });
+
+      it("records the rerun's messages after the user's message, which it records once", () => {
+        failed();
+
+        chat.retry("m1");
+        vi.advanceTimersByTime(SCRIPT_MS);
+
+        expect(recorded().map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+        expect(recorded().filter((m) => m.role === "user")).toHaveLength(1);
+        expect(new Set(recorded().map((m) => m.turn_id))).toEqual(new Set(["m1"]));
+      });
+
+      it("is refused a second time, once it has been taken", () => {
+        failed();
+        expect(chat.retry("m1")).toBe(true);
+        vi.advanceTimersByTime(SCRIPT_MS);
+        expect(chat.retry("m1")).toBe(false);
+      });
+
+      it("is refused for a turn the mock doesn't know of", () => {
+        failed();
+        expect(chat.retry("m9")).toBe(false);
+      });
+
+      it("is refused once another turn has started", () => {
+        failed();
+        chat.send(message("hello there", "m2"));
+        vi.advanceTimersByTime(TURN_MS);
+        expect(chat.retry("m1")).toBe(false);
+      });
+
+      it("is refused while a turn runs", () => {
+        failed();
+        chat.send(message("hello there", "m2"));
+        expect(chat.retry("m1")).toBe(false);
+      });
+
+      it("is refused for a turn that didn't fail", () => {
+        chat.send(message("retry please"));
+        vi.advanceTimersByTime(SCRIPT_MS);
+        expect(chat.retry("m1")).toBe(false);
+      });
+
+      it("can be stopped like any turn, without recording the message again", () => {
+        failed();
+        chat.retry("m1");
+        chat.cancel("m1");
+
+        expect(types()).toEqual(["turn_started", "turn_ended"]);
+        expect(recorded().filter((m) => m.role === "user")).toHaveLength(1);
+      });
+    });
+
     it("retry: streams part of a reply, starts over, and ends with the second attempt", () => {
       chat.send(message("retry please"));
       vi.advanceTimersByTime(SCRIPT_MS);
