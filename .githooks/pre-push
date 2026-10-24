@@ -31,12 +31,22 @@ NC='\033[0m'
 
 ZERO_SHA=0000000000000000000000000000000000000000
 MAIN_REF=refs/remotes/origin/main
-# The paths that run the Rust checks. This is the RUST_PATHS_RE of the
-# `changes` job in .github/workflows/ci.yml, which decides when CI runs the same
-# checks; change both together.
-RUST_PATHS_RE='^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+# The paths that run the Rust checks: the RUST_PATHS_RE of the `changes` job in
+# .github/workflows/ci.yml, read from there so the hook and CI never disagree.
+# When it can't be read, every path runs them: a selection may check more,
+# never less, and a warning below says so.
+RUST_PATHS_RE="$(sed -n "s/^ *RUST_PATHS_RE: '\(.*\)'\$/\1/p" "$(git rev-parse --show-toplevel)/.github/workflows/ci.yml" 2>/dev/null)"
+RUST_PATHS_UNREAD=0
+if [ -z "$RUST_PATHS_RE" ]; then
+    RUST_PATHS_RE='.'
+    RUST_PATHS_UNREAD=1
+fi
 
 note() { echo -e "${YELLOW}$1${NC}" >&2; }
+
+if [ "$RUST_PATHS_UNREAD" = 1 ]; then
+    note "WARNING: could not read RUST_PATHS_RE from .github/workflows/ci.yml; every changed path runs the Rust checks."
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CHECKOUT_HEAD="$(git rev-parse HEAD)"
@@ -402,12 +412,10 @@ pick_packages() {
 #                                  support/ and the like
 #   tests/<name>.rs                that integration test
 #   other tests/*/*                every integration test
-#   web/src/styles/tokens.css      the member tests of residuum-net, which
-#                                  embeds it (crates/net/src/browser_landing.rs)
-#   web/app-shell-csp.txt          the member tests of residuum-hub, which reads it
-#                                  (crates/hub/src/web/assets.rs)
-#   .github/workflows/release.yml  the member tests of residuum-hub, which reads it
-#                                  (crates/hub/src/update.rs)
+#   a file a member embeds or reads from outside crates/
+#                                  that member's tests (scripts/affected-packages.sh
+#                                  classifies it; testing::source_scan checks it does)
+#   any other Rust path            every root unit test
 # Clippy checks the packages scripts/affected-packages.sh --affected picks for
 # all the changed paths, and every package when there is no list of them. The
 # member tests are the packages --touched picks: the member a path is in, without
@@ -502,18 +510,18 @@ plan_rust_tests() {
                 esac
             fi
             ;;
-        web/src/styles/tokens.css)
-            # The member tests come from --touched, below.
-            ;;
-        web/app-shell-csp.txt | .github/workflows/release.yml)
-            # The member tests come from --touched, below.
-            ;;
         *)
             # Only paths the Rust checks cover count: a docs or web file that no
             # test reads selects nothing.
+            # A file outside crates/ that a member embeds or reads (web/src/styles/tokens.css)
+            # is classified to that member, whose tests --touched picks below.
             if grep -qE "$RUST_PATHS_RE" <<<"$path"; then
-                unit_all=1
-                unit_reason="$path is read by unit tests"
+                if pick_packages "$dir" --touched "$path" && [ "${#PICKED[@]}" -gt 0 ]; then
+                    :
+                else
+                    unit_all=1
+                    unit_reason="$path is read by unit tests"
+                fi
             fi
             ;;
         esac

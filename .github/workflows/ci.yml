@@ -45,9 +45,10 @@ jobs:
   # with the base branch, as a `paths` filter would; a merge queue batch from
   # the tip of main it merges onto.
   #
-  # The path lists: RUST_PATHS_RE is mirrored in .githooks/pre-push, which
-  # runs the Rust checks before a push; change both together. ci.yml itself
-  # runs both suites, since it decides how both run.
+  # The path lists: .githooks/pre-push reads RUST_PATHS_RE from this file,
+  # and testing::source_scan checks that it covers every file a crate embeds
+  # from outside crates/ and assets/. ci.yml itself runs both suites, since it
+  # decides how both run.
   changes:
     name: Changes
     # The runners are self-hosted, so a fork's code never runs on them. A
