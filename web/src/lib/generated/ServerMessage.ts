@@ -265,11 +265,11 @@ id: string,
 /**
  * Plain-language reason, with what to do next.
  */
-message: string, } | { "type": "retry_refused",
+message: string, } | { "type": "retry_refused", 
 /**
- * The failed message's id, as the `RetryTurn` named it.
+ * The id the `retry_turn` named.
  */
-id: string,
+id: string, 
 /**
  * Plain-language reason, with what to do next.
  */

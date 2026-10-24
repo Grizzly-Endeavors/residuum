@@ -38,12 +38,7 @@ body: string, } | { "type": "cancel",
  * `TurnStarted`/`TurnEnded`). A stop for a turn that has already
  * ended is silently ignored.
  */
-reply_to: string, } | { "type": "retry_turn",
-/**
- * The failed message's id: the `id` it was sent with, which is also the
- * `reply_to` of the failed turn.
- */
-id: string, } | { "type": "session_send_message",
+reply_to: string, } | { "type": "session_send_message", 
 /**
  * Client-generated correlation ID for the reply.
  */
@@ -76,6 +71,11 @@ address: string, } | { "type": "send_queued_now",
 id: string, } | { "type": "withdraw_queued", 
 /**
  * The waiting message's id.
+ */
+id: string, } | { "type": "retry_turn", 
+/**
+ * Correlation ID of the failed turn: the `id` its `SendMessage` was
+ * sent with, and the `reply_to` of its `error` frame.
  */
 id: string, } | { "type": "watch_workspace", 
 /**
