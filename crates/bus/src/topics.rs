@@ -33,7 +33,7 @@ pub trait Topic {
 pub enum DeliveryMode {
     /// Every event reaches every subscriber, however far behind it falls.
     /// For events whose loss would change behavior or hide something from
-    /// the user — see `CLAUDE.md` "No Silent Failures": user messages,
+    /// the user — see `AGENTS.md` "No Silent Failures": user messages,
     /// agent/tool results and tool-call events, turn and session
     /// lifecycle/state, notices and notifications, agent-to-agent signals,
     /// and spawn requests.
@@ -218,7 +218,7 @@ impl Carries<InlineOutputEvent> for Notification {
 }
 impl Carries<ErrorEvent> for Notification {
     // An error tied to a specific turn — silently dropping it is exactly
-    // the silent failure `CLAUDE.md` forbids.
+    // the silent failure `AGENTS.md` forbids.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<OutboundA2aTaskEvent> for Notification {

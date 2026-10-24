@@ -9,7 +9,7 @@
 # CARGO_TARGET_DIR you set is used as it is. `build` and `release` copy the
 # binary to target/<profile>/residuum before the lease ends, and `serve` and
 # `run` start it from there, so a running hub holds no pool dir.
-# CONTRIBUTING.md, "Build dirs", has the details.
+# docs/runbooks/build-dirs.md has the details.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 

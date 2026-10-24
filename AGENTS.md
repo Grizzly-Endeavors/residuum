@@ -1,6 +1,6 @@
 # AGENTS.md | Residuum - Personal Agent Framework
 
-`CLAUDE.md` carries these same rules. This paragraph and the title are the only difference. Change them together.
+Rules for coding agents working in this repository. `CLAUDE.md` imports this file, so Claude Code and every other agent read the same rules. [CONTRIBUTING.md](./CONTRIBUTING.md) has the details behind them.
 
 ## Key References
 
@@ -9,118 +9,112 @@
 - [Guides](./docs/guides/) — task-oriented walkthroughs
 - [Design](./docs/design/) — designs for work that is not built yet
 - [Hub](./docs/systems-usage/hub.md) — one process hosts every agent; `~/.residuum/` holds `hub/`, the shared `team/`, and one directory per agent
-- [Workspace layout](./CONTRIBUTING.md#workspace-layout) — the root package `residuum` and the member crates under `crates/`: what each holds, the dependency rules, the root facade and the public API policy
+- [Workspace layout](./CONTRIBUTING.md#workspace-layout) — the crates, the dependency rules, the root facade and the public API policy
+- [Runbooks](./docs/runbooks/) — maintainer operations: build dirs, the `main` ruleset, CI metrics, the Windows VM
 
 Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
-**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the agent-residuum.com site (marketing pages, Cloud sign-in and the account dashboard) — it lives in a separate repository, not this one.
+**Web interface:** the Residuum web UI lives in `web/` (Svelte 5 SPA); see `web/CLAUDE.md`. Do not confuse it with `relay/web/`, the agent-residuum.com site, which lives in a separate repository.
 
 ## Build & Quality Gates
 
 ### Workspace
 
-The repository is one Cargo workspace. The root `Cargo.toml` is both the workspace manifest and the `residuum` package (the library and the `residuum` binary: `daemon`, `logging`, `setup_wizard`, `wiring`, the CLI `commands` and the test-only `testing` scans, plus `build.rs`, the embedded `web/dist` and `tests/`). The lower layers are member crates in `crates/<dir>/`, each named `residuum-<dir>`: `core` (`util`, `time`, the diagnostic types, `build_info`, `process`, the shared test helpers), `config` (with `agent_keys`, `WorkspaceLayout` and `channels`), `skills`, `inference`, `tracing-service`, `memory`, `mcp`, `bus` (the broker and the payloads it carries), `workspace` (identity files, bootstrapping, team files, the change feed, and `inbox`), `notify` (the notification channels, their router and the external channel builder), `agent` (the turn loop, context assembly, the `Tool` container, and `subconscious`), `background` (agent sessions: the session registry, runtime and store, agent messaging, the team router, and the session tool factory trait), `a2a` (the A2A listener, the caller keys, the agent cards, the outbound client and `diagnostics_dispatch`), `tools` (the agent's tools, their registration, the main registry builder and the session tool factory, and `testing`), `interfaces` (the Discord, Telegram and Teams adapters, the webhook table and the Teams app setup), `hub` (the agent host, the hub's HTTP app and the web routes it serves, the launcher trait, `update`, `features`, `config_watcher` and `last_known_good`), `gateway` (the running agent's event loop, startup, reload and routes, the WebSocket subscriber, and `GatewayLauncher`), `checkpoints` (the workspace checkpoint history), `protocol` (the WebSocket frames and their conversions from bus events), `proactivity` (`pulse` and `actions`), and `net` (`tunnel`, `remote_access`, `pairing`, `workbench`). Dependencies point down only: no member depends on the root, and the root depends on every member. Plain `cargo build`, `cargo test` and `cargo clippy` from the root cover every package (`default-members`), and `-p residuum-<dir>` narrows a command to one. Root code names a member's items through the aliases in `src/lib.rs` (`crate::memory::…`, `crate::agent_keys::…`); member crates name each other by crate (`residuum_config::Config`). Only the root has a build script, so member crates build and test without `web/dist`. `CONTRIBUTING.md`, "Workspace layout", has the crates, their dependency rules, the facade's rules and the public API policy; `src/testing/manifest_scan.rs` enforces the manifest rules. A file a member embeds from outside its own directory and outside `assets/`, or a test reads by path, must be listed by hand in `RUST_PATHS_RE` in `ci.yml` and in the pre-push hook, in `classify_path` and in the hook's `plan_rust_tests`. The listed files are `web/src/styles/tokens.css` (embedded by `crates/net/src/browser_landing.rs`), `web/app-shell-csp.txt` (read by the hub's `web/assets.rs`) and `.github/workflows/release.yml` (read by the hub's `update.rs`); the last two classify to `residuum-hub`, whose `web/assets.rs` and `update.rs` read them; `CONTRIBUTING.md`, "Workspace layout", has the details.
+One Cargo workspace. The root `Cargo.toml` is the workspace manifest and the `residuum` package (the binary, the CLI, the daemon, and the embedded `web/dist`). Everything else is a member crate in `crates/<dir>/`, named `residuum-<dir>`. Dependencies point down only: no member depends on the root or on a crate above it. `CONTRIBUTING.md`, "The crates", lists what each crate holds.
 
-### Git Hooks
+- `cargo build`, `cargo test --quiet` and `cargo clippy` from the root cover every package; `-p residuum-<dir>` narrows to one.
+- The root package needs `web/dist` to build (`just web-build`); member crates don't.
+- Root code names members through the aliases in `src/lib.rs` (`crate::memory::…`); members name each other by crate (`residuum_config::Config`).
 
-The git hooks in `.githooks/` (installed with `.githooks/install.sh` or `just hooks`) enforce the quality gates in two stages: the fast checks on every commit, the slow ones once per push.
-- **pre-commit**: formats what is staged, re-staging only the paths already staged: `cargo fmt --all` when Rust is staged, Prettier on the staged web files. It refuses a formatter change to a file that also has unstaged edits, so the author stages the whole file or stashes the rest. When a manifest (`*.toml`, `Cargo.lock`) is staged it also runs `cargo deny check`, and refuses the commit when `cargo-deny` is not installed (`cargo install --locked cargo-deny`). It blocks three things outright in the staged diff: a `dbg!()` call, an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn), and growth of `src/testing/wall_clock_backlog.rs`. When any `scripts/ci-failures*` or `scripts/stress-issues*` file is staged it runs the `just ci-failures` log parser's fixtures and its merge queue batch selection (`scripts/ci-failures-test.sh`) and a dry run of the nightly stress issue filer over them (`scripts/stress-issues-test.sh`). When any `scripts/affected-packages*` file is staged it runs `scripts/affected-packages-test.sh`, which checks the package selection behind the pre-push hook and the CI `changes` job against a scratch workspace.
-- **pre-push**: checks each pushed commit as pushed, without merging `main` into it: a conflict with `main` shows on the pull request, and the merge queue checks the merged result. A commit is checked in place only when it is the checkout's HEAD and the working tree has no uncommitted or untracked changes; any other commit is checked in the stable tree at `target/pre-push/tree` (sharing this checkout's `web/node_modules`), or in a temporary worktree of that commit when another push holds the stable tree or it cannot be prepared. The hook fetches `origin/main` to measure a new branch's changes against it. The Rust checks of a pushed commit that build (clippy, the tests and the generated-types check) share one dir leased from the pool of warm target dirs under the main checkout's `target/pool/` (`scripts/target-pool`; `CONTRIBUTING.md`, "Build dirs"), which prefers to give each tree the dir it used last, so the checkout and the stable tree each build warm; a commit checked in place builds in the caller's `CARGO_TARGET_DIR` instead when one is set, and a commit checked in another tree always leases, so it never builds in the caller's dir; the stable tree keeps the modification times of unchanged files, so Cargo reuses its build. When the pushed commits change what the Rust checks run on (the paths for which the `changes` job of `.github/workflows/ci.yml` runs the Rust checks: `src/`, `tests/`, `assets/`, `crates/`, the Cargo, clippy, rustfmt and deny configuration, `build.rs`, the generated web types and the scripts and workflows those checks use), it runs `cargo clippy --all-targets --all-features -- -D warnings` over the packages the changed paths touch and the packages that depend on them (`scripts/affected-packages.sh --affected`; the whole workspace for a change to the root manifests, toolchain, lint or deny configuration, `.cargo/`, `assets/`, `tests/fixtures/`, or a `crates/` path outside a member), the tests for the code the push touches, and `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types into a scratch directory and fails on any difference from the index. It also runs `cargo shear --locked --deny-warnings`, which reports unused dependencies, unused `[workspace.dependencies]` entries and unlinked source files across the whole workspace from the manifests and sources alone, without building, and runs before the web build. CI pins the `cargo-shear` version in `.github/workflows/rust-checks.yml`. On a machine without `cargo-shear` the check does not run and the summary at the end names the install command; a different installed version runs with a note in the summary. The tests come from the changed paths, and the hook prints what it chose. A change under `src/<module>/` or in `src/<module>.rs` runs that module's root unit tests (one `cargo test --quiet --no-fail-fast -p residuum --lib -- <module>:: ...` run with a filter per touched module, and `--bins` too when `src/main.rs` declares the module); a change to `src/lib.rs` or `src/main.rs` runs every root unit test, lib and bin; a change under `tests/it/` runs the `it` modules its path selects (below); a change to `tests/ts_export.rs` runs that test; a change under `tests/fixtures/` or `assets/` runs every unit test of every package and every root integration test. A change to a member crate under `crates/<dir>/` runs that crate's tests (`--lib --tests`) and the `it` modules whose covers line names it, but not the tests of the crates that depend on it (clippy checks those); a change to a member's `Cargo.toml`, to a root manifest (`Cargo.toml`, `Cargo.lock`), `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml`, `.cargo/`, or a `crates/` path outside a member runs the `testing::manifest_scan` test. Every changed path also runs the `it` modules whose `//! covers:` line names the package it belongs to (`scripts/affected-packages.sh --covering`, one filter per module in the `it` binary): a path inside a module selects that module alone; a member's path selects the modules covering that member; a root path selects the modules covering `residuum`; `tests/it/main.rs`, `tests/it/support/`, `tests/fixtures/` and `assets/` select the whole `it` binary. Integration tests other than `ts_export` are built only when a path selects them; the generated-types check builds `ts_export` on every Rust push. The source scans (`testing::source_scan`) run on every push that changes Rust. A change to `build.rs`, the generated web types, or the scripts and workflows the checks use adds no tests of its own. A change to a file the Rust tests read by path runs the member tests of `residuum-hub`, which holds the file that reads it (`web/app-shell-csp.txt`: `crates/hub/src/web/assets.rs`; `.github/workflows/release.yml`: `crates/hub/src/update.rs`); a change to `web/src/styles/tokens.css`, which `crates/net/src/browser_landing.rs` embeds, runs `residuum-net`'s tests. When the selection script is missing or fails, clippy checks the whole workspace, the member tests cover every member other than `residuum`, and the `it` binary runs whole. The merge queue runs the whole suite, so a test in a module the push did not touch fails there, not in the hook. The `ts_export` integration test writes the generated types to a scratch directory, so a push never rewrites `web/src/lib/generated`. When the pushed commits change `web/` (Markdown under `web/` does not count), the Rust checks rebuild `web/dist` first unless the stable tree already holds a dist built from the same web sources, and the hook runs ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest) that import a changed file (`vitest related`); a change to `web/package.json`, the lockfile, the Vite, Vitest, Svelte or TypeScript configuration, the component test setup file, the hang guard (`web/src/test/guard.ts`) or the service worker plugin (`web/build/service-worker.ts`) runs the whole web suite. Every check runs even after one fails, and a summary at the end lists what failed. A push that only deletes a branch, or changes neither Rust nor `web/`, runs no checks.
-- **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
+### Commands
 
-Bypassing a hook with `--no-verify` is **FORBIDDEN**, on `git push` as on `git commit`.
+`just` lists every recipe. The ones you'll use most:
 
-### What Runs Where
+| Command | What it does |
+|---|---|
+| `just check` | Everything CI runs except the web end-to-end suite; lists every failure |
+| `just test <filter>` | Root and workspace tests (`cargo test --quiet --no-fail-fast`) |
+| `just test-crate <crate> <filter>` | One member crate's tests, no web build |
+| `just stress <filter>` | Tests as two concurrent copies under CPU load (`-p residuum-<crate>` for a member) |
+| `just ci-failures [pr\|branch]` | Every failure in the latest CI runs, flagged `touched` / `seen elsewhere` |
+| `just types` | Regenerate the web's TypeScript protocol types after changing an exported Rust type |
+| `just cross-clippy` | Clippy for the Windows target from Linux |
 
-| Stage | Runs on | What it runs |
-|-------|---------|--------------|
-| pre-commit | every commit | Formatting of what is staged, `cargo deny` when a manifest is staged, the `dbg!()` / `#[allow]` / wall-clock-backlog blocks, the CI log parser and stress issue filer fixtures and the package selection test when those are staged |
-| pre-push | every push, as pushed (not merged with `main`) | Clippy, the tests of the code the push touches, the generated-types check and `cargo shear` (unused dependencies) when Rust paths change; ESLint, Stylelint, `svelte-check` and Vitest (the tests that import a changed file) when `web/` changes |
-| PR lane (`ci.yml`, `pull_request`) | every push to a pull request | Two early warnings, neither of which gates the PR: the Windows clippy (`Windows Clippy`) when Rust paths change, over the affected packages (the packages the change touches and the packages that depend on them, as `scripts/affected-packages.sh` selects them, or the whole workspace when it cannot select them), and the visual comparisons when web paths change, which never fail and report in one PR comment. `CI gate` passes once the `changes` job has read the diff, without waiting for them, so `gh pr merge <n> --auto` puts the PR straight into the queue |
-| Merge queue lane (`ci.yml`, `merge_group`) | every batch the merge queue builds, merged onto `main` | The full suite, which runs nowhere else before a change reaches `main`. Rust (when Rust paths change), over the whole workspace: fmt, host clippy, Windows clippy, rustdoc with warnings denied, `cargo deny`, `cargo shear`, `cargo test`, the Pebble tests, generated types, and the crate isolation job (`scripts/check-crate-isolation.sh` checks each member crate alone and the root library and binary without dev-dependency features, so a crate that compiles only because another crate turns on a feature for it, or production code that uses a `test-support` item, fails here). Web (when web paths change): format, lint, types, unit tests on Node 22 and 24, build, the four end-to-end shards; no visual comparisons. The source image (`Docker Source Image`: `docker build` of `docker/Dockerfile`, not pushed) when the batch changes `docker/` or `.dockerignore`. `cross-compile.yml` (aarch64 Linux and macOS clippy, the tests on Windows) when the batch changes `Cargo.toml`, `Cargo.lock`, `build.rs`, `rust-toolchain.toml`, a member's `crates/*/Cargo.toml` or `.github/workflows/cross-compile.yml`. actionlint when a workflow changes. `CI gate` must pass for the batch to merge |
-| Nightly (`nightly-stress.yml`) | 07:23 UTC on `main`, or by hand | The Rust suite unloaded, then as two concurrent copies under CPU load for three rounds; every end-to-end spec three times with the CPU throttled. Each failing test becomes an `investigate` issue, and a run whose job timed out gets one saying it did not finish. It gates nothing |
-| Release (`release.yml`) | a `v*` tag | The merge queue lane's Rust and web checks (no visual comparisons, no stress; the Rust checks cover the whole workspace and include the crate isolation job) beside the release builds; nothing is published unless both pass |
+Builds lease a warm target dir from a shared pool (`docs/runbooks/build-dirs.md`); use `just clean`, not `cargo clean`, in the main checkout.
 
-`CI gate` is the only required status check. On a merge queue batch it passes when every job it needs succeeded or was skipped because its files did not change, so a batch that touches neither Rust nor web code still merges. On a pull request it passes as soon as the `changes` job has finished, whatever the early warnings report, so the ruleset's requirement admits the PR to the queue and the queue's run decides whether it merges. `cross-compile.yml` also runs on a pull request with the `cross-compile` label or a dependency or toolchain change, where it reports without gating (see Cross-Platform Targets).
+### Git hooks
 
-### Local Tasks
+Install with `just hooks`. **Bypassing a hook with `--no-verify` is forbidden**, on `git commit` and `git push`. If a hook fails, fix the cause.
 
-The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, rustdoc, tests, `cargo deny` and `cargo shear`, then actionlint over the workflows; a failing check does not stop the others, and the failures are listed at the end; it runs the web tests on your own Node version only and does not run the Windows clippy, which `just cross-clippy` does), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>` and prints a note on stderr when a filter names a member crate or a module inside one (for a crate, also the `tests/it` modules whose covers line names it, with the command that runs each), or a warning when no test matched, `just test-crate <crate> <filter>` runs one member crate's tests (`cargo test --quiet --no-fail-fast -p residuum-<crate> <filter>`; `just test-crate memory search::` runs `residuum-memory`'s search tests), `just doc` builds the rustdoc of every package, private items included, with warnings denied, as CI does, `just shear` runs `cargo shear` and asks for the `cargo-shear` version pinned in `.github/workflows/rust-checks.yml` when none or another is installed, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). In CI the visual comparisons run in a job of their own that never fails a pull request or a release, and report changed shots in one pull request comment. Every cargo recipe that builds the root package builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it; `test-crate`, `pebble` and `stress` with a member package (`-p residuum-<crate>`, no `-p residuum`) build only member crates and skip it. Every recipe that builds Rust runs under `scripts/target-pool run`, which leases a warm target dir from the pool every worktree shares and holds it until the command exits (`just build` and `just release` copy the binary out to `target/debug/residuum` and `target/release/residuum`, which `just serve` and `just run` start, so a running hub holds no pool dir; `just clean` keeps the pool and empties only the dirs no build holds, where plain `cargo clean` in the main checkout deletes the pool under running builds); a `CARGO_TARGET_DIR` you set is used as it is, and `scripts/target-pool status` lists the dirs and who holds them. In Claude Code sessions the `rust-build` plugin (from the `Grizzly-Endeavors/rust-toolkit` repository, installed from the `grizzly-plugins` marketplace) sends plain build-type `cargo` commands through the same pool. `CONTRIBUTING.md`, "Build dirs", has the details and the `TARGET_POOL_*` variables.
+- **pre-commit** formats what is staged, runs `cargo deny` when a manifest is staged, and blocks `dbg!()`, `#[allow(...)]` and growth of `src/testing/wall_clock_backlog.rs`.
+- **pre-push** runs clippy over the affected packages, the tests of the code you changed, the generated-types check and `cargo shear` when Rust changes, and the web lint, type and related unit tests when `web/` changes. It prints which tests it picked. It does not run the whole suite: when you change code other modules depend on (a shared helper, a trait), run their tests or `cargo test --quiet` before pushing.
+- The full suite runs in the merge queue. `CONTRIBUTING.md`, "Quality Gates", has what runs where.
 
-### Cross-Platform Targets
+### Cross-platform
 
-Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon), and Windows x86_64 (`x86_64-pc-windows-gnu`). Keep platform differences in mind:
-- **`c_char`**: `i8` on x86_64, `u8` on aarch64-linux — always use `std::ffi::c_char` in FFI signatures, never hardcode `i8`/`u8`
-- **Path separators, endianness, pointer width**: use `std` abstractions, not platform-specific assumptions
-- **FFI code**: test against the aarch64 target when touching unsafe/FFI boundaries
+Releases target Linux x86_64 and aarch64, macOS aarch64, and Windows x86_64 (`x86_64-pc-windows-gnu`).
 
-Every merge queue batch that changes Rust runs clippy with `-D warnings` for `x86_64-pc-windows-gnu` over the whole workspace alongside the host clippy (the `Clippy (x86_64-pc-windows-gnu)` job), so Windows-only lint failures, including test imports only some platforms use, fail the batch. Every Rust PR runs the same clippy over its affected packages as an early warning that does not gate it (the `Windows Clippy` job), so such a failure shows before the PR is enqueued; fix it first. The other targets (aarch64 Linux and macOS clippy, and the test suite on a Windows runner) are in `cross-compile.yml`. The merge queue runs it, as part of `CI gate`, for every batch that changes `Cargo.toml`, `Cargo.lock`, `build.rs`, `rust-toolchain.toml`, a member's `crates/*/Cargo.toml`, or `.github/workflows/cross-compile.yml`. On a pull request it runs, without gating the merge, when the PR changes one of the manifests, `build.rs` or `rust-toolchain.toml`, carries the `cross-compile` label, or is dispatched with `gh workflow run cross-compile.yml --ref <branch>`. Add the label for platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), and fix what it reports before enqueueing the PR. `just cross-clippy` lints a cross target locally. See CONTRIBUTING.md.
+- Use `std::ffi::c_char` in FFI signatures, never `i8`/`u8`. Use `std` abstractions for paths, endianness and pointer width.
+- Every Rust PR gets a Windows clippy early warning; fix it before enqueueing.
+- Add the `cross-compile` label to a PR that touches unsafe/FFI, `cfg(target_os)`/`cfg(unix)` branches, paths, process spawning, signals or permissions, and fix what it reports.
+- Real Windows testing: [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
 
-To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
+### Toolchain and lints
 
-### Rust Toolchain
+The Rust version is pinned in `rust-toolchain.toml`; bumping it is its own PR, with fixes for new lints.
 
-The Rust version is pinned in `rust-toolchain.toml` so the git hooks, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
+The lint table is `[workspace.lints]` in the root `Cargo.toml`: clippy pedantic plus a deny list that includes `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `todo`, `missing_errors_doc`, `missing_panics_doc`, `must_use_candidate`, `print_stderr` (residuum is a daemon; diagnostics go through `tracing`) and `allow_attributes`. Every member sets `[lints] workspace = true`.
 
-### Lint Rules
+- Suppress with a scoped `#[expect(lint, reason = "...")]`, never `#[allow]`. `unsafe_code` is `deny`, not `forbid`, so a real FFI boundary can carry one.
+- `unwrap`, `expect`, `panic` and `dbg!` are already allowed inside `#[cfg(test)]` and `#[test]` code by `clippy.toml`. Adding an `#[expect]` for them there is an error (the expectation is never fulfilled).
+- Code behind `#[cfg(any(test, feature = "test-support"))]` is production code to clippy and needs its own `#[expect(..., reason = "test-support helper: ...")]`.
+- Integration test files under `tests/it/` need `#![expect(clippy::tests_outside_test_module, reason = "...")]`, and their top-level helpers need their own suppressions.
 
-Clippy pedantic is enabled with strict error handling:
-- `unsafe_code` - **denied** (not `forbid`, so a genuine FFI boundary can carry a scoped `#[expect(unsafe_code, reason = "...")]` at the item level; `forbid` cannot be overridden that way)
-- `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented` - **denied**
-- `missing_errors_doc`, `missing_panics_doc`, `must_use_candidate` - **denied**
-- `print_stderr` - **denied** (residuum runs as a daemon; diagnostics go through `tracing`, not stderr)
-
-The lint table is `[workspace.lints.rust]` and `[workspace.lints.clippy]` in the root `Cargo.toml`. The root package and every member crate opt in with `[lints] workspace = true`, and `testing::manifest_scan` fails a member that does not. `clippy.toml`, `rustfmt.toml` and `deny.toml` sit at the repository root and apply to every crate.
-
-The lint set is kept in parity with the `rust-toolkit` reference project. `print_stderr` and the sqlite-vec-specific `unsafe_code` rationale are the only intentional residuum-only deltas. Supply-chain policy lives in `deny.toml`: vulnerabilities and source problems block, unmaintained and yanked crates do not. Every entry in the `advisories.ignore` list carries a comment saying why it is tolerated and what would let it be dropped.
-
-The root `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` for code inside `#[cfg(test)]` modules and `#[test]`-attributed functions, so test code may freely use unwrap/expect/panic/dbg for readability with no suppression header needed. Adding an `#[expect(clippy::unwrap_used, ...)]` (or `expect_used`/`panic`/`dbg_macro`) to a test file is an error, not belt-and-braces — the lint is already exempt there, so the expectation never fires and becomes an unfulfilled-expectation hard error under `-D warnings`. `clippy::tests_outside_test_module` is the one exception: it is not controllable from `clippy.toml` and stays denied project-wide, so integration tests under `tests/` (which live outside a `#[cfg(test)]` module) still need an explicit `#![expect(clippy::tests_outside_test_module, reason = "...")]` at the top of the module's file. Plain helper functions at the top level of a `tests/it/*.rs` module (not wrapped in `#[cfg(test)]` and not themselves `#[test]`-attributed) are also not covered by the `clippy.toml` exemption and still need their own suppression if they use unwrap/expect/panic/dbg. Code behind `#[cfg(any(test, feature = "test-support"))]` is not test code to clippy either: `cargo clippy --all-features` compiles it with the feature on, as production code, so an unwrap, expect or panic there carries a scoped `#[expect(clippy::…, reason = "test-support helper: …")]`, which that build fulfills.
-
-Changing a lint, a lint level, or a clippy or deny setting needs explicit approval from the user. Editing a comment in these files to keep it accurate does not.
+Changing a lint, a lint level, or a clippy or deny setting needs explicit approval from the user.
 
 ### Testing
 
-Testing is a first-class operation — NEVER skip test implementation.
-- Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
-- Unit tests: `#[cfg(test)] mod tests` at file bottom
-- Integration tests: modules of the one test binary in `tests/it/` (a file there plus a `mod` line in `tests/it/main.rs`; `cargo test --test it gateway::` runs one module). A module's leading doc comment carries exactly one `//! covers: <package>, …` line naming the packages it tests (`residuum` for the root, a member's package name for the rest), and the pre-push hook runs the modules that cover a changed package. They share a process, so a test doesn't change environment variables, the current directory or the global tracing subscriber. `tests/ts_export.rs` is the only other file directly in `tests/`; every such file is a test binary of its own that links the root library and every member crate. Member crates have no `tests/` directory: their tests are unit tests, and integration tests that need one live in the root's `tests/it/`. Tests that need crates from more than one layer of the crate graph are `it` modules too: `hub_host` and `hub_runtime` run the hub's host and runtime with the gateway's launcher, `team_files` the hub's team file routes with the agents' file tools, and `a2a_server` the A2A server with the tools' session tools.
-- Test filters are substring matches on a test's path, and a member crate's test paths start below the crate: `residuum-memory`'s search tests are `search::tests::…`, not `memory::search::tests::…`. So `cargo test --quiet memory::` (or `just test memory::`) runs the root tests whose path contains `memory::` and none of `residuum-memory`'s. Run a member's tests with `just test-crate <crate> <filter>` (`cargo test --quiet -p residuum-<crate> <filter>`), which builds only that crate and the crates below it and needs no `web/dist`; `just test -p residuum-<crate> <filter>` runs the same tests after the web build every `just test` does. `just test` and `just stress` print a note when a filter's first segment names a member crate or a module inside one, and a warning when no test matched
-- Test helpers: a crate's own tests use its `#[cfg(test)]` code. Helpers other crates' tests use live in the lowest crate that can hold them, behind that crate's `test-support` feature, which a package turns on only from `[dev-dependencies]`: `residuum_core::testing` (`wait`, `gate`, `clock`, `script`, `log`, `ports`), `residuum_config::testing` and `WorkspaceLayout::with_tempdir_guard`, `residuum_inference::testing::model`, `residuum_bus::testing` (`next_event`, `bus_barrier`, `dead_interrupt_rx`), `residuum_agent::testing` (the test tools), `residuum_background::testing` (`test_memory_extras`), `SessionStore::with_tempdir_guard` and `SessionRuntime::registry`, `residuum_checkpoints::testing` (`test_engine`), `residuum_proactivity::pulse::testing` (`script_env`), `residuum_workspace::testing::TeamHub` and `residuum_workspace::watch::assert_native_watch`, `residuum_memory::testing` and `episode_store`'s `write_episode_transcript` and `latest_episode_id`, `residuum_a2a::StaticAgentDirectory`, `residuum_tools::testing` (`RegistryHarness`, `tools_for`), `residuum_hub::testing` (`mount_reply`, `write_agent`, `fixture_assets` and its file constants), `HubServices::for_tests`, `AgentHost::reloads_finished`, `TeamChangeFeed::idle`, `push::Browser` and the `wait::Recv` impl for `AgentChangeReceiver`, `residuum-gateway`'s `panic_for_test` server command, and `residuum-net`'s pairing hooks (`advance_clock`, `pair_device_for_tests`). The root's `crate::testing` (`src/testing/`, `#[cfg(test)]`) holds what only root tests use: the source and manifest scans and the wall-clock backlog. Root tests name core's helpers as `residuum_core::testing::…`, since the root's own `testing` module takes that name, and the other crates' through the facade (`crate::inference::testing::model`, `crate::memory::testing`)
-- The pre-push hook runs the tests of the code a push touches (see Git Hooks), and the merge queue runs the whole suite. When a change reaches code that other modules depend on, such as a shared helper or a trait other modules implement, run those modules' tests (`just test <filter>`) or the whole suite (`cargo test --quiet`) before pushing.
-- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. The suites under load run nightly on `main` (`nightly-stress.yml`), not on pull requests or in the merge queue: the Rust suite as two concurrent copies with every CPU busy, and every end-to-end spec repeated with the browser's CPU throttled. Each test that fails there arrives as an `investigate` issue titled `Nightly stress: <test>` (a member crate's test arrives as `Nightly stress: residuum_<crate>::<test>`), with the run link and the failure's messages; a test that fails again adds a comment to its open issue. A test that failed under load only waits on time: fix it by making it wait on the event it checks, never by widening a timeout, adding a sleep, or rerunning past it. One that also failed in the unloaded Tests step is an ordinary failure. Reproduce one locally with `just stress <filter>` (`just stress -p residuum-<crate> <filter>` for a member crate's test; two concurrent copies under CPU load, which is how tests run when several agents share a machine) or `WEB_STRESS_ALL=1 just web-stress <spec>`; `just web-stress` on its own repeats the spec files a branch adds or changes (`web/CONTRIBUTING.md`, "CI"). A test you add or fix must pass `just stress <filter>` before you push (a member crate's test: `just stress -p residuum-<crate> <filter>`); the nightly run is the backstop, not the first check. Tests wait through `residuum_core::testing` (waits under one hang guard, gates, a paused-clock helper) and the bus's `residuum_bus::testing` (`next_event`, `bus_barrier`); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
-- After a red CI run, run `just ci-failures` (or `just ci-failures <pr-number|branch>`) and fix every listed failure before pushing again, except one marked `likely flake` (not `touched`, but `seen elsewhere`). That one may be a flake or a breakage other branches share: check whether `main` fails the same way, and file or add to an `investigate` issue rather than chasing it in this PR. Every other failure, `touched` or not, is this change's to fix until you show otherwise.
+Testing is a first-class operation — never skip test implementation.
+
+- Always `cargo test --quiet` (or `just test`), never plain `cargo test`.
+- Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests are modules of the one test binary in `tests/it/`, each with exactly one `//! covers: <package>, …` line naming the packages it tests. They share a process, so a test never changes environment variables, the current directory or the global tracing subscriber.
+- A filter matches a test's path, and a member crate's paths start below the crate: `residuum-memory`'s search tests are `search::tests::…`. Run them with `just test-crate memory search::`.
+- Shared test helpers live in the lowest crate that can hold them, behind its `test-support` feature, which a package turns on only from `[dev-dependencies]`. Look for `testing` modules under `crates/*/src/` before writing a new helper.
+- **A test waits on the event it checks, never on elapsed time.** Fix a flaky test by making it wait on an event the code exposes (adding the signal when there is none), never by widening a timeout, adding a sleep, or rerunning. `CONTRIBUTING.md`, "Waiting in tests", says which helper fits; a source scan enforces it.
+- A test you add or fix must pass `just stress <filter>` before you push. Nightly stress runs file each failure as a `Nightly stress: <test>` issue.
+- After a red CI run, run `just ci-failures` and fix every failure, `touched` or not. A `likely flake` (not touched, seen elsewhere) may be shared breakage: check `main`, and file or add to an `investigate` issue instead of chasing it in this PR.
 
 ## Code Style
 
 ### Naming
-- **Domain-specific names**: Prefer descriptive names that match the domain (`send_chat_completion` over generic `run`)
-- **Common abbreviations OK**: `cfg`, `dir`, `msg`, `ctx`, `cmd` are fine; avoid obscure ones
-- **Semantics matter**: Structs, enums, and functions should have names that make it abundantly clear what they do. Avoid vague names and catch-alls. If the logic doesn't match the semantics a refactor is needed.
+- **Domain-specific names**: prefer names that match the domain (`send_chat_completion` over `run`)
+- **Common abbreviations OK**: `cfg`, `dir`, `msg`, `ctx`, `cmd`; avoid obscure ones
+- **Semantics matter**: a struct, enum or function's name says what it does. If the logic doesn't match the name, refactor.
 
 ### Error Messages
-- Always include context: `"failed to parse config at {path}"` not just `"parse error"`
-- Lowercase, no trailing period (Unix style, chains well with `anyhow` context)
+- Include context: `"failed to parse config at {path}"`, not `"parse error"`
+- Lowercase, no trailing period (chains well with `anyhow` context)
 
 ### Comments
-- Explain **why**, never **what** — the code shows what, comments explain non-obvious reasoning
+- Explain **why**, never **what**
 - Doc comments: one-line `///` summary for public items; expand only for complex behavior
 
 ### Module Organization
-- `mod.rs` files should primarily contain declarations and re-exports, but module-level coordination logic is fine when it belongs there.
-- Group related types in one file (e.g., `Message`, `Role`, `ToolCall` together in `llm/types.rs`)
+- `mod.rs` holds declarations and re-exports, plus module-level coordination logic when it belongs there
+- Group related types in one file
 
 ### Visibility
-- Private-first: start with no visibility modifier, add `pub(crate)` or `pub` only when needed
-- Treat `pub` as a commitment — once public, it's API
+- Private-first: add `pub(crate)` or `pub` only when needed
+- `pub` is a commitment. Before widening an item across crates, follow `CONTRIBUTING.md`, "Public API".
 
 ### Function Signatures
-- **Strings**: `&str` for read-only, `impl Into<String>` when storing, owned `String` when caller must give up ownership
-- **Async**: async-first; only use sync for trivial or CPU-bound operations
-- **Generics**: default to concrete types, generify at public API boundaries when flexibility is needed
+- **Strings**: `&str` for read-only, `impl Into<String>` when storing, owned `String` when the caller gives up ownership
+- **Async**: async-first; sync only for trivial or CPU-bound work
+- **Generics**: concrete types by default; generify at public API boundaries when flexibility is needed
 
 ### Construction
-- Prefer `new()` with required args + `Default` trait for optional configuration
-- Avoid builder pattern unless struct has many optional fields
+- `new()` with required args + `Default` for optional configuration
+- No builder pattern unless a struct has many optional fields
 
 ## Designing Behavior: Make Failure Safe
 
@@ -152,24 +146,23 @@ The failure this section exists to prevent is a guard built around a failure nob
 **Every failure must be visible.** This is non-negotiable.
 
 #### User-facing: clear, actionable messages
-- Assume users are non-technical — error messages must explain what went wrong and what to do next, not expose internals
-- Use plain language: `"Couldn't connect to the server. Check your internet connection and try again."` not `"TCP connection refused on port 443"`
-- Partial failures (e.g., syncing 2 of 3 items) must tell the user what succeeded, what failed, and whether they need to act
+- Assume users are non-technical — say what went wrong and what to do next, not internals
+- Plain language: `"Couldn't connect to the server. Check your internet connection and try again."` not `"TCP connection refused on port 443"`
+- Partial failures (syncing 2 of 3 items) say what succeeded, what failed, and whether the user needs to act
 - Never show raw error types, stack traces, or module paths to the user
-- If an operation fails silently with no user impact, it still needs a log (see below)
+- A failure with no user impact still needs a log
 
 #### Developer-facing: rich, structured diagnostics
-- Every error path must produce a log entry with enough context to diagnose without reproducing
-- Include structured fields: `error!(error = %e, path = %path, "failed to read config")` — not just the message
-- Chain error context with `anyhow`: `.context("failed to load user settings")` so logs show the full causal chain
-- Use appropriate log levels (error/warn/info/debug/trace per the logging guidelines below)
-- Transient failures (retries, timeouts) should log at `warn` with attempt count and backoff details
+- Every error path logs enough context to diagnose without reproducing
+- Structured fields: `error!(error = %e, path = %path, "failed to read config")`
+- Chain context with `anyhow`: `.context("failed to load user settings")`
+- Transient failures (retries, timeouts) log at `warn` with attempt count and backoff
 
 #### Avoid log spam
-- Do not log every retry attempt individually — log once at `warn` when retries start, and once when they resolve or exhaust
-- Do not log routine successful operations ("connection still alive", "heartbeat ok") — absence of errors is the signal that things work
-- Periodic health-check style output belongs at `trace` level at most, never `info` or above
-- If a log line would fire on every loop iteration or timer tick under normal conditions, it's too noisy
+- Log once at `warn` when retries start, and once when they resolve or exhaust — not every attempt
+- Don't log routine success ("heartbeat ok"); the absence of errors is the signal
+- Periodic health-check output is `trace` at most
+- A line that fires on every loop iteration or timer tick under normal conditions is too noisy
 
 ### Logging (tracing)
 - **error**: failures that stop an operation
@@ -177,57 +170,34 @@ The failure this section exists to prevent is a guard built around a failure nob
 - **info**: major operations (LLM calls, chunked processing)
 - **debug**: internal details, state transitions
 - **trace**: verbose diagnostics (full payloads, timing)
-- Use structured fields: `info!(chunks = count, "starting chunked review")` not string interpolation
 
-### Debugging & Tracing
-- Log level is configured in `hub/config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
-- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time; `residuum logs --agent <name>` to show one agent's lines
-- `residuum tracing status` — show current tracing config and streaming state
-- `residuum tracing otel add <url>` — add an OTEL endpoint for trace export
-- `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
-- `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
-- `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
-- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off). The switch is stored for the running daemon and shows up in `residuum tracing status`. When on, `TracingService::on_error` submits a synthetic `broken`-severity bug report (with the current span buffer) through the same path as a manual report, rate limited to roughly one submission per minute per error context and five per hour overall; suppressed submissions log at debug. It's called from every unexpected turn failure — the main agent's turns and background/session/pulse turns alike, once retries are exhausted — and from the event loop's tunnel-respawn and adapter-exit supervisory paths; expected outcomes (a user-cancelled turn, a validation error, a retry that later succeeds) never call it. `residuum bug-report` is the other path that sends one, for a manual report.
-- `residuum bug-report -m "description"` — send a sanitized trace dump to the developer via the feedback-ingest service
-- `RUST_LOG` env var overrides the configured log level when set. A directive matches log targets by prefix, and a target starts with the crate's library name: the root's modules (`daemon`, `logging`, `setup_wizard`, `wiring`, `commands`) log as `residuum::<module>` (`RUST_LOG=residuum::daemon=trace`), a member crate's as `residuum_<crate>::…` (`RUST_LOG=residuum_memory=trace`, `RUST_LOG=residuum_net::tunnel=trace`, `RUST_LOG=residuum_config::agent_keys=trace`), so `residuum::memory=trace` matches nothing. The "Logging" section of `docs/systems-usage/hub.md` lists which module lives in which crate. `residuum logs --module <module>` matches either form
+### Debugging
+- Log level: `hub/config.toml`, `[tracing] log_level` (default `debug`). `RUST_LOG` overrides it.
+- `RUST_LOG` targets start with the crate's library name: root modules are `residuum::<module>` (`residuum::daemon=trace`), members are `residuum_<crate>` (`residuum_memory=trace`). `docs/systems-usage/hub.md`, "Logging", maps modules to crates.
+- `residuum logs [--watch] [--level warn] [--agent <name>] [--module <m>]` reads the saved logs.
+- `residuum tracing status | otel add <url> | dump | stream start|stop | sanitize on|off | error-reporting on|off` manages trace export.
+- `residuum bug-report -m "description"` sends a sanitized trace dump to the developer.
 
 ## Git Workflow
 
-Single-branch model: all work lands on `main`, and only through the merge queue (see Merging).
+All work lands on `main`, and only through the merge queue.
 
-### Day-to-Day Work
+1. Branch from `main` with a prefixed name: `feat/`, `fix/`, `refactor/`, `docs/`, `ci/`, `chore/`.
+2. Commit often; the hooks keep each commit and push honest.
+3. Before wrapping up, check for unfinished work, update docs and guides, and write migration guides for breaking changes.
+4. Push and open a PR against `main`, with `closes #N` in the PR **body** for each issue it closes (the queue writes the merge commit, and a keyword in a comment closes nothing).
+5. Enqueue with `gh pr merge <n> --auto`. It returns at once; don't report the work merged until `gh pr view <n> --json state` says `MERGED`.
+6. After it merges, switch to `main`, pull, and delete the local branch.
 
-1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
-2. **Commit frequently** — the pre-commit hook formats and audits what is staged; clippy, the tests of the code you changed, the generated-types check and the web checks run once per push. Commit especially often during large multi-phase tasks.
-3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
-4. **Push the branch and open a PR** against `main`, with `closes #N` in the PR body for each issue it closes.
-5. **Enqueue it**: `gh pr merge <n> --auto`. The merge queue merges it once its checks pass (see Merging).
-6. **After it merges**, switch back to `main`, pull, and delete the local branch. GitHub deletes the remote branch on merge.
+All changes are committed before you give the user a completion summary. Never use `git -C`.
 
-All changes must be committed before giving the user a completion summary. **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
+### Merging rules
 
-### Merging
-
-`main` changes only through the GitHub merge queue. The ruleset in `.github/rulesets/main.json` refuses a push to `main`, a force push or its deletion, and merges a pull request only through the queue, as a merge commit, once its `CI gate` check has passed. The flow needs auto-merge allowed and head branches deleted on merge, which the repository settings hold (`CONTRIBUTING.md`, Merging).
-
-- **Never push to `main`, and never merge locally** (no `git merge` into `main` followed by a push). The push is refused. Every change, however small, goes through a PR.
-- **Enqueue with `gh pr merge <n> --auto`.** This turns on auto-merge, and GitHub adds the PR to the queue once `CI gate` passes on it, which on a pull request takes only as long as the `changes` job. The PR's own checks are early warnings (the Windows clippy, the visual comparisons) that do not hold it back: look at them, and fix a Windows clippy failure before enqueueing. The queue merges the PR onto the tip of `main` together with any PRs ahead of it, runs the full suite on that batch (the merge queue lane), and merges the batch when it passes. The command returns at once, and the merge happens later: don't wait on it in the foreground, and don't report the work as merged until `state` is `MERGED`.
-- **Put `closes #N` in the PR body** (`gh pr create --body`, or `gh pr edit <n> --body`). The queue writes the merge commit's message, so there is no merge commit message of your own to put it in, and a keyword in a PR comment closes nothing.
-- **See where a PR stands** with `gh pr view <n> --json state,mergeStateStatus,autoMergeRequest,statusCheckRollup`: `autoMergeRequest` is set while the PR waits for its checks to enter the queue, and `state` is `MERGED` once it has merged. Its place in the queue: `gh api graphql -f query='query($n:Int!){repository(owner:"Grizzly-Endeavors",name:"residuum"){pullRequest(number:$n){mergeQueueEntry{position state}}}}' -F n=<n>` (`null` when it is not in the queue). The whole queue is at https://github.com/Grizzly-Endeavors/residuum/queue/main.
-- **A PR ejected from the queue** (its batch failed CI, it conflicts with a PR merged ahead of it, or its checks timed out) is removed from the queue, with the reason on the PR's timeline, and stays out until it is enqueued again. Fix the cause on the branch (`just ci-failures <n>` lists the failures of the PR's own runs and of its latest merge queue batch that did not pass; merge `main` into the branch to resolve a conflict), push, and run `gh pr merge <n> --auto` again.
-- **A fork's PR** shows a passing `CI gate` without having run anything. Enqueueing it runs its code, including any change it makes under `.github/`, on the self-hosted runners, so read the whole diff before enqueueing a fork's PR.
-- **Emergency bypass is admin-only.** A repository admin can merge a PR past the queue and its checks with `gh pr merge <n> --merge --admin`; the bypass works only through a PR, so even an admin cannot push to `main`. It is for an emergency the owner declares, such as CI itself being broken. Agent sessions run as an admin account, so the command works for them too: an agent never uses it unless the owner asks for that specific merge.
-
-### Branch Naming
-
-Use prefixed branch names:
-- `feat/` — new features
-- `fix/` — bug fixes
-- `refactor/` — code restructuring without behavior changes
-- `docs/` — documentation only
-- `ci/` — CI/CD changes
-- `chore/` — maintenance, dependency updates
+- **Never push to `main` or merge locally.** The ruleset refuses it.
+- A PR ejected from the queue stays out until re-enqueued: fix the cause (`just ci-failures <n>`; merge `main` for a conflict), push, and run `gh pr merge <n> --auto` again.
+- A fork's PR shows a passing `CI gate` without running anything, and enqueueing it runs its code on the self-hosted runners. Read the whole diff first.
+- `gh pr merge <n> --merge --admin` bypasses the queue. Agent sessions run as an admin, so the command works for you: never use it unless the owner asks for that specific merge.
 
 ### Releases
 
-Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs the merge queue lane's Rust and web checks alongside the artifact builds and publishes nothing unless both pass.
+CalVer (`YYYY.0M.0D`) tags like `v2026.03.02`, with `-N` for same-day follow-ups. The Cargo.toml version is independent of release tags.
