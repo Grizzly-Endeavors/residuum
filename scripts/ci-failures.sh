@@ -65,9 +65,14 @@ readonly DETAIL_PER_JOB=20
 readonly MESSAGE_WIDTH=220
 readonly US=$'\037'
 readonly RS=$'\036'
-# The paths that run the Rust checks, the RUST_PATHS_RE of .github/workflows/ci.yml.
-# scripts/ci-failures-test.sh checks this copy against that file.
-readonly RUST_PATHS_RE='^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+# The paths that run the Rust checks: the RUST_PATHS_RE of .github/workflows/ci.yml,
+# read from there as the pre-push hook reads it.
+RUST_PATHS_RE="$(sed -n "s/^ *RUST_PATHS_RE: '\(.*\)'\$/\1/p" "$(dirname "${BASH_SOURCE[0]}")/../.github/workflows/ci.yml")"
+if [[ -z "$RUST_PATHS_RE" ]]; then
+    echo "ci-failures: could not read RUST_PATHS_RE from .github/workflows/ci.yml" >&2
+    exit 1
+fi
+readonly RUST_PATHS_RE
 
 die() {
     echo "ci-failures: $*" >&2

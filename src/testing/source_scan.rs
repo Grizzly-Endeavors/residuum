@@ -871,6 +871,96 @@ fn check_covers_lines(
     }
 }
 
+/// A file a crate embeds with `include_str!` or `include_bytes!` from outside
+/// its own directory and outside `assets/`.
+struct ExternalInput {
+    /// Relative to the repository root, with `/` separators.
+    path: String,
+    /// The package whose source embeds it.
+    package: String,
+    /// Where: `file:line`.
+    site: String,
+}
+
+/// The package a source path belongs to, and that package's directory
+/// (empty for the root).
+fn package_of(path: &str) -> (String, String) {
+    if let Some(rest) = path.strip_prefix("crates/") {
+        let dir = rest.split('/').next().unwrap_or_default();
+        (format!("residuum-{dir}"), format!("crates/{dir}"))
+    } else {
+        ("residuum".to_string(), String::new())
+    }
+}
+
+/// `relative` joined to the directory of `file`, with `.` and `..` resolved;
+/// `None` when it climbs above the repository root.
+fn resolve_from(file: &str, relative: &str) -> Option<String> {
+    let mut parts: Vec<&str> = file.split('/').collect();
+    parts.pop();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Whether `path` is inside the package directory `dir`: for the root
+/// package, its `src/`, `tests/` and `build.rs`.
+fn inside_package(path: &str, dir: &str) -> bool {
+    if dir.is_empty() {
+        path.starts_with("src/") || path.starts_with("tests/") || path == "build.rs"
+    } else {
+        path.starts_with(&format!("{dir}/"))
+    }
+}
+
+/// Every [`ExternalInput`] of the scanned sources, test code included.
+fn external_inputs(sources: &[SourceFile]) -> Vec<ExternalInput> {
+    let include = Regex::new(r#"include_(?:str|bytes)!\(\s*"([^"]+)"\s*\)"#).unwrap();
+    let mut found = Vec::new();
+    for file in sources {
+        let (package, dir) = package_of(&file.path);
+        for want_test in [false, true] {
+            for (number, code) in file.code_lines(want_test) {
+                for caps in include.captures_iter(code) {
+                    let Some(path) = resolve_from(&file.path, &caps[1]) else {
+                        continue;
+                    };
+                    if inside_package(&path, &dir) || path.starts_with("assets/") {
+                        continue;
+                    }
+                    found.push(ExternalInput {
+                        path,
+                        package: package.clone(),
+                        site: format!("{}:{number}", file.path),
+                    });
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.site.cmp(&b.site));
+    found
+}
+
+/// The `RUST_PATHS_RE` of the `changes` job in `.github/workflows/ci.yml`,
+/// which decides when CI runs the Rust checks and which the pre-push hook
+/// reads.
+fn ci_rust_paths(root: &Path) -> Regex {
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
+        .expect("read .github/workflows/ci.yml");
+    let line = Regex::new(r"(?m)^\s*RUST_PATHS_RE: '(.*)'$").unwrap();
+    let caps = line
+        .captures(&workflow)
+        .expect("ci.yml has a `RUST_PATHS_RE: '...'` line");
+    Regex::new(&caps[1]).expect("RUST_PATHS_RE in ci.yml is a valid regex")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1343,6 +1433,106 @@ mod tests {
         assert!(
             missing.is_empty(),
             "these paths name no file (a rename left them behind?): {missing:?}"
+        );
+    }
+
+    #[test]
+    fn external_inputs_resolve_relative_to_the_including_file() {
+        assert_eq!(
+            resolve_from("crates/net/src/browser_landing.rs", "../../../web/x.css").as_deref(),
+            Some("web/x.css")
+        );
+        assert_eq!(resolve_from("src/lib.rs", "../../x"), None);
+        assert!(inside_package("crates/net/src/lib.rs", "crates/net"));
+        assert!(!inside_package("crates/network/x", "crates/net"));
+        assert!(inside_package("tests/fixtures/a.json", ""));
+        assert!(!inside_package("web/a.css", ""));
+    }
+
+    /// CI decides from the changed paths whether to run the Rust checks, and
+    /// the pre-push hook picks tests from the package each path belongs to. A
+    /// file a crate embeds from outside its own directory and `assets/` is
+    /// neither under `crates/` nor in `assets/`, so it must be listed by hand:
+    /// without the `RUST_PATHS_RE` entry, a change to it alone runs no Rust
+    /// checks in CI, and a breakage reaches `main`.
+    #[test]
+    fn files_embedded_from_outside_a_crate_run_its_checks() {
+        let root = crate_root();
+        let inputs = external_inputs(&crate_sources());
+        assert!(
+            inputs
+                .iter()
+                .any(|input| input.path == "web/src/styles/tokens.css"),
+            "the scan must find residuum-net's embed of web/src/styles/tokens.css, or this rule passes vacuously"
+        );
+        let rust_paths = ci_rust_paths(&root);
+        let mut problems = String::new();
+        for input in &inputs {
+            if !rust_paths.is_match(&input.path) {
+                writeln!(
+                    problems,
+                    "{} ({}): add `^{}$` to RUST_PATHS_RE in .github/workflows/ci.yml",
+                    input.path,
+                    input.site,
+                    regex::escape(&input.path)
+                )
+                .unwrap();
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "a crate embeds a file that does not run the Rust checks when it changes:\n{problems}"
+        );
+    }
+
+    /// The other half: `scripts/affected-packages.sh` classifies each such
+    /// file to the package that embeds it, so the pre-push hook runs that
+    /// package's tests and clippy checks it and its dependents. The script is a
+    /// shell script, so the Windows run skips this.
+    #[cfg(unix)]
+    #[test]
+    fn files_embedded_from_outside_a_crate_select_their_package() {
+        use std::process::Command;
+
+        let root = crate_root();
+        let mut problems = String::new();
+        for input in external_inputs(&crate_sources()) {
+            let mode = if input.package == "residuum" {
+                "--affected"
+            } else {
+                "--touched"
+            };
+            let mut child = Command::new(root.join("scripts/affected-packages.sh"))
+                .arg(mode)
+                .current_dir(&root)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("run scripts/affected-packages.sh");
+            {
+                use std::io::Write as _;
+                let mut stdin = child.stdin.take().unwrap();
+                writeln!(stdin, "{}", input.path).unwrap();
+            }
+            let output = child.wait_with_output().unwrap();
+            let printed = String::from_utf8_lossy(&output.stdout);
+            let picked = printed.split_whitespace().any(|word| word == input.package);
+            if !output.status.success() || !picked {
+                writeln!(
+                    problems,
+                    "{} ({}): classify it to {} in classify_path in scripts/affected-packages.sh (it printed {:?})",
+                    input.path,
+                    input.site,
+                    input.package,
+                    printed.trim()
+                )
+                .unwrap();
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "scripts/affected-packages.sh does not pick the package that embeds a file:\n{problems}"
         );
     }
 

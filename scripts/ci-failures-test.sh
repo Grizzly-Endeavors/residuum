@@ -80,19 +80,20 @@ CASES
 }
 check_module_files
 
-# The Rust path regex is kept in three places (the CI workflow, the pre-push hook
-# and this script). Each copy must be the one ci.yml names.
+# ci-failures.sh and the pre-push hook read RUST_PATHS_RE from ci.yml with this
+# sed expression; it must find the line, and the regex must still match a Rust path.
 ci_regex="$(sed -n "s/^ *RUST_PATHS_RE: '\(.*\)'\$/\1/p" "$dir/../.github/workflows/ci.yml")"
-hook_regex="$(sed -n "s/^RUST_PATHS_RE='\(.*\)'\$/\1/p" "$dir/../.githooks/pre-push")"
-eval "$(grep '^readonly RUST_PATHS_RE=' "$dir/ci-failures.sh")"
-if [[ -z "$ci_regex" || "$ci_regex" != "$RUST_PATHS_RE" ]]; then
-    echo "ci-failures RUST_PATHS_RE differs from the one in .github/workflows/ci.yml" >&2
+if [[ -z "$ci_regex" ]] || ! grep -qE "$ci_regex" <<<"crates/core/src/lib.rs"; then
+    echo "RUST_PATHS_RE can't be read from .github/workflows/ci.yml, or no longer matches crates/" >&2
     status=1
 fi
-if [[ "$hook_regex" != "$RUST_PATHS_RE" ]]; then
-    echo "ci-failures RUST_PATHS_RE differs from the one in .githooks/pre-push" >&2
-    status=1
-fi
+RUST_PATHS_RE="$ci_regex"
+for copy in .githooks/pre-push scripts/ci-failures.sh; do
+    if grep -qE "^(readonly )?RUST_PATHS_RE='" "$dir/../$copy"; then
+        echo "$copy hard-codes RUST_PATHS_RE; read it from .github/workflows/ci.yml instead" >&2
+        status=1
+    fi
+done
 
 # package_of maps a changed path to the package its covers check compares. Only a
 # Rust path maps to a package: a member's path to its crate, any other Rust path
