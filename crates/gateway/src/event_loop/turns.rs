@@ -1129,6 +1129,14 @@ pub async fn handle_inbound_message(
 ///
 /// Returns whether the hub's stop request interrupted the rerun, as
 /// [`handle_inbound_message`] does.
+/// Drop the error notes already queued when a rerun is accepted. They report
+/// the failed attempt, which the failure card already shows; injected after
+/// the rerun's reply, they would stay in the conversation as a stale note.
+/// Returns how many were dropped.
+fn discard_queued_error_notes(errors: &mut Subscriber<ErrorEvent>) -> usize {
+    errors.drain().len()
+}
+
 #[tracing::instrument(skip_all, fields(correlation_id = %request.id))]
 pub async fn handle_retry_request(
     request: RetryTurnRequest,
@@ -1146,6 +1154,13 @@ pub async fn handle_retry_request(
         return false;
     };
     result_tx.send(Ok(())).ok();
+    let discarded = discard_queued_error_notes(&mut rt.error_subscriber);
+    if discarded > 0 {
+        tracing::debug!(
+            count = discarded,
+            "discarded error notes queued before a rerun"
+        );
+    }
     let origin = failed.origin().clone();
     run_main_turn(
         MainTurnStart::Rerun(failed),
@@ -3894,11 +3909,13 @@ mod tests {
             started: Arc::clone(&started),
         })
         .await;
+        // A person's message: only a turn with an origin is recorded for a retry.
+        let origin = origin_on("ws");
         let (first_attempt, _) = rig
             .run(
                 TurnOpening::Message {
                     content: "hello",
-                    origin: None,
+                    origin: Some(&origin),
                     images: &[],
                 },
                 "t1",
@@ -3942,6 +3959,41 @@ mod tests {
             history_mentions(&rig_after.agent, "hello"),
             1,
             "the rerun added no message"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rerun_discards_the_error_notes_queued_before_it() {
+        let handle = residuum_bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                ErrorEvent {
+                    correlation_id: "t1".to_string(),
+                    message: "the model call failed".to_string(),
+                    details: None,
+                },
+            )
+            .await
+            .unwrap();
+        // The broker handles commands in order, so once this barrier has
+        // been delivered the error above is already queued for `errors`.
+        bus_barrier(&handle).await;
+
+        assert_eq!(
+            discard_queued_error_notes(&mut errors),
+            1,
+            "the failed attempt's error note is dropped before the rerun"
+        );
+        assert_eq!(
+            discard_queued_error_notes(&mut errors),
+            0,
+            "nothing is left to drop once the queue is empty"
         );
     }
 }
