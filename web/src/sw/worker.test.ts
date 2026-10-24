@@ -329,6 +329,30 @@ describe("page loads", () => {
     }
   });
 
+  it("takes a dotted path to the network first and falls back to the cached shell when it fails", async () => {
+    const dotted = { url: `${ORIGIN}/foo.json`, mode: "navigate" } as const;
+    const live = await installed(() => Promise.resolve(ok("not found page", { status: 404 })));
+    const found = await live.fetchEvent(dotted);
+    expect([found?.status, await found?.text()]).toEqual([404, "not found page"]);
+
+    const offline = await installed(() => Promise.reject(new TypeError("Failed to fetch")));
+    expect(await (await offline.fetchEvent(dotted))?.text()).toBe("network /index.html");
+  });
+
+  it("answers a page load of a precached dotted path from the cache without asking the network", async () => {
+    const asked: string[] = [];
+    const worker = await loadWorker({ network: serving(asked) });
+    await worker.fire("install");
+    asked.length = 0;
+    vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
+    const answer = await worker.fetchEvent({
+      url: `${ORIGIN}/icons/icon-192.png`,
+      mode: "navigate",
+    });
+    expect(await answer?.text()).toBe("network /icons/icon-192.png");
+    expect(asked).toEqual([]);
+  });
+
   it("never stores the live page", async () => {
     const worker = await installed(() => Promise.resolve(ok("live page with a switcher")));
     await worker.fetchEvent(navigation);
@@ -507,7 +531,7 @@ describe("push", () => {
         agent: "atlas",
         title: "Deploy tomorrow",
         body: "From atlas: the pipeline",
-        target: "/inbox?item=atlas:note-1",
+        target: "/inbox?thread=atlas%2Fuser%2Fnote-1",
         tag: "inbox:atlas:note-1",
         badge: 3,
       }),
@@ -518,7 +542,7 @@ describe("push", () => {
         options: expect.objectContaining({
           body: "From atlas: the pipeline",
           tag: "inbox:atlas:note-1",
-          data: { target: "/inbox?item=atlas:note-1" },
+          data: { target: "/inbox?thread=atlas%2Fuser%2Fnote-1" },
         }) as NotificationOptions,
       },
     ]);
@@ -571,10 +595,10 @@ describe("a notification click", () => {
 
   it("opens a window at the target when none is open, and never another site", async () => {
     const worker = await loadWorker({ network: serving() });
-    await worker.fire("notificationclick", clickOn("/inbox?item=scout:note-2"));
+    await worker.fire("notificationclick", clickOn("/inbox?thread=scout%2Fuser%2Fnote-2"));
     await worker.fire("notificationclick", clickOn("//elsewhere.example/phish"));
     await worker.fire("notificationclick", clickOn(42));
-    expect(worker.opened).toEqual(["/inbox?item=scout:note-2", "/home", "/home"]);
+    expect(worker.opened).toEqual(["/inbox?thread=scout%2Fuser%2Fnote-2", "/home", "/home"]);
   });
 
   it("closes the notification it was", async () => {

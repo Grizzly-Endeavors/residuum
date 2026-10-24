@@ -1,11 +1,13 @@
 import type { Locator, Page, WebSocketRoute } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
-import { sendFromComposer } from "../support/composer";
+import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
- * The composer: the chat actions under `/`, images attached by
- * button and by drop, a draft kept per agent across navigation and reload,
+ * The composer: the chat actions under `/`, files attached by button and by
+ * drop (uploads, chips, removal, the 50 MB limit, chips kept on the sent
+ * bubble through a reload, a Markdown chip opening the Files panel), a draft
+ * kept per agent across navigation and reload,
  * the model and thinking control (a popover, a sheet on phones), messages
  * waiting while the connection is down, and the conversation size in the
  * context panel for a running agent and a stopped one.
@@ -18,6 +20,8 @@ const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "base64",
 );
+/** The start of a PDF; the mock keeps it as a stand-in, so it needn't be a whole one. */
+const PDF = Buffer.from("%PDF-1.4\n%mock\n");
 
 function box(page: Page, agent = "atlas"): Locator {
   return page.getByRole("combobox", { name: `Message ${agent}` });
@@ -63,7 +67,7 @@ test.describe("the / menu", () => {
     await page.keyboard.type("water the plants");
     await sendFromComposer(box(page));
     // One message: the agent's own, once the note is in its inbox.
-    await expect(page.getByText("[inbox] item added")).toBeVisible();
+    await expect(page.getByText("Added a note to the inbox.")).toBeVisible();
   });
 
   test("a pasted path is a message, and an action that can't run keeps the line", async ({
@@ -74,7 +78,9 @@ test.describe("the / menu", () => {
     await box(page).click();
     await page.keyboard.type("/home/bear/logs/app.log has the error");
     await sendFromComposer(box(page));
-    await expect(conversation.getByText("/home/bear/logs/app.log has the error")).toBeVisible();
+    await expect(
+      conversation.getByText("/home/bear/logs/app.log has the error", { exact: true }),
+    ).toBeVisible();
     await expect(box(page)).toHaveValue("");
 
     // Stop reply names an action, which can't run while atlas isn't replying.
@@ -101,29 +107,95 @@ test.describe("the / menu", () => {
   });
 });
 
-test.describe("images", () => {
-  test("attach by button, show as thumbnails, and send with the message", async ({ page }) => {
+/** The user's message whose text holds `text`, so a picture in another message doesn't match. */
+function sent(conversation: Locator, text: string): Locator {
+  return conversation.locator(".user-message").filter({ hasText: text });
+}
+
+test.describe("files", () => {
+  test("attach by button, watch each upload finish, remove one, and send with the message", async ({
+    page,
+  }) => {
     await openChat(page);
     await page.locator('input[type="file"]').setInputFiles([
+      { name: "spec.pdf", mimeType: "application/pdf", buffer: PDF },
       { name: "one.png", mimeType: "image/png", buffer: PNG },
       { name: "two.png", mimeType: "image/png", buffer: PNG },
     ]);
-    const attached = page.getByRole("list", { name: "Attached images" });
-    await expect(attached.getByRole("img")).toHaveCount(2);
-    await page.getByRole("button", { name: "Remove image 2" }).click();
-    await expect(attached.getByRole("img")).toHaveCount(1);
+    const attached = page.getByRole("list", { name: "Attached files" });
+    await expect(attached.getByRole("listitem")).toHaveCount(3);
+    await expect(attached.locator('[data-state="ready"]')).toHaveCount(3);
+    await page.getByRole("button", { name: "Remove two.png" }).click();
+    await expect(attached.getByRole("listitem")).toHaveCount(2);
     await expectNoAxeViolations(page);
 
-    await box(page).fill("Here's the screenshot");
+    await box(page).fill("Here's the spec and the screenshot");
     await sendFromComposer(box(page));
     const conversation = page.getByRole("region", { name: "Conversation with atlas" });
-    await expect(conversation.getByRole("img", { name: "Attached image 1" })).toBeVisible();
+    const bubble = conversation.getByRole("list", { name: "Attachments" });
+    await expect(bubble.getByRole("link", { name: "Download spec.pdf" })).toBeVisible();
+    await expect(bubble.getByRole("link", { name: "Download one.png" })).toBeVisible();
+    await expect(
+      sent(conversation, "Here's the spec").getByRole("img", { name: "Attached image 1" }),
+    ).toBeVisible();
     await expect(attached).toHaveCount(0);
   });
 
-  test("attach by drop anywhere on the chat, with an overlay while a file is over it", async ({
-    page,
-  }) => {
+  test("a sent message keeps its chips and picture on reload", async ({ page }) => {
+    await openChat(page);
+    await page.locator('input[type="file"]').setInputFiles([
+      { name: "photo.png", mimeType: "image/png", buffer: PNG },
+      { name: "data.csv", mimeType: "text/csv", buffer: Buffer.from("a,b\n1,2\n") },
+    ]);
+    const attached = page.getByRole("list", { name: "Attached files" });
+    await expect(attached.locator('[data-state="ready"]')).toHaveCount(2);
+    await box(page).fill("Reload me");
+    await sendFromComposer(box(page));
+
+    const conversation = page.getByRole("region", { name: "Conversation with atlas" });
+    await expect(conversation.getByRole("link", { name: "Download data.csv" })).toBeVisible();
+    await page.reload();
+    const reloaded = sent(conversation, "Reload me");
+    await expect(reloaded.getByText("Reload me")).toBeVisible();
+    await expect(reloaded.getByRole("link", { name: "Download data.csv" })).toBeVisible();
+    await expect(reloaded.getByRole("img", { name: "Attached image 1" })).toBeVisible();
+  });
+
+  test("a Markdown chip opens the file in the context panel", async ({ page, isMobile }) => {
+    await openChat(page);
+    const conversation = page.getByRole("region", { name: "Conversation with atlas" });
+    await conversation.getByRole("button", { name: "Open routing-notes.md" }).click();
+    const panel = page.getByRole(isMobile ? "dialog" : "complementary", {
+      name: "routing-notes.md",
+    });
+    await expect(panel.getByRole("heading", { name: "Routing notes", exact: true })).toBeVisible();
+  });
+
+  test("a file over 50 MB is refused in plain words, and nothing uploads", async ({ page }) => {
+    await openChat(page);
+    // A File that claims 51 MB without holding the bytes: the composer reads only its size before refusing it.
+    const files = await page.evaluateHandle(() => {
+      const huge = new File(["x"], "archive.zip", { type: "application/zip" });
+      Object.defineProperty(huge, "size", { value: 51 * 1024 * 1024 });
+      const transfer = new DataTransfer();
+      transfer.items.add(huge);
+      return transfer;
+    });
+    await page.getByRole("region", { name: "Conversation with atlas" }).dispatchEvent("drop", {
+      dataTransfer: files,
+    });
+    await expect(
+      page.getByRole("status").filter({
+        hasText: "archive.zip is larger than the 50 MB upload limit, so it wasn't attached.",
+      }),
+    ).toBeVisible();
+    await expect(page.getByRole("list", { name: "Attached files" })).toHaveCount(0);
+    await expectNoAxeViolations(page);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "upload limit" })).toHaveCount(0);
+  });
+
+  test("drop anywhere on the chat, with an overlay while a file is over it", async ({ page }) => {
     await openChat(page);
     const files = await page.evaluateHandle(
       (bytes) => {
@@ -134,7 +206,7 @@ test.describe("images", () => {
       },
       [...PNG],
     );
-    const overlay = page.getByText("Drop images to attach");
+    const overlay = page.getByText("Drop files to attach");
     await expect(overlay).toHaveCount(0);
 
     // Over the conversation, nowhere near the composer.
@@ -149,10 +221,9 @@ test.describe("images", () => {
     expect(covering.y + covering.height / 2).toBeCloseTo(place.y + place.height / 2, 0);
     await feed.dispatchEvent("drop", { dataTransfer: files });
     await expect(overlay).toHaveCount(0);
-    await expect(page.getByRole("img", { name: "Image 1" })).toBeVisible();
-    await expect(page.locator("form.composer").getByRole("alert")).toContainText(
-      "notes.txt can't be attached. Attach a JPEG, PNG, GIF or WebP image.",
-    );
+    const attached = page.getByRole("list", { name: "Attached files" });
+    await expect(attached.getByRole("listitem")).toHaveCount(2);
+    await expect(attached.locator('[data-state="ready"]')).toHaveCount(2);
 
     // Over the header, where nothing used to take files.
     await page.getByRole("heading", { level: 1, name: "atlas" }).dispatchEvent("dragover", {
@@ -162,7 +233,7 @@ test.describe("images", () => {
     await page.getByRole("heading", { level: 1, name: "atlas" }).dispatchEvent("drop", {
       dataTransfer: files,
     });
-    await expect(page.getByRole("img", { name: "Image 2" })).toBeVisible();
+    await expect(attached.getByRole("listitem")).toHaveCount(4);
   });
 
   test("a file dropped where nothing takes it doesn't make the browser leave the app", async ({
@@ -230,7 +301,12 @@ test("the model control switches the model and keeps its failover list", async (
   expect(put.ok()).toBe(true);
   await openChat(page);
 
-  await page.getByRole("button", { name: "Model: Claude Sonnet 4.6, low thinking" }).click();
+  const trigger = page.getByRole("button", { name: "Model: Claude Sonnet 4.6, low thinking" });
+  if (isMobile) {
+    // The model name may truncate on a phone; the thinking level keeps its badge.
+    await expect(trigger.getByText("Low", { exact: true })).toBeVisible();
+  }
+  await trigger.click();
   const chooser = page.getByRole("dialog", { name: "Model for atlas" });
   await expect(chooser).toBeVisible();
   await expect(chooser.getByRole("button", { name: "Claude Sonnet 4.6" })).toHaveAttribute(
@@ -259,7 +335,7 @@ test("the model control switches the model and keeps its failover list", async (
   expect(raw).not.toContain("thinking");
 });
 
-test("messages wait while the connection is down, and say so", async ({ page }) => {
+test("messages wait while the connection is down, and say so", async ({ page, mock }) => {
   let online = true;
   const open: WebSocketRoute[] = [];
   await page.routeWebSocket(/\/api\/agents\/atlas\/ws$/, (socket) => {
@@ -271,7 +347,8 @@ test("messages wait while the connection is down, and say so", async ({ page }) 
     open.push(socket);
   });
   await openChat(page);
-  await expect(page.getByRole("status").filter({ hasText: "Reconnecting" })).toHaveCount(0);
+  await expect(reconnectingLine(page)).toHaveCount(0);
+  await mock.manualTime();
 
   online = false;
   for (const socket of open.splice(0)) await socket.close();
@@ -282,13 +359,15 @@ test("messages wait while the connection is down, and say so", async ({ page }) 
     page.getByText("Reconnecting — 1 message will send once back online."),
   ).toBeVisible();
 
+  // The page tries again once its backoff has run out on the mock's time, and connects.
   online = true;
-  await expect(page.getByText(/^Reconnecting/)).toHaveCount(0, { timeout: 20_000 });
-  await expect(
-    page
-      .getByRole("region", { name: "Conversation with atlas" })
-      .getByText("I've looked into that and here's what I found:"),
-  ).toBeVisible();
+  await mock.advance(FIRST_RECONNECT_MS);
+  await expect(reconnectingLine(page)).toHaveCount(0);
+  // The queued message reaches the mock on reconnect, and its turn's start shows; then time runs on.
+  const feed = page.getByRole("region", { name: "Conversation with atlas" });
+  await expect(feed.getByText("Working")).toBeVisible();
+  await mock.advance(60_000);
+  await expect(feed.getByText("I've looked into that and here's what I found:")).toBeVisible();
 });
 
 test.describe("the conversation size", () => {
@@ -309,6 +388,7 @@ test.describe("the conversation size", () => {
     const panel = await sizePanel(page, isMobile);
     await expect(panel).toContainText("About 14,000 words go to the model each time atlas replies");
     await expect(panel).toContainText("37 times");
+    await expect(panel.getByText("Tools used", { exact: true })).toBeVisible();
     await panel.getByRole("button", { name: "Token counts" }).click();
     await expect(panel.getByText("412,880")).toBeVisible();
     await expectNoAxeViolations(page, isMobile ? { within: OVERLAYS } : {});
@@ -350,13 +430,20 @@ test.describe("the conversation size", () => {
 });
 
 test("the memory work after a reply shows under it until it's done", async ({ page, mock }) => {
-  await mock.post("/api/mock/delays", { data: { scale: 1 } });
   await openChat(page);
+  await mock.manualTime();
+  // The reply waits before its end, so the memory work starts when the spec lets the turn finish.
+  await mock.post("/api/mock/turn-hold", { data: { held: "reply" } });
   await box(page).fill("remember that the plants need water");
   await sendFromComposer(box(page));
+  const feed = page.getByRole("region", { name: "Conversation with atlas" });
+  await expect(feed.getByText("Working")).toBeVisible();
+  await mock.advance(60_000);
+
+  await mock.post("/api/mock/turn-hold", { data: { held: false } });
   const status = page.getByRole("status").filter({ hasText: "Noting what matters" });
-  await expect(status).toHaveText("Noting what matters from this conversation", {
-    timeout: 15_000,
-  });
-  await expect(status).toHaveCount(0, { timeout: 15_000 });
+  await expect(status).toHaveText("Noting what matters from this conversation");
+  // The memory work is done two seconds of simulated time after the reply ends.
+  await mock.advance(2_000);
+  await expect(status).toHaveCount(0);
 });

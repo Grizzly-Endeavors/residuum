@@ -323,7 +323,7 @@ describe("the team event routes", () => {
       summary: "atlas added an item to your inbox",
       target: { kind: "inbox_item", agent: "atlas", item_id: id },
     });
-    const inbox = await fetchJson(`${mock.baseUrl}/api/hub/inbox?agent=atlas`);
+    const inbox = await fetchJson(`${mock.baseUrl}/api/hub/mail/threads?agent=atlas`);
     expect(JSON.stringify(inbox.body)).toContain(id);
   });
 
@@ -370,7 +370,6 @@ describe("the team event routes", () => {
       run_id: run.run_id,
       status: "completed",
       error: null,
-      error_details: null,
       episode_id: null,
     });
     const failing = { ...run, run_id: "run-action-2", source_label: "action:nightly digest" };
@@ -381,7 +380,6 @@ describe("the team event routes", () => {
       run_id: failing.run_id,
       status: "failed",
       error: "The model is unavailable.",
-      error_details: null,
       episode_id: null,
     });
 
@@ -394,6 +392,32 @@ describe("the team event routes", () => {
         "scheduled_run_finished",
         "error",
         'scout\'s scheduled action "nightly digest" failed: The model is unavailable.',
+      ],
+    ]);
+  });
+
+  it("tells a pulse fire that ran no session when it ends, pointing at the Schedule", async () => {
+    const fire = await post("/api/mock/pulse-fire?agent=atlas", { pulse: "inbox_check" });
+    expect(fire.status, JSON.stringify(fire.body)).toBe(200);
+    const { fire_id: fireId } = fire.body as { fire_id: string };
+    expect(
+      (
+        await post("/api/mock/pulse-fire/finish?agent=atlas", {
+          fire_id: fireId,
+          status: "failed",
+          error: "check_inbox.sh exited with status 2",
+        })
+      ).status,
+    ).toBe(200);
+
+    const runs = (await fetchPage()).events.filter(
+      (event) => event.kind === "scheduled_run_finished",
+    );
+    expect(runs.map((event) => [event.level, event.summary, event.target])).toEqual([
+      [
+        "error",
+        'atlas\'s pulse "inbox_check" failed: check_inbox.sh exited with status 2',
+        { kind: "agent_place", agent: "atlas", place: "schedule" },
       ],
     ]);
   });

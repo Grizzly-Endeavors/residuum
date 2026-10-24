@@ -2,7 +2,7 @@
 //
 // Shapes for the hub API and `/api/hub/ws`. The backend exports the agent
 // shapes, the list envelopes and every hub WebSocket frame through ts-rs
-// (`src/hub/types.rs`); they are re-exported from `generated/`. Only the
+// (`crates/hub/src/types.rs`); they are re-exported from `generated/`. Only the
 // status and stop-all bodies, which the backend builds inline, are
 // hand-written here, and `HubServerMessage` joins the generated frame types.
 
@@ -27,13 +27,20 @@ export type { DeletedAgent } from "./generated/DeletedAgent";
 export type { DeletedAgentListResponse } from "./generated/DeletedAgentListResponse";
 export type { HubClientMessage } from "./generated/HubClientMessage";
 export type { HubEvent } from "./generated/HubEvent";
-export type { HubInboxItem } from "./generated/HubInboxItem";
-export type { HubInboxPage } from "./generated/HubInboxPage";
+export type { HubNoticeKind } from "./generated/HubNoticeKind";
 export type { HubSocketFrame } from "./generated/HubSocketFrame";
-export type { InboxStatus } from "./generated/InboxStatus";
 export type { LastMessage } from "./generated/LastMessage";
 export type { LastMessageRole } from "./generated/LastMessageRole";
 export type { LiveSession } from "./generated/LiveSession";
+export type { MailAttachment } from "./generated/MailAttachment";
+export type { MailMessage } from "./generated/MailMessage";
+export type { MailReplyResponse } from "./generated/MailReplyResponse";
+export type { MailSeen } from "./generated/MailSeen";
+export type { MailSendResponse } from "./generated/MailSendResponse";
+export type { MailSender } from "./generated/MailSender";
+export type { MailThread } from "./generated/MailThread";
+export type { MailThreadPage } from "./generated/MailThreadPage";
+export type { MailThreadSummary } from "./generated/MailThreadSummary";
 export type { NoticeLevel } from "./generated/NoticeLevel";
 export type { OutboundProblem } from "./generated/OutboundProblem";
 export type { OverviewResponse } from "./generated/OverviewResponse";
@@ -87,6 +94,9 @@ export type HubWorkspaceFrame = Extract<
 
 /** Server-to-client frames on `/api/hub/ws`. */
 export type HubServerMessage = HubSocketFrame | HubEvent | HubWorkspaceFrame;
+
+/** The Inbox's folders (`GET /api/hub/mail/threads?folder=`): what arrived, what the user sent, and what was set aside. */
+export type MailFolder = "inbox" | "sent" | "archived";
 
 /** Which file tree a workspace call addresses: an agent's, or the shared team's. */
 export type WorkspaceScope = "agent" | "team";

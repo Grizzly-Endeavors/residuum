@@ -1,4 +1,4 @@
-// The name a person types for an agent, mirrored from `src/config/agent_name.rs`.
+// The name a person types for an agent, mirrored from `crates/config/src/agent_name.rs`.
 // The folder, the URL, and the A2A path stay a short ASCII slug.
 
 /** Longest typed name, in Unicode scalar values after the name is cleaned up. */

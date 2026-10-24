@@ -2,7 +2,7 @@
 
 Residuum terminates TLS itself for its own addresses. The relay forwards raw encrypted bytes and sees only host names, IP addresses, timing and byte counts. The connection to the relay is described in [Residuum Cloud Tunnel](cloud-tunnel.md). Which browsers may use the secure tunnel is [Remote access](remote-access.md).
 
-The code is in `src/remote_access/` (the manager, certificates, pin service client, engine) and `src/tunnel/v2/` (the tunnel client).
+The code is in `crates/net/src/remote_access/` (the manager, certificates, pin service client, engine) and `crates/net/src/tunnel/v2/` (the tunnel client).
 
 ## Addresses
 
@@ -53,11 +53,11 @@ Joins are pairwise: B joins each instance whose agents it should reach. The keys
 
 ## Switching instances
 
-The relay sends `InstancesUpdate` on connect and on every change; the status lists it as `instances` (names are plain text, entries whose slug fails the slug rules are dropped). The web UI shows a switcher in the rail when there is more than one instance. Switching sends `ActivateInstance`; the relay then closes the old instance's UI and workbench streams, and the page reloads onto the new instance, which may ask to pair.
+The relay sends `InstancesUpdate` on connect and on every change; the status lists it as `instances` (names are plain text, entries whose slug fails the slug rules are dropped). The web UI shows a switcher in the rail when there is more than one instance. Switching sends `ActivateInstance`; the relay then closes the old instance's UI and workbench streams, and the page reloads onto the new instance, which may ask to pair. The switcher's menu ends with a Manage instances link to the account dashboard on the relay's web origin, which opens in a new tab and is shown only when the status reports a valid `relay_origin`.
 
 ## Certificates
 
-The certificate manager (`src/remote_access/manager.rs`) keeps one certificate for the three names.
+The certificate manager (`crates/net/src/remote_access/manager.rs`) keeps one certificate for the three names.
 
 1. It loads or creates a persistent ACME account (a P-256 key in `hub/remote-access/acme-account-*.json`, one per directory URL, mode 0600). The account URL is what the pin service pins, and the same key signs the pin service requests.
 2. It waits until public DNS (`[cloud] caa_resolver`, default `1.1.1.1:53`) shows CAA records that allow its account at both `{user}.{base}` and `{user}.workbench.{base}`, for up to 10 minutes.
@@ -69,11 +69,11 @@ Renewal starts when one third of the certificate's lifetime remains, or earlier 
 
 ## The engine
 
-`src/remote_access/engine.rs` serves each tunnel stream: TLS with ALPN `h2`, `http/1.1` and `acme-tls/1`, then HTTP. It picks the handler by the request's Host (`:authority`), not the SNI, because browsers may reuse one connection for the UI and workbench names. Requests for the UI and workbench names go in-process to the same routers the local listeners serve, marked remote with the real peer address the relay reported, so the device gate and rate limits apply. An unknown Host gets `421 Misdirected Request`. On the instance name, `/a2a/{agent}/...` goes to the hub's A2A listener and `/teams/{agent}` to that agent's Teams listener. `x-residuum-a2a-caller`, `x-real-ip` and `x-forwarded-for` are removed from every inbound request, and the instance name's A2A path keeps the relay's old per-address limit of 300 requests a minute with a burst of 60.
+`crates/net/src/remote_access/engine.rs` serves each tunnel stream: TLS with ALPN `h2`, `http/1.1` and `acme-tls/1`, then HTTP. It picks the handler by the request's Host (`:authority`), not the SNI, because browsers may reuse one connection for the UI and workbench names. Requests for the UI and workbench names go in-process to the same routers the local listeners serve, marked remote with the real peer address the relay reported, so the device gate and rate limits apply. An unknown Host gets `421 Misdirected Request`. On the instance name, `/a2a/{agent}/...` goes to the hub's A2A listener and `/teams/{agent}` to that agent's Teams listener. What the engine and the instance name answer themselves (an unknown Host, an unknown path, a Teams `GET`, a missing agent or listener, a rate limit, an unreachable listener) is plain text, except to a browser navigation, which gets the shared fallback page (see [Browser landings](hub-http.md#browser-landings)) saying the instance name is where other agents and Microsoft Teams reach this instance's agents, with an Open Residuum link to the UI origin once Cloud has assigned the names. A navigation the A2A or Teams listener answers with an error status gets that page too; a successful answer, such as an agent card, is passed through as it is. `x-residuum-a2a-caller`, `x-real-ip` and `x-forwarded-for` are removed from every inbound request, and the instance name's A2A path keeps the relay's old per-address limit of 300 requests a minute with a burst of 60.
 
 ## Status and settings
 
-`GET /api/hub/remote-access/status` reports `instances`, `siblings`, the join this instance started (`join`) and the requests waiting for it (`pending_joins`), besides `state` (`disabled`, `connecting`, `enrolling`, `needs_join`, `waiting_for_dns`, `ordering`, `ready`, `refused`, `error`), a plain-language `detail` (`disabled` means Residuum Cloud isn't configured), the user, slug and addresses, the certificate's expiry and renewal time, the pins, any reset by email waiting to take effect (`pending_reset`), and whether a recovery code is waiting. `POST /api/hub/remote-access/retry` looks again now. The recovery code, `POST .../cancel-reset`, `POST .../join`, `POST .../joins/{id}/approve|deny`, `POST .../pins/remove` and `POST .../instances/{slug}/activate` work from the paired browsers too. `POST .../recovery-code/saved`, `POST .../reset-pins` and `POST .../email-reset` (which answers `{"email": "b***@gmail.com"}`) work only for requests made on the machine Residuum runs on.
+`GET /api/hub/remote-access/status` reports `instances`, `siblings`, the join this instance started (`join`) and the requests waiting for it (`pending_joins`), besides `state` (`disabled`, `connecting`, `enrolling`, `needs_join`, `waiting_for_dns`, `ordering`, `ready`, `refused`, `error`), a plain-language `detail` (`disabled` means Residuum Cloud isn't configured), the user, slug and addresses, `relay_origin` (the web origin of the relay named by `[cloud] relay_url`, with `wss` as `https` and `ws` as `http`; absent when that URL isn't a ws or wss address), the certificate's expiry and renewal time, the pins, any reset by email waiting to take effect (`pending_reset`), whether a recovery code is waiting, and `checked_at`, when the last check finished (failed checks included; absent until the first ends). `POST /api/hub/remote-access/retry` looks again now, and `checked_at` moves once that check is done. The recovery code, `POST .../cancel-reset`, `POST .../join`, `POST .../joins/{id}/approve|deny`, `POST .../pins/remove` and `POST .../instances/{slug}/activate` work from the paired browsers too. `POST .../recovery-code/saved`, `POST .../reset-pins` and `POST .../email-reset` (which answers `{"email": "b***@gmail.com"}`) work only for requests made on the machine Residuum runs on.
 
 `[cloud]` in `hub/config.toml`:
 
@@ -89,7 +89,7 @@ A staging account is a different account from a production one, so it has its ow
 
 ## Tests
 
-`cargo test --quiet remote_access:: tunnel::v2` runs the tests that need nothing outside the process: a fake relay speaking tunnel v2 with a TCP front door, a fake pin service, and the engine behind both. The tests marked `#[ignore]` start Pebble, the Let's Encrypt test CA (images pinned in `src/remote_access/pebble_support.rs`), and its challenge test server in Docker with host networking. `just pebble` runs them, and CI runs them in the Rust Tests job, on pull requests that change Rust code and on release tags. They cover issuance and renewal through the tunnel, the recovery code reset, the reset by email (a kept recovery code, a failed request, a cancel signed by a pinned account), and the alert for an unknown pin.
+`cargo test --quiet -p residuum-net remote_access:: tunnel::v2` runs the tests that need nothing outside the process: a fake relay speaking tunnel v2 with a TCP front door, a fake pin service, and the engine behind both. The tests marked `#[ignore]` start Pebble, the Let's Encrypt test CA (images pinned in `crates/net/src/remote_access/pebble_support.rs`), and its challenge test server in Docker with host networking. `just pebble` runs them, and CI runs them in the merge queue lane (the Rust job with `pebble: true` in `.github/workflows/ci.yml`) and in the release workflow (`.github/workflows/release.yml`), never on pull requests. They cover issuance and renewal through the tunnel, the recovery code reset, the reset by email (a kept recovery code, a failed request, a cancel signed by a pinned account), and the alert for an unknown pin.
 
 ## Files
 

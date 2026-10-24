@@ -28,6 +28,10 @@ export class MessageIds {
   has(id: string): boolean {
     return this.ids.has(id);
   }
+
+  delete(id: string): void {
+    this.ids.delete(id);
+  }
 }
 
 /** How a turn ended, for the text it left unfinished. */

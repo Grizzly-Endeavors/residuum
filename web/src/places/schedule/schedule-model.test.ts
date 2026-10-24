@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type { ActionInfo, PulseInfo } from "../../lib/types";
+import type { ActionInfo, PulseInfo, ScheduledCurrentRun } from "../../lib/types";
 import {
   actionWhen,
   lastRun,
+  modelLine,
   notRunningTitle,
   overlapNote,
   pulseCadence,
   pulseIcon,
   pulseNext,
   pulsesHeld,
+  runPhase,
+  runStarted,
 } from "./schedule-model";
 
 const NOW = Date.parse("2026-03-14T12:00:00Z");
@@ -22,6 +25,7 @@ function pulse(overrides: Partial<PulseInfo> = {}): PulseInfo {
     schedule: "2h",
     active_hours: null,
     agent: null,
+    model_tier: null,
     next_fire_at: iso(34 * MINUTE),
     last_outcome: null,
     current_run: null,
@@ -106,14 +110,53 @@ describe("lastRun", () => {
 
 describe("overlapNote", () => {
   it("names when the run it overlapped started, and is null for a run that didn't", () => {
-    const run = { address: "scheduled-1", run_id: "run-2", overlap: null };
+    const run: ScheduledCurrentRun = {
+      fire_id: "fire-2",
+      phase: "session",
+      started_at: iso(-MINUTE),
+      address: "scheduled-1",
+      run_id: "run-2",
+      overlap: null,
+    };
     expect(overlapNote(run, NOW)).toBeNull();
     expect(
       overlapNote(
-        { ...run, overlap: { previous_run_id: "run-1", previous_started_at: iso(-12 * MINUTE) } },
+        {
+          ...run,
+          overlap: {
+            previous_run_id: "run-1",
+            previous_fire_id: "fire-1",
+            previous_started_at: iso(-12 * MINUTE),
+          },
+        },
         NOW,
       ),
     ).toBe("Started while the run from 12m ago was still going");
+  });
+});
+
+describe("runPhase and runStarted", () => {
+  const script: ScheduledCurrentRun = {
+    fire_id: "fire-1",
+    phase: "script",
+    started_at: iso(-3 * MINUTE),
+    address: null,
+    run_id: null,
+    overlap: null,
+  };
+
+  it("says whether a run is in its scripts, starting its session, or in its session", () => {
+    expect(runPhase(script)).toBe("Running scripts");
+    expect(runPhase({ ...script, phase: "session", address: "scheduled-1" })).toBe(
+      "Starting session",
+    );
+    expect(runPhase({ ...script, phase: "session", address: "scheduled-1", run_id: "run-1" })).toBe(
+      "Running session",
+    );
+  });
+
+  it("says when a run started", () => {
+    expect(runStarted(script, NOW)).toBe("Started 3m ago");
   });
 });
 
@@ -131,6 +174,7 @@ describe("the rest of the place's words", () => {
       run_at: iso(10 * MINUTE),
       agent: null,
       model_tier: null,
+      problem: null,
       current_run: null,
     };
     expect(actionWhen(action, "running", NOW)).toBe("in 10m");
@@ -141,5 +185,16 @@ describe("the rest of the place's words", () => {
     expect(notRunningTitle("drifter", "stopped")).toBe("drifter is stopped");
     expect(notRunningTitle("brittle", "failed")).toBe("brittle can't start");
     expect(notRunningTitle("drifter", "starting")).toBe("drifter is starting");
+  });
+});
+
+describe("modelLine", () => {
+  it("names a tier as a tier and an explicit model as itself", () => {
+    expect(modelLine("small")).toBe("Model: small tier");
+    expect(modelLine("anthropic/claude-haiku-4-5")).toBe("Model: anthropic/claude-haiku-4-5");
+  });
+
+  it("says nothing for a pulse or action that runs its default tier", () => {
+    expect(modelLine(null)).toBeNull();
   });
 });

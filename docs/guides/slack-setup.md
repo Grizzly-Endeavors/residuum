@@ -62,7 +62,7 @@ By default the agent answers only its owner. Anyone else who DMs the app gets no
 
 ## 6. First deployment: probe the wire format
 
-The Slack interface ships with envelope fixtures (`src/interfaces/slack/fixtures/*.json`) written from Slack's published docs and marked **assumed-until-probed** — see `fixtures/README.md` in that directory. At the first live deployment, capture real envelopes and events (from the socket traffic or Slack's app logs) and **replace those fixture files byte-for-byte**, then re-run the test suite (`cargo test`). Until that probe runs, treat any wire-format oddity as possibly ours, not Slack's.
+The Slack interface ships with envelope fixtures (`crates/interfaces/src/slack/fixtures/*.json`) written from Slack's published docs and marked **assumed-until-probed** — see `fixtures/README.md` in that directory. At the first live deployment, capture real envelopes and events (from the socket traffic or Slack's app logs) and **replace those fixture files byte-for-byte**, then re-run the test suite (`cargo test`). Until that probe runs, treat any wire-format oddity as possibly ours, not Slack's.
 
 ## Troubleshooting
 

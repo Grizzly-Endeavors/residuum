@@ -5,8 +5,8 @@ import { HubStore } from "./hub.svelte";
 import type {
   AgentOverview,
   AgentSummary,
-  HubInboxItem,
-  HubInboxPage,
+  MailThreadPage,
+  MailThreadSummary,
   OverviewResponse,
   TeamEvent,
   TeamEventPage,
@@ -14,6 +14,7 @@ import type {
 import { notifications } from "./notifications.svelte";
 import { OverviewStore } from "./overview.svelte";
 import { toast } from "./toast.svelte";
+import { waitFor } from "../test/wait";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -53,16 +54,19 @@ function teamEvent(id: number, summary = `event ${String(id)}`): TeamEvent {
   };
 }
 
-function inboxItem(id: string, read = false): HubInboxItem {
+function inboxThread(id: string, unread = true): MailThreadSummary {
   return {
-    agent: "atlas",
-    id,
-    title: id,
-    body: "",
-    source: "agent",
-    at: "2026-03-14T12:00:00Z",
-    read,
-    attachments: [],
+    thread_id: `atlas/user/${id}`,
+    subject: id,
+    participants: ["atlas"],
+    message_count: 1,
+    latest_at: "2026-03-14T12:00:00Z",
+    snippet: "",
+    unread,
+    has_attachments: false,
+    in_inbox: true,
+    in_sent: false,
+    archived: false,
   };
 }
 
@@ -77,7 +81,7 @@ function json(body: unknown, status = 200): Response {
 let answers: {
   overview: OverviewResponse;
   events: (url: URL) => TeamEventPage;
-  inbox: (url: URL) => HubInboxPage;
+  mail: (url: URL) => MailThreadPage;
   /** Held back until released, for a test about a request that is still out. */
   holdOverview: Promise<void> | null;
   task: (url: URL) => Response;
@@ -97,7 +101,7 @@ function stubHub(): void {
         return json(answer);
       }
       if (url.pathname === "/api/hub/events") return json(answers.events(url));
-      if (url.pathname === "/api/hub/inbox") return json(answers.inbox(url));
+      if (url.pathname === "/api/hub/mail/threads") return json(answers.mail(url));
       if (url.pathname.includes("/a2a/outbound/")) return answers.task(url);
       return json({ error: `unexpected ${url.pathname}` }, 500);
     }),
@@ -117,7 +121,7 @@ beforeEach(() => {
   answers = {
     overview: { boot_id: BOOT, agents: [overviewOf("atlas"), overviewOf("scout")] },
     events: () => ({ boot_id: BOOT, events: [teamEvent(2), teamEvent(1)], next_before: null }),
-    inbox: () => ({ items: [], next_cursor: null }),
+    mail: () => ({ threads: [], next: null }),
     holdOverview: null,
     task: () => json({}),
   };
@@ -146,7 +150,7 @@ const eventRequests = (): string[] => requests.filter((r) => r.includes("/events
 describe("OverviewStore on connect", () => {
   it("fetches the overview and the team events when the hub socket connects", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
       expect(store.eventsLoaded).toBe(true);
     });
@@ -157,14 +161,14 @@ describe("OverviewStore on connect", () => {
 
   it("keeps what it holds when the same hub reconnects, and asks only for newer events", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     answers.events = () => ({ boot_id: BOOT, events: [teamEvent(3)], next_before: null });
 
     connect();
     expect(store.loaded).toBe(true);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.id)).toEqual([3, 2, 1]);
     });
     expect(eventRequests().at(-1)).toBe("GET /api/hub/events?after=2&limit=50");
@@ -173,7 +177,7 @@ describe("OverviewStore on connect", () => {
 
   it("drops everything from the old hub process when the boot id changes", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     answers.overview = { boot_id: "boot-2", agents: [overviewOf("atlas", { inbox_unread: 0 })] };
@@ -188,7 +192,7 @@ describe("OverviewStore on connect", () => {
     expect(store.loaded).toBe(false);
     expect(store.events).toEqual([]);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.summary)).toEqual(["fresh"]);
     });
     expect(Object.keys(store.overviews)).toEqual(["atlas"]);
@@ -198,10 +202,10 @@ describe("OverviewStore on connect", () => {
   it("ignores an overview answered by a different hub process than the socket announced", async () => {
     answers.overview = { boot_id: "boot-old", agents: [overviewOf("atlas")] };
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(overviewRequests()).toBe(1);
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     expect(store.loaded).toBe(false);
@@ -212,7 +216,7 @@ describe("OverviewStore on connect", () => {
 describe("OverviewStore after lag", () => {
   it("refetches the overview and the newer events after a snapshot sent in place of lost frames", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     expect(overviewRequests()).toBe(1);
@@ -224,7 +228,7 @@ describe("OverviewStore after lag", () => {
     answers.events = () => ({ boot_id: BOOT, events: [teamEvent(5)], next_before: null });
     hub.handleFrame(snapshot([agent("atlas"), agent("scout")]));
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.id)).toEqual([5, 2, 1]);
     });
     expect(overviewRequests()).toBe(2);
@@ -233,7 +237,7 @@ describe("OverviewStore after lag", () => {
 
   it("doesn't refetch for the snapshot every connection starts with", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
     });
     expect(overviewRequests()).toBe(1);
@@ -244,7 +248,7 @@ describe("OverviewStore after lag", () => {
 describe("OverviewStore frames", () => {
   it("replaces an agent's overview with each frame, and forgets a deleted agent", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
     });
     const busier = overviewOf("atlas", {
@@ -273,14 +277,14 @@ describe("OverviewStore frames", () => {
       release = resolve;
     });
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(overviewRequests()).toBe(1);
     });
     const framed = overviewOf("atlas", { inbox_unread: 3 });
     hub.handleFrame({ type: "agent_overview", overview: framed });
 
     release();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.loaded).toBe(true);
     });
     expect(store.overviewOf("atlas")).toEqual(framed);
@@ -289,7 +293,7 @@ describe("OverviewStore frames", () => {
 
   it("adds each team event once, newest first", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     hub.handleFrame({ type: "team_event", boot_id: BOOT, event: teamEvent(3) });
@@ -299,63 +303,79 @@ describe("OverviewStore frames", () => {
 
   it("starts the events over when one comes from another hub process", async () => {
     connect();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.eventsLoaded).toBe(true);
     });
     hub.handleFrame({ type: "team_event", boot_id: "boot-other", event: teamEvent(9) });
     expect(store.events).toEqual([]);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.events.map((e) => e.id)).toEqual([2, 1]);
     });
     expect(eventRequests().at(-1)).toBe("GET /api/hub/events?limit=50");
   });
 });
 
-describe("OverviewStore inbox items", () => {
-  it("fetches the newest unread items when a count changes, paging until it has five", async () => {
+describe("OverviewStore inbox threads", () => {
+  it("fetches one page of the inbox when a count changes, and keeps its unread threads", async () => {
     answers.overview = {
       boot_id: BOOT,
-      agents: [overviewOf("atlas", { inbox_unread: 6 }), overviewOf("scout")],
+      agents: [overviewOf("atlas", { inbox_unread: 9 }), overviewOf("scout")],
     };
-    answers.inbox = (url) =>
-      url.searchParams.get("before") === null
-        ? {
-            items: [inboxItem("a"), inboxItem("b", true), inboxItem("c")],
-            next_cursor: "cursor-1",
-          }
-        : {
-            items: [inboxItem("d"), inboxItem("e"), inboxItem("f"), inboxItem("g")],
-            next_cursor: "cursor-2",
-          };
-    connect();
-    await vi.waitFor(() => {
-      expect(store.unreadItems.map((i) => i.id)).toEqual(["a", "c", "d", "e", "f"]);
+    answers.mail = () => ({
+      threads: [
+        inboxThread("a"),
+        inboxThread("b", false),
+        ...["c", "d", "e", "f", "g"].map((id) => inboxThread(id)),
+      ],
+      next: "cursor-1",
     });
-    expect(requests.filter((r) => r.includes("/inbox"))).toEqual([
-      "GET /api/hub/inbox?status=active&limit=50",
-      "GET /api/hub/inbox?status=active&limit=50&before=cursor-1",
+    connect();
+    await waitFor(() => {
+      expect(store.unreadThreads.map((t) => t.subject)).toEqual(["a", "c", "d", "e", "f", "g"]);
+    });
+    // However long the inbox is, a count change asks for its newest page and no more.
+    expect(requests.filter((r) => r.includes("/mail/"))).toEqual([
+      "GET /api/hub/mail/threads?folder=inbox&limit=50",
     ]);
+    expect(store.unreadThreadsComplete).toBe(false);
+    expect(store.needsYou.items.filter((item) => item.kind === "inbox")).toHaveLength(5);
     expect(store.needsYou.count).toBe(5);
-    expect(store.needsYou.moreInInbox).toBe(1);
+    // The page isn't the last, so the link says there is more without a number.
+    expect(store.needsYou.moreInInbox).toBeGreaterThan(0);
+    expect(store.needsYou.moreInInboxExact).toBe(false);
 
     // A frame with the same counts asks for nothing; a changed count asks again.
-    hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 6 }) });
+    hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 9 }) });
     const asked = requests.length;
     hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 0 }) });
-    await vi.waitFor(() => {
-      expect(store.unreadItems).toEqual([]);
+    await waitFor(() => {
+      expect(store.unreadThreads).toEqual([]);
     });
     expect(requests).toHaveLength(asked);
   });
 
-  it("says when the items can't be loaded, and keeps counting them", async () => {
+  it("counts nothing more in the Inbox once every unread thread is listed", async () => {
+    // Two unread items in one thread: the count says 2, the inbox has one thread.
     answers.overview = { boot_id: BOOT, agents: [overviewOf("atlas", { inbox_unread: 2 })] };
-    answers.inbox = () => {
+    answers.mail = () => ({ threads: [inboxThread("a"), inboxThread("b", false)], next: null });
+    connect(BOOT, [agent("atlas")]);
+    await waitFor(() => {
+      expect(store.unreadThreads.map((t) => t.thread_id)).toEqual(["atlas/user/a"]);
+    });
+    expect(store.unreadThreadsComplete).toBe(true);
+    expect(store.needsYou.moreInInbox).toBe(0);
+    expect(store.needsYou.moreInInboxExact).toBe(true);
+    expect(store.needsYou.count).toBe(1);
+  });
+
+  it("says when the threads can't be loaded, and keeps counting the unread items", async () => {
+    answers.overview = { boot_id: BOOT, agents: [overviewOf("atlas", { inbox_unread: 2 })] };
+    answers.mail = () => {
       throw new Error("down");
     };
     connect(BOOT, [agent("atlas")]);
-    await vi.waitFor(() => {
-      expect(store.unreadItemsError).toContain("Couldn't load your newest inbox items");
+    await waitFor(() => {
+      expect(store.unreadThreadsError).toContain("Couldn't load your newest inbox messages");
     });
     expect(store.needsYou.count).toBe(2);
   });
@@ -375,7 +395,7 @@ describe("OverviewStore outbound tasks", () => {
       agents: [overviewOf("atlas", { outbound_problems: [STUCK] })],
     };
     connect(BOOT, [agent("atlas")]);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(store.needsYou.items).toHaveLength(1);
     });
   });

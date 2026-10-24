@@ -1,7 +1,9 @@
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "../src/lib/generated/protocol";
+import { agentInboxItemId, deriveTitle } from "./agent-inbox";
 import { arrivedThroughArtifactsOrigin } from "./artifacts-origin";
+import { saveChatAttachments, UPLOAD_GONE } from "./chat-attachments";
 import { createChatSimulator } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
 import { sendSessionMessage, spawnSession, stopSession } from "./sessions";
@@ -52,6 +54,9 @@ export function parseClientMessage(raw: string): ClientMessage {
         type,
         id: requiredString(body, "id"),
         content: requiredString(body, "content"),
+        ...(body.attachments === undefined
+          ? {}
+          : { attachments: requiredStrings(body, "attachments") }),
       };
     case "set_verbose": {
       const { enabled } = body;
@@ -68,13 +73,19 @@ export function parseClientMessage(raw: string): ClientMessage {
       return { type, body: requiredString(body, "body") };
     case "cancel":
       return { type, reply_to: requiredString(body, "reply_to") };
-    case "session_send_message":
+    case "send_queued_now":
+    case "withdraw_queued":
+      return { type, id: requiredString(body, "id") };
+    case "session_send_message": {
+      const messageId = stringField(body, "message_id");
       return {
         type,
         id: requiredString(body, "id"),
         address: requiredString(body, "address"),
         content: requiredString(body, "content"),
+        ...(messageId === undefined ? {} : { message_id: messageId }),
       };
+    }
     case "session_stop":
       return { type, id: requiredString(body, "id"), address: requiredString(body, "address") };
     case "watch_workspace":
@@ -92,6 +103,11 @@ const VERBOSE_ONLY_FRAMES: ReadonlySet<ServerMessage["type"]> = new Set([
   "session_tool_result",
 ]);
 
+/** Whether the upgrade request asks for a connection that only watches files, which the agent doesn't count as a client. */
+function isWatchOnly(req: IncomingMessage): boolean {
+  return new URL(req.url ?? "/", "http://mock.invalid").searchParams.get("watch_only") === "true";
+}
+
 /**
  * Open an agent's WebSocket, `/api/agents/{name}/ws`, on the HTTP server. It
  * refuses connections with `409` while the agent isn't running. The agent's
@@ -103,8 +119,12 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   const chat = createChatSimulator(hub, agent);
   const journal = new MockTurnJournal(() => hub.env.clock.iso());
   const verbose = new WeakSet<WebSocket>();
-  /** The sockets opened through the artifacts origin. A workbench page isn't the user reading the chat, so they don't count as clients. */
-  const throughArtifactsOrigin = new WeakSet<WebSocket>();
+  /**
+   * The sockets that aren't the user reading the chat, so they don't count as
+   * clients: those opened through the artifacts origin (a workbench page) and
+   * those that ask to only watch files (`?watch_only=true`).
+   */
+  const notClients = new WeakSet<WebSocket>();
   /** What each page watches (`watch_workspace`); a page that never asked watches nothing. */
   const watching = new WeakMap<WebSocket, WatchSet>();
 
@@ -133,8 +153,11 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
     }
   };
   agent.receiveMessage = chat.receive;
+  state.messageMain = chat.receiveFromSession;
   agent.connectedClients = () =>
-    [...wss.clients].filter((client) => !throughArtifactsOrigin.has(client)).length;
+    [...wss.clients].filter((client) => !notClients.has(client)).length;
+  agent.watchedPrefixes = () =>
+    [...new Set([...wss.clients].flatMap((client) => watching.get(client) ?? []))].sort();
   agent.dispose = () => {
     stopRouting();
     state.dropSockets();
@@ -151,15 +174,31 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         reply({ type: "pong" });
         break;
 
-      case "send_message":
+      case "send_message": {
+        // Files come as uploads staged on the hub; one that isn't staged refuses the whole message.
+        const saved = saveChatAttachments(hub, agent, msg.content, msg.attachments ?? []);
+        if (saved === null) {
+          reply({ type: "message_refused", id: msg.id, message: UPLOAD_GONE });
+          break;
+        }
         if (msg.content.toLowerCase().startsWith("spawn")) {
           spawnSession(state, msg.content.replace(/^spawn\s*/i, "") || "Look into something");
         }
-        chat.send(msg);
+        chat.send({ ...msg, content: saved.content }, saved.attachments, saved.images);
         break;
+      }
 
       case "cancel":
         chat.cancel(msg.reply_to);
+        break;
+
+      case "send_queued_now":
+        if (!chat.sendWaitingNow(msg.id)) reply({ type: "queued_message_unavailable", id: msg.id });
+        break;
+
+      case "withdraw_queued":
+        if (!chat.withdrawWaiting(msg.id))
+          reply({ type: "queued_message_unavailable", id: msg.id });
         break;
 
       case "set_verbose":
@@ -172,7 +211,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         if (turn !== null && !verbose.has(ws)) {
           turn.frames = turn.frames.filter((entry) => !VERBOSE_ONLY_FRAMES.has(entry.frame.type));
         }
-        reply({ type: "turn_snapshot", turn });
+        reply({ type: "turn_snapshot", turn, queued: journal.queued() });
         break;
       }
 
@@ -189,14 +228,13 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
             type: "error",
             reply_to: null,
             message: `Couldn't watch the workspace: ${problem}.`,
-            details: null,
           });
         }
         break;
       }
 
       case "session_send_message":
-        sendSessionMessage(state, reply, msg.id, msg.address, msg.content);
+        sendSessionMessage(state, reply, msg.id, msg.address, msg.content, msg.message_id);
         break;
 
       case "session_stop":
@@ -206,7 +244,12 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       case "reload":
         reply({ type: "reloading" });
         hub.env.after(RELOAD_MS, () => {
-          reply({ type: "notice", message: "Configuration reloaded successfully." });
+          reply({
+            type: "notice",
+            message: "Configuration reloaded successfully.",
+            reload: "reloaded",
+            reload_of: "agent_config",
+          });
         });
         break;
 
@@ -214,15 +257,25 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         reply({ type: "notice", message: `Command '${msg.name}' executed. (mock)` });
         break;
 
-      case "inbox_add":
-        reply({ type: "notice", message: "[inbox] item added" });
+      case "inbox_add": {
+        // `/inbox <text>` is a message you sent the agent, so it shows in Sent.
+        const title = deriveTitle(msg.body);
+        state.agentInbox.push({
+          id: agentInboxItemId([state], title),
+          title,
+          body: msg.body,
+          source: "cli",
+          timestamp: hub.env.clock.iso(),
+        });
+        reply({ type: "notice", message: "Added a note to the inbox." });
         break;
+      }
     }
   }
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
-    if (arrivedThroughArtifactsOrigin(req)) {
-      throughArtifactsOrigin.add(ws);
+    if (arrivedThroughArtifactsOrigin(req) || isWatchOnly(req)) {
+      notClients.add(ws);
     } else {
       // Opening the agent's socket is what shows its messages.
       hub.clearUnread(agent);
@@ -236,7 +289,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
           type: "error",
           reply_to: null,
           message: `malformed message: ${err instanceof Error ? err.message : String(err)}`,
-          details: null,
         } satisfies ServerMessage);
         return;
       }

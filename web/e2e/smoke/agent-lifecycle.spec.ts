@@ -102,6 +102,7 @@ test("the rail's + opens Create agent where the user is", async ({ page, isMobil
   await expect(dialog).toBeVisible();
   await dialog.getByRole("textbox", { name: "Name" }).fill("nova");
   await dialog.getByRole("button", { name: "More options" }).click();
+  await expect(dialog.getByRole("combobox", { name: "Who can find it" })).toHaveValue("private");
   await dialog.getByRole("combobox", { name: "Copy model settings from" }).selectOption("scout");
   await dialog.getByRole("button", { name: "Create agent" }).click();
 
@@ -254,6 +255,10 @@ test("Recently deleted restores an agent", async ({ page }) => {
   const removed = await page.request.delete("/api/hub/agents/drifter");
   expect(removed.ok()).toBe(true);
   await expect(boardRow(page, "drifter")).toHaveCount(0);
+  const deleted = page.getByRole("status").filter({ hasText: "You deleted drifter." });
+  await expect(deleted).toBeVisible();
+  await deleted.getByRole("button", { name: "Dismiss notification" }).click();
+  await expect(deleted).toBeHidden();
 
   const recent = page.getByRole("button", { name: "Recently deleted" });
   await expect(recent).toHaveAttribute("aria-expanded", "false");

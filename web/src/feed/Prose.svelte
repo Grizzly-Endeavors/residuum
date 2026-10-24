@@ -1,29 +1,80 @@
 <script lang="ts">
   import { COPY_LABEL, COPY_NAME, renderMarkdown } from "../lib/markdown";
   import { VisuallyHidden } from "../lib/ui";
-  import { openPathInPanel, pathHref } from "./feed-links";
+  import { openPathInPanel, openTeamPathInPanel, pathHref, teamPathHref } from "./feed-links";
 
   // Message text as sanitized Markdown. Each code block has a Copy button,
   // and inline code that is a whole workspace path opens that file in the
   // context panel, in `agent`'s workspace. Other links open in a new tab,
-  // so following one never takes the app away.
+  // so following one never takes the app away. With no agent (the team's
+  // folder, whose paths name no agent's workspace) such code is not a link.
+  // A relative link to a Markdown file opens that file in the panel when
+  // `filePath` names the file the text is in, in the agent's workspace or the
+  // team's folder; any other link keeps its own behavior. `openPath` replaces
+  // what clicking an agent's path does, for text that sits where the default
+  // (the agent's own place) is wrong.
 
   interface Props {
     content: string;
-    /** The agent whose workspace the message's paths are in. */
-    agent: string;
+    /** The agent whose workspace the message's paths are in, or null where the paths name none. */
+    agent: string | null;
+    /** With no agent, true for the team's folder, whose relative file links open in the panel. */
+    teamFolder?: boolean;
+    /** The workspace path (or team-folder path) of the file the text is in, for its relative links. */
+    filePath?: string;
+    /** Opens a path in `agent`'s workspace when its link is clicked. By default the agent's own place shows it. */
+    openPath?: (path: string) => void;
     /** `compact` for text inside a card. */
     size?: "message" | "compact";
     /** The text is still arriving: a blinking caret follows its last word. */
     streaming?: boolean;
   }
 
-  let { content, agent, size = "message", streaming = false }: Props = $props();
+  let {
+    content,
+    agent,
+    teamFolder = false,
+    filePath,
+    openPath,
+    size = "message",
+    streaming = false,
+  }: Props = $props();
 
   // The sanitizer builds the nodes; they replace what was shown whenever the
-  // text or its agent changes.
+  // text or its agent changes, and only then. A prop is read through what the
+  // parent passes (`item.content`), which is dirtied whenever the feed regroups
+  // its turns, on every change to its items, though the text is the same.
+  // Rebuilding every message then drops a text selection in it, and was seen
+  // in WebKit to move the feed's scroll position 1500px up under the reader.
+  const source = $derived(content);
+  const owner = $derived(agent);
+  const inTeam = $derived(teamFolder);
+  const base = $derived(filePath);
+
+  /** Where a path link points, for the scope the text is in; null where links to paths aren't made. */
+  function linkFor(
+    linkAgent: string | null,
+    linkTeam: boolean,
+  ): ((path: string) => string) | undefined {
+    if (linkAgent !== null) return (path) => pathHref(linkAgent, path);
+    if (linkTeam) return teamPathHref;
+    return undefined;
+  }
+
   function render(node: HTMLElement): void {
-    node.replaceChildren(renderMarkdown(content, { pathHref: (path) => pathHref(agent, path) }));
+    const linkAgent = owner;
+    const linkTeam = inTeam;
+    const linkBase = base;
+    const relativeHref = linkFor(linkAgent, linkTeam);
+    node.replaceChildren(
+      renderMarkdown(source, {
+        pathHref: linkAgent === null ? undefined : (path) => pathHref(linkAgent, path),
+        relativeFileLinks:
+          linkBase === undefined || relativeHref === undefined
+            ? undefined
+            : { base: linkBase, href: relativeHref },
+      }),
+    );
   }
 
   const COPY_FEEDBACK_MS = 2000;
@@ -59,8 +110,15 @@
     const link = event.target.closest<HTMLAnchorElement>("a[data-path]");
     const newTab = event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey;
     if (link === null || newTab || event.defaultPrevented) return;
-    event.preventDefault();
-    openPathInPanel(agent, link.dataset.path ?? "");
+    if (agent !== null) {
+      event.preventDefault();
+      const path = link.dataset.path ?? "";
+      if (openPath === undefined) openPathInPanel(agent, path);
+      else openPath(path);
+    } else if (inTeam) {
+      event.preventDefault();
+      openTeamPathInPanel(link.dataset.path ?? "");
+    }
   }
 
   // The links and buttons are in the rendered HTML, so their clicks are
@@ -81,7 +139,7 @@
   .prose {
     min-width: 0;
     font-size: var(--font-size-message);
-    line-height: var(--line-height-message);
+    --leading: var(--line-height-message);
     overflow-wrap: anywhere;
 
     &[data-size="compact"] {
@@ -104,7 +162,7 @@
       margin: var(--space-14) 0 var(--space-6);
       font-size: var(--font-size-message);
       font-weight: var(--font-weight-semibold);
-      line-height: var(--line-height-tight);
+      --leading: var(--line-height-tight);
     }
 
     :is(h3, h4) {
@@ -234,6 +292,12 @@
       border-radius: var(--corner-md);
     }
 
+    /* An image that isn't an agent's file, shown as a link to it: a quieter "Image" leads its alt text or URL. */
+    .prose-image-link-kind {
+      color: var(--color-text-2);
+      font-weight: var(--font-weight-medium);
+    }
+
     /* A table keeps its words whole: a column never narrows below its longest word, and a table wider than the message scrolls in its group. */
     .prose-table {
       max-width: 100%;
@@ -272,7 +336,7 @@
       background: var(--color-stone-2);
       font-family: var(--font-code);
       font-size: var(--font-size-xs);
-      line-height: var(--line-height-ui);
+      --leading: var(--line-height-ui);
       overflow-wrap: normal;
     }
 

@@ -17,23 +17,23 @@ import { byName } from "./util";
 import { rfc3339InZone } from "./zone";
 
 /**
- * The team overview of the hub, `src/hub/overview/`: what Home shows about
+ * The team overview of the hub, `crates/hub/src/overview/`: what Home shows about
  * each agent beyond its state, activity and summary. The mock reads it from
  * the same data its routes serve (the conversation, the live sessions, the
  * inbox) whenever it is asked for or sent, and tells hub clients with
  * `agent_overview` frames, gathered the way the backend gathers them.
  */
 
-/** How long an agent's changes are gathered before its overview is sent, in simulated milliseconds: `COALESCE_WINDOW` in `src/hub/overview/service.rs`. */
+/** How long an agent's changes are gathered before its overview is sent, in simulated milliseconds: `COALESCE_WINDOW` in `crates/hub/src/overview/service.rs`. */
 export const COALESCE_WINDOW_MS = 1000;
 
 /** The most characters a preview holds, the ellipsis that marks a cut included. */
 export const PREVIEW_CHARS = 200;
 
-/** The most runs an overview lists as upcoming: `MOST_UPCOMING` in `src/hub/overview/upcoming.rs`. */
+/** The most runs an overview lists as upcoming: `MOST_UPCOMING` in `crates/hub/src/overview/upcoming.rs`. */
 export const MOST_UPCOMING = 3;
 
-/** How long an agent must stay unreachable before its task is a problem, in milliseconds: `UNREACHABLE_NOTICE_AFTER` in `src/a2a/client/tracker.rs`. */
+/** How long an agent must stay unreachable before its task is a problem, in milliseconds: `UNREACHABLE_NOTICE_AFTER` in `crates/a2a/src/client/tracker.rs`. */
 export const OUTBOUND_NOTICE_MS = 600_000;
 
 /** Added to the wait for a task to pass the notice threshold, so the clock has passed it when the wait ends. */
@@ -76,7 +76,7 @@ const MARKDOWN_RULES: ReadonlyArray<readonly [RegExp, string]> = [
 /**
  * `markdown` as plain text on one line, cut to `PREVIEW_CHARS` characters
  * with a trailing `…`. A close match of the backend's `plain_preview`
- * (`src/hub/overview/preview.rs`), which parses the Markdown rather than
+ * (`crates/hub/src/overview/preview.rs`), which parses the Markdown rather than
  * matching its marks.
  */
 export function plainPreview(markdown: string): string {

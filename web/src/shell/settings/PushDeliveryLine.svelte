@@ -31,7 +31,7 @@
     gap: var(--space-6);
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
 
     &[data-failing] {
       color: var(--color-err-text);

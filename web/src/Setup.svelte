@@ -4,6 +4,7 @@
   import { fetchTimezone, fetchMcpCatalog } from "./lib/api";
   import { DEFAULT_AGENT_NAME } from "./lib/agent-name";
   import { userErrorMessage } from "./lib/errors";
+  import { markCatalogKeys } from "./lib/setup-keys";
   import { Icon } from "./lib/icons";
   import { Banner } from "./lib/ui";
   import SetupProgress from "./components/setup/SetupProgress.svelte";
@@ -60,10 +61,10 @@
   // Setup is the highest-stakes form in the app (hand-typed API keys across
   // up to 6 steps) with no undo — a refresh or crashed tab must not throw
   // away everything the user just entered. We keep a draft in localStorage
-  // and restore it on mount, but never persist raw provider API keys or
-  // integration tokens (matching the convention in Review.svelte, which
-  // only ever sends those to the backend via storeSecret(), never stores
-  // them client-side as plain text).
+  // and restore it on mount, but never persist raw provider API keys, tool
+  // server keys or chat-app tokens (matching the convention in Review.svelte,
+  // which only ever sends those to the backend via storeSecret(), never
+  // stores them client-side as plain text).
   const STORAGE_KEY = "residuum-setup-draft";
 
   interface PersistedWizard {
@@ -140,6 +141,12 @@
       teamsTenantId: clone.integrations.teamsTenantId,
       teamsAppPassword: "",
     };
+    clone.mcpServers = clone.mcpServers.map((srv) => {
+      if (!srv.secretEnvKeys || srv.secretEnvKeys.length === 0) return srv;
+      const env = { ...srv.env };
+      for (const field of srv.secretEnvKeys) env[field] = "";
+      return { ...srv, env };
+    });
     return clone;
   }
 
@@ -166,6 +173,7 @@
     catalogError = null;
     try {
       catalog = await fetchMcpCatalog();
+      markCatalogKeys(wizardState.mcpServers, catalog);
     } catch (err: unknown) {
       catalogError = userErrorMessage(err, { action: "Couldn't load the MCP server catalog." });
     } finally {
@@ -242,7 +250,7 @@
     <span class="setup-wordmark"><Icon name="mark" size={18} />Residuum</span>
   </header>
   <main class="setup-scroller" bind:this={scroller}>
-    <div class="setup-column">
+    <div class="setup-column" data-setup-column>
       <SetupProgress labels={stepLabels} current={step} />
 
       <div class="setup-head">
@@ -253,14 +261,19 @@
       {#if showDraftKeyNotice}
         <Banner tone="info" ondismiss={() => (showDraftKeyNotice = false)}>
           Picked up where you left off. Keys and tokens aren't kept in the draft, so enter them
-          again on the Providers and Connections steps before you finish.
+          again on the Providers, Tool servers and Connections steps before you finish.
         </Banner>
       {/if}
 
       {#if step === 0}
         <Welcome bind:wizardState onNext={next} />
       {:else if step === 1}
-        <Providers bind:wizardState onNext={next} onBack={back} />
+        <Providers
+          bind:wizardState
+          onNext={next}
+          onBack={back}
+          restoredDraft={persisted !== null}
+        />
       {:else if step === 2}
         <Roles bind:wizardState onNext={next} onBack={back} />
       {:else if step === 3}
@@ -340,7 +353,7 @@
   .setup-title {
     font-size: var(--font-size-title);
     font-weight: var(--font-weight-semibold);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
 
     /* Focus lands here when a step opens; the heading isn't a control. */
     &:focus {

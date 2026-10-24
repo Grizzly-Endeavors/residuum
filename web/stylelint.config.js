@@ -13,6 +13,9 @@ import { readFileSync } from "node:fs";
 /** The one file that may declare literal values: the design token set. */
 const TOKEN_FILE = "src/styles/tokens.css";
 
+/** The base styles, the one place that turns `--leading` into each element's line box. */
+const BASE_FILE = "src/styles/ui-base.css";
+
 /** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */
 const TOKEN_REFERENCE = /^var\(--[\w-]+\)$/;
 
@@ -53,7 +56,10 @@ const WIDE_MIN = readBreakpoint("wide-min");
 /** @type {import("stylelint").Config} */
 export default {
   ignoreFiles: [TOKEN_FILE],
-  overrides: [{ files: ["**/*.svelte"], customSyntax: "postcss-html" }],
+  overrides: [
+    { files: ["**/*.svelte"], customSyntax: "postcss-html" },
+    { files: [BASE_FILE], rules: { "property-disallowed-list": null } },
+  ],
   rules: {
     // Literal colors: hex, named, and the functional notations.
     "color-no-hex": [true, { message: "Use a color token (var(--…)) instead of a hex color." }],
@@ -94,6 +100,17 @@ export default {
       {
         message: (property, value) =>
           `${property}: ${value} is not allowed. Use motion tokens (var(--duration-…), var(--ease-…)), and name the properties to transition instead of "all".`,
+      },
+    ],
+
+    // A line-height set on an element is a fraction of a pixel at most font
+    // sizes, which sets off WebKit's scroll anchoring, and it hands the
+    // element's children a box for the wrong size. Components set the
+    // inherited factor instead.
+    "property-disallowed-list": [
+      ["line-height"],
+      {
+        message: `Set the leading factor as --leading: var(--line-height-…), or a number, instead of line-height; ${BASE_FILE} turns it into a whole-pixel line box.`,
       },
     ],
 

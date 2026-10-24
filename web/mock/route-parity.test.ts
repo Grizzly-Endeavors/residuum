@@ -5,6 +5,7 @@ import type { WorkspaceScope } from "../src/lib/hub-types";
 import * as api from "../src/lib/api";
 import { agentWsUrl, hubWsUrl } from "../src/lib/paths";
 import { apiRoutes } from "./api-routes";
+import { MAX_UPLOAD_BYTES } from "./mail";
 import { matchRoute, type Route } from "./routes";
 import { isRefusal, scopeRequest } from "./scope";
 import { HUB_SOCKET_PATH, agentSocketPath } from "./sockets";
@@ -150,10 +151,15 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
       }),
   ],
   fetchSessionTranscript: [(a) => a.fetchSessionTranscript(AGENT, "run-1")],
-  messageSession: [(a) => a.messageSession(AGENT, "spawned-research-3f9a", "hello")],
+  messageSession: [(a) => a.messageSession(AGENT, "spawned-research-3f9a", "hello", "web-parity")],
   stopSession: [(a) => a.stopSession(AGENT, "spawned-research-3f9a")],
+  startSession: [
+    (a) => a.startSession(AGENT, { prompt: "plan the garden" }),
+    (a) => a.startSession(AGENT, { prompt: "price the paint", model: "large", fork: true }),
+  ],
   fetchScheduledPulses: [(a) => a.fetchScheduledPulses(AGENT)],
   setPulseEnabled: [(a) => a.setPulseEnabled(AGENT, "inbox_check", false)],
+  stopPulseFire: [(a) => a.stopPulseFire(AGENT, "inbox_check", "fire-1")],
   fetchScheduledActions: [(a) => a.fetchScheduledActions(AGENT)],
   cancelScheduledAction: [(a) => a.cancelScheduledAction(AGENT, "act-1")],
   fetchWorkbenchArtifacts: [(a) => a.fetchWorkbenchArtifacts()],
@@ -231,6 +237,7 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
         a.undoCheckpoint(agentForRepo(repo), "abc", repo),
   ),
   fetchCloudStatus: [(a) => a.fetchCloudStatus()],
+  startCloudSignIn: [(a) => a.startCloudSignIn("", "7700")],
   disconnectCloud: [(a) => a.disconnectCloud()],
   fetchUpdateStatus: [(a) => a.fetchUpdateStatus()],
   triggerUpdateCheck: [(a) => a.triggerUpdateCheck()],
@@ -257,13 +264,28 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   setAgentAutostart: [(a) => a.setAgentAutostart("scout", false)],
   fetchOverview: [(a) => a.fetchOverview()],
   fetchTeamEvents: [(a) => a.fetchTeamEvents(), (a) => a.fetchTeamEvents({ after: 3, limit: 20 })],
-  fetchHubInbox: [
-    (a) => a.fetchHubInbox(),
-    (a) => a.fetchHubInbox({ status: "archived", agent: "scout", before: "1:scout:x", limit: 5 }),
+  fetchMailThreads: [
+    (a) => a.fetchMailThreads({ folder: "inbox" }),
+    (a) =>
+      a.fetchMailThreads({ folder: "sent", agent: "scout", before: "1:scout/user/x", limit: 5 }),
   ],
-  markHubInboxItemRead: [(a) => a.markHubInboxItemRead("scout", "item-1")],
-  archiveHubInboxItem: [(a) => a.archiveHubInboxItem("scout", "item-1")],
-  restoreHubInboxItem: [(a) => a.restoreHubInboxItem("scout", "item-1")],
+  fetchMailThread: [(a) => a.fetchMailThread("scout/user/item-1")],
+  sendMail: [
+    (a) => a.sendMail({ to: ["scout", "atlas"], subject: "Hello", body: "Hi", attachments: [] }),
+  ],
+  replyToMailThread: [
+    (a) => a.replyToMailThread("scout/user/item-1", { body: "Thanks", attachments: ["upload_1"] }),
+  ],
+  markMailThreadRead: [(a) => a.markMailThreadRead("scout/user/item-1")],
+  archiveMailThread: [(a) => a.archiveMailThread("scout/user/item-1")],
+  restoreMailThread: [(a) => a.restoreMailThread("scout/user/item-1")],
+  uploadFile: [
+    (a) => a.uploadFile(new Blob(["notes"], { type: "text/plain" }), "notes.txt"),
+    (a) =>
+      a.uploadFile(new Blob(["notes"], { type: "text/plain" }), "notes.txt", {
+        signal: new AbortController().signal,
+      }),
+  ],
   fetchTeamsSetupPrereqs: [(a) => a.fetchTeamsSetupPrereqs(AGENT)],
   fetchTeamsSetupJob: [(a) => a.fetchTeamsSetupJob(AGENT), (a) => a.fetchTeamsSetupJob(AGENT, 10)],
   startTeamsSetupJob: [
@@ -407,6 +429,10 @@ describe("route parity between the API client and the mock", () => {
     expect(unserved).toEqual([
       `fetchScheduledPulses: GET /api/agents/${AGENT}/scheduled/pulses (no route for GET /api/scheduled/pulses)`,
     ]);
+  });
+
+  it("refuses an upload at the size the client refuses before sending", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(api.MAX_UPLOAD_BYTES);
   });
 
   it("serves every route the workbench SDK calls", () => {

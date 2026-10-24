@@ -1,34 +1,38 @@
-pub mod a2a;
-pub mod actions;
-pub mod agent;
-pub mod agent_keys;
-pub mod background;
-pub mod bus;
-pub mod checkpoints;
-pub mod config;
+pub use residuum_a2a as a2a;
+pub use residuum_agent as agent;
+pub use residuum_agent::subconscious;
+pub use residuum_background as background;
+pub use residuum_bus as bus;
+pub use residuum_checkpoints as checkpoints;
+pub use residuum_config as config;
+pub use residuum_config::agent_keys;
+pub use residuum_core::{build_info, util};
+pub use residuum_gateway as gateway;
+pub use residuum_hub as hub;
+pub use residuum_inference as inference;
+pub use residuum_interfaces as interfaces;
+pub use residuum_mcp as mcp;
+pub use residuum_memory as memory;
+pub use residuum_net::{pairing, remote_access};
+pub use residuum_notify as notify;
+pub use residuum_proactivity::{actions, pulse};
+pub use residuum_protocol as protocol;
+pub use residuum_skills as skills;
+pub use residuum_tools as tools;
+pub use residuum_tracing_service as tracing_service;
+pub use residuum_workspace as workspace;
+pub use residuum_workspace::inbox;
+
+/// The version and commit of this binary. Only this crate reads the build
+/// variables; everything else takes the value passed down from here.
+pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
+    version: env!("RESIDUUM_VERSION"),
+    commit: option_env!("RESIDUUM_GIT_COMMIT"),
+};
+
 pub mod daemon;
-pub mod diagnostics;
-pub(crate) mod features;
-pub mod gateway;
-pub mod hub;
-pub mod inbox;
-pub mod inference;
-pub mod interfaces;
-pub mod mcp;
-pub mod memory;
-pub mod notify;
-pub mod pairing;
-pub mod pulse;
-pub mod remote_access;
-pub mod skills;
-pub mod subconscious;
+pub mod logging;
+pub mod setup_wizard;
 #[cfg(test)]
 pub(crate) mod testing;
-pub mod time;
-pub mod tools;
-pub mod tracing_service;
-pub(crate) mod tunnel;
-pub mod update;
-pub mod util;
-pub(crate) mod workbench;
-pub mod workspace;
+pub mod wiring;

@@ -13,6 +13,7 @@ import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../.
 import { fakeAgentConfig } from "../../test/fake-config";
 import { installHelp } from "../app-actions.svelte";
 import NotificationsSection from "./NotificationsSection.svelte";
+import { waitFor } from "../../test/wait";
 
 // Settings → Notifications: this browser's push (turning it on, its name,
 // what it's told about, a test send, how delivery is going), the other
@@ -189,7 +190,7 @@ describe("this device, before notifications are on", () => {
     expect(name).toHaveValue("Chrome on Linux");
     await fireEvent.input(name, { target: { value: "Work laptop" } });
     await fireEvent.click(screen.getByRole("button", { name: "Turn on notifications" }));
-    await vi.waitFor(() => expect(screen.getByText("On", { exact: true })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("On", { exact: true })).toBeInTheDocument());
 
     expect(requested).toHaveBeenCalledOnce();
     expect(calls.find((call) => call.method === "PUT")?.body).toEqual({
@@ -219,7 +220,7 @@ describe("this device, before notifications are on", () => {
     };
     await open(fakeBrowser({ pushManager: () => Promise.resolve(failing) }));
     await fireEvent.click(screen.getByRole("button", { name: "Turn on notifications" }));
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(/couldn't reach its push service/),
     );
   });
@@ -291,10 +292,10 @@ describe("this device, with notifications on", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     await open(registered());
     await fireEvent.click(screen.getByRole("switch", { name: /Replies while you're away/ }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(calls.at(-1)?.method).toBe("PATCH");
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(push.thisDevice?.preferences.reply_while_away).toBe(true);
     });
     expect(calls.at(-1)).toMatchObject({
@@ -306,7 +307,7 @@ describe("this device, with notifications on", () => {
 
     failNext = { method: "PATCH", status: 500 };
     await fireEvent.click(screen.getByRole("switch", { name: /New inbox items/ }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(messages().join(" ")).toMatch(/Couldn't change what this device is told about/);
     });
     expect(screen.getByRole("switch", { name: /New inbox items/ })).toBeChecked();
@@ -330,13 +331,13 @@ describe("this device, with notifications on", () => {
   it("sends a test and says whether the push service took it", async () => {
     await open(registered());
     await fireEvent.click(screen.getByRole("button", { name: "Send a test notification" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(messages()).toContain("Sent a test notification. It should appear here soon.");
     });
 
     testAnswer = { delivered: false, error: "The push service rejected the signing key." };
     await fireEvent.click(screen.getByRole("button", { name: "Send a test notification" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(messages()).toContain(
         "The test notification wasn't delivered. The push service rejected the signing key.",
       );
@@ -347,7 +348,7 @@ describe("this device, with notifications on", () => {
     const browser = registered();
     await open(browser);
     await fireEvent.click(screen.getByRole("button", { name: "Turn off on this device" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(browser.subscribed).toBe(false);
     });
     expect(calls.at(-1)).toMatchObject({ method: "DELETE", url: "/api/hub/push/devices/laptop" });

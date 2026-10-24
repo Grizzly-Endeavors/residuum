@@ -19,7 +19,9 @@
   // until the pointer is over it, keyboard focus is in it, or it has been tapped on a
   // screen with no hover: `--message-meta` is 1 then, and 0 otherwise, for the
   // parts that read it. They stay in the page the whole time, so assistive
-  // technology reaches them.
+  // technology reaches them. `--message-meta-events` lets them take the
+  // pointer only while shown, so details floating over the next message never
+  // catch a click meant for it.
 
   let { item, agent }: { item: FeedItem; agent: string } = $props();
 
@@ -69,6 +71,7 @@
 <style>
   .feed-message {
     --message-meta: 0;
+    --message-meta-events: none;
 
     min-width: 0;
 
@@ -76,6 +79,7 @@
     &:has(:global(:focus-visible)),
     &[data-revealed] {
       --message-meta: 1;
+      --message-meta-events: auto;
     }
   }
 
@@ -83,6 +87,7 @@
   @media (hover: hover) {
     .feed-message:hover {
       --message-meta: 1;
+      --message-meta-events: auto;
     }
   }
 </style>

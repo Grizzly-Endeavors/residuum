@@ -1,6 +1,8 @@
 import type {
+  AgentSender,
   ClientMessage,
   ImageAttachment,
+  MessageAttachment,
   MessageSender,
   ServerMessage,
 } from "../src/lib/generated/protocol";
@@ -8,6 +10,7 @@ import type { ChatHistorySegment, RecentMessage } from "../src/lib/types";
 import {
   deltaFrames,
   externalTurn,
+  sessionMessageTurn,
   PIECE_MS,
   scenarioFor,
   type Scenario,
@@ -15,6 +18,7 @@ import {
 } from "./chat-scenarios";
 import {
   cannedResponses,
+  imageShowcase,
   markdownShowcase,
   sampleEpisodes,
   sampleRecentMessages,
@@ -31,7 +35,7 @@ const TURN_USAGE = { input: 37_000, output: 420, tools: 3, context: 17_900, grow
 
 /**
  * One page of the main conversation, matching the backend's
- * `ChatHistorySegment` tagged union (see `gateway/web/config.rs`), or `null`
+ * `ChatHistorySegment` tagged union (see `crates/hub/src/web/chat.rs`), or `null`
  * when `cursor` names no episode. An agent that has no conversation yet has
  * neither the sample messages nor the sample episodes.
  */
@@ -135,6 +139,10 @@ export interface MessageSource {
   sender?: MessageSender;
   /** Images sent with it. */
   images?: ImageAttachment[];
+  /** Files sent with it, as the agent saved them. */
+  attachments?: MessageAttachment[];
+  /** The agent behind it, for a message one of the agent's own sessions sent main. */
+  agentSender?: AgentSender;
 }
 
 /** A main-agent turn that has started and not yet ended. */
@@ -142,16 +150,28 @@ interface TurnInFlight {
   content: string;
   source: MessageSource;
   cancels: Array<() => void>;
+  /** The sessions' messages the turn read while it ran, as history records them. */
+  folded: RecentMessage[];
 }
 
 /** Runs simulated main-agent turns for one agent. */
 export interface ChatSimulator {
-  /** Start a turn for a message this page sent. */
-  send: (msg: SendMessage) => void;
+  /** Start a turn for a message this page sent, with the files its uploads were saved as. */
+  send: (
+    msg: SendMessage,
+    attachments?: readonly MessageAttachment[],
+    images?: readonly ImageAttachment[],
+  ) => void;
   /** Start a turn for a message another channel brought, such as Telegram. */
   receive: (content: string, source: MessageSource) => void;
+  /** Take a message one of the agent's own sessions sent main (see `receiveFromSession`). */
+  receiveFromSession: (content: string, sender: AgentSender) => void;
   /** Stop the turn answering `replyTo`, if it is still running. */
   cancel: (replyTo: string) => void;
+  /** Send a waiting message now (`send_queued_now`); false when it isn't waiting. */
+  sendWaitingNow: (id: string) => boolean;
+  /** Take back a waiting message (`withdraw_queued`); false when it isn't waiting. */
+  withdrawWaiting: (id: string) => boolean;
 }
 
 /**
@@ -171,29 +191,51 @@ export interface ChatSimulator {
  * Each turn reports its usage, and adds it to the conversation's totals. A
  * message starting with "remember" is followed by two seconds of memory work.
  * Other prefixes run the scripted turns of `chat-scenarios.ts`.
- * A message starting with "markdown" is answered with `markdownShowcase`
- * instead of the next canned reply, which keeps its place.
+ * A message starting with "markdown" is answered with `markdownShowcase`,
+ * and one starting with "images" with `imageShowcase`, instead of the next
+ * canned reply, which keeps its place.
  */
+/** The showcase reply a message asks for by its first word, if it asks for one. */
+function showcaseFor(lower: string): string | undefined {
+  if (lower.startsWith("markdown")) return markdownShowcase;
+  if (lower.startsWith("images")) return imageShowcase;
+  return undefined;
+}
+
 export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulator {
   const { state } = agent;
   const { env } = hub;
   const inFlight = new Map<string, TurnInFlight>();
+  /** Messages that arrived while a turn ran, oldest first, waiting for the agent to read them. */
+  const waiting: Array<{ id: string; content: string; source: MessageSource }> = [];
   let responseIndex = 0;
   const WEB: MessageSource = { endpoint: "ws" };
 
-  /** The user's message as history records it. */
+  /** The message that started or joined a turn, as history records it. */
   function userRecord(content: string, source: MessageSource): RecentMessage {
     return {
       role: "user",
       content,
       timestamp: env.clock.iso(),
-      visibility: "user",
+      visibility: source.agentSender === undefined ? "user" : "background",
+      ...(source.images === undefined || source.images.length === 0
+        ? {}
+        : { images: source.images }),
+      ...(source.attachments === undefined || source.attachments.length === 0
+        ? {}
+        : { attachments: source.attachments }),
       ...(source.sender === undefined ? {} : { sender: source.sender }),
+      ...(source.agentSender === undefined ? {} : { agent_sender: source.agentSender }),
     };
   }
 
-  function recordUserMessage(content: string, source: MessageSource): void {
-    state.extraRecent.push(userRecord(content, source));
+  /**
+   * Record a turn in history: the message that started it, the turn's own
+   * messages, and the sessions' messages it read along the way, which come
+   * before its last message.
+   */
+  function recordTurn(turn: TurnInFlight, opening: RecentMessage, own: RecentMessage[]): void {
+    state.extraRecent.push(opening, ...own.slice(0, -1), ...turn.folded, ...own.slice(-1));
   }
 
   /** Add a turn's model calls and tools to the conversation's totals. */
@@ -218,7 +260,11 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         ...(source.images === undefined || source.images.length === 0
           ? {}
           : { images: source.images }),
+        ...(source.attachments === undefined || source.attachments.length === 0
+          ? {}
+          : { attachments: source.attachments }),
         ...(source.sender === undefined ? {} : { sender: source.sender }),
+        ...(source.agentSender === undefined ? {} : { agent_sender: source.agentSender }),
         endpoint: source.endpoint,
       },
       {
@@ -227,7 +273,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         origin: {
           endpoint: source.endpoint,
           ...(source.sender === undefined ? {} : { sender: source.sender }),
-          visibility: "user",
+          visibility: source.agentSender === undefined ? "user" : "background",
         },
       },
     ];
@@ -248,7 +294,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     scenario: Scenario,
     source: MessageSource,
   ): void {
-    const turn: TurnInFlight = { content, source, cancels: [] };
+    const turn: TurnInFlight = { content, source, cancels: [], folded: [] };
     inFlight.set(replyTo, turn);
     const later = (ms: number, action: () => void): void => {
       turn.cancels.push(env.after(ms, action));
@@ -321,30 +367,38 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
             emit([{ type: "turn_ended", reply_to: replyTo }]);
             settleTurn(scenario.failure !== null);
             if (scenario.recorded.length === 0) {
-              recordUserMessage(content, source);
+              recordTurn(turn, userRecord(content, source), []);
             } else {
               const ofTurn = {
                 timestamp: env.clock.iso(),
                 visibility: "user",
                 turn_id: replyTo,
               } as const;
-              state.extraRecent.push(
+              recordTurn(
+                turn,
                 { ...userRecord(content, source), turn_id: replyTo },
-                ...scenario.recorded.map((message) => ({ ...message, ...ofTurn })),
+                scenario.recorded.map((message) => ({ ...message, ...ofTurn })),
               );
             }
             hub.overview.changed(agent);
+            startNextWaiting();
           });
         }),
       );
     });
   }
 
+  /** The scripted turn that answers a message, or null for one the plain simulated turn answers. */
+  function scenarioOf(replyTo: string, content: string, source: MessageSource): Scenario | null {
+    if (source.endpoint === "ws") return scenarioFor(content, replyTo, env.nextId);
+    if (source.agentSender !== undefined) {
+      return sessionMessageTurn(replyTo, env.nextId, source.agentSender.address);
+    }
+    return externalTurn(replyTo, env.nextId);
+  }
+
   function start(replyTo: string, content: string, source: MessageSource): void {
-    const scenario =
-      source.endpoint === "ws"
-        ? scenarioFor(content, replyTo, env.nextId)
-        : externalTurn(replyTo, env.nextId);
+    const scenario = scenarioOf(replyTo, content, source);
     if (scenario !== null) {
       runScenario(replyTo, content, scenario, source);
       return;
@@ -372,13 +426,11 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
           : `   1\t# ${path}\n   2\t(the page as it is today)`,
       isError: i === 1 && lower.startsWith("fail"),
     }));
-    const showcase = lower.startsWith("markdown");
-    const response = showcase
-      ? markdownShowcase
-      : (cannedResponses[responseIndex % cannedResponses.length] ?? "");
-    if (!showcase) responseIndex++;
+    const showcase = showcaseFor(lower);
+    const response = showcase ?? cannedResponses[responseIndex % cannedResponses.length] ?? "";
+    if (showcase === undefined) responseIndex++;
 
-    const turn: TurnInFlight = { content, source, cancels: [] };
+    const turn: TurnInFlight = { content, source, cancels: [], folded: [] };
     inFlight.set(replyTo, turn);
     const later = (ms: number, action: () => void): void => {
       turn.cancels.push(env.after(ms, action));
@@ -530,8 +582,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       const now = env.clock.iso();
       // Like the backend, every message of the turn carries its correlation id.
       const ofTurn = { timestamp: now, visibility: "user", turn_id: replyTo } as const;
-      state.extraRecent.push(
-        { ...userRecord(content, source), turn_id: replyTo },
+      recordTurn(turn, { ...userRecord(content, source), turn_id: replyTo }, [
         {
           role: "assistant",
           content: note,
@@ -557,20 +608,89 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
           (r) => ({ role: "tool", content: r.output, tool_call_id: r.id, ...ofTurn }) as const,
         ),
         { role: "assistant", content: response, ...ofTurn },
-      );
+      ]);
       hub.overview.changed(agent);
+      startNextWaiting();
     }
   }
 
-  function send(msg: SendMessage): void {
-    start(msg.id, msg.content, {
+  /**
+   * Start a turn for a message, or, while a turn runs, keep it waiting and
+   * tell every page so. The mock reads a waiting message only once the
+   * running turn ends, as the backend does with one that arrives after the
+   * turn's last checkpoint.
+   */
+  function arrive(id: string, content: string, source: MessageSource): void {
+    if (inFlight.size === 0 && waiting.length === 0) {
+      start(id, content, source);
+      return;
+    }
+    waiting.push({ id, content, source });
+    state.broadcast({
+      type: "message_queued",
+      message: {
+        id,
+        content,
+        ...(source.images === undefined || source.images.length === 0
+          ? {}
+          : { images: source.images }),
+        ...(source.attachments === undefined || source.attachments.length === 0
+          ? {}
+          : { attachments: source.attachments }),
+        ...(source.sender === undefined ? {} : { sender: source.sender }),
+        endpoint: source.endpoint,
+      },
+    });
+  }
+
+  /** The turn that ran has ended: the oldest waiting message starts the next. */
+  function startNextWaiting(): void {
+    if (inFlight.size > 0) return;
+    const next = waiting.shift();
+    if (next !== undefined) start(next.id, next.content, next.source);
+  }
+
+  function send(
+    msg: SendMessage,
+    attachments: readonly MessageAttachment[] = [],
+    images: readonly ImageAttachment[] = [],
+  ): void {
+    arrive(msg.id, msg.content, {
       ...WEB,
-      ...(msg.images === undefined ? {} : { images: msg.images }),
+      ...(images.length === 0 ? {} : { images: [...images] }),
+      ...(attachments.length === 0 ? {} : { attachments: [...attachments] }),
     });
   }
 
   function receive(content: string, source: MessageSource): void {
-    start(`${source.endpoint}-${String(env.nextId())}`, content, source);
+    arrive(`${source.endpoint}-${String(env.nextId())}`, content, source);
+  }
+
+  /**
+   * A message one of the agent's own sessions sent main. While a turn runs,
+   * the backend reads it at the turn's next checkpoint and announces it then,
+   * as a `user_message` of that turn, which the turn journal keeps; the mock
+   * reads it as it arrives. With no turn running, it starts one. Nothing tells
+   * pages it is waiting: only a person's message waits that way.
+   */
+  function receiveFromSession(content: string, sender: AgentSender): void {
+    const source: MessageSource = { endpoint: "background", agentSender: sender };
+    const id = `background-${String(env.nextId())}`;
+    const running = inFlight.entries().next().value;
+    if (running === undefined) {
+      start(id, content, source);
+      return;
+    }
+    const [turnId, turn] = running;
+    state.broadcast({
+      type: "user_message",
+      id,
+      turn_id: turnId,
+      content,
+      agent_sender: sender,
+      endpoint: source.endpoint,
+    });
+    turn.folded.push({ ...userRecord(content, source), turn_id: turnId });
   }
 
   function cancel(replyTo: string): void {
@@ -580,9 +700,32 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     for (const stop of turn.cancels) stop();
     state.broadcast({ type: "turn_ended", reply_to: replyTo });
     hub.setBusy(agent, false);
-    recordUserMessage(turn.content, turn.source);
+    recordTurn(turn, userRecord(turn.content, turn.source), []);
     hub.overview.changed(agent);
+    startNextWaiting();
   }
 
-  return { send, receive, cancel };
+  /**
+   * Send a waiting message now: it goes first, and the running turn stops.
+   * False when it isn't waiting.
+   */
+  function sendWaitingNow(id: string): boolean {
+    const index = waiting.findIndex((message) => message.id === id);
+    if (index === -1) return false;
+    const [message] = waiting.splice(index, 1);
+    if (message !== undefined) waiting.unshift(message);
+    for (const replyTo of [...inFlight.keys()]) cancel(replyTo);
+    return true;
+  }
+
+  /** Take back a waiting message, telling every page. False when it isn't waiting. */
+  function withdrawWaiting(id: string): boolean {
+    const index = waiting.findIndex((message) => message.id === id);
+    if (index === -1) return false;
+    waiting.splice(index, 1);
+    state.broadcast({ type: "message_withdrawn", id });
+    return true;
+  }
+
+  return { send, receive, receiveFromSession, cancel, sendWaitingNow, withdrawWaiting };
 }

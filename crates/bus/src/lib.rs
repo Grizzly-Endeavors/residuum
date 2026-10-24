@@ -1,0 +1,54 @@
+//! Central pub/sub message broker.
+//!
+//! The bus provides topic-based event routing between subsystems. Publishers
+//! send events to named topics; subscribers receive events from topics they
+//! have registered interest in. The broker routes each event by `(TopicId,
+//! TypeId)` composite key, delivering only to subscribers that match both
+//! the topic and event type.
+
+pub mod attachment;
+pub mod auto_mode;
+mod broker;
+pub mod control;
+pub mod conversations;
+mod endpoint;
+mod events;
+mod handle;
+pub mod interrupt;
+pub mod notice;
+pub mod origin;
+mod pulse_fire;
+mod registry;
+pub mod remote_task;
+pub mod session;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
+pub mod topics;
+mod types;
+pub mod usage;
+pub mod workspace_change;
+
+pub use broker::{BusHandle, spawn_broker};
+pub use endpoint::EndpointCapabilities;
+pub use events::{
+    A2aTaskSignalEvent, A2aTaskSignalState, AgentMessageEvent, AgentResultEvent, AgentResultStatus,
+    ConversationTarget, ConversationTypingEvent, ErrorEvent, EventTrigger, HEARTBEAT_OK,
+    HEARTBEAT_URGENT, InlineOutputEvent, IntermediateEvent, MainConversationEvent, MessageEvent,
+    NoticeEvent, NotificationEvent, OutboundA2aTaskEvent, PostTurnActivityEvent,
+    PostTurnActivityKind, PulseOverlap, ReloadOutcome, ReloadReport, ReloadedFiles, ResponseEvent,
+    ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent,
+    SessionStartFailedEvent, SpawnRequestEvent, ToolCallEvent, ToolResultEvent, TurnLifecycleEvent,
+    TurnOrigin, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
+    ends_with_sentinel,
+};
+pub use handle::{Publisher, Subscriber};
+pub use pulse_fire::{
+    PulseFireChange, PulseFireEvent, PulseFireOutcome, PulseFirePhase, PulseFireRun,
+    PulseFireStatus,
+};
+pub use registry::{EndpointEntry, EndpointRegistry};
+pub use topics::{Carries, Topic};
+pub use types::{
+    BusError, EndpointId, EndpointName, NotifyName, SYSTEM_CHANNEL, SessionAddress, SkillName,
+    TopicId,
+};

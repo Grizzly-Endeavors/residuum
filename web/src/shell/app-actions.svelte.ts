@@ -8,19 +8,21 @@ import { agentLabel } from "../lib/agent-name";
 import { actionRegistry, HELP_GROUP, type AppAction } from "../lib/action-registry.svelte";
 import { displayState } from "../lib/agent-display-state";
 import { lifecycleApplies, type LifecycleAction } from "../lib/agent-lifecycle";
+import { startSession } from "../lib/api";
 import { CHAT_GROUP, chatActions } from "../lib/chat-actions";
 import { hub } from "../lib/hub.svelte";
 import type { InstallOffer } from "../lib/install";
 import type { IconName } from "../lib/icons";
 import { notifications } from "../lib/notifications.svelte";
 import { router } from "../lib/router.svelte";
-import { HOME, type Place } from "../lib/routes";
+import { HOME, INBOX, type Place } from "../lib/routes";
 import {
   AGENT_SECTIONS,
   ALL_SCOPE,
   ALL_SECTIONS,
   type SectionEntry,
 } from "../lib/settings-sections";
+import { openSessionByAddress } from "../lib/session-address";
 import { runIcon, runKind } from "../lib/session-format";
 import { ws } from "../lib/ws.svelte";
 import { AGENT_PLACES, stateWord } from "./rail-model";
@@ -34,8 +36,6 @@ export const installHelp = $state({ open: false });
 
 /** Whether Show connection status is open. */
 export const connectionStatusDialog = $state({ open: false });
-
-const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 
 function open(place: Place): () => void {
   return () => void router.openPlace(place);
@@ -186,7 +186,7 @@ function lifecycle(): AppAction[] {
   });
 }
 
-function chat(shell: ShellActions): AppAction[] {
+function chat(): AppAction[] {
   const agent = ws.agent;
   return chatActions({
     agent,
@@ -200,15 +200,21 @@ function chat(shell: ShellActions): AppAction[] {
     stopReply: () => {
       ws.stop();
     },
-    surface: (kind, message) => {
-      notifications.surface(kind, message);
+    surface: (kind, message, action) => {
+      notifications.surface(kind, message, undefined, action);
+    },
+    startSession,
+    openSession: (name, address) => {
+      void openSessionByAddress(name, address, null);
     },
     showConversationSize: (name) => {
       const panel = { kind: "size" } as const;
       if (router.viewedAgent === name) void router.openPanel(panel);
       else void router.openPlace({ kind: "chat", agent: name }, { panel });
     },
-    askForInboxNote: shell.addInboxNote,
+    composeMailTo: (name) => {
+      void router.openPlace({ ...INBOX, compose: { to: [name] } });
+    },
     showConnectionStatus: () => {
       connectionStatusDialog.open = true;
     },
@@ -270,7 +276,7 @@ export function registerAppActions(shell: ShellActions): () => void {
     actionRegistry.register("sessions", sessions),
     actionRegistry.register("settings", () => settings(shell)),
     actionRegistry.register("actions", () => [
-      ...chat(shell),
+      ...chat(),
       ...lifecycle(),
       {
         id: "agent:create",

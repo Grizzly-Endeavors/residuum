@@ -5,6 +5,7 @@ import { notifications } from "./notifications.svelte";
 import { toast } from "./toast.svelte";
 import { activityFrame, snapshot } from "../test/hub-frames";
 import type { AgentActivity, AgentSummary, DeletedAgent } from "./hub-types";
+import { waitFor } from "../test/wait";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -253,18 +254,65 @@ describe("HubStore frames", () => {
 
   it("keeps notices and shows each as a toast, naming the agent it concerns", () => {
     const hub = new HubStore();
-    hub.handleFrame({ type: "notice", level: "warn", message: "config reloaded" });
+    hub.handleFrame({ type: "notice", level: "warn", message: "the wiki is text-only" });
     hub.handleFrame({ type: "notice", level: "error", message: "it failed", agent: "scout" });
 
     expect(hub.notices.map((n) => [n.level, n.message, n.agent])).toEqual([
       ["error", "it failed", "scout"],
-      ["warn", "config reloaded", undefined],
+      ["warn", "the wiki is text-only", undefined],
     ]);
     expect(notifications.history.map((n) => [n.kind, n.message])).toEqual([
       ["error", "scout: it failed"],
-      ["notice", "config reloaded"],
+      ["notice", "the wiki is text-only"],
     ]);
     expect([...toast.toasts.values()].map((t) => t.kind)).toEqual(["info", "error"]);
+  });
+
+  it("words a notice of a known kind itself, keeping the hub's words behind the detail", () => {
+    const hub = new HubStore();
+    const hubWords =
+      "gateway rebind failed (0.0.0.0:7701): address in use — keeping the current server";
+    hub.handleFrame({
+      type: "notice",
+      level: "warn",
+      message: hubWords,
+      kind: "gateway_rebind_failed",
+    });
+
+    expect(notifications.history.map((n) => [n.kind, n.message, n.details])).toEqual([
+      [
+        "notice",
+        "Residuum couldn't move to the new address in its settings and is still reachable at the old one.",
+        hubWords,
+      ],
+    ]);
+    expect(hub.notices[0]?.details).toBe(hubWords);
+  });
+
+  it("reports a reload of the settings for all agents from its frame, in plain words", () => {
+    const hub = new HubStore();
+    hub.handleFrame({
+      type: "hub_config_reloaded",
+      ok: true,
+      changed: true,
+      message: "hub configuration reloaded: timezone",
+    });
+    hub.handleFrame({
+      type: "hub_config_reloaded",
+      ok: false,
+      changed: false,
+      message: "hub config reload failed (keeping current hub config): bad toml",
+    });
+
+    expect(notifications.history.map((n) => [n.kind, n.message, n.details]).reverse()).toEqual([
+      ["notice", "Settings for all agents reloaded.", "hub configuration reloaded: timezone"],
+      [
+        "error",
+        "Residuum couldn't apply the new settings for all agents and is still using the old ones.",
+        "hub config reload failed (keeping current hub config): bad toml",
+      ],
+    ]);
+    expect(hub.notices.map((n) => n.level)).toEqual(["error", "info"]);
   });
 
   it("does not repeat the agent's name when the notice already starts with it", () => {
@@ -720,7 +768,7 @@ describe("HubStore deleted agents", () => {
     await hub.refreshDeleted();
     fetchMock.mockClear();
     hub.handleFrame({ type: "agent_deleted", name: "nova", by: "agent:scout" });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["/api/hub/agents/deleted"]);
     });
   });
@@ -740,7 +788,7 @@ describe("HubStore deleted agents", () => {
     );
     expect(deletedToast?.action?.label).toBe("Undo");
     toast.runAction(deletedToast?.id ?? -1);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(hub.agent("nova")?.state).toBe("running");
     });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/hub/agents/restore");

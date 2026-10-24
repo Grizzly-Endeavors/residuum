@@ -1,8 +1,8 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
-import { sendFromComposer } from "../support/composer";
-import { expectFileOpen } from "../support/lazy";
+import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
+import { expectFileRendered } from "../support/lazy";
 
 /**
  * The chat feed: older history loading near the top, Jump to latest, catching
@@ -25,6 +25,19 @@ function composer(page: Page): Locator {
 async function send(page: Page, text: string): Promise<void> {
   await composer(page).fill(text);
   await sendFromComposer(composer(page));
+}
+
+/** How many pages have atlas's chat socket open, by the mock's count. */
+async function connectedPages(page: Page): Promise<number> {
+  const answer = (await (
+    await page.request.get("/api/mock/connected-pages?agent=atlas")
+  ).json()) as { pages: number };
+  return answer.pages;
+}
+
+/** How far the feed's scroll position is above the bottom of its range. */
+async function gapToBottom(feed: Locator): Promise<number> {
+  return feed.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
 }
 
 async function scrollToTop(feed: Locator): Promise<void> {
@@ -74,9 +87,7 @@ test("older episodes load as the reader nears the top, and what they read stays 
 
   await expect(async () => {
     await scrollToTop(feed);
-    await expect(feed.getByRole("separator", { name: /, ep-001$/ })).toBeInViewport({
-      timeout: 1000,
-    });
+    await expect(feed.getByRole("separator", { name: /, ep-001$/ })).toBeInViewport();
   }).toPass();
   await expect(feed.getByText("Loading earlier messages…")).toHaveCount(0);
 });
@@ -129,6 +140,98 @@ test("Jump to latest sits above the composer, says when a reply landed below, an
   await expect(feed.getByText("Back to the routing doc.", { exact: true })).toBeInViewport();
 });
 
+test("scrolling back up while the Jump to latest glide is under way brings the pill back", async ({
+  mock,
+  page,
+}) => {
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeInViewport();
+  await scrollToTop(feed);
+  const jump = page.getByRole("button", { name: "Jump to latest" });
+  await expect(jump).toBeVisible();
+
+  // Press the pill, and once the glide has started, move back to the top with no wheel,
+  // touch, key or pointer event in the feed, as find in page or a screen reader does.
+  await feed.evaluate(
+    (el) =>
+      new Promise<void>((resolve) => {
+        const onScroll = (): void => {
+          if (el.scrollTop <= 0) return;
+          el.removeEventListener("scroll", onScroll);
+          el.scrollTop = 0;
+          resolve();
+        };
+        el.addEventListener("scroll", onScroll);
+        document.querySelector<HTMLButtonElement>(".feed-pill-jump")?.click();
+      }),
+  );
+
+  await expect(jump).toBeVisible();
+  // A reply landing now leaves the reader where they went.
+  await mock.post("/api/mock/teammate-message?agent=atlas");
+  await expect(page.getByRole("button", { name: "New reply, jump to latest" })).toBeVisible();
+  await expect(feed.getByText(GREETING)).not.toBeInViewport();
+});
+
+test("a reader who starts scrolling up while a reply streams isn't pulled back down", async ({
+  browserName,
+  isMobile,
+  mock,
+  page,
+}) => {
+  test.skip(
+    isMobile && browserName !== "chromium",
+    "A touch drag is sent over CDP, which only Chromium has.",
+  );
+  // 100px is well inside the distance a reader coming back down counts as at the end.
+  const distance = 100;
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
+  await mock.manualTime();
+  await send(page, "markdown please");
+  await expect(feed.getByText("Working")).toBeVisible();
+  // The reply has started streaming, and the reader is following it.
+  const before = await feed.evaluate((el) => el.scrollHeight);
+  await mock.advance(1_000);
+  await expect.poll(() => feed.evaluate((el) => el.scrollHeight)).toBeGreaterThan(before + 100);
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
+
+  // A short drag up, a finger on a phone and the wheel on a desktop, with a piece of the
+  // reply landing between each move and the next.
+  const area = await feed.boundingBox();
+  if (!area) throw new Error("the conversation isn't laid out");
+  const x = Math.round(area.x + area.width / 2);
+  const y = Math.round(area.y + area.height / 3);
+  const steps = 25;
+  if (isMobile) {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (let step = 1; step <= steps; step++) {
+      const touchPoints = [{ x, y: y + (step * distance) / steps }];
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints });
+      await mock.advance(45);
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await page.mouse.move(x, y);
+    for (let step = 1; step <= steps; step++) {
+      await page.mouse.wheel(0, -distance / steps);
+      await mock.advance(45);
+    }
+  }
+  for (let piece = 0; piece < 10; piece++) await mock.advance(45);
+  expect(await gapToBottom(feed)).toBeGreaterThan(distance / 2);
+
+  // The rest of the reply lands below them, and the pill says so.
+  await mock.advance(60_000);
+  await expect(feed.getByText("Working")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Jump to latest|New reply/ })).toBeVisible();
+  expect(await gapToBottom(feed)).toBeGreaterThan(distance / 2);
+});
+
 test("the keyboard scrolls a conversation that overflows, and follows it again at the end", async ({
   page,
 }) => {
@@ -149,8 +252,41 @@ test("the keyboard scrolls a conversation that overflows, and follows it again a
 
   await page.keyboard.press("End");
   await expect(greeting).toBeInViewport();
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
   await expect(jump).toHaveCount(0);
   await expect(feed).toBeFocused();
+});
+
+test("End pressed while an older episode loads still follows the conversation to its end", async ({
+  page,
+}) => {
+  // Home brings the reader near the top, which asks for the older episode; its answer
+  // waits until End has been pressed, so it lands while End takes the reader down.
+  let releaseOlder: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  const olderEpisode = /\/api\/agents\/atlas\/chat\/history\?episode=ep-002$/;
+  await page.route(olderEpisode, async (route) => {
+    await released;
+    await route.continue();
+  });
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  const greeting = feed.getByText(GREETING);
+  await expect(greeting).toBeInViewport();
+  await feed.focus();
+
+  const asked = page.waitForRequest(olderEpisode);
+  await page.keyboard.press("Home");
+  await asked;
+  await page.keyboard.press("End");
+  releaseOlder();
+
+  await expect(feed.getByRole("separator", { name: /, ep-002$/ })).toBeAttached();
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
+  await expect(greeting).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Jump to latest" })).toHaveCount(0);
 });
 
 test("a conversation with nothing to scroll is no tab stop", async ({ page }) => {
@@ -161,31 +297,42 @@ test("a conversation with nothing to scroll is no tab stop", async ({ page }) =>
 });
 
 test.describe("after the connection drops", () => {
-  test.beforeEach(async ({ mock }) => {
-    // Losing and regaining the connection takes real time.
-    await mock.post("/api/mock/delays", { data: { scale: 1 } });
-  });
-
-  test("a turn that ended while it was down merges in once", async ({ page }) => {
+  test("a turn that ended while it was down merges in once", async ({ page, mock }) => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeVisible();
 
+    await mock.manualTime();
     await send(page, "drop finish: check the routing doc");
+    // The connection drops at 600ms, and the turn ends at 900ms while the page is away.
+    await expect(feed.getByText("Working")).toBeVisible();
+    await mock.advance(1_000);
+    // The page tries again a second after it saw the drop, and loads the turn from history.
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
 
-    await expect(feed.getByText(FIRST_REPLY)).toBeVisible({ timeout: 15_000 });
+    await expect(feed.getByText(FIRST_REPLY)).toBeVisible();
     await expect(feed.getByText("drop finish: check the routing doc")).toHaveCount(1);
     await expect(feed.getByText(FIRST_REPLY)).toHaveCount(1);
   });
 
-  test("a turn still running when it's back finishes live", async ({ page }) => {
+  test("a turn still running when it's back finishes live", async ({ page, mock }) => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeVisible();
 
+    await mock.manualTime();
     await send(page, "drop: keep going");
+    await expect(feed.getByText("Working")).toBeVisible();
+    // The connection drops at 600ms. The page tries again a second after it saw the drop, while
+    // the turn is still running: the mock's connection returns at 3.5s, and the turn ends at 4s.
+    await mock.advance(1_000);
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
+    await expect.poll(() => connectedPages(page)).toBe(1);
+    await mock.advance(60_000);
 
-    await expect(feed.getByText(FIRST_REPLY)).toBeVisible({ timeout: 15_000 });
+    await expect(feed.getByText(FIRST_REPLY)).toBeVisible();
     await expect(feed.getByText("drop: keep going")).toHaveCount(1);
     await expect(feed.getByText(FIRST_REPLY)).toHaveCount(1);
   });
@@ -201,29 +348,37 @@ test.describe("after the connection drops", () => {
       feed
         .getByRole("article", { name: "Background session: spawned-research-3f9a" })
         .filter({ hasText: "Missed while you were away" }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
     await expect(
       feed.getByText("The research session finished the fallback doc while you were disconnected."),
     ).toBeVisible();
   });
 
-  test("a reload under a reader who scrolled up keeps their place", async ({ page }) => {
+  test("a reload under a reader who scrolled up keeps their place", async ({ page, mock }) => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeVisible();
 
     // The summarizer folds the conversation into a new episode while the
     // connection is down, so the page reloads its history when it's back.
+    await mock.manualTime();
     await send(page, "drop compress: tidy the wiki");
+    await expect(feed.getByText("Working")).toBeVisible();
     const reading = feed.getByText("Did the observer flag anything odd in last night's batch?");
     await reading.evaluate((el) => {
       el.scrollIntoView({ block: "start" });
     });
     await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
 
-    await expect(feed.getByRole("separator", { name: /, ep-004$/ })).toBeAttached({
-      timeout: 15_000,
-    });
+    // The connection drops at 600ms, the history is compressed while it is down, and the page
+    // tries again a second after it saw the drop, before the turn ends at 4s.
+    await mock.advance(1_000);
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
+    await expect.poll(() => connectedPages(page)).toBe(1);
+    await mock.advance(60_000);
+
+    await expect(feed.getByRole("separator", { name: /, ep-004$/ })).toBeAttached();
     await expect(reading).toBeInViewport();
     await expect(feed.getByText("drop compress: tidy the wiki")).toHaveCount(1);
   });
@@ -240,15 +395,12 @@ test.describe("path links", () => {
     await expect(page).toHaveURL(
       /\/agent\/atlas\?panel=file:team\/wiki\/notification-fallbacks\.md$/,
     );
-    await expect(await expectFileOpen(page, "notification-fallbacks.md")).toHaveValue(
-      /# Fallbacks/,
-    );
+    await expectFileRendered(page, "Fallbacks");
+    await expect(page.getByText("Cascade first, then park.")).toBeVisible();
 
     await page.goBack();
     await expect(page).toHaveURL(/\/agent\/atlas$/);
-    await expect(
-      page.getByRole("textbox", { name: "Contents of notification-fallbacks.md" }),
-    ).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Fallbacks", exact: true })).toHaveCount(0);
   });
 
   test("a path that doesn't exist says so, and offers nothing to edit", async ({ page }) => {
@@ -282,6 +434,56 @@ test("Open session is offered for a session's message, not a teammate's", async 
     .getByRole("button", { name: "Open session" })
     .click();
   await expect(page).toHaveURL(/panel=session:atlas:/);
+});
+
+test("a session's message the running turn read shows on a page opened partway, and opens its run", async ({
+  page,
+  mock,
+}) => {
+  const note = "Interim note: the cascade option needs a retry cap.";
+  // The turn waits at its last step, so the page opens again while it runs.
+  await mock.post("/api/mock/turn-hold", { data: { held: true } });
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await send(page, "Check the fallback doc");
+  await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+
+  const answer = await mock.post("/api/mock/session-message", {
+    params: { agent: "atlas" },
+    data: { content: note },
+  });
+  expect(answer).toEqual({ run_id: "run-live-research" });
+  const card = feed
+    .getByRole("article", { name: "Background session: spawned-research-3f9a" })
+    .filter({ hasText: note });
+  await expect(card).toHaveCount(1);
+
+  // History holds the turn only once it ends, so the reopened page has the card from the turn so far.
+  await page.reload();
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+  await expect(card).toHaveCount(1);
+  await expect(card).not.toContainText("Agent Message from");
+
+  await card.getByRole("button", { name: "Open session" }).click();
+  await expect(page).toHaveURL(/panel=session:atlas:run-live-research$/);
+  await mock.post("/api/mock/turn-hold", { data: { held: false } });
+});
+
+test("a teammate's message shows as it arrives, without a reload", async ({ page, mock }) => {
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await expect.poll(() => connectedPages(page)).toBe(1);
+
+  await mock.post("/api/mock/teammate-message", { params: { agent: "atlas" } });
+
+  const teammate = feed.getByRole("article", { name: "Teammate: scout" });
+  await expect(teammate).toHaveCount(1);
+  await expect(teammate).toContainText("Can you look over the wiki index");
+  await expect(teammate).not.toContainText("Message from teammate");
+  await expect(feed.getByText("scout asked me to check the wiki index. On it.")).toBeVisible();
 });
 
 test("a code block's Copy button copies it", async ({ page, context, browserName }) => {

@@ -15,15 +15,15 @@ import type {
   TeamEventTarget,
 } from "../src/lib/hub-types";
 import { agentLabel } from "../src/lib/agent-name";
-import type { UserInboxAttachment, UserInboxItem } from "../src/lib/types";
 import type { MockEnv } from "./env";
 import { json, parseJsonObject, readBody, stringField } from "./http";
-import { mockAttachment } from "./inbox";
+import { keepStandIn, mockAttachment } from "./inbox";
+import { findEntry, replyTitle, subjectOf } from "./mail-threads";
 import type { Route, RouteContext } from "./routes";
-import type { MockAgent, MockState } from "./state";
+import type { MockAgent, MockState, UserInboxAttachment, UserInboxItem } from "./state";
 
 /**
- * The team event log of the hub, `src/hub/team_events/`: what happened across
+ * The team event log of the hub, `crates/hub/src/team_events/`: what happened across
  * the team since the hub started, in memory. The mock records the same
  * entries for the same things the backend does, from the frames its own
  * lifecycle, sessions, turns and inbox additions send, and words them the
@@ -76,7 +76,7 @@ export interface MockTeamEvents {
 }
 
 // ─── Wording ──────────────────────────────────────────────────────────────────
-// Kept in step with `src/hub/team_events/recorder.rs`.
+// Kept in step with `crates/hub/src/team_events/recorder.rs`.
 
 /** `text` on one line, with its runs of whitespace collapsed. */
 function plain(text: string): string {
@@ -143,14 +143,13 @@ function scheduledRunName(session: SessionSummary): string {
   return `${kind} "${colon === -1 ? label : label.slice(colon + 1)}"`;
 }
 
-/** The level and summary of a finished pulse or scheduled action. */
+/** The level and summary of a finished pulse or scheduled action, `what` as `scheduledRunName` says it. */
 function scheduledRunFinished(
   agent: string,
-  session: SessionSummary,
+  what: string,
   status: SessionRunStatus,
   error: string | null,
 ): { level: TeamEventLevel; summary: string } {
-  const what = scheduledRunName(session);
   if (status === "completed") return { level: "info", summary: `${agent} finished the ${what}` };
   if (status === "cancelled") return { level: "info", summary: `${agent}'s ${what} was stopped` };
   return { level: "error", summary: withDetail(`${agent}'s ${what} failed`, plain(error ?? "")) };
@@ -265,6 +264,17 @@ export function createTeamEvents(
         summary: plain(frame.message),
         target: null,
       });
+    } else if (frame.type === "hub_config_reloaded" && frame.message !== null) {
+      // The reload frame is the hub's only report of a reload; one that found
+      // nothing new carries no message and adds no entry.
+      record({
+        at: env.clock.iso(),
+        agent: null,
+        kind: "hub_notice",
+        level: frame.ok ? "info" : "warn",
+        summary: plain(frame.message),
+        target: null,
+      });
     }
   }
 
@@ -292,7 +302,7 @@ export function createTeamEvents(
     if (session === undefined) return;
     const scheduled = session.category === "scheduled";
     const { level, summary } = scheduled
-      ? scheduledRunFinished(agent.name, session, frame.status, frame.error)
+      ? scheduledRunFinished(agent.name, scheduledRunName(session), frame.status, frame.error)
       : sessionFinished(agent.name, session, frame.status, frame.error);
     record({
       at: env.clock.iso(),
@@ -301,6 +311,27 @@ export function createTeamEvents(
       level,
       summary,
       target: sessionTarget(agent.name, frame.run_id),
+    });
+  }
+
+  /**
+   * A pulse fire ended with an outcome. The mock's fires never reach a
+   * session, so each one is told here, as the hub tells a fire that ran no
+   * session, pointing at the agent's Schedule.
+   */
+  function onPulseFireChanged(
+    agent: string,
+    frame: Extract<ServerMessage, { type: "pulse_fire_changed" }>,
+  ): void {
+    const outcome = frame.last_outcome;
+    if (outcome === null) return;
+    const what = `pulse "${frame.pulse}"`;
+    record({
+      at: outcome.at,
+      agent,
+      kind: "scheduled_run_finished",
+      ...scheduledRunFinished(agent, what, outcome.status, outcome.error),
+      target: { kind: "agent_place", agent, place: "schedule" },
     });
   }
 
@@ -345,6 +376,7 @@ export function createTeamEvents(
         sendToPages(frame);
         if (frame.type === "session_started") onSessionStarted(agent.name, frame.session);
         else if (frame.type === "session_completed") onSessionCompleted(agent, frame);
+        else if (frame.type === "pulse_fire_changed") onPulseFireChanged(agent.name, frame);
       };
     },
     agentReplied: (agent) => {
@@ -450,8 +482,11 @@ function attachmentsField(body: Record<string, unknown>): UserInboxAttachment[] 
 /**
  * `POST /api/mock/user-inbox-add`, a test control: the agent (`?agent=`, else
  * the first running one) saves an item in the user's inbox the way its
- * `user_inbox_add` tool does. The body is `{ title?, body?, attachments? }`,
- * with each attachment `{ filename, mime_type? }`. Answers `{ id }`.
+ * `user_inbox_add` tool does. The body is `{ title?, body?, attachments?,
+ * in_reply_to? }`, with each attachment `{ filename, mime_type? }`, and
+ * `in_reply_to` the ref of the message it answers (the title then defaults to
+ * `Re: <subject>`). A text attachment is a workspace file the file panel
+ * opens. Answers `{ id }`.
  */
 async function addUserInboxItem(ctx: RouteContext): Promise<void> {
   const agent = ctx.hub.agents.get(ctx.state.agentName);
@@ -469,7 +504,15 @@ async function addUserInboxItem(ctx: RouteContext): Promise<void> {
     json(ctx.res, 400, { error: `mock: ${err instanceof Error ? err.message : String(err)}` });
     return;
   }
-  const title = stringField(body, "title") ?? `A note from ${agent.name}`;
+  const inReplyTo = stringField(body, "in_reply_to");
+  const replied = inReplyTo === undefined ? undefined : findEntry(ctx.hub, inReplyTo);
+  if (inReplyTo !== undefined && replied === undefined) {
+    json(ctx.res, 400, { error: `mock: ${inReplyTo} is not a message in any inbox` });
+    return;
+  }
+  const title =
+    stringField(body, "title") ??
+    (replied === undefined ? `A note from ${agent.name}` : replyTitle(subjectOf(replied.thread)));
   const item: UserInboxItem = {
     id: userInboxItemId(agent.state, title),
     title,
@@ -478,7 +521,9 @@ async function addUserInboxItem(ctx: RouteContext): Promise<void> {
     timestamp: ctx.hub.env.clock.iso(),
     read: false,
     attachments,
+    ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
   };
+  for (const attachment of attachments) keepStandIn(agent.state, "user", item.id, attachment);
   agent.state.inboxItems.unshift(item);
   ctx.hub.teamEvents.userInboxAdded(agent, item.id);
   ctx.hub.overview.changed(agent);

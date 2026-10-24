@@ -3,6 +3,7 @@ import { parseWorkspaceCheckpoints } from "./api";
 import { configCoordinator } from "./config-coordinator";
 import { toast } from "./toast.svelte";
 import { notifyWithUndo, notifyWithWorkspaceUndo, restoreTargets } from "./undo";
+import { waitFor } from "../test/wait";
 
 let restore: MockInstance<typeof configCoordinator.restore>;
 
@@ -37,7 +38,7 @@ describe("notifyWithUndo", () => {
     const shown = [...toast.toasts.values()].at(-1);
 
     shown?.action?.onClick();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(onRestored).toHaveBeenCalledTimes(1);
     });
 
@@ -52,7 +53,7 @@ describe("notifyWithUndo", () => {
     const shown = [...toast.toasts.values()].at(-1);
 
     shown?.action?.onClick();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const followUp = [...toast.toasts.values()].at(-1);
       expect(followUp?.kind).toBe("error");
     });
@@ -69,7 +70,7 @@ describe("notifyWithUndo", () => {
     );
 
     [...toast.toasts.values()].at(-1)?.action?.onClick();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(restore).toHaveBeenCalledTimes(2);
     });
 
@@ -164,7 +165,7 @@ describe("notifyWithWorkspaceUndo", () => {
       { id: "team-cp", repo: "team" },
     ]);
     [...toast.toasts.values()].at(-1)?.action?.onClick();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(restore).toHaveBeenCalledTimes(1);
     });
     expect(restore).toHaveBeenCalledWith(null, "team-cp", "team", "wiki/a.md");
@@ -176,7 +177,7 @@ describe("notifyWithWorkspaceUndo", () => {
       { id: "ws-cp", repo: "workspace" },
     ]);
     [...toast.toasts.values()].at(-1)?.action?.onClick();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(restore).toHaveBeenCalledTimes(1);
     });
     expect(restore).toHaveBeenCalledWith("atlas", "ws-cp", "workspace", "notes/a.md");

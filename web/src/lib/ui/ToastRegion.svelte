@@ -63,7 +63,14 @@
 
 <!-- The region moves into the overlay host; these hold its place in the block. -->
 <template></template>
-<div class="ui-toasts" data-clearance={keptClear} style:--toast-lift="{lift}px" {@attach portal}>
+<div
+  class="ui-toasts"
+  role="region"
+  aria-label="Notifications"
+  data-clearance={keptClear}
+  style:--toast-lift="{lift}px"
+  {@attach portal}
+>
   <!-- Errors interrupt; everything else is read at the next pause. Each new toast is read alone. -->
   <div class="ui-toast-group" role="alert" aria-atomic="false">
     {#each errors as item (item.id)}
@@ -136,7 +143,7 @@
     flex: 1;
     min-width: 0;
     padding: var(--space-4) 0;
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
   }
 

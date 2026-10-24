@@ -102,6 +102,7 @@
       <Button
         variant="secondary"
         loading={state.cleanupLoading}
+        disabled={state.cleanupSuccess}
         onclick={() => void state.handleCleanup()}
       >
         Clean up

@@ -22,7 +22,7 @@ export const SESSION_CATEGORIES: readonly SessionCategory[] = [
 export const KIND_NAMES: Readonly<Record<SessionCategory, string>> = {
   external: "From another app",
   scheduled: "Scheduled",
-  spawned: "Started by an agent",
+  spawned: "Started by an agent or you",
   artifact: "From a workbench page",
 };
 
@@ -37,12 +37,19 @@ export function runIcon(category: SessionCategory): IconName {
   return KIND_ICONS[category];
 }
 
+/**
+ * Whether the owner started a run by hand (a new session, or `/multitask`):
+ * every spawned run an agent starts names its spawner.
+ */
+export function startedByOwner(run: Pick<SessionSummary, "category" | "spawner">): boolean {
+  return run.category === "spawned" && run.spawner === null;
+}
+
 /** How a run started, in plain words. A spawner of `main` is the agent's own conversation. */
 export function runKind(agent: string, run: Pick<SessionSummary, "category" | "spawner">): string {
   if (run.category !== "spawned") return KIND_NAMES[run.category];
-  return run.spawner === null || run.spawner === "main"
-    ? `Started by ${agent}`
-    : `Started by ${run.spawner}`;
+  if (run.spawner === null) return "Started by you";
+  return run.spawner === "main" ? `Started by ${agent}` : `Started by ${run.spawner}`;
 }
 
 /** States in which a stop request can still take effect. */
@@ -194,4 +201,20 @@ export function outboundStatus(task: OutboundA2aTaskSummary, now: number): RunSt
 export function outboundDuration(task: OutboundA2aTaskSummary, now: number): string {
   const start = Date.parse(task.started_at);
   return Number.isNaN(start) ? "" : formatDuration(now - start);
+}
+
+/** Whether a model selector names one of the background tiers rather than one model. */
+export function isTier(model: string): model is "small" | "medium" | "large" {
+  return model === "small" || model === "medium" || model === "large";
+}
+
+/**
+ * The model a run ran on, for its Details: "anthropic/claude-haiku-4-5, from
+ * the small tier", or the model alone when it was named explicitly. `null`
+ * for a run recorded before runs kept their model.
+ */
+export function runModel(run: Pick<SessionSummary, "model" | "resolved_model">): string | null {
+  const tier = run.model !== null && isTier(run.model) ? run.model : null;
+  if (run.resolved_model === null) return tier === null ? run.model : `The ${tier} tier`;
+  return tier === null ? run.resolved_model : `${run.resolved_model}, from the ${tier} tier`;
 }

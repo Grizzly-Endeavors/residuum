@@ -1,0 +1,21 @@
+2026-10-14T04:19:48.7246976Z ##[group]Run scripts/stress-tests.sh
+2026-10-14T04:19:48.7254056Z shell: /usr/bin/bash -e {0}
+2026-10-14T04:19:48.7254475Z env:
+2026-10-14T04:19:48.7254681Z   STRESS_TESTS_LOG: /home/runner/_work/_temp/tests.log
+2026-10-14T04:19:48.7257000Z ##[endgroup]
+2026-10-14T04:19:49.0515309Z Stress: 15 test binaries, 2 copies at once, 20 CPU burners, 1 round(s), on 20 CPUs.
+2026-10-14T04:20:48.6646573Z Round 1 done. Load: 39.18 33.33 23.21. inotify instances in use mid-run: 0 of 128.
+2026-10-14T04:20:48.6717805Z
+2026-10-14T04:20:48.6719261Z Failures (count out of 2 runs of each test):
+2026-10-14T04:20:48.6723857Z Failed under load only, so a test waiting on time (fix the wait; CONTRIBUTING.md, "Waiting in tests"):
+2026-10-14T04:20:48.6727191Z 2 hub::runtime::tests::changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_running
+2026-10-14T04:20:48.6727300Z 1 gateway::startup::memory::tests::deleted_episode_prunes_its_vector_rows_on_resync
+2026-10-14T04:20:48.6727400Z
+2026-10-14T04:20:48.6727500Z Also failed in the Tests step, an ordinary failure (see the Tests step):
+2026-10-14T04:20:48.6727600Z 2 hub::host::tests::reload_keeps_running_agents
+2026-10-14T04:20:48.6727700Z
+2026-10-14T04:20:48.6727800Z Exited without naming a failed test (see the Tests step and the copy logs):
+2026-10-14T04:20:48.6727900Z 1 residuum-0123456789abcdef (exited 137 without naming a failed test)
+2026-10-14T04:20:48.6727697Z error: tests failed under load. Logs are in target/stress/; the summary says which failures waited on time and which also failed in the Tests step.
+2026-10-14T04:20:48.6728042Z
+2026-10-14T04:20:48.6744043Z ##[error]Process completed with exit code 1.

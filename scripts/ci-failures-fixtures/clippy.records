@@ -1,0 +1,1 @@
+clippy	clippy|src/checkpoints/backend.rs|this function's return value is unnecessary	src/checkpoints/backend.rs: this function's return value is unnecessary	src/checkpoints/backend.rs	1		src/checkpoints/backend.rs:519:1

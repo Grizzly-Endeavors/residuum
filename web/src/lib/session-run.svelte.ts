@@ -7,7 +7,7 @@
 // go to the agent's session routes. The panel host owns it, so it outlives
 // the panel's frame drawing its content again at another width.
 
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { fetchSessionTranscript, messageSession, stopSession } from "./api";
 import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
@@ -19,6 +19,7 @@ import {
 } from "./feed-items";
 import { hub } from "./hub.svelte";
 import type { HubClientMessage, HubServerMessage } from "./hub-types";
+import { newMessageId } from "./message-id";
 import { ObservedTurns, type TurnEnding } from "./observed-turns.svelte";
 import { deliveryOutcomeText, runOutcomeText } from "./session-format";
 import { isSessionFrame, type RunFrame, type SessionFrame } from "./sessions.svelte";
@@ -41,6 +42,50 @@ const hubRelay: SessionRelayLink = {
   },
   onFrame: (listener) => hub.onFrame(listener),
 };
+
+/**
+ * A message this page sent the session that it hasn't read yet. The turn in
+ * flight takes it in at its next checkpoint; otherwise it starts a turn, which
+ * reads it as it begins. It joins the transcript where the session read it.
+ */
+export interface SessionWaitingMessage {
+  /** The message's id, which the session's `session_user_message` frame names once it reads it. */
+  id: string;
+  content: string;
+}
+
+type ReadFrame = Extract<RunFrame, { type: "session_user_message" }>;
+
+/** The sender address the backend gives the owner's messages. */
+const OWNER_ADDRESS = "owner";
+/** The prefix of a workbench artifact's sender address, `artifact:<name>`. */
+const ARTIFACT_SENDER_PREFIX = "artifact:";
+
+/** A message the session read, as the transcript shows it from its live frame. */
+function readMessageItem(frame: ReadFrame): FeedItem {
+  const said = {
+    id: nextFeedId(),
+    timestamp: localTimestamp(),
+    content: frame.content,
+    messageId: frame.id,
+  };
+  if (frame.from === OWNER_ADDRESS) return { ...said, kind: "user" };
+  if (frame.from.startsWith(ARTIFACT_SENDER_PREFIX)) {
+    const artifact = frame.from.slice(ARTIFACT_SENDER_PREFIX.length);
+    return {
+      ...said,
+      kind: "user",
+      sender: { name: artifact, id: frame.from, interface: "workbench artifact" },
+    };
+  }
+  return {
+    ...said,
+    kind: "agent-message",
+    from: frame.from,
+    category: frame.from_category,
+    runId: null,
+  };
+}
 
 /** What is known of a run before its transcript arrives. */
 export interface KnownRun {
@@ -67,6 +112,8 @@ export class SessionRun {
   /** The message box's text, kept here so it survives the panel drawing again. */
   draft = $state("");
   sending = $state(false);
+  /** Messages this page sent that the session hasn't read yet, in the order sent. */
+  waiting = $state<SessionWaitingMessage[]>([]);
   /** A stop was asked for and the run hasn't finished yet. */
   stopping = $state(false);
 
@@ -85,6 +132,13 @@ export class SessionRun {
   private loadToken = 0;
   /** Where the turn in flight began, for tagging its message with the turn id (Undo this turn). */
   private turnStart: number | null = null;
+  /**
+   * The turn in flight has only started: nothing of it has arrived but the
+   * messages it read as it began, so a message it reads now starts it too.
+   */
+  private turnFresh = false;
+  /** The ids of the messages the transcript holds, so a read is shown once. */
+  private readIds = new SvelteSet<string>();
 
   constructor(
     readonly agent: string,
@@ -143,6 +197,10 @@ export class SessionRun {
     this.pendingTools.clear();
     this.turnStart = null;
     this.items = convertHistoryMessages(transcript.messages, { mode: "session" });
+    this.readIds = new SvelteSet(transcript.messages.flatMap((message) => message.id ?? []));
+    // A message the transcript holds was read while this page wasn't looking.
+    // One it doesn't hold is still waiting.
+    this.waiting = this.waiting.filter((message) => !this.readIds.has(message.id));
     this.items.push(...this.notes.splice(0));
     // The transcript renders every finished turn again, without timing. A
     // turn still running goes on from here; what it did so far is in the
@@ -154,6 +212,7 @@ export class SessionRun {
     const raced = this.buffered;
     this.buffered = [];
     for (const frame of raced) this.applyFrame(frame, true);
+    this.settleFollow();
     if (this.address === null) {
       this.address = transcript.session.address;
       this.subscribe();
@@ -169,24 +228,18 @@ export class SessionRun {
     if (content === "" || address === null || this.sending) return;
     this.sending = true;
     this.draft = "";
-    this.turnStart ??= this.items.length;
-    // With a turn running, the session takes the message into it at its next checkpoint.
-    const running = this.activeTurnId;
-    this.items.push({
-      id: nextFeedId(),
-      kind: "user",
-      timestamp: localTimestamp(),
-      content,
-      ...(running === null ? {} : { turnId: running, midTurn: true }),
-    });
+    // It waits until the session reads it, and its read places it in the transcript.
+    const id = newMessageId();
+    this.waiting.push({ id, content });
     // The new run a finished session starts can announce itself before the reply.
     this.followNextRun = true;
     try {
-      const outcome = await messageSession(this.agent, address, content);
+      const { outcome } = await messageSession(this.agent, address, content, id);
       if (outcome === "live") this.followNextRun = false;
       this.pushStatus("info", deliveryOutcomeText(outcome));
     } catch (err) {
       this.followNextRun = false;
+      this.dropWaiting(id);
       if (this.draft === "") this.draft = content;
       this.pushStatus(
         "error",
@@ -198,6 +251,16 @@ export class SessionRun {
     } finally {
       this.sending = false;
     }
+  }
+
+  /**
+   * Stop showing a message as waiting, for one the session will never read
+   * (its run ended and the panel lost the run that took it up). Only this
+   * page forgets it: a read that does arrive still places it.
+   */
+  dismissWaiting(id: string): void {
+    this.dropWaiting(id);
+    this.settleFollow();
   }
 
   /** Stop the run. Its frames show it finishing. */
@@ -255,7 +318,13 @@ export class SessionRun {
       if (this.followNextRun && frame.session.run_id !== this.runId) this.follow(frame.session);
       return;
     }
-    if ("run_id" in frame && frame.run_id === this.runId) this.applyFrame(frame);
+    if (!("run_id" in frame) || frame.run_id !== this.runId) return;
+    // The backend resumes a run's unread messages as a new run once it ends
+    // (`finish_run`); the panel follows that run, whose reads resolve them.
+    // Set on arrival, not when applied: mid-load the completion waits in the
+    // buffer, while the new run's start is handled at once.
+    if (frame.type === "session_completed" && this.waiting.length > 0) this.followNextRun = true;
+    this.applyFrame(frame);
   }
 
   /**
@@ -311,7 +380,7 @@ export class SessionRun {
           summary.completed_at = isoNow();
           summary.outcome = frame.status;
           summary.error = frame.error;
-          summary.error_details = frame.error_details;
+          summary.error_details = frame.error_details ?? null;
           summary.episode_id = frame.episode_id;
         }
         // A run that ends mid-turn ends the turn with it: stopped when the
@@ -327,9 +396,8 @@ export class SessionRun {
         );
         break;
       case "session_turn_started":
-        this.turnStart ??= this.items.length;
-        // The message that started it went out from here first.
-        for (const item of this.items.slice(this.turnStart)) item.turnId = frame.turn_id;
+        this.turnStart = this.items.length;
+        this.turnFresh = true;
         this.activeTurnId = frame.turn_id;
         this.observed.start(frame.turn_id);
         break;
@@ -343,8 +411,56 @@ export class SessionRun {
         this.joinTurn();
         if (summary && frame.session_totals) summary.usage = frame.session_totals;
         break;
-      case "session_message_to_main":
+      case "session_user_message":
+        this.placeRead(frame);
         break;
+    }
+  }
+
+  /**
+   * The session read a message: it joins the transcript there. One the turn
+   * in flight read as it began starts that turn; one it read at a later
+   * checkpoint is placed where it reached the session, inside the turn.
+   */
+  private placeRead(frame: ReadFrame): void {
+    this.dropWaiting(frame.id);
+    if (this.readIds.has(frame.id)) return;
+    this.readIds.add(frame.id);
+    const turnId = frame.turn_id;
+    const inFlight = this.activeTurnId;
+    const opens = inFlight === null || (inFlight === turnId && this.turnFresh);
+    this.joinTurn(turnId);
+    const item = readMessageItem(frame);
+    item.turnId = turnId;
+    if (this.activeTurnId !== turnId) {
+      // Not the turn in flight: one that ended, or one this page never saw.
+      this.items.push(item);
+      return;
+    }
+    if (!opens) {
+      item.midTurn = true;
+      this.items.push(item);
+      return;
+    }
+    this.turnFresh = true;
+    // After the messages it read before this one, ahead of any status note.
+    let at = this.turnStart ?? this.items.length;
+    while (this.items[at]?.turnId === turnId) at++;
+    this.items.splice(at, 0, item);
+  }
+
+  /**
+   * A follow waits for the run that reads this page's waiting messages. Once
+   * none waits, the run has ended and no send is in flight, no run of this
+   * page's is coming, and a later run at the address is not one to follow.
+   */
+  private settleFollow(): void {
+    if (this.waiting.length === 0 && !this.live && !this.sending) this.followNextRun = false;
+  }
+
+  private dropWaiting(id: string): void {
+    if (this.waiting.some((message) => message.id === id)) {
+      this.waiting = this.waiting.filter((message) => message.id !== id);
     }
   }
 
@@ -357,9 +473,11 @@ export class SessionRun {
   /**
    * A frame of a turn arrived with no turn in flight: the panel opened, or
    * its transcript loaded, while the turn ran. It becomes the turn in flight,
-   * joined partway, under a stand-in id until a frame names it.
+   * joined partway, under a stand-in id until a frame names it. Something of
+   * the turn has arrived, so it has gone past its start.
    */
   private joinTurn(turnId?: string): void {
+    this.turnFresh = false;
     if (this.activeTurnId !== null) {
       if (turnId !== undefined) this.nameJoinedTurn(turnId);
       return;
@@ -385,11 +503,13 @@ export class SessionRun {
     if (this.activeTurnId === turnId) this.activeTurnId = null;
   }
 
-  /** Tag the message that started the turn now ending, so it can offer Undo this turn. */
+  /** Tag the owner's message that started the turn now ending, so it can offer Undo this turn. */
   private tagTurnStart(turnId: string): void {
     if (this.turnStart === null) return;
     const item = this.items[this.turnStart];
-    if (item?.kind === "user") item.turn = { turnId, changed: null };
+    if (item?.kind === "user" && item.turnId === turnId && item.sender === undefined) {
+      item.turn = { turnId, changed: null };
+    }
   }
 
   /**

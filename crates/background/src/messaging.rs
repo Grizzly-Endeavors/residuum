@@ -1,0 +1,2440 @@
+//! Agent messaging: routes a `message_agent` call to its target by address.
+//!
+//! Delivery depends on the target's lifecycle state:
+//! - **running/idle session** — delivered through the registry's interrupt
+//!   channel: an interrupt at the target's next tool-call boundary while
+//!   running, or the input for a new turn while idle (the runtime on the
+//!   other end decides which).
+//! - **completing session** — the target's current run no longer accepts
+//!   input but hasn't yet left the registry (its completion pipeline —
+//!   memory merge, transcript write — is still running). Delivery is handed
+//!   to a detached task that waits for the run to clear and then resumes the
+//!   session, so the sender's call returns immediately rather than blocking
+//!   on however long that pipeline takes.
+//! - **completed session** — a resume pointer is looked up in the registry
+//!   and a fresh `SpawnRequestEvent` is published for it, starting a new run
+//!   at the same address through the ordinary spawn-listener path.
+//! - **main** — reuses the existing `MessageEvent`/`UserMessage` bus path,
+//!   which already implements interrupt-if-running/new-turn-if-idle for the
+//!   main agent.
+//! - **unknown** — neither a live session nor a resume point exists.
+//!
+//! Every send is checked against the configured hop-count limits before
+//! dispatch: at or above the soft limit the delivered message carries a note
+//! asking the receiver to reply only if needed, and at or above the hard
+//! limit delivery is refused outright to bound message loops.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::{Arc, Mutex};
+
+use crate::team::TeamLink;
+use residuum_agent::hop::HopLimits;
+use residuum_bus::interrupt::Interrupt;
+use residuum_bus::{
+    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName,
+    SpawnRequestEvent, topics,
+};
+use residuum_config::ModelSelector;
+use residuum_inference::{ImageData, Message};
+
+use super::store::SessionStore;
+use crate::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
+use residuum_bus::session::publish_session_event;
+use residuum_bus::session::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY};
+
+/// What happened when a message was sent to an address.
+#[derive(Debug, Clone)]
+pub enum DeliveryOutcome {
+    /// Delivered to the main agent.
+    Main,
+    /// Delivered to a live (running or idle) session.
+    Live(SessionAddress),
+    /// The session had completed; a new run was started at the same address.
+    Resumed(SessionAddress),
+    /// The session's current run is completing (its completion pipeline is
+    /// still running). Delivery was handed to a background task that will
+    /// resume the session as a new run once that run leaves the registry —
+    /// the caller does not wait for that to happen.
+    Queued(SessionAddress),
+    /// No live session, and no record of this address ever having run.
+    Unknown,
+}
+
+/// A `message_agent` send could not be completed.
+#[derive(Debug, Clone)]
+pub enum SendError {
+    /// The target's interrupt channel is full. The caller should retry
+    /// shortly rather than fall back to resuming a duplicate run — a full
+    /// channel means the target is live and actively draining it.
+    Busy(SessionAddress),
+    /// Publishing the delivery (to main, or as a resume spawn request)
+    /// failed at the bus.
+    PublishFailed(String),
+    /// The message's hop count reached the configured hard limit — this
+    /// looks like a message loop, and delivery was refused.
+    HopLimitExceeded {
+        /// The hop count the message carried.
+        hop_count: u32,
+        /// The configured hard limit it met or exceeded.
+        limit: u32,
+    },
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Busy(address) => write!(f, "agent {address} is busy, try again shortly"),
+            Self::PublishFailed(reason) => write!(f, "{reason}"),
+            Self::HopLimitExceeded { hop_count, limit } => write!(
+                f,
+                "message loop limit reached ({hop_count} hops, limit {limit}); this looks like \
+                 a message loop between agents, so delivery was refused — stop replying and \
+                 report back to your spawner or the user instead. Raise the `hop_hard_limit` \
+                 setting under `[background]` in config.toml to allow more hops"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SendError {}
+
+/// Routes agent-to-agent messages by address.
+pub struct AgentMessenger {
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    store: Arc<SessionStore>,
+    hop_limits: HopLimits,
+    /// This agent's handle on the hub's team router: how it reaches
+    /// teammates and reads the roster. A team of one until
+    /// [`Self::with_team`] links it to the hub.
+    team: TeamLink,
+    /// Hop count of an agent message delivered to main, keyed by the
+    /// `MessageEvent.id` it was published under. Main has no interrupt
+    /// channel of its own the way a session does — delivery reuses the
+    /// generic `MessageEvent`/`UserMessage` bus path — so this is how the
+    /// gateway event loop recovers a specific inbound message's hop count
+    /// (via [`Self::take_main_hop`]) without threading a new field through
+    /// that shared, interface-facing event type. Entries are removed on
+    /// read; anything never looked up (a message main never actually
+    /// consumed as a turn's kickoff or mid-turn interrupt) is harmless
+    /// clutter, not a leak that grows unbounded in practice.
+    pending_main_hops: Mutex<HashMap<String, u32>>,
+    /// Hop count each message carried when main's running turn took it in
+    /// mid-turn, keyed by `MessageEvent.id`. The turn's shared counter holds
+    /// the sum of every input, so a message that turns out to have arrived
+    /// after the turn's last checkpoint reads its own hop from here instead.
+    /// Cleared after every turn (see [`Self::clear_mid_turn_hops`]).
+    mid_turn_hops: Mutex<HashMap<String, u32>>,
+}
+
+impl AgentMessenger {
+    /// Create a new messenger over the given registry, bus publisher, and
+    /// session store (used to record a best-effort note in a session's
+    /// transcript when a hop-limit refusal involves it), enforcing `hop_limits`.
+    #[must_use]
+    pub fn new(
+        registry: Arc<SessionRegistry>,
+        publisher: Publisher,
+        store: Arc<SessionStore>,
+        hop_limits: HopLimits,
+    ) -> Self {
+        Self {
+            registry,
+            publisher,
+            store,
+            hop_limits,
+            team: TeamLink::alone("agent"),
+            pending_main_hops: Mutex::new(HashMap::new()),
+            mid_turn_hops: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Link this messenger to the hub's team router, so `agent:` addresses
+    /// reach teammates and the roster is the hub's.
+    #[must_use]
+    pub fn with_team(mut self, team: TeamLink) -> Self {
+        self.team = team;
+        self
+    }
+
+    /// This agent's handle on the team router.
+    #[must_use]
+    pub fn team(&self) -> &TeamLink {
+        &self.team
+    }
+
+    /// The bus publisher this messenger sends agent-to-agent deliveries
+    /// through — reused by callers (e.g. the A2A `RemoteTaskTracker`)
+    /// that need to publish a user-facing notice alongside an agent-facing
+    /// one, rather than threading a second `Publisher` through their own
+    /// constructor.
+    #[must_use]
+    pub fn publisher(&self) -> &Publisher {
+        &self.publisher
+    }
+
+    /// The session store this messenger records delivery notes in, shared
+    /// with the spawn listener's deferred deliveries.
+    pub(crate) fn store(&self) -> &Arc<SessionStore> {
+        &self.store
+    }
+
+    /// Recover the hop count of an agent message delivered to main, given
+    /// the `MessageEvent.id` it arrived under. Removes the entry on read.
+    /// Returns `0` for any id this messenger never published under — a
+    /// genuinely external-origin message (a user message, an interface
+    /// message, a subconscious correction) — which is exactly hop `0` per
+    /// the design.
+    #[must_use]
+    pub fn take_main_hop(&self, message_id: &str) -> u32 {
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(message_id)
+            .unwrap_or(0)
+    }
+
+    /// Record `hop_count` for a message main is about to receive again under
+    /// `message_id`, so the next [`Self::take_main_hop`] for it returns the
+    /// hop count it originally carried. A zero hop count records nothing:
+    /// `take_main_hop` already answers `0` for an id it has no entry for.
+    pub fn restore_main_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// Remember the hop count `message_id` carried when main's running turn
+    /// took it in mid-turn. A zero hop count records nothing.
+    pub fn note_mid_turn_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// The hop count `message_id` carried when it was taken in mid-turn, or
+    /// `0` if it carried none.
+    #[must_use]
+    pub fn mid_turn_hop(&self, message_id: &str) -> u32 {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(message_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Forget every hop count noted by [`Self::note_mid_turn_hop`]; called
+    /// once a turn's leftovers have been sorted out.
+    pub fn clear_mid_turn_hops(&self) {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// Discard the hop count recorded for `message_id`, for a message that
+    /// will not be looked up as a turn's kickoff.
+    pub fn forget_main_hop(&self, message_id: &str) {
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(message_id);
+    }
+
+    /// Send `message` to `to`. `to` may be `"main"`, a live session's
+    /// address, or a completed (or completing) session's address. The
+    /// message keeps its id wherever it lands, so the session that reads it
+    /// reports the same id (see [`SessionEventKind::MessageRead`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError::HopLimitExceeded`] if `hop_count` has reached the
+    /// configured hard limit — delivery is refused outright and never
+    /// reaches `to`. Returns [`SendError::Busy`] if the target is live but
+    /// its interrupt channel is saturated, and [`SendError::PublishFailed`]
+    /// if delivering the message (to main, or as a resume spawn request)
+    /// failed at the bus. All three are real delivery failures the caller
+    /// must not treat as success.
+    pub async fn send(
+        &self,
+        to: &str,
+        mut message: AgentMessageEvent,
+    ) -> Result<DeliveryOutcome, SendError> {
+        let hop_count = message.hop_count;
+        if hop_count >= self.hop_limits.hard {
+            self.refuse_hop_limit(&message.from, to, hop_count).await;
+            return Err(SendError::HopLimitExceeded {
+                hop_count,
+                limit: self.hop_limits.hard,
+            });
+        }
+        message.content = self.apply_soft_note(hop_count, std::mem::take(&mut message.content));
+
+        if to == MAIN_ADDRESS {
+            let AgentMessageEvent {
+                from,
+                from_category,
+                content,
+                ..
+            } = message;
+            self.deliver_to_main(from, from_category, content, hop_count)
+                .await?;
+            return Ok(DeliveryOutcome::Main);
+        }
+
+        let address = SessionAddress::from(to);
+        match self
+            .registry
+            .deliver(&address, Interrupt::AgentMessage(message.clone()))
+        {
+            DeliverOutcome::Delivered => return Ok(DeliveryOutcome::Live(address)),
+            DeliverOutcome::Full => return Err(SendError::Busy(address)),
+            DeliverOutcome::Completing => {
+                // The target's completion pipeline (memory merge, transcript
+                // write) may still be running — potentially including an LLM
+                // call — so waiting for it here would block the sender's
+                // tool call for however long that takes. Hand the wait off
+                // to a detached task instead: `send` returns as soon as the
+                // task is spawned, and the task itself resumes the session
+                // once the run actually clears (see `deferred_resume`). The
+                // resume point isn't looked up until then, since it may not
+                // exist yet at this exact moment — `finish_run` records it
+                // only partway through the pipeline, before the run leaves
+                // the registry.
+                let registry = Arc::clone(&self.registry);
+                let publisher = self.publisher.clone();
+                let store = Arc::clone(&self.store);
+                let deferred_address = address.clone();
+                residuum_core::util::spawn_in_span(async move {
+                    deferred_resume(registry, publisher, store, deferred_address, message).await;
+                });
+                return Ok(DeliveryOutcome::Queued(address));
+            }
+            DeliverOutcome::NotLive => {}
+        }
+
+        let Some(point) = self.registry.resume_point(&address) else {
+            return Ok(DeliveryOutcome::Unknown);
+        };
+        self.resume(&address, &point, message).await?;
+        Ok(DeliveryOutcome::Resumed(address))
+    }
+
+    /// Append a hop-count-note to `content` when `hop_count` has reached the
+    /// configured soft limit, so the receiver knows this is a long-running
+    /// exchange and should only reply if a reply is actually needed.
+    fn apply_soft_note(&self, hop_count: u32, content: String) -> String {
+        if hop_count >= self.hop_limits.soft {
+            format!(
+                "{content}\n\n[This exchange has reached {hop_count} hops. Reply only if a \
+                 reply is actually needed.]"
+            )
+        } else {
+            content
+        }
+    }
+
+    /// Log the hop-limit refusal and record a best-effort note in the
+    /// transcript of whichever side (`from`, `to`) is a live, addressable
+    /// session — main has no comparable transcript to write into, so it's
+    /// skipped there and covered by the log alone.
+    async fn refuse_hop_limit(&self, from: &SessionAddress, to: &str, hop_count: u32) {
+        tracing::warn!(
+            from = %from,
+            to = %to,
+            hop_count,
+            limit = self.hop_limits.hard,
+            "refusing to deliver agent message: hop limit reached, likely a message loop"
+        );
+        let note = self.hop_refusal_note(from, to, hop_count);
+        let sinks = self.note_sinks();
+        record_note_if_live_session(sinks, from, &note).await;
+        record_note_if_live_session(sinks, &SessionAddress::from(to), &note).await;
+    }
+
+    fn hop_refusal_note(&self, from: &SessionAddress, to: &str, hop_count: u32) -> String {
+        format!(
+            "[Message Loop Limit] a message from {from} to {to} reached the hop limit \
+             ({hop_count} >= {}); it was not delivered.",
+            self.hop_limits.hard
+        )
+    }
+
+    fn note_sinks(&self) -> NoteSinks<'_> {
+        NoteSinks {
+            registry: &self.registry,
+            store: &self.store,
+            publisher: &self.publisher,
+        }
+    }
+
+    /// Record, in the transcript of the live session `from`, that its message
+    /// to the teammate address `to` was refused at the hop limit. The
+    /// teammate's own messenger has already logged the refusal and noted it
+    /// on its side; this is the sender's half.
+    pub(crate) async fn note_refused_send(&self, from: &SessionAddress, to: &str, hop_count: u32) {
+        let note = self.hop_refusal_note(from, to, hop_count);
+        record_note_if_live_session(self.note_sinks(), from, &note).await;
+    }
+
+    /// Deliver to the main agent by publishing a `MessageEvent` on the
+    /// `UserMessage` topic, exactly like a relayed session result does today
+    /// — the gateway's own turn loop already treats an inbound message on
+    /// this topic as an interrupt when a turn is running, and as fresh input
+    /// for a new turn when it's idle. The hop count is recorded under the
+    /// event's id (see [`Self::take_main_hop`]) rather than carried on
+    /// `MessageEvent` itself.
+    ///
+    /// A message from one of this agent's own sessions names the sending run
+    /// on its origin's `agent_sender`, so main's conversation stream and
+    /// history can point at that run rather than only at its address.
+    async fn deliver_to_main(
+        &self,
+        from: SessionAddress,
+        from_category: String,
+        content: String,
+        hop_count: u32,
+    ) -> Result<(), SendError> {
+        let sender_is_teammate = from_category == TEAMMATE_SENDER_CATEGORY;
+        let msg = AgentMessageEvent::new(from, from_category, content, hop_count);
+        let mut event = MessageEvent::from_agent(&msg);
+        if !sender_is_teammate && let Some(sender) = event.origin.agent_sender.as_deref_mut() {
+            sender.run_id = self.sending_run_id(&msg.from);
+        }
+        let message_id = event.id.clone();
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.clone(), hop_count);
+        if let Err(e) = self.publisher.publish(topics::UserMessage, event).await {
+            // The message never reached main, so this hop count will never
+            // be looked up via `take_main_hop` — remove it rather than
+            // leaving a permanent entry behind for an id nothing will ever
+            // read.
+            self.pending_main_hops
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&message_id);
+            tracing::warn!(error = %e, "failed to deliver agent message to main");
+            return Err(SendError::PublishFailed(
+                "failed to deliver message to main".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The run of this agent's session at `sender`, for a message it sends
+    /// main. A session only sends during a turn (a `message_agent` call or
+    /// its turn's result relay, both before the run leaves the registry), so
+    /// the run is live. If it has somehow left the registry, the message is
+    /// still delivered without a run id, and the web UI's Open session falls
+    /// back to the newest run at the address.
+    fn sending_run_id(&self, sender: &SessionAddress) -> Option<String> {
+        let run_id = self.registry.get(sender).map(|info| info.run_id);
+        if run_id.is_none() {
+            tracing::warn!(
+                sender = %sender,
+                "message to main came from an address with no live run; delivering it without a run id"
+            );
+        }
+        run_id
+    }
+
+    /// Resume a completed session as a new run at the same address, by
+    /// publishing a fresh `SpawnRequestEvent` for the spawn listener to pick
+    /// up — the same path any other session fork takes. The new run opens
+    /// with the delivered message as its own entry; its context carries a
+    /// pointer back to the previous run's episode (or its run id, if it
+    /// produced none), so the resumed session can retrieve it with
+    /// `memory_get`. The new run's hop count is the delivered message's hop
+    /// count directly (that message *is* the run's kickoff input).
+    async fn resume(
+        &self,
+        address: &SessionAddress,
+        point: &ResumePoint,
+        msg: AgentMessageEvent,
+    ) -> Result<(), SendError> {
+        publish_resume(&self.publisher, address, point, ResumeOpening::agent(msg)).await
+    }
+
+    /// Resume a session as a new run with several buffered messages (agent
+    /// messages, conversation messages, or a mix — anything that can land in
+    /// a session's interrupt channel) as its opening input. Each agent
+    /// message opens the run as its own entry, with its own id and sender;
+    /// the conversation messages are combined into one prompt after them,
+    /// and carried as they are too, so a resume that loses the race for the
+    /// address delivers each as the chat message it is (see
+    /// `crate::listener::deliver_losing_resume`). The resumed run's hop
+    /// count is the highest hop count among the messages — together they're
+    /// the inputs driving its first turn.
+    ///
+    /// Used when a run's own interrupt channel still holds messages at the
+    /// moment its teardown drains it (see
+    /// `crate::runtime::finish_run`): by then there is no live
+    /// turn left to deliver them into individually, so they all become the
+    /// resumed run's opening input instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError::PublishFailed`] if publishing the resume spawn
+    /// request fails.
+    pub(crate) async fn resume_with_pending(
+        &self,
+        address: &SessionAddress,
+        point: &ResumePoint,
+        pending: &[PendingInput],
+    ) -> Result<(), SendError> {
+        let combined = pending
+            .iter()
+            .filter_map(PendingInput::conversation_text_for_resume)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let hop_count = pending
+            .iter()
+            .map(PendingInput::hop_count)
+            .max()
+            .unwrap_or(0);
+        let images = pending.iter().flat_map(PendingInput::images).collect();
+        let mut agent_messages = Vec::new();
+        let mut chat_messages = Vec::new();
+        for input in pending {
+            match input {
+                PendingInput::Agent(msg) => agent_messages.push(msg.clone()),
+                PendingInput::External(msg) => chat_messages.push(msg.clone()),
+            }
+        }
+        let opening = ResumeOpening {
+            prompt: combined,
+            hop_count,
+            images,
+            agent_messages,
+            chat_messages,
+        };
+        publish_resume(&self.publisher, address, point, opening).await
+    }
+
+    /// Deliver an inbound conversation message to its session by its
+    /// deterministic address, per the delivery rules: an interrupt at the
+    /// next tool-call boundary if it's running, a new turn if it's idle, a
+    /// deferred resume if its current run is completing, and — unlike
+    /// [`Self::send`], which requires the target to already exist — a fresh
+    /// spawn if no run has ever executed at this address (the first message
+    /// in a brand-new conversation).
+    ///
+    /// Inbound conversation messages are external input, so unlike
+    /// [`Self::send`] this carries no hop-count check: they are always hop
+    /// `0`, below both limits by construction.
+    ///
+    /// A chat user's message is never refused for capacity the way an
+    /// agent-to-agent message can be (see [`Self::send`]'s own
+    /// [`SendError::Busy`]): there is nobody on the other end of a chat
+    /// message to hand a `Busy` refusal to, so a saturated channel hands
+    /// off to the same detached retry-until-delivered task the
+    /// `Completing` case below already uses, rather than ever erroring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError::PublishFailed`] if starting or resuming the
+    /// session failed at the bus.
+    pub async fn deliver_conversation(
+        &self,
+        address: &SessionAddress,
+        inbound: MessageEvent,
+        spawn: ConversationSpawn,
+    ) -> Result<ConversationDeliveryOutcome, SendError> {
+        match self
+            .registry
+            .deliver(address, Interrupt::UserMessage(inbound.clone()))
+        {
+            DeliverOutcome::Delivered => {
+                return Ok(ConversationDeliveryOutcome::Live(address.clone()));
+            }
+            DeliverOutcome::Full | DeliverOutcome::Completing => {
+                // `Full`: the run is live and draining its own queue
+                // continuously, so this resolves on its own shortly — the
+                // retry task loops on it directly. `Completing`: its
+                // teardown may itself take a while (an LLM call, in the
+                // worst case), so the retry task waits for that instead.
+                // Either way, hand off to a detached task rather than
+                // blocking the caller (an interface's inbound handler) on
+                // however long either takes.
+                let registry = Arc::clone(&self.registry);
+                let publisher = self.publisher.clone();
+                let deferred_address = address.clone();
+                residuum_core::util::spawn_in_span(async move {
+                    deferred_conversation_resume(
+                        registry,
+                        publisher,
+                        deferred_address,
+                        inbound,
+                        spawn,
+                    )
+                    .await;
+                });
+                return Ok(ConversationDeliveryOutcome::Queued(address.clone()));
+            }
+            DeliverOutcome::NotLive => {}
+        }
+
+        if let Some(point) = self.registry.resume_point(address) {
+            publish_conversation_resume(&self.publisher, address, &point, &inbound).await?;
+            Ok(ConversationDeliveryOutcome::Resumed(address.clone()))
+        } else {
+            publish_conversation_spawn(&self.publisher, address.clone(), inbound, spawn).await?;
+            Ok(ConversationDeliveryOutcome::Started(address.clone()))
+        }
+    }
+}
+
+/// A message that can arrive in a session's interrupt channel, held together
+/// only for [`AgentMessenger::resume_with_pending`]'s kickoff when a run's
+/// teardown drains a mix of both kinds.
+#[derive(Debug, Clone)]
+pub(crate) enum PendingInput {
+    /// Another agent addressed this session (`message_agent`).
+    Agent(AgentMessageEvent),
+    /// A new message arrived in this session's own conversation.
+    External(MessageEvent),
+}
+
+impl PendingInput {
+    fn hop_count(&self) -> u32 {
+        match self {
+            Self::Agent(m) => m.hop_count,
+            // Inbound conversation messages are external input: hop 0.
+            Self::External(_) => 0,
+        }
+    }
+
+    /// Images this input carries, if any. An agent message has no images of
+    /// its own; an inbound conversation message's images travel with it into
+    /// the resumed run's opening turn.
+    fn images(&self) -> Vec<ImageData> {
+        match self {
+            Self::Agent(_) => Vec::new(),
+            Self::External(m) => m.images.clone(),
+        }
+    }
+
+    /// A conversation message as it reads in a resumed run's opening
+    /// prompt, or `None` for an agent message, which opens the run as its
+    /// own entry instead.
+    fn conversation_text_for_resume(&self) -> Option<String> {
+        let Self::External(m) = self else {
+            return None;
+        };
+        let mut parts = Vec::new();
+        if let Some(ctx) = &m.context {
+            parts.push(ctx.clone());
+        }
+        // Reuses `Message::attributed_content`'s formatting rather than
+        // hand-rolling the `[From: …]` prefix a second time, so the two stay
+        // in sync if that format ever changes.
+        let attributed = Message::user(m.content.clone())
+            .with_sender(m.origin.sender.clone())
+            .attributed_content()
+            .into_owned();
+        parts.push(attributed);
+        Some(parts.join("\n\n"))
+    }
+}
+
+/// Parameters for starting a brand-new conversation session when no run has
+/// ever executed at its deterministic address.
+#[derive(Debug, Clone)]
+pub struct ConversationSpawn {
+    /// Human-readable source label (e.g. `"discord:#builds"`).
+    pub source_label: String,
+    /// The model tier or explicit model to run the session on.
+    pub model: ModelSelector,
+    /// Skill to activate for the new session, if any. `None` for every
+    /// caller today — no router currently maps a conversation to a skill.
+    pub skill: Option<SkillName>,
+}
+
+/// Outcome of delivering an inbound conversation message to its session.
+#[derive(Debug, Clone)]
+pub enum ConversationDeliveryOutcome {
+    /// Delivered into a live (running or idle) session.
+    Live(SessionAddress),
+    /// No run had ever executed at this address; a fresh one was started.
+    Started(SessionAddress),
+    /// The session had completed a previous run; a new run was started,
+    /// picking up from where it left off.
+    Resumed(SessionAddress),
+    /// The session's current run is completing; delivery was handed to a
+    /// detached task that starts or resumes the session once that run
+    /// clears the registry.
+    Queued(SessionAddress),
+}
+
+/// Build the `SpawnRequestEvent` that starts a brand-new conversation
+/// session, and publish it for the spawn listener to pick up.
+async fn publish_conversation_spawn(
+    publisher: &Publisher,
+    address: SessionAddress,
+    inbound: MessageEvent,
+    spawn: ConversationSpawn,
+) -> Result<(), SendError> {
+    let Some(conversation) = inbound.origin.conversation.as_ref() else {
+        // The router only ever calls this for messages it has already
+        // classified as conversation input (see
+        // `MessageOrigin::belongs_to_main`), so this is an internal
+        // inconsistency, not a real-world input this needs to tolerate.
+        tracing::error!(
+            address = %address,
+            "conversation spawn requested for an inbound message with no conversation context"
+        );
+        return Err(SendError::PublishFailed(
+            "internal error: no conversation context on an external message".to_string(),
+        ));
+    };
+    let conversation_id = conversation.id.clone();
+    let original_inbound = inbound.clone();
+    let event = residuum_bus::SpawnRequestEvent {
+        address,
+        skill: spawn.skill,
+        source_label: spawn.source_label,
+        prompt: inbound.content,
+        context: inbound.context,
+        source: residuum_bus::EventTrigger::Conversation,
+        model: spawn.model,
+        spawner: None,
+        depth: residuum_bus::session::MAIN_DEPTH + 1,
+        hop_count: 0,
+        sender: inbound.origin.sender,
+        conversation: Some(residuum_bus::ConversationTarget {
+            endpoint: inbound.origin.endpoint,
+            conversation_id,
+        }),
+        images: original_inbound.images.clone(),
+        inbound: Some(original_inbound),
+        overlap: None,
+        carried_history: Vec::new(),
+        fire_id: None,
+        delivered_messages: Vec::new(),
+        delivered_chat_messages: Vec::new(),
+    };
+    publisher
+        .publish(topics::Background, event)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to publish conversation spawn request");
+            SendError::PublishFailed("failed to start a conversation session".to_string())
+        })
+}
+
+/// Build the `SpawnRequestEvent` that resumes a completed conversation
+/// session as a new run, carrying the previous run's pointer alongside the
+/// new inbound message.
+async fn publish_conversation_resume(
+    publisher: &Publisher,
+    address: &SessionAddress,
+    point: &ResumePoint,
+    inbound: &MessageEvent,
+) -> Result<(), SendError> {
+    let context = match &inbound.context {
+        Some(ctx) => format!("{}\n\n{ctx}", pointer_note(point)),
+        None => pointer_note(point),
+    };
+    let event = residuum_bus::SpawnRequestEvent {
+        address: address.clone(),
+        skill: point.agent_skill.clone(),
+        source_label: point.source_label.clone(),
+        prompt: inbound.content.clone(),
+        context: Some(context),
+        source: point.trigger.clone(),
+        model: point.model.clone(),
+        spawner: point.spawner.clone(),
+        depth: point.depth,
+        hop_count: 0,
+        sender: inbound.origin.sender.clone(),
+        conversation: point.conversation_target.clone(),
+        images: inbound.images.clone(),
+        inbound: Some(inbound.clone()),
+        overlap: None,
+        carried_history: Vec::new(),
+        fire_id: None,
+        delivered_messages: Vec::new(),
+        delivered_chat_messages: Vec::new(),
+    };
+    publisher.publish(topics::Background, event).await.map_err(|e| {
+        tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
+        SendError::PublishFailed(format!("failed to resume conversation session {address}"))
+    })
+}
+
+/// How long to wait between retries of a chat user's message against a
+/// saturated interrupt channel. The channel drains continuously (every
+/// tool-loop checkpoint of a live turn), so this is about not busy-looping
+/// while it does, not about giving the run time to do anything in
+/// particular.
+pub(crate) const USER_MESSAGE_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+/// Retry attempts against a saturated channel worth a `warn` log, so a
+/// channel that stays saturated for an unusually long time is visible in
+/// the logs rather than silently retrying forever.
+pub(crate) const USER_MESSAGE_WARN_AFTER_ATTEMPTS: u32 = 20;
+
+/// Retry delivering a chat user's message into `address` — the address a
+/// spawn/resume request lost the race for (see
+/// `crate::listener::race_guard_interrupt`) — until it
+/// succeeds, or republish `spawn_event` as a fresh spawn/resume request if
+/// the run that won the race finishes before delivery does.
+///
+/// Mirrors [`resume_or_start_conversation_after_clear`]'s guarantee for the
+/// ordinary conversation-delivery path: a chat user's message must never
+/// be dropped for capacity or for losing a race, unlike an agent-to-agent
+/// message in the same situation (which the callers below still log and
+/// give up on, unchanged — an unusual double-spawn race is a much rarer
+/// event than a session simply running busy or long, and there's a live
+/// agent on the other end to notice and retry itself).
+///
+/// Spawned as a detached task by both callers, so neither
+/// `SessionRuntime::spawn` (a sync fn) nor the listener's own sequential
+/// event dispatch ever blocks on it.
+pub(crate) async fn retry_race_guard_user_message(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    inbound: MessageEvent,
+    spawn_event: SpawnRequestEvent,
+) {
+    let mut attempts: u32 = 0;
+    loop {
+        match registry.deliver(&address, Interrupt::UserMessage(inbound.clone())) {
+            DeliverOutcome::Delivered => return,
+            DeliverOutcome::Full => {
+                attempts += 1;
+                if attempts == USER_MESSAGE_WARN_AFTER_ATTEMPTS {
+                    tracing::warn!(
+                        address = %address,
+                        attempts,
+                        "race-guard user message still waiting on a saturated interrupt channel"
+                    );
+                }
+                tokio::time::sleep(USER_MESSAGE_RETRY_DELAY).await;
+            }
+            DeliverOutcome::Completing => {
+                registry.wait_until_clear(&address).await;
+            }
+            DeliverOutcome::NotLive => {
+                // The run that won the original race has since finished.
+                // Give this content a fresh spawn/resume attempt through
+                // the normal listener pipeline (which can rebuild the
+                // session resources this layer doesn't have) rather than
+                // dropping it.
+                if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
+                    tracing::error!(
+                        error = %e,
+                        address = %address,
+                        "failed to republish a race-guard user message after its target \
+                         finished; input dropped"
+                    );
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// Deliver a resume's conversation messages, in order, into the run at
+/// `address` that won the race for it, each as the
+/// [`Interrupt::UserMessage`] a conversation's message is when it reaches a
+/// running conversation session, so the session reads each with its own
+/// sender rather than as an agent message.
+///
+/// A chat user's message is never dropped for losing a race: from the first
+/// one that can't be delivered at once (the winning run's channel is
+/// saturated, or that run is tearing down or gone), it and every one after
+/// it go to a detached task that delivers them one at a time, in order, the
+/// way [`AgentMessenger::deliver_conversation`]'s deferred branch delivers a
+/// conversation message (see [`deferred_conversation_resume`]); `spawn`
+/// starts the session if it somehow has no resume point by then.
+pub(crate) fn deliver_chat_messages_in_order(
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
+    address: &SessionAddress,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    let mut chat_messages = chat_messages.into_iter();
+    while let Some(msg) = chat_messages.next() {
+        let outcome = registry.deliver(address, Interrupt::UserMessage(msg.clone()));
+        if matches!(outcome, DeliverOutcome::Delivered) {
+            continue;
+        }
+        let undelivered: Vec<MessageEvent> = std::iter::once(msg).chain(chat_messages).collect();
+        tracing::warn!(
+            address = %address,
+            ?outcome,
+            count = undelivered.len(),
+            "a losing resume's chat message(s) could not be delivered immediately; delivering \
+             them on a detached task rather than dropping them"
+        );
+        let registry = Arc::clone(registry);
+        let publisher = publisher.clone();
+        let address = address.clone();
+        residuum_core::util::spawn_in_span(async move {
+            deferred_conversation_resumes(registry, publisher, address, undelivered, spawn).await;
+        });
+        return;
+    }
+}
+
+/// Deliver the rest of a losing resume's messages, from the first agent
+/// message its winning run could not take because that run is tearing down
+/// or has left the registry, on one detached task, in the order a resumed
+/// run reads them: each agent message the way [`AgentMessenger::send`]
+/// delivers one to a completing session (see [`deferred_resume`]), then each
+/// chat message the way [`AgentMessenger::deliver_conversation`] delivers
+/// one (see [`deferred_conversation_resume`]). The first message to find no
+/// live run resumes the session; each later one is delivered into that run,
+/// or loses the race at the spawn listener and is delivered there.
+pub(crate) fn defer_losing_resume(
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
+    store: &Arc<SessionStore>,
+    address: &SessionAddress,
+    agent_messages: Vec<AgentMessageEvent>,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    let registry = Arc::clone(registry);
+    let publisher = publisher.clone();
+    let store = Arc::clone(store);
+    let address = address.clone();
+    residuum_core::util::spawn_in_span(async move {
+        for msg in agent_messages {
+            deferred_resume(
+                Arc::clone(&registry),
+                publisher.clone(),
+                Arc::clone(&store),
+                address.clone(),
+                msg,
+            )
+            .await;
+        }
+        deferred_conversation_resumes(registry, publisher, address, chat_messages, spawn).await;
+    });
+}
+
+/// Run [`deferred_conversation_resume`] for each of `chat_messages` in turn,
+/// so they reach the session in the order they arrived.
+async fn deferred_conversation_resumes(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    chat_messages: Vec<MessageEvent>,
+    spawn: ConversationSpawn,
+) {
+    for chat_message in chat_messages {
+        deferred_conversation_resume(
+            Arc::clone(&registry),
+            publisher.clone(),
+            address.clone(),
+            chat_message,
+            spawn.clone(),
+        )
+        .await;
+    }
+}
+
+/// Re-run the same live-vs-start-vs-resume decision
+/// [`AgentMessenger::deliver_conversation`] makes for a fresh call, until a
+/// chat user's message is actually delivered — the deferred half of its
+/// `Full`/`Completing` branch, run on its own detached task so the original
+/// caller never blocks on it.
+///
+/// A chat user's message is never dropped for capacity: unlike an
+/// agent-to-agent message, which gets a visible `Busy` refusal the sender
+/// can act on (see [`AgentMessenger::send`]), there's nobody on the other
+/// end of a chat message to hand a refusal to.
+async fn deferred_conversation_resume(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    inbound: MessageEvent,
+    spawn: ConversationSpawn,
+) {
+    loop {
+        let done = resume_or_start_conversation_after_clear(
+            &registry, &publisher, &address, &inbound, &spawn,
+        )
+        .await;
+        if done {
+            return;
+        }
+        // Only `DeliverOutcome::Completing` reaches here (see that
+        // function's own doc): another resume raced in and is already
+        // tearing down again, so wait for it to actually clear before
+        // trying once more — unlike the `Full` case, which that function
+        // already retries in place without needing this wait.
+        registry.wait_until_clear(&address).await;
+    }
+}
+
+/// The decision `deferred_conversation_resume` makes on each pass: deliver
+/// into a run that already won the race, resume from its resume point, or
+/// start a fresh run if it never had one.
+///
+/// A saturated channel (`DeliverOutcome::Full`) is retried in place with
+/// [`USER_MESSAGE_RETRY_DELAY`] between attempts, however long that takes —
+/// the run is live and draining its own queue continuously, so this
+/// resolves on its own. Returns `false` only for
+/// [`DeliverOutcome::Completing`] (another resume raced in and is
+/// *already* tearing down again), telling the caller to wait for it to
+/// clear and retry — every other outcome, success or failure, is final.
+async fn resume_or_start_conversation_after_clear(
+    registry: &SessionRegistry,
+    publisher: &Publisher,
+    address: &SessionAddress,
+    inbound: &MessageEvent,
+    spawn: &ConversationSpawn,
+) -> bool {
+    let mut attempts: u32 = 0;
+    loop {
+        match registry.deliver(address, Interrupt::UserMessage(inbound.clone())) {
+            DeliverOutcome::Delivered => return true,
+            DeliverOutcome::Completing => return false,
+            DeliverOutcome::Full => {
+                attempts += 1;
+                if attempts == USER_MESSAGE_WARN_AFTER_ATTEMPTS {
+                    tracing::warn!(
+                        address = %address,
+                        attempts,
+                        "user message still waiting on a saturated interrupt channel"
+                    );
+                }
+                tokio::time::sleep(USER_MESSAGE_RETRY_DELAY).await;
+            }
+            DeliverOutcome::NotLive => {
+                let result = match registry.resume_point(address) {
+                    Some(point) => {
+                        publish_conversation_resume(publisher, address, &point, inbound).await
+                    }
+                    None => {
+                        publish_conversation_spawn(
+                            publisher,
+                            address.clone(),
+                            inbound.clone(),
+                            spawn.clone(),
+                        )
+                        .await
+                    }
+                };
+                if let Err(e) = result {
+                    tracing::error!(error = %e, address = %address, "failed to deliver deferred conversation message");
+                }
+                return true;
+            }
+        }
+    }
+}
+
+/// Best-effort: append `note` to `address`'s live transcript sidecar and
+/// publish it as an error event on that session's stream (so the web UI
+/// shows it on the affected session), if `address` names a
+/// currently-registered session. A no-op for `main` (which has no
+/// session-store transcript or session stream) and for an address with no
+/// live entry (nothing to append into that would actually surface). Free
+/// function (not a method) so it can be shared between
+/// [`AgentMessenger::refuse_hop_limit`] and [`deferred_resume`], which runs
+/// on a detached task with no `&AgentMessenger` to call through.
+async fn record_note_if_live_session(sinks: NoteSinks<'_>, address: &SessionAddress, note: &str) {
+    if address.as_ref() == MAIN_ADDRESS {
+        return;
+    }
+    if let Some(info) = sinks.registry.get(address) {
+        sinks
+            .store
+            .append_note(&info.run_id, info.started_at, note)
+            .await;
+        publish_session_event(
+            sinks.publisher,
+            address,
+            &info.run_id,
+            SessionEventKind::Error {
+                message: note.to_string(),
+                details: None,
+            },
+        )
+        .await;
+    }
+}
+
+/// Where [`record_note_if_live_session`] records a note: the registry to
+/// find the session's live run, the store holding its transcript, and the
+/// publisher for its event stream.
+#[derive(Clone, Copy)]
+struct NoteSinks<'a> {
+    registry: &'a SessionRegistry,
+    store: &'a SessionStore,
+    publisher: &'a Publisher,
+}
+
+/// Re-run the same live-vs-resume decision [`AgentMessenger::send`] makes
+/// for a fresh call, waiting for `address` to leave the registry whenever
+/// its run is tearing down — the deferred half of `send`'s `Completing`
+/// branch, run on its own detached task so the original sender never
+/// blocks on it.
+///
+/// Another deferred message queued at the same address may already have
+/// resumed it (a live run now exists to deliver into), so checking liveness
+/// on each pass, rather than blindly publishing another resume, is what
+/// keeps two messages queued to one completing session from producing two
+/// runs, with the second silently dropped once the spawn listener's own
+/// liveness guard refuses it. A `Completing` result (the run is still
+/// tearing down, or another resume raced in and is *already* tearing down
+/// again) waits for the address to clear rather than giving up.
+async fn deferred_resume(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    store: Arc<SessionStore>,
+    address: SessionAddress,
+    msg: AgentMessageEvent,
+) {
+    loop {
+        let done = deliver_or_resume_deferred(&registry, &publisher, &store, &address, &msg).await;
+        if done {
+            return;
+        }
+        registry.wait_until_clear(&address).await;
+    }
+}
+
+/// The decision `deferred_resume` makes on each pass: if a run is live at
+/// `address` (another deferred message queued at the same address already
+/// resumed it before this one got a chance to check), deliver `msg` into it
+/// directly instead of blindly publishing a second resume; if none is,
+/// resume it. Returns `false` only for [`DeliverOutcome::Completing`] (the
+/// run there is tearing down), telling the caller to wait for the address
+/// to clear and retry — every other outcome, success or failure, is final.
+async fn deliver_or_resume_deferred(
+    registry: &SessionRegistry,
+    publisher: &Publisher,
+    store: &SessionStore,
+    address: &SessionAddress,
+    msg: &AgentMessageEvent,
+) -> bool {
+    match registry.deliver(address, Interrupt::AgentMessage(msg.clone())) {
+        DeliverOutcome::Delivered => true,
+        DeliverOutcome::Completing => false,
+        DeliverOutcome::Full => {
+            let reason = "the resumed session's interrupt channel is saturated";
+            tracing::error!(address = %address, from = %msg.from, reason, "deferred delivery failed");
+            record_note_if_live_session(
+                NoteSinks {
+                    registry,
+                    store,
+                    publisher,
+                },
+                &msg.from,
+                &format!(
+                    "[Deferred Delivery Failed] your message to {address} could not be \
+                     delivered: {reason}"
+                ),
+            )
+            .await;
+            true
+        }
+        DeliverOutcome::NotLive => {
+            // By the time the entry clears, a resume point for this exact
+            // run is guaranteed to exist (`finish_run` always records one
+            // before removing the entry — see its doc comment), so a
+            // missing point here would be an internal inconsistency, not a
+            // genuinely unknown address.
+            let Some(point) = registry.resume_point(address) else {
+                tracing::error!(
+                    address = %address,
+                    "session left the registry with no resume point recorded; deferred message not delivered"
+                );
+                record_note_if_live_session(
+                    NoteSinks {
+                        registry,
+                        store,
+                        publisher,
+                    },
+                    &msg.from,
+                    &format!(
+                        "[Deferred Delivery Failed] your message to {address} could not be \
+                         delivered: no resume point recorded"
+                    ),
+                )
+                .await;
+                return true;
+            };
+            if let Err(e) = publish_resume(
+                publisher,
+                address,
+                &point,
+                ResumeOpening::agent(msg.clone()),
+            )
+            .await
+            {
+                tracing::error!(error = %e, address = %address, "failed to deliver deferred resume");
+                record_note_if_live_session(
+                    NoteSinks {
+                        registry,
+                        store,
+                        publisher,
+                    },
+                    &msg.from,
+                    &format!(
+                        "[Deferred Delivery Failed] your message to {address} could not be \
+                         delivered: {e}"
+                    ),
+                )
+                .await;
+            }
+            true
+        }
+    }
+}
+
+/// What a resume by messages hands the new run as its opening input.
+struct ResumeOpening {
+    /// The conversation messages combined, as the new run reads them after
+    /// its agent messages: made from `chat_messages` alone, and empty when
+    /// there are none.
+    prompt: String,
+    /// The new run's first turn's hop count.
+    hop_count: u32,
+    /// The conversation messages' images.
+    images: Vec<ImageData>,
+    /// The agent messages the new run opens with, each as its own entry,
+    /// and reports as read.
+    agent_messages: Vec<AgentMessageEvent>,
+    /// The conversation messages `prompt` combines, as they arrived.
+    chat_messages: Vec<MessageEvent>,
+}
+
+impl ResumeOpening {
+    /// A resume by one agent message, the run's whole opening input.
+    fn agent(msg: AgentMessageEvent) -> Self {
+        Self {
+            prompt: String::new(),
+            hop_count: msg.hop_count,
+            images: Vec::new(),
+            agent_messages: vec![msg],
+            chat_messages: Vec::new(),
+        }
+    }
+}
+
+/// Build and publish the `SpawnRequestEvent` that resumes `address` from
+/// `point` with `opening` as the new run's opening input. Free function (not
+/// a method) so it can be shared between [`AgentMessenger`]'s own resume
+/// paths and [`deferred_resume`], which runs on a detached task with no
+/// `&AgentMessenger` to call through.
+async fn publish_resume(
+    publisher: &Publisher,
+    address: &SessionAddress,
+    point: &ResumePoint,
+    opening: ResumeOpening,
+) -> Result<(), SendError> {
+    let ResumeOpening {
+        prompt,
+        hop_count,
+        images,
+        agent_messages,
+        chat_messages,
+    } = opening;
+    let event = residuum_bus::SpawnRequestEvent {
+        address: address.clone(),
+        skill: point.agent_skill.clone(),
+        source_label: point.source_label.clone(),
+        prompt,
+        context: Some(pointer_note(point)),
+        source: point.trigger.clone(),
+        model: point.model.clone(),
+        // A resume keeps the session's original spawner and depth, rather
+        // than resetting it to depth 1 with no spawner — which would let a
+        // resumed session evade the nesting cap.
+        spawner: point.spawner.clone(),
+        depth: point.depth,
+        hop_count,
+        // An agent message carries no sender attribution; a conversation
+        // session's own conversation target is still carried over, though,
+        // so a resume triggered by `message_agent` doesn't strand it.
+        sender: None,
+        conversation: point.conversation_target.clone(),
+        // `inbound` is the one conversation message a conversation resume
+        // starts from (`publish_conversation_resume`). A resume by messages
+        // has none, even when `point.trigger` is `Conversation` (a
+        // conversation session resumed by an agent addressing it directly,
+        // or by the messages its teardown drained): the conversation
+        // messages among those travel in `delivered_chat_messages`, each
+        // with its own sender.
+        inbound: None,
+        images,
+        overlap: None,
+        carried_history: Vec::new(),
+        fire_id: None,
+        delivered_messages: agent_messages,
+        delivered_chat_messages: chat_messages,
+    };
+
+    publisher
+        .publish(topics::Background, event)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, address = %address, "failed to publish resume spawn request");
+            SendError::PublishFailed(format!("failed to resume session {address}"))
+        })
+}
+
+/// Build the note telling a resumed session how to retrieve what its
+/// previous run produced.
+fn pointer_note(point: &ResumePoint) -> String {
+    match &point.previous_episode_id {
+        Some(episode_id) => format!(
+            "[Resumed session] Your previous run ({}) was merged as episode {episode_id} — \
+             retrieve it with memory_get if useful.",
+            point.previous_run_id
+        ),
+        None => format!(
+            "[Resumed session] Your previous run ({}) produced no episode — retrieve its \
+             transcript with memory_get using that run id if useful.",
+            point.previous_run_id
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use residuum_bus::testing::{bus_barrier, next_event};
+    use residuum_bus::{EventTrigger, SkillName, Subscriber};
+    use residuum_core::testing::wait;
+    use tokio_util::sync::CancellationToken;
+
+    const NO_LIMIT: HopLimits = HopLimits { soft: 8, hard: 32 };
+
+    fn messenger() -> (
+        AgentMessenger,
+        Arc<SessionRegistry>,
+        residuum_bus::BusHandle,
+    ) {
+        messenger_with_limits(NO_LIMIT)
+    }
+
+    fn messenger_with_limits(
+        limits: HopLimits,
+    ) -> (
+        AgentMessenger,
+        Arc<SessionRegistry>,
+        residuum_bus::BusHandle,
+    ) {
+        let bus_handle = residuum_bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger =
+            AgentMessenger::new(Arc::clone(&registry), bus_handle.publisher(), store, limits);
+        (messenger, registry, bus_handle)
+    }
+
+    fn sample_resume_point(run_id: &str, model: residuum_config::ModelSelector) -> ResumePoint {
+        ResumePoint {
+            previous_run_id: run_id.to_string(),
+            previous_episode_id: Some("ep-42".to_string()),
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            agent_skill: Some(SkillName::from("researcher")),
+            model,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
+            conversation_target: None,
+            recorded_at: chrono::Utc::now(),
+        }
+    }
+
+    fn sample_live_info(
+        address: &str,
+        state: residuum_bus::session::SessionState,
+    ) -> residuum_bus::session::SessionInfo {
+        residuum_bus::session::SessionInfo {
+            address: SessionAddress::from(address),
+            run_id: "run-1".to_string(),
+            category: residuum_bus::session::SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
+            purpose: "research".to_string(),
+            agent_skill: None,
+            model: residuum_config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: None,
+            started_at: chrono::Utc::now(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_to_main_publishes_a_user_message_naming_the_sender() {
+        let (messenger, _registry, bus_handle) = messenger();
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        let outcome = messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-3f9a"),
+                    "spawned",
+                    "found the answer",
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, DeliveryOutcome::Main));
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert!(event.content.contains("spawned-researcher-3f9a"));
+        assert!(event.content.contains("spawned"));
+        assert!(event.content.contains("found the answer"));
+        assert_eq!(event.origin.endpoint, "background");
+        assert_eq!(messenger.take_main_hop(&event.id), 0);
+    }
+
+    #[tokio::test]
+    async fn send_to_main_names_the_sending_sessions_run_on_the_origin() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+        let sender = sample_live_info(
+            "spawned-researcher-3f9c",
+            residuum_bus::session::SessionState::Running,
+        );
+        let run_id = sender.run_id.clone();
+        let _rx = registry.register(sender, CancellationToken::new()).unwrap();
+
+        messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-3f9c"),
+                    "spawned",
+                    "found the answer",
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+
+        let event = next_event("the message to main", &mut sub).await;
+        let expected = residuum_inference::AgentSender {
+            address: "spawned-researcher-3f9c".to_string(),
+            category: "spawned".to_string(),
+            run_id: Some(run_id),
+        };
+        assert_eq!(event.origin.agent_sender.as_deref(), Some(&expected));
+        let history = event.into_history_messages();
+        assert_eq!(
+            history.last().and_then(|m| m.agent_sender.as_ref()),
+            Some(&expected),
+            "main's history entry keeps the run too"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_to_main_gives_a_teammate_or_a_sender_with_no_live_run_no_run_id() {
+        let (messenger, _registry, bus_handle) = messenger();
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        for (from, category) in [
+            ("agent:scout", TEAMMATE_SENDER_CATEGORY),
+            ("spawned-gone-3f9d", "spawned"),
+        ] {
+            messenger
+                .send(
+                    MAIN_ADDRESS,
+                    AgentMessageEvent::new(SessionAddress::from(from), category, "status?", 0),
+                )
+                .await
+                .unwrap();
+            let event = next_event("the message to main", &mut sub).await;
+            let sender = event.origin.agent_sender.as_deref().unwrap();
+            assert_eq!(sender.address, from);
+            assert_eq!(
+                sender.run_id, None,
+                "{from} has no run in this agent's registry"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn take_main_hop_recovers_the_hop_count_and_removes_the_entry() {
+        let (messenger, _registry, bus_handle) = messenger();
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-3f9b"),
+                    "spawned",
+                    "an update",
+                    4,
+                ),
+            )
+            .await
+            .unwrap();
+        let event = sub.recv().await.unwrap().unwrap();
+
+        assert_eq!(messenger.take_main_hop(&event.id), 4);
+        assert_eq!(
+            messenger.take_main_hop(&event.id),
+            0,
+            "a second read must not find the same entry again"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_main_hop_on_an_unknown_id_is_hop_zero() {
+        let (messenger, _registry, _bus_handle) = messenger();
+        assert_eq!(messenger.take_main_hop("never-sent"), 0);
+    }
+
+    #[tokio::test]
+    async fn send_to_live_session_delivers_via_registry() {
+        let (messenger, registry, _bus_handle) = messenger();
+        let info = sample_live_info(
+            "spawned-researcher-0001",
+            residuum_bus::session::SessionState::Idle,
+        );
+        let mut rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let outcome = messenger
+            .send(
+                info.address.as_ref(),
+                AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "how's it going?",
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, DeliveryOutcome::Live(addr) if addr == info.address));
+
+        let received = rx.try_recv().expect("message should be queued");
+        assert!(matches!(received, Interrupt::AgentMessage(_)));
+    }
+
+    #[tokio::test]
+    async fn send_to_unknown_address_reports_unknown() {
+        let (messenger, _registry, _bus_handle) = messenger();
+        let outcome = messenger
+            .send(
+                "spawned-ghost-0000",
+                AgentMessageEvent::new(SessionAddress::from(MAIN_ADDRESS), "main", "hello?", 0),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, DeliveryOutcome::Unknown));
+    }
+
+    #[tokio::test]
+    async fn send_to_a_full_channel_reports_busy_and_never_resumes() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let info = sample_live_info(
+            "spawned-researcher-000f",
+            residuum_bus::session::SessionState::Idle,
+        );
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+        // A resume point existing here would be wrong to use — a busy
+        // channel must error, never fall through to a resume.
+        registry
+            .record_resume_point(
+                &info.address,
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
+            )
+            .await;
+
+        for _ in 0..crate::registry::INTERRUPT_CHANNEL_CAPACITY {
+            assert!(
+                messenger
+                    .send(
+                        info.address.as_ref(),
+                        AgentMessageEvent::new(
+                            SessionAddress::from(MAIN_ADDRESS),
+                            "main",
+                            "filler",
+                            0,
+                        ),
+                    )
+                    .await
+                    .is_ok()
+            );
+        }
+
+        let err = messenger
+            .send(
+                info.address.as_ref(),
+                AgentMessageEvent::new(SessionAddress::from(MAIN_ADDRESS), "main", "one more?", 0),
+            )
+            .await
+            .expect_err("a saturated channel must error rather than silently resume");
+        assert!(matches!(&err, SendError::Busy(addr) if *addr == info.address));
+        assert!(
+            err.to_string().contains("busy"),
+            "error message should be actionable: {err}"
+        );
+
+        bus_barrier(&bus_handle).await;
+        assert!(
+            spawn_sub.drain().is_empty(),
+            "a busy channel must never trigger a duplicate resume spawn"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_to_a_completing_session_returns_immediately_and_resumes_once_it_clears() {
+        // The whole point of the non-blocking redesign: `send` must not
+        // await the completing run's own teardown (which can include a slow
+        // memory-merge LLM call) — it hands the wait off to a detached task
+        // and returns right away.
+        let (messenger, registry, bus_handle) = messenger();
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let info = sample_live_info(
+            "spawned-researcher-000c",
+            residuum_bus::session::SessionState::Completing,
+        );
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+        registry
+            .record_resume_point(
+                &info.address,
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
+            )
+            .await;
+
+        let address = info.address.clone();
+        let run_id = info.run_id.clone();
+
+        let outcome = wait::guarded(
+            "send to return for a completing target, not block on its teardown",
+            messenger.send(
+                address.as_ref(),
+                AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "any updates?",
+                    0,
+                ),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, DeliveryOutcome::Queued(addr) if addr == address));
+
+        // Nothing should be published yet: the deferred task is still
+        // waiting for the entry to clear.
+        assert!(
+            residuum_core::testing::clock::within(
+                std::time::Duration::from_millis(50),
+                spawn_sub.recv()
+            )
+            .await
+            .is_none(),
+            "the resume must wait for the completing run to clear before publishing"
+        );
+
+        registry.remove(&address, &run_id);
+
+        let event = next_event(
+            "the deferred resume to publish once the entry clears",
+            &mut spawn_sub,
+        )
+        .await;
+        assert_eq!(event.address, address);
+        assert_eq!(
+            event
+                .delivered_messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["any updates?"]
+        );
+        assert_eq!(event.prompt, "", "the message is the whole opening input");
+        assert_eq!(event.model, residuum_config::ModelSelector::LARGE);
+    }
+
+    #[tokio::test]
+    async fn deliver_or_resume_deferred_delivers_into_a_run_that_already_won_the_race() {
+        // The exact "loop-defeat" scenario item 3 exists to prevent: two
+        // messages queued to one completing session must never produce two
+        // runs. `wait_until_clear` only tells the caller the address *was*
+        // empty; a completely separate run may already be live there by the
+        // time this decision actually runs (e.g. another deferred message
+        // won the race and got itself resumed first) — this must deliver
+        // into that live run rather than blindly publishing a second resume.
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let publisher = bus_handle.publisher();
+
+        let winner = sample_live_info(
+            "spawned-researcher-race1",
+            residuum_bus::session::SessionState::Idle,
+        );
+        let mut winner_rx = registry.register(winner, CancellationToken::new()).unwrap();
+
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from(MAIN_ADDRESS),
+            "main",
+            "second message",
+            0,
+        );
+        let done = deliver_or_resume_deferred(
+            &registry,
+            &publisher,
+            &store,
+            &SessionAddress::from("spawned-researcher-race1"),
+            &msg,
+        )
+        .await;
+        assert!(done, "delivering into a live run is a final outcome");
+
+        let delivered = winner_rx
+            .try_recv()
+            .expect("the message should be delivered into the run that already won");
+        match delivered {
+            Interrupt::AgentMessage(m) => assert!(m.content.contains("second message")),
+            Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                panic!("expected an agent message delivered into the winning run")
+            }
+        }
+
+        bus_barrier(&bus_handle).await;
+        assert!(
+            spawn_sub.drain().is_empty(),
+            "no resume should ever be published once the address is already live"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_or_resume_deferred_resumes_when_the_address_is_genuinely_free() {
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut spawn_sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let publisher = bus_handle.publisher();
+        let address = SessionAddress::from("spawned-researcher-race2");
+        registry
+            .record_resume_point(
+                &address,
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
+            )
+            .await;
+
+        let msg = AgentMessageEvent::new(
+            SessionAddress::from(MAIN_ADDRESS),
+            "main",
+            "still there?",
+            0,
+        );
+        let done = deliver_or_resume_deferred(&registry, &publisher, &store, &address, &msg).await;
+        assert!(done, "resuming is a final outcome");
+
+        let event = next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
+        assert_eq!(event.address, address);
+        assert_eq!(event.prompt, "", "the message is the whole opening input");
+        assert_eq!(
+            event
+                .delivered_messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![msg.id.as_str()],
+            "a deferred resume hands the new run the message it delivers"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_to_completed_session_resumes_via_spawn_request() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("spawned-researcher-0002");
+        registry
+            .record_resume_point(
+                &address,
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
+            )
+            .await;
+
+        let outcome = messenger
+            .send(
+                address.as_ref(),
+                AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "any updates?",
+                    3,
+                )
+                .with_id("m-resume"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, DeliveryOutcome::Resumed(addr) if addr == address));
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert_eq!(event.address, address);
+        let delivered: Vec<&str> = event
+            .delivered_messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(
+            delivered,
+            vec!["m-resume"],
+            "the resumed run is handed the message, id and all, to report it read"
+        );
+        assert_eq!(event.skill.as_ref().map(AsRef::as_ref), Some("researcher"));
+        assert_eq!(event.prompt, "", "the message is the whole opening input");
+        assert_eq!(
+            event.model,
+            residuum_config::ModelSelector::LARGE,
+            "a resumed run must carry the previous run's model tier, not default to Medium"
+        );
+        assert_eq!(
+            event.spawner,
+            Some(SessionAddress::from(MAIN_ADDRESS)),
+            "a resumed run must keep its original spawner, not lose it"
+        );
+        assert_eq!(
+            event.depth, 1,
+            "a resumed run must keep its original depth, not reset to a fresh depth-1 session"
+        );
+        assert_eq!(
+            event.hop_count, 3,
+            "the resumed run's hop count must be the delivered message's own hop count"
+        );
+        let context = event.context.expect("resume should carry a pointer note");
+        assert!(context.contains("ep-42"));
+        assert!(context.contains("memory_get"));
+    }
+
+    #[tokio::test]
+    async fn send_to_completed_session_without_episode_points_at_run_id() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("spawned-researcher-0003");
+        registry
+            .record_resume_point(
+                &address,
+                ResumePoint {
+                    previous_run_id: "run-quiet".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Agent,
+                    source_label: "agent:researcher".to_string(),
+                    agent_skill: None,
+                    model: residuum_config::ModelSelector::SMALL,
+                    spawner: None,
+                    depth: 1,
+                    conversation_target: None,
+                    recorded_at: chrono::Utc::now(),
+                },
+            )
+            .await;
+
+        messenger
+            .send(
+                address.as_ref(),
+                AgentMessageEvent::new(SessionAddress::from(MAIN_ADDRESS), "main", "hi", 0),
+            )
+            .await
+            .unwrap();
+
+        let event = sub.recv().await.unwrap().unwrap();
+        let context = event.context.unwrap();
+        assert!(context.contains("run-quiet"));
+        assert!(context.contains("produced no episode"));
+    }
+
+    #[tokio::test]
+    async fn resume_with_pending_hands_over_every_drained_agent_message() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("spawned-researcher-0004");
+        let point = sample_resume_point("run-old", residuum_config::ModelSelector::SMALL);
+        registry.record_resume_point(&address, point.clone()).await;
+
+        let messages = vec![
+            PendingInput::Agent(AgentMessageEvent::new(
+                SessionAddress::from(MAIN_ADDRESS),
+                "main",
+                "first",
+                1,
+            )),
+            PendingInput::Agent(AgentMessageEvent::new(
+                SessionAddress::from("spawned-other-0001"),
+                "spawned",
+                "second",
+                5,
+            )),
+        ];
+
+        messenger
+            .resume_with_pending(&address, &point, &messages)
+            .await
+            .unwrap();
+
+        let event = sub.recv().await.unwrap().unwrap();
+        let delivered: Vec<(&str, &str)> = event
+            .delivered_messages
+            .iter()
+            .map(|m| (m.from.as_ref(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            delivered,
+            vec![(MAIN_ADDRESS, "first"), ("spawned-other-0001", "second")],
+            "each message opens the resumed run with its own sender"
+        );
+        assert_eq!(event.prompt, "", "there is no other opening input");
+        assert_eq!(
+            event.hop_count, 5,
+            "the resumed run's hop count must be the highest among the combined messages"
+        );
+    }
+
+    fn sample_inbound(content: &str, buffered: Option<&str>) -> MessageEvent {
+        MessageEvent {
+            id: "conv-1".to_string(),
+            content: content.to_string(),
+            origin: residuum_bus::origin::MessageOrigin {
+                endpoint: "discord".to_string(),
+                sender: Some(residuum_inference::MessageSender {
+                    name: "Jane".to_string(),
+                    id: "discord-jane".to_string(),
+                    interface: "discord".to_string(),
+                    location: Some("#builds".to_string()),
+                }),
+                conversation: Some(residuum_bus::origin::ConversationContext {
+                    id: "chan-1".to_string(),
+                    kind: residuum_bus::origin::ConversationKind::Channel,
+                    is_owner: false,
+                }),
+                agent_sender: None,
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: vec![],
+            attachments: Vec::new(),
+            context: buffered.map(str::to_string),
+        }
+    }
+
+    fn conversation_spawn() -> ConversationSpawn {
+        ConversationSpawn {
+            source_label: "discord:#builds".to_string(),
+            model: residuum_config::ModelSelector::MEDIUM,
+            skill: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_with_pending_combines_agent_and_conversation_messages() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("external-discord-0004");
+        let point = sample_resume_point("run-old", residuum_config::ModelSelector::SMALL);
+        registry.record_resume_point(&address, point.clone()).await;
+
+        let pending = vec![
+            PendingInput::Agent(AgentMessageEvent::new(
+                SessionAddress::from(MAIN_ADDRESS),
+                "main",
+                "checking in",
+                2,
+            )),
+            PendingInput::External(sample_inbound("any updates?", None)),
+        ];
+
+        messenger
+            .resume_with_pending(&address, &point, &pending)
+            .await
+            .unwrap();
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert!(
+            !event.prompt.contains("checking in"),
+            "the agent message opens the run as its own entry: {}",
+            event.prompt
+        );
+        assert!(event.prompt.contains("any updates?"));
+        assert!(event.prompt.contains("Jane"), "{}", event.prompt);
+        assert_eq!(
+            event
+                .delivered_messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["checking in"],
+            "only the agent message is handed over to be reported read"
+        );
+        assert_eq!(
+            event
+                .delivered_chat_messages
+                .iter()
+                .map(|m| (
+                    m.content.as_str(),
+                    m.origin.sender.as_ref().map(|s| s.name.as_str())
+                ))
+                .collect::<Vec<_>>(),
+            vec![("any updates?", Some("Jane"))],
+            "the conversation message is carried as it is, so a resume that loses the race can \
+             deliver it with its own sender"
+        );
+        assert_eq!(
+            event.hop_count, 2,
+            "the agent message's hop count is higher than the conversation message's (always 0)"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_conversation_to_a_live_session_delivers_via_registry() {
+        let (messenger, registry, _bus_handle) = messenger();
+        let info = sample_live_info(
+            "external-discord-0001",
+            residuum_bus::session::SessionState::Idle,
+        );
+        let mut rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let outcome = messenger
+            .deliver_conversation(
+                &info.address,
+                sample_inbound("hi again", None),
+                conversation_spawn(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Live(addr) if addr == info.address));
+
+        let received = rx.try_recv().expect("message should be queued");
+        assert!(matches!(received, Interrupt::UserMessage(_)));
+    }
+
+    #[tokio::test]
+    async fn deliver_conversation_with_no_prior_run_starts_a_fresh_session() {
+        let (messenger, _registry, bus_handle) = messenger();
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("external-discord-brand-new");
+        let outcome = messenger
+            .deliver_conversation(
+                &address,
+                sample_inbound(
+                    "can you check the build?",
+                    Some("[14:00] Sam: build is red"),
+                ),
+                conversation_spawn(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Started(addr) if addr == address));
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert_eq!(event.address, address);
+        assert_eq!(event.prompt, "can you check the build?");
+        assert_eq!(event.context.as_deref(), Some("[14:00] Sam: build is red"));
+        assert_eq!(event.hop_count, 0);
+        assert!(matches!(event.source, EventTrigger::Conversation));
+        assert_eq!(event.spawner, None);
+        assert_eq!(event.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
+        let target = event.conversation.expect("conversation target must be set");
+        assert_eq!(target.endpoint, "discord");
+        assert_eq!(target.conversation_id, "chan-1");
+    }
+
+    #[tokio::test]
+    async fn deliver_conversation_to_a_completed_session_resumes_it() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("external-discord-0002");
+        let mut point = sample_resume_point("run-old", residuum_config::ModelSelector::LARGE);
+        point.conversation_target = Some(residuum_bus::ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "chan-1".to_string(),
+        });
+        registry.record_resume_point(&address, point).await;
+
+        let outcome = messenger
+            .deliver_conversation(
+                &address,
+                sample_inbound("still there?", None),
+                conversation_spawn(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Resumed(addr) if addr == address));
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert_eq!(event.address, address);
+        assert!(event.prompt.contains("still there?"));
+        assert_eq!(
+            event.model,
+            residuum_config::ModelSelector::LARGE,
+            "a resumed conversation session must keep its previous model tier"
+        );
+        let target = event
+            .conversation
+            .expect("conversation target must carry over");
+        assert_eq!(target.conversation_id, "chan-1");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deliver_conversation_to_a_completing_session_queues_and_resumes_once_clear() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let info = sample_live_info(
+            "external-discord-0003",
+            residuum_bus::session::SessionState::Completing,
+        );
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+        registry
+            .record_resume_point(
+                &info.address,
+                sample_resume_point("run-old", residuum_config::ModelSelector::LARGE),
+            )
+            .await;
+
+        let address = info.address.clone();
+        let run_id = info.run_id.clone();
+
+        let outcome = wait::guarded(
+            "deliver_conversation to return for a completing target",
+            messenger.deliver_conversation(
+                &address,
+                sample_inbound("any updates?", None),
+                conversation_spawn(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Queued(addr) if addr == address));
+
+        assert!(
+            residuum_core::testing::clock::within(std::time::Duration::from_millis(50), sub.recv())
+                .await
+                .is_none(),
+            "the resume must wait for the completing run to clear before publishing"
+        );
+
+        registry.remove(&address, &run_id);
+
+        let event = next_event(
+            "the deferred resume to publish once the entry clears",
+            &mut sub,
+        )
+        .await;
+        assert_eq!(event.address, address);
+        assert!(event.prompt.contains("any updates?"));
+    }
+
+    #[tokio::test]
+    async fn publish_failure_is_reported_as_an_error_not_success() {
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger =
+            AgentMessenger::new(Arc::clone(&registry), Publisher::noop(), store, NO_LIMIT);
+
+        let err = messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0005"),
+                    "spawned",
+                    "hello",
+                    0,
+                ),
+            )
+            .await
+            .expect_err("a noop publisher must surface as a delivery failure");
+        assert!(matches!(err, SendError::PublishFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn deliver_to_main_does_not_leak_a_pending_hop_entry_when_publish_fails() {
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = AgentMessenger::new(registry, Publisher::noop(), store, NO_LIMIT);
+
+        messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-leak"),
+                    "spawned",
+                    "hello",
+                    3,
+                ),
+            )
+            .await
+            .expect_err("a noop publisher must surface as a delivery failure");
+
+        assert!(
+            messenger.pending_main_hops.lock().unwrap().is_empty(),
+            "a failed publish must not leave a stale hop-count entry behind for an id \
+             main will never actually receive and look up"
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_count_at_or_above_soft_limit_appends_a_reply_only_if_needed_note() {
+        let (messenger, _registry, bus_handle) =
+            messenger_with_limits(HopLimits { soft: 5, hard: 32 });
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0006"),
+                    "spawned",
+                    "still going",
+                    5,
+                ),
+            )
+            .await
+            .unwrap();
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert!(
+            event.content.contains("Reply only if"),
+            "content should carry the soft-limit note, got: {}",
+            event.content
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_count_below_soft_limit_carries_no_note() {
+        let (messenger, _registry, bus_handle) =
+            messenger_with_limits(HopLimits { soft: 5, hard: 32 });
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0007"),
+                    "spawned",
+                    "just starting",
+                    1,
+                ),
+            )
+            .await
+            .unwrap();
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert!(!event.content.contains("Reply only if"));
+    }
+
+    #[tokio::test]
+    async fn hop_count_at_hard_limit_is_refused_and_logged() {
+        let (messenger, _registry, bus_handle) =
+            messenger_with_limits(HopLimits { soft: 5, hard: 10 });
+        let mut sub: Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+
+        let err = messenger
+            .send(
+                MAIN_ADDRESS,
+                AgentMessageEvent::new(
+                    SessionAddress::from("spawned-researcher-0008"),
+                    "spawned",
+                    "are we there yet",
+                    10,
+                ),
+            )
+            .await
+            .expect_err("hop count at the hard limit must be refused");
+        assert!(matches!(
+            err,
+            SendError::HopLimitExceeded {
+                hop_count: 10,
+                limit: 10
+            }
+        ));
+        assert!(err.to_string().contains("loop"));
+        assert!(
+            err.to_string().contains("hop_hard_limit"),
+            "error should name the config setting that controls the limit, got: {err}"
+        );
+
+        bus_barrier(&bus_handle).await;
+        assert!(
+            sub.drain().is_empty(),
+            "a refused message must never actually reach the target"
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_limit_refusal_records_a_note_in_a_live_sender_and_receiver_transcript() {
+        let registry = Arc::new(SessionRegistry::new());
+        let sender_info = sample_live_info(
+            "spawned-sender-0001",
+            residuum_bus::session::SessionState::Running,
+        );
+        let receiver_info = sample_live_info(
+            "spawned-receiver-0001",
+            residuum_bus::session::SessionState::Idle,
+        );
+        let _sender_rx = registry
+            .register(sender_info.clone(), CancellationToken::new())
+            .unwrap();
+        let _receiver_rx = registry
+            .register(receiver_info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = AgentMessenger::new(
+            Arc::clone(&registry),
+            residuum_bus::Publisher::noop(),
+            Arc::clone(&store),
+            HopLimits { soft: 5, hard: 3 },
+        );
+        let outcome = messenger
+            .send(
+                receiver_info.address.as_ref(),
+                AgentMessageEvent::new(sender_info.address.clone(), "spawned", "loop!", 3),
+            )
+            .await;
+        assert!(
+            matches!(outcome, Err(SendError::HopLimitExceeded { .. })),
+            "the send itself must still report the refusal"
+        );
+
+        let sender_transcript = store
+            .read_incremental_transcript(&sender_info.run_id, sender_info.started_at)
+            .await;
+        assert!(
+            sender_transcript
+                .iter()
+                .any(|m| m.content.contains("Message Loop Limit")),
+            "sender transcript should record the refusal, got {sender_transcript:?}"
+        );
+
+        let receiver_transcript = store
+            .read_incremental_transcript(&receiver_info.run_id, receiver_info.started_at)
+            .await;
+        assert!(
+            receiver_transcript
+                .iter()
+                .any(|m| m.content.contains("Message Loop Limit")),
+            "receiver transcript should record the refusal, got {receiver_transcript:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_limit_refusal_is_an_error_event_on_both_live_sessions() {
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let sender_info = sample_live_info(
+            "spawned-sender-0002",
+            residuum_bus::session::SessionState::Running,
+        );
+        let receiver_info = sample_live_info(
+            "spawned-receiver-0002",
+            residuum_bus::session::SessionState::Idle,
+        );
+        let _sender_rx = registry
+            .register(sender_info.clone(), CancellationToken::new())
+            .unwrap();
+        let _receiver_rx = registry
+            .register(receiver_info.clone(), CancellationToken::new())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let messenger = AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::new(SessionStore::new(dir.path().to_path_buf())),
+            HopLimits { soft: 5, hard: 3 },
+        );
+
+        let outcome = messenger
+            .send(
+                receiver_info.address.as_ref(),
+                AgentMessageEvent::new(sender_info.address.clone(), "spawned", "loop!", 3),
+            )
+            .await;
+        assert!(matches!(outcome, Err(SendError::HopLimitExceeded { .. })));
+
+        let mut tagged = Vec::new();
+        for _ in 0..2 {
+            let event = events.recv().await.unwrap().unwrap();
+            assert!(
+                matches!(&event.kind, SessionEventKind::Error { message, .. } if message.contains("Message Loop Limit")),
+                "a refusal must surface as an error event, got {:?}",
+                event.kind
+            );
+            tagged.push((event.address.to_string(), event.run_id));
+        }
+        assert!(
+            tagged.contains(&(sender_info.address.to_string(), sender_info.run_id.clone())),
+            "the sender's stream must show the refusal, got {tagged:?}"
+        );
+        assert!(
+            tagged.contains(&(
+                receiver_info.address.to_string(),
+                receiver_info.run_id.clone()
+            )),
+            "the receiver's stream must show the refusal, got {tagged:?}"
+        );
+    }
+}

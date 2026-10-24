@@ -1,18 +1,27 @@
-import type { ServerMessage, TurnInProgress } from "../src/lib/generated/protocol";
+import type { QueuedMessage, ServerMessage, TurnInProgress } from "../src/lib/generated/protocol";
 
 /**
  * The main conversation's turn in flight, as the backend's turn journal keeps
  * it, so a page that asks (`resync_turn`) is shown what the turn did before
  * it connected: every frame of the turn so far, each model call's streamed
- * pieces joined, and only the newest usage.
+ * pieces joined, and only the newest usage. It also keeps the people's
+ * messages still waiting for the agent to read them.
  */
 export class MockTurnJournal {
   private turn: TurnInProgress | null = null;
+  private waiting: QueuedMessage[] = [];
 
   constructor(private readonly now: () => string) {}
 
   /** Note a frame the agent's socket broadcast. Frames of no main-agent turn are ignored. */
   record(frame: ServerMessage): void {
+    if (frame.type === "message_queued") {
+      this.waiting.push(structuredClone(frame.message));
+      return;
+    }
+    if (frame.type === "message_withdrawn" || frame.type === "user_message") {
+      this.waiting = this.waiting.filter((message) => message.id !== frame.id);
+    }
     const turnId = turnOf(frame);
     if (turnId === null) return;
     if (frame.type === "turn_ended") {
@@ -45,9 +54,15 @@ export class MockTurnJournal {
     return this.turn === null ? null : { ...structuredClone(this.turn), now: this.now() };
   }
 
-  /** Forget the turn, as a restarted agent would. */
+  /** The messages waiting for the agent to read them, oldest first. */
+  queued(): QueuedMessage[] {
+    return structuredClone(this.waiting);
+  }
+
+  /** Forget the turn and what waited for it, as a restarted agent would. */
   clear(): void {
     this.turn = null;
+    this.waiting = [];
   }
 }
 
@@ -73,6 +88,7 @@ function turnOf(frame: ServerMessage): string | null {
     case "post_turn_activity":
     case "file_attachment":
     case "error":
+    case "message_refused":
     case "pong":
     case "turn_snapshot":
     case "reloading":
@@ -83,22 +99,27 @@ function turnOf(frame: ServerMessage): string | null {
     case "session_completed":
     case "session_turn_started":
     case "session_turn_ended":
+    case "session_user_message":
     case "session_tool_call":
     case "session_tool_result":
     case "session_turn_usage":
     case "session_broadcast_response":
     case "session_response":
     case "session_error":
-    case "session_message_to_main":
     case "session_message_delivered":
     case "session_stop_requested":
     case "session_command_failed":
     case "session_outbound_a2a_task":
+    case "session_start_failed":
+    case "pulse_fire_changed":
     case "artifact_updated":
     case "artifact_removed":
     case "workspace_changed":
     case "workspace_resync":
     case "workspace_watch_unavailable":
+    case "message_queued":
+    case "message_withdrawn":
+    case "queued_message_unavailable":
       // The backend sends these on other channels than the main conversation.
       return null;
   }

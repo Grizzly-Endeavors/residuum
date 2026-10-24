@@ -1,0 +1,4 @@
+rust	rust|hub::runtime::tests::changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_running	hub::runtime::tests::changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_running		1		failed 2 of 2 copies under load only: the test waits on time, so fix the wait
+rust	rust|gateway::startup::memory::tests::deleted_episode_prunes_its_vector_rows_on_resync	gateway::startup::memory::tests::deleted_episode_prunes_its_vector_rows_on_resync		1		failed 1 of 2 copies under load only: the test waits on time, so fix the wait
+rust	rust|hub::host::tests::reload_keeps_running_agents	hub::host::tests::reload_keeps_running_agents		1		failed 2 of 2 copies under load and in the Tests step: an ordinary failure
+rust	rust|residuum-0123456789abcdef	residuum-0123456789abcdef		1		exited 137 without naming a failed test, in 1 of 2 copies under load

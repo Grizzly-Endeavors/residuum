@@ -1,11 +1,12 @@
-import { act, cleanup } from "@testing-library/svelte";
+import { cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "../test/component";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, settle } from "../test/component";
 import { FeedStore } from "../lib/feed.svelte";
 import { router } from "../lib/router.svelte";
 import type { FeedItem } from "../lib/types";
 import FeedItemView from "./FeedItemView.svelte";
+import { waitFor } from "../test/wait";
 
 // A picture from the conversation, opened full size in a modal layer.
 
@@ -35,12 +36,8 @@ const opener = (n: number): HTMLElement =>
 /** The picture the viewer shows. */
 const shown = (): HTMLElement => screen.getByRole("dialog").querySelector("img") as HTMLElement;
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
-});
-
-afterAll(() => {
-  router.stop();
 });
 
 beforeEach(() => {
@@ -51,10 +48,10 @@ beforeEach(() => {
 // let it land before the next test opens anything.
 afterEach(async () => {
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
-  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  await settle();
 });
 
 describe("opening a message's images full size", () => {

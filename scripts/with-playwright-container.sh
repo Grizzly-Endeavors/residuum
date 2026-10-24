@@ -8,7 +8,7 @@
 #   scripts/with-playwright-container.sh npm --prefix web run e2e:visual
 #
 # With E2E_ALL_IN_CONTAINER=1 the config gives that browser to the desktop,
-# phone and preview-* projects too, so the machine needs no Chromium of its
+# phone, dev-* and preview-* projects too, so the machine needs no Chromium of its
 # own. The CI runners are such machines, and run the whole suite this way:
 #
 #   E2E_ALL_IN_CONTAINER=1 scripts/with-playwright-container.sh npm --prefix web run e2e:fast
@@ -19,6 +19,10 @@
 # browser reaches the mock through Playwright's `exposeNetwork` tunnel. The
 # container mounts the installed playwright-core read-only to run its browser
 # server, so both ends are the same version by construction.
+#
+# The port is published on the host's loopback. A command run under
+# scripts/with-loopback-network.sh, which has a network of its own, reaches it
+# through the Unix socket bridge that script sets up.
 #
 # PLAYWRIGHT_IMAGE_REGISTRY pulls the image from a mirror of mcr.microsoft.com
 # instead, such as the CI cluster's registry; the image path under it is the same.

@@ -110,7 +110,8 @@ export const CONTRAST_PAIRS: readonly ContrastPair[] = [
     "non-text",
   ),
   // Control boundaries: at rest, focused and invalid, against the surfaces
-  // controls sit on and the input fill they enclose.
+  // controls sit on and the input fill they enclose. An attachment chip's ring
+  // is control-border at rest and err when its file failed.
   ...pairs(
     ["--color-control-border", "--color-vein", "--color-err"],
     opaque([...CONTAINER_STONES, "--color-input"]),

@@ -4,20 +4,26 @@
 // Loaded over REST (there's no dedicated WebSocket feed for pulse/action
 // definitions) and refetched on signals the socket already carries: a change
 // to HEARTBEAT.yml or scheduled_actions.json, which this store watches through
-// the socket's watch registry, and any `scheduled`-category session frame (a
-// pulse or action fired, or finished) — never on a bare poll timer.
+// the socket's watch registry, any `scheduled`-category session frame (a
+// pulse or action fired, or finished), and a `pulse_fire_changed` frame —
+// never on a bare poll timer. A `pulse_fire_changed` frame also carries the
+// pulse's run in flight and its new outcome, which land at once, before the
+// refetch that brings its next run time.
 
 import { SvelteSet } from "svelte/reactivity";
 import {
+  ApiError,
   fetchScheduledPulses,
   fetchScheduledActions,
   setPulseEnabled as apiSetPulseEnabled,
   cancelScheduledAction as apiCancelScheduledAction,
+  stopPulseFire,
+  stopSession,
 } from "./api";
 import { userErrorMessage } from "./errors";
 import { notifications } from "./notifications.svelte";
 import { requireAgent } from "./paths";
-import type { ActionInfo, PulseInfo, ServerMessage } from "./types";
+import type { ActionInfo, PulseInfo, ScheduledCurrentRun, ServerMessage } from "./types";
 import type { WatchHandler, WatchOwner, WatchOwnerOptions } from "./watch-registry";
 
 /** The files whose changes mean the pulses or the actions changed. */
@@ -51,6 +57,18 @@ function isScheduledSessionFrame(msg: ServerMessage): boolean {
   return msg.type === "session_state_changed" || msg.type === "session_completed";
 }
 
+/** A change to one of a pulse's fires: its run in flight now, and its new outcome. */
+type PulseFireFrame = Extract<ServerMessage, { type: "pulse_fire_changed" }>;
+
+/**
+ * What stopping `run` acts on: its fire, or its session when no fire tracks
+ * it (a scheduled action's run, a pulse session a message resumed). `null`
+ * for a run nothing can stop yet.
+ */
+export function stopTarget(run: ScheduledCurrentRun): string | null {
+  return run.fire_id ?? run.address;
+}
+
 class ScheduledStore {
   pulses = $state<PulseInfo[]>([]);
   actions = $state<ActionInfo[]>([]);
@@ -60,6 +78,11 @@ class ScheduledStore {
   loadError = $state<string | null>(null);
   /** Names/ids currently being toggled or cancelled, to disable their controls. */
   readonly pending = new SvelteSet<string>();
+  /**
+   * The runs asked to stop that are still in flight, by `stopTarget`. A run
+   * leaves once a frame or a load no longer shows it.
+   */
+  readonly stopping = new SvelteSet<string>();
 
   private sources: ScheduledSources | null = null;
   private unsubscribeFrame: (() => void) | null = null;
@@ -69,6 +92,18 @@ class ScheduledStore {
   private generation = 0;
   /** The agent whose pulses and actions these are, `null` before one is bound. */
   private agent: string | null = null;
+  /**
+   * For each load in flight, the fire frames merged since it began. A load's
+   * answer can predate them, so they are merged again on top of it.
+   */
+  private readonly framesDuringLoads = new Set<PulseFireFrame[]>();
+  /** Numbers each load in the order it began. */
+  private loadSeq = 0;
+  /**
+   * The number of the newest load whose answer was applied. Loads answer in
+   * any order, so an older load's answer is dropped once a newer one landed.
+   */
+  private appliedSeq = 0;
 
   /**
    * Start watching for refetch signals. Call once per mounted view; pairs
@@ -80,7 +115,13 @@ class ScheduledStore {
     if (this.sources) return;
     this.sources = sources;
     this.unsubscribeFrame = sources.onFrame((msg) => {
-      if (isScheduledSessionFrame(msg)) void this.load();
+      if (msg.type === "pulse_fire_changed") {
+        this.applyFireFrame(msg);
+        // The fire moved the pulse's next run, which the frame doesn't carry.
+        void this.load();
+      } else if (isScheduledSessionFrame(msg)) {
+        void this.load();
+      }
     });
     this.watchFiles();
   }
@@ -122,12 +163,17 @@ class ScheduledStore {
     this.loading = false;
     this.loadError = null;
     this.pending.clear();
+    this.stopping.clear();
+    this.framesDuringLoads.clear();
     this.watchFiles();
     if (this.watchers > 0) void this.load();
   }
 
   async load(): Promise<void> {
     const generation = this.generation;
+    const seq = ++this.loadSeq;
+    const framesSince: PulseFireFrame[] = [];
+    this.framesDuringLoads.add(framesSince);
     this.loading = true;
     try {
       const agent = requireAgent(this.agent);
@@ -135,16 +181,69 @@ class ScheduledStore {
         fetchScheduledPulses(agent),
         fetchScheduledActions(agent),
       ]);
-      if (generation !== this.generation) return;
-      this.pulses = pulses;
+      if (generation !== this.generation || seq < this.appliedSeq) return;
+      this.appliedSeq = seq;
+      this.pulses = framesSince.reduce(mergeFireFrame, pulses);
       this.actions = actions;
+      this.forgetFinishedStops();
       this.loaded = true;
       this.loadError = null;
     } catch (err) {
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || seq < this.appliedSeq) return;
       this.loadError = userErrorMessage(err, { action: "Couldn't load the schedule." });
     } finally {
+      this.framesDuringLoads.delete(framesSince);
       if (generation === this.generation) this.loading = false;
+    }
+  }
+
+  /** Take a fire frame's run in flight, and its outcome when it has one, onto its pulse. */
+  private applyFireFrame(frame: PulseFireFrame): void {
+    for (const frames of this.framesDuringLoads) frames.push(frame);
+    this.pulses = mergeFireFrame(this.pulses, frame);
+    this.forgetFinishedStops();
+  }
+
+  /** Drop the stops whose run no pulse or action shows in flight any more. */
+  private forgetFinishedStops(): void {
+    if (this.stopping.size === 0) return;
+    const live = [...this.pulses, ...this.actions].map((item) =>
+      item.current_run === null ? null : stopTarget(item.current_run),
+    );
+    for (const target of [...this.stopping]) {
+      if (!live.includes(target)) this.stopping.delete(target);
+    }
+  }
+
+  /**
+   * Stop the run in flight of the pulse or action named `name`: its fire, or
+   * its session when no fire tracks it. The frames that follow show it end;
+   * a failure is a toast.
+   */
+  async stopRun(kind: "pulse" | "action", name: string, run: ScheduledCurrentRun): Promise<void> {
+    const target = stopTarget(run);
+    if (target === null || this.stopping.has(target)) return;
+    const generation = this.generation;
+    this.stopping.add(target);
+    try {
+      const agent = requireAgent(this.agent);
+      if (kind === "pulse" && run.fire_id !== null) {
+        await stopPulseFire(agent, name, run.fire_id);
+      } else {
+        await stopSession(agent, target);
+      }
+    } catch (err) {
+      if (generation !== this.generation) return;
+      this.stopping.delete(target);
+      notifications.surface(
+        "error",
+        userErrorMessage(err, {
+          action: `Couldn't stop ${kind} "${name}".`,
+          notFound: "It had already finished.",
+        }),
+      );
+      // The run is over, so show where it stands now.
+      if (err instanceof ApiError && err.status === 404) void this.load();
     }
   }
 
@@ -194,6 +293,22 @@ class ScheduledStore {
       if (generation === this.generation) this.pending.delete(action.id);
     }
   }
+}
+
+/**
+ * `pulses` with a fire frame merged: its pulse's run in flight is the frame's
+ * (`null` included), and its last outcome changes only when the frame has one.
+ */
+function mergeFireFrame(pulses: PulseInfo[], frame: PulseFireFrame): PulseInfo[] {
+  return pulses.map((pulse) =>
+    pulse.name === frame.pulse
+      ? {
+          ...pulse,
+          current_run: frame.current_run,
+          last_outcome: frame.last_outcome ?? pulse.last_outcome,
+        }
+      : pulse,
+  );
 }
 
 export const scheduled = new ScheduledStore();

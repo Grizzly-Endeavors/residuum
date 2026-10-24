@@ -148,6 +148,9 @@ export function convertHistory(
   const stamped = opts.timestamps ?? opts.mode === "main";
 
   for (const msg of messages) {
+    // Context the agent reads with the message after it, which nobody sent and
+    // the live feed never shows. That message follows what came before it.
+    if (msg.context === true) continue;
     const midTurn = reachedAgentMidTurn(msg, before, opts.mode);
     if (msg.role !== "system" || opts.mode === "session") before = { msg, midTurn };
     const agentMessage = historyAgentMessage(msg, opts.mode);
@@ -183,7 +186,7 @@ export function convertHistory(
             from: agentMessage.from,
             category: agentMessage.category,
             content: agentMessage.body,
-            runId: null,
+            runId: msg.agent_sender?.run_id ?? null,
             ...ofTurn,
             ...sent,
           });
@@ -210,6 +213,10 @@ export function convertHistory(
           id: nextFeedId(),
           kind: "user",
           content: ownerBody ?? content,
+          ...(msg.images === undefined || msg.images.length === 0 ? {} : { images: msg.images }),
+          ...(msg.attachments === undefined || msg.attachments.length === 0
+            ? {}
+            : { attachments: msg.attachments }),
           sender: msg.sender,
           ...ofTurn,
           ...sent,

@@ -12,7 +12,7 @@ import type {
   UpcomingRun,
 } from "../../lib/hub-types";
 import { displayState } from "../../lib/agent-display-state";
-import type { AppLocation } from "../../lib/routes";
+import { INBOX, userInboxRef, type AppLocation } from "../../lib/routes";
 import type { StatusDotState } from "../../lib/ui";
 
 // ── Times ────────────────────────────────────────────────────────────
@@ -241,12 +241,7 @@ export function eventLocation(target: TeamEventTarget): AppLocation {
       };
     case "inbox_item":
       return {
-        place: {
-          kind: "inbox",
-          agent: null,
-          tab: "active",
-          item: { agent: target.agent, id: target.item_id },
-        },
+        place: { ...INBOX, thread: userInboxRef(target.agent, target.item_id) },
         panel: null,
         settings: null,
       };

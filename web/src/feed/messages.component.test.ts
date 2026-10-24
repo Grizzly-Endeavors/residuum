@@ -4,16 +4,24 @@ import { render, screen, settle } from "../test/component";
 import { notifications } from "../lib/notifications.svelte";
 import { FeedStore } from "../lib/feed.svelte";
 import type { FeedItem, UndoOutcome } from "../lib/types";
+import type * as FeedLinks from "./feed-links";
 import FeedItemView from "./FeedItemView.svelte";
 
-const { turnChangedWorkspace, undoTurn, openSessionByAddress } = vi.hoisted(() => ({
-  turnChangedWorkspace: vi.fn<(agent: string | null, turnId: string) => Promise<boolean>>(),
-  undoTurn: vi.fn<(agent: string | null, turnId: string) => Promise<UndoOutcome | null>>(),
-  openSessionByAddress:
-    vi.fn<(agent: string, address: string, runId: string | null) => Promise<void>>(),
-}));
+const { turnChangedWorkspace, undoTurn, openSessionByAddress, openAgentFileInPanel } = vi.hoisted(
+  () => ({
+    turnChangedWorkspace: vi.fn<(agent: string | null, turnId: string) => Promise<boolean>>(),
+    undoTurn: vi.fn<(agent: string | null, turnId: string) => Promise<UndoOutcome | null>>(),
+    openSessionByAddress:
+      vi.fn<(agent: string, address: string, runId: string | null) => Promise<void>>(),
+    openAgentFileInPanel: vi.fn<(agent: string, path: string) => void>(),
+  }),
+);
 vi.mock("../lib/turn-undo", () => ({ turnChangedWorkspace, undoTurn }));
 vi.mock("../lib/session-address", () => ({ openSessionByAddress }));
+vi.mock("./feed-links", async (importOriginal) => ({
+  ...(await importOriginal<typeof FeedLinks>()),
+  openAgentFileInPanel,
+}));
 
 class NoObserver {
   observe(): void {}
@@ -32,6 +40,7 @@ function show(item: FeedItem, agent = "atlas"): void {
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", NoObserver);
+  openAgentFileInPanel.mockReset();
   turnChangedWorkspace.mockReset();
   undoTurn.mockReset();
   openSessionByAddress.mockReset().mockResolvedValue(undefined);
@@ -109,6 +118,75 @@ describe("the user's message", () => {
   });
 });
 
+describe("the files a user's message carried", () => {
+  const notes = {
+    item_id: "item-1",
+    filename: "notes.md",
+    size: 1840,
+    content_type: "text/markdown",
+    path: "inbox/agent/attachments/item-1/notes.md",
+  };
+  const spec = {
+    item_id: "item-2",
+    filename: "spec.pdf",
+    size: 48213,
+    content_type: "application/pdf",
+    path: "inbox/agent/attachments/item-2/spec.pdf",
+  };
+
+  it("shows a chip for each file, a download link for a non-text file", () => {
+    show({ id: 1, kind: "user", content: "", attachments: [notes, spec] }, "atlas");
+    const list = screen.getByRole("list", { name: "Attachments" });
+    expect(list.querySelectorAll("li")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "Download spec.pdf" })).toHaveAttribute(
+      "href",
+      "/api/agents/atlas/inbox/agent/item-2/attachments/0",
+    );
+  });
+
+  it("opens a Markdown file in the context panel beside the agent", async () => {
+    show({ id: 1, kind: "user", content: "", attachments: [notes] }, "atlas");
+    expect(screen.queryByRole("link", { name: "Download notes.md" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Open notes.md" }));
+    expect(openAgentFileInPanel).toHaveBeenCalledWith("atlas", notes.path);
+  });
+
+  it("shows a chip with no link for a file whose item isn't saved yet", () => {
+    show({
+      id: 1,
+      kind: "user",
+      content: "",
+      attachments: [{ ...spec, item_id: "" }],
+    });
+    expect(screen.getByText("spec")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open spec.pdf" })).toBeNull();
+  });
+
+  it("hides the attachment lines and keeps the rest of the text", () => {
+    show({
+      id: 1,
+      kind: "user",
+      content: [
+        "Here is the spec.",
+        `[Attachment: notes.md (1840 bytes) → ${notes.path}]`,
+        `[Attachment: spec.pdf (48213 bytes) → ${spec.path}]`,
+        "Tell me what you think.",
+      ].join("\n"),
+      attachments: [notes, spec],
+    });
+    expect(screen.getByText(/Here is the spec\./)).toBeInTheDocument();
+    expect(screen.getByText(/Tell me what you think\./)).toBeInTheDocument();
+    expect(screen.queryByText(/\[Attachment:/)).toBeNull();
+  });
+
+  it("keeps a download-failed line, which no chip stands for", () => {
+    const failed = "[Attachment: spec.pdf (48213 bytes) — download failed: timeout]";
+    show({ id: 1, kind: "user", content: failed, attachments: [] });
+    expect(screen.getByText(failed)).toBeInTheDocument();
+  });
+});
+
 describe("the agent's reply", () => {
   it("is Markdown in the reading column", () => {
     show({ id: 1, kind: "assistant", content: "Two **changes** touch us." });
@@ -149,6 +227,29 @@ describe("a message from a session or a teammate", () => {
       runId: null,
     });
     expect(screen.getByRole("article", { name: "Teammate: scout" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
+  });
+
+  it("shows a teammate's live message as the card history gives it, without its header", () => {
+    const store = new FeedStore();
+    store.handleMessage({
+      type: "user_message",
+      id: "bg-1",
+      turn_id: "bg-1",
+      content:
+        "[Message from teammate agent:scout, not the user. Your response in this turn is not " +
+        'shown to them; to reply, call message_agent with to="agent:scout".]\n' +
+        "Can you look over the wiki index?",
+      agent_sender: { address: "agent:scout", category: "teammate" },
+      endpoint: "background",
+    });
+    const held = store.feed[0];
+    if (held === undefined) throw new Error("the frame added nothing to the feed");
+    render(FeedItemView, { item: held, agent: "atlas" });
+
+    const card = screen.getByRole("article", { name: "Teammate: scout" });
+    expect(card).toHaveTextContent("Can you look over the wiki index?");
+    expect(card).not.toHaveTextContent("Message from teammate");
     expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
   });
 });

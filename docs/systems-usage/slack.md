@@ -24,6 +24,7 @@ The **owner** is whoever first sends the app a direct message. Their Slack user 
 - While a Slack-started turn runs, the agent's **working reaction** sits on the message that started it — `[slack] working_reaction`, 👀 (`eyes`) by default, so each agent can have its own. It goes on when the turn starts and comes off when the turn ends, whether it ended in a reply, a failure report, or no text at all. A reaction posts nothing into the conversation, so nothing is left looking like a reply if a turn goes wrong. Turns started elsewhere never react. One limit: if the hub stops mid-turn, that turn never ends, and its reaction stays until removed by hand. (Slack's native “Working…” indicator for agents is tied to threads, so v1's flat replies don't use it.)
 - Other proactive output — `send_message` without a conversation, results routed through `idle_channel = "slack"` — goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
 - When a main-agent turn started from Slack fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Slack; they appear in the web UI.
+- Text the agent writes before a tool call ("checking the calendar first") is not posted to Slack by default: each main-agent turn sends only its final reply (a conversation session's turn sends nothing on its own; the session posts with `send_message`), the working reaction shows the turn is still running in the meantime, and the web UI shows that text as it always does. Set `[slack] deliver_intermediate = true` (Settings → Connections → Slack → **Post updates while working**) to post each piece of it as its own message as soon as it's written. The setting covers the main agent's turns, agent-started ones delivered here included, and every conversation session's turns alike. A turn's final reply is the text written after its last tool call, so an answer written before a trailing tool call reaches the chat only with `deliver_intermediate` on; the agent's system prompt tells it to put the full answer in that final reply.
 - Long replies are split into 4,000-character messages, and the agent's markdown is converted to Slack's mrkdwn on the way out (code fences survive the split). Posts are rate-limited to Slack's roughly-one-per-second Web API budget, with backoff on 429s.
 
 ## Conversations the agent can list
@@ -38,6 +39,7 @@ bot_token = "secret:slack_bot_token"   # xoxb-… — posts messages as the bot 
 app_token = "secret:slack_app_token"   # xapp-… — opens the Socket Mode connection
 respond_to_others = false
 working_reaction = "eyes"   # emoji shortcode, colons optional; "" turns it off
+deliver_intermediate = false   # true: also post what the agent writes between tool calls
 ```
 
 Both tokens are required (each also accepts a `"${ENV_VAR}"` reference or a literal); a `[slack]` section with either missing resolves to no Slack adapter, with a warning in the log. Changing any `[slack]` value restarts the Slack adapter on reload — the old socket is drained and closed and a new one opens — and removing the section stops the adapter.
@@ -48,4 +50,4 @@ Both tokens are required (each also accepts a `"${ENV_VAR}"` reference or a lite
 
 ## Code
 
-`src/interfaces/slack/`: `mod.rs` (shared state, reply targets, conversation listing), `handler.rs` (inbound DM events, owner binding, dedup, bus dispatch), `socket.rs` (Socket Mode client — connect, ack-first, reconnect, liveness), `subscriber.rs` (outbound delivery, working reaction), `api.rs` (Web API client — posts and reactions — and the rate-limited sender), `format.rs` (markdown → mrkdwn), `events.rs` (envelope and DM event types). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Discord, Teams, and Telegram.
+`crates/interfaces/src/slack/`: `mod.rs` (shared state, reply targets, conversation listing), `handler.rs` (inbound DM events, owner binding, dedup, bus dispatch), `socket.rs` (Socket Mode client — connect, ack-first, reconnect, liveness), `subscriber.rs` (outbound delivery, working reaction), `api.rs` (Web API client — posts and reactions — and the rate-limited sender), `format.rs` (markdown → mrkdwn), `events.rs` (envelope and DM event types). Owner and conversation state is `crates/interfaces/src/chat_state.rs`, shared with Discord, Teams, and Telegram.

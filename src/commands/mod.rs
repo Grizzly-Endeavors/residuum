@@ -113,10 +113,11 @@ enum Command {
 }
 
 pub async fn run() -> Result<(), FatalError> {
-    // Install rustls CryptoProvider before any TLS usage. Required since
-    // rustls 0.23 when both `ring` and `aws-lc-rs` appear in the dep tree.
-    // Err means a provider was already installed by a dependency — that's
-    // expected and fine; we just continue with whatever was registered first.
+    // Install ring as the rustls process-default CryptoProvider before the first
+    // HTTP client is built. reqwest 0.13 is compiled with `rustls-no-provider` and
+    // panics in `Client::new()` when no default is installed. Err means a provider
+    // was already installed, which leaves ring in place: it is the only one
+    // compiled in.
     drop(rustls::crypto::ring::default_provider().install_default());
 
     // Install a panic hook that logs to tracing and stderr.
@@ -144,44 +145,44 @@ pub async fn run() -> Result<(), FatalError> {
         Command::AgentKeys { ref command } => agent_keys::run_agent_keys_command(command).await,
         Command::A2a { ref command } => a2a::run_a2a_command(command).await,
         Command::Agent { ref command } => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             agent::run_agent_command(command, &gateway_addr).await
         }
         Command::Remote { ref command } => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             remote::run_remote_command(command, &gateway_addr).await
         }
         Command::Logs(ref args) => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             logs::run_logs_command(args).await
         }
         Command::Setup(ref args) => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             setup::run_setup_command(args).await
         }
         Command::Stop(ref args) => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             stop::run_stop_command(args).await
         }
         Command::Update(ref args) => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             update::run_update_command(args).await
         }
         Command::UpdateWatchdog(ref args) => update_watchdog::run_update_watchdog(args),
         Command::Tracing { ref command } => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             tracing_cmd::run_tracing_command(command, &gateway_addr).await
         }
         Command::BugReport(ref args) => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             bug_report::run_bug_report_command(args, &gateway_addr).await
         }
         Command::Feedback(ref args) => {
-            residuum::util::tracing_init::init_default_tracing();
+            residuum::logging::init_default_tracing();
             let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             feedback::run_feedback_command(args, &gateway_addr).await
         }
@@ -196,7 +197,7 @@ pub async fn run() -> Result<(), FatalError> {
                             hub.tracing.log_level
                         })
                 };
-                residuum::util::tracing_init::init_daemon_tracing(args.foreground, log_level);
+                residuum::logging::init_daemon_tracing(args.foreground, log_level);
                 serve::run_serve_foreground(args).await
             } else {
                 serve::run_serve_command(args)

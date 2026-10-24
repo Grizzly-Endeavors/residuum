@@ -3,6 +3,7 @@ import { configCoordinator } from "../../lib/config-coordinator";
 import { toast } from "../../lib/toast.svelte";
 import { jsonResponse, mockFetch } from "../../test/component";
 import { FileBuffer } from "./file-buffer.svelte";
+import { waitFor } from "../../test/wait";
 
 // A fake workspace: files by path with a version that changes on each write,
 // the agent's config.toml behind its raw route, and every request made.
@@ -123,7 +124,7 @@ describe("saving", () => {
     write("notes.md", "theirs\n");
     buffer.text = "mine\n";
     const saving = buffer.save();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(buffer.conflict).not.toBeNull();
     });
     expect(disk.files.get("notes.md")).toBe("theirs\n");
@@ -143,7 +144,7 @@ describe("saving", () => {
     write("notes.md", "theirs\n");
     buffer.text = "mine\n";
     const saving = buffer.save();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(buffer.conflict).not.toBeNull();
     });
     buffer.answer("use-disk");
@@ -157,7 +158,7 @@ describe("saving", () => {
     write("notes.md", "theirs\n");
     buffer.text = "mine\n";
     const saving = buffer.save();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(buffer.conflict).not.toBeNull();
     });
     buffer.answer("cancel");

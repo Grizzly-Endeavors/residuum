@@ -2,7 +2,7 @@ import type { MockHub, MockState } from "./state";
 
 /**
  * Routes that still work on a stopped or failed agent, so the user can repair
- * it: the same list as the backend's repair router (`src/hub/http/dispatch.rs`).
+ * it: the same list as the backend's repair router (`crates/hub/src/http/dispatch.rs`).
  * The path is the agent's own, below `/api/agents/{name}`.
  */
 const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints|teams-setup)(\/|$)/;
@@ -35,7 +35,7 @@ const INBOX_ITEM_ACTIONS = new Set(["read", "archive", "restore"]);
 /**
  * Whether `sub`, the agent's own path below `/api/agents/{name}`, is one of
  * the file-only routes the backend serves for a stopped or failed agent
- * (`is_file_data_route` in `src/hub/http/dispatch.rs`): chat history, usage,
+ * (`is_file_data_route` in `crates/hub/src/http/dispatch.rs`): chat history, usage,
  * the user inbox, and the raw A2A client settings. They are matched whole,
  * because most routes that share a first segment with one need the agent: of
  * `a2a/...` only `a2a/agents/raw` is a file route.
@@ -50,7 +50,8 @@ export function isFileDataRoute(sub: string): boolean {
     case "a2a":
       return rest.length === 2 && rest[0] === "agents" && rest[1] === "raw";
     case "inbox":
-      // The inbox, the archive, `{id}/(read|archive|restore)`, `{id}/attachments/{index}`.
+      // The inbox, the archive, `{id}/(read|archive|restore)`, `{id}/attachments/{index}`,
+      // and the attachments of an item in the agent's own inbox, `agent/{id}/attachments/{index}`.
       switch (rest.length) {
         case 0:
           return true;
@@ -60,6 +61,8 @@ export function isFileDataRoute(sub: string): boolean {
           return INBOX_ITEM_ACTIONS.has(rest[1] ?? "");
         case 3:
           return rest[1] === "attachments";
+        case 4:
+          return rest[0] === "agent" && rest[2] === "attachments";
         default:
           return false;
       }
@@ -91,7 +94,7 @@ export interface ScopeRefusal {
  *   any other route answers `409`. An unknown agent answers `404`, and so
  *   does a route an agent doesn't own (`AGENT_ROUTES`).
  * - Hub routes run against the shared state. Lifecycle, status, hub config,
- *   the team event log, the team overview, cross-agent inbox routes and team files keep their path; any other
+ *   the team event log, the team overview, mail and upload routes and team files keep their path; any other
  *   the hub owns (`HUB_ROUTES`) becomes `/api/...`, and the rest answer `404`.
  * - `/api/team/...` likewise, except team files, and with the workbench the
  *   only other route it owns (`TEAM_ROUTES`).
@@ -137,8 +140,8 @@ export function scopeRequest(
     path.startsWith("/api/hub/agents/") ||
     path === "/api/hub/events" ||
     path === "/api/hub/overview" ||
-    path === "/api/hub/inbox" ||
-    path.startsWith("/api/hub/inbox/")
+    path.startsWith("/api/hub/mail/") ||
+    path === "/api/hub/uploads"
   ) {
     return { state: hub.hubState, path };
   }

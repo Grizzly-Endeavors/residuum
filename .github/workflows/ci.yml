@@ -1,0 +1,357 @@
+name: CI
+
+# The checks for every pull request and every merge queue batch. `main` changes
+# only through the merge queue, and the one status check the ruleset requires
+# (.github/rulesets/main.json) is the `CI gate` job at the bottom.
+#
+# The full suite runs once, in the merge queue, on the batch merged onto main.
+# Merge queue lane: the Rust checks over the whole workspace with the Pebble
+# tests and the crate isolation check, the web checks without the visual
+# comparisons, a build of the source image (docker/Dockerfile) when the batch
+# changes docker/ or .dockerignore, cross-compile.yml when the batch changes
+# dependencies or the toolchain, and actionlint.yml when a workflow changes.
+# `CI gate` fails the batch when any of them failed.
+#
+# Pull request lane: two early warnings that never gate, the Windows clippy over
+# the affected packages when Rust changed, and the visual comparisons, which
+# report in one pull request comment, when the web app changed. `CI gate` passes
+# on a pull request without waiting for them, so `gh pr merge --auto` adds the
+# pull request to the queue as soon as the `changes` job has read the diff.
+#
+# A required check must report on every pull request and every batch, or the
+# pull request waits for it forever. GitHub ignores `paths` filters for
+# merge_group, and a path-filtered workflow that never starts reports nothing,
+# so this workflow has no filters: the `changes` job reads the diff, each check
+# runs only when its files changed, and `CI gate` on a batch passes when every
+# job it needs succeeded or was skipped. The suites under load run nightly on
+# main (nightly-stress.yml), not here.
+on:
+  pull_request:
+  merge_group:
+
+# A new push to a pull request cancels the run for the push before it. A merge
+# queue batch is never cancelled: a cancelled run fails the CI gate and ejects
+# the batch's pull requests from the queue. Each batch has its own ref, so it
+# has its own group.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # What the change touches. A pull request is compared from its merge base
+  # with the base branch, as a `paths` filter would; a merge queue batch from
+  # the tip of main it merges onto.
+  #
+  # The path lists: RUST_PATHS_RE is mirrored in .githooks/pre-push, which
+  # runs the Rust checks before a push; change both together. ci.yml itself
+  # runs both suites, since it decides how both run.
+  changes:
+    name: Changes
+    # The runners are self-hosted, so a fork's code never runs on them. A
+    # fork's pull request is checked when a maintainer adds it to the merge
+    # queue, where the batch runs in this repository.
+    if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: lab-runners-light
+
+    outputs:
+      rust: ${{ steps.decide.outputs.rust }}
+      web: ${{ steps.decide.outputs.web }}
+      deps: ${{ steps.decide.outputs.deps }}
+      docker: ${{ steps.decide.outputs.docker }}
+      workflows: ${{ steps.decide.outputs.workflows }}
+      packages: ${{ steps.decide.outputs.packages }}
+
+    steps:
+      # The merge base needs the history, not the shallow clone.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Decide which checks run
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          RUST_PATHS_RE: '^(src|tests|assets|crates|\.cargo)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^web/app-shell-csp\.txt$|^(scripts/((check|export)-generated-types|affected-packages(-test)?|check-crate-isolation)\.sh|\.github/workflows/(ci|rust-checks|release)\.yml)$'
+          WEB_PATHS_RE: '^web/|^scripts/(with-playwright-container|web-initial-route-size|ci-cpu-report)\.sh$|^\.github/workflows/(ci|web-checks)\.yml$'
+          # The Docker files only: a source change that breaks the image build
+          # breaks the Rust or web checks too.
+          DOCKER_PATHS_RE: '^docker/|^\.dockerignore$'
+          DEPS_PATHS_RE: '^(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml|\.github/workflows/cross-compile\.yml)$|^crates/[^/]+/Cargo\.toml$'
+          WORKFLOWS_PATHS_RE: '^\.github/(workflows/|actionlint\.yaml$)'
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = merge_group ]; then
+            changed="$(git diff --name-only "$QUEUE_BASE_SHA" "$QUEUE_HEAD_SHA")"
+            compared="the merge queue batch, $QUEUE_BASE_SHA..$QUEUE_HEAD_SHA"
+          else
+            changed="$(git diff --name-only "$PR_BASE_SHA...$PR_HEAD_SHA")"
+            compared="the pull request, $PR_BASE_SHA...$PR_HEAD_SHA"
+          fi
+          rust=false web=false docker=false deps=false workflows=false
+          if grep -qE "$RUST_PATHS_RE" <<<"$changed"; then rust=true; fi
+          if grep -vE '^web/.*\.md$' <<<"$changed" | grep -qE "$WEB_PATHS_RE"; then web=true; fi
+          if grep -qE "$DOCKER_PATHS_RE" <<<"$changed"; then docker=true; fi
+          if grep -qE "$DEPS_PATHS_RE" <<<"$changed"; then deps=true; fi
+          if grep -qE "$WORKFLOWS_PATHS_RE" <<<"$changed"; then workflows=true; fi
+
+          # A merge queue batch checks the whole workspace. On a pull request the
+          # Windows clippy checks the packages its change touches and the
+          # packages that depend on them; when that selection cannot be made, the
+          # whole workspace is checked and the step says so. Without a Rust change
+          # no Rust job runs, so there is nothing to select.
+          packages=--workspace
+          if [ "$rust" = true ] && [ "$EVENT" != merge_group ]; then
+            selection_log="$RUNNER_TEMP/affected-packages.log"
+            if selected="$(scripts/affected-packages.sh --affected 2>"$selection_log" <<<"$changed")" && [ -n "$selected" ]; then
+              packages="$selected"
+              {
+                echo '## Packages'
+                echo ''
+                echo 'The Windows clippy checks the packages this pull request touches and the packages that depend on them:'
+                echo ''
+                echo '```'
+                cat "$selection_log"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Could not select the affected packages, so every package is checked: $(tr '\n' ' ' < "$selection_log")"
+              {
+                echo '## Packages'
+                echo ''
+                echo 'Could not select the affected packages, so the Windows clippy checks every package. The selection script'"'"'s output:'
+                echo ''
+                echo '```'
+                cat "$selection_log"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          {
+            echo "rust=$rust"
+            echo "web=$web"
+            echo "docker=$docker"
+            echo "deps=$deps"
+            echo "workflows=$workflows"
+            echo "packages=$packages"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '## Changes'
+            echo ''
+            echo "Compared $compared."
+            echo ''
+            echo '| Checks | Run |'
+            echo '|--------|-----|'
+            echo "| Rust | $rust |"
+            echo "| Web | $web |"
+            echo "| Source image (docker/Dockerfile) | $docker |"
+            echo "| Dependencies (root or member manifests), toolchain or cross-compile.yml (cross-compile in the merge queue) | $deps |"
+            echo "| Workflows (actionlint) | $workflows |"
+            if [ "$EVENT" != merge_group ]; then
+              echo ''
+              echo 'On a pull request a Rust change runs the Windows clippy and a web change the visual comparisons, as early warnings. The merge queue runs every check in the table.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --- Merge queue lane: the jobs CI gate needs -------------------------------
+
+  rust:
+    name: Rust
+    needs: changes
+    if: github.event_name == 'merge_group' && needs.changes.outputs.rust == 'true'
+    uses: ./.github/workflows/rust-checks.yml
+    with:
+      pebble: true
+      packages: --workspace
+      isolation: true
+
+  web:
+    name: Web
+    needs: changes
+    if: github.event_name == 'merge_group' && needs.changes.outputs.web == 'true'
+    uses: ./.github/workflows/web-checks.yml
+    with:
+      visual: false
+
+  # docker/Dockerfile builds the image from source, the way a self-hoster does,
+  # and no other workflow builds it: release.yml builds docker/Dockerfile.release
+  # from the release binaries. The image is built and not pushed. The runner's
+  # Docker daemon is the dind sidecar of the lab-runners-wide pods, which pulls
+  # base images through the cluster registry's mirror.
+  docker:
+    name: Docker Source Image
+    needs: changes
+    if: github.event_name == 'merge_group' && needs.changes.outputs.docker == 'true'
+    runs-on: lab-runners-wide
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build docker/Dockerfile
+        run: |
+          docker version
+          docker build --file docker/Dockerfile --tag residuum-source:ci .
+
+  cross-compile:
+    name: Cross-Platform
+    needs: changes
+    if: github.event_name == 'merge_group' && needs.changes.outputs.deps == 'true'
+    uses: ./.github/workflows/cross-compile.yml
+
+  workflow-lint:
+    name: Workflow Lint
+    needs: changes
+    if: github.event_name == 'merge_group' && needs.changes.outputs.workflows == 'true'
+    uses: ./.github/workflows/actionlint.yml
+
+  # --- Pull request lane: early warnings, not part of CI gate ------------------
+
+  # The release builds Windows from Linux, and code behind cfg(windows) fails
+  # only this clippy, so it also runs on the pull request, where a failure shows
+  # before the pull request is queued. The merge queue runs it again over the
+  # whole workspace, in `rust`.
+  windows-clippy:
+    name: Windows Clippy
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
+    uses: ./.github/workflows/rust-checks.yml
+    with:
+      windows_clippy_only: true
+      packages: ${{ needs.changes.outputs.packages }}
+
+  # The visual comparisons are a design reference for a human to look at on the
+  # pull request (web/CONTRIBUTING.md, "Visual"); the merge queue does not run
+  # them.
+  web-visual:
+    name: Web Visual
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.web == 'true'
+    uses: ./.github/workflows/web-checks.yml
+    with:
+      visual_only: true
+
+  # Posts the result of the visual comparisons (web-checks.yml, `web-visual`)
+  # as one comment on the pull request. The comment carries a hidden marker, so
+  # a later run finds it and edits it instead of adding another. A run whose
+  # shots all match edits an existing comment to say so and posts nothing when
+  # there is none: a pull request that changes no look has no reason to carry a
+  # comment. A run with no status or no body (the visual job broke before it
+  # sorted the shots, or rendering failed) says so in the comment, so an earlier
+  # push's result never stands as the current one. Posting is best effort and
+  # is not part of the CI gate.
+  # A superseded run is cancelled and posts nothing; the run that replaces it
+  # reports.
+  visual-report:
+    name: Visual Report
+    needs: web-visual
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.web-visual.result != 'skipped' }}
+    runs-on: lab-runners-light
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Post the visual report
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STATUS: ${{ needs.web-visual.outputs.visual_status }}
+          BODY: ${{ needs.web-visual.outputs.visual_body }}
+        run: |
+          marker='<!-- residuum-visual-report -->'
+          if [ -z "$STATUS" ] || [ -z "$BODY" ]; then
+            BODY="$marker"$'\n\n'"### Web visual comparisons"$'\n\n'"The visual comparisons produced no result. See [the workflow run]($RUN_URL)."$'\n'
+          fi
+
+          existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\"))) | .id" | head -n 1)
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" -f body="$BODY" > /dev/null
+            echo "Updated comment $existing."
+          elif [ "$STATUS" = "match" ]; then
+            echo 'Every shot matches and there is no comment to update; nothing to post.'
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -f body="$BODY" > /dev/null
+            echo 'Posted a new comment.'
+          fi
+
+  # The one required status check. It runs whatever happened above, including
+  # after a cancellation, so it always reports: a skipped required check counts
+  # as passing, so this job must never be skipped.
+  #
+  # On a merge queue batch it fails when a job it needs failed or was cancelled,
+  # and passes when each one succeeded or was skipped because its files did not
+  # change. On a pull request every job it needs but `changes` is skipped, and it
+  # passes whatever their results, so the ruleset lets the pull request into the
+  # queue, which runs them. It does not need the pull request lane's early
+  # warnings, so it never waits for them.
+  gate:
+    name: CI gate
+    needs: [changes, rust, web, docker, cross-compile, workflow-lint]
+    if: always()
+    runs-on: lab-runners-light
+
+    steps:
+      - name: Pass the pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo '## CI gate'
+            echo ''
+            echo 'A pull request is checked in the merge queue, on the batch merged onto main, so CI gate passes here and the pull request can be queued. The Windows clippy and the visual comparisons on the pull request are early warnings and do not gate it.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo '::notice::CI gate passes on a pull request. The merge queue runs the checks.'
+
+      - name: Check the results
+        if: github.event_name != 'pull_request'
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.rust.result }}
+          WEB: ${{ needs.web.result }}
+          DOCKER: ${{ needs.docker.result }}
+          CROSS: ${{ needs.cross-compile.result }}
+          WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
+        run: |
+          set -euo pipefail
+          failed=""
+          check() {
+            echo "| $1 | $2 |" >> "$GITHUB_STEP_SUMMARY"
+            case "$2" in
+              success | skipped) ;;
+              *) failed+="${failed:+, }$1 ($2)" ;;
+            esac
+          }
+          {
+            echo '## CI gate'
+            echo ''
+            echo '| Job | Result |'
+            echo '|-----|--------|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          check Changes "$CHANGES"
+          check Rust "$RUST"
+          check Web "$WEB"
+          check "Docker Source Image" "$DOCKER"
+          check Cross-Platform "$CROSS"
+          check "Workflow Lint" "$WORKFLOW_LINT"
+
+          # Skipping every check passes, so the one job that decides what runs
+          # must have run.
+          if [ "$CHANGES" = skipped ]; then
+            failed+="${failed:+, }Changes was skipped, so nothing was checked"
+          fi
+
+          if [ -n "$failed" ]; then
+            echo "::error::CI gate failed: $failed. Open the failed job above for its log, or run just ci-failures."
+            exit 1
+          fi
+          echo 'Every check that had to run passed.'

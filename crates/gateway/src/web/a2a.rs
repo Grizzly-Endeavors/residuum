@@ -1,0 +1,905 @@
+//! A2A web API endpoints of the running agent: the client-side "remote
+//! agents" status (`GET /api/agents/{name}/a2a/agents`), the Activity's tasks
+//! sent to remote agents (`GET /api/agents/{name}/a2a/outbound` and the stop
+//! endpoints under it), and the Agent-to-agent settings'
+//! `GET /api/agents/{name}/a2a/status` and `GET /api/agents/{name}/a2a/card`.
+
+use std::path::Path as FsPath;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::Json;
+use serde::Serialize;
+
+use residuum_a2a::{
+    A2aClientHub, AUTH_CHECK_PATH, AgentCardFile, AgentSnapshot, AgentSource, AgentStatus,
+    CardError, CardRuntime, RemoteTaskTracker, build_agent_card,
+};
+use residuum_config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT, WorkspaceLayout};
+use residuum_net::tunnel::TunnelStatus;
+use residuum_protocol::OutboundA2aTaskSummary;
+
+use residuum_hub::web::ConfigApiState;
+
+/// Shared state for `GET /api/agents/{name}/a2a/agents` and the outbound-task endpoints.
+#[derive(Clone)]
+pub(crate) struct A2aAgentsStatusState {
+    pub hub: Arc<A2aClientHub>,
+    pub tracker: Arc<RemoteTaskTracker>,
+}
+
+/// Build the remote-agents status and outbound-task API router.
+pub(crate) fn a2a_agents_status_router(state: A2aAgentsStatusState) -> axum::Router {
+    axum::Router::new()
+        .route("/api/a2a/agents", axum::routing::get(api_a2a_agents_list))
+        .route(
+            "/api/a2a/outbound",
+            axum::routing::get(api_a2a_outbound_list),
+        )
+        .route(
+            "/api/a2a/outbound/{task_id}/stop",
+            axum::routing::post(api_a2a_outbound_stop),
+        )
+        .route(
+            "/api/a2a/outbound/{task_id}/stop-watching",
+            axum::routing::post(api_a2a_outbound_stop_watching),
+        )
+        .with_state(state)
+}
+
+/// Error body for the outbound-task endpoints: a message for the user and a
+/// machine-readable `code` (`not_open`, or `unreachable` when the agent
+/// couldn't be reached to cancel the task — the web UI then offers
+/// stop-watching instead).
+#[derive(Debug, Serialize)]
+pub(crate) struct OutboundTaskError {
+    error: String,
+    code: &'static str,
+}
+
+fn outbound_not_open(task_id: &str) -> (StatusCode, Json<OutboundTaskError>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(OutboundTaskError {
+            error: format!("Task {task_id} isn't running anymore, so there's nothing to stop."),
+            code: "not_open",
+        }),
+    )
+}
+
+/// `GET /api/agents/{name}/a2a/outbound` — every open task sent to a remote agent, newest
+/// first.
+pub(crate) async fn api_a2a_outbound_list(
+    State(state): State<A2aAgentsStatusState>,
+) -> Json<Vec<OutboundA2aTaskSummary>> {
+    let tasks = state.tracker.open_tasks().await;
+    Json(tasks.iter().map(OutboundA2aTaskSummary::from).collect())
+}
+
+/// `POST /api/agents/{name}/a2a/outbound/{task_id}/stop` — ask the remote agent to cancel
+/// the task, the same cancel the agent's own `stop_agent a2a:<name>` makes.
+///
+/// # Errors
+/// `404` (`not_open`) when no open task has that id; `502` (`unreachable`)
+/// when its agent can't be reached to cancel it.
+pub(crate) async fn api_a2a_outbound_stop(
+    State(state): State<A2aAgentsStatusState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<OutboundA2aTaskSummary>, (StatusCode, Json<OutboundTaskError>)> {
+    match state.tracker.stop_task(&task_id).await {
+        Ok(Some(task)) => Ok(Json(OutboundA2aTaskSummary::from(&task))),
+        Ok(None) => Err(outbound_not_open(&task_id)),
+        Err(e) => {
+            tracing::warn!(task_id, error = %e, "user stop of a2a remote task failed");
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(OutboundTaskError {
+                    error: format!(
+                        "Couldn't reach {} to cancel the task. You can stop watching it instead; it \
+                         may keep running on their side.",
+                        e.agent_name()
+                    ),
+                    code: "unreachable",
+                }),
+            ))
+        }
+    }
+}
+
+/// `POST /api/agents/{name}/a2a/outbound/{task_id}/stop-watching` — close the task locally
+/// without reaching its agent, ending the retries and their notices.
+///
+/// # Errors
+/// `404` (`not_open`) when no open task has that id.
+pub(crate) async fn api_a2a_outbound_stop_watching(
+    State(state): State<A2aAgentsStatusState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<OutboundA2aTaskSummary>, (StatusCode, Json<OutboundTaskError>)> {
+    state
+        .tracker
+        .stop_watching(&task_id)
+        .await
+        .map(|task| Json(OutboundA2aTaskSummary::from(&task)))
+        .ok_or_else(|| outbound_not_open(&task_id))
+}
+
+/// One skill on a remote agent's card, in the shape the web UI wants.
+#[derive(Serialize)]
+pub(crate) struct A2aAgentSkillView {
+    id: String,
+    name: String,
+}
+
+/// One remote agent's card, in the shape the web UI wants.
+#[derive(Serialize)]
+pub(crate) struct A2aAgentCardView {
+    name: String,
+    description: String,
+    skills: Vec<A2aAgentSkillView>,
+}
+
+/// One entry in `GET /api/agents/{name}/a2a/agents`. `error` and `card` are always present
+/// (as `null` when absent) rather than omitted, matching the web UI's
+/// `string | null` / `Card | null` contract.
+#[derive(Serialize)]
+pub(crate) struct A2aAgentView {
+    name: String,
+    url: String,
+    source: AgentSource,
+    status: &'static str,
+    error: Option<String>,
+    card: Option<A2aAgentCardView>,
+}
+
+impl From<AgentSnapshot> for A2aAgentView {
+    fn from(snapshot: AgentSnapshot) -> Self {
+        let (status, error, card) = match &snapshot.status {
+            AgentStatus::Pending => ("pending", None, None),
+            AgentStatus::Ok(card) => (
+                "ok",
+                None,
+                Some(A2aAgentCardView {
+                    name: card.name.clone(),
+                    description: card.description.clone(),
+                    skills: card
+                        .skills
+                        .iter()
+                        .map(|s| A2aAgentSkillView {
+                            id: s.id.clone(),
+                            name: s.name.clone(),
+                        })
+                        .collect(),
+                }),
+            ),
+            AgentStatus::Error(e) => ("error", Some(e.clone()), None),
+        };
+        Self {
+            name: snapshot.name,
+            url: snapshot.url,
+            source: snapshot.source,
+            status,
+            error,
+            card,
+        }
+    }
+}
+
+/// `GET /api/agents/{name}/a2a/agents` — every registered remote agent's live status.
+pub(crate) async fn api_a2a_agents_list(
+    State(state): State<A2aAgentsStatusState>,
+) -> Json<Vec<A2aAgentView>> {
+    let agents = state.hub.snapshot().await;
+    Json(agents.into_iter().map(A2aAgentView::from).collect())
+}
+
+/// `[a2a]` settings as currently written in `config.toml`, resolved with the
+/// same defaults config's a2a resolution (`crates/config/src/resolve/a2a.rs`) uses. Parsed
+/// standalone from the raw file — rather than through `Config::load_at`, which
+/// validates the whole config — so an unrelated broken section elsewhere in
+/// `config.toml` never breaks this status check.
+struct A2aStatusConfig {
+    enabled: bool,
+    port: u16,
+    public_url: Option<String>,
+    visibility: A2aVisibility,
+    gateway_bind: String,
+}
+
+impl Default for A2aStatusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: DEFAULT_A2A_PORT,
+            public_url: None,
+            visibility: A2aVisibility::default(),
+            gateway_bind: "127.0.0.1".to_string(),
+        }
+    }
+}
+
+/// Read the A2A settings the status endpoints report: the listener's
+/// `enabled`/`port`/`public_url` and the gateway bind from the hub config,
+/// and this agent's `visibility` from its own config. Reads the raw TOML
+/// rather than a resolved config so a file that fails full validation still
+/// reports what it does say.
+fn read_a2a_status_config(hub_dir: &FsPath, agent_config_dir: &FsPath) -> A2aStatusConfig {
+    let default = A2aStatusConfig::default();
+    let read_table = |path: std::path::PathBuf| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+    };
+    let hub_value = read_table(hub_dir.join("config.toml"));
+    let agent_value = read_table(agent_config_dir.join("config.toml"));
+    let hub_a2a = hub_value
+        .as_ref()
+        .and_then(|v| v.get("a2a"))
+        .and_then(toml::Value::as_table);
+    let gateway_table = hub_value
+        .as_ref()
+        .and_then(|v| v.get("gateway"))
+        .and_then(toml::Value::as_table);
+    let agent_a2a = agent_value
+        .as_ref()
+        .and_then(|v| v.get("a2a"))
+        .and_then(toml::Value::as_table);
+    A2aStatusConfig {
+        enabled: hub_a2a
+            .and_then(|t| t.get("enabled"))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(default.enabled),
+        port: hub_a2a
+            .and_then(|t| t.get("port"))
+            .and_then(toml::Value::as_integer)
+            .and_then(|v| u16::try_from(v).ok())
+            .unwrap_or(default.port),
+        public_url: hub_a2a
+            .and_then(|t| t.get("public_url"))
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string),
+        visibility: match agent_a2a
+            .and_then(|t| t.get("visibility"))
+            .and_then(toml::Value::as_str)
+        {
+            Some("private") => A2aVisibility::Private,
+            _ => A2aVisibility::Public,
+        },
+        gateway_bind: gateway_table
+            .and_then(|t| t.get("bind"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(default.gateway_bind),
+    }
+}
+
+impl A2aStatusConfig {
+    /// The `A2aConfig` shape [`CardRuntime::from_config`] expects, so the
+    /// status/card endpoints compute the base URL exactly the way the running
+    /// listener does.
+    fn as_a2a_config(&self) -> A2aConfig {
+        A2aConfig {
+            enabled: self.enabled,
+            port: self.port,
+            public_url: self.public_url.clone(),
+            visibility: self.visibility,
+        }
+    }
+}
+
+/// Whether something currently answers the A2A listener's health-check path
+/// on loopback. A direct probe rather than reading in-process adapter state,
+/// so this endpoint needs no wiring into the gateway's adapter lifecycle — it
+/// answers the same question an outside caller would get.
+async fn probe_listener_running(port: u16) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(format!("http://127.0.0.1:{port}{AUTH_CHECK_PATH}"))
+        .send()
+        .await
+        .is_ok()
+}
+
+/// Plain-language explanation of a broken workspace agent-card file, for the
+/// Agent-to-agent settings — never the raw `CardError` display, which names internal
+/// error kinds a non-technical user has no use for.
+fn plain_card_error(e: &CardError) -> String {
+    match e {
+        CardError::Read { path, .. } => format!(
+            "Couldn't read the agent card file at {path}. Residuum writes one automatically \
+             on first run, so if it's missing something else may have removed it."
+        ),
+        CardError::Parse { path, message } => {
+            format!("The agent card file at {path} isn't valid JSON: {message}")
+        }
+        CardError::Invalid { path, message } => {
+            format!("The agent card file at {path} has a problem: {message}")
+        }
+    }
+}
+
+/// What [`api_a2a_status`] reports about how far the agent can be reached.
+fn relay_access_note(has_own_address: bool, relay_connected: bool) -> &'static str {
+    match (relay_connected, has_own_address) {
+        (true, true) => {
+            "Reachable through the Residuum relay and at your own address. Your other Residuum installs that joined this one find it; anyone else needs a caller key."
+        }
+        (true, false) => {
+            "Reachable through the Residuum relay. Your other Residuum installs that joined this one find it; anyone else needs a caller key."
+        }
+        (false, true) => {
+            "Reachable locally and at your own address. Connect to the Residuum relay in Settings → All agents → Residuum Cloud to make it reachable through the relay too."
+        }
+        (false, false) => {
+            "Reachable locally. Connect to the Residuum relay in Settings → All agents → Residuum Cloud to make it reachable from other places, or enter your own address in Settings → All agents → Agent-to-agent if you run your own tunnel."
+        }
+    }
+}
+
+/// Response body for `GET /api/agents/{name}/a2a/status`.
+#[derive(Serialize)]
+pub(super) struct A2aStatusResponse {
+    enabled: bool,
+    port: u16,
+    visibility: &'static str,
+    /// The address other agents reach this one at from outside this machine:
+    /// under the user's own `[a2a] public_url` when set, otherwise through
+    /// the relay while the tunnel is connected, otherwise `None`.
+    public_url: Option<String>,
+    /// This agent's address on the local A2A listener.
+    local_url: String,
+    /// Whether other Residuum installs can reach this agent through the relay
+    /// right now: A2A is enabled and the tunnel is connected.
+    relay_access: bool,
+    /// Plain-language statement of how far the agent can be reached.
+    relay_access_note: &'static str,
+    listener_running: bool,
+    card_error: Option<String>,
+}
+
+/// State for the Agent-to-agent settings' status and card endpoints: the agent's
+/// config and the relay tunnel's status.
+#[derive(Clone)]
+pub(crate) struct A2aStatusState {
+    pub config: ConfigApiState,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+}
+
+/// Build the router for the Agent-to-agent settings' status and card endpoints.
+pub(crate) fn a2a_status_router(state: A2aStatusState) -> axum::Router {
+    axum::Router::new()
+        .route("/api/a2a/status", axum::routing::get(api_a2a_status))
+        .route("/api/a2a/card", axum::routing::get(api_a2a_card))
+        .with_state(state)
+}
+
+/// `GET /api/agents/{name}/a2a/status` — whether A2A is on, how other agents can reach it,
+/// and whether the listener or the workspace agent card currently have a
+/// problem.
+///
+/// `public_url` is the agent's address under the configured `[a2a]
+/// public_url` when set, else its instance address (`{instance origin}/a2a/{name}`)
+/// while the tunnel is connected, and `null` otherwise; `local_url` is the
+/// address on the local listener.
+pub(super) async fn api_a2a_status(State(state): State<A2aStatusState>) -> Json<A2aStatusResponse> {
+    let config = &state.config;
+    let cfg = read_a2a_status_config(&config.hub_dir, &config.config_dir);
+    let listener_running = if cfg.enabled {
+        probe_listener_running(cfg.port).await
+    } else {
+        false
+    };
+    let card_path = WorkspaceLayout::new(&config.workspace_dir).agent_card_json();
+    let card_error = AgentCardFile::load(&card_path)
+        .err()
+        .map(|e| plain_card_error(&e));
+
+    let own_url =
+        residuum_a2a::public_url::known_a2a_public_url(&cfg.as_a2a_config(), &config.agent_name);
+    let relay_url = residuum_a2a::public_url::relay_a2a_base(&state.tunnel_status_rx.borrow())
+        .map(|base| residuum_a2a::public_url::relay_agent_url(&base, &config.agent_name));
+    let relay_access = cfg.enabled && relay_url.is_some();
+
+    Json(A2aStatusResponse {
+        enabled: cfg.enabled,
+        port: cfg.port,
+        visibility: cfg.visibility.as_str(),
+        relay_access_note: relay_access_note(own_url.is_some(), relay_access),
+        public_url: own_url.or(relay_url),
+        local_url: format!(
+            "http://{}:{}{}/{}",
+            cfg.gateway_bind,
+            cfg.port,
+            residuum_net::remote_access::A2A_AGENTS_PATH_PREFIX,
+            config.agent_name
+        ),
+        relay_access,
+        listener_running,
+        card_error,
+    })
+}
+
+/// `GET /api/agents/{name}/a2a/card` — the Agent Card as the listener would currently serve
+/// it, or a `503` with a plain-language error if the workspace
+/// `agent-card.json` file is invalid.
+pub(super) async fn api_a2a_card(
+    State(state): State<A2aStatusState>,
+) -> Result<Json<a2a::AgentCard>, (StatusCode, String)> {
+    let config = &state.config;
+    let cfg = read_a2a_status_config(&config.hub_dir, &config.config_dir);
+    let card_path = WorkspaceLayout::new(&config.workspace_dir).agent_card_json();
+    let file = AgentCardFile::load(&card_path)
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, plain_card_error(&e)))?;
+    let relay_base = residuum_a2a::public_url::relay_a2a_base(&state.tunnel_status_rx.borrow());
+    let runtime = CardRuntime::from_config(
+        &cfg.as_a2a_config(),
+        &cfg.gateway_bind,
+        &config.agent_name,
+        relay_base.as_deref(),
+    );
+    Ok(Json(build_agent_card(&file, &runtime)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use residuum_core::testing::ports::reserve_port;
+
+    fn status_state(config: ConfigApiState) -> A2aStatusState {
+        status_state_with(config, TunnelStatus::Disconnected)
+    }
+
+    fn status_state_with(config: ConfigApiState, tunnel: TunnelStatus) -> A2aStatusState {
+        A2aStatusState {
+            config,
+            tunnel_status_rx: tokio::sync::watch::channel(tunnel).1,
+        }
+    }
+
+    fn relay_connected() -> TunnelStatus {
+        TunnelStatus::Connected {
+            user_id: "bear".to_string(),
+            origin: Some("https://bear.agent-residuum.com".to_string()),
+            workbench_origin: None,
+            instance: Some("laptop".to_string()),
+            instance_origin: Some("https://laptop.bear.agent-residuum.com".to_string()),
+        }
+    }
+
+    fn test_state(dir: &std::path::Path) -> ConfigApiState {
+        ConfigApiState {
+            team: None,
+            hub_dir: dir.to_path_buf(),
+            config_dir: dir.to_path_buf(),
+            agent_name: "test-agent".to_string(),
+            workspace_dir: dir.join("workspace"),
+            memory_dir: None,
+            reload_tx: None,
+            scope: residuum_hub::web::WorkspaceScope::Agent,
+            checkpoints: residuum_checkpoints::testing::test_engine(),
+        }
+    }
+
+    // ── Remote agents ────────────────────────────────────────────────
+
+    async fn agents_state(hub: &Arc<A2aClientHub>, dir: &FsPath) -> A2aAgentsStatusState {
+        let bus = residuum_bus::spawn_broker();
+        let messenger = Arc::new(residuum_background::messaging::AgentMessenger::new(
+            Arc::new(residuum_background::registry::SessionRegistry::new()),
+            bus.publisher(),
+            Arc::new(residuum_background::store::SessionStore::new(
+                dir.join("sessions"),
+            )),
+            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+        ));
+        let tracker = RemoteTaskTracker::load(
+            dir.join("outbound.json"),
+            Arc::clone(hub),
+            messenger,
+            dir.join("inbox"),
+            chrono_tz::UTC,
+        )
+        .await;
+        A2aAgentsStatusState {
+            hub: Arc::clone(hub),
+            tracker,
+        }
+    }
+
+    async fn unreachable_laptop_with_task(dir: &FsPath) -> A2aAgentsStatusState {
+        let hub = residuum_a2a::A2aClientHub::new_shared();
+        hub.register_external(
+            "laptop".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            std::collections::HashMap::new(),
+            residuum_a2a::AgentSource::Config,
+        )
+        .await;
+        let state = agents_state(&hub, dir).await;
+        state
+            .tracker
+            .track(
+                &residuum_bus::SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        state
+    }
+
+    #[tokio::test]
+    async fn outbound_list_shows_open_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = unreachable_laptop_with_task(dir.path()).await;
+        let Json(tasks) = api_a2a_outbound_list(State(state)).await;
+        let [only] = tasks.as_slice() else {
+            panic!("expected exactly one task");
+        };
+        assert_eq!(only.task_id, "t1");
+        assert_eq!(only.agent, "laptop");
+        assert_eq!(only.state, "working");
+        assert!(only.open);
+    }
+
+    #[tokio::test]
+    async fn outbound_stop_reports_unreachable_then_stop_watching_closes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = unreachable_laptop_with_task(dir.path()).await;
+
+        let Err((status, Json(err))) =
+            api_a2a_outbound_stop(State(state.clone()), Path("t1".to_string())).await
+        else {
+            panic!("an unreachable agent can't be asked to cancel");
+        };
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(err.code, "unreachable");
+        assert!(err.error.contains("laptop"), "got: {}", err.error);
+
+        let Json(closed) =
+            api_a2a_outbound_stop_watching(State(state.clone()), Path("t1".to_string()))
+                .await
+                .unwrap();
+        assert!(!closed.open);
+        let Json(tasks) = api_a2a_outbound_list(State(state.clone())).await;
+        assert!(tasks.is_empty());
+
+        let Err((gone_status, Json(gone_err))) =
+            api_a2a_outbound_stop_watching(State(state), Path("t1".to_string())).await
+        else {
+            panic!("a closed task has nothing to stop");
+        };
+        assert_eq!(gone_status, StatusCode::NOT_FOUND);
+        assert_eq!(gone_err.code, "not_open");
+    }
+
+    #[tokio::test]
+    async fn outbound_stop_unknown_task_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = unreachable_laptop_with_task(dir.path()).await;
+        let Err((status, _)) = api_a2a_outbound_stop(State(state), Path("nope".to_string())).await
+        else {
+            panic!("an unknown task can't be stopped");
+        };
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn agents_list_reports_status_and_card() {
+        let hub = residuum_a2a::A2aClientHub::new_shared();
+        hub.register_external(
+            "laptop".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            std::collections::HashMap::new(),
+            residuum_a2a::AgentSource::Config,
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let Json(agents) = api_a2a_agents_list(State(agents_state(&hub, dir.path()).await)).await;
+        let [only] = agents.as_slice() else {
+            panic!("expected exactly one agent");
+        };
+        assert_eq!(only.name, "laptop");
+        assert_eq!(
+            only.status, "error",
+            "an unreachable agent reports error status"
+        );
+        assert!(only.error.is_some());
+        assert!(only.card.is_none());
+    }
+
+    fn write_config(dir: &std::path::Path, toml: &str) {
+        std::fs::write(dir.join("config.toml"), toml).unwrap();
+    }
+
+    fn write_card(state: &ConfigApiState, json: &str) {
+        let path = WorkspaceLayout::new(&state.workspace_dir).agent_card_json();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
+
+    const VALID_CARD: &str =
+        r#"{"name": "Test Agent", "description": "does things", "skills": []}"#;
+
+    #[tokio::test]
+    async fn status_defaults_when_config_and_card_are_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = api_a2a_status(State(status_state(test_state(dir.path()))))
+            .await
+            .0;
+        assert!(status.enabled, "a2a is enabled by default");
+        assert_eq!(status.port, DEFAULT_A2A_PORT);
+        assert_eq!(status.visibility, "public");
+        assert_eq!(status.public_url, None);
+        // `listener_running` is left unasserted: it probes the real default
+        // port, which any Residuum running on this machine may hold.
+        assert!(
+            status.card_error.is_some(),
+            "a missing agent card file should surface as an error, not silently succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_no_listener_when_nothing_answers_the_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(dir.path(), &format!("[a2a]\nport = {port}\n"));
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let status = api_a2a_status(State(status_state(state))).await.0;
+        assert!(status.enabled);
+        assert!(
+            !status.listener_running,
+            "nothing listens on a freshly freed port"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reads_public_url_and_private_visibility_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(
+            dir.path(),
+            &format!(
+                "[a2a]\nenabled = true\nport = {port}\nvisibility = \"private\"\n\
+                 public_url = \"https://example.com/a2a/laptop\"\n"
+            ),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let status = api_a2a_status(State(status_state(state))).await.0;
+        assert_eq!(status.port, port);
+        assert_eq!(status.visibility, "private");
+        assert_eq!(
+            status.public_url.as_deref(),
+            Some("https://example.com/a2a/laptop/agents/test-agent")
+        );
+        assert!(status.card_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn status_reports_listener_running_when_something_answers_auth_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let router = axum::Router::new().route(
+            AUTH_CHECK_PATH,
+            axum::routing::get(|| async { StatusCode::NO_CONTENT }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        residuum_core::util::spawn_in_span(async move { axum::serve(listener, router).await });
+
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nenabled = true\nport = {port}\n"),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let status = api_a2a_status(State(status_state(state))).await.0;
+        assert!(status.listener_running);
+    }
+
+    #[tokio::test]
+    async fn status_never_probes_a_disabled_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        // Nothing listens on `port`: if the handler probed it anyway despite
+        // `enabled = false`, it would (correctly) report `false` too, so this
+        // only exercises the disabled branch's own reported fields.
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nenabled = false\nport = {port}\n"),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let status = api_a2a_status(State(status_state(state))).await.0;
+        assert!(!status.enabled);
+        assert!(!status.listener_running);
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_returns_the_served_card_when_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nenabled = true\nport = {port}\n"),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let card = api_a2a_card(State(status_state(state))).await.unwrap().0;
+        assert_eq!(card.name, "Test Agent");
+        assert!(
+            card.skills.is_empty(),
+            "expected {:?} to be empty",
+            card.skills
+        );
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_is_503_with_a_plain_message_when_the_card_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        write_card(&state, "not json");
+
+        let Err((status, message)) = api_a2a_card(State(status_state(state))).await else {
+            panic!("an invalid card file should be rejected");
+        };
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            message.contains("agent card"),
+            "error should name the problem in plain language: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_is_503_when_the_card_file_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let Err((status, _)) = api_a2a_card(State(status_state(test_state(dir.path())))).await
+        else {
+            panic!("a missing card file should be rejected");
+        };
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn status_puts_the_agent_under_its_own_path_without_a_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nport = {port}\npublic_url = \"https://example.com/a2a/\"\n"),
+        );
+        let state = test_state(dir.path());
+        let status = api_a2a_status(State(status_state(state))).await.0;
+        assert_eq!(
+            status.public_url.as_deref(),
+            Some("https://example.com/a2a/agents/test-agent")
+        );
+        assert_eq!(
+            status.local_url,
+            format!("http://127.0.0.1:{port}/agents/test-agent")
+        );
+        assert!(!status.relay_access);
+        assert!(
+            status.relay_access_note.contains("own address")
+                && status
+                    .relay_access_note
+                    .contains("Connect to the Residuum relay"),
+            "{}",
+            status.relay_access_note
+        );
+    }
+
+    #[tokio::test]
+    async fn status_with_nothing_configured_or_connected_only_offers_the_local_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(dir.path(), &format!("[a2a]\nport = {port}\n"));
+        let status = api_a2a_status(State(status_state(test_state(dir.path()))))
+            .await
+            .0;
+        assert_eq!(status.public_url, None);
+        assert!(!status.relay_access);
+        assert!(
+            status.relay_access_note.starts_with("Reachable locally."),
+            "{}",
+            status.relay_access_note
+        );
+    }
+
+    #[tokio::test]
+    async fn status_uses_the_relay_address_while_the_tunnel_is_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(dir.path(), &format!("[a2a]\nport = {port}\n"));
+        let state = status_state_with(test_state(dir.path()), relay_connected());
+        let status = api_a2a_status(State(state)).await.0;
+        assert_eq!(
+            status.public_url.as_deref(),
+            Some("https://laptop.bear.agent-residuum.com/a2a/test-agent")
+        );
+        assert!(status.relay_access);
+        assert!(
+            status
+                .relay_access_note
+                .starts_with("Reachable through the Residuum relay"),
+            "{}",
+            status.relay_access_note
+        );
+    }
+
+    #[tokio::test]
+    async fn status_prefers_the_configured_public_url_over_the_relay_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nport = {port}\npublic_url = \"https://example.com\"\n"),
+        );
+        let state = status_state_with(test_state(dir.path()), relay_connected());
+        let status = api_a2a_status(State(state)).await.0;
+        assert_eq!(
+            status.public_url.as_deref(),
+            Some("https://example.com/agents/test-agent")
+        );
+        assert!(status.relay_access, "the relay still reaches the agent");
+    }
+
+    #[tokio::test]
+    async fn status_reports_no_relay_access_when_a2a_is_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nenabled = false\nport = {port}\n"),
+        );
+        let state = status_state_with(test_state(dir.path()), relay_connected());
+        let status = api_a2a_status(State(state)).await.0;
+        assert!(!status.relay_access);
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_advertises_the_relay_address_while_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let reservation = reserve_port();
+        let port = reservation.port();
+        write_config(dir.path(), &format!("[a2a]\nport = {port}\n"));
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+        let card = api_a2a_card(State(status_state_with(state, relay_connected())))
+            .await
+            .unwrap()
+            .0;
+        let first = card.supported_interfaces.first().unwrap();
+        assert_eq!(
+            first.url,
+            "https://laptop.bear.agent-residuum.com/a2a/test-agent"
+        );
+    }
+}

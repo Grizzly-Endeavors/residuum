@@ -1,8 +1,13 @@
+import type { Server } from "node:net";
 import type { PreviewServer, ViteDevServer } from "vite";
 import { apiRoutes } from "./api-routes";
+import { appShellPolicy } from "./app-shell-policy";
 import { startArtifactsListener } from "./artifacts-listener";
+import { createCloudCallbackHandler } from "./cloud";
 import { createMockEnv } from "./env";
 import { createHub } from "./hub";
+import { keepIdleConnectionsOpen } from "./http";
+import { mockListeningLine } from "./listening";
 import { apiMiddleware, createApiHandler, firstToHandle } from "./middleware";
 import { createRebuiltWorkerHandler } from "./rebuilt-worker";
 import { seedAgents } from "./scenario";
@@ -44,11 +49,35 @@ export function readMockOptions(env: NodeJS.ProcessEnv = process.env): MockOptio
   };
 }
 
+/**
+ * The port `server` listens on, once it does: at once when it already listens,
+ * `null` when it has no port (a pipe), or, with `failsOnError`, when it fails
+ * to listen.
+ */
+function portOnceListening(server: Server, failsOnError: boolean): Promise<number | null> {
+  const port = (): number | null => {
+    const address = server.address();
+    return typeof address === "object" && address !== null ? address.port : null;
+  };
+  if (server.listening) return Promise.resolve(port());
+  return new Promise((resolve) => {
+    server.once("listening", () => {
+      resolve(port());
+    });
+    if (failsOnError) {
+      server.once("error", () => {
+        resolve(null);
+      });
+    }
+  });
+}
+
 /** What the mock needs of a Vite server: the dev server and the preview server both have it. */
 export type MockHost = Pick<ViteDevServer | PreviewServer, "httpServer" | "middlewares">;
 
 /**
  * Start the mock on a Vite server: the hub with its agents and sockets, the
+ * hub's Content-Security-Policy on the app's HTML (`app-shell-policy.ts`), the
  * API behind the server's middleware, and the artifacts listener, which closes
  * with the server and forwards its own `/api` to the same API and sockets. The
  * dev server and the preview server both serve the whole mock this way.
@@ -62,15 +91,23 @@ export function startMock(
   log: (message: string) => void,
   distDir?: string,
 ): MockHub {
+  // An HTTP/2 server, which Vite starts for HTTPS, has no idle timeout to lift; the mock serves plain HTTP.
+  if (host.httpServer !== null && "keepAliveTimeout" in host.httpServer) {
+    keepIdleConnectionsOpen(host.httpServer);
+  }
   const hub = createHub(host.httpServer, {
     env: createMockEnv(options),
     // With no agents the web UI shows the setup wizard, and finishing it creates the first one.
     seed: options.setup ? undefined : seedAgents,
   });
+  host.middlewares.use(appShellPolicy);
   const api = createApiHandler({ hub, routes: apiRoutes });
+  const appOrigin = firstToHandle(api, createCloudCallbackHandler(hub));
   host.middlewares.use(
     apiMiddleware(
-      distDir === undefined ? api : firstToHandle(api, createRebuiltWorkerHandler(hub, distDir)),
+      distDir === undefined
+        ? appOrigin
+        : firstToHandle(appOrigin, createRebuiltWorkerHandler(hub, distDir)),
     ),
   );
   const listener = startArtifactsListener(
@@ -83,6 +120,15 @@ export function startMock(
     listener.close();
     listener.closeAllConnections();
   });
+  if (host.httpServer !== null) {
+    // Only `listening` counts for the host: Vite moves on to the next port when one is taken, and each try fails with an `error` first.
+    void Promise.all([
+      portOnceListening(host.httpServer, false),
+      portOnceListening(listener, true),
+    ]).then(([port, artifactsPort]) => {
+      if (port !== null) log(mockListeningLine(port, artifactsPort));
+    });
+  }
 
   log("");
   log("  [mock] API mock server active");

@@ -18,6 +18,7 @@ import {
 import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import { snapshot } from "../../test/hub-frames";
 import SettingsModal from "../SettingsModal.svelte";
+import { waitFor } from "../../test/wait";
 
 let agent = "";
 let server: FakeAgentConfig;
@@ -62,7 +63,7 @@ async function open(
   render(SettingsModal);
   await router.openSettings({ scope: agent, section: "a2a" });
   await settle();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(screen.getByRole("heading", { name: "Agent-to-agent" })).toBeTruthy();
   });
 }
@@ -125,10 +126,10 @@ describe("the Agent-to-agent section", () => {
   it("applies visibility at once through the hub, with no save bar", async () => {
     await open("running");
     await fireEvent.click(screen.getByRole("radio", { name: "Public" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(requested()).toContain(`PATCH /api/hub/agents/${agent}`);
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect([...toast.toasts.values()].map((shown) => shown.message)).toContain(
         `${agent} is public: anyone with its address can see what it does.`,
       );
@@ -144,12 +145,12 @@ describe("the Agent-to-agent section", () => {
     await open("running");
     await fireEvent.click(screen.getByRole("radio", { name: "Public" }));
     expect(screen.getByRole("radio", { name: "Public" })).toHaveAttribute("aria-checked", "true");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(notifications.history.map((shown) => shown.message)).toContainEqual(
         expect.stringContaining(`Couldn't change the A2A visibility of ${agent}.`),
       );
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("radio", { name: "Private" })).toHaveAttribute(
         "aria-checked",
         "true",
@@ -160,17 +161,17 @@ describe("the Agent-to-agent section", () => {
 
   it("shows a running agent's status, address, reachability and card, and the install's listener read-only", async () => {
     await open("running");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText(`http://127.0.0.1:7702/agents/${agent}`)).toBeTruthy();
     });
     expect(screen.getByText(/Nothing is answering on port 7702 right now/)).toBeTruthy();
     expect(screen.getByText("agent-card.json has no name")).toBeTruthy();
     expect(screen.getByText(/listener is off, so nothing outside it can reach/)).toBeTruthy();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText("Can't reach it")).toBeTruthy();
     });
     expect(screen.getByText("connection refused")).toBeTruthy();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText("Desk helper")).toBeTruthy();
     });
   });
@@ -180,12 +181,12 @@ describe("the Agent-to-agent section", () => {
     for (const subject of ["its status and address", "its card", "whether they can be reached"]) {
       expect(screen.getByText(`Start ${agent} to see ${subject}.`)).toBeTruthy();
     }
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText("https://desk.example/a2a")).toBeTruthy();
     });
 
     await fireEvent.click(screen.getByRole("button", { name: "Edit a2a.json" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByLabelText("Contents of a2a.json")).toHaveValue(a2aJson);
     });
     const edited = JSON.stringify({ agents: { laptop: { url: "https://laptop.example/a2a" } } });
@@ -193,7 +194,7 @@ describe("the Agent-to-agent section", () => {
       target: { value: edited },
     });
     await fireEvent.submit(screen.getByRole("form", { name: "Edit a2a.json" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText("https://laptop.example/a2a")).toBeTruthy();
     });
     expect(a2aJson).toBe(edited);

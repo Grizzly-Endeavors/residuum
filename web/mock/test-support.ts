@@ -8,14 +8,24 @@ import { HUB_STATE_NAME } from "./constants";
 import { createMockEnv, type EnvOptions, type MockEnv } from "./env";
 import { createHub, mockListing } from "./hub";
 import { json } from "./http";
-import { createApiHandler } from "./middleware";
+import { createCloudCallbackHandler } from "./cloud";
+import { createApiHandler, firstToHandle } from "./middleware";
 import { dispatchRoute, type Route } from "./routes";
 import { seedAgents } from "./scenario";
 import { frameText } from "./sockets";
 import { createOverview } from "./overview";
 import { createState, type MockAgent, type MockHub, type MockState } from "./state";
 import { createTeamEvents } from "./team-events";
-import { sleep } from "./util";
+
+/**
+ * Run every timer the mock has set that falls due within `ms` of simulated
+ * time, in manual time, so a test sees what the mock does over a span without
+ * waiting for it. The mock stays in manual time for the rest of the test.
+ */
+export async function advanceMockTime(env: MockEnv, ms: number): Promise<void> {
+  if (env.timeMode() !== "manual") env.setTimeMode("manual");
+  await env.advance(ms);
+}
 
 /** A hub with no sockets: agents are plain records, and hub frames go nowhere. */
 export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
@@ -40,6 +50,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
         unread: 0,
         state: createState(name, (options.runState ?? "running") === "running", env),
         connectedClients: () => 0,
+        watchedPrefixes: () => [],
         receiveMessage: () => undefined,
         dispose: () => undefined,
       };
@@ -245,9 +256,9 @@ export class TestSocket {
   }
 
   /**
-   * Wait until the server has handled everything this agent socket sent so
-   * far, which a `ping` answered by a `pong` shows, and return the frames that
-   * arrived since the last call. The hub socket doesn't answer a `ping`.
+   * Wait until the server has handled everything this socket sent so far, which
+   * a `ping` answered by a `pong` shows, and return the frames that arrived
+   * since the last call.
    */
   async settled(): Promise<Frame[]> {
     const start = this.cursor;
@@ -256,12 +267,21 @@ export class TestSocket {
     return this.frames.slice(start, this.cursor);
   }
 
-  /** The frames that arrive in the next `ms` milliseconds, for showing that nothing more comes. */
-  async quietFrames(ms = 100): Promise<Frame[]> {
+  /**
+   * The frames the server sends from now until it has handled everything sent
+   * so far (and `during`, when given, has finished), without the `pong` that
+   * shows it: what a test reads to show that nothing more comes. `during`
+   * moves mock time (`advanceMockTime`) so that a timer the mock set gets to
+   * run first.
+   */
+  async quietFrames(during?: () => Promise<void>): Promise<Frame[]> {
     const start = this.frames.length;
-    await sleep(ms);
-    this.cursor = this.frames.length;
-    return this.frames.slice(start);
+    await during?.();
+    // Start the barrier's search at this call, so a `pong` from an earlier ping can't answer it.
+    this.cursor = start;
+    this.send({ type: "ping" });
+    await this.nextOfType("pong");
+    return this.frames.slice(start, this.cursor).filter((frame) => frame.type !== "pong");
   }
 
   close(): Promise<void> {
@@ -298,7 +318,10 @@ export async function startMockServer(options: MockServerOptions = {}): Promise<
     env: createMockEnv(options),
     seed: (options.seed ?? true) ? seedAgents : undefined,
   });
-  const handle = createApiHandler({ hub, routes: options.routes ?? apiRoutes });
+  const handle = firstToHandle(
+    createApiHandler({ hub, routes: options.routes ?? apiRoutes }),
+    createCloudCallbackHandler(hub),
+  );
   server.on("request", (req, res) => {
     void handle(req, res).then((handled) => {
       if (!handled) {

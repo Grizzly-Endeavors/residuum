@@ -12,6 +12,7 @@ import {
 } from "./config-coordinator";
 import { applyPatch } from "../test/apply-patch";
 import type { RestoreOutcome, UndoOutcome } from "./types";
+import { waitFor } from "../test/wait";
 
 // ── A fake server ─────────────────────────────────────────────────────
 
@@ -211,7 +212,7 @@ describe("serializing writes", () => {
       edit: { patch: { b: 3 } },
       choose,
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(choose).toHaveBeenCalledTimes(1);
     });
 

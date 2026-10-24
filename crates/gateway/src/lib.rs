@@ -1,0 +1,25 @@
+//! WebSocket gateway for multi-client access to the agent.
+
+mod actions;
+mod chat_adapters;
+pub(crate) mod event_loop;
+mod idle;
+mod launcher;
+mod memory;
+pub(crate) mod post_turn;
+pub mod pulse_fires;
+pub(crate) mod queued_messages;
+mod reload;
+pub(crate) mod sessions;
+pub(crate) mod startup;
+pub mod turn_journal;
+pub(crate) mod types;
+pub mod web;
+pub mod websocket;
+mod ws;
+
+pub use launcher::GatewayLauncher;
+
+#[cfg(test)]
+#[path = "../../core/src/testing/crypto.rs"]
+mod crypto;

@@ -18,12 +18,36 @@ const desktop: InstanceInfo = {
   active: false,
   connected: false,
 };
+const RELAY = "https://agent-residuum.com";
+const DASHBOARD = "https://agent-residuum.com/dashboard";
 
 let instances: InstanceInfo[];
+let relayOrigin: string | null;
 let calls: string[];
+let stopRecordingLinkClicks: () => void = () => {};
 const reload = vi.fn();
 
-function statusWith(list: InstanceInfo[]): unknown {
+// jsdom can't open a new tab, so a link's click is recorded and its navigation stopped.
+// The click still reaches the link's own handler, which runs before this listener.
+function recordLinkClicks(): string[] {
+  const clicks: string[] = [];
+  const controller = new AbortController();
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (!(event.target instanceof HTMLAnchorElement)) return;
+      clicks.push(event.target.href);
+      event.preventDefault();
+    },
+    { signal: controller.signal },
+  );
+  stopRecordingLinkClicks = () => {
+    controller.abort();
+  };
+  return clicks;
+}
+
+function statusWith(list: InstanceInfo[], origin: string | null = RELAY): unknown {
   return {
     state: "ready",
     detail: null,
@@ -39,6 +63,7 @@ function statusWith(list: InstanceInfo[]): unknown {
     join: null,
     pending_joins: [],
     pending_reset: null,
+    relay_origin: origin,
   };
 }
 
@@ -54,17 +79,22 @@ async function open(): Promise<ReturnType<typeof userEvent.setup>> {
 beforeEach(() => {
   vi.useFakeTimers();
   instances = [laptop, desktop];
+  relayOrigin = RELAY;
   calls = [];
   reload.mockReset();
   vi.stubGlobal("location", { reload });
   mockFetch((url, init) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
-    if (url === "/api/hub/remote-access/status") return jsonResponse(statusWith(instances));
+    if (url === "/api/hub/remote-access/status") {
+      return jsonResponse(statusWith(instances, relayOrigin));
+    }
     return new Response(null, { status: 204 });
   });
 });
 
 afterEach(() => {
+  stopRecordingLinkClicks();
+  stopRecordingLinkClicks = () => {};
   vi.useRealTimers();
   vi.unstubAllGlobals();
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
@@ -147,6 +177,76 @@ describe("InstanceSwitcher", () => {
     await user.click(screen.getByRole("button", { name: /Instance:/ }));
     expect(screen.queryByText("Traversal")).not.toBeInTheDocument();
     expect(screen.queryByText("Injected")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem")).toHaveLength(2);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+  });
+
+  it("ends with a link to the account dashboard on the relay, in a new tab", async () => {
+    const user = await open();
+    await user.click(screen.getByRole("button", { name: /Instance:/ }));
+    const items = screen.getAllByRole("menuitem");
+    expect(items.at(-1)).toBe(screen.getByRole("menuitem", { name: "Manage instances…" }));
+    const link = screen.getByRole("menuitem", { name: "Manage instances…" });
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveAttribute("href", "https://agent-residuum.com/dashboard");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("reaches the dashboard link with the arrow keys", async () => {
+    const user = await open();
+    screen.getByRole("button", { name: /Instance:/ }).focus();
+    await user.keyboard("{ArrowUp}");
+    expect(screen.getByRole("menuitem", { name: "Manage instances…" })).toHaveFocus();
+  });
+
+  it("chooses the dashboard link with Space", async () => {
+    const user = await open();
+    const clicks = recordLinkClicks();
+    screen.getByRole("button", { name: /Instance:/ }).focus();
+    await user.keyboard("{ArrowUp}");
+    await user.keyboard(" ");
+    expect(clicks).toEqual([DASHBOARD]);
+  });
+
+  it("does not open the dashboard link at a space within a typed search", async () => {
+    const user = await open();
+    const clicks = recordLinkClicks();
+    screen.getByRole("button", { name: /Instance:/ }).focus();
+    await user.keyboard("{ArrowUp}");
+    await user.keyboard("manage instances");
+    expect(clicks).toEqual([]);
+    expect(screen.getByRole("menuitem", { name: "Manage instances…" })).toHaveFocus();
+  });
+
+  it("closes the menu and returns focus to its button when the dashboard link is chosen", async () => {
+    const user = await open();
+    const clicks = recordLinkClicks();
+    const trigger = screen.getByRole("button", { name: /Instance:/ });
+    await user.click(trigger);
+    await user.click(screen.getByRole("menuitem", { name: "Manage instances…" }));
+    await settle();
+    expect(clicks).toEqual([DASHBOARD]);
+    expect(screen.queryByRole("menuitem", { name: "Manage instances…" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("has no dashboard link when the relay origin is absent or not an http origin", async () => {
+    for (const origin of [null, "javascript:alert(1)", "https://relay.example.com/x"]) {
+      relayOrigin = origin;
+      const { unmount } = render(InstanceSwitcher, {
+        store: await loadedStore(),
+      });
+      await settle();
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(screen.getByRole("button", { name: /Instance:/ }));
+      expect(screen.queryByRole("menuitem", { name: "Manage instances…" })).not.toBeInTheDocument();
+      unmount();
+    }
   });
 });
+
+async function loadedStore(): Promise<RemoteAccessStore> {
+  const store = new RemoteAccessStore();
+  await store.refresh();
+  return store;
+}

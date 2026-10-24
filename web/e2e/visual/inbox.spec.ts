@@ -1,50 +1,80 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { MAIL_SEED } from "../../mock/data/mail";
 import { expect, test } from "../support/fixtures";
-import { expectScreenshot } from "../support/screenshot";
+import { expectFileRendered } from "../support/lazy";
+import { expectClipScreenshot, expectScreenshot } from "../support/screenshot";
 
 /**
- * The Inbox's baselines: the list at 1440 wide and on the phone, an item open
- * with Markdown and an attachment, the list at a medium width, and the empty
- * archive of an agent.
+ * The Inbox's design reference: the list beside a Markdown thread with
+ * attachments, a thread of replies with the reply box, New message, and a
+ * thread with an attachment open beside it in the file panel. Each is shot
+ * alone, on the desktop.
  */
 
-/** Open the Inbox at `url` and wait for its list to hold `items` items. */
-async function openInbox(page: Page, url = "/inbox", items = 4): Promise<void> {
-  await page.goto(url);
-  const list = page.getByRole("region", { name: "Inbox" }).getByRole("list", { name: "Items" });
-  await expect(list.locator(":scope > li")).toHaveCount(items);
+const SYNC = MAIL_SEED.syncResearch;
+const AUDIT = MAIL_SEED.wikiAudit;
+
+/** The open thread. */
+function thread(page: Page): Locator {
+  return page.getByRole("region", { name: "Conversation", exact: true });
 }
 
 test.describe("inbox", { tag: "@visual" }, () => {
-  test("the list, at 1440 wide or on the phone", async ({ page }) => {
-    await openInbox(page);
-    await expectScreenshot(page, "inbox");
+  test.skip(
+    ({ isMobile }) => isMobile,
+    "The Inbox is shot at the desktop size, list beside thread.",
+  );
+
+  test("the list beside a Markdown thread with attachments", async ({ page }) => {
+    await page.goto(`/inbox?thread=${SYNC.threadId}`);
+    await expect(thread(page).getByRole("heading", { name: SYNC.subject, level: 2 })).toBeVisible();
+    await expect(thread(page).getByRole("button", { name: "Open findings.md" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversations", exact: true })).toBeVisible();
+    await page.mouse.move(0, 0);
+    await expectScreenshot(page.getByRole("main"), "inbox-thread");
   });
 
-  test("an item open, with Markdown and an attachment", async ({ page, mock }) => {
-    const { id } = (await mock.post("/api/mock/user-inbox-add", {
-      params: { agent: "scout" },
-      data: {
-        title: "Svelte 5.4 shipped",
-        body: "Two changes matter for the web UI:\n\n- **Snippets** can be passed as props\n- `$state.raw` skips deep proxies\n\nRelease notes are attached.",
-        attachments: [{ filename: "release-notes.txt" }],
-      },
-    })) as { id: string };
-    await openInbox(page, `/inbox?item=scout:${id}`, 5);
-    await expect(page.getByRole("link", { name: /release-notes\.txt/ })).toBeVisible();
-    await expectScreenshot(page, "inbox-open");
+  test("a thread of replies, with your answer's seen marks and the reply box", async ({ page }) => {
+    // Tall enough for the whole thread and its reply box, which the place otherwise scrolls.
+    await page.setViewportSize({ width: page.viewportSize()?.width ?? 0, height: 1300 });
+    await page.goto(`/inbox?thread=${AUDIT.threadId}`);
+    await expect(thread(page).getByRole("article")).toHaveCount(4);
+    await expect(thread(page).getByRole("form", { name: "Reply to the thread" })).toBeVisible();
+    await page.mouse.move(0, 0);
+    await expectScreenshot(thread(page), "inbox-replies");
   });
 
-  test("at medium width", async ({ page, isMobile }) => {
-    test.skip(isMobile, "Medium width is a desktop window narrowed.");
-    await page.setViewportSize({ width: 1000, height: 800 });
-    await openInbox(page);
-    await expectScreenshot(page, "inbox-medium");
+  test("New message, addressed to two agents, with a file", async ({ page }) => {
+    await page.goto("/inbox?compose=1&to=atlas,scout");
+    const compose = page.getByRole("form", { name: "New message" });
+    await compose.getByRole("textbox", { name: "Subject" }).fill("Release checklist");
+    await compose
+      .getByRole("textbox", { name: /^Message/ })
+      .fill(
+        "Please **review** the checklist before Friday:\n\n- tag the release\n- publish the notes",
+      );
+    await page.getByLabel("Files to attach").setInputFiles({
+      name: "checklist.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("1. Tag the release\n2. Publish the notes\n"),
+    });
+    await expect(compose.getByRole("button", { name: "Remove checklist.txt" })).toBeVisible();
+    await expect(
+      compose.getByRole("list", { name: "Attached files" }).getByRole("progressbar"),
+    ).toHaveCount(0);
+    // Focus leaves the message box, so its ring is not part of the shot.
+    await compose.getByRole("textbox", { name: /^Message/ }).blur();
+    await page.mouse.move(0, 0);
+    await expectScreenshot(compose, "inbox-new-message");
   });
 
-  test("an agent's empty archive", async ({ page }) => {
-    await page.goto("/inbox?agent=drifter&tab=archived");
-    await expect(page.getByText("Nothing from drifter is archived.")).toBeVisible();
-    await expectScreenshot(page, "inbox-empty");
+  test("an attachment open beside its thread in the file panel", async ({ page }) => {
+    await page.goto(`/inbox?thread=${SYNC.threadId}`);
+    await thread(page).getByRole("button", { name: "Open findings.md" }).click();
+    const panel = page.getByRole("complementary", { name: "findings.md" });
+    await expect(panel).toBeVisible();
+    await expectFileRendered(page, "Local-first sync: findings");
+    await page.mouse.move(0, 0);
+    await expectClipScreenshot([page.getByRole("main"), panel], "inbox-thread-panel");
   });
 });

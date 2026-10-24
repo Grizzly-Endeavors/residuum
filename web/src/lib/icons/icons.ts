@@ -24,6 +24,16 @@ const DRAWINGS = {
   clock: [{ circle: [12, 12, 8.5] }, { path: "M12 7.5V12l3 2" }],
   folder: [{ path: "M3.5 6.5h6l2 2h9v10h-17z" }],
   file: [{ path: "M6.5 3.5h7.5l4 4v13h-11.5z" }, { path: "M14 3.5v4h4" }],
+  document: [
+    { path: "M6.5 3.5h7.5l4 4v13h-11.5z" },
+    { path: "M14 3.5v4h4" },
+    { path: "M9.5 12h5M9.5 15.5h5" },
+  ],
+  image: [
+    { rect: [3.5, 5, 17, 14, 2] },
+    { circle: [9, 10, 1.6] },
+    { path: "m20.5 15.5-4.5-4.5-9 8" },
+  ],
   grid: [
     { rect: [4, 4, 7, 7, 1.5] },
     { rect: [13, 4, 7, 7, 1.5] },
@@ -63,6 +73,12 @@ const DRAWINGS = {
   close: [{ path: "M6.5 6.5l11 11M17.5 6.5l-11 11" }],
   check: [{ path: "m5 12.5 4.5 4.5L19 7.5" }],
   send: [{ path: "M12 19V5M6.5 10.5 12 5l5.5 5.5" }],
+  fork: [
+    { circle: [7, 5, 2] },
+    { circle: [17, 5, 2] },
+    { circle: [12, 19, 2] },
+    { path: "M7 7v2.5A2.5 2.5 0 0 0 9.5 12h5A2.5 2.5 0 0 0 17 9.5V7M12 12v5" },
+  ],
   "arrow-down": [{ path: "M12 5v14M6.5 13.5 12 19l5.5-5.5" }],
   stop: [{ rect: [7, 7, 10, 10, 1.8], solid: true }],
   play: [{ path: "M8 5.5v13l10.5-6.5z" }],

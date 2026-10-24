@@ -15,6 +15,7 @@ import {
 import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import SettingsModal from "../SettingsModal.svelte";
 import { conflictQuestion } from "./changed-on-disk.svelte";
+import { waitFor } from "../../test/wait";
 
 let agent = "";
 let server: FakeAgentConfig;
@@ -32,7 +33,7 @@ async function open(scope: string, section: SectionId | null): Promise<void> {
   render(SettingsModal);
   await router.openSettings({ scope, section });
   await settle();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(document.querySelector(".settings-content")).not.toBeNull();
     expect(screen.queryByText("Loading settings")).toBeNull();
   });
@@ -88,7 +89,7 @@ describe("the Settings modal frame", () => {
     expect(writes()).toEqual([]);
 
     await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(saveBar()).toBeNull();
     });
     expect(writes()).toEqual([`PATCH /api/agents/${agent}/config/patch`]);
@@ -111,18 +112,18 @@ describe("the Settings modal frame", () => {
     await open(agent, "runtime");
     await type(timeout(), "60");
     await router.switchSettingsScope(ALL_SCOPE);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
     });
     expect(saveBar()).toBeNull();
     // Runtime isn't an All agents section, so the switch landed on General and comes back on Model.
     await router.switchSettingsScope(agent);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Model" })).toBeTruthy();
     });
     expect(saveBar()).toBeTruthy();
     await router.switchSettingsSection("runtime");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(timeout().value).toBe("60");
     });
   });
@@ -137,7 +138,7 @@ describe("the Settings modal frame", () => {
     );
     await type(timeout(), "999999");
     await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(saveBar()).toHaveTextContent("Couldn't save config.toml: timeout_secs is too long.");
     });
     expect(
@@ -151,13 +152,13 @@ describe("the Settings modal frame", () => {
     await type(timeout(), "60");
     server.files.config = "timeout_secs = 45\n";
     await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("dialog", { name: `${agent}'s config.toml changed` })).toBeTruthy();
     });
     expect(screen.getByRole("button", { name: "Use what's on disk" })).toBeTruthy();
 
     conflictQuestion.answer(null);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(saveBar()).toHaveTextContent("you closed the question about it");
     });
     expect(timeout().value).toBe("60");
@@ -169,7 +170,7 @@ describe("the Settings modal frame", () => {
     const text = screen.getByRole("textbox", { name: "Contents of config.toml" });
     await type(text as HTMLInputElement, 'timezone = "Europe/Berlin"\n');
     await fireEvent.click(screen.getByRole("button", { name: "Save config.toml" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(writes()).toEqual(["PUT /api/hub/config/raw"]);
     });
   });
@@ -178,7 +179,7 @@ describe("the Settings modal frame", () => {
     await open(agent, "runtime");
     await type(timeout(), "60");
     await router.switchSettingsSection("raw");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText("Save or discard your form changes first.")).toBeTruthy();
     });
     expect(screen.getByRole("textbox", { name: "Contents of config.toml" })).toHaveAttribute(

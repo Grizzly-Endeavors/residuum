@@ -1,4 +1,4 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { isValidArtifactName } from "./artifact-name";
 
 /** A parsed JSON request body: an object whose fields still have to be checked. */
@@ -12,6 +12,25 @@ export function readBody(req: IncomingMessage): Promise<string> {
     });
     req.on("end", () => {
       resolve(data);
+    });
+  });
+}
+
+/**
+ * A request body's bytes, or `null` when it is longer than `limit`. A body
+ * over the limit is read to its end and dropped as it arrives, so the client
+ * can finish sending and read the answer.
+ */
+export function readBodyBytes(req: IncomingMessage, limit: number): Promise<Buffer | null> {
+  return new Promise<Buffer | null>((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= limit) chunks.push(chunk);
+    });
+    req.on("end", () => {
+      resolve(size <= limit ? Buffer.concat(chunks) : null);
     });
   });
 }
@@ -45,9 +64,30 @@ export function text(res: ServerResponse, status: number, body: string): void {
   res.end(body);
 }
 
+/** Whether the request carries an `X-Residuum-Artifact` header, valid or not. */
+export function hasArtifactHeader(req: IncomingMessage): boolean {
+  return req.headers["x-residuum-artifact"] !== undefined;
+}
+
 /** The `X-Residuum-Artifact` header, or `null` when it's absent or isn't an artifact's name. */
 export function artifactIdentity(req: IncomingMessage): string | null {
   const raw = req.headers["x-residuum-artifact"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   return value !== undefined && isValidArtifactName(value) ? value : null;
+}
+
+/**
+ * Leave a client's idle connection open until the client closes it.
+ *
+ * Node closes a connection that has sat idle for `keepAliveTimeout` (5s, plus a
+ * second's grace). Playwright's request context, which the e2e suite's mock
+ * controls go through, keeps its connections with no idle limit of its own, so
+ * a call made at the moment the server closes one goes out on it and fails with
+ * "socket hang up". That failed a spec on CI whose control call came 6.0s after
+ * the one before it. With no idle timeout the server never closes a connection
+ * a client may be about to use; the browser and the suite close theirs when
+ * they are done.
+ */
+export function keepIdleConnectionsOpen(server: Pick<Server, "keepAliveTimeout">): void {
+  server.keepAliveTimeout = 0;
 }

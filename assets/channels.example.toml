@@ -16,7 +16,6 @@
 # throttle_window_secs = 30         # optional, any positive value, default: 30
 # sound = true                      # optional, default: true
 # app_name = "Residuum"             # optional, default: "Residuum"
-# web_url = "http://localhost:3000" # optional, enables "Open" action button
 
 # ── Native Windows Toast notifications (Windows only) ───────────────────────
 # [channels.windows]

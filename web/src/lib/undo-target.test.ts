@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "./toast.svelte";
 import { notifyWithUndo } from "./undo";
+import { waitFor } from "../test/wait";
 
 /**
  * The checkpoint id the delete/revoke response handed back for the action.
@@ -72,7 +73,7 @@ describe("toast undo targets the action's own checkpoint", () => {
     expect(shown?.action?.label).toBe("Undo");
 
     shown?.action?.onClick();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(restored.length).toBeGreaterThan(0);
     });
 

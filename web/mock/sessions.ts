@@ -8,8 +8,17 @@ import type {
   SessionSummary,
 } from "../src/lib/generated/protocol";
 import type { RecentMessage, SessionTranscriptResponse } from "../src/lib/types";
-import { untrackedRunFields } from "./data/sessions";
-import { artifactIdentity, json, parseJsonObject, readBody, stringField, text } from "./http";
+import { untrackedRunFields, type UnreadSessionMessage } from "./data/sessions";
+import {
+  artifactIdentity,
+  hasArtifactHeader,
+  json,
+  parseJsonObject,
+  readBody,
+  stringField,
+  text,
+  type JsonObject,
+} from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState } from "./state";
 
@@ -23,14 +32,23 @@ const TRANSCRIPT_DELAY_MS = 700;
 const OWNER_MESSAGE_LABEL =
   "[Message from the owner via the web UI — your response in this turn is shown to them directly]";
 
+/** The owner's sender address and category, as the backend gives them. */
+const OWNER_ADDRESS = "owner";
+const OWNER_CATEGORY = "owner";
+
+/** A message id a sender may choose, as the backend accepts one. */
+const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const INVALID_MESSAGE_ID =
+  "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.";
+
 /** Where a session command's reply goes: the socket that sent the command. */
 export type SessionReply = (frame: ServerMessage) => void;
 
 type SessionMessage = Pick<RecentMessage, "role" | "content"> & Partial<RecentMessage>;
 
 // Session lifecycle helpers shared by the WebSocket command handlers and the
-// REST endpoints that start, stop, and message sessions on an artifact's
-// behalf (`POST /api/sessions` and friends) — both need to mutate the same
+// REST endpoints that start, stop, and message sessions for the owner or an
+// artifact (`POST /api/sessions` and friends) — both need to mutate the same
 // in-memory sessions and announce it over the same broadcast channel.
 
 function recordMessage(state: MockState, session: SessionSummary, message: SessionMessage): void {
@@ -58,6 +76,11 @@ function completeSession(
   errorDetails: string | null = null,
 ): void {
   const { sessions } = state;
+  // A run's end ends the turn in flight. What it hadn't read resumes the
+  // session as a new run once this one has gone, as the backend's
+  // `finish_run` does.
+  const unread = sessions.turns.get(session.run_id)?.unread.splice(0) ?? [];
+  sessions.turns.delete(session.run_id);
   setSessionState(state, session, "completing");
   state.env.after(800, () => {
     sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
@@ -71,17 +94,81 @@ function completeSession(
       run_id: session.run_id,
       status,
       error,
-      error_details: errorDetails,
+      ...(errorDetails === null ? {} : { error_details: errorDetails }),
       episode_id: session.episode_id,
     });
+    if (unread.length > 0)
+      resumeRun(state, session, { runIdPrefix: "run-resumed", messages: unread });
   });
 }
 
-// One turn: running → tool → reply → idle, relaying to main when spawned by it.
-function runSessionTurn(state: MockState, session: SessionSummary, reply: string): void {
+/** The owner's message, under the id the client chose or one given here. */
+function ownerMessage(
+  state: MockState,
+  id: string | undefined,
+  content: string,
+  reply: string,
+): UnreadSessionMessage {
+  return {
+    id: id ?? `msg-s-${String(state.env.nextId())}`,
+    content,
+    header: OWNER_MESSAGE_LABEL,
+    from: OWNER_ADDRESS,
+    fromCategory: OWNER_CATEGORY,
+    reply,
+  };
+}
+
+/** The session reads `message` in the turn `turnId`: into its transcript, and announced. */
+function readMessage(
+  state: MockState,
+  session: SessionSummary,
+  turnId: string,
+  message: UnreadSessionMessage,
+): void {
+  recordMessage(state, session, {
+    role: "user",
+    content: `${message.header}\n${message.content}`,
+    id: message.id,
+  });
+  state.broadcast({
+    type: "session_user_message",
+    address: session.address,
+    run_id: session.run_id,
+    id: message.id,
+    turn_id: turnId,
+    content: message.content,
+    from: message.from,
+    from_category: message.fromCategory,
+  });
+}
+
+/** Hand `message` to a live session: the turn in flight reads it after its tool batch, or it starts a turn. */
+function deliverMessage(
+  state: MockState,
+  session: SessionSummary,
+  message: UnreadSessionMessage,
+): void {
+  const inFlight = state.sessions.turns.get(session.run_id);
+  if (inFlight) inFlight.unread.push(message);
+  else runSessionTurn(state, session, message.reply, [message]);
+}
+
+// One turn: running → the messages that start it → tool → the messages sent
+// meanwhile → reply → idle, relaying to main when spawned by it. A message
+// sent after the tool batch starts the next turn.
+function runSessionTurn(
+  state: MockState,
+  session: SessionSummary,
+  reply: string,
+  openers: readonly UnreadSessionMessage[] = [],
+): void {
   const { sessions } = state;
   const turnId = `${session.run_id}-t${String(state.env.nextId())}`;
   const toolId = `tc_s_${String(state.env.nextId())}`;
+  const turn = { turnId, unread: [] as UnreadSessionMessage[] };
+  sessions.turns.set(session.run_id, turn);
+  let answer = openers.at(-1)?.reply ?? reply;
   setSessionState(state, session, "running");
   state.broadcast({
     type: "session_turn_started",
@@ -89,6 +176,7 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
     run_id: session.run_id,
     turn_id: turnId,
   });
+  for (const message of openers) readMessage(state, session, turnId, message);
   state.env.after(500, () => {
     state.broadcast({
       type: "session_broadcast_response",
@@ -116,16 +204,23 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       output: "1 result: notification-routing.md",
       is_error: false,
     });
+    // The checkpoint after the tool batch: the turn takes in what was sent meanwhile.
+    if (sessions.turns.get(session.run_id) !== turn) return;
+    for (const message of turn.unread.splice(0)) {
+      readMessage(state, session, turnId, message);
+      answer = message.reply;
+    }
   });
   state.env.after(2400, () => {
+    if (sessions.turns.get(session.run_id) === turn) sessions.turns.delete(session.run_id);
     if (!sessions.live.includes(session) || session.state !== "running") return;
-    recordMessage(state, session, { role: "assistant", content: reply });
+    recordMessage(state, session, { role: "assistant", content: answer });
     state.broadcast({
       type: "session_response",
       address: session.address,
       run_id: session.run_id,
       turn_id: turnId,
-      content: reply,
+      content: answer,
     });
     state.broadcast({
       type: "session_turn_ended",
@@ -134,14 +229,21 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       turn_id: turnId,
     });
     setSessionState(state, session, "idle");
-    if (session.spawner === "main") {
-      state.broadcast({
-        type: "session_message_to_main",
-        address: session.address,
-        run_id: session.run_id,
-        content: reply,
-      });
-    }
+    if (session.spawner === "main") messageMainFrom(state, session, answer);
+    const left = turn.unread.splice(0);
+    if (left.length > 0) runSessionTurn(state, session, answer, left);
+  });
+}
+
+/**
+ * `session` sends main `body`, as the backend relays a session's result: with
+ * the header that names the sender, and the sender, run included, alongside.
+ */
+export function messageMainFrom(state: MockState, session: SessionSummary, body: string): void {
+  state.messageMain(`[Agent Message from ${session.address} (${session.category})]\n${body}`, {
+    address: session.address,
+    category: session.category,
+    run_id: session.run_id,
   });
 }
 
@@ -177,11 +279,18 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
   return session;
 }
 
-/** Bring a finished session back as a new run that answers `message` with `reply`. */
+/** The note telling a resumed session where its previous run went, as the backend writes it. */
+function resumePointer(prev: SessionSummary): string {
+  return prev.episode_id === null
+    ? `[Resumed session] Your previous run (${prev.run_id}) produced no episode — retrieve its transcript with memory_get using that run id if useful.`
+    : `[Resumed session] Your previous run (${prev.run_id}) was merged as episode ${prev.episode_id} — retrieve it with memory_get if useful.`;
+}
+
+/** Bring a finished session back as a new run, whose first turn reads `messages`. */
 function resumeRun(
   state: MockState,
   prev: SessionSummary,
-  options: { runIdPrefix: string; message: string; reply: string },
+  options: { runIdPrefix: string; messages: readonly UnreadSessionMessage[] },
 ): SessionSummary {
   const { sessions } = state;
   sessions.runCounter++;
@@ -196,10 +305,16 @@ function resumeRun(
     ...untrackedRunFields(),
   };
   sessions.live.unshift(session);
-  recordMessage(state, session, { role: "user", content: options.message });
   state.broadcast({ type: "session_started", session });
   state.env.after(400, () => {
-    runSessionTurn(state, session, options.reply);
+    // The pointer to the previous run opens the transcript as context the
+    // session reads, which the panel never draws.
+    recordMessage(state, session, {
+      role: "user",
+      content: resumePointer(prev),
+      context: true,
+    });
+    runSessionTurn(state, session, "Picking this back up.", options.messages);
   });
   return session;
 }
@@ -211,9 +326,21 @@ export function sendSessionMessage(
   id: string,
   address: string,
   content: string,
+  chosenId?: string,
 ): void {
   const { sessions } = state;
   const live = sessions.live.find((s) => s.address === address);
+  if (chosenId !== undefined && !MESSAGE_ID.test(chosenId)) {
+    reply({
+      type: "session_command_failed",
+      id,
+      address,
+      code: "invalid_request",
+      message: INVALID_MESSAGE_ID,
+    });
+    return;
+  }
+  const messageId = chosenId ?? `msg-s-${String(state.env.nextId())}`;
   if (content.includes("busy")) {
     reply({
       type: "session_command_failed",
@@ -225,12 +352,15 @@ export function sendSessionMessage(
     return;
   }
   if (live) {
-    recordMessage(state, live, {
-      role: "user",
-      content: `${OWNER_MESSAGE_LABEL}\n${content}`,
+    reply({
+      type: "session_message_delivered",
+      id,
+      address,
+      message_id: messageId,
+      outcome: "live",
     });
-    reply({ type: "session_message_delivered", id, address, outcome: "live" });
-    runSessionTurn(state, live, `Understood: "${content.slice(0, 60)}". Adjusting course.`);
+    const ack = `Understood: "${content.slice(0, 60)}". Adjusting course.`;
+    deliverMessage(state, live, ownerMessage(state, messageId, content, ack));
     return;
   }
   const prev = sessions.completed.find((s) => s.address === address);
@@ -244,12 +374,24 @@ export function sendSessionMessage(
     });
     return;
   }
-  reply({ type: "session_message_delivered", id, address, outcome: "resumed" });
+  reply({
+    type: "session_message_delivered",
+    id,
+    address,
+    message_id: messageId,
+    outcome: "resumed",
+  });
   state.env.after(300, () => {
     resumeRun(state, prev, {
       runIdPrefix: "run-resumed",
-      message: `${OWNER_MESSAGE_LABEL}\n${content}`,
-      reply: "Picking this back up. Here's where it stands now.",
+      messages: [
+        ownerMessage(
+          state,
+          messageId,
+          content,
+          "Picking this back up. Here's where it stands now.",
+        ),
+      ],
     });
   });
 }
@@ -326,31 +468,110 @@ async function sessionTranscript(ctx: RouteContext): Promise<void> {
   } satisfies SessionTranscriptResponse);
 }
 
-// POST /api/sessions — start an artifact session, the endpoint
-// `residuum.sessions.start` calls through the bridge.
-async function startArtifactSession(ctx: RouteContext): Promise<void> {
+/** The fields a session start takes. Any other is refused, as the backend refuses it. */
+const START_FIELDS = new Set(["prompt", "context", "skill", "model", "fork"]);
+const MODEL_SIZES = new Set(["small", "medium", "large"]);
+
+/** Whether `model` is a tier or a `provider/model` id, the shapes the backend accepts. */
+function isModelSelector(model: string): boolean {
+  if (MODEL_SIZES.has(model)) return true;
+  const slash = model.indexOf("/");
+  return slash > 0 && slash < model.length - 1 && !/\s/.test(model);
+}
+const MALFORMED_START = 'the body must be JSON like {"prompt": "..."}';
+
+/** A session start's prompt and fork flag, or the backend's reason it can't be read. */
+function readStartRequest(raw: string): { prompt: string; fork: boolean } | { error: string } {
+  let body: JsonObject;
+  try {
+    body = parseJsonObject(raw || "{}");
+  } catch {
+    return { error: MALFORMED_START };
+  }
+  const unknown = Object.keys(body).find((key) => !START_FIELDS.has(key));
+  if (unknown !== undefined) return { error: `${MALFORMED_START}: unknown field \`${unknown}\`` };
+  const { prompt, fork = false, model = null, context = null, skill = null } = body;
+  const optionalText = [model, context, skill].every((v) => v === null || typeof v === "string");
+  if (typeof prompt !== "string" || typeof fork !== "boolean" || !optionalText) {
+    return { error: MALFORMED_START };
+  }
+  if (!prompt.trim()) return { error: "prompt must not be empty" };
+  if (typeof model === "string" && !isModelSelector(model)) {
+    return {
+      error: `invalid model '${model}': use a tier (small, medium, or large) or a model id in provider/model form, such as anthropic/claude-haiku-4-5`,
+    };
+  }
+  return { prompt, fork };
+}
+
+/** Who a session started over HTTP is: its identity, and the framing its first message carries. */
+type StartedSession = Pick<SessionSummary, "address" | "run_id" | "category" | "source_label"> & {
+  framing: string;
+};
+
+/** The owner's own session: a clean one, or with `fork` a fork of the main conversation. */
+function ownerSession(state: MockState, fork: boolean): StartedSession {
+  const n = state.sessions.runCounter;
+  return {
+    address: `spawned-${fork ? "multitask" : "session"}-${(0xa000 + n).toString(16)}`,
+    run_id: `run-owner-${n}`,
+    category: "spawned",
+    source_label: fork ? "owner:multitask" : "owner:session",
+    framing: fork
+      ? "[You are a fork of the main conversation: the messages before this one are that conversation. The owner started you with /multitask to work on the task below while the main conversation carries on separately. Main doesn't see your responses; the owner does.]"
+      : "[This session was started by the owner. Your responses are shown to them, not to the main conversation.]",
+  };
+}
+
+function artifactSession(state: MockState, artifactName: string): StartedSession {
+  const n = state.sessions.runCounter;
+  return {
+    address: `artifact-${artifactName}-${(0x1000 + n).toString(16)}`,
+    run_id: `run-artifact-${n}`,
+    category: "artifact",
+    source_label: `artifact:${artifactName}`,
+    framing: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]`,
+  };
+}
+
+// POST /api/sessions — start a session at depth 1 with no spawner, so
+// nothing it says reaches the main chat. With the artifact identity header
+// it is the artifact session `residuum.sessions.start` asks for through the
+// bridge; without it, the owner's own `spawned` session, clean or (with
+// `fork`, `/multitask`) a fork of the main conversation.
+async function startSession(ctx: RouteContext): Promise<void> {
   const { req, res, state } = ctx;
   const artifactName = artifactIdentity(req);
-  if (!artifactName) {
+  if (artifactName === null && hasArtifactHeader(req)) {
     json(res, 400, {
-      error:
-        "starting a session needs the X-Residuum-Artifact header: sessions are started by workbench artifacts, through residuum.sessions.start",
+      error: 'the x-residuum-artifact header must name an artifact, like "wiki-graph"',
     });
     return;
   }
-  const body = parseJsonObject((await readBody(req)) || "{}");
-  const prompt = stringField(body, "prompt") ?? "";
-  if (!prompt.trim()) {
-    json(res, 400, { error: "prompt must not be empty" });
+  const request = readStartRequest(await readBody(req));
+  if ("error" in request) {
+    json(res, 400, request);
+    return;
+  }
+  const { prompt, fork } = request;
+  if (artifactName !== null && fork) {
+    json(res, 400, {
+      error: "fork is the owner's /multitask: a workbench artifact's session starts clean",
+    });
     return;
   }
   const { sessions } = state;
   sessions.runCounter++;
+  const { framing, ...identity } =
+    artifactName === null ? ownerSession(state, fork) : artifactSession(state, artifactName);
+  if (artifactName === null && sessions.failNextOwnerStart) {
+    sessions.failNextOwnerStart = false;
+    failOwnerStart(state, identity.address);
+    json(res, 202, { address: identity.address });
+    return;
+  }
   const session: SessionSummary = {
-    address: `artifact-${artifactName}-${(0x1000 + sessions.runCounter).toString(16)}`,
-    run_id: `run-artifact-${sessions.runCounter}`,
-    category: "artifact",
-    source_label: `artifact:${artifactName}`,
+    ...identity,
     state: "forking",
     spawner: null,
     depth: 1,
@@ -362,15 +583,29 @@ async function startArtifactSession(ctx: RouteContext): Promise<void> {
     ...untrackedRunFields(),
   };
   sessions.live.unshift(session);
-  recordMessage(state, session, {
-    role: "user",
-    content: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]\n\n${prompt}`,
-  });
+  recordMessage(state, session, { role: "user", content: `${framing}\n\n${prompt}` });
   state.broadcast({ type: "session_started", session });
   state.env.after(400, () => {
     runSessionTurn(state, session, `Working on it: ${prompt.slice(0, 80)}.`);
   });
   json(res, 202, { address: session.address });
+}
+
+/**
+ * An owner's start the agent took but couldn't fork: no run is listed, and a
+ * moment later every page is sent `session_start_failed` for its address, as
+ * the backend sends it when the session's model has no working provider.
+ */
+function failOwnerStart(state: MockState, address: string): void {
+  state.env.after(400, () => {
+    state.broadcast({
+      type: "session_start_failed",
+      address,
+      error: `The session ${address} couldn't start because its model (medium) couldn't be set up, usually because a provider's API key is missing. Check Settings → Model → Providers, then start the session again.`,
+      error_details:
+        "failed to build provider chain for model medium: no API key configured for provider anthropic",
+    });
+  });
 }
 
 // POST /api/sessions/:address/stop — stop any live session.
@@ -391,12 +626,14 @@ function stopSessionRoute(ctx: RouteContext): void {
 }
 
 // POST /api/sessions/:address/messages — message any session, attributed
-// to the artifact naming itself with the identity header, or the owner.
+// to the artifact naming itself with the identity header, or the owner,
+// under the `id` the client chose or one given here.
 async function messageSessionRoute(ctx: RouteContext): Promise<void> {
   const { req, res, state } = ctx;
   const address = decodedParam(ctx, 0);
   const body = parseJsonObject((await readBody(req)) || "{}");
   const content = stringField(body, "content") ?? "";
+  const chosenId = stringField(body, "id");
   if (!content.trim() || address === "main") {
     sessionError(
       ctx,
@@ -406,16 +643,23 @@ async function messageSessionRoute(ctx: RouteContext): Promise<void> {
     );
     return;
   }
+  if (chosenId !== undefined && !MESSAGE_ID.test(chosenId)) {
+    sessionError(ctx, 400, INVALID_MESSAGE_ID, "invalid_request");
+    return;
+  }
   const artifactName = artifactIdentity(req);
-  const label = artifactName
-    ? `[Message from the workbench artifact "${artifactName}" — your response in this turn is shown to it directly]`
-    : OWNER_MESSAGE_LABEL;
   const { sessions } = state;
   const live = sessions.live.find((s) => s.address === address);
+  const ack = live ? `Understood: "${content.slice(0, 60)}".` : "Picking this back up.";
+  const message = ownerMessage(state, chosenId, content, ack);
+  if (artifactName) {
+    message.header = `[Message from the workbench artifact "${artifactName}" — your response in this turn is shown to it directly]`;
+    message.from = `artifact:${artifactName}`;
+    message.fromCategory = "artifact";
+  }
   if (live) {
-    recordMessage(state, live, { role: "user", content: `${label}\n${content}` });
-    runSessionTurn(state, live, `Understood: "${content.slice(0, 60)}".`);
-    json(res, 200, { outcome: "live" satisfies SessionDeliveryOutcome });
+    deliverMessage(state, live, message);
+    json(res, 200, { outcome: "live" satisfies SessionDeliveryOutcome, id: message.id });
     return;
   }
   const prev = sessions.completed.find((s) => s.address === address);
@@ -428,12 +672,8 @@ async function messageSessionRoute(ctx: RouteContext): Promise<void> {
     );
     return;
   }
-  resumeRun(state, prev, {
-    runIdPrefix: "run-resumed-http",
-    message: `${label}\n${content}`,
-    reply: "Picking this back up.",
-  });
-  json(res, 200, { outcome: "resumed" satisfies SessionDeliveryOutcome });
+  resumeRun(state, prev, { runIdPrefix: "run-resumed-http", messages: [message] });
+  json(res, 200, { outcome: "resumed" satisfies SessionDeliveryOutcome, id: message.id });
 }
 
 /** The sessions endpoints, in the unscoped `/api/...` spelling. */
@@ -444,7 +684,7 @@ export const sessionRoutes: readonly Route[] = [
     pattern: /^\/api\/sessions\/runs\/([^/]+)\/transcript$/,
     handler: sessionTranscript,
   },
-  { method: "POST", pattern: "/api/sessions", handler: startArtifactSession },
+  { method: "POST", pattern: "/api/sessions", handler: startSession },
   { method: "POST", pattern: /^\/api\/sessions\/([^/]+)\/stop$/, handler: stopSessionRoute },
   {
     method: "POST",

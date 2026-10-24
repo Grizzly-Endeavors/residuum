@@ -1,0 +1,358 @@
+//! Central time helper for timezone-aware local time.
+
+use chrono::{
+    DateTime, Datelike, Days, LocalResult, NaiveDateTime, Offset, SecondsFormat, TimeDelta,
+    TimeZone,
+};
+use tracing::warn;
+
+/// Get the current local time for the configured timezone.
+///
+/// Converts UTC wall-clock time to the correct local time via `chrono_tz::Tz`,
+/// then drops the offset to produce a plain `NaiveDateTime`. DST transitions
+/// are handled at the moment of this call.
+#[must_use]
+pub fn now_local(tz: chrono_tz::Tz) -> NaiveDateTime {
+    chrono::Utc::now().with_timezone(&tz).naive_local()
+}
+
+/// The instant a stored naive local time denotes in `tz`.
+///
+/// Times kept as naive minute-precision local times (inbox items, for one) carry no
+/// offset, so two kinds of local time don't name exactly one instant:
+/// - **Ambiguous**: a DST fall-back repeats an hour. The earlier of the two
+///   instants is used, which is the first time the clock showed that time.
+/// - **Nonexistent**: a DST spring-forward skips an hour (or, in some zones, half
+///   an hour or a day). The time is read with the offset in force before the gap, so
+///   it lands later by the length of the gap: 02:30 in a gap that jumps 02:00 to
+///   03:00 is 03:30.
+#[must_use]
+pub fn local_to_instant(tz: chrono_tz::Tz, local: NaiveDateTime) -> DateTime<chrono_tz::Tz> {
+    match tz.from_local_datetime(&local) {
+        LocalResult::Single(instant) | LocalResult::Ambiguous(instant, _) => instant,
+        LocalResult::None => {
+            // The gap's transition lies within about 14 hours of `local` read as UTC, so
+            // the offset a day earlier is the one in force before it. The fallbacks
+            // below only apply at the edge of chrono's date range, which a stored
+            // `YYYY-MM-DDTHH:MM` time never reaches.
+            let probe = local.checked_sub_days(Days::new(1)).unwrap_or(local);
+            let offset_before_gap = tz.offset_from_utc_datetime(&probe).fix();
+            let utc = local.checked_sub_offset(offset_before_gap).unwrap_or(local);
+            tz.from_utc_datetime(&utc)
+        }
+    }
+}
+
+/// An instant as RFC 3339 with its zone's offset, such as
+/// `2026-03-08T03:30:00-04:00` (`Z` when the offset is zero).
+#[must_use]
+pub fn format_rfc3339(instant: &DateTime<chrono_tz::Tz>) -> String {
+    instant.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// A stored naive local time as RFC 3339 with its offset in `tz`. See
+/// [`local_to_instant`] for how ambiguous and nonexistent times resolve.
+#[must_use]
+pub fn local_to_rfc3339(tz: chrono_tz::Tz, local: NaiveDateTime) -> String {
+    format_rfc3339(&local_to_instant(tz, local))
+}
+
+/// English ordinal suffix for a day-of-month number.
+#[must_use]
+pub(crate) fn ordinal_suffix(day: u32) -> &'static str {
+    match day {
+        11..=13 => "th",
+        _ if day % 10 == 1 => "st",
+        _ if day % 10 == 2 => "nd",
+        _ if day % 10 == 3 => "rd",
+        _ => "th",
+    }
+}
+
+/// Format a datetime for display in the time context tag.
+///
+/// Produces `"Sunday Feb 22nd 2026 | 17:00"`.
+#[must_use]
+pub fn format_display_datetime(dt: NaiveDateTime) -> String {
+    let suffix = ordinal_suffix(dt.day());
+    format!(
+        "{} {}{suffix} {}",
+        dt.format("%A %b"),
+        dt.day(),
+        dt.format("%Y | %H:%M")
+    )
+}
+
+fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
+}
+
+/// Format a time delta as a human-readable relative string.
+///
+/// Produces `"just now"`, `"5 mins ago"`, `"2 hours ago"`, or `"3 days ago"`.
+#[must_use]
+pub fn format_relative_time(delta: TimeDelta) -> String {
+    let total_secs = delta.num_seconds();
+    if total_secs < 0 {
+        warn!(
+            delta_secs = total_secs,
+            "format_relative_time received negative delta; caller passed timestamps in wrong order"
+        );
+        return "just now".to_string();
+    }
+    if total_secs < 60 {
+        return "just now".to_string();
+    }
+
+    let mins = delta.num_minutes();
+    if mins < 60 {
+        return format!("{mins} {} ago", plural(mins, "min", "mins"));
+    }
+
+    let hours = delta.num_hours();
+    if hours < 24 {
+        return format!("{hours} {} ago", plural(hours, "hour", "hours"));
+    }
+
+    let days = delta.num_days();
+    format!("{days} {} ago", plural(days, "day", "days"))
+}
+
+const MINUTE_FMT: &str = "%Y-%m-%dT%H:%M";
+
+fn parse_minute(s: &str) -> Result<NaiveDateTime, String> {
+    NaiveDateTime::parse_from_str(s, MINUTE_FMT).map_err(|e| format!("invalid datetime {s:?}: {e}"))
+}
+
+/// Serde module for `NaiveDateTime` using minute-precision (`YYYY-MM-DDTHH:MM`).
+pub mod minute_format {
+    use chrono::NaiveDateTime;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    /// # Errors
+    /// Returns a serializer error if the underlying serializer fails.
+    pub fn serialize<S>(dt: &NaiveDateTime, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&dt.format(super::MINUTE_FMT).to_string())
+    }
+
+    /// # Errors
+    /// Returns a deserializer error if the string is missing or not in `YYYY-MM-DDTHH:MM` format.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<NaiveDateTime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        super::parse_minute(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn dt(year: i32, month: u32, day: u32, hour: u32, min: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_opt(hour, min, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn ordinal_suffix_st() {
+        assert_eq!(ordinal_suffix(1), "st");
+        assert_eq!(ordinal_suffix(21), "st");
+        assert_eq!(ordinal_suffix(31), "st");
+    }
+
+    #[test]
+    fn ordinal_suffix_nd() {
+        assert_eq!(ordinal_suffix(2), "nd");
+        assert_eq!(ordinal_suffix(22), "nd");
+    }
+
+    #[test]
+    fn ordinal_suffix_rd() {
+        assert_eq!(ordinal_suffix(3), "rd");
+        assert_eq!(ordinal_suffix(23), "rd");
+    }
+
+    #[test]
+    fn ordinal_suffix_th() {
+        assert_eq!(ordinal_suffix(4), "th");
+        assert_eq!(ordinal_suffix(10), "th");
+        assert_eq!(ordinal_suffix(11), "th");
+        assert_eq!(ordinal_suffix(12), "th");
+        assert_eq!(ordinal_suffix(13), "th");
+        assert_eq!(ordinal_suffix(14), "th");
+        assert_eq!(ordinal_suffix(20), "th");
+    }
+
+    #[test]
+    fn format_display_datetime_typical() {
+        // Sunday Feb 22nd 2026 at 17:00
+        let t = dt(2026, 2, 22, 17, 0);
+        assert_eq!(format_display_datetime(t), "Sunday Feb 22nd 2026 | 17:00");
+    }
+
+    #[test]
+    fn format_display_datetime_first_day() {
+        let t = dt(2026, 1, 1, 9, 5);
+        assert_eq!(format_display_datetime(t), "Thursday Jan 1st 2026 | 09:05");
+    }
+
+    #[test]
+    fn format_relative_time_just_now() {
+        assert_eq!(format_relative_time(TimeDelta::seconds(0)), "just now");
+        assert_eq!(format_relative_time(TimeDelta::seconds(59)), "just now");
+    }
+
+    #[test]
+    fn format_relative_time_minutes() {
+        assert_eq!(format_relative_time(TimeDelta::minutes(1)), "1 min ago");
+        assert_eq!(format_relative_time(TimeDelta::minutes(15)), "15 mins ago");
+        assert_eq!(format_relative_time(TimeDelta::minutes(59)), "59 mins ago");
+    }
+
+    #[test]
+    fn format_relative_time_hours() {
+        assert_eq!(format_relative_time(TimeDelta::hours(1)), "1 hour ago");
+        assert_eq!(format_relative_time(TimeDelta::hours(23)), "23 hours ago");
+    }
+
+    #[test]
+    fn format_relative_time_days() {
+        assert_eq!(format_relative_time(TimeDelta::days(1)), "1 day ago");
+        assert_eq!(format_relative_time(TimeDelta::days(7)), "7 days ago");
+    }
+
+    #[test]
+    fn format_relative_time_negative_returns_just_now() {
+        assert_eq!(format_relative_time(TimeDelta::seconds(-1)), "just now");
+        assert_eq!(format_relative_time(TimeDelta::seconds(-3600)), "just now");
+    }
+
+    #[test]
+    fn format_display_datetime_teen_day() {
+        let t = dt(2026, 3, 13, 0, 0);
+        assert_eq!(format_display_datetime(t), "Friday Mar 13th 2026 | 00:00");
+    }
+
+    #[test]
+    fn minute_format_round_trip() {
+        use serde::{Deserialize, Serialize};
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            #[serde(with = "minute_format")]
+            ts: NaiveDateTime,
+        }
+        let original = Wrapper {
+            ts: dt(2026, 3, 22, 17, 0),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#"{"ts":"2026-03-22T17:00"}"#);
+        let roundtripped: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, original);
+    }
+
+    #[test]
+    fn minute_format_rejects_malformed() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        #[expect(dead_code, reason = "fields populated via serde deserialization only")]
+        struct Wrapper {
+            #[serde(with = "minute_format")]
+            ts: NaiveDateTime,
+        }
+        assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"not-a-date"}"#).is_err());
+        assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"2026-03-22"}"#).is_err());
+    }
+
+    fn rfc3339(zone: &str, local: NaiveDateTime) -> String {
+        local_to_rfc3339(zone.parse().unwrap(), local)
+    }
+
+    #[test]
+    fn local_to_rfc3339_carries_the_zones_offset_in_winter_and_summer() {
+        assert_eq!(
+            rfc3339("America/New_York", dt(2026, 1, 15, 10, 0)),
+            "2026-01-15T10:00:00-05:00"
+        );
+        assert_eq!(
+            rfc3339("America/New_York", dt(2026, 7, 15, 10, 0)),
+            "2026-07-15T10:00:00-04:00"
+        );
+        assert_eq!(
+            rfc3339("Asia/Kolkata", dt(2026, 7, 15, 10, 0)),
+            "2026-07-15T10:00:00+05:30"
+        );
+    }
+
+    #[test]
+    fn local_to_rfc3339_writes_z_for_a_zero_offset() {
+        assert_eq!(
+            rfc3339("UTC", dt(2026, 2, 27, 14, 30)),
+            "2026-02-27T14:30:00Z"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_fall_back_time_takes_the_earlier_offset() {
+        // New York repeats 01:00-02:00 on 2026-11-01: first at -04:00, then at -05:00.
+        assert_eq!(
+            rfc3339("America/New_York", dt(2026, 11, 1, 1, 30)),
+            "2026-11-01T01:30:00-04:00"
+        );
+        let first = local_to_instant("America/New_York".parse().unwrap(), dt(2026, 11, 1, 1, 0));
+        let after = local_to_instant("America/New_York".parse().unwrap(), dt(2026, 11, 1, 2, 0));
+        assert_eq!(
+            (after - first).num_minutes(),
+            120,
+            "01:00 is read as its first occurrence, two hours before the unambiguous 02:00"
+        );
+    }
+
+    #[test]
+    fn a_nonexistent_spring_forward_time_moves_forward_by_the_gap() {
+        // New York skips 02:00-03:00 on 2026-03-08.
+        assert_eq!(
+            rfc3339("America/New_York", dt(2026, 3, 8, 2, 30)),
+            "2026-03-08T03:30:00-04:00"
+        );
+        assert_eq!(
+            rfc3339("America/New_York", dt(2026, 3, 8, 2, 0)),
+            "2026-03-08T03:00:00-04:00"
+        );
+        assert_eq!(
+            rfc3339("America/New_York", dt(2026, 3, 8, 3, 0)),
+            "2026-03-08T03:00:00-04:00",
+            "the first time after the gap is already unambiguous"
+        );
+        assert_eq!(
+            rfc3339("America/New_York", dt(2026, 3, 8, 1, 59)),
+            "2026-03-08T01:59:00-05:00",
+            "the last time before the gap keeps the old offset"
+        );
+    }
+
+    #[test]
+    fn a_half_hour_gap_moves_forward_half_an_hour() {
+        // Lord Howe skips 02:00-02:30 when DST starts on 2026-10-04.
+        assert_eq!(
+            rfc3339("Australia/Lord_Howe", dt(2026, 10, 4, 2, 10)),
+            "2026-10-04T02:40:00+11:00"
+        );
+    }
+
+    #[test]
+    fn a_whole_day_gap_moves_forward_a_day() {
+        // Samoa skipped 2011-12-30 entirely when it moved across the date line.
+        assert_eq!(
+            rfc3339("Pacific/Apia", dt(2011, 12, 30, 12, 0)),
+            "2011-12-31T12:00:00+14:00"
+        );
+    }
+}

@@ -2,22 +2,53 @@ import type { SessionSummary } from "../../src/lib/generated/protocol";
 import type { RecentMessage } from "../../src/lib/types";
 import type { MockClock } from "../env";
 
+/**
+ * A message sent to a session that it hasn't read yet. The turn in flight
+ * reads it after its tool batch; without one, it starts a turn.
+ */
+export interface UnreadSessionMessage {
+  id: string;
+  /** The message as sent. */
+  content: string;
+  /** The header the session reads it under, as the transcript records it. */
+  header: string;
+  /** The sender's address (`owner`, `artifact:<name>`) and category. */
+  from: string;
+  fromCategory: string;
+  /** What the turn that reads it replies. */
+  reply: string;
+}
+
+/** A run's turn in flight, and the messages sent it that it hasn't read. */
+export interface MockSessionTurn {
+  turnId: string;
+  unread: UnreadSessionMessage[];
+}
+
 /** An agent's sessions: the live runs, the finished ones, and each run's transcript. */
 export interface MockSessions {
   live: SessionSummary[];
   completed: SessionSummary[];
   transcripts: Map<string, RecentMessage[]>;
+  /** Each run's turn in flight, by run id. */
+  turns: Map<string, MockSessionTurn>;
   /** How many runs the mock has started or resumed, for naming them. */
   runCounter: number;
+  /**
+   * The next session the owner starts is accepted and then fails to fork,
+   * as one on a model with no working provider does (see the
+   * `/api/mock/fail-next-session-start` control).
+   */
+  failNextOwnerStart: boolean;
 }
 
 /**
  * The run fields the mock has no data for: no token usage yet, no recorded
- * outcome or failure, and no pulse overlap.
+ * outcome or failure, no pulse overlap, and the default `medium` tier's model.
  */
 export function untrackedRunFields(): Pick<
   SessionSummary,
-  "usage" | "outcome" | "error" | "error_details" | "overlap"
+  "usage" | "outcome" | "error" | "error_details" | "overlap" | "model" | "resolved_model"
 > {
   return {
     usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
@@ -25,6 +56,8 @@ export function untrackedRunFields(): Pick<
     error: null,
     error_details: null,
     overlap: null,
+    model: "medium",
+    resolved_model: "anthropic/claude-sonnet-4-6",
   };
 }
 
@@ -60,6 +93,8 @@ export function createSessions(clock: MockClock): MockSessions {
       episode_id: null,
       interrupted: false,
       ...untrackedRunFields(),
+      model: "ollama/qwen3:8b",
+      resolved_model: "ollama/qwen3:8b",
     },
     {
       address: "external-discord-4f1c9a2e7b3d0856",
@@ -213,5 +248,12 @@ export function createSessions(clock: MockClock): MockSessions {
       },
     ]);
   }
-  return { live, completed, transcripts, runCounter: 0 };
+  return {
+    live,
+    completed,
+    transcripts,
+    turns: new Map(),
+    runCounter: 0,
+    failNextOwnerStart: false,
+  };
 }

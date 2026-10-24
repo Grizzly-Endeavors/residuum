@@ -1,0 +1,86 @@
+[package]
+name = "residuum-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+test-support = ["residuum-core/test-support", "dep:wiremock"]
+
+[dependencies]
+residuum-core = { workspace = true }
+residuum-config = { workspace = true }
+residuum-bus = { workspace = true }
+residuum-inference = { workspace = true }
+residuum-tracing-service = { workspace = true }
+residuum-memory = { workspace = true }
+residuum-mcp = { workspace = true }
+residuum-net = { workspace = true }
+residuum-workspace = { workspace = true }
+residuum-checkpoints = { workspace = true }
+residuum-proactivity = { workspace = true }
+residuum-agent = { workspace = true }
+residuum-background = { workspace = true }
+residuum-a2a = { workspace = true }
+residuum-protocol = { workspace = true }
+residuum-interfaces = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+futures-util = { workspace = true }
+globset = { workspace = true }
+iana-time-zone = { workspace = true }
+mime_guess = { workspace = true }
+pulldown-cmark = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+ring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+ts-rs = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+wiremock = { workspace = true, optional = true }
+
+[dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
+residuum-config = { workspace = true, features = ["test-support"] }
+residuum-bus = { workspace = true, features = ["test-support"] }
+residuum-inference = { workspace = true, features = ["test-support"] }
+residuum-memory = { workspace = true, features = ["test-support"] }
+residuum-net = { workspace = true, features = ["test-support"] }
+residuum-workspace = { workspace = true, features = ["test-support"] }
+residuum-checkpoints = { workspace = true, features = ["test-support"] }
+residuum-proactivity = { workspace = true, features = ["test-support"] }
+residuum-agent = { workspace = true, features = ["test-support"] }
+residuum-background = { workspace = true, features = ["test-support"] }
+residuum-a2a = { workspace = true, features = ["test-support"] }
+ctor = { workspace = true }
+regex = { workspace = true }
+rustls = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = { workspace = true }
+wiremock = { workspace = true }
+
+[package.metadata.cargo-shear]
+# crates/core/src/testing/crypto.rs, which lib.rs includes by #[path], uses ctor and
+# rustls. cargo-shear reads a source file only for the package whose src/ directory
+# holds it, so it never sees the use here.
+ignored = ["ctor", "rustls"]

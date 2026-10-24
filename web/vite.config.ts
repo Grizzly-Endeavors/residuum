@@ -6,6 +6,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
 import { serviceWorkerPlugin } from "./build/service-worker";
 import { mockServerPlugin } from "./mock/plugin";
+import { HANG_GUARD_MS } from "./src/test/guard";
 
 const isMock = process.env.VITE_MOCK === "1";
 // Vitest sets this before loading the config. HMR stays on for `vite dev`.
@@ -37,6 +38,10 @@ function fontLicenses(): Plugin {
 }
 
 export default defineConfig(({ command }) => ({
+  // Each e2e dev server gets its own dependency cache: dev servers sharing one
+  // run the optimizer at once and race on renaming its output directory, which
+  // failed a release run with ENOTEMPTY and a 504 for a pre-bundled dependency.
+  ...(process.env.VITE_CACHE_DIR && { cacheDir: process.env.VITE_CACHE_DIR }),
   define: {
     // The primitives gallery (`/dev/gallery`) is served by the dev server and
     // built into mock builds. Production builds compile it out.
@@ -69,6 +74,13 @@ export default defineConfig(({ command }) => ({
     }),
   },
   test: {
+    // A hang guard, not a speed budget: tests wait on events, and a loaded
+    // machine can take far longer than the 5s default to render and settle.
+    // src/test/guard.ts holds it and the matching bound for waits in a test.
+    testTimeout: HANG_GUARD_MS,
+    hookTimeout: HANG_GUARD_MS,
+    // Cuts a full run by about 12% wall (37.5s to 33s, interleaved, 4 rounds): transforms persist in node_modules/.vitest-cache.
+    fsModuleCache: true,
     // Reported in CI's job summary, with no threshold. `npm run test:coverage` runs it locally.
     coverage: {
       provider: "v8",
@@ -83,7 +95,7 @@ export default defineConfig(({ command }) => ({
         test: {
           name: "unit",
           environment: "node",
-          include: ["src/**/*.test.ts", "build/**/*.test.ts", "mock/**/*.test.ts"],
+          include: ["src/**/*.test.ts", "build/**/*.test.ts", "mock/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: componentTests,
         },
       },

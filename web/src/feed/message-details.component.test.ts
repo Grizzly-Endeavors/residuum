@@ -99,7 +99,7 @@ describe("when a message was sent", () => {
     // jsdom has no inert, so the property Svelte sets is read as it is; a browser takes the
     // row out of the tab order and the accessibility tree.
     const foot = (): { inert?: boolean } | null =>
-      document.querySelector<HTMLElement & { inert?: boolean }>(".reply-foot");
+      document.querySelector<HTMLElement & { inert?: boolean }>(".reply-meta");
     expect(foot()?.inert).toBe(true);
 
     if (held.kind !== "assistant") throw new Error("not a reply");
@@ -167,7 +167,6 @@ describe("copying a reply", () => {
     const writeText = stubClipboard(() => Promise.resolve());
     show({ id: 1, kind: "assistant", content: "Use **two** `ports`.\n\n- a\n- b" });
     const copy = screen.getByRole("button", { name: "Copy reply" });
-    expect(copy).toHaveTextContent("Copy");
 
     await user.click(copy);
     await settle();
@@ -175,7 +174,7 @@ describe("copying a reply", () => {
     expect(writeText).toHaveBeenCalledWith("Use **two** `ports`.\n\n- a\n- b");
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
     // A button that is pressed doesn't announce its new label, so a status does.
-    const status = (): Element | null => document.querySelector(".reply-foot [role=status]");
+    const status = (): Element | null => document.querySelector(".reply-meta [role=status]");
     expect(status()).toHaveTextContent("Copied");
 
     await advance(2000);

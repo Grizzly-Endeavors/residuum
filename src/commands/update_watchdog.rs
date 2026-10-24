@@ -41,7 +41,7 @@ pub(super) struct UpdateWatchdogArgs {
 /// roll back to the previous version if it doesn't.
 #[tracing::instrument(skip_all, fields(target_version = %args.target_version))]
 pub(super) fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(), FatalError> {
-    residuum::util::tracing_init::init_default_tracing();
+    residuum::logging::init_default_tracing();
 
     let config_dir = residuum::config::default_hub_dir()?;
     let ready_path = residuum::daemon::ready_file_path(&config_dir);
@@ -136,9 +136,9 @@ fn roll_back(
     );
 
     residuum::daemon::remove_ready_file(config_dir);
-    residuum::update::write_rollback_notice(
+    residuum::hub::update::write_rollback_notice(
         config_dir,
-        &residuum::update::RollbackNotice {
+        &residuum::hub::update::RollbackNotice {
             attempted_version: args.target_version.clone(),
             reason: reason.to_string(),
             at: chrono::Utc::now(),
@@ -180,18 +180,25 @@ mod tests {
     fn roll_back_restores_previous_binary_and_writes_notice() {
         let dir = tempfile::tempdir().unwrap();
         // A stub "previous binary": something that exists and is
-        // executable so the restart-after-rollback spawn succeeds. Windows
-        // won't run a script as a binary, so it gets a copy of a real one.
+        // executable so the restart-after-rollback spawn succeeds. On Unix
+        // it is a link to the shell, run as `sh -c "exit 0"`, not a script
+        // written here: executing a file this process just wrote fails with
+        // "Text file busy" when a test on another thread forks while the file
+        // is still open for writing, because the forked child holds a copy of
+        // the descriptor until it execs. Windows won't run a script as a
+        // binary, so it gets a copy of a real one.
         #[cfg(unix)]
-        let (gateway_exe, prev_exe) = {
-            use std::os::unix::fs::PermissionsExt;
+        let (gateway_exe, prev_exe, serve_args) = {
             let prev_exe = dir.path().join("residuum.prev");
-            std::fs::write(&prev_exe, "#!/bin/sh\nexit 0\n").unwrap();
-            std::fs::set_permissions(&prev_exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-            (dir.path().join("residuum"), prev_exe)
+            std::os::unix::fs::symlink("/bin/sh", &prev_exe).unwrap();
+            (
+                dir.path().join("residuum"),
+                prev_exe,
+                vec!["-c".to_string(), "exit 0".to_string()],
+            )
         };
         #[cfg(windows)]
-        let (gateway_exe, prev_exe) = {
+        let (gateway_exe, prev_exe, serve_args) = {
             let prev_exe = dir.path().join("residuum.exe.prev");
             let system_root = std::env::var("SystemRoot").unwrap();
             std::fs::copy(
@@ -201,10 +208,17 @@ mod tests {
                 &prev_exe,
             )
             .unwrap();
-            (dir.path().join("residuum.exe"), prev_exe)
+            (
+                dir.path().join("residuum.exe"),
+                prev_exe,
+                vec!["serve".to_string(), "--foreground".to_string()],
+            )
         };
 
-        let a = args(gateway_exe.clone(), prev_exe.clone());
+        let a = UpdateWatchdogArgs {
+            serve_args,
+            ..args(gateway_exe.clone(), prev_exe.clone())
+        };
         roll_back(&a, dir.path(), "did not become healthy within 60s").unwrap();
 
         assert!(
@@ -216,7 +230,7 @@ mod tests {
             "the preserved backup should be consumed by the restore"
         );
 
-        let notice = residuum::update::read_rollback_notice(dir.path()).unwrap();
+        let notice = residuum::hub::update::read_rollback_notice(dir.path()).unwrap();
         assert_eq!(notice.attempted_version, "v2026.09.24");
         assert_eq!(notice.reason, "did not become healthy within 60s");
     }

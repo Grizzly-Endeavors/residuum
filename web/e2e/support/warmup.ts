@@ -18,7 +18,7 @@
  * built ahead of time. Each worker has its own dev server with its own module
  * cache, so every one of them is warmed, at the same time.
  */
-import { workerServers } from "./servers";
+import { startedWorkerServers } from "./servers";
 
 const ENTRY = "/src/main.ts";
 
@@ -37,33 +37,28 @@ interface Compiled {
 }
 
 /**
- * How many times a request that never got an answer is made. The server
- * closes the idle connections its clients keep, so a request that reuses one
- * a moment too late is reset; asking again opens a new connection. An answer
- * with an error status is a module that does not compile, and is final.
+ * Ask for one module. An answer with an error status is a module that does not
+ * compile; no answer at all is a server that is down or broken. The mock leaves
+ * idle connections open (`keepIdleConnectionsOpen` in `mock/http.ts`), so a
+ * request never meets a connection the server is closing.
  */
-const ATTEMPTS = 3;
-
 async function compile(origin: string, path: string): Promise<Compiled> {
-  let failure = "";
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-    try {
-      const response = await fetch(`${origin}${path}`);
-      const body = await response.text();
-      if (!response.ok) {
-        const firstLine = body.split("\n", 1)[0] ?? "";
-        return { path, imports: [], failure: `${response.status} ${firstLine}`.trim() };
-      }
-      return {
-        path,
-        imports: Array.from(body.matchAll(SPECIFIER), (match) => match[1] ?? ""),
-        failure: null,
-      };
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
+  try {
+    const response = await fetch(`${origin}${path}`);
+    const body = await response.text();
+    if (!response.ok) {
+      const firstLine = body.split("\n", 1)[0] ?? "";
+      return { path, imports: [], failure: `${response.status} ${firstLine}`.trim() };
     }
+    return {
+      path,
+      imports: Array.from(body.matchAll(SPECIFIER), (match) => match[1] ?? ""),
+      failure: null,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { path, imports: [], failure: `no answer: ${reason}` };
   }
-  return { path, imports: [], failure: `no answer after ${ATTEMPTS} attempts: ${failure}` };
 }
 
 /** Compile `paths` on the server at `origin`, `CONCURRENCY` at a time. */
@@ -78,12 +73,15 @@ async function compileAll(origin: string, paths: readonly string[]): Promise<Com
 }
 
 export default async function warmDevServers(): Promise<void> {
+  const servers = startedWorkerServers();
+  const origins = (kind: "dev" | "preview"): string =>
+    servers.map((worker) => worker[kind].url).join(", ");
+  process.stderr.write(`Mock servers: dev ${origins("dev")}; preview ${origins("preview")}.\n`);
   const started = Date.now();
-  const counts = await Promise.all(workerServers.map(({ dev }) => warmDevServer(dev.url)));
+  const counts = await Promise.all(servers.map(({ dev }) => warmDevServer(dev.url)));
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
-  const servers =
-    counts.length === 1 ? "the dev server's" : `${String(counts.length)} dev servers'`;
-  process.stderr.write(`Warmed ${servers} ${String(counts[0] ?? 0)} modules in ${seconds}s.\n`);
+  const warmed = counts.length === 1 ? "the dev server's" : `${String(counts.length)} dev servers'`;
+  process.stderr.write(`Warmed ${warmed} ${String(counts[0] ?? 0)} modules in ${seconds}s.\n`);
 }
 
 /** Compile every module the dev server at `origin` can reach from the entry, and answer how many there were. */

@@ -15,6 +15,8 @@
      * presses, but stays focusable so keyboard focus isn't dropped.
      */
     loading?: boolean;
+    /** Set for a toggle button: the button reports `aria-pressed` and shows as selected. */
+    pressed?: boolean;
     element?: HTMLButtonElement;
     children: Snippet;
   }
@@ -24,6 +26,7 @@
     size = "md",
     icon,
     loading = false,
+    pressed,
     type = "button",
     element = $bindable(),
     class: className,
@@ -42,6 +45,7 @@
   class={["ui-button", className]}
   data-variant={variant}
   data-size={size}
+  aria-pressed={pressed}
   aria-disabled={loading || undefined}
   aria-busy={loading || undefined}
   onclick={(event) => {
@@ -72,7 +76,7 @@
     border-radius: var(--corner-sm);
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
-    line-height: 1;
+    --leading: 1;
     white-space: nowrap;
     transition:
       background-color var(--duration-fast) var(--ease-out),
@@ -110,17 +114,24 @@
     color: var(--color-err-text);
   }
 
+  /* A toggle that is on reads as an icon button does: the vein tint under the label. */
+  .ui-button[aria-pressed="true"] {
+    background: var(--color-vein-tint);
+    color: var(--color-text);
+  }
+
   .ui-button:not(:disabled, [aria-disabled="true"]) {
     &:hover[data-variant="primary"] {
       background: var(--color-vein-hover);
     }
 
-    &:hover[data-variant="secondary"] {
+    &:hover:is([data-variant="secondary"], [aria-pressed="true"]) {
       background: var(--color-stone-4);
+      color: var(--color-text);
     }
 
     /* A floating layer sets --ui-quiet-hover: stone-3 wouldn't show on its stone-3 card. */
-    &:hover[data-variant="quiet"] {
+    &:hover[data-variant="quiet"]:not([aria-pressed="true"]) {
       background: var(--ui-quiet-hover, var(--color-stone-3));
       color: var(--color-text);
     }

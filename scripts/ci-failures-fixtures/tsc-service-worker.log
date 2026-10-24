@@ -1,0 +1,16 @@
+2026-10-17T03:48:22.7860853Z ##[group]Run cd web && npm run check
+2026-10-17T03:48:22.7861529Z [36;1mcd web && npm run check[0m
+2026-10-17T03:48:22.7882757Z shell: /usr/bin/bash -e {0}
+2026-10-17T03:48:22.7883483Z ##[endgroup]
+2026-10-17T03:48:22.9980906Z 
+2026-10-17T03:48:22.9981413Z > residuum-web@0.0.1 check
+2026-10-17T03:48:22.9982428Z > svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc -p src/sw/tsconfig.json
+2026-10-17T03:48:22.9983357Z 
+2026-10-17T03:48:49.9681363Z Loading svelte-check in workspace: /home/runner/_work/residuum/residuum/web
+2026-10-17T03:48:49.9683072Z Getting Svelte diagnostics...
+2026-10-17T03:48:49.9683671Z 
+2026-10-17T03:48:49.9777186Z [32msvelte-check found 0 errors and 0 warnings
+2026-10-17T03:48:52.0713330Z [39msrc/sw/probe.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.
+2026-10-17T03:48:52.0718117Z src/sw/probe.ts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.
+2026-10-17T03:48:52.1514457Z ##[error]Process completed with exit code 2.
+2026-10-17T03:48:52.4595745Z Post job cleanup.

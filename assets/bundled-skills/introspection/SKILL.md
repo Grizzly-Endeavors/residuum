@@ -13,5 +13,5 @@ File rules:
 
 Delivery rules:
 - If you found anything worth the user's attention, finish by calling user_inbox_add exactly once: short title, body listing what you suggest and the evidence behind it. Write plainly, for the user.
-- Before suggesting something, list and read your previous items (JSON files) in inbox/user/ and archive/inbox/user/ — do not repeat a suggestion the user has already seen.
+- Before suggesting something, check what every agent has already sent the user: call user_inbox_list with include_archived set to true, and read the relevant items with inbox_read and their refs. Do not repeat a suggestion the user has already seen, from you or from another agent.
 - If nothing warranted action, send nothing.

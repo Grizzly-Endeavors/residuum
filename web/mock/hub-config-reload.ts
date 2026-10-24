@@ -22,9 +22,9 @@ function changedSections(before: TomlTable, after: TomlTable): string[] {
 }
 
 /**
- * The hub's config reload (`reload` in `src/hub/runtime.rs`): it compares the
- * file with the config it is running on, tells hub clients with a notice and
- * a `hub_config_reloaded` frame, and keeps the running config when the file
+ * The hub's config reload (`reload` in `crates/hub/src/runtime.rs`): it compares the
+ * file with the config it is running on, tells hub clients how that went in a
+ * `hub_config_reloaded` frame, and keeps the running config when the file
  * can't be read.
  */
 export function createHubConfigReloader(
@@ -40,7 +40,6 @@ export function createHubConfigReloader(
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       const message = `hub config reload failed (keeping current hub config): ${reason}`;
-      broadcast({ type: "notice", level: "warn", message });
       broadcast({ type: "hub_config_reloaded", ok: false, changed: false, message });
       return;
     }
@@ -51,7 +50,6 @@ export function createHubConfigReloader(
     const changed = changedSections(running, loaded);
     running = loaded;
     const message = `hub configuration reloaded: ${changed.join(", ")}`;
-    broadcast({ type: "notice", level: "info", message });
     broadcast({ type: "hub_config_reloaded", ok: true, changed: true, message });
   };
 }

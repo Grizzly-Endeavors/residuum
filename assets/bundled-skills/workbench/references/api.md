@@ -51,11 +51,13 @@ The same file routes exist for each agent's own folder under `/api/agents/<agent
 
 ## Blocked Routes
 
-These answer `403` with `{ "error": "<reason>" }`, whatever the method: shutting Residuum down, stopping every agent, updating it, and finishing setup stay with the Residuum app.
+These answer `403` with `{ "error": "<reason>" }`, whatever the method: shutting Residuum down, stopping every agent, updating it, finishing setup, signing in to or switching off Residuum Cloud, pairing and managing browsers, and setting up remote access stay with the Residuum app.
 
 - `/api/hub/shutdown` and `/api/hub/stop-all`.
 - `/api/hub/update/check`, `/api/hub/update/apply`, and `/api/hub/update/restart`.
 - `/api/hub/config/complete-setup`.
+- `/api/hub/cloud/connect` and `/api/hub/cloud/disconnect`.
+- `/api/hub/devices` and `/api/hub/remote-access`, and every path below them.
 
 Everything else the web UI can call, an artifact can call, including starting or stopping one agent and writing config. Two kinds of path are answered by `residuum.fetch` itself with `400`, without being sent: one that belongs to an agent but names none (`POST /api/sessions` included: start sessions with `residuum.sessions.start({ agent, prompt })`), and one outside `/api/`.
 
@@ -82,7 +84,7 @@ Two places hear live events.
 |--------|--------|------------|
 | `turn_started` | `reply_to`, `origin` (`endpoint`, `sender?`, `visibility`) | The agent starts a turn in its main chat, started from the web, a chat interface (`origin.endpoint` is `telegram`, `discord` or `teams`), or no person at all (`background`). `reply_to` is the turn's id. |
 | `turn_ended` | `reply_to` | The turn is over, whatever its outcome. |
-| `user_message` | `id`, `turn_id`, `content`, `images?`, `sender?`, `endpoint` | A person's message entered the main chat, starting a turn or joining the one running. |
+| `user_message` | `id`, `turn_id`, `content`, `images?`, `sender?`, `agent_sender?`, `endpoint` | A person's message, or an agent's message (a teammate's, or one of the agent's own sessions' named by `agent_sender`), entered the main chat, starting a turn or joining the one running. |
 | `text_delta` / `thinking_delta` | `reply_to`, `call`, `text` | More of a model call's text or reasoning as it is written; a preview of the `broadcast_response` / `response` / `thinking` frame that follows. |
 | `stream_restart` | `reply_to`, `call` | What was streamed for that `call` is void; it starts over. |
 | `thinking` | `reply_to`, `call`, `content` | A model call's complete readable reasoning, sent before its text and tool calls. |
@@ -109,7 +111,7 @@ Load with `GET /api/team/workspace/tree`, start watching before that first load,
 
 ## Agent Sessions
 
-`await residuum.sessions.start({ agent, prompt, context, skill, model })` starts a session: a full fork of the agent named by `agent`, with its tools and memory, working on `prompt`. A session runs on one agent, so `agent` is required: a call without it rejects with a `TypeError` before anything is sent. `context` is extra text it reads first, `skill` a skill to run as, `model` one of `"small"`, `"medium"` (default), `"large"`. The session knows which artifact started it. Its output comes back to the page only: it never posts in the main chat, never files an inbox item on its own, and can't message the main agent. The page hears it from its first frame, whichever agent runs it. It shows in that agent's Activity in the web UI, as From a workbench page, where the user can watch or stop it. It keeps running if the page closes or reloads; a reloaded page finds its sessions with `GET /api/agents/<agent>/sessions?artifact=<name>`, then gets a handle back for one still running with `residuum.sessions.follow(agent, address)`.
+`await residuum.sessions.start({ agent, prompt, context, skill, model })` starts a session: a full fork of the agent named by `agent`, with its tools and memory, working on `prompt`. A session runs on one agent, so `agent` is required: a call without it rejects with a `TypeError` before anything is sent. `context` is extra text it reads first, `skill` a skill to run as, `model` a tier (`"small"`, `"medium"` (default), `"large"`) or one explicit model as `"provider/model"`, the format the agent's `providers.toml` uses. The session knows which artifact started it. Its output comes back to the page only: it never posts in the main chat, never files an inbox item on its own, and can't message the main agent. The page hears it from its first frame, whichever agent runs it. It shows in that agent's Activity in the web UI, as From a workbench page, where the user can watch or stop it. It keeps running if the page closes or reloads; a reloaded page finds its sessions with `GET /api/agents/<agent>/sessions?artifact=<name>`, then gets a handle back for one still running with `residuum.sessions.follow(agent, address)`.
 
 `residuum.sessions.follow(agent, address)` returns the same handle shape, at once, for a session the page already knows the address of — one still running across a reload, or one that started while the page was open elsewhere. It needs no prompt: the session already exists. Both `agent` and `address` are required, or it throws a `TypeError` before anything is sent. The handle's first frame is a `resync` with the session's current state, since a `follow` has none of its own frames to go on yet.
 

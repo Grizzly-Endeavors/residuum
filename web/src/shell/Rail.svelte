@@ -7,7 +7,7 @@
   import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
   import { runningCount } from "../lib/running-count";
-  import { formatLocation, HOME, locationAt, placesEqual, type Place } from "../lib/routes";
+  import { formatLocation, HOME, INBOX, locationAt, placesEqual, type Place } from "../lib/routes";
   import {
     Badge,
     Button,
@@ -39,7 +39,6 @@
   let { accordion, actions, onclose }: Props = $props();
 
   const uid = $props.id();
-  const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
   const WORKBENCH: Place = { kind: "workbench", artifact: null };
   const SHARED_FILES: Place = { kind: "shared-files" };
   const ROW_KEYS = new Set(["ArrowDown", "ArrowUp", "Home", "End"]);

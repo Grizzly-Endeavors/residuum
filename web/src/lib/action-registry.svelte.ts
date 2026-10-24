@@ -38,6 +38,8 @@ export interface AppAction {
   readonly takesText?: boolean;
   /** Why it can't run now, in plain words. Absent when it can. */
   readonly disabled?: string;
+  /** Why it can't run with text after it, when that differs from `disabled`. Absent when it can. */
+  readonly disabledWithText?: string;
   /** Listed only once something is typed, to keep the unsearched list short. */
   readonly searchOnly?: boolean;
   readonly run: (text?: string) => void;

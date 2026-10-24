@@ -242,11 +242,11 @@ describe("FeedStore day dividers for live messages around local midnight", () =>
 });
 
 describe("FeedStore when a turn fails", () => {
-  const error = (replyTo: string | null, details: string | null = null): ServerMessage => ({
+  const error = (replyTo: string | null, details?: string): ServerMessage => ({
     type: "error",
     reply_to: replyTo,
     message: "The model provider didn't answer.",
-    details,
+    ...(details === undefined ? {} : { details }),
   });
 
   function failingTurn(store: FeedStore, id = "web-a"): void {
@@ -299,10 +299,16 @@ describe("FeedStore when a turn fails", () => {
     expect(reloaded.feed.map((item) => item.kind)).toEqual(["user"]);
   });
 
-  it("keeps the images the user sent for Try again", () => {
+  it("offers no Try again for a message that carried files, whose uploads it used", () => {
     const store = new FeedStore();
-    const image = { media_type: "image/png", data: "AAAA" };
-    store.pushUserMessage("What is this?", [image], "web-a");
+    const file = {
+      item_id: "",
+      filename: "notes.pdf",
+      size: 10,
+      content_type: "application/pdf",
+      path: "",
+    };
+    store.pushUserMessage("What is this?", [file], "web-a");
     store.handleMessage({
       type: "turn_started",
       reply_to: "web-a",
@@ -310,9 +316,66 @@ describe("FeedStore when a turn fails", () => {
     });
     store.handleMessage(error("web-a"));
 
-    expect(store.feed.at(-1)).toMatchObject({
-      retry: { content: "What is this?", images: [image] },
+    const failure = store.feed.at(-1);
+    expect(failure?.kind).toBe("turn-failure");
+    expect(failure).not.toHaveProperty("retry");
+  });
+
+  it("shows the files of a message it sent as the agent saved them", () => {
+    const store = new FeedStore();
+    const sent = {
+      item_id: "",
+      filename: "notes.pdf",
+      size: 10,
+      content_type: "application/pdf",
+      path: "",
+    };
+    store.pushUserMessage("Read this", [sent], "web-a");
+    expect(store.feed.at(-1)).toMatchObject({ kind: "user", attachments: [sent] });
+
+    const saved = {
+      ...sent,
+      item_id: "20260314_chat_attachment_notes_pdf",
+      path: "inbox/agent/attachments/20260314_chat_attachment_notes_pdf/notes.pdf",
+    };
+    store.handleMessage({
+      type: "user_message",
+      id: "web-a",
+      turn_id: "web-a",
+      content: "Read this",
+      attachments: [saved],
+      endpoint: "ws",
     });
+    const shown = store.feed.filter((item) => item.kind === "user");
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toMatchObject({ attachments: [saved] });
+  });
+
+  it("takes a refused message off the feed, and the reply it was waiting on with it", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Read this", undefined, "web-a");
+    expect(store.isProcessing).toBe(true);
+
+    store.withdrawRefused("web-a");
+
+    expect(store.feed.filter((item) => item.kind === "user")).toEqual([]);
+    expect(store.isProcessing).toBe(false);
+  });
+
+  it("takes a refused message off the waiting messages", () => {
+    const store = new FeedStore();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.pushUserMessage("And this", undefined, "web-b");
+    expect(store.waiting.map((message) => message.id)).toEqual(["web-b"]);
+
+    store.withdrawRefused("web-b");
+
+    expect(store.waiting).toEqual([]);
+    expect(store.isProcessing).toBe(true);
   });
 
   it("puts the failure inside its turn's block, so the turn ends on it", () => {
@@ -449,13 +512,13 @@ describe("FeedStore announcements", () => {
       reply_to: "t1",
       origin: { endpoint: "ws", visibility: "user" },
     });
-    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope.", details: null });
+    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope." });
     expect(store.announcement?.text).toBe("atlas couldn't finish");
   });
 
   it("leaves an error that names no turn to its toast", () => {
     const store = named();
-    store.handleMessage({ type: "error", reply_to: null, message: "Bad frame.", details: null });
+    store.handleMessage({ type: "error", reply_to: null, message: "Bad frame." });
     expect(store.announcement).toBeNull();
   });
 
@@ -563,7 +626,7 @@ describe("FeedStore with a turn id history already holds", () => {
 });
 
 describe("FeedStore flagging messages that reach a running turn", () => {
-  it("flags a user message sent while a turn runs, and not one that starts a turn", () => {
+  it("flags a user message the running turn read, and not one that starts a turn", () => {
     const store = storeWithSettledHistory();
     store.pushUserMessage("Draft the post", undefined, "web-a");
     store.handleMessage({
@@ -572,26 +635,57 @@ describe("FeedStore flagging messages that reach a running turn", () => {
       origin: { endpoint: "ws", visibility: "user" },
     });
     store.pushUserMessage("Keep it short", undefined, "web-b");
+    store.handleMessage({
+      type: "user_message",
+      id: "web-b",
+      turn_id: "web-a",
+      content: "Keep it short",
+      endpoint: "ws",
+    });
 
     const users = store.feed.filter((item) => item.kind === "user").slice(-2);
     expect(users[0]).not.toHaveProperty("midTurn");
     expect(users[1]).toMatchObject({ content: "Keep it short", turnId: "web-a", midTurn: true });
   });
 
-  it("flags a session's message that arrives mid-turn", () => {
+  it("flags a session's message the running turn read, and not one that starts a turn", () => {
     const store = storeWithSettledHistory();
-    store.pushAgentMessage("spawned-1", "run-1", "Done early", null);
+    // As the backend announces a session's message: header first, with the session and its run.
+    const fromSession = (id: string, turnId: string, body: string): ServerMessage => ({
+      type: "user_message",
+      id,
+      turn_id: turnId,
+      content: `[Agent Message from spawned-1 (spawned)]\n${body}`,
+      agent_sender: { address: "spawned-1", category: "spawned", run_id: "run-1" },
+      endpoint: "background",
+    });
+    store.handleMessage(fromSession("bg-1", "bg-1", "Done early"));
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "bg-1",
+      origin: { endpoint: "background", visibility: "background" },
+    });
+    store.handleMessage({ type: "turn_ended", reply_to: "bg-1" });
     store.pushUserMessage("Go", undefined, "web-a");
     store.handleMessage({
       type: "turn_started",
       reply_to: "web-a",
       origin: { endpoint: "ws", visibility: "user" },
     });
-    store.pushAgentMessage("spawned-1", "run-1", "Result", null);
+    store.handleMessage(fromSession("bg-2", "web-a", "Result"));
 
     const messages = store.feed.filter((item) => item.kind === "agent-message");
+    expect(messages[0]).toMatchObject({ content: "Done early", turnId: "bg-1" });
     expect(messages[0]).not.toHaveProperty("midTurn");
-    expect(messages[1]).toMatchObject({ content: "Result", turnId: "web-a", midTurn: true });
+    expect(messages[1]).toMatchObject({
+      from: "spawned-1",
+      category: "spawned",
+      content: "Result",
+      runId: "run-1",
+      messageId: "bg-2",
+      turnId: "web-a",
+      midTurn: true,
+    });
   });
 });
 

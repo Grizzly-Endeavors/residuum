@@ -5,6 +5,7 @@ import { toast } from "../../lib/toast.svelte";
 import { jsonResponse, mockFetch, render, screen } from "../../test/component";
 import FileHistoryDialog from "./FileHistoryDialog.svelte";
 import type { FileSource } from "./file-source";
+import { waitFor } from "../../test/wait";
 
 function checkpoint(id: string, summary: string): Record<string, unknown> {
   return {
@@ -79,7 +80,7 @@ describe("a file's history", () => {
     open({ agent: "atlas", scope: "agent" }, "memory/notes.md");
     await screen.findByText("+new");
     await userEvent.click(screen.getByRole("button", { name: "Restore this version" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(restoreBody).toEqual({ repo: "workspace", path: "memory/notes.md" });
     });
     expect(restore).toHaveBeenCalledWith("atlas", "cp1", "workspace", "memory/notes.md");

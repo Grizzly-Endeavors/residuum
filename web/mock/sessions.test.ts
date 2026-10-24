@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  AgentSender,
   ServerMessage,
   SessionListResponse,
   SessionSummary,
 } from "../src/lib/generated/protocol";
 import type { SessionTranscriptResponse } from "../src/lib/types";
+import { controlRoutes } from "./controls";
+import { createMockEnv } from "./env";
 import { sendSessionMessage, sessionRoutes, spawnSession, stopSession } from "./sessions";
 import { createState, type MockState } from "./state";
 import {
+  advanceMockTime,
   captureFrames,
   fetchJson,
   fetchText,
@@ -19,6 +23,12 @@ const ARTIFACT_HEADER = { "X-Residuum-Artifact": "tip-splitter" };
 const DISCORD = "external-discord-4f1c9a2e7b3d0856";
 const TELEGRAM = "external-telegram-a07d3e5519c2b4f8";
 const RESEARCH = "spawned-research-3f9a";
+
+type ReadFrame = Extract<ServerMessage, { type: "session_user_message" }>;
+
+function isRead(frame: ServerMessage): frame is ReadFrame {
+  return frame.type === "session_user_message";
+}
 
 const UNTRACKED = {
   usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
@@ -119,10 +129,7 @@ describe("sessions endpoints", () => {
   });
 
   describe("starting a session", () => {
-    it("needs the artifact identity header", async () => {
-      const missing = await post(harness, "/api/sessions", { prompt: "hi" });
-      expect(missing.status).toBe(400);
-      expect(String(missing.body.error)).toContain("X-Residuum-Artifact");
+    it("refuses an identity header that names no artifact", async () => {
       const malformed = await post(
         harness,
         "/api/sessions",
@@ -130,6 +137,81 @@ describe("sessions endpoints", () => {
         { "X-Residuum-Artifact": "Not A Name" },
       );
       expect(malformed.status).toBe(400);
+      expect(String(malformed.body.error)).toContain("x-residuum-artifact");
+      expect((await list()).body.live).toHaveLength(3);
+    });
+
+    it("refuses unknown fields, a bad model and a fork from an artifact", async () => {
+      const unknown = await post(harness, "/api/sessions", { prompt: "hi", agent: "atlas" });
+      expect(unknown.status).toBe(400);
+      expect(String(unknown.body.error)).toContain("unknown field `agent`");
+      const model = await post(harness, "/api/sessions", { prompt: "hi", model: "huge" });
+      expect(model).toEqual({
+        status: 400,
+        body: {
+          error:
+            "invalid model 'huge': use a tier (small, medium, or large) or a model id in provider/model form, such as anthropic/claude-haiku-4-5",
+        },
+      });
+      const fork = await post(
+        harness,
+        "/api/sessions",
+        { prompt: "hi", fork: true },
+        ARTIFACT_HEADER,
+      );
+      expect(fork.status).toBe(400);
+      expect(String(fork.body.error)).toContain("/multitask");
+      expect((await list()).body.live).toHaveLength(3);
+    });
+
+    it("starts the owner's own clean session without the identity header", async () => {
+      const { status, body } = await post(harness, "/api/sessions", {
+        prompt: "plan the garden",
+        model: "large",
+      });
+      expect(status).toBe(202);
+      expect(body).toEqual({ address: "spawned-session-a001" });
+      const started = harness.frames.find((f) => f.type === "session_started");
+      expect(started).toMatchObject({
+        session: {
+          address: "spawned-session-a001",
+          category: "spawned",
+          source_label: "owner:session",
+          spawner: null,
+          depth: 1,
+          purpose: "plan the garden",
+        },
+      });
+    });
+
+    it("starts a session on an explicit provider/model, as the backend does", async () => {
+      const { status } = await post(harness, "/api/sessions", {
+        prompt: "plan the garden",
+        model: "anthropic/claude-haiku-4-5",
+      });
+      expect(status).toBe(202);
+    });
+
+    it("forks the main conversation for /multitask", async () => {
+      const { status, body } = await post(harness, "/api/sessions", {
+        prompt: "price out the paint",
+        fork: true,
+      });
+      expect(status).toBe(202);
+      expect(body).toEqual({ address: "spawned-multitask-a001" });
+      const live = (await list()).body.live;
+      expect(live[0]).toMatchObject({
+        address: "spawned-multitask-a001",
+        category: "spawned",
+        source_label: "owner:multitask",
+        spawner: null,
+      });
+      const transcript = await fetchJson(
+        `${harness.baseUrl}/api/sessions/runs/${live[0]?.run_id ?? ""}/transcript`,
+      );
+      const messages = (transcript.body as SessionTranscriptResponse).messages;
+      expect(messages[0]?.content).toMatch(/^\[You are a fork of the main conversation/);
+      expect(messages[0]?.content).toMatch(/price out the paint$/);
     });
 
     it("rejects an empty prompt and an empty body", async () => {
@@ -195,22 +277,89 @@ describe("sessions endpoints", () => {
       const unknown = await post(harness, "/api/sessions/nope/messages", { content: "hi" });
       expect(unknown.status).toBe(404);
       expect(unknown.body.code).toBe("unknown_address");
+      const badId = await post(harness, `/api/sessions/${DISCORD}/messages`, {
+        content: "hi",
+        id: "has space",
+      });
+      expect(badId.status).toBe(400);
+      expect(badId.body).toEqual({
+        error:
+          "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.",
+        code: "invalid_request",
+      });
     });
 
-    it("delivers to a live session, attributed to the artifact or the owner", async () => {
+    it("delivers to a live session, attributed to the artifact or the owner, and reads it as a turn begins", async () => {
       const fromArtifact = await post(
         harness,
         `/api/sessions/${DISCORD}/messages`,
         { content: "status?" },
         ARTIFACT_HEADER,
       );
-      expect(fromArtifact).toEqual({ status: 200, body: { outcome: "live" } });
-      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "and now?" });
-
+      expect(fromArtifact).toEqual({ status: 200, body: { outcome: "live", id: "msg-s-1" } });
+      const started = harness.frames.find((f) => f.type === "session_turn_started");
+      expect(harness.frames.find((f) => f.type === "session_user_message")).toEqual({
+        type: "session_user_message",
+        address: DISCORD,
+        run_id: "run-live-discord",
+        id: "msg-s-1",
+        turn_id: started && "turn_id" in started ? started.turn_id : "",
+        content: "status?",
+        from: "artifact:tip-splitter",
+        from_category: "artifact",
+      });
       const transcript = harness.state.sessions.transcripts.get("run-live-discord") ?? [];
-      const last = transcript.slice(-2).map((m) => m.content);
-      expect(last[0]).toMatch(/^\[Message from the workbench artifact "tip-splitter"/);
-      expect(last[1]).toMatch(/^\[Message from the owner via the web UI/);
+      expect(transcript.at(-1)).toMatchObject({ role: "user", id: "msg-s-1" });
+      expect(transcript.at(-1)?.content).toMatch(
+        /^\[Message from the workbench artifact "tip-splitter".*\]\nstatus\?$/,
+      );
+    });
+
+    it("reads a message sent during a turn after the turn's tool batch, under the id the client chose", async () => {
+      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "status?" });
+      const during = await post(harness, `/api/sessions/${DISCORD}/messages`, {
+        content: "and now?",
+        id: "web-7",
+      });
+      expect(during.body).toEqual({ outcome: "live", id: "web-7" });
+      const reads = (): ReadFrame[] => harness.frames.filter(isRead);
+      expect(reads().map((f) => f.id)).toEqual(["msg-s-1"]);
+
+      await advanceMockTime(harness.state.env, 1200);
+      expect(reads().at(-1)).toMatchObject({
+        id: "web-7",
+        turn_id: reads()[0]?.turn_id,
+        from: "owner",
+        from_category: "owner",
+        content: "and now?",
+      });
+      // The tool result came first: it was read at the checkpoint after it.
+      expect(harness.frames.map((f) => f.type).slice(-2)).toEqual([
+        "session_tool_result",
+        "session_user_message",
+      ]);
+      const transcript = harness.state.sessions.transcripts.get("run-live-discord") ?? [];
+      expect(transcript.at(-1)).toMatchObject({ id: "web-7" });
+
+      await advanceMockTime(harness.state.env, 1200);
+      expect(transcript.at(-1)?.content).toBe('Understood: "and now?".');
+      // Only the one turn ran.
+      expect(harness.frames.filter((f) => f.type === "session_turn_started")).toHaveLength(1);
+    });
+
+    it("starts the next turn with a message sent after the tool batch", async () => {
+      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "status?" });
+      await advanceMockTime(harness.state.env, 1500);
+      await post(harness, `/api/sessions/${DISCORD}/messages`, { content: "late", id: "web-8" });
+      await advanceMockTime(harness.state.env, 900);
+      const starts = harness.frames.filter((f) => f.type === "session_turn_started");
+      expect(starts).toHaveLength(2);
+      const second = starts[1];
+      expect(harness.frames.at(-1)).toMatchObject({
+        type: "session_user_message",
+        id: "web-8",
+        turn_id: second && "turn_id" in second ? second.turn_id : "",
+      });
     });
 
     it("resumes a finished session as a new run", async () => {
@@ -218,7 +367,7 @@ describe("sessions endpoints", () => {
         content: "hello again",
       });
       expect(status).toBe(200);
-      expect(body).toEqual({ outcome: "resumed" });
+      expect(body).toEqual({ outcome: "resumed", id: "msg-s-1" });
       const live = (await list()).body.live;
       expect(live[0]).toMatchObject({
         address: TELEGRAM,
@@ -230,10 +379,55 @@ describe("sessions endpoints", () => {
   });
 });
 
+describe("an owner start that fails after it is accepted", () => {
+  let harness: RouteHarness;
+  let env: ReturnType<typeof createMockEnv>;
+
+  beforeEach(async () => {
+    env = createMockEnv({ deterministic: true });
+    env.setTimeMode("manual");
+    harness = await startRouteHarness([...sessionRoutes, ...controlRoutes], env);
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it("answers 202, lists no run, then says why it couldn't start; the next start succeeds", async () => {
+    expect((await post(harness, "/api/mock/fail-next-session-start", {})).status).toBe(200);
+    const failed = await post(harness, "/api/sessions", { prompt: "plan the garden" });
+    expect(failed).toEqual({ status: 202, body: { address: "spawned-session-a001" } });
+    expect(harness.state.sessions.live.map((s) => s.address)).not.toContain("spawned-session-a001");
+    expect(harness.frames).toEqual([]);
+
+    await env.advance(400);
+    expect(harness.frames).toEqual([
+      {
+        type: "session_start_failed",
+        address: "spawned-session-a001",
+        error: expect.stringContaining("couldn't start") as unknown,
+        error_details: expect.stringContaining("failed to build provider chain") as unknown,
+      },
+    ]);
+
+    const retried = await post(harness, "/api/sessions", { prompt: "plan the garden" });
+    expect(retried).toEqual({ status: 202, body: { address: "spawned-session-a002" } });
+    expect(harness.frames.map((f) => f.type)).toContain("session_started");
+  });
+
+  it("leaves an artifact's start alone", async () => {
+    await post(harness, "/api/mock/fail-next-session-start", {});
+    await post(harness, "/api/sessions", { prompt: "split the tip" }, ARTIFACT_HEADER);
+    expect(harness.frames.map((f) => f.type)).toEqual(["session_started"]);
+  });
+});
+
 describe("session commands and lifecycle", () => {
   let state: MockState;
   let frames: ServerMessage[];
   let replies: ServerMessage[];
+  /** What the sessions sent the main conversation, in order. */
+  let toMain: Array<{ content: string; sender: AgentSender }>;
   const reply = (frame: ServerMessage): void => {
     replies.push(frame);
   };
@@ -247,6 +441,10 @@ describe("session commands and lifecycle", () => {
     state = createState("atlas");
     frames = captureFrames(state);
     replies = [];
+    toMain = [];
+    state.messageMain = (content, sender) => {
+      toMain.push({ content, sender });
+    };
   });
 
   afterEach(() => {
@@ -270,14 +468,25 @@ describe("session commands and lifecycle", () => {
   it("delivers to a live session and runs a turn: running, tool call, reply, idle", () => {
     sendSessionMessage(state, reply, "c2", DISCORD, "status?");
     expect(replies).toEqual([
-      { type: "session_message_delivered", id: "c2", address: DISCORD, outcome: "live" },
+      {
+        type: "session_message_delivered",
+        id: "c2",
+        address: DISCORD,
+        message_id: expect.stringMatching(/^msg-s-/) as string,
+        outcome: "live",
+      },
     ]);
-    expect(types(frames)).toEqual(["session_state_changed", "session_turn_started"]);
+    expect(types(frames)).toEqual([
+      "session_state_changed",
+      "session_turn_started",
+      "session_user_message",
+    ]);
 
     vi.advanceTimersByTime(2400);
     expect(types(frames)).toEqual([
       "session_state_changed",
       "session_turn_started",
+      "session_user_message",
       "session_broadcast_response",
       "session_tool_call",
       "session_tool_result",
@@ -290,10 +499,36 @@ describe("session commands and lifecycle", () => {
     expect(reply2?.content).toBe('Understood: "status?". Adjusting course.');
   });
 
-  it("relays a spawned session's reply to main", () => {
+  it("relays a spawned session's reply to main, naming the run that sent it", () => {
     sendSessionMessage(state, reply, "c3", RESEARCH, "keep going");
     vi.advanceTimersByTime(2400);
-    expect(frames.at(-1)).toMatchObject({ type: "session_message_to_main", address: RESEARCH });
+    expect(toMain).toEqual([
+      {
+        content: `[Agent Message from ${RESEARCH} (spawned)]\nUnderstood: "keep going". Adjusting course.`,
+        sender: { address: RESEARCH, category: "spawned", run_id: "run-live-research" },
+      },
+    ]);
+  });
+
+  it("sends main nothing for a session main didn't spawn", () => {
+    sendSessionMessage(state, reply, "c3b", DISCORD, "status?");
+    vi.advanceTimersByTime(2400);
+    expect(toMain).toEqual([]);
+  });
+
+  it("refuses a chosen message id the backend would refuse", () => {
+    sendSessionMessage(state, reply, "c16", DISCORD, "hi", "x".repeat(129));
+    expect(replies).toEqual([
+      {
+        type: "session_command_failed",
+        id: "c16",
+        address: DISCORD,
+        code: "invalid_request",
+        message:
+          "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.",
+      },
+    ]);
+    expect(frames).toEqual([]);
   });
 
   it("rejects an address it has never seen", () => {
@@ -302,9 +537,15 @@ describe("session commands and lifecycle", () => {
   });
 
   it("resumes a finished session after a short wait, as a new forking run", () => {
-    sendSessionMessage(state, reply, "c5", TELEGRAM, "resume me");
+    sendSessionMessage(state, reply, "c5", TELEGRAM, "resume me", "web-c5");
     expect(replies).toEqual([
-      { type: "session_message_delivered", id: "c5", address: TELEGRAM, outcome: "resumed" },
+      {
+        type: "session_message_delivered",
+        id: "c5",
+        address: TELEGRAM,
+        message_id: "web-c5",
+        outcome: "resumed",
+      },
     ]);
     expect(frames).toEqual([]);
 
@@ -316,6 +557,24 @@ describe("session commands and lifecycle", () => {
     expect(summaryOf("run-resumed-1")?.state).toBe("forking");
     vi.advanceTimersByTime(400);
     expect(summaryOf("run-resumed-1")?.state).toBe("running");
+    // The new run's first turn reads the message, under the id it was sent with.
+    expect(frames.at(-1)).toMatchObject({
+      type: "session_user_message",
+      id: "web-c5",
+      run_id: "run-resumed-1",
+      content: "resume me",
+      from: "owner",
+    });
+    // Its transcript opens with the pointer to the previous run, marked as
+    // context, then the message.
+    const transcript = state.sessions.transcripts.get("run-resumed-1") ?? [];
+    const [pointer, read] = transcript;
+    expect(pointer).toMatchObject({ role: "user", context: true });
+    expect(pointer?.content).toMatch(
+      /^\[Resumed session\] Your previous run \(run-done-telegram\)/,
+    );
+    expect(read).toMatchObject({ role: "user", id: "web-c5" });
+    expect(read).not.toHaveProperty("context");
   });
 
   it("stops a live session, then moves it to the finished list", () => {
@@ -335,9 +594,10 @@ describe("session commands and lifecycle", () => {
       run_id: "run-live-discord",
       status: "cancelled",
       error: null,
-      error_details: null,
       episode_id: null,
     });
+    // As on the wire, a finish with no details leaves the key out.
+    expect(frames.at(-1)).not.toHaveProperty("error_details");
   });
 
   it("refuses to stop a session that is winding down, finished, or unknown", () => {
@@ -351,6 +611,21 @@ describe("session commands and lifecycle", () => {
       "not_live",
       "not_live",
       "not_live",
+    ]);
+  });
+
+  it("resumes a stopped run with what its turn hadn't read, as the backend does", () => {
+    sendSessionMessage(state, reply, "c13", DISCORD, "status?");
+    sendSessionMessage(state, reply, "c14", DISCORD, "and this?");
+    stopSession(state, reply, "c15", DISCORD);
+    vi.advanceTimersByTime(5000);
+    const resumed = frames.find((frame) => frame.type === "session_started");
+    expect(resumed).toMatchObject({ session: { address: DISCORD } });
+    const resumedRun = resumed?.type === "session_started" ? resumed.session.run_id : null;
+    expect(resumedRun).not.toBe("run-live-discord");
+    expect(frames.filter(isRead).map((frame) => [frame.run_id, frame.content])).toEqual([
+      ["run-live-discord", "status?"],
+      [resumedRun, "and this?"],
     ]);
   });
 
@@ -377,11 +652,13 @@ describe("session commands and lifecycle", () => {
     expect(frames[0]).toMatchObject({ type: "session_started" });
 
     vi.advanceTimersByTime(400 + 2400);
-    expect(frames.at(-1)).toEqual({
-      type: "session_message_to_main",
-      address: "spawned-subagent-a001",
-      run_id: "run-new-1",
-      content: "Finished: Look into otters. Two items need a look; details are in the transcript.",
-    });
+    expect(toMain).toEqual([
+      {
+        content:
+          "[Agent Message from spawned-subagent-a001 (spawned)]\n" +
+          "Finished: Look into otters. Two items need a look; details are in the transcript.",
+        sender: { address: "spawned-subagent-a001", category: "spawned", run_id: "run-new-1" },
+      },
+    ]);
   });
 });

@@ -1,5 +1,5 @@
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary } from "../../lib/hub-types";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
@@ -10,6 +10,7 @@ import { confirmations, type StatusDotState } from "../../lib/ui";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
 import AgentMenu from "./AgentMenu.svelte";
+import { waitFor } from "../../test/wait";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -35,12 +36,8 @@ let calls: Call[] = [];
 let patchFails = false;
 let checkpointId: string | null = "ckpt-9";
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
-});
-
-afterAll(() => {
-  router.stop();
 });
 
 beforeEach(() => {
@@ -161,7 +158,7 @@ describe("AgentMenu", () => {
     });
     expect(confirmations.current?.message).toMatch(/^drifter's folder is removed/);
     confirmations.answer(false);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(confirmations.current).toBeNull();
     });
     await settle();
@@ -175,7 +172,7 @@ describe("AgentMenu", () => {
     expect(confirmations.current?.message).toMatch(/^atlas stops, and its folder is removed/);
     confirmations.answer(true);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(drop).toHaveBeenCalledWith("atlas");
     });
     expect(calls).toContainEqual({
@@ -192,7 +189,7 @@ describe("AgentMenu", () => {
     const { user } = await openMenu(agent("drifter", { state: "stopped" }));
     await user.click(item("Delete"));
     confirmations.answer(true);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(notifications.history[0]).toMatchObject({ kind: "error" });
     });
     expect(notifications.history[0]?.message).toMatch(/no checkpoint was taken first/);

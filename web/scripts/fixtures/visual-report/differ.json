@@ -1,0 +1,288 @@
+{
+  "config": {
+    "argv": [
+      "node",
+      "/repo/web/node_modules/.bin/playwright",
+      "test",
+      "--config",
+      "/repo/web/scripts/fixtures/visual-report/capture/playwright.config.mjs",
+      "--project=visual-desktop",
+      "--workers=1",
+      "--grep",
+      "chat"
+    ],
+    "configFile": "/repo/web/scripts/fixtures/visual-report/capture/playwright.config.mjs",
+    "rootDir": "/repo/web/scripts/fixtures/visual-report/capture/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/capture-scratch/results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "visual-desktop",
+        "name": "visual-desktop",
+        "testDir": "/repo/web/scripts/fixtures/visual-report/capture/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json",
+        {
+          "outputFile": "/capture-scratch/report.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "visual.spec.mjs",
+      "file": "visual.spec.mjs",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "chat",
+          "file": "visual.spec.mjs",
+          "line": 32,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a finished turn's activity line, open to a step's details",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1404,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: locator('#t')\n  5000 pixels (ratio 1.00 of all image pixels) are different.\n\n  Snapshot: chat-turn.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(chat-turn.png)\" locator('#t') with timeout 2000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: locator('#t')\n  5000 pixels (ratio 1.00 of all image pixels) are different.\n\n  Snapshot: chat-turn.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(chat-turn.png)\" locator('#t') with timeout 2000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\n    at /repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs:35:38",
+                        "location": {
+                          "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                          "column": 38,
+                          "line": 35
+                        },
+                        "snippet": "  33 |   test(\"a finished turn's activity line, open to a step's details\", async ({ page }, testInfo) => {\n  34 |     await page.setContent(box(changed(testInfo, \"chat-turn\") ? \"blue\" : \"green\"));\n> 35 |     await expect(page.locator(\"#t\")).toHaveScreenshot(\"chat-turn.png\");\n     |                                      ^\n  36 |   });\n  37 |\n  38 |   test(\"the composer\", async ({ page }, testInfo) => {"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                            "column": 38,
+                            "line": 35
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: locator('#t')\n  5000 pixels (ratio 1.00 of all image pixels) are different.\n\n  Snapshot: chat-turn.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(chat-turn.png)\" locator('#t') with timeout 2000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\n\n  33 |   test(\"a finished turn's activity line, open to a step's details\", async ({ page }, testInfo) => {\n  34 |     await page.setContent(box(changed(testInfo, \"chat-turn\") ? \"blue\" : \"green\"));\n> 35 |     await expect(page.locator(\"#t\")).toHaveScreenshot(\"chat-turn.png\");\n     |                                      ^\n  36 |   });\n  37 |\n  38 |   test(\"the composer\", async ({ page }, testInfo) => {\n    at /repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs:35:38"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:26.403Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "chat-turn-expected.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/snapshots/chat-turn-visual-desktop-linux.png"
+                        },
+                        {
+                          "name": "chat-turn-actual.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/results/visual-chat-a-finished-tur-82950-ne-open-to-a-step-s-details-visual-desktop/chat-turn-actual.png"
+                        },
+                        {
+                          "name": "chat-turn-diff.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/results/visual-chat-a-finished-tur-82950-ne-open-to-a-step-s-details-visual-desktop/chat-turn-diff.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/capture-scratch/results/visual-chat-a-finished-tur-82950-ne-open-to-a-step-s-details-visual-desktop/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                        "column": 38,
+                        "line": 35
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-0a456c35605fe7038934",
+              "file": "visual.spec.mjs",
+              "line": 33,
+              "column": 3
+            },
+            {
+              "title": "the composer",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1222,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: locator('#t')\n  5000 pixels (ratio 1.00 of all image pixels) are different.\n\n  Snapshot: composer.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(composer.png)\" locator('#t') with timeout 2000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: locator('#t')\n  5000 pixels (ratio 1.00 of all image pixels) are different.\n\n  Snapshot: composer.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(composer.png)\" locator('#t') with timeout 2000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\n    at /repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs:40:38",
+                        "location": {
+                          "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                          "column": 38,
+                          "line": 40
+                        },
+                        "snippet": "  38 |   test(\"the composer\", async ({ page }, testInfo) => {\n  39 |     await page.setContent(box(changed(testInfo, \"composer\") ? \"blue\" : \"red\"));\n> 40 |     await expect(page.locator(\"#t\")).toHaveScreenshot(\"composer.png\");\n     |                                      ^\n  41 |   });\n  42 |\n  43 |   test(\"a message's details\", async ({ page }, testInfo) => {"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                            "column": 38,
+                            "line": 40
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: locator('#t')\n  5000 pixels (ratio 1.00 of all image pixels) are different.\n\n  Snapshot: composer.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(composer.png)\" locator('#t') with timeout 2000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - waiting for locator('#t')\u001b[22m\n\u001b[2m    - locator resolved to <div id=\"t\"></div>\u001b[22m\n\u001b[2m  - taking element screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - attempting scroll into view action\u001b[22m\n\u001b[2m    - waiting for element to be stable\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 5000 pixels (ratio 1.00 of all image pixels) are different.\u001b[22m\n\n\n  38 |   test(\"the composer\", async ({ page }, testInfo) => {\n  39 |     await page.setContent(box(changed(testInfo, \"composer\") ? \"blue\" : \"red\"));\n> 40 |     await expect(page.locator(\"#t\")).toHaveScreenshot(\"composer.png\");\n     |                                      ^\n  41 |   });\n  42 |\n  43 |   test(\"a message's details\", async ({ page }, testInfo) => {\n    at /repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs:40:38"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:29.737Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "composer-expected.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/snapshots/composer-visual-desktop-linux.png"
+                        },
+                        {
+                          "name": "composer-actual.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/results/visual-chat-the-composer-visual-desktop/composer-actual.png"
+                        },
+                        {
+                          "name": "composer-diff.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/results/visual-chat-the-composer-visual-desktop/composer-diff.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/capture-scratch/results/visual-chat-the-composer-visual-desktop/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                        "column": 38,
+                        "line": 40
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-92ce40298499b3af66ea",
+              "file": "visual.spec.mjs",
+              "line": 38,
+              "column": 3
+            },
+            {
+              "title": "a message's details",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1672,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:33.279Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-8c001c149ae79fee89cd",
+              "file": "visual.spec.mjs",
+              "line": 43,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-13T19:46:25.074Z",
+    "duration": 10444.578,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 2,
+    "flaky": 0
+  }
+}

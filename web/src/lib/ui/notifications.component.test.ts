@@ -1,19 +1,16 @@
 import { act, cleanup, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "../../test/component";
 import NotificationsHarness from "../../test/ui/NotificationsHarness.svelte";
 import { composerClearance } from "../composer-clearance.svelte";
 import { notifications } from "../notifications.svelte";
 import { router } from "../router.svelte";
 import { toast } from "../toast.svelte";
+import { waitFor } from "../../test/wait";
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
-});
-
-afterAll(() => {
-  router.stop();
 });
 
 beforeEach(() => {
@@ -24,7 +21,7 @@ beforeEach(() => {
 afterEach(async () => {
   vi.useRealTimers();
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
 });

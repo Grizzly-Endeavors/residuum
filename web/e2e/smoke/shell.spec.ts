@@ -50,7 +50,7 @@ const PLACES: readonly PlaceCase[] = [
     name: "Inbox",
     link: /^Inbox/,
     path: "/inbox",
-    shows: (page) => page.getByRole("region", { name: "Inbox" }),
+    shows: (page) => page.getByRole("heading", { name: "Inbox", level: 1 }),
   },
   {
     name: "Chat",
@@ -287,6 +287,26 @@ test.describe("old URLs redirect to where they lead now", () => {
   }
 });
 
+test("an address the app doesn't have shows Not Found inside the shell, with the way back", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/agent/atlas/old-notes");
+  await expect(page.getByRole("heading", { name: "Page not found", level: 1 })).toBeVisible();
+  await expect(page.getByText("/agent/atlas/old-notes", { exact: true })).toBeVisible();
+  expect(address(page)).toBe("/agent/atlas/old-notes");
+  await expect(page).toHaveTitle("Page not found · Residuum");
+  // The shell's own navigation stays in reach.
+  await expect(
+    page.getByRole("navigation", { name: isMobile ? "Main" : "Places and agents" }),
+  ).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await page.getByRole("button", { name: "Go to Home" }).click();
+  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
+  expect(address(page)).toBe("/home");
+});
+
 test("a redirect replaces the old URL in the history", async ({ page }) => {
   await page.goto("/home");
   await page.goto("/agent/atlas/scheduled");
@@ -299,19 +319,18 @@ test("the hub banner shows while the hub can't be reached, and Retry reconnects"
   page,
   mock,
 }) => {
-  await page.clock.install();
   await page.goto("/agent/atlas");
   await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
   const banner = page.getByRole("status").filter({ hasText: "Can't reach Residuum." });
   await expect(banner).toBeHidden();
+  // Manual time holds the socket's own reconnect timer, which would otherwise
+  // race the click below once the hub is back, so only Retry can reconnect it.
+  await mock.manualTime();
 
   await mock.post("/api/mock/hub-socket", { data: { online: false } });
   await expect(banner).toBeVisible();
   await expectNoAxeViolations(page);
 
-  // Hold the socket's own reconnect timer, which would otherwise race the
-  // click below once the hub is back, so only Retry can reconnect it.
-  await page.clock.pauseAt(Date.now() + 2_000);
   const retry = banner.getByRole("button", { name: "Retry" });
   await expect(retry).not.toHaveAttribute("aria-busy", "true");
   await mock.post("/api/mock/hub-socket", { data: { online: true } });

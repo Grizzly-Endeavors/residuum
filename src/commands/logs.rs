@@ -3,11 +3,11 @@
 //! Reads NDJSON log files produced by `tracing-subscriber`'s JSON formatter,
 //! applies optional module/level filters, and renders human-readable output.
 
-use residuum::util::FatalError;
-use residuum::util::log_format::{
-    LogEntry, LogLevel, expand_module_filter, format_entry, format_entry_colored, meets_level,
-    parse_line,
+use residuum::logging::format::{
+    LogEntry, LogLevel, format_entry, format_entry_colored, meets_level, module_matches, parse_line,
 };
+use residuum::util::FatalError;
+use std::io::Write;
 
 #[derive(clap::Args)]
 pub(super) struct LogsArgs {
@@ -30,16 +30,30 @@ pub(super) struct LogsArgs {
 
 /// Resolved filter criteria, computed once from CLI args.
 struct LogFilter {
-    module_prefix: Option<String>,
+    module: Option<String>,
     min_level: Option<LogLevel>,
     agent: Option<String>,
     raw_json: bool,
     color: bool,
 }
 
+/// The line printed when a non-watch run shows no entries, naming only the filters given.
+fn no_match_notice(args: &LogsArgs) -> Option<String> {
+    let mut given = Vec::new();
+    if let Some(module) = &args.module {
+        given.push(format!("--module {module}"));
+    }
+    if let Some(level) = &args.level {
+        given.push(format!("--level {level}"));
+    }
+    if let Some(agent) = &args.agent {
+        given.push(format!("--agent {agent}"));
+    }
+    (!given.is_empty()).then(|| format!("No log entries matched ({}).", given.join(", ")))
+}
+
 impl LogFilter {
     fn from_args(args: &LogsArgs) -> Result<Self, FatalError> {
-        let module_prefix = args.module.as_deref().map(expand_module_filter);
         let min_level = args
             .level
             .as_deref()
@@ -55,7 +69,7 @@ impl LogFilter {
             && !args.json
             && std::env::var_os("NO_COLOR").is_none();
         Ok(Self {
-            module_prefix,
+            module: args.module.clone(),
             min_level,
             agent: args.agent.clone(),
             raw_json: args.json,
@@ -87,8 +101,8 @@ impl LogFilter {
             return self.agent.is_none().then(|| trimmed.to_string());
         };
 
-        if let Some(ref prefix) = self.module_prefix
-            && !entry.target.starts_with(prefix.as_str())
+        if let Some(ref module) = self.module
+            && !module_matches(module, &entry.target)
         {
             return None;
         }
@@ -125,6 +139,33 @@ fn entry_belongs_to_agent(entry: &LogEntry, agent: &str) -> bool {
             .spans
             .iter()
             .any(|span| matches(span.fields.get("agent")))
+}
+
+/// Writes the entries of one log file that pass the filter to `out`. A non-watch
+/// run that prints no entries writes the no-match notice to `err` instead: it is
+/// command output for the person running the command, not a diagnostic, so it
+/// is not routed through tracing.
+fn print_entries(
+    filter: &LogFilter,
+    args: &LogsArgs,
+    content: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    let mut printed = 0_usize;
+    for line in content.lines() {
+        if let Some(text) = filter.render_line(line) {
+            writeln!(out, "{text}")?;
+            printed += 1;
+        }
+    }
+    if !args.watch
+        && printed == 0
+        && let Some(notice) = no_match_notice(args)
+    {
+        writeln!(err, "{notice}")?;
+    }
+    Ok(())
 }
 
 /// Display and optionally tail structured log files.
@@ -176,8 +217,11 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
 
     let content = std::fs::read_to_string(&latest)
         .map_err(|e| FatalError::Config(format!("failed to read log file: {e}")))?;
-    for line in content.lines() {
-        filter.process_line(line);
+    {
+        let mut out = std::io::stdout().lock();
+        let mut err = std::io::stderr().lock();
+        print_entries(&filter, args, &content, &mut out, &mut err)
+            .map_err(|e| FatalError::Config(format!("failed to write log output: {e}")))?;
     }
 
     if args.watch {
@@ -224,7 +268,7 @@ mod tests {
 
     fn filter(agent: Option<&str>, level: Option<LogLevel>) -> LogFilter {
         LogFilter {
-            module_prefix: None,
+            module: None,
             min_level: level,
             agent: agent.map(str::to_string),
             raw_json: false,
@@ -276,6 +320,43 @@ mod tests {
                 .is_some()
         );
         assert_eq!(f.render_line("not json").as_deref(), Some("not json"));
+    }
+
+    #[test]
+    fn module_matching_nothing_gives_notice_and_no_entries() {
+        let f = LogFilter {
+            module: Some("nosuchmodule".to_string()),
+            ..filter(None, None)
+        };
+        let args = LogsArgs {
+            watch: false,
+            module: Some("nosuchmodule".to_string()),
+            level: None,
+            agent: None,
+            json: false,
+        };
+        let content = [
+            line("INFO", r#"{"message":"hi"}"#, "[]"),
+            line("WARN", r#"{"message":"there"}"#, "[]"),
+        ]
+        .join("\n");
+        let (mut out, mut err): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+        print_entries(&f, &args, &content, &mut out, &mut err)
+            .expect("writing to a Vec cannot fail");
+        assert_eq!(String::from_utf8(out).expect("entries are UTF-8"), "");
+        assert_eq!(
+            String::from_utf8(err).expect("notice is UTF-8"),
+            "No log entries matched (--module nosuchmodule).\n"
+        );
+
+        let watching = LogsArgs {
+            watch: true,
+            ..args
+        };
+        let (mut watch_out, mut watch_err): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+        print_entries(&f, &watching, &content, &mut watch_out, &mut watch_err)
+            .expect("writing to a Vec cannot fail");
+        assert_eq!(String::from_utf8(watch_err).expect("UTF-8"), "");
     }
 
     #[test]

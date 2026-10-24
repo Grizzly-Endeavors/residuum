@@ -10,7 +10,7 @@ import type { TeamEvent } from "./TeamEvent";
  * Frames the hub WebSocket sends on its own account, rather than forwarding
  * a [`HubEvent`] from the hub bus.
  */
-export type HubSocketFrame = { "type": "hub_boot", boot_id: string, } | { "type": "agents_snapshot" } & AgentListResponse | { "type": "team_event", 
+export type HubSocketFrame = { "type": "hub_boot", boot_id: string, } | { "type": "pong" } | { "type": "agents_snapshot" } & AgentListResponse | { "type": "team_event", 
 /**
  * The hub process whose log the entry is in.
  */

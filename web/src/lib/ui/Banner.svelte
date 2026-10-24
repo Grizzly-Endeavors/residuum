@@ -54,10 +54,10 @@
       <Icon name={icon ?? TONE_ICONS[tone]} size={16} />
     {/if}
   </span>
-  <p class="ui-banner-message">
+  <div class="ui-banner-message">
     {#if title}<strong class="ui-banner-title">{title}</strong>{/if}
     {@render children()}
-  </p>
+  </div>
   {#if actions}
     <div class="ui-banner-actions">{@render actions()}</div>
   {/if}
@@ -113,7 +113,7 @@
     align-self: flex-start;
     min-width: 0;
     padding: var(--space-4) 0;
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
     overflow-wrap: anywhere;
   }
 

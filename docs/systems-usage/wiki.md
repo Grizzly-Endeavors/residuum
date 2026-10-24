@@ -2,7 +2,7 @@
 
 The wiki is where the agent keeps distilled long-term knowledge: facts about the user, the people and projects in their life, their tools, their machine, and their standing preferences. It is the team wiki, shared by every agent, and lives at `team/wiki/` under the Residuum root (agents reach it through the `team/` prefix in their file tools). It follows the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) (OKF), a formalization of the "LLM wiki" pattern: a folder of Markdown pages, one concept per page, with YAML frontmatter, cross-links, and index files an agent reads before drilling into pages.
 
-The wiki is entirely agent-maintained. The user can read and edit it through the web UI's file editor like any other file.
+The wiki is entirely agent-maintained. The user can read and edit it through the web UI's file panel like any other file: a Markdown page opens rendered, and Edit switches to the editor.
 
 `wiki/agents/` holds one role page per agent (frontmatter `type: Agent`, `title`, and a one-line `description`) and an `index.md` roster. Each agent owns and maintains its own page.
 

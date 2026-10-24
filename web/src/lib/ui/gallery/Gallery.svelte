@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    AttachmentChip,
     Badge,
     Banner,
     Button,
@@ -32,6 +33,7 @@
     confirmLeave,
     provideTooltips,
     tooltip,
+    type AttachmentState,
     type ButtonVariant,
     type StatusDotState,
   } from "..";
@@ -71,6 +73,39 @@
     { value: "high", label: "High" },
   ] as const;
 
+  interface StagedFile {
+    filename: string;
+    size: number;
+    contentType?: string;
+    state: AttachmentState;
+    progress?: number;
+  }
+
+  function stagedFiles(): StagedFile[] {
+    return [
+      {
+        filename: "receipts-2026.zip",
+        size: 19_293_798,
+        contentType: "application/zip",
+        state: "ready",
+      },
+      {
+        filename: "pharmacy-receipt.jpg",
+        size: 2_202_009,
+        contentType: "image/jpeg",
+        state: "pending",
+        progress: 0.42,
+      },
+      { filename: "lease-renewal-2027.pdf", size: 1_258_291, state: "failed" },
+    ];
+  }
+
+  let staged = $state(stagedFiles());
+
+  function stageFiles(): void {
+    staged = stagedFiles();
+  }
+
   let name = $state("research-buddy");
   let badName = $state("Research Buddy");
   let notes = $state("");
@@ -90,7 +125,7 @@
   let replacingKey = $state("sk-live-");
   let settingsOpen = $state(false);
   let jobsOpen = $state(true);
-  let inboxTab = $state<"inbox" | "archived" | "later">("inbox");
+  let sessionsTab = $state<"running" | "finished" | "scheduled">("running");
   let showDismissible = $state(true);
 
   // Back closes the overlays opened here, without the router reading this
@@ -372,6 +407,113 @@
       </div>
     </section>
 
+    <section aria-labelledby="g-attachments">
+      <h2 id="g-attachments">Attachment chips</h2>
+      <div class="gallery-surface">
+        <div class="gallery-row">
+          <span class="gallery-caption">download</span>
+          <AttachmentChip
+            filename="budget-2027.xlsx"
+            size={22_528}
+            href="data:text/plain,budget"
+            download="budget-2027.xlsx"
+          />
+          <AttachmentChip
+            filename="pharmacy-receipt.jpg"
+            size={2_202_009}
+            contentType="image/jpeg"
+            href="data:text/plain,receipt"
+          />
+          <AttachmentChip filename="no-size-known.bin" href="data:text/plain,bin" />
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">open</span>
+          <AttachmentChip
+            filename="grant-outline-v1.md"
+            size={2048}
+            onopen={() => toast.info("Opened grant-outline-v1.md.")}
+          />
+          <AttachmentChip
+            filename="restore-log.txt"
+            size={1024}
+            href="data:text/plain,log"
+            onopen={() => toast.info("Opened restore-log.txt.")}
+          />
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">long name</span>
+          <AttachmentChip
+            filename="lease-renewal-2027-signed-by-both-parties-final-v3.pdf"
+            size={1_258_291}
+            href="data:text/plain,lease"
+          />
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">pending</span>
+          <AttachmentChip filename="meeting-notes.docx" size={48_128} state="pending" />
+          <AttachmentChip
+            filename="site-photos.zip"
+            size={19_293_798}
+            state="pending"
+            progress={0.42}
+          />
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">failed</span>
+          <AttachmentChip
+            filename="contract.pdf"
+            size={1_258_291}
+            state="failed"
+            failure="Couldn't upload"
+            onretry={() => toast.info("Trying contract.pdf again.")}
+            onremove={() => toast.info("Removed contract.pdf.")}
+          />
+          <AttachmentChip filename="old-draft.md" state="failed" failure="Couldn't load" />
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">composer</span>
+          <div class="gallery-well gallery-well-fill" data-stone="2">
+            {#each staged as file (file.filename)}
+              <AttachmentChip
+                filename={file.filename}
+                size={file.size}
+                contentType={file.contentType}
+                state={file.state}
+                progress={file.progress}
+                failure="Couldn't upload"
+                onretry={() => {
+                  file.state = "pending";
+                  file.progress = undefined;
+                }}
+                onremove={() => {
+                  staged = staged.filter((other) => other !== file);
+                }}
+              />
+            {:else}
+              <Button variant="quiet" size="sm" onclick={stageFiles}>Stage the files again</Button>
+            {/each}
+          </div>
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">on each stone</span>
+          <div class="gallery-wells">
+            {#each [0, 1, 2, 3] as stone (stone)}
+              <div class="gallery-well" data-stone={stone}>
+                <AttachmentChip filename="notes.md" size={2048} onopen={() => {}} />
+                <AttachmentChip
+                  filename="contract.pdf"
+                  state="failed"
+                  failure="Couldn't upload"
+                  onretry={() => {}}
+                />
+                <span class="gallery-well-name">stone-{stone}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section aria-labelledby="g-structure">
       <h2 id="g-structure">Disclosure and tabs</h2>
       <div class="gallery-grid">
@@ -390,19 +532,19 @@
         </div>
         <div class="gallery-surface">
           <Tabs
-            label="Inbox"
-            bind:selected={inboxTab}
+            label="Sessions"
+            bind:selected={sessionsTab}
             tabs={[
-              { value: "inbox", label: "Inbox", count: 3 },
-              { value: "archived", label: "Archived" },
-              { value: "later", label: "Later", disabled: true },
+              { value: "running", label: "Running", count: 3 },
+              { value: "finished", label: "Finished" },
+              { value: "scheduled", label: "Scheduled", disabled: true },
             ]}
           >
             {#snippet children(tab)}
-              {#if tab === "inbox"}
-                <p class="gallery-note">Three things need you.</p>
+              {#if tab === "running"}
+                <p class="gallery-note">Three sessions are running.</p>
               {:else}
-                <EmptyState>Nothing archived yet.</EmptyState>
+                <EmptyState>Nothing finished yet.</EmptyState>
               {/if}
             {/snippet}
           </Tabs>
@@ -421,9 +563,9 @@
             {/snippet}
           </EmptyState>
           <EmptyState variant="block" icon="inbox" title="You're all caught up">
-            Agents put things here that need you.
+            Mail from your agents lands here.
             {#snippet actions()}
-              <Button variant="secondary" icon="chat">Open a chat</Button>
+              <Button variant="secondary" icon="edit">New message</Button>
             {/snippet}
           </EmptyState>
         </div>
@@ -814,6 +956,48 @@
     gap: var(--space-4);
     font-size: var(--font-size-sm);
     color: var(--color-text-2);
+  }
+
+  /* A chip's outline keeps it visible on every stone a container can be. */
+  .gallery-wells {
+    display: grid;
+    flex: 1 1 0;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+    gap: var(--space-8);
+    min-width: 0;
+  }
+
+  .gallery-well {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-6);
+    min-width: 0;
+    padding: var(--space-12);
+    border-radius: var(--corner-md);
+    background: var(--color-stone-2);
+
+    &[data-stone="0"] {
+      background: var(--color-stone-0);
+    }
+
+    &[data-stone="1"] {
+      background: var(--color-stone-1);
+    }
+
+    &[data-stone="3"] {
+      background: var(--color-stone-3);
+    }
+  }
+
+  .gallery-well-fill {
+    flex: 1 1 0;
+  }
+
+  .gallery-well-name {
+    flex-basis: 100%;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-3);
   }
 
   .gallery-pre {

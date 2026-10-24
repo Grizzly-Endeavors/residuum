@@ -2,6 +2,14 @@
 #
 # Every recipe wraps a command you can run by hand (see CONTRIBUTING.md), so
 # nothing here is required to build or contribute.
+#
+# Recipes that build Rust run under `scripts/target-pool run`, which leases a
+# warm target dir from the pool every worktree of the repo shares, under the
+# main checkout's target/pool, and holds it until the command exits. A
+# CARGO_TARGET_DIR you set is used as it is. `build` and `release` copy the
+# binary to target/<profile>/residuum before the lease ends, and `serve` and
+# `run` start it from there, so a running hub holds no pool dir.
+# CONTRIBUTING.md, "Build dirs", has the details.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -15,64 +23,154 @@ default:
 [group('setup')]
 setup: hooks web-install
 
-# Symlink the tracked git hooks into this repo
+# Install the tracked git hooks into this repo's hooks directory (all worktrees share it)
 [group('setup')]
 hooks:
     .githooks/install.sh
 
 # --- run ---------------------------------------------------------------------
 
-# Start the hub in the foreground; extra args go to `residuum serve`
+# Start the hub in the foreground from a debug build (as `just build` leaves it at target/debug/residuum); extra args go to `residuum serve`
 [group('run')]
-serve *args: _web-dist
-    cargo run -- serve --foreground {{ args }}
+[positional-arguments]
+serve *args: build
+    target/debug/residuum serve --foreground "$@"
 
-# Run any residuum subcommand, e.g. `just run logs --watch`
+# Run any residuum subcommand from a debug build (as `just build` leaves it at target/debug/residuum), e.g. `just run logs --watch`
 [group('run')]
-run *args: _web-dist
-    cargo run -- {{ args }}
+[positional-arguments]
+run *args: build
+    target/debug/residuum "$@"
+
+# --- docker ------------------------------------------------------------------
+
+# Build the source image (docker/Dockerfile), tagged `residuum`, with this checkout's version and commit as build args, since the image's build context leaves out `.git`; args go to `docker build`, e.g. `just docker-build -t residuum:test`
+[group('docker')]
+[positional-arguments]
+docker-build *args:
+    docker build -f docker/Dockerfile -t residuum \
+        --build-arg RESIDUUM_VERSION="$(git describe --tags --always)" \
+        --build-arg RESIDUUM_GIT_COMMIT="$(git rev-parse --short=12 HEAD)" \
+        "$@" .
+
+# docker compose with docker/docker-compose.yml, which builds the source image with this checkout's version and commit as `docker-build` does; args go to `docker compose`, e.g. `just docker-compose up -d --build`
+[group('docker')]
+[positional-arguments]
+docker-compose *args:
+    RESIDUUM_VERSION="$(git describe --tags --always)" \
+        RESIDUUM_GIT_COMMIT="$(git rev-parse --short=12 HEAD)" \
+        docker compose -f docker/docker-compose.yml "$@"
 
 # --- rust --------------------------------------------------------------------
 
-# Debug build
+# Debug build; the binary is copied out of the pool dir to target/debug/residuum
 [group('rust')]
 build: _web-dist
-    cargo build
+    scripts/target-pool run -- scripts/build-binary.sh debug
 
-# Release build; always rebuilds the web assets, since the binary embeds them
+# Release build, with the binary copied out of the pool dir to target/release/residuum; always rebuilds the web assets, since the binary embeds them
 [group('rust')]
 release: web-build
-    cargo build --release
+    scripts/target-pool run -- scripts/build-binary.sh release
 
-# Run tests, quietly; args are cargo's filters, e.g. `just test memory::` or `just test --test smoke`
+# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test logging::` or `just test --test it smoke::`. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
+[positional-arguments]
 test *args: _web-dist
-    cargo test --quiet {{ args }}
+    #!/usr/bin/env bash
+    scripts/test-filters.sh note test "$@"
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    # The output goes through tee, so neither cargo nor the test harness sees a terminal. On a terminal, CARGO_TERM_COLOR keeps cargo's own lines coloured and --color=always keeps the harness's (FAILED, test result, panics); a CARGO_TERM_COLOR or a harness --color the caller sets wins. The log check gets the caller's arguments, without the harness flag.
+    cargo_args=("$@")
+    if [ -t 1 ]; then
+        export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
+        if [ "$CARGO_TERM_COLOR" = always ]; then
+            after_dd=no
+            harness_colour=no
+            for arg in "$@"; do
+                if [ "$after_dd" = yes ]; then
+                    case $arg in --color | --color=*) harness_colour=yes ;; esac
+                elif [ "$arg" = "--" ]; then
+                    after_dd=yes
+                fi
+            done
+            if [ "$harness_colour" = no ]; then
+                if [ "$after_dd" = no ]; then cargo_args+=(--); fi
+                cargo_args+=(--color=always)
+            fi
+        fi
+    fi
+    scripts/target-pool run -- cargo test --quiet --no-fail-fast "${cargo_args[@]}" 2>&1 | tee "$log"
+    status="${PIPESTATUS[0]}"
+    if [ "$status" -eq 0 ]; then scripts/test-filters.sh check test "$log" -- "$@"; fi
+    exit "$status"
 
-# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`
+# Run one member crate's tests, quietly, without the web build: `just test-crate core util::fs` runs residuum-core's tests; args after the crate are cargo's
 [group('rust')]
-stress *args: _web-dist
-    scripts/stress-tests.sh {{ args }}
+[positional-arguments]
+test-crate crate *args:
+    scripts/target-pool run -- cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
 
-# Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker
+# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress logging::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`, which skips the web build. The copies run the same test binaries, built once in one build dir from the pool, which the run holds until it ends. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
-pebble: _web-dist
-    cargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests
+[positional-arguments]
+stress *args:
+    #!/usr/bin/env bash
+    # The root package's build script needs web/dist; a member crate's tests do not.
+    # The root is stressed without a package option, or with `-p residuum` among them.
+    has_package=0 has_root=0 value_next=0
+    for arg in "$@"; do
+        if [ "$value_next" -eq 1 ]; then
+            value_next=0
+            if [ "$arg" = residuum ]; then has_root=1; fi
+            continue
+        fi
+        case $arg in
+            -p | --package)
+                has_package=1
+                value_next=1
+                ;;
+            --package=*)
+                has_package=1
+                if [ "${arg#--package=}" = residuum ]; then has_root=1; fi
+                ;;
+            *) break ;;
+        esac
+    done
+    if [ "$has_root" -eq 1 ] || [ "$has_package" -eq 0 ]; then
+        {{ quote(just_executable()) }} _web-dist || exit "$?"
+    fi
+    scripts/test-filters.sh note stress "$@"
+    scripts/target-pool run -- scripts/stress-tests.sh "$@"
+    status="$?"
+    if [ "$status" -eq 0 ]; then scripts/test-filters.sh check stress target/stress/*/*.log -- "$@"; fi
+    exit "$status"
 
-# Regenerate the TypeScript protocol types in web/src/lib/generated from the Rust types
+# Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker, without the web build
+[group('rust')]
+pebble:
+    scripts/target-pool run -- cargo test --quiet -p residuum-net --lib -- --ignored --test-threads=1 pebble system_tests
+
+# Regenerate the TypeScript protocol types in web/src/lib/generated from the Rust types; the files are replaced only if the export succeeds
 [group('rust')]
 types: _web-dist
-    cargo test --quiet --test ts_export
+    scripts/target-pool run -- scripts/update-generated-types.sh
 
 # Regenerate the TypeScript types from scratch and fail if they differ from the index, as CI does (stage regenerated files first)
 [group('rust')]
 types-check: _web-dist
-    scripts/check-generated-types.sh
+    scripts/target-pool run -- scripts/check-generated-types.sh
 
-# Clippy with warnings denied, exactly as the pre-commit hook runs it
+# Clippy with warnings denied, exactly as the pre-push hook runs it
 [group('rust')]
 clippy: _web-dist
-    cargo clippy --all-targets --all-features -- -D warnings
+    scripts/target-pool run -- cargo clippy --all-targets --all-features -- -D warnings
+
+# Build the rustdoc of every package, private items included, with rustdoc warnings denied, so broken intra-doc links fail, exactly as CI runs it
+[group('rust')]
+doc: _web-dist
+    RUSTDOCFLAGS="-D warnings" scripts/target-pool run -- cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Format Rust code
 [group('rust')]
@@ -94,7 +192,7 @@ deny:
 [group('rust')]
 cross-clippy target="x86_64-pc-windows-gnu": _web-dist
     rustup target add {{ target }}
-    cargo clippy --target {{ target }} --all-targets --all-features -- -D warnings
+    scripts/target-pool run -- cargo clippy --target {{ target }} --all-targets --all-features -- -D warnings
 
 # Lint every cross-compile target CI covers
 [group('rust')]
@@ -104,40 +202,45 @@ cross-check: (cross-clippy "aarch64-unknown-linux-gnu") (cross-clippy "x86_64-pc
 
 # Install web dependencies from the lockfile
 [group('web')]
-web-install:
+web-install: _web-unlink
     cd web && npm ci
 
 # Vite dev server against the mock API; no Rust backend needed. Extra args go to vite, e.g. `just web-mock --port 5199`
 [group('web')]
+[positional-arguments]
 web-mock *args: _web-deps
-    cd web && npm run dev:mock -- {{ args }}
+    cd web && npm run dev:mock -- "$@"
 
 # Mock dev server that boots into the first-run setup wizard
 [group('web')]
+[positional-arguments]
 web-mock-setup *args: _web-deps
-    cd web && VITE_MOCK_SETUP=1 npm run dev:mock -- {{ args }}
+    cd web && VITE_MOCK_SETUP=1 npm run dev:mock -- "$@"
 
 # Deterministic mock (fixed clock, no delays, fixed artifacts port) on a Vite dev server, headless on a port. `POST /api/mock/reset` restores the scenario.
 [group('web')]
+[positional-arguments]
 web-mock-serve port="5173" *args: _web-deps
-    cd web && MOCK_DETERMINISTIC=1 npm run dev:mock -- --port {{ port }} --strictPort {{ args }}
+    cd web && MOCK_DETERMINISTIC=1 npm run dev:mock -- --port {{ port }} --strictPort "${@:2}"
 
 # Production build served with the whole mock (API, sockets, artifacts page), deterministic and headless on a port
 [group('web')]
+[positional-arguments]
 web-mock-preview port="4173" *args: _web-deps
-    cd web && npm run build && MOCK_DETERMINISTIC=1 npm run preview:mock -- --port {{ port }} --strictPort {{ args }}
+    cd web && npm run build && MOCK_DETERMINISTIC=1 npm run preview:mock -- --port {{ port }} --strictPort "${@:2}"
 
 # Vite dev server proxying /api and /ws to a real backend on :7700 (start one with `just serve`)
 [group('web')]
+[positional-arguments]
 web-dev *args: _web-deps
-    cd web && npm run dev -- {{ args }}
+    cd web && npm run dev -- "$@"
 
 # Production build into web/dist, which the Rust binary embeds
 [group('web')]
 web-build: _web-deps
     cd web && npm run build
 
-# Gzipped size of the initial route (the scripts and styles loaded before the first screen), from a fresh build, against its budget: fails when the route outgrows it, as CI does
+# Gzipped size of the initial route (the scripts and styles loaded before the first screen), from a fresh build, as CI's web job reports it
 [group('web')]
 web-size: web-build
     scripts/web-initial-route-size.sh web/dist
@@ -169,82 +272,145 @@ web-typecheck: _web-deps
 
 # Vitest; args are vitest's filters, e.g. `just web-test src/lib/time.test.ts`
 [group('web')]
+[positional-arguments]
 web-test *args: _web-deps
-    cd web && npm test -- {{ args }}
+    cd web && npm test -- "$@"
 
 # Vitest with a coverage summary; the full HTML report is written to web/coverage
 [group('web')]
+[positional-arguments]
 web-coverage *args: _web-deps
-    cd web && npm run test:coverage -- {{ args }}
+    cd web && npm run test:coverage -- "$@"
 
-# End-to-end and accessibility specs in Chromium, desktop and phone, with no Docker. The visual specs are left out. Args go to playwright, e.g. `just web-e2e-fast e2e/smoke`
+# End-to-end and accessibility specs in Chromium, desktop and phone. The visual specs are left out. Runs on this machine's Chromium, installed on first use, in a loopback-only network so host network changes such as Docker containers starting can't abort its page loads (scripts/with-loopback-network.sh); when that install fails or stalls, the run says so and moves to the Playwright container (needs Docker). Args go to playwright, e.g. `just web-e2e-fast e2e/smoke`
 [group('web')]
-web-e2e-fast *args: _web-e2e-browsers
-    cd web && npm run e2e:fast -- {{ args }}
+[positional-arguments]
+web-e2e-fast *args: _web-deps
+    scripts/with-e2e-browser.sh npm --prefix web run e2e:fast -- "$@"
 
-# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). Pull requests that change web/ run it in CI too
+# The whole end-to-end suite: the fast specs on this machine (in a loopback-only network, as web-e2e-fast), the visual comparisons in the Playwright container (needs Docker). When this machine's Chromium can't be installed, the fast specs run in the container too. CI runs the fast specs in its Web End-to-End jobs and the visual comparisons in a job of their own that never fails a pull request
 [group('web')]
-web-e2e *args: _web-e2e-browsers
-    scripts/with-playwright-container.sh npm --prefix web run e2e -- {{ args }}
+[positional-arguments]
+web-e2e *args: _web-deps
+    scripts/with-e2e-browser.sh --visual npm --prefix web run e2e -- "$@"
 
-# Refresh the visual baselines in the Playwright container (needs Docker). Review the changed images under web/e2e/__screenshots__ before committing them
+# Refresh the visual baselines in the Playwright container (needs Docker); `just web-e2e-update -g "<part of a test title>"` refreshes only the matching shots. Review the changed images under web/e2e/__screenshots__ before committing them
 [group('web')]
+[positional-arguments]
 web-e2e-update *args: _web-deps
-    scripts/with-playwright-container.sh npm --prefix web run e2e:visual -- --update-snapshots=all {{ args }}
+    scripts/with-playwright-container.sh npm --prefix web run e2e:visual -- --update-snapshots=all "$@"
 
 # The WebKit phone project, in the Playwright container (needs Docker), so this machine needs no WebKit. Local only: CI doesn't run it
 [group('web')]
+[positional-arguments]
 web-e2e-webkit *args: _web-deps
-    scripts/with-playwright-container.sh npm --prefix web run e2e:webkit -- {{ args }}
+    scripts/with-playwright-container.sh npm --prefix web run e2e:webkit -- "$@"
+
+# The end-to-end specs this branch adds or changes (every spec with WEB_STRESS_ALL=1), each run repeatedly (WEB_STRESS_REPEAT, default 5) with the browser's CPU throttled (WEB_STRESS_CPU_THROTTLE, default 4); on this machine's Chromium in a loopback-only network, or in the Playwright container when that can't be installed; args go to playwright, e.g. `just web-stress --grep "tab is titled"`
+[group('web')]
+[positional-arguments]
+web-stress *args: _web-deps
+    scripts/with-e2e-browser.sh scripts/web-stress.sh "$@"
 
 # --- checks ------------------------------------------------------------------
 
-# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then checks the initial route's budget
-[group('check')]
-web-check: web-fmt-check web-lint web-typecheck web-test web-size
+web_checks := "web-fmt-check web-lint web-typecheck web-test web-size"
 
-# Everything CI's rust job runs
+# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then prints the initial route's size. Runs every check and lists the failures.
 [group('check')]
-rust-check: rust-fmt-check clippy test types-check deny
+web-check: _web-deps
+    {{ quote(just_executable()) }} _run-parts {{ web_checks }}
 
-# Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist
+# Everything CI's rust job runs. Runs every check and lists the failures.
 [group('check')]
-check: web-check rust-check
+rust-check: _web-dist
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy doc test types-check deny shear
+
+# Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist, so a broken web build stops rust-check before its checks run. Runs every check and lists the failures.
+[group('check')]
+check: _web-deps
+    {{ quote(just_executable()) }} _run-parts {{ web_checks }} rust-check actionlint
 
 # Format Rust and web sources
 [group('check')]
 fmt: rust-fmt web-fmt
 
-# Check Rust and web formatting without rewriting
+# Check Rust and web formatting without rewriting; runs both and lists the failures
 [group('check')]
-fmt-check: rust-fmt-check web-fmt-check
+fmt-check:
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check web-fmt-check
+
+# Lint the GitHub Actions workflows with actionlint and shellcheck, at the versions CI pins in .github/workflows/actionlint.yml
+[group('check')]
+actionlint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pinned="$(sed -n 's/^ *ACTIONLINT_VERSION: \(.*\)$/\1/p' .github/workflows/actionlint.yml)"
+    shellcheck_pinned="$(sed -n 's/^ *SHELLCHECK_VERSION: \(.*\)$/\1/p' .github/workflows/actionlint.yml)"
+    command -v actionlint >/dev/null || { echo "actionlint is not installed: get v${pinned} from https://github.com/rhysd/actionlint/releases" >&2; exit 1; }
+    installed="$(actionlint -version | sed -n 1p)"
+    [ "$installed" = "$pinned" ] || { echo "actionlint ${installed} is installed; CI pins ${pinned}" >&2; exit 1; }
+    command -v shellcheck >/dev/null || { echo "shellcheck is not installed, so actionlint would skip its shell checks: install it (apt install shellcheck, or v${shellcheck_pinned} from https://github.com/koalaman/shellcheck/releases)" >&2; exit 1; }
+    actionlint
+
+# Unused dependencies, unused workspace dependencies and unlinked source files, with cargo-shear at the version CI pins in .github/workflows/rust-checks.yml
+[group('check')]
+shear:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pinned="$(sed -n 's/^ *CARGO_SHEAR_VERSION: \(.*\)$/\1/p' .github/workflows/rust-checks.yml)"
+    install="install v${pinned} with: cargo install --locked cargo-shear --version ${pinned} (or unpack the cargo-shear-<target>.tar.gz of that release from https://github.com/Boshen/cargo-shear/releases into a directory on PATH)"
+    command -v cargo-shear >/dev/null || { echo "cargo-shear is not installed: ${install}" >&2; exit 1; }
+    installed="$(cargo shear --version | sed -n 's/^Version: //p')"
+    [ "$installed" = "$pinned" ] || { echo "cargo-shear ${installed} is installed; CI pins ${pinned}: ${install}" >&2; exit 1; }
+    cargo shear --locked --deny-warnings
+
+# Every failure (tests, lint, types, format, timeouts) in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
+[group('check')]
+[positional-arguments]
+ci-failures *args:
+    scripts/ci-failures.sh "$@"
+
+# Checks the CI log parser behind ci-failures against its fixtures
+[group('check')]
+ci-failures-test:
+    scripts/ci-failures-test.sh
+
+# Checks which issues the nightly stress run's issue filer would open for the parser's fixtures (a dry run; GitHub is not queried)
+[group('check')]
+stress-issues-test:
+    scripts/stress-issues-test.sh
 
 # --- misc --------------------------------------------------------------------
 
 # Lines-of-code summary (needs cloc); extra args go to cloc
 [group('misc')]
+[positional-arguments]
 loc *args:
-    scripts/loc.sh {{ args }}
+    scripts/loc.sh "$@"
 
-# Remove build output; the next cargo recipe rebuilds web/dist on its own
+# Remove build output: everything in this checkout's target/ except the build-dir pool, web/dist, and the contents of every pool dir no build holds (`scripts/target-pool clean`; a dir in use is named and left alone). Plain `cargo clean` in the main checkout deletes the pool under running builds. The next cargo recipe rebuilds web/dist on its own
 [group('misc')]
 clean:
-    cargo clean
+    scripts/target-pool clean
+    if [ -d target ]; then find target -mindepth 1 -maxdepth 1 ! -name pool -exec rm -rf {} +; fi
     rm -rf web/dist
+
+# A web/node_modules that is a symlink borrows another checkout's copy, as a worktree's link to the main
+# checkout does. npm ci follows the link and empties that copy, so the link is removed, never its target,
+# and the install that follows is local. unlink fails on a real directory, so a local install is left alone.
+[private]
+_web-unlink:
+    @{ [ ! -L web/node_modules ] || { echo "web/node_modules is a symlink to another checkout's copy: replacing it with a local install"; unlink web/node_modules; }; }
 
 # Reinstall when package-lock.json is newer than the one npm ci leaves in node_modules (or that is missing)
 [private]
-_web-deps:
+_web-deps: _web-unlink
     @[ web/node_modules/.package-lock.json -nt web/package-lock.json ] || (cd web && npm ci)
 
-# Playwright's Chromium, which the end-to-end specs drive. A no-op once installed. A fresh Linux machine also needs its system libraries: `cd web && npx playwright install --with-deps chromium`
-[private]
-_web-e2e-browsers: _web-deps
-    cd web && npx playwright install chromium
-
-# build.rs panics without web/dist, and the gateway's asset tests read dist/sw.js. Rebuilds a dist that is
-# missing, incomplete or stale: sw.js is the last file a build writes, so a dist without it is unfinished,
-# and a source newer than it was edited since. Tests and the mock aren't built into dist and don't count.
+# build.rs panics without web/dist, and the root's `wiring` tests read the embedded app. Rebuilds a dist
+# that is missing, incomplete or stale: sw.js is the last file a build writes, so a dist without it is
+# unfinished, and a source newer than it was edited since. Tests and the mock aren't built into dist and don't count.
 [private]
 _web-dist: _web-deps
     #!/usr/bin/env bash
@@ -257,3 +423,23 @@ _web-dist: _web-deps
         echo "web/dist is older than $newer: rebuilding"
     fi
     npm run build
+
+# Runs each named recipe in its own `just` process, so its prerequisites still run. A failing recipe does not stop the rest; the failures are listed at the end and the exit status is non-zero if any failed.
+[private]
+_run-parts +parts:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    trap 'echo "interrupted" >&2; exit 130' INT TERM
+    parts=({{ parts }})
+    failed=()
+    for part in "${parts[@]}"; do
+        echo "==> $part"
+        if ! {{ quote(just_executable()) }} "$part"; then
+            failed+=("$part")
+        fi
+    done
+    if [ "${#failed[@]}" -gt 0 ]; then
+        echo "${#failed[@]} of ${#parts[@]} checks failed: ${failed[*]}" >&2
+        exit 1
+    fi
+    echo "all ${#parts[@]} checks passed"

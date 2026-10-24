@@ -61,6 +61,17 @@ async function requestsOf(call: () => Promise<unknown>): Promise<string[]> {
 
 beforeEach(() => {
   stubStorage();
+  // The fetch cache lives for the module's lifetime; each test starts empty.
+  for (const agent of AGENTS) {
+    for (const key of [
+      api.cacheKeyStatus,
+      api.cacheKeyConfigRaw,
+      api.cacheKeyProvidersRaw,
+      api.cacheKeyMcpRaw,
+    ]) {
+      invalidate(key(agent));
+    }
+  }
 });
 
 afterEach(() => {
@@ -209,24 +220,9 @@ const AREAS: Record<string, Row[]> = {
   ],
   inbox: [
     [
-      "markHubInboxItemRead",
-      (a) => api.markHubInboxItemRead(a, "i1"),
-      "PUT /api/hub/inbox/{agent}/i1/read",
-    ],
-    [
-      "archiveHubInboxItem",
-      (a) => api.archiveHubInboxItem(a, "i1"),
-      "POST /api/hub/inbox/{agent}/i1/archive",
-    ],
-    [
-      "restoreHubInboxItem",
-      (a) => api.restoreHubInboxItem(a, "i1"),
-      "POST /api/hub/inbox/{agent}/i1/restore",
-    ],
-    [
-      "fetchHubInbox",
-      (a) => api.fetchHubInbox({ agent: a, status: "archived" }),
-      "GET /api/hub/inbox?agent={agent}&status=archived",
+      "fetchMailThreads",
+      (a) => api.fetchMailThreads({ folder: "sent", agent: a }),
+      "GET /api/hub/mail/threads?folder=sent&agent={agent}",
     ],
   ],
   scheduled: [
@@ -458,15 +454,15 @@ describe("cache keys are per agent", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
-  it("keeps an episode cached for one agent from answering another's", async () => {
+  it("asks the agent for every episode, never answering from an earlier read", async () => {
     const seen = recordRequests();
-    invalidate("GET /api/agents/scout/chat/history?episode=ep-1");
-    invalidate("GET /api/agents/atlas/chat/history?episode=ep-1");
     await api.fetchChatSegment("scout", "ep-1").catch(() => undefined);
     await api.fetchChatSegment("atlas", "ep-1").catch(() => undefined);
+    await api.fetchChatSegment("scout", "ep-1").catch(() => undefined);
     expect(seen).toEqual([
       "GET /api/agents/scout/chat/history?episode=ep-1",
       "GET /api/agents/atlas/chat/history?episode=ep-1",
+      "GET /api/agents/scout/chat/history?episode=ep-1",
     ]);
   });
 
@@ -516,7 +512,7 @@ describe("stores address the agent they hold", () => {
   it("lists sessions and outbound tasks for the agent it was made for", async () => {
     for (const agent of AGENTS) {
       const seen = recordRequests();
-      const store = new SessionsStore({ agent, pushToMain: () => {} });
+      const store = new SessionsStore({ agent });
       await store.refresh();
       expect(seen.length).toBeGreaterThan(0);
       for (const request of seen) {
@@ -528,7 +524,7 @@ describe("stores address the agent they hold", () => {
   it("stops a session from the list on the agent the list was made for", async () => {
     for (const agent of AGENTS) {
       const seen = recordRequests();
-      const store = new SessionsStore({ agent, pushToMain: () => {} });
+      const store = new SessionsStore({ agent });
       await store.stop("spawned-x");
       expect(seen).toEqual([`POST /api/agents/${agent}/sessions/spawned-x/stop`]);
     }

@@ -1,0 +1,285 @@
+name: Web Checks
+
+# The web format, lint, type, unit, build and end-to-end checks, and the visual
+# comparisons. ci.yml calls it on merge queue batches that change the web app,
+# without the visual comparisons, and on pull requests that change the web app
+# for the visual comparisons alone (`visual_only`); release.yml calls it on
+# every release tag. It is also runnable by hand from the Actions tab, to try a
+# change on the runners without opening a pull request.
+#
+# Every check is its own job so they run side by side, on lab-runners-wide
+# (grizzly-platform ADR-081): the web jobs split well across runners.
+on:
+  workflow_call:
+    inputs:
+      visual:
+        description: Run the web visual comparisons, which compare component screenshots against the committed baselines in their own job and never fail the workflow; turn off to leave them out
+        type: boolean
+        default: true
+      visual_only:
+        description: Run only the web visual comparisons (web-visual), as the pull request lane does, whatever `visual` says
+        type: boolean
+        default: false
+    outputs:
+      visual_status:
+        description: How the visual comparisons ended; match, differ, error or skipped, and empty when the job did not run or did not finish
+        value: ${{ jobs.web-visual.outputs.status }}
+      visual_body:
+        description: The Markdown of the pull request comment that reports the visual comparisons, with the marker that finds the comment again
+        value: ${{ jobs.web-visual.outputs.body }}
+  workflow_dispatch:
+    inputs:
+      visual:
+        description: Run the web visual comparisons, which compare component screenshots against the committed baselines in their own job and never fail the workflow; turn off to leave them out
+        type: boolean
+        default: true
+      visual_only:
+        description: Run only the web visual comparisons (web-visual), whatever `visual` says
+        type: boolean
+        default: false
+
+jobs:
+  # Every check runs even when an earlier one fails, so one run lists every
+  # failure. A check runs only when the dependencies it needs were installed,
+  # and the job still fails if any step failed.
+  web:
+    name: Web Checks
+    if: ${{ !inputs.visual_only }}
+    runs-on: lab-runners-wide
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install web dependencies
+        id: web_install
+        run: cd web && npm ci
+
+      - name: Web format check
+        id: web_format
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
+        run: cd web && npm run format:check
+
+      - name: Web lint
+        id: web_lint
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
+        run: cd web && npm run lint
+
+      - name: Web type check
+        id: web_typecheck
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
+        run: cd web && npm run check
+
+      # The same tests as `npm test`, with a coverage report. Reported in the
+      # job summary below, with no threshold.
+      - name: Web unit tests
+        id: web_test
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
+        run: cd web && npm run test:coverage
+
+      - name: Build web assets
+        id: web_build
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
+        run: cd web && npm run build
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Web Check Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Install | ${{ steps.web_install.outcome }} |"
+            echo "| Format | ${{ steps.web_format.outcome }} |"
+            echo "| Lint | ${{ steps.web_lint.outcome }} |"
+            echo "| Types | ${{ steps.web_typecheck.outcome }} |"
+            echo "| Tests | ${{ steps.web_test.outcome }} |"
+            echo "| Build | ${{ steps.web_build.outcome }} |"
+            echo ''
+            echo 'The end-to-end and accessibility results are in the Web End-to-End jobs, and the visual comparisons in the Web Visual Comparisons job.'
+            if [ -f web/coverage/summary.txt ]; then
+              echo ''
+              echo '### Web test coverage'
+              echo ''
+              echo '```'
+              sed '/^$/d' web/coverage/summary.txt
+              echo '```'
+            fi
+            if [ -f web/dist/index.html ]; then
+              echo ''
+              echo '### Web initial-route size'
+              echo ''
+              scripts/web-initial-route-size.sh web/dist 2>&1 || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # web/package.json allows Node 22, 24 and 26 and later. The unit and
+  # component tests run on Node 22 (the oldest allowed) and Node 24 (the
+  # current LTS, which docker/Dockerfile also uses), each at its latest
+  # release; Node 26 and later are not run. Only the tests are repeated:
+  # format, lint, types and the build do not depend on the Node version beyond
+  # what Web Checks runs.
+  web-node:
+    name: Web Tests (Node ${{ matrix.node }})
+    if: ${{ !inputs.visual_only }}
+    runs-on: lab-runners-wide
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Web unit tests
+        run: cd web && npm test
+
+  # The end-to-end and accessibility specs drive a browser against the mock
+  # (web/CONTRIBUTING.md, "Testing"), split into shards that run on separate
+  # runners. Playwright gives each shard a share of the individual tests.
+  # The runner installs no browser: the download from cdn.playwright.dev
+  # stalls on the cluster's missing IPv6 route. Instead every project drives
+  # the browser in the official Playwright container, which the Docker daemon
+  # beside the runner starts and the wrapper script stops. The image comes
+  # through the cluster registry's mirror of mcr.microsoft.com, so it is
+  # pulled over the LAN. E2E_ALL_IN_CONTAINER sends the Chromium projects
+  # there. CI is set on the runner, so the untagged specs run against the
+  # production build (web/playwright.config.ts, `smokeServer`). The visual
+  # comparisons are not part of these shards; they run in `web-visual` below.
+  web-e2e:
+    name: Web End-to-End (${{ matrix.shard }}/4)
+    if: ${{ !inputs.visual_only }}
+    runs-on: lab-runners-wide
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    env:
+      E2E_ALL_IN_CONTAINER: '1'
+      E2E_WORKERS: '4'
+      PLAYWRIGHT_IMAGE_REGISTRY: registry.registry.svc.cluster.local:5000/mcr
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The node's CPU pressure is counted from here (scripts/ci-cpu-report.sh).
+      - name: Start the CPU report
+        run: scripts/ci-cpu-report.sh start
+
+      # Playwright builds the app itself for the preview projects
+      # (web/playwright.config.ts, `webServer`).
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Web end-to-end tests
+        id: web_e2e
+        run: scripts/with-playwright-container.sh npm --prefix web run e2e:fast -- --shard=${{ matrix.shard }}/4
+
+      # How much CPU the shard had, whether its limit throttled it, and how
+      # long the node kept it waiting: the suite's timing depends on all three.
+      # The table goes to the job summary and, between CI METRICS markers, to
+      # the job log (`gh run view <id> --log` reads it).
+      - name: CPU report
+        if: always()
+        run: |
+          scripts/ci-cpu-report.sh report > "$RUNNER_TEMP/ci-metrics.md"
+          cat "$RUNNER_TEMP/ci-metrics.md" >> "$GITHUB_STEP_SUMMARY"
+          echo '===== BEGIN CI METRICS (Web E2E shard ${{ matrix.shard }} of 4) ====='
+          cat "$RUNNER_TEMP/ci-metrics.md"
+          echo '===== END CI METRICS (Web E2E shard ${{ matrix.shard }} of 4) ====='
+
+      - name: Upload Playwright report and traces
+        if: always() && steps.web_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-shard-${{ matrix.shard }}
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 14
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "## Web End-to-End Results (shard ${{ matrix.shard }} of 4)"
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| End-to-end and accessibility | ${{ steps.web_e2e.outcome }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The visual comparisons are a design reference for a human to look at
+  # (web/CONTRIBUTING.md, "Visual"): they never fail the workflow, a pull
+  # request's checks or a release. One job runs all of them, in the Playwright
+  # container like the shards above, with Playwright's JSON report beside the
+  # HTML one. web/scripts/visual-report.mjs sorts each shot into matches, differs,
+  # new (no baseline) or errored, and writes the Markdown that ci.yml's
+  # `visual-report` job posts as the pull request's one comment. The report
+  # and the expected, actual and diff images are uploaded whenever a shot is
+  # not a match. Every step after the comparisons runs even when they fail, so
+  # the outputs are set whatever happened.
+  web-visual:
+    name: Web Visual Comparisons
+    if: inputs.visual || inputs.visual_only
+    runs-on: lab-runners-wide
+    continue-on-error: true
+
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      body: ${{ steps.render.outputs.body }}
+
+    env:
+      E2E_ALL_IN_CONTAINER: '1'
+      E2E_WORKERS: '4'
+      PLAYWRIGHT_IMAGE_REGISTRY: registry.registry.svc.cluster.local:5000/mcr
+      PLAYWRIGHT_HTML_OPEN: never
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Web visual comparisons
+        id: web_visual
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/visual-results.json
+        run: scripts/with-playwright-container.sh npm --prefix web run e2e:visual -- --reporter=list,html,json
+
+      - name: Sort the shots
+        id: classify
+        if: always()
+        run: node web/scripts/visual-report.mjs classify "$RUNNER_TEMP/visual-results.json" "$RUNNER_TEMP/visual-classification.json"
+
+      - name: Upload Playwright report and images
+        id: upload
+        if: always() && steps.classify.outputs.status != 'match'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-visual-report
+          path: |
+            web/playwright-report
+            web/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Write the report
+        id: render
+        if: always() && steps.classify.outcome == 'success'
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node web/scripts/visual-report.mjs render "$RUNNER_TEMP/visual-classification.json" "$RUNNER_TEMP/visual-report.md"

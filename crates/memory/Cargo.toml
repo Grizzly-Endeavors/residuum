@@ -1,0 +1,46 @@
+[package]
+name = "residuum-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+test-support = ["dep:async-trait"]
+
+[dependencies]
+residuum-core = { workspace = true }
+residuum-config = { workspace = true }
+residuum-inference = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true, optional = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+sqlite-vec = { workspace = true }
+tantivy = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ts-rs = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+residuum-core = { workspace = true, features = ["test-support"] }
+residuum-config = { workspace = true, features = ["test-support"] }
+residuum-inference = { workspace = true, features = ["test-support"] }
+async-trait = { workspace = true }
+ctor = { workspace = true }
+rustls = { workspace = true }
+tempfile = { workspace = true }
+
+[package.metadata.cargo-shear]
+# crates/core/src/testing/crypto.rs, which lib.rs includes by #[path], uses ctor and
+# rustls. cargo-shear reads a source file only for the package whose src/ directory
+# holds it, so it never sees the use here.
+ignored = ["ctor", "rustls"]

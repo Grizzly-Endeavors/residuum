@@ -1,13 +1,22 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  Agent,
+  createServer,
+  get,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Plugin } from "vite";
 import type { AgentSummary } from "../src/lib/generated/protocol";
 import type { WorkbenchInfo } from "../src/lib/types";
 import { WebSocket } from "ws";
+import { mockListeningLine, mockListeningPattern } from "./listening";
 import { mockServerPlugin } from "./plugin";
 import { frameText } from "./sockets";
 import { fetchJson } from "./test-support";
+import { waitFor } from "../src/test/wait";
 
 type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
 
@@ -85,6 +94,30 @@ function firstHubFrames(url: string): Promise<string[]> {
   });
 }
 
+/**
+ * The connection headers of a GET of `url` on a kept-alive connection. Node
+ * answers `Keep-Alive: timeout=N` when it will close the connection after N
+ * idle seconds, and leaves the header out when it never will.
+ */
+function keepAliveHeaders(url: string): Promise<{ connection?: string; keepAlive?: string }> {
+  const agent = new Agent({ keepAlive: true });
+  return new Promise((resolve, reject) => {
+    get(url, { agent }, (res) => {
+      res.resume();
+      res.on("end", () => {
+        agent.destroy();
+        resolve({
+          connection: res.headers.connection,
+          keepAlive: res.headers["keep-alive"]?.toString(),
+        });
+      });
+    }).on("error", (err) => {
+      agent.destroy();
+      reject(err);
+    });
+  });
+}
+
 describe("the mock server plugin", () => {
   const running: Server[] = [];
 
@@ -142,7 +175,7 @@ describe("the mock server plugin", () => {
 
   it("starts the artifacts listener, and reports its port through the workbench info", async () => {
     const dev = await start();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       expect((info.body as WorkbenchInfo).port).not.toBeNull();
     });
@@ -158,7 +191,7 @@ describe("the mock server plugin", () => {
   it("closes the artifacts listener with the dev server", async () => {
     const dev = await start();
     let port: number | null = null;
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       port = (info.body as WorkbenchInfo).port;
       expect(port).not.toBeNull();
@@ -172,6 +205,32 @@ describe("the mock server plugin", () => {
     await expect(fetch(`http://127.0.0.1:${String(port)}/tip-splitter/`)).rejects.toThrow();
   });
 
+  // A client that keeps connections with no idle limit of its own, as Playwright's request
+  // context does, fails with "socket hang up" when it sends on one the server is closing.
+  it("keeps an idle connection open until the client closes it, on the dev and the preview server", async () => {
+    for (const kind of ["configureServer", "configurePreviewServer"] as const) {
+      const server = await start(kind);
+      expect(await keepAliveHeaders(`${server.baseUrl}/api/hub/status`), kind).toEqual({
+        connection: "keep-alive",
+        keepAlive: undefined,
+      });
+    }
+  });
+
+  it("keeps an idle connection open until the client closes it on the artifacts port", async () => {
+    const dev = await start();
+    await waitFor(async () => {
+      const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
+      expect((info.body as WorkbenchInfo).port).not.toBeNull();
+    });
+    const { port } = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
+      .body as WorkbenchInfo;
+    expect(await keepAliveHeaders(`http://127.0.0.1:${String(port)}/tip-splitter/`)).toEqual({
+      connection: "keep-alive",
+      keepAlive: undefined,
+    });
+  });
+
   it("serves the same mock from the preview server of a production build", async () => {
     const preview = await start("configurePreviewServer");
     const agents = await fetchJson(`${preview.baseUrl}/api/hub/agents`);
@@ -183,7 +242,7 @@ describe("the mock server plugin", () => {
     ]);
     // The preview server's own middleware, the built app, answers what isn't /api.
     expect((await fetch(`${preview.baseUrl}/index.html`)).status).toBe(404);
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = (await fetchJson(`${preview.baseUrl}/api/team/workbench/info`))
         .body as WorkbenchInfo;
       expect(info.port).not.toBeNull();
@@ -197,7 +256,7 @@ describe("the mock server plugin", () => {
 
   it("forwards the API and the hub socket on the artifacts port, except what artifacts are refused", async () => {
     const dev = await start();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       expect((info.body as WorkbenchInfo).port).not.toBeNull();
     });
@@ -222,23 +281,35 @@ describe("the mock server plugin", () => {
   });
 
   describe("when deterministic", () => {
-    /** A port nothing is listening on. */
-    function freePort(): number {
-      return 30000 + Math.floor(Math.random() * 20000);
-    }
-
-    it("listens for artifacts on the port it is given, where a live mock takes a free one", async () => {
-      const port = freePort();
+    it("listens for artifacts on a free port when the port is 0", async () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
-      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", "0");
       const dev = await start();
-      await vi.waitFor(async () => {
+      let port: number | null = null;
+      await waitFor(async () => {
         const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
           .body as WorkbenchInfo;
-        expect(info.port).toBe(port);
+        port = info.port;
+        expect(port).not.toBeNull();
       });
       expect(dev.logged.some((line) => line.includes("Deterministic: fixed clock"))).toBe(true);
       expect((await fetch(`http://127.0.0.1:${String(port)}/tip-splitter/`)).status).toBe(200);
+    });
+
+    it("prints the ports it took once the server and the artifacts listener both listen", async () => {
+      vi.stubEnv("MOCK_DETERMINISTIC", "1");
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", "0");
+      const dev = await start();
+      const pattern = mockListeningPattern("port", "artifacts");
+      let groups: Record<string, string> | undefined;
+      await waitFor(() => {
+        groups = dev.logged.map((line) => pattern.exec(line)?.groups).find(Boolean);
+        expect(groups).toBeDefined();
+      });
+      expect(groups?.port).toBe(new URL(dev.baseUrl).port);
+      const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
+        .body as WorkbenchInfo;
+      expect(groups?.artifacts).toBe(String(info.port));
     });
 
     it("says so, and reports artifacts as unavailable, when the port is taken", async () => {
@@ -251,10 +322,13 @@ describe("the mock server plugin", () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
       vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
       const dev = await start();
-      await vi.waitFor(() => {
+      await waitFor(() => {
         expect(
           dev.logged.some((line) => line.includes(`can't listen on port ${String(port)}`)),
         ).toBe(true);
+      });
+      await waitFor(() => {
+        expect(dev.logged).toContain(mockListeningLine(Number(new URL(dev.baseUrl).port), null));
       });
       const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
         .body as WorkbenchInfo;
@@ -264,7 +338,7 @@ describe("the mock server plugin", () => {
 
     it("resets through the plugin's own handler", async () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
-      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(freePort()));
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", "0");
       const dev = await start();
       await fetchJson(`${dev.baseUrl}/api/hub/agents/scout`, { method: "DELETE" });
       expect((await fetchJson(`${dev.baseUrl}/api/mock/reset`, { method: "POST" })).body).toEqual({

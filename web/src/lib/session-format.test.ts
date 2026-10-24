@@ -4,6 +4,7 @@ import {
   isStoppableState,
   outboundStatus,
   runKind,
+  runModel,
   runStatus,
   sessionArtifact,
 } from "./session-format";
@@ -38,6 +39,8 @@ function session(
     error: null,
     error_details: null,
     overlap: null,
+    model: null,
+    resolved_model: null,
   };
 }
 
@@ -53,6 +56,10 @@ describe("a run's words", () => {
     const spawned = session("s", "spawned", "agent:researcher");
     expect(runKind("atlas", { ...spawned, spawner: "main" })).toBe("Started by atlas");
     expect(runKind("atlas", { ...spawned, spawner: "spawned-a-1" })).toBe("Started by spawned-a-1");
+    expect(runKind("atlas", { ...spawned, spawner: null })).toBe("Started by you");
+    expect(runKind("atlas", { ...spawned, category: "artifact", spawner: null })).toBe(
+      "From a workbench page",
+    );
   });
 
   it("says how a live run is doing, with how long it has run", () => {
@@ -118,5 +125,24 @@ describe("isStoppableState", () => {
     ["completed", false],
   ] satisfies [SessionState, boolean][])("%s is stoppable: %s", (state, expected) => {
     expect(isStoppableState(state)).toBe(expected);
+  });
+});
+
+describe("runModel", () => {
+  it("names the model a tier ran on, and the tier", () => {
+    expect(runModel({ model: "small", resolved_model: "anthropic/claude-haiku-4-5" })).toBe(
+      "anthropic/claude-haiku-4-5, from the small tier",
+    );
+  });
+
+  it("names an explicitly chosen model on its own", () => {
+    expect(runModel({ model: "local/qwen3:8b", resolved_model: "local/qwen3:8b" })).toBe(
+      "local/qwen3:8b",
+    );
+  });
+
+  it("falls back to what was asked for, and to nothing for an old run", () => {
+    expect(runModel({ model: "large", resolved_model: null })).toBe("The large tier");
+    expect(runModel({ model: null, resolved_model: null })).toBeNull();
   });
 });

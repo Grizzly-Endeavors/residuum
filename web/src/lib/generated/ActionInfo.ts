@@ -4,4 +4,15 @@ import type { ScheduledCurrentRun } from "./ScheduledCurrentRun";
 /**
  * One pending scheduled action, as listed by `GET /api/agents/{name}/scheduled/actions`.
  */
-export type ActionInfo = { id: string, name: string, run_at: string, agent: string | null, model_tier: string | null, current_run: ScheduledCurrentRun | null, };
+export type ActionInfo = { id: string, name: string, run_at: string, agent: string | null, 
+/**
+ * The action's `model_tier` as stored: a tier or an explicit
+ * `provider/model` id. `None` runs the `medium` tier.
+ */
+model_tier: string | null, 
+/**
+ * Why the action is held instead of running, when its model can't run
+ * (an unreadable value, or a provider `providers.toml` doesn't have).
+ * Plain language, ready to show as-is.
+ */
+problem: string | null, current_run: ScheduledCurrentRun | null, };

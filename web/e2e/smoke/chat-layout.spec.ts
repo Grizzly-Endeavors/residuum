@@ -159,13 +159,16 @@ test.describe("opening and closing in the conversation", () => {
     mock,
     page,
   }) => {
-    await mock.post("/api/mock/delays", { data: { scale: 0 } });
     const feed = await openChat(page);
+    await mock.manualTime();
     await box(page).fill("Look at the wiki");
     await sendFromComposer(box(page));
+    // The turn's start shows once the mock has set its timers; then time runs to the turn's end.
+    await expect(feed.getByText("Working")).toBeVisible();
+    await mock.advance(60_000);
     await expect(feed.getByText("Looking through recent notes first.").first()).toBeVisible();
     const summary = feed.getByRole("button", { name: /^Searched memory, read 2 files/ }).last();
-    await expect(summary).toHaveAttribute("aria-expanded", "false", { timeout: 20_000 });
+    await expect(summary).toHaveAttribute("aria-expanded", "false");
     await summary.evaluate((el) => {
       el.scrollIntoView({ block: "center" });
     });
@@ -217,7 +220,6 @@ test.describe("opening and closing in the conversation", () => {
     mock,
     page,
   }) => {
-    await mock.post("/api/mock/delays", { data: { scale: 0 } });
     const feed = await openChat(page);
     const summary = feed.getByRole("button", { name: /^Ran 1 command/ }).first();
     await summary.evaluate((el) => {
@@ -265,7 +267,7 @@ test.describe("the message box", () => {
     await page.setViewportSize({ width: 320, height: 640 });
     await openChat(page);
     const composer = page.locator("form.composer");
-    const send = page.getByRole("button", { name: "Send" });
+    const send = page.getByRole("button", { name: "Send", exact: true });
     const outer = await rect(composer);
     const padding = await composer.evaluate((form) =>
       parseFloat(getComputedStyle(form).paddingRight),
@@ -278,7 +280,7 @@ test.describe("the message box", () => {
   test("keeps focus after Send is pressed", async ({ isMobile, page }) => {
     await openChat(page);
     await box(page).fill("Check the wiki");
-    const send = page.getByRole("button", { name: "Send" });
+    const send = page.getByRole("button", { name: "Send", exact: true });
     const at = await rect(send);
     if (isMobile) await page.touchscreen.tap(at.x + at.w / 2, at.y + at.h / 2);
     else await page.mouse.click(at.x + at.w / 2, at.y + at.h / 2);
@@ -299,7 +301,7 @@ test.describe("the message box", () => {
       await page.keyboard.press("Enter");
       await page.keyboard.type("second");
       await expect(box(page)).toHaveValue("first\nsecond");
-      await page.getByRole("button", { name: "Send" }).click();
+      await page.getByRole("button", { name: "Send", exact: true }).click();
     } else {
       await expect(box(page)).not.toHaveAttribute("enterkeyhint");
       await page.keyboard.type("first");
@@ -315,15 +317,21 @@ test.describe("the message box", () => {
 
 test.describe("the history", () => {
   test("shows a skeleton while it loads", async ({ page }) => {
+    // The history answer waits until the skeleton has been seen.
+    let releaseHistory: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
     await page.route("**/api/agents/atlas/chat/history", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await released;
       await route.continue();
     });
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText("Loading the conversation")).toBeAttached();
     await expect(feed.getByText("No messages yet")).toHaveCount(0);
-    await expect(feed.getByText(GREETING)).toBeVisible({ timeout: 15_000 });
+    releaseHistory();
+    await expect(feed.getByText(GREETING)).toBeVisible();
     await expect(feed.getByText("Loading the conversation")).toHaveCount(0);
   });
 

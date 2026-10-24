@@ -50,7 +50,7 @@ app-level token scopes. So the manifest carries only `chat:write` and
 
 That Slack's **Create from manifest** flow accepts this file verbatim is
 assumed-until-probed, per the same discipline as
-`src/interfaces/slack/fixtures/README.md`: the first live deployment (or the
+`crates/interfaces/src/slack/fixtures/README.md`: the first live deployment (or the
 Task 8 reviewer) confirms it, and any drift is fixed here and in
 `docs/guides/slack-setup.md`. `features.bot_user.always_online = true` is a
 choice, not a Slack requirement: the adapter holds a resident Socket Mode

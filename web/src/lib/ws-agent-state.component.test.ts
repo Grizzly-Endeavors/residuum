@@ -6,6 +6,7 @@ import { hub } from "./hub.svelte";
 import type { AgentState, AgentSummary } from "./hub-types";
 import { setViewedAgent } from "./viewed-agent";
 import { ws } from "./ws.svelte";
+import { waitFor } from "../test/wait";
 
 // The agent connection follows the hub's word on the bound agent: it is open
 // while the agent runs and closed otherwise, with history read from files.
@@ -60,7 +61,7 @@ afterEach(() => {
 describe("the agent connection", () => {
   it("stays closed for a stopped agent, whose history still loads", async () => {
     setViewedAgent("drifter");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(ws.store.feed.map((item) => ("content" in item ? item.content : ""))).toEqual([
         "Said before it stopped.",
       ]);

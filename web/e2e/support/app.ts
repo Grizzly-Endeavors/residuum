@@ -38,6 +38,14 @@ export type HubState = "connected" | "lost";
  */
 export const hubReach = { lost: false };
 
+/**
+ * Where the page's clock (`Date`) stands, when the fixtures hold it still:
+ * at the mock's fixed start in a visual project, and at the mock's simulated
+ * time once a test is in manual time. `null` while it follows the wall clock.
+ * The fixtures keep it, and the screenshot helper checks the page against it.
+ */
+export const pageClock: { fixedAt: number | null } = { fixedAt: null };
+
 export interface AppReadyOptions {
   /**
    * Where the hub socket should stand. Left out, it follows `hubReach`:
@@ -57,6 +65,53 @@ const APP_ROOT = ".shell, .setup-wizard, .gallery";
  * and loaded what it shows.
  */
 const LAZY_LOADING = /^(Opening|Loading settings|Loading the file)$/;
+
+/** How many failed requests a wait's failure names; the rest are counted. */
+const FAILED_REQUESTS_LISTED = 15;
+
+/** The requests each page has failed since its current document started loading, in the order they failed. */
+const failedRequests = new WeakMap<Page, string[]>();
+
+/**
+ * Record the requests `page` fails, so a wait that times out can name them. A
+ * network change (Docker creating or removing a bridge, say) aborts the page's
+ * in-flight loads with `ERR_NETWORK_CHANGED`, and the app then never renders:
+ * the failure names the cause instead of looking like a slow load. `intended`
+ * marks the requests the harness aborts on purpose, which are left out.
+ *
+ * The record starts again only when a new main-frame document starts loading.
+ * In-app navigation (the router's `pushState` and `replaceState`) keeps it, so
+ * the failures of the load a wait is still watching are not dropped.
+ */
+export function recordFailedRequests(page: Page, intended: (url: URL) => boolean): void {
+  const failed: string[] = [];
+  failedRequests.set(page, failed);
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+    failed.length = 0;
+  });
+  page.on("requestfailed", (request) => {
+    const url = new URL(request.url());
+    if (intended(url)) return;
+    const reason = request.failure()?.errorText ?? "failed";
+    failed.push(`${request.method()} ${url.pathname} ${reason}`);
+  });
+}
+
+/** Add the page's failed requests to a failed wait's error, so the message says what the page could not load. */
+function explainWithFailedRequests(page: Page, error: unknown): unknown {
+  const failed = failedRequests.get(page);
+  if (!(error instanceof Error) || failed === undefined || failed.length === 0) return error;
+  const listed = failed.slice(0, FAILED_REQUESTS_LISTED);
+  const rest = failed.length - listed.length;
+  const lines = [
+    `${failed.length} request${failed.length === 1 ? "" : "s"} the page made failed:`,
+    ...listed.map((line) => `  ${line}`),
+  ];
+  if (rest > 0) lines.push(`  ...and ${rest} more`);
+  error.message = [error.message, ...lines].join("\n");
+  return error;
+}
 
 /** The part of a page that is being built while the app starts: the app's roots, the hub socket and what it brings, the lazy components the URL asked for. */
 async function appRendered(page: Page, hub: HubState): Promise<void> {
@@ -130,6 +185,10 @@ export async function settleAnimations(page: Page): Promise<void> {
  * that is already there.
  */
 export async function waitForApp(page: Page, options: AppReadyOptions = {}): Promise<void> {
-  await appRendered(page, options.hub ?? (hubReach.lost ? "lost" : "connected"));
-  await fontsLoaded(page);
+  try {
+    await appRendered(page, options.hub ?? (hubReach.lost ? "lost" : "connected"));
+    await fontsLoaded(page);
+  } catch (error) {
+    throw explainWithFailedRequests(page, error);
+  }
 }

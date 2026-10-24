@@ -21,18 +21,30 @@ async function openSection(page: Page, section: string): Promise<void> {
   await expectSettingsOpen(page);
 }
 
-/** Record what the page opens in a new tab, since the relay's sign-in page can't load here. */
+/**
+ * Record where the page sends the tabs it opens, since the relay's sign-in
+ * page can't load here. Each `window.open` gets a stand-in tab, and the
+ * address the page sends it to (`location.replace`) is what is recorded.
+ */
 async function recordOpenedTabs(page: Page): Promise<() => Promise<string[]>> {
   await page.evaluate(() => {
     const opened: string[] = [];
     Object.assign(window, { openedTabs: opened });
-    window.open = (url) => {
-      opened.push(String(url));
-      return null;
+    window.open = () => {
+      const tab = {
+        opener: window,
+        location: { replace: (url: string | URL) => opened.push(String(url)) },
+        close: () => undefined,
+      };
+      return tab as unknown as Window;
     };
   });
   return () => page.evaluate(() => (window as unknown as { openedTabs: string[] }).openedTabs);
 }
+
+/** The relay's sign-in page at `origin` for the default gateway port, with the `state` the hub handed out. */
+const SIGN_IN_PAGE = (origin: string): RegExp =>
+  new RegExp(`^${origin.replaceAll(".", "\\.")}/connect\\?port=7700&state=[A-Za-z0-9_-]{16,128}$`);
 
 test.describe("General", () => {
   test("a timezone and the gateway port are saved with Save changes and kept across a reload", async ({
@@ -44,6 +56,7 @@ test.describe("General", () => {
 
     await page.getByLabel("Timezone").selectOption("Europe/Berlin");
     await page.getByRole("button", { name: "More options" }).click();
+    await expect(page.getByLabel("Bind address")).toBeVisible();
     await page.getByLabel("Port", { exact: true }).fill("7711");
     await expect(saveBar(page)).toContainText("You have unsaved changes.");
     await expectNoAxeViolations(page, { within: OVERLAY });
@@ -86,15 +99,19 @@ test.describe("Residuum Cloud", () => {
     const opened = await recordOpenedTabs(page);
 
     await page.getByRole("button", { name: "Connect to Residuum Cloud" }).click();
-    expect(await opened()).toEqual(["https://agent-residuum.com/connect?port=7700"]);
+    await expect
+      .poll(opened)
+      .toEqual([expect.stringMatching(SIGN_IN_PAGE("https://agent-residuum.com"))]);
 
     await page.getByRole("button", { name: "More options" }).click();
     await page.getByLabel("Relay URL").fill("ws://127.0.0.1:8080/tunnel/v2/register");
     await page.getByRole("button", { name: "Connect to Residuum Cloud" }).click();
-    expect(await opened()).toEqual([
-      "https://agent-residuum.com/connect?port=7700",
-      "http://127.0.0.1:8080/connect?port=7700",
-    ]);
+    await expect
+      .poll(opened)
+      .toEqual([
+        expect.stringMatching(SIGN_IN_PAGE("https://agent-residuum.com")),
+        expect.stringMatching(SIGN_IN_PAGE("http://127.0.0.1:8080")),
+      ]);
     await saveBar(page).getByRole("button", { name: "Discard" }).click();
 
     await mock.post("/api/mock/cloud-callback");
@@ -142,6 +159,71 @@ test.describe("Residuum Cloud", () => {
     await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
   });
 
+  test("the relay's hand-back lands in Settings, which follows the tunnel from Connecting to Connected", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/cloud", { data: { tunnel: "connecting" } });
+    const { url } = (await mock.post("/api/hub/cloud/connect", { data: {} })) as { url: string };
+    const state = new URL(url).searchParams.get("state") ?? "";
+    await page.goto(`/cloud/callback?token=rst_handed_back&state=${state}`);
+    await expectSettingsOpen(page);
+    await expect.poll(() => new URL(page.url()).search).toBe("?settings=_all/cloud");
+    await expect(page.getByText("Connecting…")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Connection" }).getByRole("alert")).toBeHidden();
+    expect(await hubConfig(page)).toContain('token = "secret:cloud_token"');
+
+    // The tunnel comes up; the section, still looking while it connects, shows it.
+    await mock.post("/api/mock/cloud", { data: { tunnel: null } });
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    await expectNoAxeViolations(page, { within: OVERLAY });
+  });
+
+  test("a hand-back without a token lands in Settings with what to do next", async ({
+    page,
+    mock,
+  }) => {
+    const { url } = (await mock.post("/api/hub/cloud/connect", { data: {} })) as { url: string };
+    const state = new URL(url).searchParams.get("state") ?? "";
+    await page.goto(`/cloud/callback?state=${state}`);
+    await expectSettingsOpen(page);
+    const problem = page.getByRole("region", { name: "Connection" }).getByRole("alert");
+    await expect(problem).toContainText("sent you back without signing this install in");
+    await expect(problem).toContainText("Try connecting again.");
+    await expect(page.getByText("Not connected")).toBeVisible();
+    await expectNoAxeViolations(page, { within: OVERLAY });
+    const opened = await recordOpenedTabs(page);
+
+    await problem.getByRole("button", { name: "Try connecting again" }).click();
+    await expect
+      .poll(opened)
+      .toEqual([expect.stringMatching(SIGN_IN_PAGE("https://agent-residuum.com"))]);
+    await expect(problem).toBeHidden();
+  });
+
+  test("a hand-back this app didn't start saves nothing and says so", async ({ page }) => {
+    await page.goto("/cloud/callback?token=rst_someone_else&state=not-from-this-app");
+    await expectSettingsOpen(page);
+    const problem = page.getByRole("region", { name: "Connection" }).getByRole("alert");
+    await expect(problem).toContainText("This sign-in link didn't come from this app");
+    await expect(page.getByText("Not connected")).toBeVisible();
+    expect(await hubConfig(page)).not.toContain('token = "secret:cloud_token"');
+    const status = (await (await page.request.get("/api/hub/cloud/status")).json()) as {
+      has_token: boolean;
+    };
+    expect(status.has_token).toBe(false);
+  });
+
+  test("a sign-in the relay refuses offers to sign in again", async ({ page, mock }) => {
+    await mock.post("/api/mock/cloud-callback");
+    await mock.post("/api/mock/cloud", { data: { tunnel: "refused" } });
+    await openSection(page, "cloud");
+
+    await expect(page.getByText("Sign-in not accepted")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in again" })).toBeVisible();
+    await expectNoAxeViolations(page, { within: OVERLAY });
+  });
+
   test("seen through Residuum Cloud there is no Disconnect, and the page says why", async ({
     page,
     mock,
@@ -179,6 +261,9 @@ test.describe("Session limits and Diagnostics", () => {
     page,
   }) => {
     await openSection(page, "diagnostics");
+    await expect(
+      page.getByRole("switch", { name: "Redact content in trace exports" }),
+    ).toBeChecked();
     const report = page.getByRole("switch", { name: "Report errors automatically" });
     await expect(report).not.toBeChecked();
     await expectNoAxeViolations(page, { within: OVERLAY });

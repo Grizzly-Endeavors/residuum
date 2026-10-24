@@ -99,6 +99,74 @@ describe("the Residuum Cloud routes", () => {
     expect((await call("POST", "/api/mock/cloud-callback", { token: "" })).status).toBe(422);
   });
 
+  /** Start a sign-in as Connect does; the relay's sign-in address and its `state`. */
+  async function startSignIn(body: unknown = {}): Promise<{ url: URL; state: string }> {
+    const answer = await call("POST", "/api/hub/cloud/connect", body);
+    expect(answer.status).toBe(200);
+    const url = new URL((answer.body as { url: string }).url);
+    return { url, state: url.searchParams.get("state") ?? "" };
+  }
+
+  /** Where the gateway's callback sends the browser for `query`. */
+  async function callback(query: string): Promise<string | null> {
+    const handedOff = await fetch(`${harness.baseUrl}/cloud/callback${query}`, {
+      redirect: "manual",
+    });
+    expect(handedOff.status).toBe(303);
+    return handedOff.headers.get("location");
+  }
+
+  it("starts a sign-in at the relay the request names, with a fresh state each time", async () => {
+    const first = await startSignIn({ relay_url: "", port: "7701" });
+    expect(`${first.url.origin}${first.url.pathname}`).toBe("https://agent-residuum.com/connect");
+    expect(first.url.searchParams.get("port")).toBe("7701");
+    expect(first.state).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
+
+    const local = await startSignIn({ relay_url: "ws://127.0.0.1:8080/tunnel/v2/register" });
+    expect(local.url.origin).toBe("http://127.0.0.1:8080");
+    expect(local.url.searchParams.get("port")).toBe("7700");
+    expect(local.state).not.toBe(first.state);
+
+    expect((await call("POST", "/api/hub/cloud/connect", { relay_url: "nope" })).status).toBe(400);
+  });
+
+  it("answers the gateway's sign-in callback by saving the token and handing off to Settings", async () => {
+    const { state } = await startSignIn();
+    expect(await callback(`?token=&token=rst_two&state=${state}`)).toBe(
+      "/home?settings=_all/cloud&cloud=connecting",
+    );
+    expect(harness.hub.hubState.secrets.get("cloud_token")).toBe("rst_two");
+    expect(await status()).toMatchObject({ status: "connected", has_token: true, enabled: true });
+  });
+
+  it("hands a callback without a token off to Settings without saving anything", async () => {
+    const { state } = await startSignIn();
+    expect(await callback(`?state=${state}`)).toBe("/home?settings=_all/cloud&cloud=missing-token");
+    expect(await status()).toMatchObject({ has_token: false });
+  });
+
+  it("saves nothing from a callback whose state no sign-in here started, or that was used", async () => {
+    const { state } = await startSignIn();
+    for (const query of ["?token=rst_x", "?token=rst_x&state=", "?token=rst_x&state=forged"]) {
+      expect(await callback(query)).toBe("/home?settings=_all/cloud&cloud=not-started-here");
+    }
+    expect(await status()).toMatchObject({ has_token: false });
+
+    expect(await callback(`?token=rst_mine&state=${state}`)).toBe(
+      "/home?settings=_all/cloud&cloud=connecting",
+    );
+    expect(await callback(`?token=rst_replay&state=${state}`)).toBe(
+      "/home?settings=_all/cloud&cloud=not-started-here",
+    );
+    expect(harness.hub.hubState.secrets.get("cloud_token")).toBe("rst_mine");
+  });
+
+  it("holds the tunnel at refused", async () => {
+    await call("POST", "/api/mock/cloud-callback");
+    expect((await call("POST", "/api/mock/cloud", { tunnel: "refused" })).status).toBe(200);
+    expect(await status()).toMatchObject({ status: "refused", has_token: true, enabled: true });
+  });
+
   it("starts over on reset", async () => {
     await call("POST", "/api/mock/cloud-callback");
     await call("POST", "/api/mock/cloud", { via_tunnel: true });

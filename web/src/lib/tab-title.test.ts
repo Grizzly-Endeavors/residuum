@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { placeSubject, tabTitle, type TabTitleInput } from "./tab-title";
-import type { Place } from "./routes";
+import { INBOX, type Place } from "./routes";
 
 const QUIET: TabTitleInput = {
   subject: "atlas",
@@ -42,9 +42,10 @@ describe("placeSubject", () => {
 
   it.each<[Place, string | null]>([
     [{ kind: "home" }, null],
-    [{ kind: "inbox", agent: "scout", tab: "active", item: null }, "Inbox"],
+    [{ ...INBOX, agent: "scout" }, "Inbox"],
     [{ kind: "workbench", artifact: null }, "Workbench"],
     [{ kind: "shared-files" }, "Shared files"],
+    [{ kind: "not-found", path: "/agent/atlas/nowhere" }, "Page not found"],
     [{ kind: "chat", agent: "atlas" }, "ATLAS"],
     [{ kind: "activity", agent: "atlas" }, "ATLAS"],
     [{ kind: "schedule", agent: "atlas" }, "ATLAS"],

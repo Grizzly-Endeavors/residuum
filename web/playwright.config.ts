@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 import type { E2EOptions } from "./e2e/support/fixtures";
-import { workerCount, workerServers } from "./e2e/support/servers";
+import { launchOf, workerCount } from "./e2e/support/servers";
 
 /**
  * End-to-end, accessibility and visual tests against the mock server.
@@ -42,9 +42,11 @@ const webkitPhone = {
 
 /**
  * `scripts/with-playwright-container.sh` starts the Playwright container with
- * a browser server and sets this to its address. The `visual-*` projects and
- * `webkit-phone` drive that browser, and reach the mock on this machine through
- * `exposeNetwork`. `E2E_ALL_IN_CONTAINER` (below) adds the other projects.
+ * a browser server and sets this to its address (a `ws+unix://` socket when
+ * `scripts/with-loopback-network.sh` bridges it into its loopback-only network).
+ * The `visual-*` projects and `webkit-phone` drive that browser, and reach the
+ * mock on this machine through `exposeNetwork`. `E2E_ALL_IN_CONTAINER` (below)
+ * adds the other projects.
  */
 const containerBrowser = process.env.E2E_CONTAINER_WS ?? "";
 const inContainer =
@@ -53,12 +55,12 @@ const inContainer =
     : { connectOptions: { wsEndpoint: containerBrowser, exposeNetwork: "<loopback>" } };
 
 /**
- * `E2E_ALL_IN_CONTAINER=1` sends `desktop`, `phone` and the `preview-*` projects
- * to the container's browser too, so a machine with no Chromium of its own (the
- * CI runners) needs none. Without it they launch this machine's Chromium. The
- * variable only works under the container wrapper; with no container browser it
- * is an error, because a quiet fall-back to a host browser would hide that the
- * run isn't the one that was asked for.
+ * `E2E_ALL_IN_CONTAINER=1` sends `desktop`, `phone`, the `dev-*` and the
+ * `preview-*` projects to the container's browser too, so a machine with no
+ * Chromium of its own (the CI runners) needs none. Without it they launch this
+ * machine's Chromium. The variable only works under the container wrapper; with
+ * no container browser it is an error, because a quiet fall-back to a host
+ * browser would hide that the run isn't the one that was asked for.
  */
 const allInContainer = process.env.E2E_ALL_IN_CONTAINER === "1";
 if (allInContainer && containerBrowser === "") {
@@ -112,6 +114,12 @@ export default defineConfig<E2EOptions>({
   fullyParallel: true,
   forbidOnly: process.env.CI !== undefined,
   retries: 0,
+  // A hang guard, not a speed budget: every step waits on what it needs, so
+  // only a test that would never finish reaches it. A spec of several page
+  // loads takes many times longer on a machine other suites share than on a
+  // quiet one, and the 30s default failed such specs there. The same rule
+  // bounds the unit tests (src/test/guard.ts).
+  timeout: 180_000,
 
   reporter: [["list"], ["html", { open: "never" }]],
 
@@ -156,7 +164,7 @@ export default defineConfig<E2EOptions>({
       grepInvert: eitherTag,
     },
     {
-      // Local only: the release workflow doesn't run it. It uses this machine's WebKit, or the
+      // Local only: no CI workflow runs it. It uses this machine's WebKit, or the
       // container's when the container wrapper runs it, and skips itself when neither starts.
       name: "webkit-phone",
       use: { ...webkitPhone, ...inContainer },
@@ -188,29 +196,37 @@ export default defineConfig<E2EOptions>({
     },
   ],
 
-  // Playwright starts these one after another, in this order, so the first preview server's build is in place before the others serve it.
+  // Playwright starts these one after another, in this order, so the first preview server's build is in place before the others serve it, and each dev server looks for its port once the one before has taken its own.
+  // Each counts as started when the mock prints its ports, which Playwright then stores for the worker processes (`e2e/support/servers.ts`).
   webServer: [
-    ...workerServers.map(({ dev }) => ({
-      command: `npm run dev:mock -- --port ${dev.port} --strictPort`,
-      url: dev.url,
-      env: {
-        MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(dev.artifactsPort),
-      },
-      // A server left over from another run would carry its state and its code into this one.
-      reuseExistingServer: false,
-      timeout: 60_000,
-    })),
-    ...workerServers.map(({ preview }, index) => ({
-      // The build is what the preview servers serve, so it is rebuilt every run, once.
-      command: `${index === 0 ? "npm run build && " : ""}npm run preview:mock -- --port ${preview.port} --strictPort`,
-      url: preview.url,
-      env: {
-        MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(preview.artifactsPort),
-      },
-      reuseExistingServer: false,
-      timeout: index === 0 ? 180_000 : 60_000,
-    })),
+    ...Array.from({ length: workerCount }, (_, index) => {
+      const launch = launchOf("dev", index);
+      return {
+        name: launch.name,
+        command: `npm run dev:mock -- ${launch.listenArgs}`,
+        wait: { stdout: launch.listening },
+        env: {
+          MOCK_DETERMINISTIC: "1",
+          MOCK_ARTIFACTS_PORT: String(launch.artifactsPort),
+          // A dependency cache for each dev server (see `cacheDir` in `vite.config.ts`).
+          VITE_CACHE_DIR: `node_modules/.vite-e2e/${String(index)}`,
+        },
+        timeout: 60_000,
+      };
+    }),
+    ...Array.from({ length: workerCount }, (_, index) => {
+      const launch = launchOf("preview", index);
+      return {
+        name: launch.name,
+        // The build is what the preview servers serve, so it is rebuilt every run, once.
+        command: `${index === 0 ? "npm run build && " : ""}npm run preview:mock -- ${launch.listenArgs}`,
+        wait: { stdout: launch.listening },
+        env: {
+          MOCK_DETERMINISTIC: "1",
+          MOCK_ARTIFACTS_PORT: String(launch.artifactsPort),
+        },
+        timeout: index === 0 ? 180_000 : 60_000,
+      };
+    }),
   ],
 });

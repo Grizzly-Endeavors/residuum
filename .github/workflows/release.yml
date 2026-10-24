@@ -34,18 +34,31 @@ jobs:
 
       - name: Build summary
         run: |
-          echo '## Release Version' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tag:** ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '## Release Version'
+            echo ''
+            echo "**Tag:** ${{ steps.version.outputs.tag }}"
+            echo "**Version:** ${{ steps.version.outputs.version }}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  quality:
-    name: Quality Checks
-    uses: ./.github/workflows/quality-checks.yml
+  # The checks of the merge queue lane, on the tagged commit. The suites under
+  # load run nightly (nightly-stress.yml) and do not gate a release, and the
+  # visual comparisons report on pull requests only.
+  rust:
+    name: Rust
+    uses: ./.github/workflows/rust-checks.yml
+    with:
+      pebble: true
 
-  # The builds run beside the quality checks instead of after them. Nothing
-  # leaves the workflow until both pass: the Docker image and the GitHub
-  # release need the quality checks.
+  web:
+    name: Web
+    uses: ./.github/workflows/web-checks.yml
+    with:
+      visual: false
+
+  # The builds run beside the checks instead of after them. Nothing leaves the
+  # workflow until both pass: the Docker image and the GitHub release need the
+  # Rust and web checks.
   build:
     name: Build (${{ matrix.artifact }})
     needs: [version]
@@ -103,10 +116,13 @@ jobs:
 
       - name: Stage artifact
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARTIFACT: ${{ matrix.artifact }}
         run: |
-          SRC="target/${{ matrix.target }}/release/residuum"
-          if [[ "${{ matrix.target }}" == *-windows-* ]]; then SRC="${SRC}.exe"; fi
-          cp "$SRC" "${{ matrix.artifact }}"
+          SRC="target/$TARGET/release/residuum"
+          if [[ "$TARGET" == *-windows-* ]]; then SRC="${SRC}.exe"; fi
+          cp "$SRC" "$ARTIFACT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -195,7 +211,7 @@ jobs:
 
   docker:
     name: Docker Image
-    needs: [version, quality, build]
+    needs: [version, rust, web, build]
     runs-on: lab-runners-wide
 
     steps:
@@ -250,7 +266,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [version, quality, build, mac-app]
+    needs: [version, rust, web, build, mac-app]
     if: always() && !failure() && !cancelled()
     runs-on: lab-runners-light
 
@@ -309,13 +325,15 @@ jobs:
       - name: Build summary
         if: always()
         run: |
-          echo '## Release Results' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tag:** ${{ needs.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** ${{ needs.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo '| Artifact | Status |' >> "$GITHUB_STEP_SUMMARY"
-          echo '|----------|--------|' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '## Release Results'
+            echo ''
+            echo "**Tag:** ${{ needs.version.outputs.tag }}"
+            echo "**Version:** ${{ needs.version.outputs.version }}"
+            echo ''
+            echo '| Artifact | Status |'
+            echo '|----------|--------|'
+          } >> "$GITHUB_STEP_SUMMARY"
           for name in residuum-linux-x86_64 residuum-linux-aarch64 residuum-macos-aarch64 residuum-windows-x86_64.exe Residuum-macos; do
             if [ -d "release-artifacts/$name" ]; then
               echo "| $name | uploaded |" >> "$GITHUB_STEP_SUMMARY"

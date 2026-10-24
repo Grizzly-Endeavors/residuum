@@ -46,14 +46,13 @@ describe("a turn that couldn't finish", () => {
   });
 
   it("sends the user's message again with Try again, once", async () => {
-    const images = [{ media_type: "image/png", data: "AAAA" }];
     render(TurnFailure, {
-      item: { ...failure, retry: { content: "Tidy the wiki index", images } },
+      item: { ...failure, retry: { content: "Tidy the wiki index" } },
       agent: "atlas",
     });
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    expect(ws.sendChat).toHaveBeenCalledExactlyOnceWith("Tidy the wiki index", images);
+    expect(ws.sendChat).toHaveBeenCalledExactlyOnceWith("Tidy the wiki index");
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 

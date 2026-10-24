@@ -50,11 +50,14 @@ describe("Prose", () => {
 
   it("drops script and event handlers from the message", () => {
     const { container } = render(Prose, {
-      content: 'hi <script>window.hacked = true</script><img src="x" onerror="alert(1)">',
+      content:
+        'hi <script>window.hacked = true</script><img src="/api/agents/atlas/files/x" onerror="alert(1)">',
       agent: "atlas",
     });
     expect(container.querySelector("script")).toBeNull();
-    expect(container.querySelector("img")?.getAttribute("onerror")).toBeNull();
+    const image = container.querySelector("img");
+    expect(image).not.toBeNull();
+    expect(image?.getAttribute("onerror")).toBeNull();
   });
 
   it("copies a code block without its trailing newline, and says so", async () => {
@@ -96,7 +99,7 @@ describe("Prose", () => {
 
     await userEvent.click(screen.getByRole("link", { name: "notes/plan.md" }));
 
-    expect(openPanel).toHaveBeenCalledWith({ kind: "file", path: "notes/plan.md" });
+    expect(openPanel).toHaveBeenCalledWith({ kind: "file", path: "notes/plan.md", agent: null });
   });
 
   it("opens another agent's path beside that agent's chat", async () => {
@@ -109,7 +112,7 @@ describe("Prose", () => {
     expect(openPanel).not.toHaveBeenCalled();
     expect(openPlace).toHaveBeenCalledWith(
       { kind: "chat", agent: "scout" },
-      { panel: { kind: "file", path: "notes/plan.md" } },
+      { panel: { kind: "file", path: "notes/plan.md", agent: null } },
     );
   });
 

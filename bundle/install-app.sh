@@ -12,13 +12,18 @@ APP_DIR="$HOME/Applications/Residuum.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 
+# A cargo wrapper that builds in a leased dir (CONTRIBUTING.md, "Build dirs")
+# passes through when CARGO_TARGET_DIR is set, so the binary lands where the
+# copies below look for it.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+
 echo "Building release binary..."
 cargo build --release --manifest-path "$PROJECT_ROOT/Cargo.toml"
 
 echo "Creating app bundle at $APP_DIR..."
 mkdir -p "$MACOS_DIR"
 cp "$PROJECT_ROOT/bundle/Info.plist" "$CONTENTS/Info.plist"
-cp "$PROJECT_ROOT/target/release/residuum" "$MACOS_DIR/residuum"
+cp "$CARGO_TARGET_DIR/release/residuum" "$MACOS_DIR/residuum"
 
 # Ad-hoc sign so macOS recognizes the bundle for notifications
 echo "Signing app bundle..."
@@ -28,7 +33,7 @@ codesign -s - -f --deep "$APP_DIR"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR"
 
 # Also update the cargo bin copy for non-notification use
-cp "$PROJECT_ROOT/target/release/residuum" "$HOME/.cargo/bin/residuum"
+cp "$CARGO_TARGET_DIR/release/residuum" "$HOME/.cargo/bin/residuum"
 
 echo "Done. Residuum.app installed at $APP_DIR"
 echo ""

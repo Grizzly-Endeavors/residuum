@@ -1,7 +1,7 @@
-import { act, cleanup, waitFor } from "@testing-library/svelte";
+import { act, cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { render, screen } from "../../test/component";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, settle } from "../../test/component";
 import { htmlSnippet } from "../../test/snippets";
 import OverlayHarness from "../../test/ui/OverlayHarness.svelte";
 import { router } from "../router.svelte";
@@ -9,11 +9,7 @@ import ConfirmDialog from "./ConfirmDialog.svelte";
 import ModalLayer from "./ModalLayer.svelte";
 import ConfirmHost from "./ConfirmHost.svelte";
 import { confirmations, confirmLeave } from "./confirm.svelte";
-
-/** Let the history traversals an overlay started land. */
-async function settleHistory(): Promise<void> {
-  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
-}
+import { waitFor } from "../../test/wait";
 
 function scrim(): HTMLElement {
   const scrims = document.querySelectorAll<HTMLElement>("[data-overlay-scrim]");
@@ -40,22 +36,18 @@ function drag(element: HTMLElement, from: [number, number], to: [number, number]
   element.dispatchEvent(touch("touchend", ...to));
 }
 
-beforeAll(() => {
+beforeEach(() => {
   router.startForOverlays();
-});
-
-afterAll(() => {
-  router.stop();
 });
 
 // Unmounting closes what a test left open, and that goes back in the history:
 // let it land before the next test opens anything.
 afterEach(async () => {
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
-  await settleHistory();
+  await settle();
 });
 
 describe("Dialog", () => {
@@ -209,7 +201,7 @@ describe("Dialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Open" }));
     await user.keyboard("{Escape}");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(window.history.state).toEqual({ idx: start });
     });
   });
@@ -334,7 +326,7 @@ describe("ConfirmDialog", () => {
     await user.keyboard("{Enter}");
     expect(onconfirm).toHaveBeenCalledTimes(1);
     first.unmount();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect((window.history.state as { overlay?: string }).overlay).toBeUndefined();
     });
 

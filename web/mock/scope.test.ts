@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { MailThreadPage } from "../src/lib/hub-types";
+import { MAIL_SEED } from "./data/mail";
 import { isRefusal, isFileDataRoute, scopeRequest } from "./scope";
 import {
   fetchJson,
@@ -9,7 +11,7 @@ import {
 } from "./test-support";
 
 describe("isFileDataRoute", () => {
-  // The same paths the backend's dispatch tests check (`src/hub/http/dispatch.rs`).
+  // The same paths the backend's dispatch tests check (`crates/hub/src/http/dispatch.rs`).
   it.each([
     "/chat/history",
     "/usage",
@@ -20,6 +22,7 @@ describe("isFileDataRoute", () => {
     "/inbox/2026-09-30-note/archive",
     "/inbox/2026-09-30-note/restore",
     "/inbox/2026-09-30-note/attachments/0",
+    "/inbox/agent/2026-09-30-note/attachments/0",
     "/inbox/archive/read",
   ])("takes %s", (route) => {
     expect(isFileDataRoute(route)).toBe(true);
@@ -42,6 +45,7 @@ describe("isFileDataRoute", () => {
     "/a2a/outbound",
     "/inbox/item",
     "/inbox/item/unknown",
+    "/inbox/agent/item/attachments",
     "/inbox/item/attachments",
     "/inbox/item/attachments/0/extra",
     "/inbox/",
@@ -96,9 +100,11 @@ describe("scopeRequest", () => {
       "/api/hub/status",
       "/api/hub/events",
       "/api/hub/overview",
-      "/api/hub/inbox",
-      "/api/hub/inbox/unread",
-      "/api/hub/inbox/atlas/note/read",
+      "/api/hub/mail/threads",
+      "/api/hub/mail/threads/atlas%2Fuser%2Fnote",
+      "/api/hub/mail/threads/atlas%2Fuser%2Fnote/archive",
+      "/api/hub/mail/send",
+      "/api/hub/uploads",
       "/api/hub/config/raw",
       "/api/team/workspace/files",
     ]) {
@@ -263,6 +269,8 @@ describe("stopped and failed agents over HTTP", () => {
 
   const at = (agent: string, route: string): string =>
     `${harness.baseUrl}/api/agents/${agent}${route}`;
+  const inboxThreads = (agent: string): string =>
+    `${harness.baseUrl}/api/hub/mail/threads?folder=inbox&agent=${agent}`;
 
   it.each(["drifter", "brittle"])("serves %s's file-only routes, with no data", async (agent) => {
     expect(await fetchJson(at(agent, "/chat/history"))).toEqual({
@@ -277,7 +285,17 @@ describe("stopped and failed agents over HTTP", () => {
       status: 200,
       body: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
     });
-    expect(await fetchJson(at(agent, "/inbox"))).toEqual({ status: 200, body: [] });
+    expect(await fetchJson(at(agent, "/inbox/mock_1/attachments/0"))).toEqual({
+      status: 404,
+      body: {
+        error:
+          "This attachment is no longer available. It may have been removed from its inbox item.",
+      },
+    });
+    expect(await fetchJson(inboxThreads(agent))).toEqual({
+      status: 200,
+      body: { threads: [], next: null },
+    });
     expect(await fetchText(at(agent, "/a2a/agents/raw"))).toEqual({
       status: 200,
       body: '{"agents":{}}',
@@ -301,6 +319,42 @@ describe("stopped and failed agents over HTTP", () => {
     expect(config.body).toContain("[");
   });
 
+  // A mail attachment of a stopped agent opens in the file panel beside its thread.
+  it.each(["drifter", "brittle"])(
+    "reads, saves and checks %s's own workspace files, as the backend does for an agent that isn't running",
+    async (agent) => {
+      const read = await fetch(at(agent, "/workspace/file?path=SOUL.md"));
+      expect(read.status).toBe(200);
+      const version = read.headers.get("etag") ?? "";
+      expect(version).not.toBe("");
+      expect(await read.text()).toContain("# Soul");
+      expect(await fetchText(at(agent, "/workspace/file?path=missing.md"))).toMatchObject({
+        status: 404,
+      });
+
+      const checked = await fetchJson(at(agent, "/workspace/validate"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "notes/today.md", content: "# Today\n" }),
+      });
+      expect(checked).toEqual({ status: 200, body: { diagnostics: [] } });
+
+      const saved = await fetchJson(at(agent, "/workspace/file"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "If-Match": version },
+        body: JSON.stringify({ path: "SOUL.md", content: `# Soul of ${agent}\n` }),
+      });
+      expect(saved.status).toBe(200);
+      expect((await fetchText(at(agent, "/workspace/file?path=SOUL.md"))).body).toBe(
+        `# Soul of ${agent}\n`,
+      );
+      // A stopped agent's write is to its own workspace and no one else's.
+      expect((await fetchText(at("atlas", "/workspace/file?path=SOUL.md"))).body).toContain(
+        "# Soul\n",
+      );
+    },
+  );
+
   it.each([
     ["drifter", "stopped"],
     ["brittle", "failed"],
@@ -320,11 +374,12 @@ describe("stopped and failed agents over HTTP", () => {
     });
   });
 
-  it("serves the inbox handlers the stopped agent's own state", async () => {
-    const atlas = await fetchJson(at("atlas", "/inbox"));
-    expect((atlas.body as unknown[]).length).toBeGreaterThan(0);
-    await fetchJson(`${harness.baseUrl}/api/hub/agents/atlas/stop`, { method: "POST" });
-    expect(await fetchJson(at("atlas", "/inbox"))).toEqual(atlas);
+  it("serves a stopped agent's attachments from its own inbox", async () => {
+    const attachment = at("scout", `/inbox/${MAIL_SEED.wikiAudit.replyId}/attachments/0`);
+    const running = await fetchText(attachment);
+    expect(running.status).toBe(200);
+    await fetchJson(`${harness.baseUrl}/api/hub/agents/scout/stop`, { method: "POST" });
+    expect(await fetchText(attachment)).toEqual(running);
   });
 
   it("keeps a stopped agent's conversation readable", async () => {
@@ -342,8 +397,8 @@ describe("stopped and failed agents over HTTP", () => {
       messages: { content: string }[];
     };
     expect(history.messages.at(-1)?.content).toContain("Hi, this is drifter");
-    const inbox = (await fetchJson(at("drifter", "/inbox"))).body as unknown[];
-    expect(inbox.length).toBeGreaterThan(0);
+    const inbox = (await fetchJson(inboxThreads("drifter"))).body as MailThreadPage;
+    expect(inbox.threads.length).toBeGreaterThan(0);
   });
 
   it("refuses a failed start and keeps the agent without a conversation", async () => {

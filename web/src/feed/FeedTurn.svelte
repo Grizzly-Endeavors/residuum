@@ -58,7 +58,7 @@
   });
 </script>
 
-<div class="feed-turn" bind:this={turnEl}>
+<div class="feed-turn" data-feed-turn bind:this={turnEl}>
   {#each parts as part, index (part.key)}
     {#if part.kind === "activity"}
       <ActivityLine

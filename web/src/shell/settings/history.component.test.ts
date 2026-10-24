@@ -8,6 +8,7 @@ import { toast } from "../../lib/toast.svelte";
 import type { CheckpointSummary } from "../../lib/types";
 import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import HistoryBrowser from "./HistoryBrowser.svelte";
+import { waitFor } from "../../test/wait";
 
 // The History browser against a stand-in for the checkpoint routes: the list,
 // a checkpoint opened in place, restore and undo through the config write
@@ -85,7 +86,7 @@ function serve(): void {
 }
 
 async function shown(): Promise<void> {
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(screen.queryByText("Loading the history")).toBeNull();
   });
 }
@@ -113,7 +114,7 @@ describe("the History browser", () => {
     expect(screen.getByRole("button", { name: /updated SOUL\.md/ })).toBeTruthy();
 
     await fireEvent.click(screen.getByRole("button", { name: "Show older" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("button", { name: /the first turn/ })).toBeTruthy();
     });
     expect(requests).toContain(
@@ -128,7 +129,7 @@ describe("the History browser", () => {
     const row = screen.getByRole("button", { name: /updated SOUL\.md/ });
     await fireEvent.click(row);
     expect(row).toHaveAttribute("aria-expanded", "true");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("list", { name: "Files this checkpoint changed" })).toBeTruthy();
     });
 
@@ -149,7 +150,7 @@ describe("the History browser", () => {
     await fireEvent.click(
       await screen.findByRole("button", { name: "Restore config/mcp.json as it was then" }),
     );
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(heard.map((change) => change.cause)).toEqual(["restore"]);
     });
     expect(requests).toContain(`POST /api/agents/${agent}/checkpoints/cp-3/restore`);
@@ -162,7 +163,7 @@ describe("the History browser", () => {
     await shown();
     await fireEvent.click(screen.getByRole("button", { name: /updated SOUL\.md/ }));
     await fireEvent.click(await screen.findByRole("button", { name: "Undo these changes" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(
         screen.getByText(
           "Put back SOUL.md. Left config/mcp.json alone, because it changed again since.",
@@ -179,13 +180,13 @@ describe("the History browser", () => {
       target: { value: "nowhere.md" },
     });
     await fireEvent.click(screen.getByRole("button", { name: "Filter" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText(/No checkpoint changed/)).toHaveTextContent(
         "No checkpoint changed nowhere.md.",
       );
     });
     await fireEvent.click(screen.getByRole("button", { name: "Show all" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("button", { name: /updated SOUL\.md/ })).toBeTruthy();
     });
   });
@@ -193,12 +194,12 @@ describe("the History browser", () => {
   it("shows a failed load with Try again", async () => {
     failList = true;
     render(HistoryBrowser, { agent });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load this history.");
     });
     failList = false;
     await fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("button", { name: /updated SOUL\.md/ })).toBeTruthy();
     });
     expect(screen.queryByRole("alert")).toBeNull();
@@ -211,7 +212,7 @@ describe("the History browser", () => {
     await fireEvent.click(screen.getByRole("radio", { name: "Install-wide config" }));
     await settle();
     await fireEvent.click(await screen.findByRole("button", { name: /set a secret/ }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(
         screen.getByText("Restores the saved secrets to how they were at this point."),
       ).toBeTruthy();

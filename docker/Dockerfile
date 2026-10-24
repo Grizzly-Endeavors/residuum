@@ -30,6 +30,14 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 COPY . .
 COPY --from=web-builder /app/web/dist /app/web/dist
 
+# The version and commit the binary reports (hub status, the update check,
+# bug reports). The context leaves out `.git`, so build.rs can't read them from
+# git here; `just docker-build` and docker-compose.yml pass them from the
+# checkout. Without them the version is `dev` and the commit unknown.
+# Declared just before the build so a new commit keeps the layers above cached.
+ARG RESIDUUM_VERSION=""
+ARG RESIDUUM_GIT_COMMIT=""
+
 # build backend
 RUN cargo build --release
 
@@ -54,6 +62,10 @@ RUN chmod +x residuum
 RUN useradd -m residuum
 
 USER residuum
+
+# A volume mounted where the image has no directory starts out owned by root,
+# which the residuum user can't write to; one the image has takes its owner.
+RUN mkdir -p /home/residuum/.residuum
 
 VOLUME [ "/home/residuum/.residuum" ]
 

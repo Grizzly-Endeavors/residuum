@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseClientMessage } from "./agent-socket";
 import {
+  advanceMockTime,
+  fetchJson,
   startMockServer,
   type Frame,
   type MockServerHarness,
@@ -10,6 +12,7 @@ import {
 describe("parseClientMessage", () => {
   it.each([
     [{ type: "send_message", id: "m1", content: "hi" }],
+    [{ type: "send_message", id: "m1", content: "hi", attachments: ["upload_0001"] }],
     [{ type: "set_verbose", enabled: true }],
     [{ type: "ping" }],
     [{ type: "reload" }],
@@ -84,6 +87,23 @@ describe("agent socket", () => {
       await scout.close();
     });
 
+    it("doesn't count a watch-only socket as a client, and doesn't reset unread", async () => {
+      const scout = harness.hub.agents.get("scout");
+      if (scout === undefined) throw new Error("no scout");
+      harness.hub.addUnread(scout);
+      const watcher = await harness.openSocket("/api/agents/scout/ws?watch_only=true");
+      await watcher.settled();
+      expect(scout.unread).toBe(1);
+      expect(scout.connectedClients()).toBe(0);
+      await watcher.close();
+
+      const page = await harness.openSocket("/api/agents/scout/ws");
+      await page.settled();
+      expect(scout.unread).toBe(0);
+      expect(scout.connectedClients()).toBe(1);
+      await page.close();
+    });
+
     it("drops a page's connections when the agent's state asks to", async () => {
       harness.hub.agents.get("atlas")?.state.dropSockets();
       await socket.closed;
@@ -101,7 +121,8 @@ describe("agent socket", () => {
     ])("answers %s with an error frame", async (raw, message) => {
       socket.sendRaw(raw);
       const frame = await socket.nextOfType("error");
-      expect(frame).toMatchObject({ reply_to: null, details: null });
+      expect(frame).toMatchObject({ reply_to: null });
+      expect(frame).not.toHaveProperty("details");
       expect(String(frame.message)).toContain(message);
     });
 
@@ -122,7 +143,18 @@ describe("agent socket", () => {
       socket.send({ type: "inbox_add", body: "remember the milk" });
       expect(await socket.nextOfType("notice")).toEqual({
         type: "notice",
-        message: "[inbox] item added",
+        message: "Added a note to the inbox.",
+      });
+    });
+
+    it("saves an inbox add in the agent's own inbox as a message from the terminal, titled by its first line", async () => {
+      socket.send({ type: "inbox_add", body: "remember the milk\nand the eggs" });
+      await socket.nextOfType("notice");
+
+      expect(harness.hub.agents.get("atlas")?.state.agentInbox.at(-1)).toMatchObject({
+        title: "remember the milk",
+        body: "remember the milk\nand the eggs",
+        source: "cli",
       });
     });
 
@@ -132,6 +164,8 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("notice", 3000)).toEqual({
         type: "notice",
         message: "Configuration reloaded successfully.",
+        reload: "reloaded",
+        reload_of: "agent_config",
       });
     });
 
@@ -151,8 +185,56 @@ describe("agent socket", () => {
         reply_to: null,
         message:
           'Couldn\'t watch the workspace: can\'t watch "../secrets": watch paths must stay inside the workspace (no "..").',
-        details: null,
       });
+      expect(frames[0]).not.toHaveProperty("details");
+    });
+
+    it("reports what its sockets watch, merged, at /api/mock/watches", async () => {
+      const watched = async (): Promise<unknown> =>
+        (await fetchJson(`${harness.baseUrl}/api/mock/watches?agent=atlas`)).body;
+      expect(await watched()).toEqual({ prefixes: [] });
+
+      socket.send({ type: "watch_workspace", prefixes: ["notes/plan.md", "memory"] });
+      const watcher = await harness.openSocket("/api/agents/atlas/ws?watch_only=true");
+      watcher.send({ type: "watch_workspace", prefixes: ["notes/plan.md", "inbox"] });
+      await socket.settled();
+      await watcher.settled();
+      expect(await watched()).toEqual({ prefixes: ["inbox", "memory", "notes/plan.md"] });
+
+      await watcher.close();
+      expect(await watched()).toEqual({ prefixes: ["memory", "notes/plan.md"] });
+      expect((await fetchJson(`${harness.baseUrl}/api/mock/watches?agent=ghost`)).status).toBe(404);
+    });
+
+    it("saves the uploads a message names as inbox items, and tells pages of the files", async () => {
+      const staged = await fetch(`${harness.baseUrl}/api/hub/uploads?filename=notes.txt`, {
+        method: "POST",
+        body: "the notes",
+      });
+      const { id } = (await staged.json()) as { id: string };
+
+      socket.send({ type: "send_message", id: "m1", content: "Read this", attachments: [id] });
+      const message = await socket.nextOfType("user_message");
+
+      const item = harness.hub.agents.get("atlas")?.state.agentInbox.at(-1);
+      expect(item).toMatchObject({ title: "Chat attachment: notes.txt", source: "chat" });
+      const path = `inbox/agent/attachments/${item?.id ?? ""}/notes.txt`;
+      expect(message.attachments).toEqual([
+        { item_id: item?.id, filename: "notes.txt", size: 9, content_type: "text/plain", path },
+      ]);
+      expect(message.content).toBe(`Read this\n[Attachment: notes.txt (9 bytes) → ${path}]`);
+      expect(harness.hub.hubState.uploads.size).toBe(0);
+    });
+
+    it("refuses a message that names an upload that isn't staged", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "Read this", attachments: ["gone"] });
+      expect(await socket.nextOfType("message_refused")).toEqual({
+        type: "message_refused",
+        id: "m1",
+        message:
+          "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
+      });
+      expect((await socket.settled()).map((frame) => frame.type)).not.toContain("user_message");
     });
 
     it("starts a session when the message begins with spawn", async () => {
@@ -208,6 +290,55 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("turn_snapshot")).toEqual({
         type: "turn_snapshot",
         turn: null,
+        queued: [],
+      });
+    });
+
+    it("keeps a message sent while a turn runs waiting, and starts its turn once that one ends", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "and another" });
+      expect(await socket.nextOfType("message_queued")).toEqual({
+        type: "message_queued",
+        message: { id: "m2", content: "and another", endpoint: "ws" },
+      });
+      socket.send({ type: "resync_turn" });
+      const snapshot = await socket.nextOfType("turn_snapshot");
+      expect(snapshot.queued).toEqual([{ id: "m2", content: "and another", endpoint: "ws" }]);
+
+      socket.send({ type: "cancel", reply_to: "m1" });
+      await socket.nextOfType("turn_ended");
+      expect(await socket.nextOfType("turn_started")).toMatchObject({ reply_to: "m2" });
+    });
+
+    it("sends a waiting message now by stopping the turn in flight", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "first" });
+      socket.send({ type: "send_message", id: "m3", content: "second" });
+      await socket.nextOfType("message_queued");
+      await socket.nextOfType("message_queued");
+
+      socket.send({ type: "send_queued_now", id: "m3" });
+      expect(await socket.nextOfType("turn_ended")).toEqual({ type: "turn_ended", reply_to: "m1" });
+      expect(await socket.nextOfType("turn_started")).toMatchObject({ reply_to: "m3" });
+    });
+
+    it("takes back a waiting message, and says when one no longer waits", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "never mind" });
+      await socket.nextOfType("message_queued");
+
+      socket.send({ type: "withdraw_queued", id: "m2" });
+      expect(await socket.nextOfType("message_withdrawn")).toEqual({
+        type: "message_withdrawn",
+        id: "m2",
+      });
+      socket.send({ type: "withdraw_queued", id: "m2" });
+      expect(await socket.nextOfType("queued_message_unavailable")).toEqual({
+        type: "queued_message_unavailable",
+        id: "m2",
       });
     });
 
@@ -216,7 +347,7 @@ describe("agent socket", () => {
       await socket.nextOfType("turn_started");
       socket.send({ type: "cancel", reply_to: "m1" });
       expect(await socket.nextOfType("turn_ended")).toEqual({ type: "turn_ended", reply_to: "m1" });
-      const rest = await socket.quietFrames(1800);
+      const rest = await socket.quietFrames(() => advanceMockTime(harness.hub.env, 1800));
       expect(rest.map((f) => f.type)).not.toContain("response");
       expect(harness.hub.agents.get("atlas")?.busySince).toBeNull();
     });
@@ -242,11 +373,13 @@ describe("agent socket", () => {
         id: "s2",
         address: "spawned-research-3f9a",
         content: "keep going",
+        message_id: "web-s2",
       });
       expect(await socket.nextOfType("session_message_delivered")).toEqual({
         type: "session_message_delivered",
         id: "s2",
         address: "spawned-research-3f9a",
+        message_id: "web-s2",
         outcome: "live",
       });
     });

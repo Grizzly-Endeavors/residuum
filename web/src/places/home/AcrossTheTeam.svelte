@@ -15,7 +15,11 @@
   /** How many of the newest events show. */
   const SHOWN = 10;
 
-  const events = $derived(overview.events.slice(0, SHOWN));
+  // Every main-turn reply logs an `agent_replied`; listed here they would crowd
+  // out everything else, so they are dropped before the newest are taken.
+  const events = $derived(
+    overview.events.filter((event) => event.kind !== "agent_replied").slice(0, SHOWN),
+  );
 </script>
 
 {#snippet summary(text: string, agent: string | null)}
@@ -79,7 +83,7 @@
     gap: var(--space-8);
     padding: var(--space-6) 0;
     font-size: var(--font-size-sm);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .event-time {

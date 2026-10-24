@@ -19,6 +19,7 @@ import CallerKeysGroup from "./CallerKeysGroup.svelte";
 import KeysSection from "./KeysSection.svelte";
 import ListenerSection from "./ListenerSection.svelte";
 import SecretsGroup from "./SecretsGroup.svelte";
+import { waitFor } from "../../test/wait";
 
 // The All agents sections that list what the hub keeps encrypted (Saved
 // keys), and the install's agent-to-agent listener with its caller keys. The
@@ -176,7 +177,7 @@ function pressToastAction(): void {
 /** Wait for every list on screen to finish loading. */
 async function loaded(): Promise<void> {
   await settle();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(screen.queryAllByText(/^Loading the /)).toHaveLength(0);
   });
 }
@@ -210,7 +211,7 @@ describe("Saved keys", () => {
     await loaded();
     for (const key of [...api.agentKeys]) {
       await fireEvent.click(screen.getByRole("button", { name: `Remove ${key.name}` }));
-      await vi.waitFor(() => {
+      await waitFor(() => {
         expect(screen.queryByRole("button", { name: `Remove ${key.name}` })).toBeNull();
       });
     }
@@ -294,16 +295,16 @@ describe("Saved keys", () => {
     await loaded();
 
     await fireEvent.click(screen.getByRole("button", { name: "Remove github_token" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.queryByText("github_token")).not.toBeInTheDocument();
     });
 
     expect(messages()).toContain("Removed github_token.");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("button", { name: "Add a key" })).toHaveFocus();
     });
     pressToastAction();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("list", { name: "Agent keys" })).toHaveTextContent("github_token");
     });
     expect(callsTo("POST", "/api/hub/checkpoints/cp-keys/restore")[0]?.body).toEqual({
@@ -320,7 +321,7 @@ describe("Saved keys", () => {
       init?.method === "DELETE" ? new Response("", { status: 500 }) : undefined;
 
     await fireEvent.click(screen.getByRole("button", { name: "Remove github_token" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(
         messages().some((message) => message.startsWith("Couldn't remove github_token.")),
       ).toBe(true);
@@ -560,7 +561,7 @@ describe("Caller keys", () => {
 
     expect(messages()).toContain("Revoked laptop. It can no longer reach your agents.");
     pressToastAction();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("list", { name: "Caller keys" })).toHaveTextContent("laptop");
     });
     expect(callsTo("POST", "/api/hub/checkpoints/cp-callers/restore")[0]?.body).toEqual({

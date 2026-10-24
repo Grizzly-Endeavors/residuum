@@ -27,7 +27,7 @@ const UNREADABLE_MESSAGE =
 /** How long a report of `active: true` holds without another one, as in the backend's `presence::FRESH_FOR`. */
 export const PRESENCE_FRESH_MS = 60_000;
 
-/** The hub WebSocket, `/api/hub/ws`: server to client frames, plus `watch_team`, `presence` and the session subscriptions from the page. */
+/** The hub WebSocket, `/api/hub/ws`: server to client frames, plus `watch_team`, `presence`, `ping` and the session subscriptions from the page. */
 export interface HubSocket {
   /** Send a frame to every connected page; a change feed frame goes to the pages that watch what it touches. */
   broadcast: (frame: HubServerMessage) => void;
@@ -55,6 +55,7 @@ export interface HubSocket {
 type ClientFrame =
   | { type: "watch_team"; prefixes: WatchSet }
   | { type: "presence"; deviceId: string; active: boolean }
+  | { type: "ping" }
   | { type: "subscription"; request: SessionSubscriptionRequest };
 
 /** What a `presence` frame asks, or `UNREADABLE_MESSAGE` when it lacks a device or a state. */
@@ -119,6 +120,7 @@ function readClientFrame(raw: string): ClientFrame | { refusal: string } {
   }
   if (body.type === "presence") return readPresence(body);
   if (body.type === "watch_team") return readWatchTeam(body);
+  if (body.type === "ping") return { type: "ping" };
   return readSubscription(body);
 }
 
@@ -170,6 +172,10 @@ export function openHubSocket(
         } satisfies HubServerMessage);
       } else if (read.type === "watch_team") {
         watching.set(ws, read.prefixes);
+      } else if (read.type === "ping") {
+        // Frames are handled in order, so this also says everything sent
+        // before the ping has taken effect.
+        sendFrame(ws, { type: "pong" } satisfies HubServerMessage);
       } else if (read.type === "subscription") {
         relay.handle(ws, read.request);
       } else {

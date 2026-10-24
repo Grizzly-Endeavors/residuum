@@ -21,6 +21,7 @@ import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import { snapshot } from "../../test/hub-frames";
 import SettingsModal from "../SettingsModal.svelte";
 import { conflictQuestion } from "./changed-on-disk.svelte";
+import { waitFor } from "../../test/wait";
 
 let agent = "";
 let server: FakeAgentConfig;
@@ -59,7 +60,7 @@ async function open(section: SectionId, files: { config?: string } = {}): Promis
   render(SettingsModal);
   await router.openSettings({ scope: agent, section });
   await settle();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(document.querySelector(".settings-content")).not.toBeNull();
     expect(screen.queryByText("Loading settings")).toBeNull();
   });
@@ -80,7 +81,7 @@ async function click(
 
 async function save(): Promise<void> {
   await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(saveBar()).toBeNull();
   });
 }
@@ -215,6 +216,21 @@ describe("Connections", () => {
     await type(context, "30");
     await save();
     expect(patches()).toEqual([{ telegram: { context_messages: 30 } }]);
+  });
+
+  it("posts only finished replies to a chat until updates while working are turned on", async () => {
+    await open("connections", { config: "[discord]\ndeliver_intermediate = true\n" });
+    const updates = (channel: string): HTMLElement =>
+      group(channel).getByRole("switch", { name: /Post updates while working/ });
+    expect(updates("Discord")).toBeChecked();
+    expect(updates("Telegram")).not.toBeChecked();
+    expect(updates("Microsoft Teams")).not.toBeChecked();
+    expect(updates("Slack")).not.toBeChecked();
+
+    await fireEvent.click(updates("Telegram"));
+    await settle();
+    await save();
+    expect(patches()).toEqual([{ telegram: { deliver_intermediate: true } }]);
   });
 
   it("warns while Teams is half filled, and clears when it is complete or empty", async () => {

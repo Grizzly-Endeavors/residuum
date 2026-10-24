@@ -57,7 +57,7 @@
     color: var(--color-text-3);
     font-size: var(--font-size-xs);
     font-weight: var(--font-weight-medium);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
     white-space: nowrap;
 
     & > kbd {

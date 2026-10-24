@@ -1,0 +1,1284 @@
+//! Vector similarity search using `SQLite` + sqlite-vec.
+//!
+//! Stores observation, chunk, and wiki page embeddings in `vec0` virtual tables with
+//! denormalized metadata columns for efficient filtered search.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Mutex, Once};
+
+use rusqlite::Connection;
+use zerocopy::IntoBytes;
+
+use anyhow::Context;
+
+use crate::types::{DocSource, IndexChunk, Observation};
+
+/// A vector search result from the observation, chunk, or wiki table.
+#[derive(Debug, Clone)]
+pub struct VectorSearchResult {
+    /// Document identifier (obs ID, chunk ID, or wiki page path).
+    pub id: String,
+    /// Which kind of document this result came from.
+    pub source_type: DocSource,
+    /// Parent episode identifier (empty for wiki pages).
+    pub episode_id: String,
+    /// Date string (YYYY-MM-DD).
+    pub date: String,
+    /// Snippet of content.
+    pub content: String,
+    /// Line range start (chunks only).
+    pub line_start: Option<usize>,
+    /// Line range end (chunks only).
+    pub line_end: Option<usize>,
+    /// Cosine distance from query vector (lower = more similar).
+    pub(crate) distance: f64,
+}
+
+/// Filters for narrowing vector search results.
+#[derive(Debug, Clone, Default)]
+pub struct VectorSearchFilters {
+    /// Filter results on or after this date (YYYY-MM-DD, inclusive).
+    pub date_from: Option<String>,
+    /// Filter results on or before this date (YYYY-MM-DD, inclusive).
+    pub date_to: Option<String>,
+    /// Filter to results from these episode IDs. Wiki pages belong to no
+    /// episode, so an episode filter excludes them.
+    pub episode_ids: Option<Vec<String>>,
+    /// Filter to a single document kind; `None` searches every table.
+    pub source: Option<DocSource>,
+}
+
+/// A wiki page's embedding, keyed by its workspace-relative path.
+#[derive(Debug, Clone)]
+pub struct WikiVector<'a> {
+    /// Workspace-relative page path (the page's doc ID).
+    pub page_id: &'a str,
+    /// Page date (YYYY-MM-DD), from its last modification.
+    pub date: &'a str,
+    /// The text that was embedded.
+    pub content: &'a str,
+    /// The embedding vector.
+    pub embedding: &'a [f32],
+}
+
+/// `SQLite` + sqlite-vec backed vector store for memory embeddings.
+pub struct VectorStore {
+    conn: Mutex<Connection>,
+    dim: usize,
+}
+
+/// Register the sqlite-vec extension globally, exactly once per process.
+///
+/// `sqlite3_auto_extension` is process-global and applies to every connection
+/// opened afterwards, so several stores (an agent's and the team wiki's) share
+/// the one registration. The `Once` keeps the extension from being registered
+/// again on every store open.
+fn register_sqlite_vec_extension() {
+    static REGISTER: Once = Once::new();
+    REGISTER.call_once(register_sqlite_vec_extension_unchecked);
+}
+
+#[expect(
+    unsafe_code,
+    reason = "sqlite-vec C FFI registration — no safe wrapper exists"
+)]
+fn register_sqlite_vec_extension_unchecked() {
+    // Safety: sqlite3_vec_init is a valid sqlite3 extension entry point
+    // provided by the sqlite-vec crate. transmute converts it to the function
+    // pointer type expected by sqlite3_auto_extension.
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut std::ffi::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> i32,
+        >(
+            sqlite_vec::sqlite3_vec_init as *const ()
+        )));
+    }
+}
+
+impl VectorStore {
+    /// Open or create a vector store at the given database path.
+    ///
+    /// Registers the sqlite-vec extension, opens the database in WAL mode,
+    /// and creates the virtual tables if they don't exist.
+    ///
+    /// # Errors
+    /// Returns an error if the database cannot be opened or schema creation fails.
+    pub fn open_or_create(db_path: &Path, dim: usize) -> anyhow::Result<Self> {
+        register_sqlite_vec_extension();
+
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create vector store directory at {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("failed to open vector store at {}", db_path.display()))?;
+
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("failed to set WAL mode for vector store")?;
+
+        create_tables(&conn, dim)?;
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+            dim,
+        })
+    }
+
+    /// Insert observation embeddings for a single episode.
+    ///
+    /// Each observation gets a doc ID of `"{episode_id}-o{index}"`.
+    ///
+    /// # Errors
+    /// Returns an error if the insert fails or embedding dimensions don't match.
+    pub fn insert_observations(
+        &self,
+        episode_id: &str,
+        date: &str,
+        observations: &[Observation],
+        embeddings: &[Vec<f32>],
+    ) -> anyhow::Result<Vec<String>> {
+        if observations.is_empty() {
+            return Ok(Vec::new());
+        }
+        if observations.len() != embeddings.len() {
+            anyhow::bail!(
+                "observation count ({}) does not match embedding count ({})",
+                observations.len(),
+                embeddings.len()
+            );
+        }
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to start obs transaction")?;
+
+        let mut doc_ids = Vec::with_capacity(observations.len());
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO obs_vectors(obs_id, episode_id, date, content, embedding)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .context("failed to prepare obs insert")?;
+
+            for (i, (obs, emb)) in observations.iter().zip(embeddings.iter()).enumerate() {
+                self.check_dim(emb)?;
+                let doc_id = format!("{episode_id}-o{i}");
+                match stmt.execute(rusqlite::params![
+                    doc_id,
+                    episode_id,
+                    date,
+                    obs.content,
+                    emb.as_bytes(),
+                ]) {
+                    Ok(_) => {}
+                    Err(ref e) if is_unique_violation(e) => {
+                        tracing::debug!(doc_id, "observation vector already exists, skipping");
+                    }
+                    Err(e) => {
+                        return Err(anyhow::Error::new(e)
+                            .context(format!("failed to insert observation vector {doc_id}")));
+                    }
+                }
+                doc_ids.push(doc_id);
+            }
+        }
+
+        tx.commit().context("failed to commit obs transaction")?;
+
+        Ok(doc_ids)
+    }
+
+    /// Insert chunk embeddings.
+    ///
+    /// # Errors
+    /// Returns an error if the insert fails or embedding dimensions don't match.
+    pub fn insert_chunks(
+        &self,
+        chunks: &[IndexChunk],
+        embeddings: &[Vec<f32>],
+    ) -> anyhow::Result<Vec<String>> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        if chunks.len() != embeddings.len() {
+            anyhow::bail!(
+                "chunk count ({}) does not match embedding count ({})",
+                chunks.len(),
+                embeddings.len()
+            );
+        }
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to start chunk transaction")?;
+
+        let mut doc_ids = Vec::with_capacity(chunks.len());
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO chunk_vectors(chunk_id, episode_id, date, content,
+                     line_start, line_end, embedding)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .context("failed to prepare chunk insert")?;
+
+            for (chunk, emb) in chunks.iter().zip(embeddings.iter()) {
+                self.check_dim(emb)?;
+                let line_start_i64 = i64::try_from(chunk.line_start).unwrap_or(i64::MAX);
+                let line_end_i64 = i64::try_from(chunk.line_end).unwrap_or(i64::MAX);
+                match stmt.execute(rusqlite::params![
+                    chunk.chunk_id,
+                    chunk.episode_id,
+                    chunk.date,
+                    chunk.content,
+                    line_start_i64,
+                    line_end_i64,
+                    emb.as_bytes(),
+                ]) {
+                    Ok(_) => {}
+                    Err(ref e) if is_unique_violation(e) => {
+                        tracing::debug!(
+                            chunk_id = chunk.chunk_id,
+                            "chunk vector already exists, skipping"
+                        );
+                    }
+                    Err(e) => {
+                        return Err(anyhow::Error::new(e)
+                            .context(format!("failed to insert chunk vector {}", chunk.chunk_id)));
+                    }
+                }
+                doc_ids.push(chunk.chunk_id.clone());
+            }
+        }
+
+        tx.commit().context("failed to commit chunk transaction")?;
+
+        Ok(doc_ids)
+    }
+
+    /// Replace the stored embeddings of wiki pages (delete, then insert).
+    ///
+    /// # Errors
+    /// Returns an error if the write fails or an embedding dimension doesn't match.
+    pub fn upsert_wiki_pages(&self, pages: &[WikiVector<'_>]) -> anyhow::Result<()> {
+        if pages.is_empty() {
+            return Ok(());
+        }
+        for page in pages {
+            self.check_dim(page.embedding)?;
+        }
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to start wiki vector transaction")?;
+        for page in pages {
+            tx.execute(
+                "DELETE FROM wiki_vectors WHERE page_id = ?1",
+                [page.page_id],
+            )
+            .with_context(|| format!("failed to delete wiki vector {}", page.page_id))?;
+            tx.execute(
+                "INSERT INTO wiki_vectors(page_id, date, content, embedding)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    page.page_id,
+                    page.date,
+                    page.content,
+                    page.embedding.as_bytes()
+                ],
+            )
+            .with_context(|| format!("failed to insert wiki vector {}", page.page_id))?;
+        }
+        tx.commit()
+            .context("failed to commit wiki vector transaction")?;
+        Ok(())
+    }
+
+    /// The embedded content of every stored wiki page, keyed by page ID.
+    ///
+    /// Lets a resync skip re-embedding pages whose text has not changed.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn wiki_page_contents(&self) -> anyhow::Result<HashMap<String, String>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT page_id, content FROM wiki_vectors")
+            .context("failed to prepare wiki content query")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .context("wiki content query failed")?;
+        let mut contents = HashMap::new();
+        for row in rows {
+            let (id, content): (String, String) = row.context("failed to read wiki content row")?;
+            contents.insert(id, content);
+        }
+        Ok(contents)
+    }
+
+    /// Search for similar vectors across the tables `filters.source` selects.
+    ///
+    /// Returns results sorted by distance.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        filters: &VectorSearchFilters,
+    ) -> anyhow::Result<Vec<VectorSearchResult>> {
+        self.check_dim(query_embedding)?;
+        let conn = self.lock_conn()?;
+        let wants = |source: DocSource| filters.source.is_none_or(|s| s == source);
+
+        let mut results = Vec::new();
+
+        let obs_results = if wants(DocSource::Observation) {
+            search_obs_table(&conn, query_embedding, limit, filters)?
+        } else {
+            Vec::new()
+        };
+        let obs_count = obs_results.len();
+        results.extend(obs_results);
+
+        let chunk_results = if wants(DocSource::Chunk) {
+            search_chunk_table(&conn, query_embedding, limit, filters)?
+        } else {
+            Vec::new()
+        };
+        let chunk_count = chunk_results.len();
+        results.extend(chunk_results);
+
+        let wiki_results = if wants(DocSource::Wiki) && filters.episode_ids.is_none() {
+            search_wiki_table(&conn, query_embedding, limit, filters)?
+        } else {
+            Vec::new()
+        };
+        let wiki_count = wiki_results.len();
+        results.extend(wiki_results);
+
+        // Sort by distance ascending (most similar first)
+        results.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
+
+        tracing::trace!(
+            obs_candidates = obs_count,
+            chunk_candidates = chunk_count,
+            wiki_candidates = wiki_count,
+            returned = results.len(),
+            "vector search complete"
+        );
+        Ok(results)
+    }
+
+    /// Delete documents by their IDs from every table.
+    ///
+    /// # Errors
+    /// Returns an error if the delete fails.
+    pub fn delete_by_doc_ids(&self, ids: &[String]) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin delete transaction")?;
+
+        for id in ids {
+            // Try every table — a given ID only exists in one
+            tx.execute("DELETE FROM obs_vectors WHERE obs_id = ?1", [id])
+                .context("failed to delete from obs_vectors")?;
+            tx.execute("DELETE FROM chunk_vectors WHERE chunk_id = ?1", [id])
+                .context("failed to delete from chunk_vectors")?;
+            tx.execute("DELETE FROM wiki_vectors WHERE page_id = ?1", [id])
+                .context("failed to delete from wiki_vectors")?;
+        }
+
+        tx.commit().context("failed to commit delete transaction")?;
+
+        Ok(())
+    }
+
+    /// Delete every wiki page embedding, returning how many rows were removed.
+    ///
+    /// Wiki pages live in the team wiki's own store; this clears any
+    /// wiki rows an agent's store holds.
+    ///
+    /// # Errors
+    /// Returns an error if the delete fails.
+    pub fn purge_wiki_vectors(&self) -> anyhow::Result<usize> {
+        let conn = self.lock_conn()?;
+        conn.execute("DELETE FROM wiki_vectors", [])
+            .context("failed to purge wiki vectors")
+    }
+
+    /// The embedding model whose vectors this store holds, if one was recorded.
+    ///
+    /// # Errors
+    /// Returns an error if the lookup fails.
+    pub fn embedding_model(&self) -> anyhow::Result<Option<String>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT value FROM store_meta WHERE key = 'embedding_model'")
+            .context("failed to prepare embedding model lookup")?;
+        let mut rows = stmt.query([]).context("embedding model lookup failed")?;
+        match rows.next().context("failed to read embedding model row")? {
+            Some(row) => Ok(Some(
+                row.get(0).context("failed to read embedding model value")?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Discard every stored vector and rebuild the tables for `dim`.
+    ///
+    /// Used when the embedding model changes: the old vectors are meaningless
+    /// to the new model and may have a different dimension. This clears the
+    /// store in place rather than deleting the database file, because the file
+    /// cannot be deleted on Windows while any connection to it is open.
+    ///
+    /// # Errors
+    /// Returns an error if dropping or recreating the tables fails.
+    pub fn reset(&mut self, dim: usize) -> anyhow::Result<()> {
+        {
+            let conn = self.lock_conn()?;
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS obs_vectors;
+                 DROP TABLE IF EXISTS chunk_vectors;
+                 DROP TABLE IF EXISTS wiki_vectors;
+                 DROP TABLE IF EXISTS store_meta;",
+            )
+            .context("failed to clear vector store")?;
+            create_tables(&conn, dim)?;
+        }
+        self.dim = dim;
+        Ok(())
+    }
+
+    /// Record the embedding model whose vectors this store holds.
+    ///
+    /// # Errors
+    /// Returns an error if the write fails.
+    pub(crate) fn set_embedding_model(&self, model: &str) -> anyhow::Result<()> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO store_meta(key, value) VALUES ('embedding_model', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [model],
+        )
+        .context("failed to record embedding model")?;
+        Ok(())
+    }
+
+    /// Check if an observation vector exists by its doc ID.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn has_observation(&self, obs_id: &str) -> anyhow::Result<bool> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT 1 FROM obs_vectors WHERE obs_id = ?1 LIMIT 1")
+            .context("failed to prepare obs existence check")?;
+        let exists = stmt
+            .exists(rusqlite::params![obs_id])
+            .context("obs existence check failed")?;
+        Ok(exists)
+    }
+
+    /// Check if a chunk vector exists by its doc ID.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn has_chunk(&self, chunk_id: &str) -> anyhow::Result<bool> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT 1 FROM chunk_vectors WHERE chunk_id = ?1 LIMIT 1")
+            .context("failed to prepare chunk existence check")?;
+        let exists = stmt
+            .exists(rusqlite::params![chunk_id])
+            .context("chunk existence check failed")?;
+        Ok(exists)
+    }
+
+    /// Lock the connection mutex.
+    fn lock_conn(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
+        self.conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("vector store lock poisoned: {e}"))
+    }
+
+    /// Validate that an embedding has the expected dimension.
+    fn check_dim(&self, embedding: &[f32]) -> anyhow::Result<()> {
+        if embedding.len() != self.dim {
+            anyhow::bail!(
+                "embedding dimension mismatch: expected {}, got {}",
+                self.dim,
+                embedding.len()
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Check if a rusqlite error is a UNIQUE constraint violation.
+///
+/// Handles both standard `SQLite` constraint errors and vec0 virtual table
+/// errors which report UNIQUE violations via extended error codes.
+fn is_unique_violation(err: &rusqlite::Error) -> bool {
+    if let rusqlite::Error::SqliteFailure(ffi_err, msg) = err {
+        return msg
+            .as_deref()
+            .is_some_and(|m| m.contains("UNIQUE constraint"))
+            || ffi_err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE;
+    }
+    false
+}
+
+/// Create the vec0 virtual tables if they don't exist.
+fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS obs_vectors USING vec0(
+            obs_id TEXT PRIMARY KEY,
+            episode_id TEXT,
+            date TEXT,
+            +content TEXT,
+            embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
+            chunk_id TEXT PRIMARY KEY,
+            episode_id TEXT,
+            date TEXT,
+            +content TEXT,
+            +line_start INTEGER,
+            +line_end INTEGER,
+            embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS wiki_vectors USING vec0(
+            page_id TEXT PRIMARY KEY,
+            date TEXT,
+            +content TEXT,
+            embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
+        );
+
+        CREATE TABLE IF NOT EXISTS store_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );"
+    ))
+    .context("failed to create vector tables")?;
+    Ok(())
+}
+
+/// Search the `obs_vectors` table.
+fn search_obs_table(
+    conn: &Connection,
+    query_embedding: &[f32],
+    limit: usize,
+    filters: &VectorSearchFilters,
+) -> anyhow::Result<Vec<VectorSearchResult>> {
+    let (where_clause, params) = build_filter_clauses(filters);
+
+    let sql = format!(
+        "SELECT obs_id, episode_id, date, content, distance
+         FROM obs_vectors
+         WHERE embedding MATCH ?1
+           AND k = ?2
+           {where_clause}
+         ORDER BY distance"
+    );
+
+    let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+
+    let mut stmt = conn
+        .prepare_cached(&sql)
+        .context("failed to prepare obs search")?;
+
+    // Build parameter list: embedding bytes, limit, then filter values
+    let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    all_params.push(Box::new(query_embedding.as_bytes().to_vec()));
+    all_params.push(Box::new(limit_i64));
+    for p in params {
+        all_params.push(Box::new(p));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok(VectorSearchResult {
+                id: row.get(0)?,
+                source_type: DocSource::Observation,
+                episode_id: row.get(1)?,
+                date: row.get(2)?,
+                content: row.get(3)?,
+                line_start: None,
+                line_end: None,
+                distance: row.get(4)?,
+            })
+        })
+        .context("obs vector search failed")?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.context("failed to read obs search row")?);
+    }
+    Ok(results)
+}
+
+/// Search the `chunk_vectors` table.
+fn search_chunk_table(
+    conn: &Connection,
+    query_embedding: &[f32],
+    limit: usize,
+    filters: &VectorSearchFilters,
+) -> anyhow::Result<Vec<VectorSearchResult>> {
+    let (where_clause, params) = build_filter_clauses(filters);
+
+    let sql = format!(
+        "SELECT chunk_id, episode_id, date, content, line_start, line_end, distance
+         FROM chunk_vectors
+         WHERE embedding MATCH ?1
+           AND k = ?2
+           {where_clause}
+         ORDER BY distance"
+    );
+
+    let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+
+    let mut stmt = conn
+        .prepare_cached(&sql)
+        .context("failed to prepare chunk search")?;
+
+    let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    all_params.push(Box::new(query_embedding.as_bytes().to_vec()));
+    all_params.push(Box::new(limit_i64));
+    for p in params {
+        all_params.push(Box::new(p));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            let line_start: Option<i64> = row.get(4)?;
+            let line_end: Option<i64> = row.get(5)?;
+            Ok(VectorSearchResult {
+                id: row.get(0)?,
+                source_type: DocSource::Chunk,
+                episode_id: row.get(1)?,
+                date: row.get(2)?,
+                content: row.get(3)?,
+                line_start: line_start.and_then(|v| usize::try_from(v).ok()),
+                line_end: line_end.and_then(|v| usize::try_from(v).ok()),
+                distance: row.get(6)?,
+            })
+        })
+        .context("chunk vector search failed")?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.context("failed to read chunk search row")?);
+    }
+    Ok(results)
+}
+
+/// Search the `wiki_vectors` table.
+///
+/// Callers skip this table when an episode filter is set: wiki pages belong to
+/// no episode, and the table has no `episode_id` column to filter on.
+fn search_wiki_table(
+    conn: &Connection,
+    query_embedding: &[f32],
+    limit: usize,
+    filters: &VectorSearchFilters,
+) -> anyhow::Result<Vec<VectorSearchResult>> {
+    let date_only = VectorSearchFilters {
+        date_from: filters.date_from.clone(),
+        date_to: filters.date_to.clone(),
+        episode_ids: None,
+        source: None,
+    };
+    let (where_clause, params) = build_filter_clauses(&date_only);
+
+    let sql = format!(
+        "SELECT page_id, date, content, distance
+         FROM wiki_vectors
+         WHERE embedding MATCH ?1
+           AND k = ?2
+           {where_clause}
+         ORDER BY distance"
+    );
+
+    let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+
+    let mut stmt = conn
+        .prepare_cached(&sql)
+        .context("failed to prepare wiki search")?;
+
+    let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    all_params.push(Box::new(query_embedding.as_bytes().to_vec()));
+    all_params.push(Box::new(limit_i64));
+    for p in params {
+        all_params.push(Box::new(p));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok(VectorSearchResult {
+                id: row.get(0)?,
+                source_type: DocSource::Wiki,
+                episode_id: String::new(),
+                date: row.get(1)?,
+                content: row.get(2)?,
+                line_start: None,
+                line_end: None,
+                distance: row.get(3)?,
+            })
+        })
+        .context("wiki vector search failed")?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.context("failed to read wiki search row")?);
+    }
+    Ok(results)
+}
+
+/// Build SQL WHERE clause fragments and parameter values from filters.
+///
+/// Returns `(clause_string, params)` where `clause_string` contains SQL fragments
+/// like `AND date >= ?3 AND date <= ?4` and `params` are the corresponding values.
+/// Parameter numbering starts at `?3` because `?1` is the embedding and `?2` is k.
+fn build_filter_clauses(filters: &VectorSearchFilters) -> (String, Vec<String>) {
+    let mut clauses = Vec::new();
+    let mut params = Vec::new();
+    let mut idx = 3_u32; // ?1 = embedding, ?2 = k
+
+    if let Some(ref from) = filters.date_from {
+        clauses.push(format!("AND date >= ?{idx}"));
+        params.push(from.clone());
+        idx += 1;
+    }
+    if let Some(ref to) = filters.date_to {
+        clauses.push(format!("AND date <= ?{idx}"));
+        params.push(to.clone());
+        idx += 1;
+    }
+    if let Some(ref episode_ids) = filters.episode_ids
+        && !episode_ids.is_empty()
+    {
+        let placeholders: Vec<String> = episode_ids
+            .iter()
+            .map(|_| {
+                let p = format!("?{idx}");
+                idx += 1;
+                p
+            })
+            .collect();
+        clauses.push(format!("AND episode_id IN ({})", placeholders.join(", ")));
+        params.extend(episode_ids.iter().cloned());
+    }
+
+    (clauses.join(" "), params)
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code indexes into known-length slices"
+)]
+mod tests {
+    use super::*;
+    use crate::types::Visibility;
+
+    const TEST_DIM: usize = 4;
+
+    fn sample_embedding(seed: f32) -> Vec<f32> {
+        vec![seed, seed + 0.1, seed + 0.2, seed + 0.3]
+    }
+
+    fn sample_observation(text: &str) -> Observation {
+        Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            source_episodes: Some("ep-001".to_string()),
+            visibility: Visibility::User,
+            content: text.to_string(),
+            source: crate::types::SourceTag::main(),
+        }
+    }
+
+    fn create_test_store() -> (tempfile::TempDir, VectorStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("vectors.db");
+        let store = VectorStore::open_or_create(&db_path, TEST_DIM).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn insert_and_search_observations() {
+        let (_dir, store) = create_test_store();
+
+        let obs = vec![
+            sample_observation("rust memory safety"),
+            sample_observation("observer token threshold"),
+        ];
+        let embeddings = vec![sample_embedding(0.1), sample_embedding(0.5)];
+
+        let ids = store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+        assert_eq!(ids.len(), 2, "should insert 2 observations");
+        assert_eq!(ids[0], "ep-001-o0");
+        assert_eq!(ids[1], "ep-001-o1");
+
+        // Search for something similar to the first embedding
+        let query = sample_embedding(0.1);
+        let results = store
+            .search(&query, 5, &VectorSearchFilters::default())
+            .unwrap();
+        assert!(!results.is_empty(), "should find results");
+        assert_eq!(results[0].source_type, DocSource::Observation);
+        assert_eq!(results[0].episode_id, "ep-001");
+    }
+
+    #[test]
+    fn insert_and_search_chunks() {
+        let (_dir, store) = create_test_store();
+
+        let chunks = vec![IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            line_start: 2,
+            line_end: 3,
+            content: "user: hello\nassistant: hi there".to_string(),
+        }];
+        let embeddings = vec![sample_embedding(0.3)];
+
+        let ids = store.insert_chunks(&chunks, &embeddings).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], "ep-001-c0");
+
+        let query = sample_embedding(0.3);
+        let results = store
+            .search(&query, 5, &VectorSearchFilters::default())
+            .unwrap();
+        assert!(!results.is_empty(), "should find chunk");
+        assert_eq!(results[0].source_type, DocSource::Chunk);
+        assert_eq!(results[0].line_start, Some(2));
+        assert_eq!(results[0].line_end, Some(3));
+    }
+
+    #[test]
+    fn delete_by_doc_ids() {
+        let (_dir, store) = create_test_store();
+
+        let obs = vec![sample_observation("test content")];
+        let embeddings = vec![sample_embedding(0.2)];
+        let ids = store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+
+        let query = sample_embedding(0.2);
+        let before = store
+            .search(&query, 5, &VectorSearchFilters::default())
+            .unwrap();
+        assert!(!before.is_empty(), "should find before delete");
+
+        store.delete_by_doc_ids(&ids).unwrap();
+
+        let after = store
+            .search(&query, 5, &VectorSearchFilters::default())
+            .unwrap();
+        assert!(after.is_empty(), "should be empty after delete");
+    }
+
+    #[test]
+    fn empty_search_returns_empty() {
+        let (_dir, store) = create_test_store();
+
+        let query = sample_embedding(0.5);
+        let results = store
+            .search(&query, 5, &VectorSearchFilters::default())
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "empty store should return empty results"
+        );
+    }
+
+    #[test]
+    fn dimension_mismatch_rejected() {
+        let (_dir, store) = create_test_store();
+
+        let obs = vec![sample_observation("test")];
+        let bad_embedding = vec![vec![0.1, 0.2]]; // wrong dimension
+        let result = store.insert_observations("ep-001", "2026-02-19", &obs, &bad_embedding);
+        assert!(result.is_err(), "wrong dimension should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("dimension mismatch"),
+            "error should mention dimension: {err}"
+        );
+    }
+
+    #[test]
+    fn search_with_date_filter() {
+        let (_dir, store) = create_test_store();
+
+        let obs1 = vec![sample_observation("early data")];
+        let emb1 = vec![sample_embedding(0.1)];
+        store
+            .insert_observations("ep-001", "2026-02-10", &obs1, &emb1)
+            .unwrap();
+
+        let obs2 = vec![sample_observation("later data")];
+        let emb2 = vec![sample_embedding(0.15)];
+        store
+            .insert_observations("ep-002", "2026-02-20", &obs2, &emb2)
+            .unwrap();
+
+        let query = sample_embedding(0.1);
+        let results = store
+            .search(
+                &query,
+                5,
+                &VectorSearchFilters {
+                    date_from: Some("2026-02-15".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert!(
+            results.iter().all(|r| r.date.as_str() >= "2026-02-15"),
+            "all results should be on or after filter date"
+        );
+    }
+
+    #[test]
+    fn count_mismatch_rejected() {
+        let (_dir, store) = create_test_store();
+
+        let obs = vec![sample_observation("one"), sample_observation("two")];
+        let embeddings = vec![sample_embedding(0.1)]; // only 1 embedding for 2 obs
+        let result = store.insert_observations("ep-001", "2026-02-19", &obs, &embeddings);
+        assert!(result.is_err(), "count mismatch should be rejected");
+    }
+
+    #[test]
+    fn insert_empty_observations_ok() {
+        let (_dir, store) = create_test_store();
+        let ids = store
+            .insert_observations("ep-001", "2026-02-19", &[], &[])
+            .unwrap();
+        assert!(ids.is_empty(), "empty insert should return empty");
+    }
+
+    #[test]
+    fn insert_empty_chunks_ok() {
+        let (_dir, store) = create_test_store();
+        let ids = store.insert_chunks(&[], &[]).unwrap();
+        assert!(ids.is_empty(), "empty insert should return empty");
+    }
+
+    #[test]
+    fn delete_empty_ids_ok() {
+        let (_dir, store) = create_test_store();
+        store.delete_by_doc_ids(&[]).unwrap();
+    }
+
+    #[test]
+    fn has_observation_returns_false_when_missing() {
+        let (_dir, store) = create_test_store();
+        assert!(!store.has_observation("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn has_observation_returns_true_when_present() {
+        let (_dir, store) = create_test_store();
+        let obs = vec![sample_observation("test content")];
+        let embeddings = vec![sample_embedding(0.1)];
+        store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+        assert!(store.has_observation("ep-001-o0").unwrap());
+    }
+
+    #[test]
+    fn reset_clears_vectors_and_adopts_the_new_dimension_while_the_file_stays_open() {
+        let (_dir, mut store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+        store.set_embedding_model("model-a").unwrap();
+
+        store.reset(3).unwrap();
+
+        assert!(store.wiki_page_contents().unwrap().is_empty());
+        assert_eq!(store.embedding_model().unwrap(), None);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/b.md", "b page", &[0.1, 0.2, 0.3])])
+            .unwrap();
+        assert_eq!(store.wiki_page_contents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn purge_wiki_vectors_removes_only_wiki_rows() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+        let chunks = vec![IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            line_start: 1,
+            line_end: 2,
+            content: "chunk".to_string(),
+        }];
+        store.insert_chunks(&chunks, &[emb]).unwrap();
+
+        assert_eq!(store.purge_wiki_vectors().unwrap(), 1);
+        assert!(store.wiki_page_contents().unwrap().is_empty());
+        assert!(store.has_chunk("ep-001-c0").unwrap());
+        assert_eq!(store.purge_wiki_vectors().unwrap(), 0);
+    }
+
+    #[test]
+    fn embedding_model_round_trips_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.db");
+        {
+            let store = VectorStore::open_or_create(&path, TEST_DIM).unwrap();
+            assert_eq!(store.embedding_model().unwrap(), None);
+            store.set_embedding_model("model-a").unwrap();
+            store.set_embedding_model("model-b").unwrap();
+        }
+        let store = VectorStore::open_or_create(&path, TEST_DIM).unwrap();
+        assert_eq!(store.embedding_model().unwrap().as_deref(), Some("model-b"));
+    }
+
+    #[test]
+    fn two_stores_in_one_process_stay_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = VectorStore::open_or_create(&dir.path().join("first.db"), TEST_DIM).unwrap();
+        let second = VectorStore::open_or_create(&dir.path().join("second.db"), TEST_DIM).unwrap();
+        let emb = sample_embedding(0.4);
+        first
+            .upsert_wiki_pages(&[wiki_vector("wiki/only-first.md", "first", &emb)])
+            .unwrap();
+        assert!(second.wiki_page_contents().unwrap().is_empty());
+        assert_eq!(first.wiki_page_contents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn has_chunk_returns_false_when_missing() {
+        let (_dir, store) = create_test_store();
+        assert!(!store.has_chunk("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn has_chunk_returns_true_when_present() {
+        let (_dir, store) = create_test_store();
+        let chunks = vec![IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            line_start: 1,
+            line_end: 2,
+            content: "test content".to_string(),
+        }];
+        let embeddings = vec![sample_embedding(0.3)];
+        store.insert_chunks(&chunks, &embeddings).unwrap();
+        assert!(store.has_chunk("ep-001-c0").unwrap());
+    }
+
+    #[test]
+    fn duplicate_insert_observations_is_idempotent() {
+        let (_dir, store) = create_test_store();
+        let obs = vec![sample_observation("test content")];
+        let embeddings = vec![sample_embedding(0.1)];
+
+        let ids1 = store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+        // Second insert with same IDs should succeed (INSERT OR IGNORE)
+        let ids2 = store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+
+        assert_eq!(ids1, ids2, "should return same doc IDs");
+
+        // Should still only have one result when searching
+        let query = sample_embedding(0.1);
+        let results = store
+            .search(&query, 10, &VectorSearchFilters::default())
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "duplicate insert should not create extra rows"
+        );
+    }
+
+    #[test]
+    fn duplicate_insert_chunks_is_idempotent() {
+        let (_dir, store) = create_test_store();
+        let chunks = vec![IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            line_start: 1,
+            line_end: 2,
+            content: "test content".to_string(),
+        }];
+        let embeddings = vec![sample_embedding(0.3)];
+
+        let ids1 = store.insert_chunks(&chunks, &embeddings).unwrap();
+        // Second insert with same IDs should succeed (INSERT OR IGNORE)
+        let ids2 = store.insert_chunks(&chunks, &embeddings).unwrap();
+
+        assert_eq!(ids1, ids2, "should return same doc IDs");
+
+        let query = sample_embedding(0.3);
+        let results = store
+            .search(&query, 10, &VectorSearchFilters::default())
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "duplicate insert should not create extra rows"
+        );
+    }
+
+    fn wiki_vector<'a>(page_id: &'a str, content: &'a str, emb: &'a [f32]) -> WikiVector<'a> {
+        WikiVector {
+            page_id,
+            date: "2026-09-20",
+            content,
+            embedding: emb,
+        }
+    }
+
+    #[test]
+    fn upsert_wiki_pages_replaces_existing_row() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "first", &emb)])
+            .unwrap();
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "second", &emb)])
+            .unwrap();
+
+        let contents = store.wiki_page_contents().unwrap();
+        assert_eq!(contents.len(), 1, "upsert should not duplicate the page");
+        assert_eq!(
+            contents.get("wiki/a.md").map(String::as_str),
+            Some("second")
+        );
+
+        let results = store
+            .search(&emb, 10, &VectorSearchFilters::default())
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_type, DocSource::Wiki);
+        assert_eq!(results[0].id, "wiki/a.md");
+    }
+
+    #[test]
+    fn delete_by_doc_ids_removes_wiki_rows() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "text", &emb)])
+            .unwrap();
+        store.delete_by_doc_ids(&["wiki/a.md".to_string()]).unwrap();
+        assert!(store.wiki_page_contents().unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_source_filter_restricts_tables() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .insert_observations(
+                "ep-001",
+                "2026-09-20",
+                &[sample_observation("an observation")],
+                std::slice::from_ref(&emb),
+            )
+            .unwrap();
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+
+        let only = |source| {
+            store
+                .search(
+                    &emb,
+                    10,
+                    &VectorSearchFilters {
+                        source: Some(source),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let wiki = only(DocSource::Wiki);
+        assert!(
+            wiki.iter().all(|r| r.source_type == DocSource::Wiki) && wiki.len() == 1,
+            "wiki filter should return only wiki rows, got {wiki:?}"
+        );
+        let obs = only(DocSource::Observation);
+        assert!(
+            obs.iter().all(|r| r.source_type == DocSource::Observation) && obs.len() == 1,
+            "observation filter should return only observation rows, got {obs:?}"
+        );
+    }
+
+    #[test]
+    fn search_episode_filter_excludes_wiki_rows() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+        let results = store
+            .search(
+                &emb,
+                10,
+                &VectorSearchFilters {
+                    episode_ids: Some(vec!["ep-001".to_string()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(results.is_empty(), "wiki pages belong to no episode");
+    }
+}

@@ -58,10 +58,12 @@ import type {
   DeletedAgentListResponse,
   RestoreAgentRequest,
   AgentPatch,
-  HubInboxItem,
-  HubInboxPage,
   HubStatusResponse,
-  InboxStatus,
+  MailFolder,
+  MailReplyResponse,
+  MailSendResponse,
+  MailThread,
+  MailThreadPage,
   OverviewResponse,
   PushDevice,
   PushPreferencesPatch,
@@ -279,8 +281,9 @@ export async function fetchUsageTotals(agent: string): Promise<SessionUsageTotal
 }
 
 /**
- * Fetch an episode segment by cursor. Episodes are immutable, so the result
- * is cached for the life of the browser session (and across reloads).
+ * Fetch an episode segment by cursor. Not cached: an episode id names a
+ * different conversation on another instance behind the same address, or
+ * after an agent is created again under the same name.
  *
  * Throws `ApiError` on failure — callers must decide how to surface the
  * error. A 404 (episode not found) is surfaced the same as any other
@@ -290,11 +293,9 @@ export async function fetchChatSegment(
   agent: string,
   episodeId: string,
 ): Promise<EpisodeHistorySegment> {
-  // Built inline rather than as a CACHE_KEY_* constant because it's per-episode.
-  // The key string must match the url string exactly — if you change one, change
-  // the other, or cache lookups will miss.
-  const url = agentPath(agent, `/chat/history?episode=${encodeURIComponent(episodeId)}`);
-  const segment = await cachedFetch(`GET ${url}`, () => apiFetch<ChatHistorySegment>(url));
+  const segment = await apiFetch<ChatHistorySegment>(
+    agentPath(agent, `/chat/history?episode=${encodeURIComponent(episodeId)}`),
+  );
   if (segment.kind === "episode") return segment;
   throw new Error(
     `unexpected chat history kind "${segment.kind}" — server must return Episode for ?episode=`,
@@ -760,9 +761,49 @@ export async function fetchSessionTranscript(
   );
 }
 
+/** Which of the agent's models a session runs on. */
+export type SessionModelSize = "small" | "medium" | "large";
+
+/** What the owner starts a session with. */
+export interface StartSessionRequest {
+  /** The task, the session's first message. */
+  prompt: string;
+  /** The agent's medium model when left out. */
+  model?: SessionModelSize;
+  /** Start from the main conversation (`/multitask`) instead of clean. */
+  fork?: boolean;
+}
+
 /**
- * Send the session at `address` a message as the owner: delivered to a live
- * run, or starting a new run of a finished one. Resolves to where it landed.
+ * Start a session of the owner's own on `agent`: a clean one, or with `fork`
+ * a fork of the main conversation. Resolves to its address as soon as the
+ * agent takes the request; the run announces itself with `session_started`.
+ *
+ * Throws `ApiError` with `{ error }`: `400` for a blank prompt or a bad
+ * model, `500` when a fork couldn't read the main conversation, `503` while
+ * Residuum shuts down.
+ */
+export async function startSession(agent: string, request: StartSessionRequest): Promise<string> {
+  const reply = await apiFetch<{ address: string }>(agentPath(agent, "/sessions"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return reply.address;
+}
+
+/** `POST /api/sessions/{address}/messages` response. */
+export interface SessionMessageReply {
+  /** Where the message landed. */
+  outcome: SessionDeliveryOutcome;
+  /** The message's id, which the session's `session_user_message` frame names once it reads it. */
+  id: string;
+}
+
+/**
+ * Send the session at `address` a message as the owner, under `id`:
+ * delivered to a live run, or starting a new run of a finished one. Resolves
+ * to where it landed.
  *
  * Throws `ApiError` with `{ error, code }`: `404` for an unknown address,
  * `409` when the session is busy, `502` when delivery failed.
@@ -771,16 +812,16 @@ export async function messageSession(
   agent: string,
   address: string,
   content: string,
-): Promise<SessionDeliveryOutcome> {
-  const reply = await apiFetch<{ outcome: SessionDeliveryOutcome }>(
+  id: string,
+): Promise<SessionMessageReply> {
+  return apiFetch<SessionMessageReply>(
     agentPath(agent, `/sessions/${encodeURIComponent(address)}/messages`),
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, id }),
     },
   );
-  return reply.outcome;
 }
 
 /**
@@ -814,6 +855,21 @@ export async function setPulseEnabled(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
     },
+  );
+}
+
+/**
+ * Stop one fire of a pulse, in its scripts or its session. The stop's outcome
+ * arrives as a `pulse_fire_changed` frame. Throws `ApiError` (`404` once that
+ * fire has finished).
+ */
+export async function stopPulseFire(agent: string, pulse: string, fireId: string): Promise<void> {
+  await apiFetch<unknown>(
+    agentPath(
+      agent,
+      `/scheduled/pulses/${encodeURIComponent(pulse)}/fires/${encodeURIComponent(fireId)}/stop`,
+    ),
+    { method: "POST" },
   );
 }
 
@@ -1153,6 +1209,19 @@ export async function fetchCloudStatus(): Promise<CloudStatusResponse> {
   return apiFetch<CloudStatusResponse>(hubPath("/cloud/status"));
 }
 
+/**
+ * Start a sign-in to Residuum Cloud: the hub answers with the relay's sign-in
+ * address, carrying the `state` its callback will accept the token with.
+ */
+export async function startCloudSignIn(relayUrl: string, port: string): Promise<string> {
+  const { url } = await apiFetch<{ url: string }>(hubPath("/cloud/connect"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ relay_url: relayUrl, port }),
+  });
+  return url;
+}
+
 export async function disconnectCloud(): Promise<void> {
   await apiFetchText(hubPath("/cloud/disconnect"), { method: "POST" });
 }
@@ -1321,7 +1390,7 @@ async function patchAgent(name: string, patch: Partial<AgentPatch>): Promise<Age
   });
 }
 
-// ── Team overview, team events and the cross-agent inbox ────────────
+// ── Team overview and team events ───────────────────────────────────
 
 /** `?a=1&b=2` from the parameters that are set, or `""` when none are. */
 function queryString(params: Record<string, string | number | undefined>): string {
@@ -1349,47 +1418,121 @@ export async function fetchTeamEvents(
   return apiFetch<TeamEventPage>(hubPath(`/events${queryString(query)}`));
 }
 
+// ── Mail ────────────────────────────────────────────────────────────
+
+/** The largest file the hub stages for a message, in bytes. A larger upload is answered `413`. */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** `MAX_UPLOAD_BYTES` as the screens say it: "50 MB". */
+export const UPLOAD_LIMIT_LABEL = `${String(MAX_UPLOAD_BYTES / (1024 * 1024))} MB`;
+
+/** A file the hub has staged, to attach to a message by `id`. */
+export interface UploadedFile {
+  id: string;
+  filename: string;
+  size: number;
+}
+
+/** What `POST /api/hub/mail/send` takes. `attachments` are upload ids. */
+export interface SendMailRequest {
+  to: string[];
+  subject: string;
+  body: string;
+  attachments: string[];
+}
+
+/** What `POST /api/hub/mail/threads/{thread_id}/reply` takes. `attachments` are upload ids. */
+export interface ReplyToMailRequest {
+  body: string;
+  attachments: string[];
+}
+
+/** The hub's route for one mail thread, followed by `action` when there is one. A thread id holds `/`, so it is encoded. */
+function mailThreadPath(threadId: string, action?: string): string {
+  const path = `/mail/threads/${encodeURIComponent(threadId)}`;
+  return hubPath(action === undefined ? path : `${path}/${action}`);
+}
+
 /**
- * One page of every agent's user inbox, newest first: the active items by
- * default, one agent's with `agent`, the page after a `next_cursor` with
- * `before`. Throws `ApiError`.
+ * One page of the mail threads in a folder, newest first, across every agent
+ * or only those `agent` took part in. `before` is the previous page's `next`.
+ * Throws `ApiError`.
  */
-export async function fetchHubInbox(
-  query: { status?: InboxStatus; agent?: string; before?: string; limit?: number } = {},
-): Promise<HubInboxPage> {
-  return apiFetch<HubInboxPage>(hubPath(`/inbox${queryString(query)}`));
-}
-
-/** The hub's route for one item of `agent`'s user inbox, followed by `action`. */
-function hubInboxItemPath(agent: string, id: string, action: string): string {
-  return hubPath(`/inbox/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/${action}`);
+export async function fetchMailThreads(query: {
+  folder: MailFolder;
+  agent?: string;
+  before?: string;
+  limit?: number;
+}): Promise<MailThreadPage> {
+  const { folder, agent, before, limit } = query;
+  return apiFetch<MailThreadPage>(
+    hubPath(`/mail/threads${queryString({ folder, agent, before, limit })}`),
+  );
 }
 
 /**
- * Mark an item read, whether it is in the inbox or the archive, and get it
- * back. Throws `ApiError`.
+ * A thread with every message, oldest first. `threadId` can be the ref of any
+ * message in the thread; the answer names the thread by its own id. Throws
+ * `ApiError`.
  */
-export async function markHubInboxItemRead(agent: string, id: string): Promise<HubInboxItem> {
-  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "read"), {
-    method: "PUT",
-  });
-  return item;
+export async function fetchMailThread(threadId: string): Promise<MailThread> {
+  return apiFetch<MailThread>(mailThreadPath(threadId));
 }
 
-/** Move an item from the inbox to the archive. Throws `ApiError`. */
-export async function archiveHubInboxItem(agent: string, id: string): Promise<HubInboxItem> {
-  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "archive"), {
+/** Send a new message to one or more agents and get the thread it starts. Throws `ApiError`. */
+export async function sendMail(request: SendMailRequest): Promise<MailSendResponse> {
+  return apiFetch<MailSendResponse>(hubPath("/mail/send"), {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
   });
-  return item;
 }
 
-/** Move an archived item back to the inbox. Throws `ApiError`. */
-export async function restoreHubInboxItem(agent: string, id: string): Promise<HubInboxItem> {
-  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "restore"), {
+/** Reply to everyone in a thread and get the message that was added. Throws `ApiError`. */
+export async function replyToMailThread(
+  threadId: string,
+  request: ReplyToMailRequest,
+): Promise<MailReplyResponse> {
+  return apiFetch<MailReplyResponse>(mailThreadPath(threadId, "reply"), {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
   });
-  return item;
+}
+
+/** Mark every message an agent sent in the thread read. Throws `ApiError`. */
+export async function markMailThreadRead(threadId: string): Promise<void> {
+  await apiFetchText(mailThreadPath(threadId, "read"), { method: "POST" });
+}
+
+/** Move the thread's messages from the agents to the archive. Throws `ApiError`. */
+export async function archiveMailThread(threadId: string): Promise<void> {
+  await apiFetchText(mailThreadPath(threadId, "archive"), { method: "POST" });
+}
+
+/** Move the thread's archived messages back to the inbox. Throws `ApiError`. */
+export async function restoreMailThread(threadId: string): Promise<void> {
+  await apiFetchText(mailThreadPath(threadId, "restore"), { method: "POST" });
+}
+
+/**
+ * Stage a file for a message to attach: the body is the file's bytes, so
+ * nothing is encoded. Throws `ApiError`; a file over `MAX_UPLOAD_BYTES` is
+ * answered `413`. Aborting `signal` cancels the upload, so one the user
+ * removed before it finished stages nothing; the call then throws the
+ * `AbortError` the fetch rejects with.
+ */
+export async function uploadFile(
+  file: File | Blob,
+  filename: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<UploadedFile> {
+  return apiFetch<UploadedFile>(hubPath(`/uploads${queryString({ filename })}`), {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
 }
 
 // ── Teams setup API ─────────────────────────────────────────────────

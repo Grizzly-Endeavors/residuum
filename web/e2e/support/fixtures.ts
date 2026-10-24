@@ -4,9 +4,14 @@
  * On top of Playwright's fixtures it:
  * - resets the mock before every test, so no test sees what another left behind,
  * - keeps the page on loopback, so a font or script on the internet can't change a run,
- * - freezes the page's clock at the mock's clock when a project asks for it,
+ * - installs Playwright's clock on every page before its scripts run, so the
+ *   page's `Date` and timers are the test's to hold: frozen at the mock's clock
+ *   when a project asks for it, and in manual time moving only with the mock's
+ *   simulated time (see `MockControls`); animation frames stay the browser's
+ *   own, since they are drawing, not time,
  * - makes `page.goto` and `page.reload` wait until the app is usable (`waitForApp`
- *   in `app.ts`), so a spec's first action never lands on a half-built page,
+ *   in `app.ts`), on every page the test opens, so a spec's first action never
+ *   lands on a half-built page,
  * - skips, with the reason, what can't run here: visual specs outside the
  *   Playwright container, and the WebKit project on a machine that can't start WebKit.
  *
@@ -14,8 +19,8 @@
  *   worker's own dev or preview server (`servers.ts`), so workers never share a mock.
  */
 import { expect, test as base, webkit, type Page, type Response } from "@playwright/test";
-import { FIXED_START_MS } from "../../mock/env";
-import { hubReach, waitForApp } from "./app";
+import { FIXED_START_MS, type TimeProgress } from "../../mock/env";
+import { hubReach, pageClock, recordFailedRequests, waitForApp } from "./app";
 import { serversOf, type MockServerKind } from "./servers";
 
 export { expect };
@@ -37,6 +42,52 @@ export interface MockControls {
     path: string,
     options?: { params?: Record<string, string>; data?: Record<string, unknown> },
   ) => Promise<unknown>;
+  /**
+   * Stop simulated time: from now on nothing the mock simulates happens until
+   * the spec moves time with `advance` or `stepUntil`, so a moment of a turn
+   * stays on screen for as long as the spec looks at it. Call it before
+   * starting what you want to watch. The fixture's reset turns it off again.
+   *
+   * The page's clock stops at the mock's time too, and moves only with it:
+   * `Date`, and every `setTimeout` and `setInterval` the page sets, so what
+   * the page times itself ("Worked for 2s", a toast's dismissal, the socket's
+   * reconnect backoff) waits for the spec to move time past it. Animation
+   * frames keep running, so the page still draws what reaches it.
+   */
+  manualTime: () => Promise<void>;
+  /**
+   * Move manual time forward by `ms`: every timer due by then runs, in order.
+   * The page's clock moves through the span first, running the page's own
+   * timers due in it, each at its time, and stops at the end of the span, so
+   * the page reads every frame the mock's move sends at that time: a turn
+   * that starts at 0 and ends within `advance(1_500)` took 1.5s. Before moving
+   * time again, wait for what this move shows, so its frames are read at this
+   * move's time, and for the page to have set any timer the next move should
+   * run (the socket sets its reconnect when it sees the close, which the
+   * composer's "Reconnecting" shows).
+   */
+  advance: (ms: number) => Promise<TimeProgress>;
+  /**
+   * Run the mock's timers one at a time until `expectation` holds. It gets the
+   * time to allow each try, to pass on to its assertion:
+   * `mock.stepUntil((timeout) => expect(card).toBeVisible({ timeout }))`.
+   * The page gets that long to show what a timer did before the next one
+   * runs, and the steps end when no timer is left, so the bound is the turn's
+   * timers, not a wall-clock guess. A timer can close the moment it opens, so
+   * for a window that a later timer ends, `advance` to a time inside it. The
+   * page's clock runs to each timer's time before it runs, but the page may
+   * read its frames after the next step, so assert durations after `advance`.
+   */
+  stepUntil: (expectation: (timeout: number) => Promise<unknown>) => Promise<void>;
+}
+
+/** How long `stepUntil` lets the page show what a timer did before it runs the next. */
+const STEP_SETTLE_MS = 2000;
+
+/** What the mock's time controls answer: the time it reads, and when its next timer is due. */
+interface TimeReading {
+  now: string;
+  next: string | null;
 }
 
 interface E2EFixtures {
@@ -99,6 +150,60 @@ function waitForAppAfterLoads(page: Page, baseURL: string | undefined): void {
   };
 }
 
+/** The part of Playwright's in-page clock the harness reads: the browser's own functions, saved before the clock replaced them. */
+interface InstalledClock {
+  builtins: Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
+}
+
+/**
+ * An init script that gives the page the browser's own animation frames back
+ * from Playwright's clock, which fakes them as timers. Frames are drawing, not
+ * time: the app flushes streamed text and keeps the feed's scroll place in
+ * them, which has to go on while manual time stands still, or the page would
+ * show nothing a move sent until the next move. Init scripts run in no set
+ * order, so it holds whichever runs first: the property ignores the clock's
+ * assignment, and reads the clock's saved original if the clock got there first.
+ */
+function keepBrowserFrames(): void {
+  const clock = (globalThis as { __pwClock?: InstalledClock }).__pwClock;
+  const frames = {
+    requestAnimationFrame: clock?.builtins.requestAnimationFrame ?? window.requestAnimationFrame,
+    cancelAnimationFrame: clock?.builtins.cancelAnimationFrame ?? window.cancelAnimationFrame,
+  };
+  for (const [name, native] of Object.entries(frames)) {
+    Object.defineProperty(window, name, {
+      configurable: true,
+      get: () => native,
+      set: () => undefined,
+    });
+  }
+}
+
+/**
+ * The CPU slow-down `E2E_CPU_THROTTLE` asks for, or `null` when it is unset.
+ * `scripts/web-stress.sh` sets it, to run the pages on a slowed CPU as a busy
+ * machine does.
+ */
+function cpuThrottleRate(): number | null {
+  const raw = process.env.E2E_CPU_THROTTLE;
+  if (raw === undefined || raw === "") return null;
+  const rate = Number(raw);
+  if (!Number.isInteger(rate) || rate < 1) {
+    throw new Error(`E2E_CPU_THROTTLE must be a whole number of at least 1, got "${raw}"`);
+  }
+  return rate;
+}
+
+/**
+ * Slow the page's CPU by `rate` through Chromium's `Emulation.setCPUThrottlingRate`.
+ * The throttle stays with the page across its navigations, so it holds for
+ * every page the test opens.
+ */
+async function throttlePageCpu(page: Page, rate: number): Promise<void> {
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setCPUThrottlingRate", { rate });
+}
+
 const USE_CONTAINER_HINT = "or run `just web-e2e-webkit` to use the Playwright container";
 
 /** Why WebKit can't start on this machine, in one line, or `null` when it can. Probed once per worker. */
@@ -121,6 +226,19 @@ async function probeWebkit(): Promise<string | null> {
   }
 }
 
+/** The page function the init script reports each Content-Security-Policy violation to. */
+const CSP_VIOLATION_BINDING = "__e2eReportCspViolation";
+
+/** Runs in every page: hands each violation of the page's policy to the test. */
+function reportCspViolations(binding: string): void {
+  document.addEventListener("securitypolicyviolation", (event) => {
+    const report = (
+      window as unknown as Record<string, ((text: string) => Promise<void>) | undefined>
+    )[binding];
+    void report?.(`${event.effectiveDirective} ${event.blockedURI} on ${event.documentURI}`);
+  });
+}
+
 export const test = base.extend<E2EFixtures & E2EOptions>({
   frozenClock: [false, { option: true }],
   requiresContainer: [false, { option: true }],
@@ -133,15 +251,64 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
   // Automatic fixtures are set up before the test's own, so the reset lands
   // before the page opens and connects.
   mock: [
-    async ({ request }, use) => {
+    async ({ request, context }, use) => {
+      const post: MockControls["post"] = async (path, options) => {
+        const response = await request.post(path, options);
+        expect(response.ok(), `POST ${path} answered ${response.status()}`).toBe(true);
+        // A page loaded while the hub is out of reach is ready when it shows the banner (see `hubReach`).
+        if (path === "/api/mock/hub-socket") hubReach.lost = options?.data?.online === false;
+        if (path === "/api/mock/reset") hubReach.lost = false;
+        return (await response.json()) as unknown;
+      };
+      // In manual time, what the mock last said its clock reads, and where the page's clock stands.
+      let reading: TimeReading | undefined;
+      let pageAt = 0;
+      /** Run the page's timers due by `ms`, in order and each at its time, and stop its clock there. */
+      const pageClockTo = async (ms: number): Promise<void> => {
+        if (ms < pageAt) {
+          throw new Error(
+            `the page's clock is at ${pageAt} ms and can't move back to ${ms} ms; the mock's time and the page's have come apart`,
+          );
+        }
+        await context.clock.runFor(ms - pageAt);
+        pageAt = ms;
+        pageClock.fixedAt = ms;
+      };
       const controls: MockControls = {
-        post: async (path, options) => {
-          const response = await request.post(path, options);
-          expect(response.ok(), `POST ${path} answered ${response.status()}`).toBe(true);
-          // A page loaded while the hub is out of reach is ready when it shows the banner (see `hubReach`).
-          if (path === "/api/mock/hub-socket") hubReach.lost = options?.data?.online === false;
-          if (path === "/api/mock/reset") hubReach.lost = false;
-          return (await response.json()) as unknown;
+        post,
+        manualTime: async () => {
+          reading = (await post("/api/mock/time", { data: { mode: "manual" } })) as TimeReading;
+          const now = Date.parse(reading.now);
+          // Pausing jumps the page's clock forward from its time to the one given,
+          // firing what falls due on the way. With `Date` held at `now` first, the
+          // pause jumps nowhere, so no timer fires early.
+          await context.clock.setFixedTime(now);
+          await context.clock.pauseAt(now);
+          // `Date` moves again, now only as `pageClockTo` runs the page's timers.
+          await context.clock.setSystemTime(now);
+          pageAt = now;
+          pageClock.fixedAt = now;
+        },
+        advance: async (ms) => {
+          if (reading !== undefined) await pageClockTo(Date.parse(reading.now) + ms);
+          const moved = (await post("/api/mock/time/advance", { data: { ms } })) as TimeProgress &
+            TimeReading;
+          reading = moved;
+          return moved;
+        },
+        stepUntil: async (expectation) => {
+          for (;;) {
+            try {
+              await expectation(STEP_SETTLE_MS);
+              return;
+            } catch (notYet) {
+              if (reading?.next != null) await pageClockTo(Date.parse(reading.next));
+              const stepped = (await post("/api/mock/time/step")) as TimeProgress & TimeReading;
+              reading = stepped;
+              // No timer left to run: the expectation's own failure says what never showed.
+              if (stepped.fired === 0) throw notYet;
+            }
+          }
         },
       };
       await controls.post("/api/mock/reset");
@@ -178,9 +345,35 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
     { auto: true },
   ],
 
-  context: async ({ context, frozenClock }, use) => {
+  context: async ({ context, frozenClock, baseURL, browserName }, use) => {
+    const throttle = cpuThrottleRate();
+    if (throttle !== null && browserName !== "chromium") {
+      throw new Error(
+        `E2E_CPU_THROTTLE needs Chromium's CPU throttling, and this project drives ${browserName}`,
+      );
+    }
+    const throttles: Promise<void>[] = [];
+    // Every page, the test's own and any it opens, such as a second tab.
+    context.on("page", (page) => {
+      waitForAppAfterLoads(page, baseURL);
+      recordFailedRequests(page, leavesLoopback);
+      if (throttle !== null) throttles.push(throttlePageCpu(page, throttle));
+    });
     await context.route(leavesLoopback, (route) => route.abort("blockedbyclient"));
+    pageClock.fixedAt = frozenClock ? FIXED_START_MS : null;
+    // Installed before any page opens, so every timer a page sets, from its
+    // first script on, is the clock's, and manual time holds them all.
     if (frozenClock) await context.clock.setFixedTime(FIXED_START_MS);
+    else await context.clock.install();
+    await context.addInitScript(keepBrowserFrames);
+    // The mock sends the hub's Content-Security-Policy with the app's HTML
+    // (`mock/app-shell-policy.ts`), so anything the app loads that the policy
+    // refuses would be missing for real users too: the test fails with it.
+    const violations: string[] = [];
+    await context.exposeBinding(CSP_VIOLATION_BINDING, (_source, report: string) => {
+      violations.push(report);
+    });
+    await context.addInitScript(reportCspViolations, CSP_VIOLATION_BINDING);
     // With the network off the hub can't be reached, so a page that loads then is ready showing the banner (see `hubReach`).
     const setOffline = context.setOffline.bind(context);
     context.setOffline = async (offline) => {
@@ -188,11 +381,13 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
       await setOffline(offline);
     };
     await use(context);
-  },
-
-  page: async ({ page, baseURL }, use) => {
-    waitForAppAfterLoads(page, baseURL);
-    await use(page);
+    // A page whose throttle failed fails the test here, not silently at full speed.
+    await Promise.all(throttles);
+    if (violations.length > 0) {
+      throw new Error(
+        `The app shell's Content-Security-Policy (web/app-shell-csp.txt) refused: ${violations.join("; ")}`,
+      );
+    }
   },
 });
 
@@ -203,5 +398,5 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
 export function artifactsOrigin(): string {
   const info = test.info();
   const kind = (info.project.use as Partial<E2EOptions>).mockServer ?? "dev";
-  return `http://localhost:${String(serversOf(info.parallelIndex)[kind].artifactsPort)}`;
+  return serversOf(info.parallelIndex)[kind].artifactsUrl;
 }

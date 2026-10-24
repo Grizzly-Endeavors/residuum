@@ -1,8 +1,9 @@
 import { backgroundTurnFrames } from "./chat-scenarios";
-import type { TurnHold } from "./env";
+import type { TimeProgress, TurnHold } from "./env";
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import { offeredModelsOnly } from "./provider-models";
 import type { Route, RouteContext } from "./routes";
+import { messageMainFrom } from "./sessions";
 import { changeAgentFile, changeTeamFile } from "./workspace-changes";
 
 /**
@@ -41,11 +42,11 @@ function missedRelay({ res, state }: RouteContext): void {
 /**
  * A teammate (`?from=`, scout by default) messages an agent (`?agent=atlas`):
  * the message lands in its main conversation and the agent answers it in a
- * turn that no person started. Every connected page is sent that turn's
- * frames (and, as the backend does, none for the message itself), history
- * records both under the turn's id, and the hub reports the reply unread
- * until the web UI opens that agent's socket. All of it has happened by the
- * time the request is answered.
+ * turn that no person started. Every connected page is sent the message, as
+ * a `user_message` frame naming the teammate, then that turn's frames;
+ * history records both under the turn's id, and the hub reports the reply
+ * unread until the web UI opens that agent's socket. All of it has happened by
+ * the time the request is answered.
  */
 function teammateMessage({ res, hub, query }: RouteContext): void {
   const agent = hub.agents.get(query.get("agent") ?? "");
@@ -58,17 +59,19 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   const reply = `${from} asked me to check the wiki index. On it.`;
   const address = `agent:${from}`;
   const turnId = `bg-${String(hub.env.nextId())}`;
+  // The header and the structured sender the backend gives a teammate's message.
+  const content =
+    `[Message from teammate ${address}, not the user. Your response in this turn is ` +
+    `not shown to them; to reply, call message_agent with to="${address}".]\n` +
+    "Can you look over the wiki index when you get a chance?";
+  const agentSender = { address, category: "teammate" };
   agent.state.extraRecent.push(
     {
       role: "user",
-      // The header and the structured sender the backend records for a teammate.
-      content:
-        `[Message from teammate ${address}, not the user. Your response in this turn is ` +
-        `not shown to them; to reply, call message_agent with to="${address}".]\n` +
-        "Can you look over the wiki index when you get a chance?",
+      content,
       timestamp: now,
       visibility: "background",
-      agent_sender: { address, category: "teammate" },
+      agent_sender: agentSender,
       turn_id: turnId,
     },
     {
@@ -80,11 +83,44 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
       turn_id: turnId,
     },
   );
+  agent.state.broadcast({
+    type: "user_message",
+    id: turnId,
+    turn_id: turnId,
+    content,
+    agent_sender: agentSender,
+    endpoint: "background",
+  });
   for (const frame of backgroundTurnFrames(turnId, reply)) agent.state.broadcast(frame);
   hub.teamEvents.agentReplied(agent);
   hub.overview.changed(agent);
   if (agent.connectedClients() === 0) hub.addUnread(agent);
   json(res, 200, { ok: true });
+}
+
+/**
+ * One of an agent's live sessions (`?address=`, the research session by
+ * default) sends its main conversation `{ content? }`, as `message_agent` or
+ * a relayed result does: it joins the turn in flight, announced as a
+ * `user_message` naming the session and its run that the turn journal keeps,
+ * or starts a turn. Answers `{ run_id }`, the sending run.
+ */
+async function sessionMessage({ req, res, state, query }: RouteContext): Promise<void> {
+  const address = query.get("address") ?? "spawned-research-3f9a";
+  const session = state.sessions.live.find((s) => s.address === address);
+  if (session === undefined) {
+    json(res, 404, { error: `mock: no live session at ${address}` });
+    return;
+  }
+  const raw = await readBody(req);
+  const { content = "Interim note: the cascade option needs a retry cap." } =
+    raw.trim() === "" ? {} : parseJsonObject(raw);
+  if (typeof content !== "string") {
+    json(res, 422, { error: "mock: `content` must be a string" });
+    return;
+  }
+  messageMainFrom(state, session, content);
+  json(res, 200, { run_id: session.run_id });
 }
 
 /**
@@ -171,6 +207,74 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
 }
 
 /**
+ * `{ mode }`: how simulated time passes, `"manual"` or `"scaled"` (see
+ * `TimeMode`). A spec sets it before it starts what it wants to watch; reset
+ * puts it back to scaled. Answers with the time the mock reads and when the
+ * next waiting timer is due.
+ */
+async function setTimeMode({ req, res, hub }: RouteContext): Promise<void> {
+  const { mode } = await readJsonObject(req);
+  if (mode !== "manual" && mode !== "scaled") {
+    json(res, 422, { error: 'mock: `mode` must be "manual" or "scaled"' });
+    return;
+  }
+  hub.env.setTimeMode(mode);
+  json(res, 200, { mode, pending: hub.env.pendingTimers(), ...readings(hub) });
+}
+
+/**
+ * The time the mock reads, and in manual time when the next waiting timer
+ * comes due (`null` when none waits, or in scaled time). The e2e fixture
+ * sets the page's clock from these, so the page and the mock agree on time.
+ */
+function readings(hub: RouteContext["hub"]): { now: string; next: string | null } {
+  const nextIn = hub.env.nextTimerIn();
+  return {
+    now: hub.env.clock.iso(),
+    next: nextIn === null ? null : hub.env.clock.isoIn(nextIn),
+  };
+}
+
+/** Answer a move of manual time with what it did, the time the mock now reads, and when the next timer is due. */
+function timeMoved(
+  res: RouteContext["res"],
+  hub: RouteContext["hub"],
+  progress: TimeProgress,
+): void {
+  json(res, 200, { ...progress, ...readings(hub) });
+}
+
+/**
+ * `{ ms }`: in manual time, move simulated time forward. Every timer that
+ * comes due runs, in order, along with the timers their work sets within the
+ * span. Answers `{ fired, pending, elapsedMs, now, next }` once they have.
+ */
+async function advanceTime({ req, res, hub }: RouteContext): Promise<void> {
+  const { ms } = await readJsonObject(req);
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    json(res, 422, { error: "mock: `ms` must be a non-negative number of milliseconds" });
+    return;
+  }
+  if (hub.env.timeMode() !== "manual") {
+    json(res, 409, { error: "mock: time is scaled; set manual time first" });
+    return;
+  }
+  timeMoved(res, hub, await hub.env.advance(ms));
+}
+
+/**
+ * In manual time, run the next timer that waits, however far ahead it is.
+ * Answers `{ fired, pending, elapsedMs, now, next }`; `fired` is 0 when none waits.
+ */
+async function stepTime({ res, hub }: RouteContext): Promise<void> {
+  if (hub.env.timeMode() !== "manual") {
+    json(res, 409, { error: "mock: time is scaled; set manual time first" });
+    return;
+  }
+  timeMoved(res, hub, await hub.env.step());
+}
+
+/**
  * `{ held }`: how far simulated turns may get. `"reply"` stops each once its
  * reply has streamed in, before it ends; `true` stops each at its last step,
  * before its reply; `"steps"` stops each while its file reads are still
@@ -202,6 +306,20 @@ function connectedPages({ res, hub, query }: RouteContext): void {
     return;
   }
   json(res, 200, { pages: agent.connectedClients() });
+}
+
+/**
+ * `GET ?agent=name`: the workspace paths the agent's sockets watch right now,
+ * merged and sorted, as `{ prefixes }`. A test that changes a file waits for
+ * its path to be here, so the change reaches a page that is already watching.
+ */
+function watchedPrefixes({ res, hub, query }: RouteContext): void {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (agent === undefined) {
+    json(res, 404, { error: "mock: no such agent" });
+    return;
+  }
+  json(res, 200, { prefixes: agent.watchedPrefixes() });
 }
 
 /**
@@ -270,6 +388,17 @@ function lagSessionRelay({ res, hub }: RouteContext): void {
 }
 
 /**
+ * The next session the owner starts on the agent (from Activity's New
+ * session or `/multitask`) is accepted with `202`, then fails to fork: its
+ * pages are sent `session_start_failed` instead of `session_started`. Only
+ * that one start fails; reset disarms it.
+ */
+function failNextSessionStart({ res, state }: RouteContext): void {
+  state.sessions.failNextOwnerStart = true;
+  json(res, 200, { armed: true });
+}
+
+/**
  * `{ online }`: take the hub WebSocket down (`false`), dropping every page and
  * refusing new connections, or let pages connect again (`true`). The HTTP API
  * stays up. Reset brings the socket back.
@@ -304,12 +433,18 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/agent-file", handler: changeAgentFileControl },
   { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
+  { method: "POST", pattern: "/api/mock/fail-next-session-start", handler: failNextSessionStart },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
+  { method: "POST", pattern: "/api/mock/session-message", handler: sessionMessage },
   { method: "POST", pattern: "/api/mock/telegram-message", handler: telegramMessage },
   { method: "POST", pattern: "/api/mock/fix-agent", handler: fixAgent },
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
   { method: "POST", pattern: "/api/mock/delays", handler: setDelays },
+  { method: "POST", pattern: "/api/mock/time", handler: setTimeMode },
+  { method: "POST", pattern: "/api/mock/time/advance", handler: advanceTime },
+  { method: "POST", pattern: "/api/mock/time/step", handler: stepTime },
   { method: "POST", pattern: "/api/mock/turn-hold", handler: holdTurns },
   { method: "GET", pattern: "/api/mock/connected-pages", handler: connectedPages },
+  { method: "GET", pattern: "/api/mock/watches", handler: watchedPrefixes },
 ];

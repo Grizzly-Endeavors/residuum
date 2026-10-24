@@ -1,0 +1,429 @@
+//! The main conversation as a web client sees it, against a real hub: every
+//! main-agent turn reaches an open WebSocket in order, whichever endpoint
+//! started it, and a person's message is announced wherever it enters.
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
+)]
+#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#![expect(clippy::expect_used, reason = "test code uses expect for clarity")]
+#![expect(
+    clippy::panic,
+    reason = "test assertions use panic on unexpected variants"
+)]
+
+use super::agent_watch::agent_bus;
+use super::*;
+use residuum::bus::origin::MessageOrigin;
+use residuum::bus::{MessageEvent, topics};
+use residuum::inference::MessageSender;
+
+type AgentSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Open the agent's WebSocket with tool frames on, and wait until the server
+/// has subscribed it to the bus: it answers a ping only once it has.
+async fn connect(hub: &Fixture, name: &str) -> AgentSocket {
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{}/api/agents/{name}/ws", hub.addr))
+            .await
+            .unwrap();
+    send(&mut ws, json!({ "type": "set_verbose", "enabled": true })).await;
+    send(&mut ws, json!({ "type": "ping" })).await;
+    let pong = next_frame(&mut ws).await;
+    assert_eq!(
+        str_at(&pong, "type"),
+        "pong",
+        "the server did not answer the ping with a pong"
+    );
+    ws
+}
+
+async fn send(ws: &mut AgentSocket, frame: Value) {
+    ws.send(WsMessage::text(frame.to_string())).await.unwrap();
+}
+
+async fn next_frame(ws: &mut AgentSocket) -> Value {
+    wait::guarded("the next frame", async {
+        loop {
+            let frame = ws.next().await.expect("the WebSocket stays open").unwrap();
+            if let WsMessage::Text(raw) = frame {
+                return serde_json::from_str(&raw).unwrap();
+            }
+        }
+    })
+    .await
+}
+
+/// Every frame up to and including the `turn_ended` of the turn named
+/// `turn_id`, or of the next turn to end when `turn_id` is `None`.
+async fn frames_until_turn_ends(ws: &mut AgentSocket, turn_id: Option<&str>) -> Vec<Value> {
+    let mut frames = Vec::new();
+    loop {
+        let frame = next_frame(ws).await;
+        let ended = str_at(&frame, "type") == "turn_ended"
+            && turn_id.is_none_or(|id| str_at(&frame, "reply_to") == id);
+        frames.push(frame);
+        if ended {
+            return frames;
+        }
+    }
+}
+
+/// Assert the `type` of each frame, without the usage ticks that come and go
+/// with each model call. A failure shows every frame, so an unexpected one is
+/// seen with its payload.
+fn assert_kinds(frames: &[Value], expected: &[&str], context: &str) {
+    let kinds: Vec<&str> = frames
+        .iter()
+        .map(|frame| str_at(frame, "type"))
+        .filter(|kind| *kind != "turn_usage")
+        .collect();
+    assert_eq!(kinds, expected, "{context}; the frames were {frames:?}");
+}
+
+fn frame_of<'a>(frames: &'a [Value], kind: &str) -> &'a Value {
+    frames
+        .iter()
+        .find(|frame| str_at(frame, "type") == kind)
+        .unwrap_or_else(|| panic!("no {kind} frame in {frames:?}"))
+}
+
+/// The owner's direct message to the agent on Telegram.
+fn telegram_message(id: &str, content: &str) -> MessageEvent {
+    MessageEvent {
+        id: id.to_string(),
+        content: content.to_string(),
+        origin: MessageOrigin {
+            endpoint: "telegram".to_string(),
+            sender: Some(MessageSender {
+                name: "Bear".to_string(),
+                id: "42".to_string(),
+                interface: "telegram".to_string(),
+                location: Some("direct message".to_string()),
+            }),
+            conversation: None,
+            agent_sender: None,
+        },
+        timestamp: chrono::Utc::now().naive_utc(),
+        images: Vec::new(),
+        attachments: Vec::new(),
+        context: None,
+    }
+}
+
+async fn deliver(hub: &Fixture, agent: &str, message: MessageEvent) {
+    agent_bus(hub, agent)
+        .publisher()
+        .publish(topics::UserMessage, message)
+        .await
+        .unwrap();
+}
+
+/// A teammate's message to `agent`, which starts a background turn.
+async fn message_from_teammate(hub: &Fixture, agent: &str, text: &str) {
+    use residuum::background::team::{TeamLink, parse_team_address};
+
+    let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
+    let target = parse_team_address(&format!("agent:{agent}"))
+        .unwrap()
+        .unwrap();
+    let main =
+        residuum::bus::SessionAddress::from(residuum::bus::session::MAIN_ADDRESS.to_string());
+    link.send(&main, &target, text.to_string(), 0)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_turn_that_started_on_telegram_reaches_the_web_with_its_origin() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+
+    deliver(&hub, "scout", telegram_message("tg-1", "status?")).await;
+    let frames = frames_until_turn_ends(&mut ws, Some("tg-1")).await;
+
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the web follows a turn that never touched the web endpoint",
+    );
+    let message = frame_of(&frames, "user_message");
+    assert_eq!(str_at(message, "id"), "tg-1");
+    assert_eq!(str_at(message, "turn_id"), "tg-1");
+    assert_eq!(str_at(message, "content"), "status?");
+    assert_eq!(str_at(message, "endpoint"), "telegram");
+    assert_eq!(message["sender"]["name"], "Bear");
+    let started = frame_of(&frames, "turn_started");
+    assert_eq!(str_at(started, "reply_to"), "tg-1");
+    assert_eq!(started["origin"]["endpoint"], "telegram");
+    assert_eq!(started["origin"]["visibility"], "user");
+    assert_eq!(started["origin"]["sender"]["id"], "42");
+    let response = frame_of(&frames, "response");
+    assert_eq!(str_at(response, "reply_to"), "tg-1");
+    assert_eq!(response["call"], 0);
+    assert_eq!(str_at(response, "endpoint"), "telegram");
+    assert_eq!(str_at(response, "content"), "scout here");
+}
+
+#[tokio::test]
+async fn a_message_from_the_web_starts_its_own_turn_and_is_echoed_under_its_id() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+
+    send(
+        &mut ws,
+        json!({ "type": "send_message", "id": "web-1", "content": "hello" }),
+    )
+    .await;
+    let frames = frames_until_turn_ends(&mut ws, Some("web-1")).await;
+
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the web follows its own message's turn",
+    );
+    let message = frame_of(&frames, "user_message");
+    assert_eq!(str_at(message, "id"), "web-1");
+    assert_eq!(str_at(message, "endpoint"), "ws");
+    assert_eq!(
+        frame_of(&frames, "turn_started")["origin"]["endpoint"],
+        "ws"
+    );
+    assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
+}
+
+/// A model that asks for one tool call, then answers. The agent's model
+/// calls go through the hub's gate, so a test holds this call to look at the
+/// turn while it runs.
+async fn script_one_tool_call_then_a_reply(hub: &Fixture, agent: &str) {
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": {
+                "role": "assistant",
+                "content": "Looking.",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": { "name": "list_endpoints", "arguments": "{}" }
+                }]
+            } }]
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(hub.mock(agent))
+        .await;
+}
+
+#[tokio::test]
+async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_end() {
+    let hub = Fixture::new(&["scout"], "").await;
+    script_one_tool_call_then_a_reply(&hub, "scout").await;
+    hub.gate("scout").close();
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+
+    deliver(
+        &hub,
+        "scout",
+        telegram_message("tg-2", "check the endpoints"),
+    )
+    .await;
+    let mut frames = Vec::new();
+    loop {
+        let frame = next_frame(&mut ws).await;
+        let started = str_at(&frame, "type") == "turn_started";
+        frames.push(frame);
+        if started {
+            break;
+        }
+    }
+    // The turn is held in its first model call: this message is folded in at
+    // the next checkpoint instead of starting a turn of its own.
+    hub.gate("scout").until_held(1).await;
+    send(
+        &mut ws,
+        json!({ "type": "send_message", "id": "web-2", "content": "and the inbox" }),
+    )
+    .await;
+    // The socket answers a ping only after the frames before it, so the pong
+    // shows the message was handled.
+    send(&mut ws, json!({ "type": "ping" })).await;
+    loop {
+        let frame = next_frame(&mut ws).await;
+        if str_at(&frame, "type") == "pong" {
+            break;
+        }
+        frames.push(frame);
+    }
+    // The turn announces the message as waiting before it can read it; the
+    // held call goes on only after that, so the frames come in one order.
+    while !frames
+        .iter()
+        .any(|frame| str_at(frame, "type") == "message_queued")
+    {
+        frames.push(next_frame(&mut ws).await);
+    }
+    hub.gate("scout").open_all();
+    frames.extend(frames_until_turn_ends(&mut ws, Some("tg-2")).await);
+
+    assert_kinds(
+        &frames,
+        &[
+            "user_message",
+            "turn_started",
+            "message_queued",
+            "broadcast_response",
+            "tool_call",
+            "tool_result",
+            "user_message",
+            "response",
+            "turn_ended",
+        ],
+        "the web message appears between the tool result and the reply, where the model reads it",
+    );
+    let joined = frames
+        .iter()
+        .filter(|frame| str_at(frame, "type") == "user_message")
+        .nth(1)
+        .unwrap();
+    assert_eq!(str_at(joined, "id"), "web-2");
+    assert_eq!(str_at(joined, "turn_id"), "tg-2");
+    assert_eq!(str_at(joined, "endpoint"), "ws");
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| str_at(frame, "type") == "turn_started")
+            .count(),
+        1,
+        "joining a running turn starts no turn of its own"
+    );
+    assert_eq!(str_at(frame_of(&frames, "response"), "reply_to"), "tg-2");
+    assert_eq!(frame_of(&frames, "tool_call")["call"], 0);
+    assert_eq!(frame_of(&frames, "response")["call"], 1);
+}
+
+#[tokio::test]
+async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    // The owner's last endpoint is the web, where background replies follow.
+    assert_eq!(hub.chat("scout", "hello").await, "scout here");
+    let mut ws = connect(&hub, "scout").await;
+
+    message_from_teammate(&hub, "scout", "status check").await;
+    let frames = frames_until_turn_ends(&mut ws, None).await;
+
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the teammate's message is announced ahead of the turn it starts",
+    );
+    let started = frame_of(&frames, "turn_started");
+    assert_eq!(started["origin"]["endpoint"], "background");
+    assert_eq!(started["origin"]["visibility"], "background");
+    assert!(started["origin"].get("sender").is_none(), "{started}");
+    assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
+
+    let turn_id = str_at(started, "reply_to");
+    let announced = frame_of(&frames, "user_message");
+    assert_eq!(str_at(announced, "turn_id"), turn_id);
+    assert_eq!(str_at(announced, "endpoint"), "background");
+    assert_eq!(
+        announced["agent_sender"],
+        json!({ "address": "agent:guest", "category": "teammate" }),
+        "the frame names the teammate, so the web shows its card live: {announced}"
+    );
+    assert!(
+        announced.get("sender").is_none(),
+        "no person sent it: {announced}"
+    );
+    assert!(
+        str_at(announced, "content").ends_with("status check"),
+        "{announced}"
+    );
+    // The turn is written to history before `turn_ended` goes out, so a page
+    // that reloads history on `turn_ended` finds it there.
+    let (status, body) = hub.get("/api/agents/scout/chat/history").await;
+    assert_eq!(status, 200, "{body}");
+    let history: Value = serde_json::from_str(&body).unwrap();
+    let of_turn: Vec<Value> = array_at(&history, "messages")
+        .iter()
+        .filter(|message| message.get("turn_id") == Some(&json!(turn_id)))
+        .cloned()
+        .collect();
+    assert!(
+        !of_turn.is_empty(),
+        "the turn is in history once turn_ended arrives: {history}"
+    );
+    assert!(
+        of_turn
+            .iter()
+            .all(|message| str_at(message, "visibility") == "background"),
+        "after a reload the turn is still marked background: {of_turn:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_background_turn_with_no_endpoint_to_follow_still_reaches_the_web() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+
+    message_from_teammate(&hub, "scout", "status check").await;
+    let frames = frames_until_turn_ends(&mut ws, None).await;
+
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "a teammate's turn with no endpoint",
+    );
+    assert_eq!(
+        str_at(frame_of(&frames, "response"), "endpoint"),
+        "",
+        "the reply went to no endpoint, and the frame says so"
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_message_to_main_is_announced_with_its_run_ahead_of_the_turn_it_starts() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let mut ws = connect(&hub, "scout").await;
+
+    let mut message = MessageEvent::from_agent(&residuum::bus::AgentMessageEvent::new(
+        residuum::bus::SessionAddress::from("spawned-research-1a2b"),
+        "spawned",
+        "found the answer",
+        0,
+    ));
+    message.origin.agent_sender = Some(Box::new(residuum::inference::AgentSender {
+        address: "spawned-research-1a2b".to_string(),
+        category: "spawned".to_string(),
+        run_id: Some("run-1".to_string()),
+    }));
+    let id = message.id.clone();
+    deliver(&hub, "scout", message).await;
+    let frames = frames_until_turn_ends(&mut ws, Some(&id)).await;
+
+    assert_kinds(
+        &frames,
+        &["user_message", "turn_started", "response", "turn_ended"],
+        "the session's message is announced ahead of the turn it starts",
+    );
+    let announced = frame_of(&frames, "user_message");
+    assert_eq!(str_at(announced, "id"), id);
+    assert_eq!(str_at(announced, "turn_id"), id);
+    assert_eq!(
+        announced["agent_sender"],
+        json!({ "address": "spawned-research-1a2b", "category": "spawned", "run_id": "run-1" }),
+        "the frame names the session and the run that sent it: {announced}"
+    );
+    assert!(
+        str_at(announced, "content").ends_with("found the answer"),
+        "{announced}"
+    );
+}

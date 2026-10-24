@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Badge, Banner, Button } from "../../../lib/ui";
+  import TeamsCleanupError from "./TeamsCleanupError.svelte";
   import type { TeamsSetupState } from "./teams-setup-state.svelte";
 
   interface Props {
@@ -67,6 +68,8 @@
       {state.cleanupSuccess ? "Temporary files cleaned up" : "Clean up temporary files"}
     </Button>
   </div>
+
+  <TeamsCleanupError {state} />
 </div>
 
 <style>
@@ -119,7 +122,7 @@
   .reminder-text {
     font-size: var(--font-size-xs);
     color: var(--color-text-2);
-    line-height: var(--line-height-ui);
+    --leading: var(--line-height-ui);
   }
 
   .cleanup-box {

@@ -265,7 +265,7 @@
     border-radius: var(--corner-sm);
     font-family: var(--font-code);
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-tight);
+    --leading: var(--line-height-tight);
   }
 
   .log-trimmed-note {

@@ -157,6 +157,7 @@ export function createHub(
         unread: 0,
         state: createState(name, false, env),
         connectedClients: () => 0,
+        watchedPrefixes: () => [],
         receiveMessage: () => undefined,
         dispose: () => undefined,
       };
