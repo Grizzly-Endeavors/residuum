@@ -271,7 +271,17 @@ const TOOL_WORDS: Readonly<Record<string, ToolWords>> = {
     icon: "inbox",
     running: "Checking its inbox",
     done: "Checked its inbox",
+    by: "for",
+    target: targetOf("query", "query"),
     summary: repeated("checked its inbox"),
+  },
+  user_inbox_list: {
+    icon: "inbox",
+    running: "Checking your inbox",
+    done: "Checked your inbox",
+    by: "for",
+    target: targetOf("query", "query"),
+    summary: repeated("checked your inbox"),
   },
   inbox_read: {
     icon: "inbox",
