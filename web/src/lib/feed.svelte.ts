@@ -828,6 +828,11 @@ export class FeedStore {
     if (failure?.retry !== undefined) failure.retry.asked = true;
   }
 
+  /** Whether the feed still shows the failure of the turn `turnId`. */
+  showsFailure(turnId: string): boolean {
+    return this.failureOf(turnId) !== undefined;
+  }
+
   /** Something was asked of the waiting message `id`, and its answer is awaited. */
   askOfWaiting(id: string, asked: NonNullable<WaitingMessage["asked"]>): void {
     const message = this.waiting.find((waiting) => waiting.id === id);

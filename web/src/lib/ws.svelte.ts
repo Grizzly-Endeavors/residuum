@@ -131,8 +131,11 @@ class WsCoordinator {
       } else if (msg.type === "retry_refused") {
         // The failure card says it too, beside the button it replaces; the
         // toast is what a screen reader hears. Nothing of a send was
-        // refused, so the composer is left alone.
-        notifications.surface("error", msg.message);
+        // refused, so the composer is left alone. With the card gone the
+        // turn already ran again: a second Try again, asked after the
+        // connection dropped and queued until it came back, got here after
+        // the first one's rerun, and its refusal is moot.
+        if (this.store.showsFailure(msg.id)) notifications.surface("error", msg.message);
       } else if (msg.type === "workspace_watch_unavailable") {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;

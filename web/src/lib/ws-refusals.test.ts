@@ -240,4 +240,26 @@ describe("Try again on a turn that couldn't finish", () => {
     expect(userMessages()).toEqual(["Read this"]);
     expect(readDraft("scout")).toBe("");
   });
+
+  it("says nothing of a refusal once the rerun has taken the failure's place", () => {
+    // Try again was asked twice across a dropped connection: the first
+    // started the rerun, and the second is refused while it runs.
+    const id = failedTurn();
+    ws.retryTurn(id);
+    socket.simulateMessage({
+      type: "turn_started",
+      reply_to: id,
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+
+    socket.simulateMessage({
+      type: "retry_refused",
+      id,
+      message: "The agent is working on a reply right now.",
+    });
+
+    expect(notifications.history.map((notice) => notice.message)).toEqual([
+      "The model isn't reachable.",
+    ]);
+  });
 });
