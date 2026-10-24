@@ -859,10 +859,10 @@ async fn finish_turn_with_notice(
 /// Returns an error when a model call fails, or when the model still returns
 /// an empty response with no tool calls once the turn's retries are used up.
 ///
-/// `turn_start` is the index in `recent_messages` of the message that
-/// triggered the turn. Everything after it already belongs to the turn:
-/// usually the triggering message was pushed just before this call and is the
-/// last one, while a rerun of a failed turn starts from the message that
+/// `turn_start` is the index in `recent_messages` of the (first) message
+/// that triggered the turn. Everything after it already belongs to the turn:
+/// usually the triggering messages were pushed just before this call and are
+/// the last ones, while a rerun of a failed turn starts from the message that
 /// started it, with the failed attempt's work still in history after it.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 #[expect(

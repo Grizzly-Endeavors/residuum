@@ -437,8 +437,9 @@ pub(crate) async fn execute_subagent(
     let delivered = kickoff.delivered_messages().to_vec();
     // No identity/wiki/skills content here — that lives in the system message.
     let kickoff_messages = kickoff.into_messages();
+    // The turn begins at its first kickoff message: a kickoff can hold several.
+    let turn_start = recent_messages.len();
     recent_messages.extend(kickoff_messages.clone());
-    let turn_start = recent_messages.len().saturating_sub(1);
     if let Some(sink) = transcript_sink {
         sink.append(&kickoff_messages).await;
     }
