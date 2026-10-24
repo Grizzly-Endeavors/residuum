@@ -108,14 +108,15 @@ pub struct TurnWiring<'a> {
 
 /// The agent's latest turn, which failed. The message that started it is
 /// still in history, so [`Agent::rerun_turn`] can run the turn again on it.
-#[derive(Debug, Clone)]
+/// Only a turn with an origin is recorded: a rerun runs under it.
+#[derive(Debug)]
 pub struct FailedTurn {
     /// The turn's correlation id.
     correlation_id: String,
     /// Index in the recent history of the message that started the turn.
     kickoff_index: usize,
     /// Where the message that started the turn came from.
-    origin: Option<MessageOrigin>,
+    origin: MessageOrigin,
     /// The hop count that message carried.
     kickoff_hop: u32,
     /// When the message before it arrived, for the rerun's status line.
@@ -124,6 +125,7 @@ pub struct FailedTurn {
 
 impl FailedTurn {
     /// The failed turn's correlation id.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn correlation_id(&self) -> &str {
         &self.correlation_id
@@ -131,8 +133,8 @@ impl FailedTurn {
 
     /// Where the message that started the turn came from.
     #[must_use]
-    pub fn origin(&self) -> Option<&MessageOrigin> {
-        self.origin.as_ref()
+    pub fn origin(&self) -> &MessageOrigin {
+        &self.origin
     }
 
     /// Index in the agent's recent history of the message that started the
@@ -342,6 +344,7 @@ impl Agent {
     }
 
     /// The latest turn, when it failed and can still be run again.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn failed_turn(&self) -> Option<&FailedTurn> {
         self.failed_turn.as_ref()
@@ -411,8 +414,9 @@ impl Agent {
     /// value. `correlation_id` names the turn in
     /// everything it publishes.
     ///
-    /// A turn that fails is recorded as the failed latest turn, which
-    /// [`Self::rerun_turn`] can run again on the message already in history.
+    /// A turn that fails is recorded as the failed latest turn, when it has
+    /// an `origin` to run again under, and [`Self::rerun_turn`] can then run
+    /// it again on the message already in history.
     ///
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors
@@ -461,13 +465,7 @@ impl Agent {
         self.recent_messages
             .push(kickoff.with_sender(sender).with_agent_sender(agent_sender));
 
-        let attempt = FailedTurn {
-            correlation_id: correlation_id.to_string(),
-            kickoff_index,
-            origin: origin.cloned(),
-            kickoff_hop: self.hop_counter.get(),
-            previous_message_at,
-        };
+        let kickoff_hop = self.hop_counter.get();
         let wiring = TurnWiring {
             publisher,
             output: output_endpoint.into(),
@@ -476,7 +474,21 @@ impl Agent {
             subconscious,
             stop_token,
         };
-        self.run_recorded_turn(attempt, &status_line, wiring).await
+        let result = self
+            .run_turn_from(kickoff_index, correlation_id, &status_line, wiring)
+            .await;
+        if result.is_err()
+            && let Some(origin) = origin
+        {
+            self.failed_turn = Some(FailedTurn {
+                correlation_id: correlation_id.to_string(),
+                kickoff_index,
+                origin: origin.clone(),
+                kickoff_hop,
+                previous_message_at,
+            });
+        }
+        result
     }
 
     /// Run the failed latest turn again, taken with
@@ -503,16 +515,28 @@ impl Agent {
         let status_line = StatusLine {
             now: residuum_core::time::now_local(self.tz),
             last_message_at: failed.previous_message_at,
-            message_source: failed.origin.as_ref().map(|o| o.endpoint.clone()),
+            message_source: Some(failed.origin.endpoint.clone()),
         };
-        self.run_recorded_turn(failed, &status_line, wiring).await
+        let result = self
+            .run_turn_from(
+                failed.kickoff_index,
+                &failed.correlation_id,
+                &status_line,
+                wiring,
+            )
+            .await;
+        if result.is_err() {
+            self.failed_turn = Some(failed);
+        }
+        result
     }
 
-    /// Run a turn whose opening message sits at `attempt.kickoff_index`, and
-    /// record it as the failed latest turn when it fails.
-    async fn run_recorded_turn(
+    /// Run a turn whose opening message sits at `kickoff_index` in history,
+    /// under `correlation_id`.
+    async fn run_turn_from(
         &mut self,
-        attempt: FailedTurn,
+        kickoff_index: usize,
+        correlation_id: &str,
         status_line: &StatusLine,
         wiring: TurnWiring<'_>,
     ) -> anyhow::Result<Vec<String>> {
@@ -551,12 +575,12 @@ impl Agent {
             reply_audience: self.reply_audience.as_deref(),
             target: EventTarget::Endpoint {
                 output_endpoint: output,
-                correlation_id: &attempt.correlation_id,
+                correlation_id,
             },
             session_conversation: None,
         };
-        let result = execute_turn(
-            attempt.kickoff_index,
+        execute_turn(
+            kickoff_index,
             &resources,
             &memory_ctx,
             prompt_ctx,
@@ -566,11 +590,7 @@ impl Agent {
             interrupt_rx,
             subconscious,
         )
-        .await;
-        if result.is_err() {
-            self.failed_turn = Some(attempt);
-        }
-        result
+        .await
     }
 
     /// Compute a per-section token breakdown for the current agent context.
@@ -2353,6 +2373,34 @@ mod tests {
 
         assert_eq!(retry(&mut agent, "t1").await.unwrap(), vec!["ok"]);
         assert_eq!(user_messages(&agent), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_without_an_origin_is_not_recorded() {
+        let (mut agent, _requests) = scripted_agent(vec![model_down()]);
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+
+        let result = agent
+            .process_message(
+                "hello",
+                &publisher,
+                Some(&ep),
+                "t1",
+                None,
+                &PromptContext::default(),
+                &mut irx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            agent.failed_turn().is_none(),
+            "a rerun runs under the turn's origin, so one without it can't be retried"
+        );
     }
 
     #[tokio::test]

@@ -804,9 +804,8 @@ pub enum ServerMessage {
     },
     /// A `retry_turn` was refused: the turn it named is not the main
     /// conversation's latest failed turn (unknown, already retried, or the
-    /// conversation moved on), or a turn is running or messages are waiting.
-    /// The recorded message stays where it is. Sent to the asking connection
-    /// only.
+    /// conversation moved on), or a turn is running. The recorded message
+    /// stays where it is. Sent to the asking connection only.
     RetryRefused {
         /// The id the `retry_turn` named.
         id: String,

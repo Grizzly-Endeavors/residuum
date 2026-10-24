@@ -734,11 +734,11 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
    * Run the failed turn again under its own id: no message is announced or
    * recorded again, and the provider answers this time, so the rerun ends
    * with a reply. False when the turn isn't the latest one's failure, or the
-   * agent is busy or has messages waiting.
+   * agent is busy.
    */
   function retry(replyTo: string): boolean {
     const turn = latestFailure;
-    if (turn?.id !== replyTo || inFlight.size > 0 || waiting.length > 0) return false;
+    if (turn?.id !== replyTo || inFlight.size > 0) return false;
     latestFailure = null;
     runScenario(replyTo, turn.content, retriedTurn(replyTo, env.nextId), turn.source, true);
     return true;

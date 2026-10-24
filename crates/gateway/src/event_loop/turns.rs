@@ -494,10 +494,6 @@ const RETRY_REFUSED_TURN_RUNNING: &str = "The agent is working on a reply right 
 /// Why a retry is refused when the turn it names isn't the latest failed one.
 const RETRY_REFUSED_MOVED_ON: &str = "That message can't be retried anymore because the conversation has moved on. Send it again to try once more.";
 
-/// Why a retry is refused while messages wait to start turns of their own.
-const RETRY_REFUSED_MESSAGES_WAITING: &str =
-    "Other messages are waiting for the agent. Try again once it has answered them.";
-
 #[expect(
     clippy::too_many_arguments,
     reason = "publisher and topic params added during bus migration"
@@ -1126,9 +1122,10 @@ pub async fn handle_inbound_message(
 /// Answer a request, made while no turn runs, to run the failed latest main
 /// turn again: rerun it on the message already in history under the same
 /// correlation id, or refuse when the request names any other turn (one that
-/// never failed, was retried already, or is no longer the latest) or messages
-/// are waiting to start turns of their own. The answer goes back on the
-/// request's channel before the rerun starts.
+/// never failed, was retried already, or is no longer the latest). Messages
+/// waiting to start turns of their own never meet a retry here: the idle loop
+/// runs them first, and the turn they start moves the conversation on. The
+/// answer goes back on the request's channel before the rerun starts.
 ///
 /// Returns whether the hub's stop request interrupted the rerun, as
 /// [`handle_inbound_message`] does.
@@ -1140,15 +1137,16 @@ pub async fn handle_retry_request(
     idle_deadline: &mut Option<tokio::time::Instant>,
 ) -> bool {
     let RetryTurnRequest { id, result_tx } = request;
-    let (failed, origin) = match claim_failed_turn(rt, &id) {
-        Ok(claimed) => claimed,
-        Err(reason) => {
-            tracing::info!(reason, "refused a retry of a failed turn");
-            result_tx.send(Err(reason.to_string())).ok();
-            return false;
-        }
+    let Some(failed) = rt.agent.take_failed_turn(&id) else {
+        tracing::info!(
+            reason = RETRY_REFUSED_MOVED_ON,
+            "refused a retry of a failed turn"
+        );
+        result_tx.send(Err(RETRY_REFUSED_MOVED_ON.to_string())).ok();
+        return false;
     };
     result_tx.send(Ok(())).ok();
+    let origin = failed.origin().clone();
     run_main_turn(
         MainTurnStart::Rerun(failed),
         &id,
@@ -1158,31 +1156,6 @@ pub async fn handle_retry_request(
         idle_deadline,
     )
     .await
-}
-
-/// Take the failed latest turn `id` names, with the origin it runs under, or
-/// say why it can't run again.
-fn claim_failed_turn(
-    rt: &mut AgentRuntime,
-    id: &str,
-) -> Result<(FailedTurn, MessageOrigin), &'static str> {
-    // The idle loop runs waiting messages before it reads a retry, so none
-    // are expected here. One that waits would start the next turn, and the
-    // failed turn would no longer be the latest.
-    if !rt.deferred_inbound.is_empty() {
-        return Err(RETRY_REFUSED_MESSAGES_WAITING);
-    }
-    let failed = rt
-        .agent
-        .take_failed_turn(id)
-        .ok_or(RETRY_REFUSED_MOVED_ON)?;
-    let Some(origin) = failed.origin().cloned() else {
-        // Every main turn the event loop runs has an origin; a failed turn
-        // without one was not started here.
-        tracing::warn!("the failed turn has no origin to run again under");
-        return Err(RETRY_REFUSED_MOVED_ON);
-    };
-    Ok((failed, origin))
 }
 
 /// Where a main turn's messages begin in history (`before` is the history
