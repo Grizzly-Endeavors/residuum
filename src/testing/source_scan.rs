@@ -1471,8 +1471,9 @@ mod tests {
             if !rust_paths.is_match(&input.path) {
                 writeln!(
                     problems,
-                    "{} ({}): add `^{}$` to RUST_PATHS_RE in .github/workflows/ci.yml",
+                    "{} ({}, {}): add `^{}$` to RUST_PATHS_RE in .github/workflows/ci.yml",
                     input.path,
+                    input.package,
                     input.site,
                     regex::escape(&input.path)
                 )
