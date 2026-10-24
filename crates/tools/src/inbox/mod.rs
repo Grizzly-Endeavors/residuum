@@ -5,6 +5,7 @@
 
 mod agent;
 mod mail;
+mod paging;
 mod user;
 
 #[cfg(test)]

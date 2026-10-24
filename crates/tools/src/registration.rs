@@ -42,14 +42,15 @@ pub struct RegistryInjections {
     pub publisher: Option<Publisher>,
     /// Every agent's mailbox, for the mail-aware inbox tools (`inbox_read`,
     /// `user_inbox_add`, `user_inbox_list`). `None` means those tools reach
-    /// only this agent's own inboxes.
+    /// only this agent's own inboxes. `inbox_list` reads this agent's own
+    /// inbox either way.
     pub mailboxes: Option<Arc<dyn MailboxDirectory>>,
 }
 
 /// Re-register every tool that captured the user's timezone at
-/// construction (`schedule_action`, `list_actions`, and the mail-aware inbox
-/// tools `inbox_read`, `user_inbox_add` and `user_inbox_list`) with a new
-/// one, so a timezone edit reaches them without a restart.
+/// construction (`schedule_action`, `list_actions`, and the inbox tools
+/// `inbox_list`, `inbox_read`, `user_inbox_add` and `user_inbox_list`) with a
+/// new one, so a timezone edit reaches them without a restart.
 pub fn reload_timezone_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -62,6 +63,7 @@ pub fn reload_timezone_tools(
     for name in [
         "schedule_action",
         "list_actions",
+        "inbox_list",
         "inbox_read",
         "user_inbox_add",
         "user_inbox_list",
@@ -106,11 +108,11 @@ pub fn reload_ollama_web_search_tool(
     }
 }
 
-/// Register the mail-aware inbox tools (`inbox_read`, `user_inbox_add`,
-/// `user_inbox_list`) for the agent whose workspace is `layout`, reaching
-/// every agent through the injections' mailboxes when there are some.
-/// `user_inbox_add` announces each item it saves on the injections'
-/// publisher when there is one.
+/// Register the inbox tools that read items in `tz` (`inbox_list`,
+/// `inbox_read`, `user_inbox_add`, `user_inbox_list`) for the agent whose
+/// workspace is `layout`, reaching every agent through the injections'
+/// mailboxes when there are some. `user_inbox_add` announces each item it
+/// saves on the injections' publisher when there is one.
 fn register_mail_inbox_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -118,6 +120,7 @@ fn register_mail_inbox_tools(
     tz: chrono_tz::Tz,
 ) {
     let mail = inbox::MailAccess::new(injections.mailboxes.clone(), layout, tz);
+    tools.register(Box::new(inbox::InboxListTool::new(mail.clone())));
     tools.register(Box::new(inbox::InboxReadTool::new(mail.clone())));
     tools.register(Box::new(inbox::UserInboxListTool::new(mail.clone())));
     let add = inbox::UserInboxAddTool::new(mail);
@@ -231,9 +234,9 @@ pub fn register_skill_tools(tools: &mut ToolRegistry, state: SharedSkillState) {
 /// (`inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore`,
 /// `user_inbox_add`, `user_inbox_list`).
 ///
-/// The mail-aware ones reach every agent through the injections' mailboxes,
-/// and `user_inbox_add` announces the items it saves on the injections'
-/// publisher.
+/// `inbox_read`, `user_inbox_add` and `user_inbox_list` reach every agent
+/// through the injections' mailboxes, and `user_inbox_add` announces the
+/// items it saves on the injections' publisher.
 pub fn register_inbox_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -242,10 +245,6 @@ pub fn register_inbox_tools(
 ) {
     let agent_inbox_dir = layout.agent_inbox_dir();
     let agent_archive_dir = layout.agent_inbox_archive_dir();
-    tools.register(Box::new(inbox::InboxListTool::new(
-        agent_inbox_dir.clone(),
-        agent_archive_dir.clone(),
-    )));
     tools.register(Box::new(inbox::InboxArchiveTool::new(
         agent_inbox_dir.clone(),
         agent_archive_dir.clone(),
