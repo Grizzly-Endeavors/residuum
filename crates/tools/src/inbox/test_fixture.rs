@@ -1,9 +1,11 @@
 //! Agents' workspaces with inbox items written straight to disk, for the
 //! inbox tool tests.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::NaiveDate;
+use residuum_agent::Tool;
 use residuum_config::WorkspaceLayout;
 use residuum_workspace::inbox::mail::MailboxDirectory;
 use residuum_workspace::inbox::{InboxItem, InboxKind, list_items_or_empty, load_item};
@@ -67,6 +69,19 @@ impl Item {
         self
     }
 
+    /// The item carries a file named `filename`, written beside it when the
+    /// item is saved.
+    pub fn with_attachment(mut self, filename: &str) -> Self {
+        self.contents.attachments.push(PathBuf::from(filename));
+        self
+    }
+
+    /// The item has been read.
+    pub fn read(mut self) -> Self {
+        self.contents.read = true;
+        self
+    }
+
     /// The item is in the archive.
     pub fn archived(mut self) -> Self {
         self.archived = true;
@@ -105,13 +120,24 @@ impl MailHub {
     }
 
     pub async fn write(&self, item: Item) {
-        let dir = item
-            .kind
-            .items_dir(&self.layout(&item.agent), item.archived);
+        let layout = self.layout(&item.agent);
+        let dir = item.kind.items_dir(&layout, item.archived);
         tokio::fs::create_dir_all(&dir).await.unwrap();
         save_item_for_tests(&dir, &format!("{}.json", item.id), &item.contents)
             .await
             .unwrap();
+        if !item.contents.attachments.is_empty() {
+            let files = item
+                .kind
+                .attachments_dir(&layout, item.archived)
+                .join(&item.id);
+            tokio::fs::create_dir_all(&files).await.unwrap();
+            for stored in &item.contents.attachments {
+                tokio::fs::write(files.join(stored), b"attached")
+                    .await
+                    .unwrap();
+            }
+        }
     }
 
     /// The active item `id` of `agent`'s inbox of `kind`.
@@ -125,5 +151,43 @@ impl MailHub {
         list_items_or_empty(&kind.items_dir(&self.layout(agent), false))
             .await
             .unwrap()
+    }
+}
+
+/// The ids on the item lines of a listing's output, in order: the last word
+/// before the title on each line.
+pub(super) fn listed_ids(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter(|line| line.starts_with("  ["))
+        .filter_map(|line| line.split(" — ").next()?.rsplit(' ').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The cursor a listing's output tells the caller to pass as `before`, when
+/// a next page follows.
+pub(super) fn next_cursor(output: &str) -> Option<String> {
+    let (_, rest) = output.split_once("before=\"")?;
+    let (cursor, _) = rest.split_once('"')?;
+    Some(cursor.to_string())
+}
+
+/// The output of every page `tool` lists for `arguments`, first to last: each
+/// call after the first passes the cursor the page before it ended with.
+pub(super) async fn pages(tool: &dyn Tool, mut arguments: serde_json::Value) -> Vec<String> {
+    let mut outputs = Vec::new();
+    loop {
+        let result = tool.execute(arguments.clone()).await.unwrap();
+        assert!(!result.is_error, "{}", result.output);
+        let next = next_cursor(&result.output);
+        outputs.push(result.output);
+        let Some(cursor) = next else {
+            return outputs;
+        };
+        assert!(outputs.len() < 1_000, "the pages never end");
+        if let Some(map) = arguments.as_object_mut() {
+            map.insert("before".to_string(), serde_json::Value::String(cursor));
+        }
     }
 }

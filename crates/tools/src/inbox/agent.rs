@@ -10,29 +10,33 @@ use serde_json::Value;
 
 use residuum_agent::Tool;
 use residuum_inference::{ToolDefinition, ToolError, ToolResult};
-use residuum_workspace::inbox::mail::{MailIndex, MailMessage, MailSender, is_user_mail_source};
-use residuum_workspace::inbox::{self, InboxItem, InboxKind, InboxRef};
+use residuum_workspace::inbox::mail::{
+    MailCursor, MailIndex, MailMessage, MailSender, is_user_mail_source,
+};
+use residuum_workspace::inbox::{self, InboxKind, InboxRef};
 
 use super::mail::{
     LocateError, MailAccess, OWN_INBOX_ONLY_NOTE, TIME_FORMAT, locate, parse_item_ref,
 };
+use super::paging::{
+    DEFAULT_LIMIT, MAX_LIMIT, PageRequest, before_schema, limit_schema, more_note, query_schema,
+};
 
 // ─── inbox_list ─────────────────────────────────────────────────────────────
 
-/// Tool for listing inbox items.
+/// The parameters of `inbox_list` a next-page call repeats.
+const LIST_FILTERS: &str = "query, unread_only and archived";
+
+/// Tool for listing this agent's agent-inbox items.
 pub struct InboxListTool {
-    inbox_dir: PathBuf,
-    archive_dir: PathBuf,
+    mail: MailAccess,
 }
 
 impl InboxListTool {
-    /// Create a new `InboxListTool`.
+    /// Create a new `InboxListTool` for the agent `mail` belongs to.
     #[must_use]
-    pub fn new(inbox_dir: PathBuf, archive_dir: PathBuf) -> Self {
-        Self {
-            inbox_dir,
-            archive_dir,
-        }
+    pub fn new(mail: MailAccess) -> Self {
+        Self { mail }
     }
 }
 
@@ -45,7 +49,9 @@ impl Tool for InboxListTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "List inbox items. Shows unread/read status, title, source, and timestamp for each item.".to_string(),
+            description: format!(
+                "List inbox items, newest first. Shows unread/read status, title, source, and timestamp for each item. Find an item by its words with query. Lists {DEFAULT_LIMIT} items at a time (limit, at most {MAX_LIMIT}); when more match, the result ends with the before cursor that lists the next page."
+            ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -56,13 +62,17 @@ impl Tool for InboxListTool {
                     "archived": {
                         "type": "boolean",
                         "description": "List archived items instead of active ones (default false). Use with inbox_restore to bring an item back."
-                    }
+                    },
+                    "query": query_schema(),
+                    "limit": limit_schema(),
+                    "before": before_schema()
                 }
             }),
         }
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
+        let request = PageRequest::parse(&arguments)?;
         let archived = arguments
             .get("archived")
             .and_then(Value::as_bool)
@@ -73,37 +83,65 @@ impl Tool for InboxListTool {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
 
+        let layout = self.mail.own_layout();
         let dir = if archived {
-            &self.archive_dir
+            layout.agent_inbox_archive_dir()
         } else {
-            &self.inbox_dir
+            layout.agent_inbox_dir()
         };
-        let items = inbox::list_items(dir).await.map_err(|e| {
+        let items = inbox::list_items(&dir).await.map_err(|e| {
             tracing::error!(error = %e, archived, "failed to list inbox items");
             ToolError::Execution(format!("failed to list inbox items: {e}"))
         })?;
 
-        let filtered: Vec<&(String, InboxItem)> = if unread_only {
-            items.iter().filter(|(_, item)| !item.read).collect()
-        } else {
-            items.iter().collect()
-        };
-
-        if filtered.is_empty() {
-            let label = if archived { "archived" } else { "inbox" };
-            return Ok(ToolResult::success(format!("No {label} items found.")));
+        let kind = if archived { "archived" } else { "inbox" };
+        let tz = self.mail.own_timezone();
+        let mut entries = Vec::new();
+        let mut unlistable = Vec::new();
+        for (filename, item) in items {
+            let unwanted = (unread_only && item.read)
+                || request
+                    .query()
+                    .is_some_and(|query| !item.matches_text(query));
+            if unwanted {
+                continue;
+            }
+            match InboxRef::new(self.mail.own_agent(), InboxKind::Agent, &filename) {
+                Ok(item_ref) => {
+                    let at = residuum_core::time::local_to_instant(tz, item.timestamp);
+                    entries.push((MailCursor::new(at, item_ref), (filename, item)));
+                }
+                Err(e) => {
+                    tracing::warn!(item = %filename, error = %e, "inbox item has no valid ref; left out of the listing");
+                    unlistable.push(filename);
+                }
+            }
         }
 
+        let page = request.page(entries);
         let mut lines: Vec<String> = Vec::new();
-        let label = if archived { "archived" } else { "inbox" };
-        lines.push(format!("{} {label} item(s):", filtered.len()));
-
-        for (filename, item) in &filtered {
-            let status = if item.read { "read" } else { "unread" };
-            let ts = item.timestamp.format(TIME_FORMAT);
+        if page.items.is_empty() {
+            lines.push(request.empty_message(kind));
+        } else {
+            lines.push(request.header(page.total, kind));
+            for (filename, item) in &page.items {
+                let status = if item.read { "read" } else { "unread" };
+                let ts = item.timestamp.format(TIME_FORMAT);
+                lines.push(format!(
+                    "  [{status}] {filename} — {} ({}, {ts})",
+                    item.title, item.source
+                ));
+            }
+            if let Some(next) = &page.next {
+                lines.push(more_note(page.items.len(), page.total, next, LIST_FILTERS));
+            }
+        }
+        if !unlistable.is_empty() {
+            lines.push(String::new());
             lines.push(format!(
-                "  [{status}] {filename} — {} ({}, {ts})",
-                item.title, item.source
+                "Note: {} {kind} item(s) were left out because their file names can't be used as an item id: {}.",
+                unlistable.len(),
+                unlistable.join(", ")
             ));
         }
 
@@ -491,7 +529,7 @@ impl Tool for InboxRestoreTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inbox::test_fixture::{Item, MailHub};
+    use crate::inbox::test_fixture::{Item, MailHub, listed_ids, next_cursor, pages};
     use residuum_config::WorkspaceLayout;
 
     /// The workspace of an agent named `atlas` under `dir`, and its mail
@@ -502,6 +540,11 @@ mod tests {
         (layout, mail)
     }
 
+    /// What `tool` answers to `arguments`.
+    async fn output_of(tool: &InboxListTool, arguments: serde_json::Value) -> String {
+        tool.execute(arguments).await.unwrap().output
+    }
+
     #[test]
     fn definitions_have_matching_names() {
         let dir = tempfile::tempdir().unwrap();
@@ -509,7 +552,7 @@ mod tests {
         let inbox_dir = layout.agent_inbox_dir();
         let archive = layout.agent_inbox_archive_dir();
 
-        let list = InboxListTool::new(inbox_dir.clone(), archive.clone());
+        let list = InboxListTool::new(mail.clone());
         assert_eq!(list.definition().name, list.name());
         assert_eq!(list.name(), "inbox_list");
 
@@ -547,7 +590,7 @@ mod tests {
         let filename = filename.trim_end_matches(".json").to_string();
 
         // List items
-        let list_tool = InboxListTool::new(inbox_dir.clone(), archive_dir.clone());
+        let list_tool = InboxListTool::new(mail.clone());
         let list_result = list_tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!list_result.is_error, "list should succeed");
         assert!(
@@ -618,8 +661,9 @@ mod tests {
     #[tokio::test]
     async fn inbox_list_archived_and_restore_flow() {
         let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        let archive_dir = dir.path().join("archive/inbox");
+        let (layout, mail) = atlas(&dir);
+        let inbox_dir = layout.agent_inbox_dir();
+        let archive_dir = layout.agent_inbox_archive_dir();
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
         let filename = residuum_workspace::inbox::quick_add(
@@ -639,7 +683,7 @@ mod tests {
             .await
             .unwrap();
 
-        let list_tool = InboxListTool::new(inbox_dir.clone(), archive_dir.clone());
+        let list_tool = InboxListTool::new(mail);
 
         // Archived items are visible via inbox_list(archived=true) …
         let list_archived = list_tool
@@ -681,6 +725,221 @@ mod tests {
                 .contains("No archived items"),
             "archive should be empty after restore: {}",
             list_archived_after_restore.output
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_list_pages_visit_every_item_once_even_when_times_tie() {
+        let hub = MailHub::new(&["atlas"]);
+        for (id, hour) in [
+            ("item-0", 8),
+            ("item-1", 8),
+            ("item-2", 8),
+            ("item-3", 9),
+            ("item-4", 9),
+            ("item-5", 10),
+            ("item-6", 10),
+        ] {
+            hub.write(Item::user_mail("atlas", id, "t", "b", hour))
+                .await;
+        }
+        let tool = InboxListTool::new(hub.access("atlas"));
+
+        let outputs = pages(&tool, serde_json::json!({"limit": 3})).await;
+
+        let ids: Vec<Vec<String>> = outputs.iter().map(|text| listed_ids(text)).collect();
+        assert_eq!(
+            ids,
+            [
+                vec!["item-5", "item-6", "item-3"],
+                vec!["item-4", "item-0", "item-1"],
+                vec!["item-2"],
+            ],
+            "newest first, a tie by id, each item on exactly one page"
+        );
+        let [first, second, last] = outputs.as_slice() else {
+            panic!("three pages: {outputs:?}");
+        };
+        assert!(
+            first.starts_with("7 inbox item(s), newest first:"),
+            "{first}"
+        );
+        assert!(
+            first.contains("Showing 3 of 7. For the next page, call again with before=\""),
+            "{first}"
+        );
+        assert!(
+            first.contains("the same query, unread_only and archived."),
+            "{first}"
+        );
+        assert!(
+            second.starts_with("4 inbox item(s) after the cursor, newest first:"),
+            "{second}"
+        );
+        assert!(second.contains("Showing 3 of 4."), "{second}");
+        assert!(
+            last.starts_with("1 inbox item(s) after the cursor, newest first:"),
+            "{last}"
+        );
+        assert!(
+            !last.contains("Showing"),
+            "the last page has no next: {last}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_list_cursor_reads_the_stored_time_in_the_agents_timezone() {
+        let hub = MailHub::new(&["atlas"]);
+        hub.write(Item::user_mail("atlas", "early", "t", "b", 9))
+            .await;
+        hub.write(Item::user_mail("atlas", "late", "t", "b", 10))
+            .await;
+        let mail = MailAccess::new(None, &hub.layout("atlas"), chrono_tz::America::New_York);
+        let tool = InboxListTool::new(mail);
+
+        let out = tool
+            .execute(serde_json::json!({"limit": 1}))
+            .await
+            .unwrap()
+            .output;
+
+        assert_eq!(listed_ids(&out), ["late"], "{out}");
+        // 10:00 in New York on 2026-02-25 is 15:00 UTC.
+        assert_eq!(
+            next_cursor(&out).as_deref(),
+            Some("1772031600000:atlas/agent/late"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_list_lists_fifty_by_default_and_clamps_the_limit_to_two_hundred() {
+        let hub = MailHub::new(&["atlas"]);
+        let total = MAX_LIMIT + 5;
+        for n in 0..total {
+            hub.write(Item::user_mail(
+                "atlas",
+                &format!("item-{n:03}"),
+                "t",
+                "b",
+                8,
+            ))
+            .await;
+        }
+        let tool = InboxListTool::new(hub.access("atlas"));
+
+        for (arguments, listed) in [
+            (serde_json::json!({}), DEFAULT_LIMIT),
+            (serde_json::json!({"limit": 3}), 3),
+            (serde_json::json!({"limit": "2"}), 2),
+            (serde_json::json!({"limit": MAX_LIMIT}), MAX_LIMIT),
+            (serde_json::json!({"limit": 100_000}), MAX_LIMIT),
+        ] {
+            let out = tool.execute(arguments.clone()).await.unwrap().output;
+            assert_eq!(listed_ids(&out).len(), listed, "{arguments}: {out}");
+            assert!(
+                out.contains(&format!("Showing {listed} of {total}.")),
+                "{arguments}: {out}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn inbox_list_refuses_a_zero_limit_a_bad_limit_and_a_foreign_cursor() {
+        let hub = MailHub::new(&["atlas"]);
+        let tool = InboxListTool::new(hub.access("atlas"));
+        for (arguments, expected) in [
+            (serde_json::json!({"limit": 0}), "limit must be at least 1"),
+            (
+                serde_json::json!({"limit": 1.5}),
+                "limit must be a whole number",
+            ),
+            (
+                serde_json::json!({"before": "nonsense"}),
+                "the before cursor isn't one this list returned",
+            ),
+            (
+                serde_json::json!({"before": "later:atlas/agent/x"}),
+                "the before cursor isn't one this list returned",
+            ),
+        ] {
+            let result = tool.execute(arguments.clone()).await;
+            let Err(ToolError::InvalidArguments(message)) = result else {
+                panic!("{arguments} is refused: {result:?}");
+            };
+            assert!(message.contains(expected), "{arguments}: {message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn inbox_list_query_matches_title_body_and_attachment_filenames_ignoring_case() {
+        let hub = MailHub::new(&["atlas"]);
+        hub.write(Item::user_mail("atlas", "a1", "Budget review", "b", 8))
+            .await;
+        hub.write(Item::user_mail("atlas", "a2", "Notes", "the BUDGET is final", 9).read())
+            .await;
+        hub.write(
+            Item::user_mail("atlas", "a3", "Files", "see attached", 10)
+                .with_attachment("budget-2026.xlsx"),
+        )
+        .await;
+        hub.write(Item::user_mail("atlas", "a4", "Other", "nothing", 11))
+            .await;
+        hub.write(Item::user_mail("atlas", "old1", "Old Budget", "b", 7).archived())
+            .await;
+        let tool = InboxListTool::new(hub.access("atlas"));
+
+        let out = output_of(&tool, serde_json::json!({"query": "bUdGeT"})).await;
+        assert_eq!(listed_ids(&out), ["a3", "a2", "a1"], "{out}");
+        assert!(
+            out.starts_with("3 inbox item(s) match, newest first:"),
+            "{out}"
+        );
+
+        let unread = output_of(
+            &tool,
+            serde_json::json!({"query": "budget", "unread_only": true}),
+        )
+        .await;
+        assert_eq!(listed_ids(&unread), ["a3", "a1"], "{unread}");
+
+        let archived = output_of(
+            &tool,
+            serde_json::json!({"query": "budget", "archived": true}),
+        )
+        .await;
+        assert_eq!(listed_ids(&archived), ["old1"], "{archived}");
+        assert!(
+            archived.starts_with("1 archived item(s) match, newest first:"),
+            "{archived}"
+        );
+
+        let outputs = pages(&tool, serde_json::json!({"query": "budget", "limit": 2})).await;
+        let ids: Vec<Vec<String>> = outputs.iter().map(|text| listed_ids(text)).collect();
+        assert_eq!(ids, [vec!["a3", "a2"], vec!["a1"]]);
+
+        let none = output_of(&tool, serde_json::json!({"query": "zebra"})).await;
+        assert_eq!(none, "No inbox items match \"zebra\".");
+
+        let blank = output_of(&tool, serde_json::json!({"query": "   "})).await;
+        assert_eq!(listed_ids(&blank), ["a4", "a3", "a2", "a1"], "{blank}");
+    }
+
+    #[tokio::test]
+    async fn inbox_list_says_which_items_have_names_it_cannot_list() {
+        let hub = MailHub::new(&["atlas"]);
+        hub.write(Item::user_mail("atlas", "fine", "Fine", "b", 9))
+            .await;
+        hub.write(Item::user_mail("atlas", "odd..name", "Odd", "b", 10))
+            .await;
+        let tool = InboxListTool::new(hub.access("atlas"));
+
+        let out = tool.execute(serde_json::json!({})).await.unwrap().output;
+
+        assert_eq!(listed_ids(&out), ["fine"], "{out}");
+        assert!(
+            out.ends_with("Note: 1 inbox item(s) were left out because their file names can't be used as an item id: odd..name."),
+            "{out}"
         );
     }
 

@@ -101,7 +101,15 @@ const SUMMARIES: Readonly<Record<string, (args: Args) => (ArgLine | null)[]>> = 
     ),
     line("quote", str(a, "prompt")),
   ],
-  inbox_list: (a) => [a.unread_only === true ? { kind: "meta", text: "unread only" } : null],
+  inbox_list: (a) => [
+    line("query", str(a, "query")),
+    a.unread_only === true ? { kind: "meta", text: "unread only" } : null,
+  ],
+  user_inbox_list: (a) => [
+    line("query", str(a, "query")),
+    meta([["Agent", "agent"]], a),
+    a.include_archived === true ? { kind: "meta", text: "archived included" } : null,
+  ],
   inbox_archive: (a) => [count(a, "ids", "item")],
   inbox_restore: (a) => [count(a, "ids", "item")],
   inbox_read: (a) => [line("label", str(a, "id"))],

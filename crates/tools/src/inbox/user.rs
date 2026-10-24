@@ -11,11 +11,14 @@ use residuum_agent::Tool;
 use residuum_bus::{Publisher, UserInboxAddedEvent, topics};
 use residuum_inference::{ToolDefinition, ToolError, ToolResult};
 use residuum_workspace::inbox::mail::{
-    MailIndex, MailMessage, MailSender, MailThread, ThreadFilter, reply_subject,
+    MailCursor, MailIndex, MailMessage, MailSender, MailThread, ThreadFilter, reply_subject,
 };
 use residuum_workspace::inbox::{self, InboxKind};
 
 use super::mail::{MailAccess, OWN_INBOX_ONLY_NOTE, TIME_FORMAT, parse_item_ref};
+use super::paging::{
+    DEFAULT_LIMIT, MAX_LIMIT, PageRequest, before_schema, limit_schema, more_note, query_schema,
+};
 
 // ─── user_inbox_add ─────────────────────────────────────────────────────────
 
@@ -211,8 +214,8 @@ impl Tool for UserInboxAddTool {
 
 // ─── user_inbox_list ────────────────────────────────────────────────────────
 
-/// The most items one `user_inbox_list` call shows.
-const USER_INBOX_LIST_CAP: usize = 100;
+/// The parameters of `user_inbox_list` a next-page call repeats.
+const LIST_FILTERS: &str = "query, agent and include_archived";
 
 /// Tool for listing every agent's user-inbox items.
 pub struct UserInboxListTool {
@@ -256,7 +259,7 @@ impl Tool for UserInboxListTool {
         ToolDefinition {
             name: self.name().to_string(),
             description: format!(
-                "List the items every agent has added to the user's inbox, newest first: each item's ref, title, agent, time, read and archived state, and the message it answers. Read-only. Check it before adding an item so you don't repeat what an agent already sent; read one with inbox_read and its ref. Shows at most {USER_INBOX_LIST_CAP} items."
+                "List the items every agent has added to the user's inbox, newest first: each item's ref, title, agent, time, read and archived state, and the message it answers. Read-only. Check it before adding an item so you don't repeat what an agent already sent; find an older item by its words with query, and read one with inbox_read and its ref. Lists {DEFAULT_LIMIT} items at a time (limit, at most {MAX_LIMIT}); when more match, the result ends with the before cursor that lists the next page."
             ),
             parameters: serde_json::json!({
                 "type": "object",
@@ -268,13 +271,17 @@ impl Tool for UserInboxListTool {
                     "include_archived": {
                         "type": "boolean",
                         "description": "Include items the user archived (default false)."
-                    }
+                    },
+                    "query": query_schema(),
+                    "limit": limit_schema(),
+                    "before": before_schema()
                 }
             }),
         }
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
+        let request = PageRequest::parse(&arguments)?;
         let agent_filter = arguments
             .get("agent")
             .and_then(Value::as_str)
@@ -310,7 +317,7 @@ impl Tool for UserInboxListTool {
                 problem.error
             ));
         }
-        let mut items: Vec<(&str, &MailMessage)> = index
+        let entries: Vec<(MailCursor, (&str, &MailMessage))> = index
             .threads(&ThreadFilter::default())
             .flat_map(MailThread::messages)
             .filter_map(|message| match &message.from {
@@ -319,25 +326,30 @@ impl Tool for UserInboxListTool {
             })
             .filter(|(agent, _)| agent_filter.is_none_or(|wanted| wanted == *agent))
             .filter(|(_, message)| include_archived || !message.archived)
+            .filter(|(_, message)| {
+                request
+                    .query()
+                    .is_none_or(|query| message.matches_text(query))
+            })
+            .map(|(agent, message)| {
+                let cursor = MailCursor::new(message.at, message.item_ref.clone());
+                (cursor, (agent, message))
+            })
             .collect();
-        items.sort_by(|(_, a), (_, b)| b.at.cmp(&a.at).then_with(|| a.item_ref.cmp(&b.item_ref)));
 
-        let total = items.len();
+        let page = request.page(entries);
         let mut lines = Vec::new();
-        if total == 0 {
-            lines.push("No user inbox items found.".to_string());
+        if page.items.is_empty() {
+            lines.push(request.empty_message("user inbox"));
         } else {
-            lines.push(format!("{total} user inbox item(s), newest first:"));
+            lines.push(request.header(page.total, "user inbox"));
             lines.extend(
-                items
+                page.items
                     .iter()
-                    .take(USER_INBOX_LIST_CAP)
                     .map(|(agent, message)| list_line(agent, message)),
             );
-            if total > USER_INBOX_LIST_CAP {
-                lines.push(format!(
-                    "Showing the {USER_INBOX_LIST_CAP} newest of {total} items. Narrow the list with agent to see older ones."
-                ));
+            if let Some(next) = &page.next {
+                lines.push(more_note(page.items.len(), page.total, next, LIST_FILTERS));
             }
         }
         for note in notes {

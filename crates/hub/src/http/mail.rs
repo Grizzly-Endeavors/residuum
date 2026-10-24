@@ -32,8 +32,8 @@ use crate::overview::TeamOverview;
 use crate::uploads::{UploadError, UploadStore};
 use residuum_workspace::inbox::InboxRef;
 use residuum_workspace::inbox::mail::{
-    self as domain, MailFolder, MailIndex, MailboxDirectory, OutgoingMail, SendMailError,
-    ThreadFilter, ThreadUpdateError, UserMailSource,
+    self as domain, MailCursor, MailFolder, MailIndex, MailboxDirectory, OutgoingMail,
+    SendMailError, ThreadFilter, ThreadUpdateError, UserMailSource,
 };
 
 /// How many threads a page holds when the request names no limit.
@@ -92,47 +92,10 @@ struct ListParams {
     limit: Option<String>,
 }
 
-/// Where a page stopped, carried in `next`: the latest time and the id of its
-/// last thread, as `<unix milliseconds>:<thread_id>`. A ref may hold `:`, so
-/// the id is everything after the first one.
-#[derive(Debug, PartialEq, Eq)]
-struct Cursor {
-    latest_at_ms: i64,
-    thread_id: InboxRef,
-}
-
-impl Cursor {
-    fn after(thread: &domain::MailThread) -> Self {
-        Self {
-            latest_at_ms: thread.latest_at().timestamp_millis(),
-            thread_id: thread.thread_id().clone(),
-        }
-    }
-
-    fn render(&self) -> String {
-        format!("{}:{}", self.latest_at_ms, self.thread_id)
-    }
-
-    fn parse(raw: &str) -> Option<Self> {
-        let (at, id) = raw.split_once(':')?;
-        Some(Self {
-            latest_at_ms: at.parse().ok()?,
-            thread_id: InboxRef::parse(id).ok()?,
-        })
-    }
-
-    /// Whether `thread` comes after this cursor in the list's order: newest
-    /// first, then by thread id.
-    fn precedes(&self, thread: &domain::MailThread) -> bool {
-        let at = thread.latest_at().timestamp_millis();
-        at < self.latest_at_ms || (at == self.latest_at_ms && *thread.thread_id() > self.thread_id)
-    }
-}
-
 /// A usable list request.
 struct ListQuery {
     filter: ThreadFilter,
-    before: Option<Cursor>,
+    before: Option<MailCursor>,
     limit: usize,
 }
 
@@ -168,7 +131,7 @@ impl ListParams {
             .before
             .as_deref()
             .map(|raw| {
-                Cursor::parse(raw)
+                MailCursor::parse(raw)
                     .ok_or_else(|| "the before cursor isn't one this list returned".to_string())
             })
             .transpose()?;
@@ -197,12 +160,17 @@ async fn list_threads(
         Err(rejection) => return json_error(StatusCode::BAD_REQUEST, rejection.body_text()),
     };
     let index = MailIndex::load(&mailboxes).await;
-    let mut threads = index
-        .threads(&query.filter)
-        .filter(|thread| query.before.as_ref().is_none_or(|c| c.precedes(thread)));
+    let mut threads = index.threads(&query.filter).filter(|thread| {
+        query
+            .before
+            .as_ref()
+            .is_none_or(|c| c.precedes(thread.latest_at(), thread.thread_id()))
+    });
     let page: Vec<&domain::MailThread> = threads.by_ref().take(query.limit).collect();
     let next = match (threads.next(), page.last()) {
-        (Some(_), Some(last)) => Some(Cursor::after(last).render()),
+        (Some(_), Some(last)) => {
+            Some(MailCursor::new(last.latest_at(), last.thread_id().clone()).to_string())
+        }
         _ => None,
     };
     Json(MailThreadPage {
@@ -518,45 +486,4 @@ async fn reply_to_thread(
                 "The reply was sent, but it couldn't be read back. Reload the thread to see it.",
             )
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use chrono::DateTime;
-
-    use super::*;
-
-    fn cursor_for(at: DateTime<chrono::Utc>, thread_id: &str) -> String {
-        Cursor {
-            latest_at_ms: at.timestamp_millis(),
-            thread_id: InboxRef::parse(thread_id).unwrap(),
-        }
-        .render()
-    }
-
-    #[test]
-    fn a_cursor_survives_a_round_trip_even_when_the_id_holds_colons() {
-        let raw = cursor_for(
-            DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
-            "scout/user/20260930_a:b:c",
-        );
-        let cursor = Cursor::parse(&raw).unwrap();
-        assert_eq!(cursor.latest_at_ms, 1_790_000_000_000);
-        assert_eq!(cursor.thread_id.to_string(), "scout/user/20260930_a:b:c");
-        assert_eq!(cursor.render(), raw);
-    }
-
-    #[test]
-    fn a_cursor_needs_a_time_and_a_ref() {
-        for raw in [
-            "",
-            "scout/user/id",
-            "soon:scout/user/id",
-            "1790000000:",
-            "1790000000:scout",
-            "1790000000",
-        ] {
-            assert_eq!(Cursor::parse(raw), None, "{raw:?} isn't a cursor");
-        }
-    }
 }

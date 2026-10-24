@@ -1,5 +1,5 @@
 use super::*;
-use crate::inbox::test_fixture::{Item, MailHub};
+use crate::inbox::test_fixture::{Item, MailHub, listed_ids, pages};
 use residuum_bus::testing::bus_barrier;
 use residuum_config::WorkspaceLayout;
 use residuum_core::testing::wait;
@@ -402,9 +402,77 @@ async fn user_inbox_list_without_a_directory_lists_this_agent_and_says_so() {
 }
 
 #[tokio::test]
-async fn user_inbox_list_caps_the_listing_and_says_how_many_are_left_out() {
+async fn user_inbox_list_pages_visit_every_item_once_even_when_times_tie() {
     let hub = MailHub::new(&["atlas"]);
-    for n in 0..=USER_INBOX_LIST_CAP {
+    for (id, hour) in [
+        ("item-0", 8),
+        ("item-1", 8),
+        ("item-2", 8),
+        ("item-3", 9),
+        ("item-4", 9),
+        ("item-5", 10),
+        ("item-6", 10),
+    ] {
+        hub.write(Item::agent_message("atlas", id, "t", "b", hour))
+            .await;
+    }
+    let tool = UserInboxListTool::new(hub.access("atlas"));
+
+    let outputs = pages(&tool, serde_json::json!({"limit": 3})).await;
+
+    let ids: Vec<Vec<String>> = outputs.iter().map(|out| listed_ids(out)).collect();
+    assert_eq!(
+        ids,
+        [
+            vec![
+                "atlas/user/item-5",
+                "atlas/user/item-6",
+                "atlas/user/item-3"
+            ],
+            vec![
+                "atlas/user/item-4",
+                "atlas/user/item-0",
+                "atlas/user/item-1"
+            ],
+            vec!["atlas/user/item-2"],
+        ],
+        "newest first, a tie by ref, each item on exactly one page"
+    );
+    let [first, second, last] = outputs.as_slice() else {
+        panic!("three pages: {outputs:?}");
+    };
+    assert!(
+        first.starts_with("7 user inbox item(s), newest first:"),
+        "{first}"
+    );
+    assert!(
+        first.contains("Showing 3 of 7. For the next page, call again with before=\""),
+        "{first}"
+    );
+    assert!(
+        first.contains("the same query, agent and include_archived."),
+        "{first}"
+    );
+    assert!(
+        second.starts_with("4 user inbox item(s) after the cursor, newest first:"),
+        "{second}"
+    );
+    assert!(second.contains("Showing 3 of 4."), "{second}");
+    assert!(
+        last.starts_with("1 user inbox item(s) after the cursor, newest first:"),
+        "{last}"
+    );
+    assert!(
+        !last.contains("Showing"),
+        "the last page has no next: {last}"
+    );
+}
+
+#[tokio::test]
+async fn user_inbox_list_lists_fifty_by_default_and_clamps_the_limit_to_two_hundred() {
+    let hub = MailHub::new(&["atlas"]);
+    let total = MAX_LIMIT + 5;
+    for n in 0..total {
         hub.write(Item::agent_message(
             "atlas",
             &format!("item-{n:03}"),
@@ -414,20 +482,202 @@ async fn user_inbox_list_caps_the_listing_and_says_how_many_are_left_out() {
         ))
         .await;
     }
-    let out = UserInboxListTool::new(hub.access("atlas"))
-        .execute(serde_json::json!({}))
+    let tool = UserInboxListTool::new(hub.access("atlas"));
+
+    for (arguments, listed) in [
+        (serde_json::json!({}), DEFAULT_LIMIT),
+        (serde_json::json!({"limit": 3}), 3),
+        (serde_json::json!({"limit": "2"}), 2),
+        (serde_json::json!({"limit": MAX_LIMIT}), MAX_LIMIT),
+        (serde_json::json!({"limit": 100_000}), MAX_LIMIT),
+    ] {
+        let out = tool.execute(arguments.clone()).await.unwrap().output;
+        assert_eq!(listed_ids(&out).len(), listed, "{arguments}: {out}");
+        assert!(
+            out.contains(&format!("Showing {listed} of {total}.")),
+            "{arguments}: {out}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn user_inbox_list_refuses_a_zero_limit_a_bad_limit_and_a_foreign_cursor() {
+    let hub = team_mail().await;
+    let tool = UserInboxListTool::new(hub.access("atlas"));
+    for (arguments, expected) in [
+        (serde_json::json!({"limit": 0}), "limit must be at least 1"),
+        (
+            serde_json::json!({"limit": -1}),
+            "limit must be a whole number",
+        ),
+        (
+            serde_json::json!({"limit": "many"}),
+            "limit must be a whole number",
+        ),
+        (
+            serde_json::json!({"before": "nonsense"}),
+            "the before cursor isn't one this list returned",
+        ),
+        (
+            serde_json::json!({"before": "soon:atlas/user/digest"}),
+            "the before cursor isn't one this list returned",
+        ),
+    ] {
+        let result = tool.execute(arguments.clone()).await;
+        let Err(ToolError::InvalidArguments(message)) = result else {
+            panic!("{arguments} is refused: {result:?}");
+        };
+        assert!(message.contains(expected), "{arguments}: {message}");
+    }
+}
+
+#[tokio::test]
+async fn user_inbox_list_query_matches_title_body_and_attachment_filenames_ignoring_case() {
+    let hub = MailHub::new(&["atlas"]);
+    hub.write(Item::agent_message(
+        "atlas",
+        "digest",
+        "Weekly Digest",
+        "plain text",
+        8,
+    ))
+    .await;
+    hub.write(Item::agent_message(
+        "atlas",
+        "figures",
+        "Numbers",
+        "Contains the Budget figures",
+        9,
+    ))
+    .await;
+    hub.write(
+        Item::agent_message("atlas", "plan", "Plan", "see attached", 10)
+            .with_attachment("Roadmap.PDF"),
+    )
+    .await;
+    hub.write(Item::agent_message(
+        "atlas",
+        "other",
+        "Unrelated",
+        "nothing",
+        11,
+    ))
+    .await;
+    let tool = UserInboxListTool::new(hub.access("atlas"));
+
+    for (query, expected) in [
+        ("DIGEST", "atlas/user/digest"),
+        ("budget figures", "atlas/user/figures"),
+        ("roadmap.pdf", "atlas/user/plan"),
+        ("pdf", "atlas/user/plan"),
+    ] {
+        let out = tool
+            .execute(serde_json::json!({"query": query}))
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(listed_ids(&out), [expected], "{query}: {out}");
+        assert!(
+            out.starts_with("1 user inbox item(s) match, newest first:"),
+            "{query}: {out}"
+        );
+    }
+
+    let none = tool
+        .execute(serde_json::json!({"query": "zebra"}))
+        .await
+        .unwrap();
+    assert!(!none.is_error, "{}", none.output);
+    assert_eq!(none.output, "No user inbox items match \"zebra\".");
+
+    let blank = tool
+        .execute(serde_json::json!({"query": "  "}))
         .await
         .unwrap()
         .output;
+    assert_eq!(listed_ids(&blank).len(), 4, "a blank query is ignored");
+    assert!(
+        blank.starts_with("4 user inbox item(s), newest first:"),
+        "{blank}"
+    );
+}
+
+#[tokio::test]
+async fn user_inbox_list_query_combines_with_paging_and_the_agent_filter() {
+    let hub = MailHub::new(&["atlas", "nova"]);
+    for n in 0..5 {
+        hub.write(Item::agent_message(
+            "nova",
+            &format!("alpha-{n}"),
+            &format!("Alpha report {n}"),
+            "b",
+            8,
+        ))
+        .await;
+    }
+    for n in 0..2 {
+        hub.write(Item::agent_message(
+            "nova",
+            &format!("beta-{n}"),
+            "Beta report",
+            "b",
+            8,
+        ))
+        .await;
+    }
+    for n in 0..3 {
+        hub.write(Item::agent_message(
+            "atlas",
+            &format!("alpha-{n}"),
+            "Alpha notes",
+            "b",
+            8,
+        ))
+        .await;
+    }
+    let tool = UserInboxListTool::new(hub.access("atlas"));
+
+    let nova = pages(
+        &tool,
+        serde_json::json!({"query": "ALPHA", "agent": "nova", "limit": 2}),
+    )
+    .await;
+    let ids: Vec<Vec<String>> = nova.iter().map(|out| listed_ids(out)).collect();
     assert_eq!(
-        out.lines().filter(|l| l.starts_with("  [")).count(),
-        USER_INBOX_LIST_CAP
+        ids,
+        [
+            vec!["nova/user/alpha-0", "nova/user/alpha-1"],
+            vec!["nova/user/alpha-2", "nova/user/alpha-3"],
+            vec!["nova/user/alpha-4"],
+        ]
+    );
+    let [first, second, _] = nova.as_slice() else {
+        panic!("three pages: {nova:?}");
+    };
+    assert!(
+        first.starts_with("5 user inbox item(s) match, newest first:"),
+        "{first}"
     );
     assert!(
-        out.contains(&format!(
-            "Showing the {USER_INBOX_LIST_CAP} newest of {} items.",
-            USER_INBOX_LIST_CAP + 1
-        )),
-        "{out}"
+        second.starts_with("3 user inbox item(s) match after the cursor, newest first:"),
+        "{second}"
     );
+
+    let everyone = pages(&tool, serde_json::json!({"query": "alpha", "limit": 4})).await;
+    let all: Vec<String> = everyone.iter().flat_map(|out| listed_ids(out)).collect();
+    assert_eq!(
+        all,
+        [
+            "atlas/user/alpha-0",
+            "atlas/user/alpha-1",
+            "atlas/user/alpha-2",
+            "nova/user/alpha-0",
+            "nova/user/alpha-1",
+            "nova/user/alpha-2",
+            "nova/user/alpha-3",
+            "nova/user/alpha-4",
+        ],
+        "every match once, across two pages"
+    );
+    assert_eq!(everyone.len(), 2);
 }

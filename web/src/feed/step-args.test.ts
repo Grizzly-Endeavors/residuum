@@ -37,6 +37,29 @@ describe("a step's arguments", () => {
     ]);
   });
 
+  it("show what an inbox listing searched for, then what narrowed it", () => {
+    expect(argumentLines("inbox_list", { query: "budget", unread_only: true, limit: 20 })).toEqual([
+      { kind: "query", text: "budget" },
+      { kind: "meta", text: "unread only" },
+    ]);
+    expect(
+      argumentLines("user_inbox_list", { query: "digest", agent: "scout", include_archived: true }),
+    ).toEqual([
+      { kind: "query", text: "digest" },
+      { kind: "meta", text: "Agent: scout" },
+      { kind: "meta", text: "archived included" },
+    ]);
+    expect(argumentLines("user_inbox_list", { limit: 20, before: "1:a/user/x" })).toEqual([
+      {
+        kind: "pairs",
+        pairs: [
+          ["limit", "20"],
+          ["before", "1:a/user/x"],
+        ],
+      },
+    ]);
+  });
+
   it("show nothing for a call that took no arguments", () => {
     expect(argumentLines("inbox_list", {})).toEqual([]);
   });
