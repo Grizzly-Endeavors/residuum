@@ -121,7 +121,7 @@ pub fn spawn_broker() -> BusHandle {
 
 /// An edge in one subscriber's drop run worth logging — the run's start, or
 /// its end together with how many events it cost. Every drop in between is
-/// silent: per `CLAUDE.md` "Avoid log spam", only the edges are logged.
+/// silent: per `AGENTS.md` "Avoid log spam", only the edges are logged.
 #[derive(Debug, PartialEq, Eq)]
 enum DropTransition {
     /// The first drop after the subscriber was keeping up.

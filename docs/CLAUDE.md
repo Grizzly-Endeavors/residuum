@@ -7,6 +7,7 @@
 | `systems-usage/` | How each system is intended to work, for both the agent and the user | **Authoritative.** Keep current with the code. |
 | `guides/` | Task-oriented walkthroughs — how to accomplish something end to end | Current. |
 | `design/` | Designs for work that is not built yet | Current intent, not current behavior. |
+| `runbooks/` | Maintainer operations: build dirs, CI and the `main` ruleset, the Windows VM | Current. |
 | `archive/` | Superseded documents, kept for history | Historical. Do not treat as a description of the system. |
 
 `design-philosophy.md` sits at the top level: it describes durable principles rather than any particular implementation.
