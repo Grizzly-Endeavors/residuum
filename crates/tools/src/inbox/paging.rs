@@ -192,8 +192,8 @@ mod tests {
 
     use super::*;
 
-    fn request(arguments: Value) -> PageRequest {
-        PageRequest::parse(&arguments).unwrap()
+    fn request(arguments: &Value) -> PageRequest {
+        PageRequest::parse(arguments).unwrap()
     }
 
     fn refusal(arguments: &Value) -> String {
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn no_arguments_ask_for_the_first_default_sized_page() {
-        let page = request(serde_json::json!({}));
+        let page = request(&serde_json::json!({}));
         assert_eq!(page.limit, DEFAULT_LIMIT);
         assert!(page.before.is_none());
         assert_eq!(page.query(), None);
@@ -222,16 +222,16 @@ mod tests {
     #[test]
     fn a_limit_above_the_maximum_counts_as_the_maximum() {
         assert_eq!(
-            request(serde_json::json!({"limit": 5_000})).limit,
+            request(&serde_json::json!({"limit": 5_000})).limit,
             MAX_LIMIT
         );
-        assert_eq!(request(serde_json::json!({"limit": 7})).limit, 7);
+        assert_eq!(request(&serde_json::json!({"limit": 7})).limit, 7);
         assert_eq!(
-            request(serde_json::json!({"limit": "12"})).limit,
+            request(&serde_json::json!({"limit": "12"})).limit,
             12,
             "a number written as text counts"
         );
-        assert_eq!(request(serde_json::json!({"limit": null})).limit, 50);
+        assert_eq!(request(&serde_json::json!({"limit": null})).limit, 50);
     }
 
     #[test]
@@ -276,11 +276,11 @@ mod tests {
 
     #[test]
     fn a_blank_before_or_query_is_left_out() {
-        let page = request(serde_json::json!({"before": "  ", "query": "   "}));
+        let page = request(&serde_json::json!({"before": "  ", "query": "   "}));
         assert!(page.before.is_none());
         assert_eq!(page.query(), None);
         assert_eq!(
-            request(serde_json::json!({"query": "  Budget "})).query(),
+            request(&serde_json::json!({"query": "  Budget "})).query(),
             Some("Budget")
         );
     }
@@ -296,12 +296,12 @@ mod tests {
             ]
         };
 
-        let first = request(serde_json::json!({"limit": 2})).page(entries());
+        let first = request(&serde_json::json!({"limit": 2})).page(entries());
         assert_eq!(first.items, ["a", "a2"]);
         assert_eq!(first.total, 4);
 
         let before = first.next.unwrap().to_string();
-        let second = request(serde_json::json!({"limit": 2, "before": before})).page(entries());
+        let second = request(&serde_json::json!({"limit": 2, "before": before})).page(entries());
         assert_eq!(second.items, ["b", "c"]);
         assert_eq!(second.total, 2, "counted from the page's start");
         assert_eq!(second.next, None);
@@ -310,14 +310,14 @@ mod tests {
     #[test]
     fn a_page_that_holds_the_rest_has_no_next_cursor() {
         let page =
-            request(serde_json::json!({"limit": 2})).page(vec![entry(1, "a"), entry(2, "b")]);
+            request(&serde_json::json!({"limit": 2})).page(vec![entry(1, "a"), entry(2, "b")]);
         assert_eq!(page.items, ["b", "a"]);
         assert_eq!(page.next, None);
     }
 
     #[test]
     fn headers_and_empty_answers_say_what_narrowed_the_list() {
-        let plain = request(serde_json::json!({}));
+        let plain = request(&serde_json::json!({}));
         assert_eq!(
             plain.header(3, "user inbox"),
             "3 user inbox item(s), newest first:"
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(plain.empty_message("archived"), "No archived items found.");
 
         let cursor = entry(1, "a").0.to_string();
-        let narrowed = request(serde_json::json!({"query": "budget", "before": cursor}));
+        let narrowed = request(&serde_json::json!({"query": "budget", "before": cursor}));
         assert_eq!(
             narrowed.header(3, "inbox"),
             "3 inbox item(s) match after the cursor, newest first:"

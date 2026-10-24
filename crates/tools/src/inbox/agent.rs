@@ -747,7 +747,7 @@ mod tests {
 
         let outputs = pages(&tool, serde_json::json!({"limit": 3})).await;
 
-        let ids: Vec<Vec<String>> = outputs.iter().map(|out| listed_ids(out)).collect();
+        let ids: Vec<Vec<String>> = outputs.iter().map(|text| listed_ids(text)).collect();
         assert_eq!(
             ids,
             [
@@ -915,7 +915,7 @@ mod tests {
         );
 
         let outputs = pages(&tool, serde_json::json!({"query": "budget", "limit": 2})).await;
-        let ids: Vec<Vec<String>> = outputs.iter().map(|out| listed_ids(out)).collect();
+        let ids: Vec<Vec<String>> = outputs.iter().map(|text| listed_ids(text)).collect();
         assert_eq!(ids, [vec!["a3", "a2"], vec!["a1"]]);
 
         let none = output_of(&tool, serde_json::json!({"query": "zebra"})).await;
