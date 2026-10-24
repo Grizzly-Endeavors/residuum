@@ -75,7 +75,7 @@ impl InferenceError {
 
     /// Plain-language sentence naming what went wrong and what to do next.
     /// Never exposes a raw status code, error type, or module path — see
-    /// `CLAUDE.md`'s "No Silent Failures".
+    /// `AGENTS.md`'s "No Silent Failures".
     #[must_use]
     pub fn user_message(&self) -> String {
         self.category().user_message(self)
@@ -319,7 +319,7 @@ impl FailureCategory {
 
 /// A turn failure described for two different audiences: `message` is
 /// plain language for the user (never a raw error type or status code, per
-/// `CLAUDE.md`'s "No Silent Failures"), and `details` is the full technical
+/// `AGENTS.md`'s "No Silent Failures"), and `details` is the full technical
 /// cause chain for a developer or an expandable "details" view.
 #[derive(Debug, Clone)]
 pub struct FailureDescription {

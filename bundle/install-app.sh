@@ -12,7 +12,7 @@ APP_DIR="$HOME/Applications/Residuum.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 
-# A cargo wrapper that builds in a leased dir (CONTRIBUTING.md, "Build dirs")
+# A cargo wrapper that builds in a leased dir (docs/runbooks/build-dirs.md)
 # passes through when CARGO_TARGET_DIR is set, so the binary lands where the
 # copies below look for it.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
