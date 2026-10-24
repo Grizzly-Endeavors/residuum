@@ -120,14 +120,20 @@ For the agent, `user_inbox_add`'s `attachments` parameter takes paths to files t
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `inbox_list` | `unread_only` (bool, optional), `archived` (bool, optional) | Lists the agent's own agent-inbox items. `archived: true` lists `archive/inbox/agent/` and ignores `unread_only`. |
+| `inbox_list` | `unread_only` (bool, optional), `archived` (bool, optional), `query` (text, optional), `limit` (integer, optional), `before` (cursor, optional) | Lists the agent's own agent-inbox items newest first, a page at a time. `archived: true` lists `archive/inbox/agent/` and ignores `unread_only`. See [Paging and search](#paging-and-search). |
 | `inbox_read` | `id` (a filename stem of the agent's own agent inbox, or any item's ref) | Reads one item, shows its ref, and for mail shows the thread's earlier messages oldest first, with each message's ref, and the refs of later messages. Marks the item read only when it is an active item of the agent's own agent inbox. |
 | `inbox_archive` | `ids` (filename stems) | Moves items from `inbox/agent/` to `archive/inbox/agent/`. |
 | `inbox_restore` | `ids` (filename stems) | Moves items from `archive/inbox/agent/` back. Find the stems with `inbox_list` and `archived: true`. |
 | `user_inbox_add` | `title` (optional when `in_reply_to` is set), `body`, `in_reply_to` (ref, optional), `attachments` (paths, optional) | Writes an item to the user inbox. With `in_reply_to`, the item answers that message in its thread, titled `Re: <subject>` unless a title is given. A ref that is not in any thread is refused, and nothing is written. Without `in_reply_to`, a title is required. |
-| `user_inbox_list` | `agent` (folder name, optional), `include_archived` (bool, optional) | Lists every agent's user-inbox items newest first, with ref, title, agent, time, read and archived state, and the message each one answers. Read-only. Lists at most 100 items and notes when more match. |
+| `user_inbox_list` | `agent` (folder name, optional), `include_archived` (bool, optional), `query` (text, optional), `limit` (integer, optional), `before` (cursor, optional) | Lists every agent's user-inbox items newest first, a page at a time, with ref, title, agent, time, read and archived state, and the message each one answers. Read-only. See [Paging and search](#paging-and-search). |
 
 Neither `user_inbox_list` nor `inbox_read` changes the user's read or archived state. Archiving and restoring user-inbox items belong to the user in the web UI.
+
+### Paging and search
+
+`inbox_list` and `user_inbox_list` list one page at a time, newest first, with items of the same time ordered by their ref. `limit` sets the page size (50 by default, at most 200: a larger value counts as 200; 0 or anything that is not a whole number is refused). When more items follow the page, the listing ends with `Showing {n} of {total}. For the next page, call again with before="{cursor}" and the same query, agent and include_archived.`, and the next call passes that cursor as `before`. The listing's header counts the items from the start of the page, so a later page counts only the items that remain. A cursor is `{unix ms}:{ref}`, the same form the hub's mail thread list returns as `next`: `inbox_list` reads an item's stored local time in the agent's timezone, and a `before` that isn't a cursor a listing returned is refused.
+
+`query` keeps the items whose title, body or attachment filenames contain the text, ignoring case; a blank `query` is ignored. It combines with the other parameters, so `query` with `agent`, `include_archived`, `unread_only`, `archived` and `before` narrows the same list a page at a time.
 
 ## Notifications and Other Writers
 
