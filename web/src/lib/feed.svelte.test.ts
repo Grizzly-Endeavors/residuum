@@ -368,6 +368,20 @@ describe("FeedStore when a turn fails", () => {
       ).toEqual(["assistant", "assistant"]);
     });
 
+    it("asks again whether the turn changed anything once the rerun ends", () => {
+      const store = new FeedStore();
+      failedTurn(store);
+      const asked = store.feed.find((item) => item.kind === "user");
+      if (asked?.kind !== "user" || asked.turn === undefined) throw new Error("expected a tag");
+      // The failed attempt's check found nothing changed.
+      asked.turn.changed = false;
+
+      store.handleMessage(started("web-a"));
+      store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+      expect(asked.turn).toEqual({ turnId: "web-a", changed: null });
+    });
+
     it("leaves the failures of other turns where they are", () => {
       const store = new FeedStore();
       failedTurn(store, "web-a");

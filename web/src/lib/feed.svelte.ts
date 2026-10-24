@@ -1068,13 +1068,25 @@ export class FeedStore {
    * id, so the feed can offer "Undo this turn" on it. A no-op when the
    * turn has no user message to anchor to (a background turn's own message
    * is a different kind), or the turn never got a start index at all.
+   *
+   * A rerun of a failed turn starts after the failed attempt's items, so its
+   * start index holds no user message: the message that began the turn is
+   * found by id instead. Tagging it afresh asks again whether the turn
+   * changed anything, now counting the rerun too.
    */
   private tagTurnStart(turnId: string): void {
     if (this.turnStart === null) return;
-    const item = this.feed[this.turnStart];
-    if (item?.kind === "user") {
-      item.turn = { turnId, changed: null };
-    }
+    const atStart = this.feed[this.turnStart];
+    const item =
+      atStart?.kind === "user"
+        ? atStart
+        : this.feed.findLast(
+            (candidate): candidate is UserFeedItem =>
+              candidate.kind === "user" &&
+              (candidate.turnId === turnId || candidate.messageId === turnId) &&
+              candidate.midTurn !== true,
+          );
+    if (item !== undefined) item.turn = { turnId, changed: null };
   }
 
   /**
