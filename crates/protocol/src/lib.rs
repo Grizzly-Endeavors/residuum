@@ -107,6 +107,16 @@ pub enum ClientMessage {
         /// The waiting message's id.
         id: String,
     },
+    /// Rerun the main agent's failed latest turn on the user message the
+    /// server already recorded. No new user message is published and nothing
+    /// is uploaded again. Answered by the rerun's `turn_started`, which
+    /// carries the same correlation id as the failed turn, or by
+    /// `retry_refused` when the turn can't be rerun.
+    RetryTurn {
+        /// Correlation ID of the failed turn: the `id` its `SendMessage` was
+        /// sent with, and the `reply_to` of its `error` frame.
+        id: String,
+    },
     /// Replace this connection's watched workspace prefixes. `[]` stops
     /// watching; `""` watches the whole workspace. An invalid prefix is
     /// answered with an `Error` frame and leaves the set unchanged.
@@ -788,6 +798,17 @@ pub enum ServerMessage {
     /// connection only; a failure after delivery is an `error` instead.
     MessageRefused {
         /// The refused message's id.
+        id: String,
+        /// Plain-language reason, with what to do next.
+        message: String,
+    },
+    /// A `retry_turn` was refused: the turn it named is not the main
+    /// conversation's latest failed turn (unknown, already retried, or the
+    /// conversation moved on), or a turn is running or messages are waiting.
+    /// The recorded message stays where it is. Sent to the asking connection
+    /// only.
+    RetryRefused {
+        /// The id the `retry_turn` named.
         id: String,
         /// Plain-language reason, with what to do next.
         message: String,
@@ -1543,6 +1564,34 @@ mod tests {
                 "message": "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.",
             }),
             "message_refused should carry the send's id and the reason"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_retry_refused() {
+        let msg = ServerMessage::RetryRefused {
+            id: "id-1".to_string(),
+            message: "A reply is still being written. Try again once it finishes.".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "retry_refused",
+                "id": "id-1",
+                "message": "A reply is still being written. Try again once it finishes.",
+            }),
+            "retry_refused should carry the retry's id and the reason"
+        );
+    }
+
+    #[test]
+    fn client_message_deserialize_retry_turn() {
+        let json = r#"{"type":"retry_turn","id":"msg-7"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(msg, ClientMessage::RetryTurn { ref id } if id == "msg-7"),
+            "should deserialize to RetryTurn carrying the failed turn's id"
         );
     }
 

@@ -438,6 +438,7 @@ pub(crate) async fn execute_subagent(
     // No identity/wiki/skills content here — that lives in the system message.
     let kickoff_messages = kickoff.into_messages();
     recent_messages.extend(kickoff_messages.clone());
+    let turn_start = recent_messages.len().saturating_sub(1);
     if let Some(sink) = transcript_sink {
         sink.append(&kickoff_messages).await;
     }
@@ -484,6 +485,7 @@ pub(crate) async fn execute_subagent(
     }
     // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
+        turn_start,
         &turn_resources,
         &memory_ctx,
         &prompt_ctx,
