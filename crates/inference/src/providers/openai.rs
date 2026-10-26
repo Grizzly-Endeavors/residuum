@@ -1,8 +1,9 @@
 //! Client for OpenAI-compatible chat completion APIs.
 //!
-//! Supports various providers including Azure, vLLM, LM Studio, Fireworks, and
-//! other compatible endpoints. Host-specific behavior on top of the shared wire
-//! format is selected with [`OpenAiDialect`].
+//! Supports various providers including Azure, vLLM, LM Studio, and other
+//! compatible endpoints. Host-specific behavior on top of the shared wire
+//! format is selected with [`OpenAiDialect`]; vendors that need one, such as
+//! Fireworks, build theirs in their own module.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,12 +29,6 @@ use crate::{
 use residuum_config::RetryConfig;
 use residuum_config::{ThinkingConfig, ThinkingLevel};
 
-/// Fireworks response header carrying the prompt tokens served from cache.
-const FIREWORKS_CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tokens";
-
-/// Fireworks request header that pins requests to a replica holding a warm cache.
-const FIREWORKS_SESSION_AFFINITY_HEADER: &str = "x-session-affinity";
-
 /// The `reasoning_content` sent with a tool-calling assistant message of the
 /// exchange in progress that has no reasoning of this host's to send back,
 /// such as one another provider wrote before a failover, once the host has
@@ -44,24 +39,33 @@ const FIREWORKS_SESSION_AFFINITY_HEADER: &str = "x-session-affinity";
 /// conflict, so the stand-in is short readable text.
 const MISSING_REASONING_PLACEHOLDER: &str = "(reasoning for this step is not available)";
 
-/// Host-specific behavior layered on the OpenAI-compatible wire format.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) enum OpenAiDialect {
-    /// `OpenAI` and generic compatible servers.
-    #[default]
-    OpenAi,
-    /// Fireworks AI: reports cache hits in response headers rather than the
-    /// `usage` body, has no hosted web search tool, and routes by an affinity key.
-    Fireworks {
-        /// Value for the `x-session-affinity` header.
-        session_affinity: Option<String>,
-    },
+/// Reads a cached prompt token count out of response headers.
+pub(super) type CachedTokensFromHeaders = fn(&reqwest::header::HeaderMap) -> Option<u32>;
+
+/// Host-specific behavior layered on the OpenAI-compatible wire format. The
+/// default is `OpenAI` and generic compatible servers; a vendor module builds
+/// its own value.
+#[derive(Debug, Clone)]
+pub(crate) struct OpenAiDialect {
+    /// Headers sent with every chat completion request.
+    pub(super) request_headers: Vec<(&'static str, String)>,
+    /// For hosts that report cache hits in response headers rather than the
+    /// `usage` body.
+    pub(super) cached_tokens_from_headers: Option<CachedTokensFromHeaders>,
+    /// Whether the host understands `OpenAI`'s hosted `web_search_preview` tool.
+    pub(super) hosted_web_search: bool,
+    /// Whether the host takes `reasoning_content` back whatever its URL is.
+    pub(super) always_replays_reasoning: bool,
 }
 
-impl OpenAiDialect {
-    /// Whether the host understands `OpenAI`'s hosted `web_search_preview` tool.
-    fn supports_hosted_web_search(&self) -> bool {
-        matches!(self, Self::OpenAi)
+impl Default for OpenAiDialect {
+    fn default() -> Self {
+        Self {
+            request_headers: Vec::new(),
+            cached_tokens_from_headers: None,
+            hosted_web_search: true,
+            always_replays_reasoning: false,
+        }
     }
 }
 
@@ -155,13 +159,11 @@ impl OpenAiClient {
     /// whose reasoning is missing; `OpenAI` itself returns no reasoning text
     /// and rejects fields it does not know, so it gets none.
     fn replays_reasoning(&self) -> bool {
-        match &self.dialect {
-            OpenAiDialect::Fireworks { .. } => true,
-            OpenAiDialect::OpenAi => url::Url::parse(&self.base_url)
+        self.dialect.always_replays_reasoning
+            || url::Url::parse(&self.base_url)
                 .ok()
                 .and_then(|url| url.host_str().map(str::to_lowercase))
-                .is_some_and(|host| !is_official_openai_host(&host)),
-        }
+                .is_some_and(|host| !is_official_openai_host(&host))
     }
 
     /// Who the reasoning this client returns is recorded as coming from, and
@@ -225,7 +227,7 @@ impl OpenAiClient {
             })
             .collect();
         if let Some(ws) = &options.web_search
-            && self.dialect.supports_hosted_web_search()
+            && self.dialect.hosted_web_search
         {
             openai_tools.push(OpenAiToolEntry::WebSearch(OpenAiWebSearchTool {
                 r#type: "web_search_preview".to_string(),
@@ -353,11 +355,8 @@ impl OpenAiClient {
             req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
         }
 
-        if let OpenAiDialect::Fireworks {
-            session_affinity: Some(affinity),
-        } = &self.dialect
-        {
-            req_builder = req_builder.header(FIREWORKS_SESSION_AFFINITY_HEADER, affinity);
+        for (name, value) in &self.dialect.request_headers {
+            req_builder = req_builder.header(*name, value);
         }
 
         let response = req_builder.send().await.map_err(|e| {
@@ -382,10 +381,10 @@ impl OpenAiClient {
             return Err(InferenceError::Api(format!("{status}: {error_body}")));
         }
 
-        let header_cached_tokens = match &self.dialect {
-            OpenAiDialect::Fireworks { .. } => fireworks_cached_prompt_tokens(response.headers()),
-            OpenAiDialect::OpenAi => None,
-        };
+        let header_cached_tokens = self
+            .dialect
+            .cached_tokens_from_headers
+            .and_then(|read| read(response.headers()));
 
         let resp = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
             read_stream(response, timeout_secs, sink, header_cached_tokens).await?
@@ -576,20 +575,6 @@ impl InferenceProvider for OpenAiClient {
     fn model_name(&self) -> &str {
         &self.model
     }
-}
-
-/// Parse the Fireworks cached-prompt-token header, logging a malformed value.
-fn fireworks_cached_prompt_tokens(headers: &reqwest::header::HeaderMap) -> Option<u32> {
-    let raw = headers.get(FIREWORKS_CACHED_PROMPT_TOKENS_HEADER)?;
-    let parsed = raw.to_str().ok().and_then(|v| v.trim().parse::<u32>().ok());
-    if parsed.is_none() {
-        tracing::warn!(
-            header = FIREWORKS_CACHED_PROMPT_TOKENS_HEADER,
-            value = ?raw,
-            "fireworks returned an unparseable cached-token header; cache stats unavailable for this call"
-        );
-    }
-    parsed
 }
 
 // --- Streaming ---
@@ -1585,57 +1570,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_passes_through_a_malformed_tool_call_name_verbatim() {
-        // Fireworks (and vLLM, upstream) have shipped tool-call parsers for
-        // GLM models that fail to strip the model's own `<arg_key>`/
-        // `<arg_value>` tool-call template out of a structured response,
-        // leaking it into `function.name` instead of a clean `write_file`.
-        // This client has no name/markup parsing of its own — it's a thin
-        // OpenAI-compatible wire decoder — so it must pass the field through
-        // exactly as the API returned it. Downstream (`agent::turn`) is
-        // responsible for recognizing the shape is bogus and failing
-        // legibly instead of chasing it through the tool registries.
-        let mock_server = MockServer::start().await;
-        let malformed_name = "write_file\tcontent</arg_key><arg_value># Hello";
-
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "choices": [{
-                    "message": {
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": [{
-                            "id": "call_glm_1",
-                            "type": "function",
-                            "function": {
-                                "name": malformed_name,
-                                "arguments": "{}"
-                            }
-                        }]
-                    }
-                }]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = make_fireworks_client(mock_server.uri(), None);
-        let messages = vec![Message::user("write a file")];
-
-        let response = client
-            .complete(&messages, &[], &CompletionOptions::default())
-            .await
-            .unwrap();
-
-        assert_eq!(
-            response.tool_calls.first().map(|t| t.name.as_str()),
-            Some(malformed_name),
-            "the client must not attempt to repair or hand-parse markup out of the tool name; \
-             that decision belongs to the caller, not the wire-format decoder"
-        );
-    }
-
-    #[tokio::test]
     async fn api_error_401() {
         let mock_server = MockServer::start().await;
 
@@ -2186,176 +2120,6 @@ mod tests {
         );
     }
 
-    fn make_fireworks_client(url: impl Into<String>, affinity: Option<&str>) -> OpenAiClient {
-        make_client_with_key(url, "accounts/fireworks/models/test", "fw-key").with_dialect(
-            OpenAiDialect::Fireworks {
-                session_affinity: affinity.map(String::from),
-            },
-        )
-    }
-
-    fn fireworks_usage_body(cached_in_body: Option<u32>) -> serde_json::Value {
-        let usage = match cached_in_body {
-            Some(cached) => serde_json::json!({
-                "prompt_tokens": 1000,
-                "completion_tokens": 10,
-                "prompt_tokens_details": {"cached_tokens": cached}
-            }),
-            None => serde_json::json!({"prompt_tokens": 1000, "completion_tokens": 10}),
-        };
-        serde_json::json!({
-            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
-            "usage": usage
-        })
-    }
-
-    #[tokio::test]
-    async fn fireworks_sends_session_affinity_header() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .and(header("x-session-affinity", "residuum-main-abc"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(fireworks_usage_body(None)))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let client = make_fireworks_client(mock_server.uri(), Some("residuum-main-abc"));
-        client
-            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn fireworks_reads_cached_tokens_from_header_when_body_lacks_them() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("fireworks-cached-prompt-tokens", "768")
-                    .set_body_json(fireworks_usage_body(None)),
-            )
-            .mount(&mock_server)
-            .await;
-
-        let client = make_fireworks_client(mock_server.uri(), None);
-        let response = client
-            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
-            .await
-            .unwrap();
-        assert_eq!(
-            response.usage.and_then(|u| u.cache_read_tokens),
-            Some(768),
-            "header cache count should fill the gap"
-        );
-    }
-
-    #[tokio::test]
-    async fn fireworks_prefers_body_cached_tokens_over_header() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("fireworks-cached-prompt-tokens", "1")
-                    .set_body_json(fireworks_usage_body(Some(512))),
-            )
-            .mount(&mock_server)
-            .await;
-
-        let client = make_fireworks_client(mock_server.uri(), None);
-        let response = client
-            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
-            .await
-            .unwrap();
-        assert_eq!(
-            response.usage.and_then(|u| u.cache_read_tokens),
-            Some(512),
-            "body cache count is authoritative when present"
-        );
-    }
-
-    #[tokio::test]
-    async fn fireworks_malformed_cache_header_leaves_stats_empty() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("fireworks-cached-prompt-tokens", "lots")
-                    .set_body_json(fireworks_usage_body(None)),
-            )
-            .mount(&mock_server)
-            .await;
-
-        let client = make_fireworks_client(mock_server.uri(), None);
-        let response = client
-            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
-            .await
-            .unwrap();
-        let usage = response.usage.unwrap();
-        assert_eq!(usage.input_tokens, 1000, "usage still parses");
-        assert_eq!(
-            usage.cache_read_tokens, None,
-            "bad header is not guessed at"
-        );
-    }
-
-    #[tokio::test]
-    async fn openai_dialect_ignores_fireworks_cache_header() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("fireworks-cached-prompt-tokens", "768")
-                    .set_body_json(fireworks_usage_body(None)),
-            )
-            .mount(&mock_server)
-            .await;
-
-        let client = make_client(mock_server.uri(), "gpt-4");
-        let response = client
-            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
-            .await
-            .unwrap();
-        assert_eq!(
-            response.usage.and_then(|u| u.cache_read_tokens),
-            None,
-            "only the fireworks dialect trusts fireworks headers"
-        );
-    }
-
-    #[tokio::test]
-    async fn fireworks_never_sends_hosted_web_search_tool() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(fireworks_usage_body(None)))
-            .mount(&mock_server)
-            .await;
-
-        let client = make_fireworks_client(mock_server.uri(), None);
-        let options = CompletionOptions {
-            web_search: Some(crate::WebSearchNativeConfig::default()),
-            ..CompletionOptions::default()
-        };
-        client
-            .complete(&[Message::user("hi")], &[], &options)
-            .await
-            .unwrap();
-
-        let requests = mock_server.received_requests().await.unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
-        assert!(
-            body.get("tools").is_none(),
-            "fireworks rejects web_search_preview, so no tools should be sent: {body}"
-        );
-    }
-
     // --- Streaming ---
 
     fn sse_data(data: impl Into<Value>) -> String {
@@ -2895,41 +2659,6 @@ mod tests {
         assert!(sink.deltas().is_empty(), "nothing streamed");
     }
 
-    #[tokio::test]
-    async fn fireworks_cache_header_is_used_for_streamed_usage() {
-        let stream = [
-            delta_chunk(json!({"content": "x"})),
-            finish_chunk("stop"),
-            usage_chunk(10, 2),
-            DONE.to_string(),
-        ]
-        .concat();
-        let script = vec![
-            Step::Write(
-                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
-                  fireworks-cached-prompt-tokens: 7\r\ntransfer-encoding: chunked\r\n\
-                  connection: close\r\n\r\n"
-                    .to_vec(),
-            ),
-            Step::chunk(stream),
-            Step::end(),
-        ];
-        let (result, _, _) = stream_from(script, |url| {
-            let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-            OpenAiClient::with_http_client(http, url, "m", RetryConfig::no_retry()).with_dialect(
-                OpenAiDialect::Fireworks {
-                    session_affinity: None,
-                },
-            )
-        })
-        .await;
-        assert_eq!(
-            result.unwrap().usage.unwrap().cache_read_tokens,
-            Some(7),
-            "cache hits come from the header when the body lacks them"
-        );
-    }
-
     // --- Reasoning replay ---
 
     /// Where the reasoning of the clients in these tests comes from.
@@ -3009,20 +2738,6 @@ mod tests {
                  and only what an OpenAI-compatible API returned for it, not another provider's text"
             );
         }
-    }
-
-    #[test]
-    fn fireworks_gets_reasoning_back() {
-        let client = client_at("https://api.fireworks.ai/inference/v1").with_dialect(
-            OpenAiDialect::Fireworks {
-                session_affinity: None,
-            },
-        );
-        assert_eq!(
-            replayed(&client).get(5).cloned().flatten(),
-            Some("current reasoning".to_string()),
-            "Fireworks understands reasoning_content"
-        );
     }
 
     #[test]
