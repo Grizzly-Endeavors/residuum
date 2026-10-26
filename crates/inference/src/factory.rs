@@ -9,9 +9,10 @@ use residuum_core::util::FatalError;
 use super::failover::{FailoverProvider, NoticeSink};
 use super::image_input::{ImageInputGuard, LearnedTextOnly};
 use super::providers::anthropic::AnthropicClient;
+use super::providers::fireworks;
 use super::providers::gemini::GeminiClient;
 use super::providers::ollama::OllamaClient;
-use super::providers::openai::{OpenAiClient, OpenAiDialect};
+use super::providers::openai::OpenAiClient;
 use super::{InferenceProvider, SharedHttpClient};
 use residuum_config::RetryConfig;
 
@@ -80,9 +81,7 @@ fn build_provider_client(
                     key,
                     retry,
                 )
-                .with_dialect(OpenAiDialect::Fireworks {
-                    session_affinity: spec.session_affinity.clone(),
-                }),
+                .with_dialect(fireworks::dialect(spec.session_affinity.clone())),
             ))
         }
         ProviderKind::Gemini => {

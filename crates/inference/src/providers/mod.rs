@@ -5,6 +5,7 @@
 //! chain construction) lives in the parent module, not here.
 
 pub mod anthropic;
+pub(crate) mod fireworks;
 pub(crate) mod gemini;
 pub(crate) mod null;
 pub(crate) mod ollama;
