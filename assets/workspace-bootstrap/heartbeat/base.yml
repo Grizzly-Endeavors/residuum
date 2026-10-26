@@ -45,7 +45,7 @@ pulses:
     model_tier: "small"
     tasks:
       - name: gate
-        prompt: "Find the last ingest entry in team/wiki/log.md and the episode it went through, then try memory_get on the next episode ID. If that episode is not found, respond with exactly HEARTBEAT_OK and skip the remaining tasks."
+        prompt: "Episode IDs are per agent and team/wiki/log.md is shared, so use only your own cursor. Get your agent name from list_agents (the [agent:<name>] line marked (you)). Find the last ingest entry in team/wiki/log.md that reads `through <name>/ep-NNN` with your exact name; ignore entries for other agents and entries with no agent name. Try memory_get on ep-NNN+1, or on ep-001 if you have no such entry. If that episode is not found, respond with exactly HEARTBEAT_OK and skip the remaining tasks."
       - name: ingest
         prompt: "Run the Ingest procedure from your instructions: file the new knowledge into team wiki pages and team/USER.md, then update the indexes and log. Summarize what you filed, one line per page touched."
 
