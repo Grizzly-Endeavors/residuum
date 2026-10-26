@@ -859,9 +859,12 @@ mod tests {
         )
         .await;
 
-        let mut entries = std::fs::read_dir(dir.path()).unwrap();
-        let entry = entries.next().unwrap().unwrap();
-        let contents = std::fs::read_to_string(entry.path()).unwrap();
+        let item_path = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .expect("the inbox should hold the added item's json file");
+        let contents = std::fs::read_to_string(item_path).unwrap();
         assert!(
             contents.contains(&long_line),
             "the title should keep the full first line, not truncate to 60 chars: {contents}"
