@@ -66,11 +66,11 @@ Pages are also searchable with `memory_search` (`source: "wiki"`, or included wh
 ## Who writes it
 
 - **The main agent**, during conversation, whenever it learns something durable. It activates the bundled `wiki` skill before writing, which carries the page format, index rules, and procedures.
-- **`memory_tending`** (nightly, runs as the `wiki` skill): ingests every episode after the one recorded in the last `ingest` entry of `log.md` — episode IDs are sequential, so it walks them with `memory_get` rather than searching — and files what they teach into pages and `team/USER.md`. It reads at most 20 episodes per run and records the last one it read.
+- **`memory_tending`** (nightly, runs as the `wiki` skill): ingests every episode of the running agent after the one recorded in that agent's last `ingest` entry of `log.md` — episode IDs are sequential per agent, so it walks them with `memory_get` rather than searching — and files what they teach into pages and `team/USER.md`. Its gate and the ingest read only entries that name the agent (`through <agent>/ep-NNN`); entries for other agents, and old entries with no agent name, are ignored, so an agent with no entry of its own starts at `ep-001`. It reads at most 20 episodes per run and records the last one it read.
 - **`wiki_lint`** (weekly, runs as the `wiki` skill): fixes index drift (pages missing from indexes, links to missing files, unlisted folders), incomplete frontmatter, pages past `stale_after`, drafts whose newest source is over a month old, duplicate pages, contradictions, and missing cross-links; it also splits crowded folders and folds near-empty ones back.
 - **The `learner` skill**: files corroborated preference signals from the subconscious as pages.
 
-Every change updates the index of each folder touched and appends a line to `log.md` (`## [YYYY-MM-DD] <ingest|edit|restructure|lint> | …`; ingest entries also record `through ep-NNN`).
+Every change updates the index of each folder touched and appends a line to `log.md` (`## [YYYY-MM-DD] <ingest|edit|restructure|lint> | …`; ingest entries also record the agent and its last episode covered, `through <agent>/ep-NNN`).
 
 Indexes are maintained by the agent rather than generated from frontmatter, so it can group and summarize them; the cost is that they can drift, which is what `wiki_lint` exists to catch.
 

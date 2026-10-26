@@ -61,7 +61,7 @@ List every page in its own folder's index, and list every subfolder in its paren
 ## After every change
 
 1. Update the `index.md` of each folder you touched: add new pages, fix moved or renamed links, drop deleted ones, refresh descriptions that changed.
-2. Append one line to `team/wiki/log.md`: `## [YYYY-MM-DD] <ingest|edit|restructure|lint> | <what changed and where>`. An `ingest` entry also names the last episode it covered: `## [2026-09-21] ingest | through ep-047 | ...`.
+2. Append one line to `team/wiki/log.md`: `## [YYYY-MM-DD] <ingest|edit|restructure|lint> | <what changed and where>`. An `ingest` entry also names your agent and the last episode of yours it covered: `## [2026-09-21] ingest | through writer/ep-047 | ...`.
 3. Re-read each index you edited and confirm every link points at a file that exists.
 
 ## team/USER.md versus the wiki
@@ -70,12 +70,12 @@ List every page in its own folder's index, and list every subfolder in its paren
 
 ## Ingest (memory_tending pulse)
 
-1. Find the last `ingest` entry in `team/wiki/log.md` and the episode it went through (`through ep-NNN`). Episode IDs are sequential: read each later episode with memory_get (ep-NNN+1, +2, …) until one is not found. With no prior ingest entry, start at ep-001. Stop after 20 episodes in one run; the next run continues from the log entry.
+1. Find your own cursor. Episode IDs count per agent, but `team/wiki/log.md` is shared, so only an entry that names you counts. Get your agent name from list_agents (the `[agent:<name>]` line marked `(you)`), then find the last `ingest` entry reading `through <name>/ep-NNN` with your exact name. Ignore entries for other agents and old entries with no agent name (`through ep-NNN`). Your episode IDs are sequential: read each later episode with memory_get (ep-NNN+1, +2, …) until one is not found. With no entry of yours, start at ep-001. Stop after 20 episodes in one run; the next run continues from your log entry.
 2. For each durable fact, decision, or preference: update the existing page that covers it, or create a new page. Add the episode to its `sources`.
 3. A pattern seen in one episode goes in a `draft` page. Promote a draft to `stable` once a second, independent episode supports it.
 4. Correct pages the new evidence contradicts; mark pages `deprecated` when they stop being true.
 5. Update `team/USER.md` only for core facts, under the cap.
-6. Finish with the After-every-change steps, recording the last episode you read in the `ingest` log entry.
+6. Finish with the After-every-change steps, recording your agent name and the last episode you read in the `ingest` log entry (`through <name>/ep-NNN`).
 
 ## Lint (wiki_lint pulse)
 
