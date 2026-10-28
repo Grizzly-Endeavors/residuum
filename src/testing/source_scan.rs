@@ -954,9 +954,15 @@ fn external_inputs(sources: &[SourceFile]) -> Vec<ExternalInput> {
 fn ci_rust_paths(root: &Path) -> Regex {
     let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
         .expect("read .github/workflows/ci.yml");
-    let line = Regex::new(r"(?m)^\s*RUST_PATHS_RE: '(.*)'$").unwrap();
+    rust_paths_in(&workflow)
+}
+
+/// The `RUST_PATHS_RE` value in the text of `ci.yml`, whose lines end in
+/// `\n` or, in a Windows checkout, `\r\n`.
+fn rust_paths_in(workflow: &str) -> Regex {
+    let line = Regex::new(r"(?mR)^\s*RUST_PATHS_RE: '(.*)'$").unwrap();
     let caps = line
-        .captures(&workflow)
+        .captures(workflow)
         .expect("ci.yml has a `RUST_PATHS_RE: '...'` line");
     Regex::new(&caps[1]).expect("RUST_PATHS_RE in ci.yml is a valid regex")
 }
@@ -1447,6 +1453,18 @@ mod tests {
         assert!(!inside_package("crates/network/x", "crates/net"));
         assert!(inside_package("tests/fixtures/a.json", ""));
         assert!(!inside_package("web/a.css", ""));
+    }
+
+    #[test]
+    fn rust_paths_are_read_from_lf_and_crlf_workflows() {
+        for ending in ["\n", "\r\n"] {
+            let workflow = format!(
+                "jobs:{ending}  env:{ending}    RUST_PATHS_RE: '^src/'{ending}    X: y{ending}"
+            );
+            let re = rust_paths_in(&workflow);
+            assert!(re.is_match("src/lib.rs"), "{ending:?}");
+            assert!(!re.is_match("docs/a.md"), "{ending:?}");
+        }
     }
 
     /// CI decides from the changed paths whether to run the Rust checks, and
