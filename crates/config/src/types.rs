@@ -211,6 +211,34 @@ impl std::fmt::Debug for TelegramConfig {
     }
 }
 
+/// Validated Slack Socket Mode configuration for one agent's Slack app.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SlackConfig {
+    /// Bot user token (`xoxb-…`) — the agent's Slack identity for posting.
+    pub bot_token: String,
+    /// App-level token (`xapp-…`) — opens the Socket Mode websocket.
+    pub app_token: String,
+    /// Whether people other than the owner can talk to the agent.
+    pub respond_to_others: bool,
+    /// Emoji shortcode (no colons) the agent reacts with on a message while
+    /// its turn runs; `None` turns the working reaction off.
+    pub working_reaction: Option<String>,
+    /// Whether text the agent writes before a tool call is posted to the chat.
+    pub deliver_intermediate: bool,
+}
+
+impl std::fmt::Debug for SlackConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlackConfig")
+            .field("bot_token", &"[redacted]")
+            .field("app_token", &"[redacted]")
+            .field("respond_to_others", &self.respond_to_others)
+            .field("working_reaction", &self.working_reaction)
+            .field("deliver_intermediate", &self.deliver_intermediate)
+            .finish()
+    }
+}
+
 /// Validated Microsoft Teams bot configuration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TeamsConfig {
@@ -1093,6 +1121,8 @@ pub struct Config {
     pub discord: Option<DiscordConfig>,
     /// Telegram bot configuration (None if `[telegram]` section absent or no token).
     pub telegram: Option<TelegramConfig>,
+    /// Slack bot configuration (None if `[slack]` section absent or tokens incomplete).
+    pub slack: Option<SlackConfig>,
     /// Microsoft Teams bot configuration (None if `[teams]` section absent).
     pub teams: Option<TeamsConfig>,
     /// `Agent2Agent` (A2A) protocol configuration. `enabled`/`port`/`public_url`
@@ -1162,6 +1192,7 @@ impl fmt::Debug for Config {
             .field("cloud", &self.cloud.as_ref().map(|_| "[configured]"))
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
+            .field("slack", &self.slack.as_ref().map(|_| "[configured]"))
             .field("teams", &self.teams)
             .field("a2a", &self.a2a)
             .field(

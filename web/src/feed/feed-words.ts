@@ -45,6 +45,7 @@ const ENDPOINT_NAMES: Readonly<Record<string, string>> = {
   telegram: "Telegram",
   discord: "Discord",
   teams: "Teams",
+  slack: "Slack",
 };
 
 /** A chat interface as people name it: `telegram` is "Telegram"; any other is its id, capitalized. */

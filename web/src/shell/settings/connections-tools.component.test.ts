@@ -225,6 +225,7 @@ describe("Connections", () => {
     expect(updates("Discord")).toBeChecked();
     expect(updates("Telegram")).not.toBeChecked();
     expect(updates("Microsoft Teams")).not.toBeChecked();
+    expect(updates("Slack")).not.toBeChecked();
 
     await fireEvent.click(updates("Telegram"));
     await settle();

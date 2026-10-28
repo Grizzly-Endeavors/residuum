@@ -134,7 +134,7 @@ pub fn build_gateway_app(
         }))
 }
 
-/// Spawn the Discord, Telegram, and Teams adapters that are configured.
+/// Spawn the Discord, Telegram, Slack, and Teams adapters that are configured.
 pub fn spawn_adapters(
     cfg: &Config,
     senders: &AdapterSenders,
@@ -182,6 +182,27 @@ pub fn spawn_adapters(
             tx,
         );
         tracing::info!("telegram interface started");
+    }
+
+    if let Some(ref slack_cfg) = cfg.slack {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let iface = residuum_interfaces::slack::SlackInterface::new(
+            slack_cfg.clone(),
+            senders.clone(),
+            cfg.workspace_dir.clone(),
+            tz,
+            rx,
+        );
+        chat.insert(
+            "slack",
+            residuum_core::util::spawn_monitored("slack", async move {
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "slack interface failed");
+                }
+            }),
+            tx,
+        );
+        tracing::info!("slack interface started");
     }
 
     if let Some(ref teams_cfg) = cfg.teams {

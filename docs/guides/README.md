@@ -10,6 +10,7 @@ For how a system is *intended* to work rather than how to drive it, see `../syst
 
 - [Work with more than one agent](multiple-agents.md) — create agents, switch between them, hand work from one to another, and delete or bring one back.
 - [Set up Residuum in Microsoft Teams](teams-setup.md) — register a Teams bot, expose it through a tunnel, and install it for DMs, group chats, and channels.
+- [Set up Residuum in Slack](slack-setup.md) — create a Slack app from the bundled manifest, give it the two tokens, and DM your agent; the first DM claims the owner.
 - [Connect agents with A2A](a2a-setup.md) — let other agents delegate work to yours, reach other agents from yours, and link your own instances.
 - [Migrating to agent sessions](migrating-to-agent-sessions.md) — breaking changes and new behavior for anyone upgrading from before the agent sessions overhaul.
 - [Reach Residuum from your phone and other browsers](remote-access.md) — pair a browser for Residuum Cloud, approve another from a paired one, use a recovery code, and remove a browser.

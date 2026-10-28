@@ -1402,6 +1402,7 @@ mod tests {
             cloud: None,
             discord: None,
             telegram: None,
+            slack: None,
             teams: None,
             a2a: residuum_config::A2aConfig::default(),
             webhooks: std::collections::HashMap::new(),

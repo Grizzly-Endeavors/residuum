@@ -28,6 +28,7 @@ Every agent's file tools and the web file API see the team layer under a `team/`
 | `teams_state.json` | Managed by the Teams interface | Teams owner and conversation references for proactive messages. Edit only to reset the owner (see [Microsoft Teams](teams.md)). |
 | `discord_state.json` | Managed by the Discord interface | Discord owner and the conversations the bot has seen. Edit only to reset the owner (see [Discord](discord.md)). |
 | `telegram_state.json` | Managed by the Telegram interface | Telegram owner and the chats the bot has seen. Edit only to reset the owner (see [Telegram](telegram.md)). |
+| `slack_state.json` | Managed by the Slack interface | Slack owner and the DM channels the app has seen. Edit only to reset the owner (see [Slack](slack.md)). |
 | `config/agent-card.json` | Low | What this agent advertises to other agents over A2A: name, description, and skills. Bootstrapped with a generic placeholder and an empty skill list. See [A2A](a2a.md). |
 
 ### User-owned files
@@ -96,6 +97,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
 | [Discord](discord.md) | Chat with the agent in Discord DMs and server channels | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
 | [Telegram](telegram.md) | Chat with the agent in Telegram private chats and groups | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
+| [Slack](slack.md) | Chat with the agent in Slack DMs over Socket Mode | *(interface — no tools)* | `[slack]` in `config.toml`, `slack_state.json` |
 | [A2A](a2a.md) | Lets other agents (including a user's own other instances) delegate tasks to this agent, and lets this agent delegate to them, over the Agent2Agent protocol | `list_agents`, `message_agent`, `stop_agent` (addresses `a2a:<name>`); `a2a_task_update` (A2A sessions only) | `[a2a]` in `hub/config.toml` (listener) and `config/config.toml` (visibility), `residuum a2a keys`, `config/agent-card.json`, `config/a2a.json` |
 | [Config Loading & Startup Fallback](config-loading.md) | How `config.toml`/`providers.toml` load, what's fatal vs. skipped with a notice, and the last-known-good fallback when startup can't come up on the live files | *(operations — no tools)* | `hub/config.toml`, `config/config.toml`, `config/providers.toml`, and their `.last-known-good.toml` copies |
 

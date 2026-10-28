@@ -105,8 +105,7 @@ pub fn from_file_and_env(
         subconscious::resolve_subconscious_settings(file.and_then(|f| f.subconscious.as_ref()));
     let learning = subconscious::resolve_learning_config(file.and_then(|f| f.learning.as_ref()));
 
-    let (discord, telegram, teams, idle) =
-        channels::resolve_configured_chats(file, &secrets, &mut notices);
+    let chats = channels::resolve_configured_chats(file, &secrets, &mut notices);
     let a2a = a2a::resolve_agent_a2a_config(hub, file.and_then(|f| f.a2a.as_ref()), &mut notices);
     let webhooks = channels::resolve_webhooks_config(
         file.and_then(|f| f.webhooks.as_ref()),
@@ -170,9 +169,10 @@ pub fn from_file_and_env(
         gateway: hub.gateway.clone(),
         timezone: hub.timezone,
         cloud: hub.cloud.clone(),
-        discord,
-        telegram,
-        teams,
+        discord: chats.discord,
+        telegram: chats.telegram,
+        slack: chats.slack,
+        teams: chats.teams,
         a2a,
         webhooks,
         skills,
@@ -181,7 +181,7 @@ pub fn from_file_and_env(
         background,
         agent: agent_abilities,
         auto_mode: agent::resolve_auto_mode_config(file, &mut notices),
-        idle,
+        idle: chats.idle,
         temperature: file.and_then(|f| f.temperature),
         thinking,
         web_search,
@@ -1259,7 +1259,8 @@ candidate_multiplier = 8
 
     fn chat_bots_config(extra: &str) -> Config {
         let cfg_toml = format!(
-            "[discord]\ntoken = \"d-token\"\n{extra}\n[telegram]\ntoken = \"t-token\"\n{extra}"
+            "[discord]\ntoken = \"d-token\"\n{extra}\n[telegram]\ntoken = \"t-token\"\n{extra}\n\
+             [slack]\nbot_token = \"xoxb-token\"\napp_token = \"xapp-token\"\n{extra}"
         );
         resolve_test(
             &cfg_toml,
@@ -1273,6 +1274,7 @@ candidate_multiplier = 8
         let cfg = chat_bots_config("");
         assert_eq!(cfg.discord.map(|d| d.respond_to_others), Some(false));
         assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(false));
+        assert_eq!(cfg.slack.map(|s| s.respond_to_others), Some(false));
     }
 
     #[test]
@@ -1280,6 +1282,52 @@ candidate_multiplier = 8
         let cfg = chat_bots_config("respond_to_others = true\n");
         assert_eq!(cfg.discord.map(|d| d.respond_to_others), Some(true));
         assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(true));
+        assert_eq!(cfg.slack.map(|s| s.respond_to_others), Some(true));
+    }
+
+    fn slack_config_with(extra: &str) -> crate::SlackConfig {
+        let cfg_toml =
+            format!("[slack]\nbot_token = \"xoxb-token\"\napp_token = \"xapp-token\"\n{extra}");
+        resolve_test(
+            &cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap()
+        .slack
+        .expect("both tokens set")
+    }
+
+    #[test]
+    fn slack_working_reaction_defaults_to_eyes() {
+        assert_eq!(
+            slack_config_with("").working_reaction.as_deref(),
+            Some("eyes")
+        );
+    }
+
+    #[test]
+    fn slack_working_reaction_is_configurable_and_tolerates_colons() {
+        assert_eq!(
+            slack_config_with("working_reaction = \"zap\"\n")
+                .working_reaction
+                .as_deref(),
+            Some("zap")
+        );
+        assert_eq!(
+            slack_config_with("working_reaction = \":test_tube:\"\n")
+                .working_reaction
+                .as_deref(),
+            Some("test_tube"),
+            "the shortcode as Slack displays it resolves to the bare name"
+        );
+    }
+
+    #[test]
+    fn an_empty_slack_working_reaction_turns_it_off() {
+        assert_eq!(
+            slack_config_with("working_reaction = \"\"\n").working_reaction,
+            None
+        );
     }
 
     #[test]
@@ -1287,6 +1335,7 @@ candidate_multiplier = 8
         let cfg = chat_bots_config("");
         assert_eq!(cfg.discord.map(|d| d.deliver_intermediate), Some(false));
         assert_eq!(cfg.telegram.map(|t| t.deliver_intermediate), Some(false));
+        assert_eq!(cfg.slack.map(|s| s.deliver_intermediate), Some(false));
     }
 
     #[test]
@@ -1294,6 +1343,7 @@ candidate_multiplier = 8
         let cfg = chat_bots_config("deliver_intermediate = true\n");
         assert_eq!(cfg.discord.map(|d| d.deliver_intermediate), Some(true));
         assert_eq!(cfg.telegram.map(|t| t.deliver_intermediate), Some(true));
+        assert_eq!(cfg.slack.map(|s| s.deliver_intermediate), Some(true));
     }
 
     // ── Teams config ───────────────────────────────────────────────────────
