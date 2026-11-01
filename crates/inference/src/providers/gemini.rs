@@ -508,7 +508,6 @@ impl GeminiClient {
             tool_calls = result.tool_calls.len(),
             "gemini completion received"
         );
-        crate::gen_ai_span::record_usage(result.usage.as_ref());
         Ok(result)
     }
 }

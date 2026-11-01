@@ -250,36 +250,24 @@ impl UsageRecorder {
     }
 }
 
-/// The attempts a finished call reports. A provider that reports none (a
-/// test double, the null provider) counts as one attempt of its own model.
+/// The attempts a finished call reports. A response from a provider that
+/// sends no request of its own (a test double, the null provider) lists
+/// none and counts as one attempt of the provider's model; an error listing
+/// none sent no request, so there is nothing to record.
 fn call_attempts(
     provider: &dyn InferenceProvider,
     result: &Result<InferenceResponse, InferenceError>,
 ) -> Vec<AttemptUsage> {
-    let (reported, outcome, usage) = match result {
-        Ok(response) => (
-            response.attempts.clone(),
-            AttemptOutcome::Succeeded,
-            response.usage,
-        ),
-        Err(error) => (failed_call_attempts(error), AttemptOutcome::Failed, None),
-    };
-    if !reported.is_empty() {
-        return reported;
+    match result {
+        Ok(response) if response.attempts.is_empty() => vec![AttemptUsage {
+            provider: UNKNOWN_PROVIDER.to_string(),
+            model: provider.model_name().to_string(),
+            outcome: AttemptOutcome::Succeeded,
+            usage: response.usage,
+        }],
+        Ok(response) => response.attempts.clone(),
+        Err(error) => error.attempts().to_vec(),
     }
-    vec![AttemptUsage {
-        provider: UNKNOWN_PROVIDER.to_string(),
-        model: provider.model_name().to_string(),
-        outcome,
-        usage,
-    }]
-}
-
-/// The attempts a call that failed overall made before giving up, as its
-/// error carries them. The one place that reads attempts off an error.
-fn failed_call_attempts(error: &InferenceError) -> Vec<AttemptUsage> {
-    let _ = error;
-    Vec::new()
 }
 
 fn month_file_name(year: i32, month: u32) -> String {
@@ -472,7 +460,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_call_is_recorded_as_a_failed_attempt() {
+    async fn a_failed_call_records_every_attempt_it_carries() {
+        let (_dir, recorder) = recorder();
+        let provider = FixedProvider(Err(InferenceError::Api("refused".to_string())));
+        let error = InferenceError::Attempted {
+            error: Box::new(InferenceError::Timeout(30)),
+            attempts: vec![
+                attempt("primary", AttemptOutcome::Failed, Some(usage(500, 0))),
+                attempt("fallback", AttemptOutcome::Failed, None),
+            ],
+        };
+        recorder
+            .record_call(&UsageComponent::Reflector, None, &provider, &Err(error))
+            .await;
+
+        let records = load_all(&recorder).await;
+        assert_eq!(records.len(), 2, "one record per attempt the error carries");
+        let first = records.first().unwrap();
+        assert_eq!(first.component, UsageComponent::Reflector);
+        assert_eq!(first.model, "primary");
+        assert_eq!(first.outcome, AttemptOutcome::Failed);
+        assert_eq!(
+            first.usage,
+            Some(usage(500, 0)),
+            "what a failed attempt spent is kept"
+        );
+        assert_eq!(records.get(1).unwrap().model, "fallback");
+    }
+
+    #[tokio::test]
+    async fn a_call_that_failed_before_sending_anything_records_nothing() {
         let (_dir, recorder) = recorder();
         let provider = FixedProvider(Err(InferenceError::Api("refused".to_string())));
         recorder
@@ -480,16 +497,13 @@ mod tests {
                 &UsageComponent::Reflector,
                 None,
                 &provider,
-                &Err(InferenceError::Api("refused".to_string())),
+                &Err(InferenceError::Parse("bad request".to_string())),
             )
             .await;
-
-        let records = load_all(&recorder).await;
-        assert_eq!(records.len(), 1);
-        let record = records.first().unwrap();
-        assert_eq!(record.component, UsageComponent::Reflector);
-        assert_eq!(record.outcome, AttemptOutcome::Failed);
-        assert_eq!(record.usage, None);
+        assert!(
+            load_all(&recorder).await.is_empty(),
+            "a bare error sent no request"
+        );
     }
 
     #[tokio::test]

@@ -446,8 +446,16 @@ mod tests {
         let mut response = InferenceResponse::new("ok".to_string(), vec![]);
         response.usage = Some(usage(30, 4));
         sink.record_call(&NamedProvider, &Ok(response)).await;
-        sink.record_call(&NamedProvider, &Err(InferenceError::Timeout(5)))
-            .await;
+        let failed = InferenceError::Attempted {
+            error: Box::new(InferenceError::Timeout(5)),
+            attempts: vec![residuum_inference::AttemptUsage {
+                provider: "anthropic".to_string(),
+                model: "main-model".to_string(),
+                outcome: residuum_inference::AttemptOutcome::Failed,
+                usage: None,
+            }],
+        };
+        sink.record_call(&NamedProvider, &Err(failed)).await;
 
         let records = UsageRecorder::new(&layout)
             .load(

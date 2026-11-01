@@ -573,7 +573,6 @@ impl AnthropicClient {
             tool_calls = result.tool_calls.len(),
             "anthropic completion received"
         );
-        crate::gen_ai_span::record_usage(result.usage.as_ref());
 
         Ok(result)
     }

@@ -427,7 +427,6 @@ impl OpenAiClient {
             tool_calls = resp.tool_calls.len(),
             "openai completion received"
         );
-        crate::gen_ai_span::record_usage(resp.usage.as_ref());
         Ok(resp)
     }
 }

@@ -38,7 +38,8 @@ impl From<InferenceError> for FailedRequest {
 
 /// Record one request sent to `model` at `provider`: a response lists it as
 /// its one attempt, and an error carries it with the usage reported before
-/// the failure.
+/// the failure. The usage also goes on the current span, the provider's
+/// request span, as its GenAI attributes.
 pub(crate) fn record_attempt(
     provider: ProviderKind,
     model: &str,
@@ -52,12 +53,16 @@ pub(crate) fn record_attempt(
     };
     match result {
         Ok(mut response) => {
+            crate::gen_ai_span::record_usage(response.usage.as_ref());
             response.attempts = vec![attempt(AttemptOutcome::Succeeded, response.usage)];
             Ok(response)
         }
-        Err(failed) => Err(failed
-            .error
-            .after_attempts(vec![attempt(AttemptOutcome::Failed, failed.usage)])),
+        Err(failed) => {
+            crate::gen_ai_span::record_usage(failed.usage.as_ref());
+            Err(failed
+                .error
+                .after_attempts(vec![attempt(AttemptOutcome::Failed, failed.usage)]))
+        }
     }
 }
 
