@@ -6,7 +6,7 @@
 //! `systemInstruction` field. Tool results are sent as `functionResponse`
 //! parts in user-role messages.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -226,7 +226,7 @@ impl GeminiClient {
         // The function names of the latest assistant message's tool calls, by
         // id. Ids are synthesized per response, so a result is only matched
         // against the calls just before it.
-        let mut call_names: HashMap<&str, &str> = HashMap::new();
+        let mut call_names: BTreeMap<&str, &str> = BTreeMap::new();
 
         for (index, msg) in messages.iter().enumerate() {
             match msg.role {

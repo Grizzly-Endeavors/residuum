@@ -458,8 +458,8 @@ fn to_ollama_messages(
     // Filled in conversation order rather than up front: ids synthesized when
     // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
     // a result must resolve against the calls that preceded it.
-    let mut tool_names_by_id: std::collections::HashMap<&str, &str> =
-        std::collections::HashMap::new();
+    let mut tool_names_by_id: std::collections::BTreeMap<&str, &str> =
+        std::collections::BTreeMap::new();
 
     messages
         .iter()
