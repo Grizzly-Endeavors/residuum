@@ -1050,55 +1050,9 @@ async fn reload_a2a(rt: &mut AgentRuntime, new_cfg: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use residuum_config::RetryConfig;
-    use residuum_config::{
-        AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig,
-        MemoryConfig, SkillsConfig, TelegramConfig, ToolsConfig,
-    };
+    use residuum_config::{CloudConfig, DiscordConfig, TelegramConfig};
 
-    /// Build a minimal test config.
-    fn test_config() -> Config {
-        Config {
-            agent_name: "test-agent".to_string(),
-            autostart: true,
-            main: vec![],
-            observer: vec![],
-            reflector: vec![],
-            pulse: vec![],
-            subconscious: vec![],
-            embedding: None,
-            workspace_dir: std::path::PathBuf::from("/tmp/test"),
-            timeout_secs: 30,
-            max_tokens: 4096,
-            memory: MemoryConfig::default(),
-            pulse_enabled: false,
-            subconscious_settings: residuum_config::SubconsciousSettings::default(),
-            learning: residuum_config::LearningConfig::default(),
-            gateway: GatewayConfig::default(),
-            timezone: chrono_tz::UTC,
-            cloud: None,
-            discord: None,
-            telegram: None,
-            teams: None,
-            a2a: residuum_config::A2aConfig::default(),
-            webhooks: std::collections::HashMap::new(),
-            skills: SkillsConfig { dirs: vec![] },
-            tools: ToolsConfig { dirs: vec![] },
-            retry: RetryConfig::default(),
-            background: BackgroundConfig::default(),
-            agent: AgentAbilitiesConfig::default(),
-            auto_mode: residuum_config::AutoModeConfig::default(),
-            idle: residuum_config::IdleConfig::default(),
-            temperature: None,
-            thinking: None,
-            web_search: residuum_config::WebSearchConfig::default(),
-            tracing: residuum_config::TracingConfig::default(),
-            role_overrides: std::collections::HashMap::new(),
-            model_catalog: residuum_config::ModelCatalog::default(),
-            config_dir: std::path::PathBuf::from("/tmp/config"),
-            load_notices: vec![],
-        }
-    }
+    use crate::testing::test_config;
 
     /// A disruptive-flags-all-false assertion helper: confirms a change didn't
     /// spuriously trip an adapter restart.

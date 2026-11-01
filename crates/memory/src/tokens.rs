@@ -27,7 +27,7 @@ pub fn estimate_message_tokens(messages: &[Message]) -> usize {
 /// `ImageData` stores the base64 bytes and media type but not the dimensions,
 /// so the provider's `width × height / 750` estimate can't be computed. This
 /// is that estimate for a typical resized image.
-const TOKENS_PER_IMAGE: usize = 1_600;
+pub const TOKENS_PER_IMAGE: usize = 1_600;
 
 /// Estimate tokens for a single message including metadata overhead.
 ///
@@ -39,10 +39,7 @@ const TOKENS_PER_IMAGE: usize = 1_600;
 /// where the line is counted, once.
 pub(crate) fn estimate_single_message(msg: &Message) -> usize {
     // Rendered content, including the `[From: …]` line for a known sender
-    let mut chars = msg.attributed_content().len();
-
-    // Role label overhead (~10 chars)
-    chars += 10;
+    let mut chars = text_chars(msg, &msg.attributed_content());
 
     // The status line, sent as its own system message with its own role label
     if let Some(line) = &msg.status_line {
@@ -55,6 +52,27 @@ pub(crate) fn estimate_single_message(msg: &Message) -> usize {
         .iter()
         .map(|block| block.text.len())
         .sum::<usize>();
+
+    chars.div_ceil(4) + msg.images.len() * TOKENS_PER_IMAGE
+}
+
+/// Estimate the tokens of one message of an assembled request: its content
+/// as it stands (a sender prefix already rendered into it), its role label
+/// and its tool call metadata.
+///
+/// What a stored message sends apart from that text is left to the caller:
+/// its status line, which assembly sends as a message of its own, and its
+/// images and reasoning, which reach the model only as the provider decides.
+#[must_use]
+pub fn estimate_request_message_tokens(msg: &Message) -> usize {
+    text_chars(msg, &msg.content).div_ceil(4)
+}
+
+/// The characters of `content` sent as `msg`, with its role label and tool
+/// call metadata.
+fn text_chars(msg: &Message, content: &str) -> usize {
+    // Role label overhead (~10 chars)
+    let mut chars = content.len() + 10;
 
     // Tool call overhead
     if let Some(calls) = &msg.tool_calls {
@@ -72,7 +90,7 @@ pub(crate) fn estimate_single_message(msg: &Message) -> usize {
         chars += id.len();
     }
 
-    chars.div_ceil(4) + msg.images.len() * TOKENS_PER_IMAGE
+    chars
 }
 
 #[cfg(test)]
@@ -240,6 +258,38 @@ mod tests {
         let msg = Message::user("hi").with_sender(Some(sender));
 
         assert_eq!(estimate_single_message(&msg), 10);
+    }
+
+    #[test]
+    fn a_request_message_counts_its_text_alone() {
+        let sender = MessageSender {
+            name: "Jane Doe".to_string(),
+            id: "u-1".to_string(),
+            interface: "teams".to_string(),
+            location: None,
+        };
+        let mut stored = Message::user_with_images(
+            "hi",
+            vec![ImageData {
+                media_type: "image/png".to_string(),
+                data: "iVBORw0KGgo=".to_string(),
+            }],
+        )
+        .with_sender(Some(sender))
+        .with_thinking(vec![ThinkingBlock::text("a".repeat(400))]);
+        stored.status_line = Some("[Received: Sunday Nov 1st 2026 | 10:49]".to_string());
+        // Assembly renders the sender prefix into the content and keeps the
+        // stored fields alongside it.
+        let mut sent = stored.clone();
+        sent.content = stored.attributed_content().into_owned();
+
+        // "[From: Jane Doe via teams]\nhi" = 29 chars + 10 role = 39 => 10 tokens
+        assert_eq!(estimate_request_message_tokens(&sent), 10);
+        assert_eq!(
+            estimate_request_message_tokens(&Message::user("hello world")),
+            estimate_single_message(&Message::user("hello world")),
+            "a plain message is the same either way"
+        );
     }
 
     #[test]

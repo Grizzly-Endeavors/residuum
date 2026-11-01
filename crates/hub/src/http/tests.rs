@@ -52,6 +52,7 @@ use residuum_workspace::team_files::TeamWriteCoordinator;
 use residuum_workspace::watch::WatchHealth;
 
 mod artifacts_origin;
+mod context;
 mod events;
 mod mail;
 mod overview;

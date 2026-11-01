@@ -1,5 +1,8 @@
 //! Context types used in system prompt assembly.
 
+use std::collections::BTreeSet;
+use std::ops::Range;
+
 /// Memory-related context injected into the system prompt.
 ///
 /// Groups observation log and recent narrative context to avoid parameter
@@ -54,22 +57,33 @@ pub struct PromptContext<'a> {
     pub intermediate_delivery: IntermediateDelivery,
 }
 
-/// A per-section breakdown of the agent's approximate token usage.
-pub struct ContextBreakdown {
-    /// Estimated tokens from stable identity files (soul, agents, env, user, memory).
-    pub identity_tokens: usize,
-    /// Estimated tokens from the memory pipeline (observation log + recent context).
-    pub memory_pipeline_tokens: usize,
-    /// Estimated tokens from the skills index.
-    pub skills_index_tokens: usize,
-    /// Estimated tokens from active skill instructions (0 if none active).
-    pub active_skills_tokens: usize,
-    /// Estimated tokens from built-in system tool definitions.
-    pub system_tool_tokens: usize,
-    /// Estimated tokens from MCP tool definitions.
-    pub mcp_tool_tokens: usize,
-    /// Estimated tokens across the in-memory recent message history.
-    pub history_tokens: usize,
-    /// Number of messages in the recent history.
-    pub history_count: usize,
+/// What a system prompt section is, for the context breakdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SectionKind {
+    /// A workspace or team file: SOUL.md, AGENTS.md, BOOTSTRAP.md, USER.md,
+    /// the wiki index, or the team roster.
+    Identity,
+    /// The code-owned HARNESS orientation.
+    Harness,
+    /// The observation log or the recent context.
+    Memory,
+    /// The skills index.
+    SkillsIndex,
+    /// The active skills' instructions.
+    ActiveSkills,
+}
+
+/// What each part of an assembled model request is, so the context
+/// breakdown counts the request a turn sends rather than rebuilding it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RequestLayout {
+    /// The system prompt's sections (the request's first message): each
+    /// one's kind and the byte range of the text it covers, in order,
+    /// together covering the whole text.
+    pub(crate) system_sections: Vec<(SectionKind, Range<usize>)>,
+    /// Indexes into the request's messages of the stored status lines.
+    pub(crate) status_lines: BTreeSet<usize>,
+    /// How many of the request's tools are built in; the MCP tools follow
+    /// them. Set where the tools are added.
+    pub(crate) builtin_tools: usize,
 }

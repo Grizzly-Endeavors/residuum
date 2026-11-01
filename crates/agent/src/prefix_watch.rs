@@ -435,6 +435,7 @@ mod tests {
             messages,
             tools: tools.to_vec(),
             options: CompletionOptions::default(),
+            layout: crate::context::RequestLayout::default(),
         }
     }
 

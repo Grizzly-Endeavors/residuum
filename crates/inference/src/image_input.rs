@@ -102,14 +102,22 @@ impl ImageInputGuard {
         }
     }
 
-    /// Whether this request should go without images from the start, and
-    /// whether that is because a rejection taught it.
+    /// Whether the model is known to be text-only, and whether a rejection
+    /// taught it. `Some` means requests to it go without images from the start.
     fn strip_up_front(&self) -> Option<bool> {
         match self.declared {
             ImageInput::TextOnly => Some(false),
             ImageInput::Accepted => None,
             ImageInput::Undeclared => self.learned.contains(&self.learned_key).then_some(true),
         }
+    }
+
+    /// The request as it goes out from the start, when the model is known to
+    /// be text-only and the request carries images, with whether a rejection
+    /// taught it. `None` means the request goes out as it is.
+    fn stripped_up_front(&self, messages: &[Message]) -> Option<(StrippedRequest, bool)> {
+        let learned = self.strip_up_front()?;
+        strip_images(messages).map(|stripped| (stripped, learned))
     }
 
     async fn send(
@@ -159,14 +167,10 @@ impl ImageInputGuard {
         sink: Option<&TrackedSink<'_>>,
         image_fallback: bool,
     ) -> Result<InferenceResponse, InferenceError> {
-        if let Some(learned) = self.strip_up_front() {
-            return match strip_images(messages) {
-                Some(stripped) => {
-                    self.send_without_images(&stripped, tools, options, sink, learned)
-                        .await
-                }
-                None => self.send(messages, tools, options, sink).await,
-            };
+        if let Some((stripped, learned)) = self.stripped_up_front(messages) {
+            return self
+                .send_without_images(&stripped, tools, options, sink, learned)
+                .await;
         }
 
         let err = match self.send(messages, tools, options, sink).await {
@@ -251,6 +255,23 @@ impl InferenceProvider for ImageInputGuard {
 
     fn takes_images(&self) -> bool {
         self.strip_up_front().is_none()
+    }
+
+    /// The inner provider's, over the request as this guard sends it: with
+    /// the images left out when they are stripped up front.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Vec<String> {
+        match self.stripped_up_front(messages) {
+            Some((stripped, _)) => {
+                self.inner
+                    .replayed_reasoning(&stripped.messages, tools, options)
+            }
+            None => self.inner.replayed_reasoning(messages, tools, options),
+        }
     }
 
     fn model_name(&self) -> &str {

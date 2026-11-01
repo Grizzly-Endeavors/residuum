@@ -55,7 +55,7 @@ enum AgentRouterKind {
     /// agent so the user can repair it.
     Repair,
     /// Routes that only read and write the agent's files: chat history,
-    /// usage, the inbox attachments, the raw A2A client settings, and the file links
+    /// usage, the context breakdown, the inbox attachments, the raw A2A client settings, and the file links
     /// (workspace and token). A running agent serves them from its own router, at the
     /// cost it always had. Any other agent gets them from a router that opens
     /// no checkpoint repository, so they answer even when the repositories
@@ -97,7 +97,9 @@ impl AgentRouterKind {
 /// file-only data routes.
 fn is_file_data_route(route: &[&str]) -> bool {
     match route {
-        ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] | ["files", _] => true,
+        ["chat", "history"] | ["usage" | "context"] | ["a2a", "agents", "raw"] | ["files", _] => {
+            true
+        }
         ["inbox", rest @ ..] => {
             matches!(rest, [_, "attachments", _] | ["agent", _, "attachments", _])
         }
@@ -342,10 +344,12 @@ mod tests {
     }
 
     #[test]
-    fn file_routes_are_history_usage_inbox_attachments_the_raw_a2a_settings_and_file_links() {
+    fn file_routes_are_history_usage_the_context_breakdown_inbox_attachments_the_raw_a2a_settings_and_file_links()
+     {
         for files in [
             "/api/chat/history",
             "/api/usage",
+            "/api/context",
             "/api/a2a/agents/raw",
             "/api/files/workspace",
             "/api/files/abc123",
@@ -389,6 +393,7 @@ mod tests {
             "/api/chat",
             "/api/chat/history/extra",
             "/api/usage/totals",
+            "/api/context/extra",
             "/api/a2a/agents",
             "/api/a2a/agents/raw/extra",
             "/api/a2a/status",

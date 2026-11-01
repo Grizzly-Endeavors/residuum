@@ -455,6 +455,7 @@ mod tests {
             messages,
             tools: Vec::new(),
             options: residuum_inference::CompletionOptions::default(),
+            layout: crate::context::RequestLayout::default(),
         }
     }
 

@@ -21,7 +21,9 @@ use residuum_inference::{ToolError, ToolResult};
 use residuum_mcp::SharedMcpRegistry;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::context::{MemoryContext, PromptContext, StatusClock, assemble_system_prompt};
+use super::context::{
+    MemoryContext, PromptContext, RequestLayout, StatusClock, assemble_system_prompt,
+};
 use super::hop::HopCounter;
 use super::recent_messages::RecentMessages;
 use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
@@ -707,6 +709,9 @@ pub struct ModelRequest {
     /// The turn's options, whose cache hints name the conversation and how
     /// long this turn's cached prefix should be kept.
     pub options: CompletionOptions,
+    /// What each part of the messages and tools is, for the context
+    /// breakdown.
+    pub(crate) layout: RequestLayout,
 }
 
 /// Build the request a model call sends from the turn's current state.
@@ -734,6 +739,7 @@ pub(crate) async fn build_model_request(
     options: &CompletionOptions,
 ) -> ModelRequest {
     let mut tool_definitions = tools.definitions();
+    let builtin_tools = tool_definitions.len();
 
     // Merge MCP tool definitions from all connected servers. The registry
     // has already dropped any MCP tool whose name collides with a built-in
@@ -744,12 +750,17 @@ pub(crate) async fn build_model_request(
     tool_definitions.extend(mcp_guard.tool_definitions());
     drop(mcp_guard);
 
-    let messages = assemble_system_prompt(identity, recent_messages, memory_ctx, prompt_ctx);
+    let (messages, layout) =
+        assemble_system_prompt(identity, recent_messages, memory_ctx, prompt_ctx);
 
     ModelRequest {
         messages,
         tools: tool_definitions,
         options: options.clone(),
+        layout: RequestLayout {
+            builtin_tools,
+            ..layout
+        },
     }
 }
 

@@ -8,11 +8,16 @@ use residuum_inference::{CacheRetention, CompletionOptions, InferenceProvider, M
 use residuum_mcp::SharedMcpRegistry;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::context::{MemoryContext, PromptContext, StatusClock};
+use super::context::{
+    ContextBreakdown, ContextSnapshot, MemoryContext, PromptContext, StatusClock,
+    compute_context_breakdown, save_context_snapshot,
+};
 use super::hop::HopCounter;
 use super::recent_messages::RecentMessages;
 use super::tool::ToolRegistry;
-use super::turn::{EventContext, EventTarget, TurnOutput, TurnResources, execute_turn};
+use super::turn::{
+    EventContext, EventTarget, TurnOutput, TurnResources, build_model_request, execute_turn,
+};
 use super::usage::MainUsageSink;
 use residuum_bus::interrupt;
 use residuum_bus::usage::SessionUsageTotals;
@@ -568,7 +573,7 @@ impl Agent {
             },
             session_conversation: None,
         };
-        execute_turn(
+        let result = execute_turn(
             kickoff_index,
             &resources,
             &memory_ctx,
@@ -579,41 +584,54 @@ impl Agent {
             interrupt_rx,
             subconscious,
         )
-        .await
+        .await;
+        self.save_latest_breakdown(prompt_ctx).await;
+        result
     }
 
-    /// Compute a per-section token breakdown for the current agent context.
-    pub async fn context_breakdown(
-        &self,
-        prompt_ctx: &PromptContext<'_>,
-    ) -> super::context::ContextBreakdown {
-        // Reload identity so `/context` reflects on-disk edits, not the snapshot
-        // from the last turn.
+    /// Count what the agent's next model request is made of, from the
+    /// request a turn would build now (with identity reloaded from disk, so
+    /// on-disk edits show).
+    pub async fn context_breakdown(&self, prompt_ctx: &PromptContext<'_>) -> ContextBreakdown {
         let identity = self.load_identity_snapshot().await;
+        self.breakdown_with(&identity, prompt_ctx).await
+    }
+
+    /// The breakdown of the request built from `identity` and the agent's
+    /// current history, memory, tools and options.
+    async fn breakdown_with(
+        &self,
+        identity: &IdentityFiles,
+        prompt_ctx: &PromptContext<'_>,
+    ) -> ContextBreakdown {
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
-
-        let builtin_defs = self.tools.definitions();
-
-        let mcp_defs = self.mcp_registry.read().await.tool_definitions();
-
-        let token_count = |def: &residuum_inference::ToolDefinition| {
-            let param_str = def.parameters.to_string();
-            residuum_memory::tokens::estimate_tokens(&def.name)
-                + residuum_memory::tokens::estimate_tokens(&def.description)
-                + residuum_memory::tokens::estimate_tokens(&param_str)
-        };
-        let system_tool_tokens: usize = builtin_defs.iter().map(token_count).sum();
-        let mcp_tool_tokens: usize = mcp_defs.iter().map(token_count).sum();
-
-        super::context::compute_context_breakdown(
-            &identity,
+        let request = build_model_request(
+            identity,
+            &self.recent_messages,
             &memory_ctx,
             prompt_ctx,
-            &self.recent_messages,
-            system_tool_tokens,
-            mcp_tool_tokens,
+            &self.tools,
+            &self.mcp_registry,
+            &self.options,
         )
+        .await;
+        compute_context_breakdown(&request, &*self.provider)
+    }
+
+    /// Save the breakdown of the request the next turn starts from, for the
+    /// hub to serve. Called after every turn and after any change the memory
+    /// pipeline makes to history between turns. An agent with no workspace
+    /// layout saves nothing; a failed write is logged and never fails the turn.
+    pub async fn save_latest_breakdown(&self, prompt_ctx: &PromptContext<'_>) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let snapshot = ContextSnapshot {
+            computed_at: chrono::Utc::now(),
+            breakdown: self.breakdown_with(&self.identity, prompt_ctx).await,
+        };
+        save_context_snapshot(&layout.context_breakdown_json(), &snapshot).await;
     }
 
     /// Get the current recent message count.
@@ -2608,6 +2626,83 @@ mod tests {
     fn is_status_line(message: &Message) -> bool {
         message.role == residuum_inference::Role::System
             && message.content.starts_with("[Received:")
+    }
+
+    /// `script`'s agent, keeping its files in a fresh workspace with a
+    /// memory directory.
+    async fn scripted_agent_with_workspace(
+        script: Vec<Step>,
+    ) -> (Agent, residuum_config::WorkspaceLayout, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        let (mut agent, _) = scripted_agent(script);
+        agent.layout = Some(layout.clone());
+        (agent, layout, dir)
+    }
+
+    #[tokio::test]
+    async fn each_turn_saves_the_breakdown_of_the_request_the_next_turn_starts_from() {
+        use crate::context::load_context_snapshot;
+
+        let (mut agent, layout, _dir) = scripted_agent_with_workspace(vec![
+            Ok(echo_call()),
+            Ok(reply("one")),
+            Ok(reply("two")),
+        ])
+        .await;
+        let path = layout.context_breakdown_json();
+        assert_eq!(
+            load_context_snapshot(&path).await.unwrap(),
+            None,
+            "nothing is saved before the first turn"
+        );
+
+        send(&mut agent, "first", "t1", &[]).await.unwrap();
+        let first = load_context_snapshot(&path)
+            .await
+            .unwrap()
+            .expect("the turn saved its breakdown");
+        assert_eq!(
+            first.breakdown,
+            agent.context_breakdown(&PromptContext::default()).await,
+            "the saved breakdown is the one /context shows"
+        );
+        assert_eq!(
+            first.breakdown.history_count, 4,
+            "the message, the tool call, its result and the reply"
+        );
+        assert!(
+            first.breakdown.status_line_tokens > 0,
+            "the message's status line is counted"
+        );
+
+        send(&mut agent, "second", "t2", &[]).await.unwrap();
+        let second = load_context_snapshot(&path).await.unwrap().unwrap();
+        assert_eq!(
+            second.breakdown.history_count, 6,
+            "replaced after the next turn"
+        );
+        assert!(second.breakdown.total_tokens > first.breakdown.total_tokens);
+        assert!(second.computed_at >= first.computed_at);
+    }
+
+    #[tokio::test]
+    async fn a_breakdown_that_cannot_be_saved_leaves_the_turn_alone() {
+        let (mut agent, layout, _dir) = scripted_agent_with_workspace(vec![Ok(reply("one"))]).await;
+        // A directory where the file goes: the rename into place fails.
+        let path = layout.context_breakdown_json();
+        tokio::fs::create_dir(&path).await.unwrap();
+
+        let replies = send(&mut agent, "hi", "t1", &[]).await.unwrap();
+
+        assert_eq!(replies, ["one"], "the turn answers as usual");
+        assert!(
+            tokio::fs::metadata(&path).await.unwrap().is_dir(),
+            "nothing replaced what was in the way"
+        );
     }
 
     #[tokio::test]

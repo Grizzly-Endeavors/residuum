@@ -1,9 +1,11 @@
 //! System prompt content builders.
 
+use std::ops::Range;
+
 use residuum_inference::Message;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::types::{IntermediateDelivery, MemoryContext, PromptContext};
+use super::types::{IntermediateDelivery, MemoryContext, PromptContext, SectionKind};
 
 fn section(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
@@ -40,6 +42,15 @@ Extend, don't just operate: authoring pulses and skills for the user's recurring
 
 /// Separates the system prompt's sections.
 const SECTION_SEPARATOR: &str = "\n\n";
+
+/// The system prompt message, and what each part of its text is.
+pub(super) struct SystemPrompt {
+    pub(super) message: Message,
+    /// Each section's kind and the byte range of the message's text it
+    /// covers, the separator ahead of it included: in order, together
+    /// covering the whole text.
+    pub(super) sections: Vec<(SectionKind, Range<usize>)>,
+}
 
 /// The `HARNESS` section, with the Senders bullet telling the agent what
 /// reaches each chat under that chat's `deliver_intermediate` setting. The
@@ -116,41 +127,41 @@ fn chat_names(chats: &[(&str, bool)], posted: bool) -> String {
 /// models) get the same effect from the order alone. The skills index (10)
 /// comes before the active skills (11) so activating a skill leaves the
 /// index cached.
-pub(super) fn build_system_message(
+pub(super) fn build_system_prompt(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
-) -> Message {
+) -> SystemPrompt {
     let skills_ctx = &prompt_ctx.skills;
     let mut stable = Vec::new();
 
     if let Some(soul) = &identity.soul {
-        stable.push(section("SOUL.md", soul));
+        stable.push((SectionKind::Identity, section("SOUL.md", soul)));
     }
 
     if let Some(agents) = &identity.agents {
-        stable.push(section("AGENTS.md", agents));
+        stable.push((SectionKind::Identity, section("AGENTS.md", agents)));
     }
 
-    stable.push(section(
-        "HARNESS",
-        &harness(prompt_ctx.intermediate_delivery),
+    stable.push((
+        SectionKind::Harness,
+        section("HARNESS", &harness(prompt_ctx.intermediate_delivery)),
     ));
 
     if let Some(bootstrap) = &identity.bootstrap {
-        stable.push(section("BOOTSTRAP.md", bootstrap));
+        stable.push((SectionKind::Identity, section("BOOTSTRAP.md", bootstrap)));
     }
 
     if let Some(user) = &identity.user {
-        stable.push(section("USER.md", user));
+        stable.push((SectionKind::Identity, section("USER.md", user)));
     }
 
     if let Some(wiki_index) = &identity.wiki_index {
-        stable.push(section("WIKI_INDEX", wiki_index));
+        stable.push((SectionKind::Identity, section("WIKI_INDEX", wiki_index)));
     }
 
     if let Some(team) = &identity.team {
-        stable.push(section("TEAM", team));
+        stable.push((SectionKind::Identity, section("TEAM", team)));
     }
 
     let mut changing = Vec::new();
@@ -158,34 +169,51 @@ pub(super) fn build_system_message(
     if let Some(obs) = memory_ctx.observations
         && !obs.is_empty()
     {
-        changing.push(section("OBSERVATION_LOG", obs));
+        changing.push((SectionKind::Memory, section("OBSERVATION_LOG", obs)));
     }
 
     if let Some(ctx) = memory_ctx.recent_context
         && !ctx.is_empty()
     {
-        changing.push(section("RECENT_CONTEXT", ctx));
+        changing.push((SectionKind::Memory, section("RECENT_CONTEXT", ctx)));
     }
 
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
-        changing.push(section("SKILLS_INDEX", idx));
+        changing.push((SectionKind::SkillsIndex, section("SKILLS_INDEX", idx)));
     }
 
     if let Some(active) = skills_ctx.active_instructions
         && !active.is_empty()
     {
-        changing.push(section("ACTIVE_SKILLS", active));
+        changing.push((SectionKind::ActiveSkills, section("ACTIVE_SKILLS", active)));
     }
 
+    let mut sections = Vec::with_capacity(stable.len() + changing.len());
+    let mut stable_text = String::new();
+    for (position, (kind, part)) in stable.iter().enumerate() {
+        let start = stable_text.len();
+        if position > 0 {
+            stable_text.push_str(SECTION_SEPARATOR);
+        }
+        stable_text.push_str(part);
+        sections.push((*kind, start..stable_text.len()));
+    }
     // The separator opens the changing part rather than closing the stable
     // one, so the stable part's bytes don't depend on what follows it.
-    let rest: String = changing
-        .iter()
-        .flat_map(|part| [SECTION_SEPARATOR, part.as_str()])
-        .collect();
-    Message::system_with_cache_boundary(stable.join(SECTION_SEPARATOR), &rest)
+    let boundary = stable_text.len();
+    let mut rest = String::new();
+    for (kind, part) in &changing {
+        let start = boundary + rest.len();
+        rest.push_str(SECTION_SEPARATOR);
+        rest.push_str(part);
+        sections.push((*kind, start..boundary + rest.len()));
+    }
+    SystemPrompt {
+        message: Message::system_with_cache_boundary(stable_text, &rest),
+        sections,
+    }
 }
 
 #[cfg(test)]
@@ -199,7 +227,9 @@ mod tests {
         memory_ctx: &MemoryContext<'_>,
         prompt_ctx: &PromptContext<'_>,
     ) -> String {
-        build_system_message(identity, memory_ctx, prompt_ctx).content
+        build_system_prompt(identity, memory_ctx, prompt_ctx)
+            .message
+            .content
     }
 
     /// The system message's text on either side of its cache boundary.
@@ -451,7 +481,7 @@ mod tests {
             index: Some("index"),
             active_instructions: Some("active"),
         };
-        let message = build_system_message(&identity, &mem, &with_skills(skills));
+        let message = build_system_prompt(&identity, &mem, &with_skills(skills)).message;
 
         let (stable, rest) = split(&message);
         assert!(stable.ends_with("</TEAM>"), "{stable}");
@@ -468,6 +498,62 @@ mod tests {
             );
             assert!(rest.contains(changing), "{changing} is after the boundary");
         }
+    }
+
+    #[test]
+    fn the_sections_cover_the_whole_text_in_order_with_their_kinds() {
+        let identity = IdentityFiles {
+            soul: Some("soul".to_string()),
+            user: Some("user".to_string()),
+            ..IdentityFiles::default()
+        };
+        let mem = MemoryContext {
+            observations: Some("obs"),
+            recent_context: Some("recent"),
+        };
+        let delivery = IntermediateDelivery {
+            discord: true,
+            ..IntermediateDelivery::default()
+        };
+        let prompt_ctx = PromptContext {
+            skills: SkillsContext {
+                index: Some("- pdf (team, /skills/pdf/SKILL.md): Reads PDFs"),
+                active_instructions: Some("<active_skill/>"),
+            },
+            intermediate_delivery: delivery,
+        };
+        let prompt = build_system_prompt(&identity, &mem, &prompt_ctx);
+        let text = &prompt.message.content;
+
+        let kinds: Vec<SectionKind> = prompt.sections.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                SectionKind::Identity,
+                SectionKind::Harness,
+                SectionKind::Identity,
+                SectionKind::Memory,
+                SectionKind::Memory,
+                SectionKind::SkillsIndex,
+                SectionKind::ActiveSkills,
+            ]
+        );
+        let mut end = 0;
+        for (_, range) in &prompt.sections {
+            assert_eq!(range.start, end, "each section starts where the last ended");
+            end = range.end;
+        }
+        assert_eq!(end, text.len(), "the sections cover the whole text");
+        let harness_range_text = prompt
+            .sections
+            .get(1)
+            .and_then(|(_, range)| text.get(range.clone()))
+            .unwrap();
+        assert_eq!(
+            harness_range_text,
+            format!("\n\n{}", section("HARNESS", &harness(delivery))),
+            "a section's range holds its text, for the agent's chat settings, and the separator ahead of it"
+        );
     }
 
     #[test]
@@ -498,12 +584,13 @@ mod tests {
             soul: Some("soul".to_string()),
             ..IdentityFiles::default()
         };
-        let before = build_system_message(&identity, &no_memory(), &PromptContext::default());
+        let before =
+            build_system_prompt(&identity, &no_memory(), &PromptContext::default()).message;
         let mem = MemoryContext {
             observations: Some("a new observation"),
             recent_context: None,
         };
-        let after = build_system_message(&identity, &mem, &PromptContext::default());
+        let after = build_system_prompt(&identity, &mem, &PromptContext::default()).message;
 
         let (stable_before, rest_before) = split(&before);
         let (stable_after, _) = split(&after);

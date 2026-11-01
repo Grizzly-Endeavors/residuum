@@ -191,7 +191,7 @@ Net effect: exactly one new run starts, and every queued message reaches it — 
 
 - **`residuum_config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`, `RetryConfig` (passed to provider construction), `WorkspaceLayout` (including `sessions_dir()`).
 - **`residuum_inference`** — `InferenceProvider`, `CompletionOptions`, `SharedHttpClient`, `Message`. Used to build and call LLM providers for a session's turn.
-- **`residuum_agent::context`** — `assemble_system_prompt`/`build_system_message` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `residuum_agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
+- **`residuum_agent::context`** — `assemble_system_prompt`/`build_system_prompt` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `residuum_agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
 - **`residuum_agent::turn`** — `execute_turn()`. The session executor calls this to run the turn loop, passing the session's `CancellationToken` as the stop token.
 - **`residuum_agent::recent_messages`** — `RecentMessages`, the message buffer accumulated across a run's turns.
 - **`residuum_bus::interrupt`** — `Interrupt` (specifically `Interrupt::AgentMessage`), the type a session's real interrupt channel carries.

@@ -18,6 +18,9 @@ pub mod web;
 pub mod websocket;
 mod ws;
 
+#[cfg(test)]
+mod testing;
+
 pub use launcher::GatewayLauncher;
 
 #[cfg(test)]

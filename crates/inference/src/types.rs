@@ -923,6 +923,22 @@ pub trait InferenceProvider: Send + Sync {
         true
     }
 
+    /// The readable text of the reasoning a request of `messages`, `tools`
+    /// and `options` sends back to the model, one entry per block, chosen by
+    /// the same rule the provider's request conversion applies. Reasoning
+    /// that goes back only as a signature or encrypted data has no text and
+    /// is not listed. A provider that sends no reasoning back keeps this
+    /// default.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Vec<String> {
+        let _ = (messages, tools, options);
+        Vec::new()
+    }
+
     /// The model this provider is configured for. A chain that fails over
     /// keeps naming its primary; the model that answered a call is the last
     /// of its response's [`InferenceResponse::attempts`].

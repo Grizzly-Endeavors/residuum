@@ -362,6 +362,15 @@ impl OpenAiClient {
         Ok(response.produced_at(&self.origin()))
     }
 
+    /// The attempt a request's first send makes: the request as prepared, with
+    /// whatever this host has already been found to refuse left out.
+    fn first_attempt(&self) -> Attempt {
+        Attempt {
+            fill_missing_reasoning: self.fills_missing_reasoning.load(Ordering::Relaxed),
+            drop_capped_effort: self.refuses_capped_effort.load(Ordering::Relaxed),
+        }
+    }
+
     /// Send a request, and once more with placeholder reasoning on the tool
     /// calls that have none if the host refuses it for missing
     /// `reasoning_content`, or without [`CAPPED_REASONING_EFFORT`] if the
@@ -371,10 +380,7 @@ impl OpenAiClient {
         prepared: &PreparedRequest,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
-        let mut attempt = Attempt {
-            fill_missing_reasoning: self.fills_missing_reasoning.load(Ordering::Relaxed),
-            drop_capped_effort: self.refuses_capped_effort.load(Ordering::Relaxed),
-        };
+        let mut attempt = self.first_attempt();
         let mut refused = Vec::new();
         loop {
             let request = prepared.request(&self.model, sink.is_some(), attempt);
@@ -727,6 +733,25 @@ impl InferenceProvider for OpenAiClient {
         sink: &dyn StreamSink,
     ) -> Result<InferenceResponse, InferenceError> {
         self.run(messages, tools, options, Some(sink)).await
+    }
+
+    /// The `reasoning_content` the first send of this request carries, in
+    /// the order it is sent, placeholders included. It is the same request
+    /// `send_with_reasoning_fallback` sends first, so the count and the wire
+    /// cannot disagree.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Vec<String> {
+        let prepared = self.prepare(messages, tools, options);
+        prepared
+            .request(&self.model, false, self.first_attempt())
+            .messages
+            .iter()
+            .filter_map(|message| message.reasoning_content.clone())
+            .collect()
     }
 
     fn model_name(&self) -> &str {
@@ -3499,6 +3524,64 @@ mod tests {
                 .all(|r| reasoning_at(r, 7).as_deref() == Some("mine")),
             "the host's own reasoning is never replaced"
         );
+    }
+
+    #[test]
+    fn the_reasoning_counted_is_the_reasoning_the_request_sends_back() {
+        let options = CompletionOptions::default();
+        let compatible = reasoning_client_at("http://localhost:8000/v1");
+        assert_eq!(
+            compatible.replayed_reasoning(&reasoning_exchange(), &[], &options),
+            ["current reasoning"],
+            "only the reasoning that goes on the wire is counted"
+        );
+        assert!(
+            reasoning_client_at("https://api.openai.com/v1")
+                .replayed_reasoning(&reasoning_exchange(), &[], &options)
+                .is_empty(),
+            "OpenAI itself is sent none"
+        );
+
+        let exchange = failover_exchange(Some("mine"));
+        assert_eq!(
+            compatible.replayed_reasoning(&exchange, &[], &options),
+            ["mine"],
+            "a tool call with nothing to replay sends nothing until the host asks for it"
+        );
+        compatible
+            .fills_missing_reasoning
+            .store(true, Ordering::Relaxed);
+        assert_eq!(
+            compatible.replayed_reasoning(&exchange, &[], &options),
+            [MISSING_REASONING_PLACEHOLDER, "mine"],
+            "once it has, the placeholder counts too, in the order the request sends it"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reasoning_counted_is_the_reasoning_in_the_body_the_host_accepted() {
+        let server = MockServer::start().await;
+        mount_reasoning_host(&server).await;
+        let client = make_client(server.uri(), "m");
+        let exchange = failover_exchange(Some("mine"));
+        let options = CompletionOptions::default();
+        client.complete(&exchange, &[], &options).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        let sent: Vec<String> = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .expect("the body has a messages array")
+            .iter()
+            .filter_map(|message| message["reasoning_content"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            client.replayed_reasoning(&exchange, &[], &options),
+            sent,
+            "the count is taken from the request the wire carries, so it cannot drift from it"
+        );
+        assert_eq!(sent, [MISSING_REASONING_PLACEHOLDER, "mine"]);
     }
 
     #[tokio::test]

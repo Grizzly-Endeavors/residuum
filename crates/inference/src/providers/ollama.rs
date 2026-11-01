@@ -115,13 +115,10 @@ impl OllamaClient {
             })
             .collect();
 
-        let think = options.thinking.as_ref().map(|tc| match tc {
-            ThinkingConfig::Toggle(val) => *val,
-            ThinkingConfig::Level(_) => true,
-        });
+        let think = think_flag(options);
 
         PreparedRequest {
-            messages: to_ollama_messages(messages, (think == Some(true)).then_some(origin)),
+            messages: wire_messages(messages, options, origin),
             tools: (!ollama_tools.is_empty()).then_some(ollama_tools),
             format: match &options.response_format {
                 ResponseFormat::Text => None,
@@ -409,6 +406,19 @@ impl InferenceProvider for OllamaClient {
         self.run(messages, tools, options, Some(sink)).await
     }
 
+    /// The `thinking` the converted request carries on its messages.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Vec<String> {
+        wire_messages(messages, options, &self.origin())
+            .into_iter()
+            .filter_map(|message| message.thinking)
+            .collect()
+    }
+
     fn model_name(&self) -> &str {
         &self.model
     }
@@ -468,6 +478,28 @@ struct OllamaMessage {
     thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
+}
+
+/// The request's `think` flag: `None` when thinking is not configured.
+fn think_flag(options: &CompletionOptions) -> Option<bool> {
+    options.thinking.as_ref().map(|tc| match tc {
+        ThinkingConfig::Toggle(val) => *val,
+        ThinkingConfig::Level(_) => true,
+    })
+}
+
+/// The conversation a request sends, replaying `origin`'s reasoning when the
+/// request has thinking on. Both the request and
+/// [`InferenceProvider::replayed_reasoning`] come from here.
+fn wire_messages(
+    messages: &[Message],
+    options: &CompletionOptions,
+    origin: &ThinkingOrigin,
+) -> Vec<OllamaMessage> {
+    to_ollama_messages(
+        messages,
+        (think_flag(options) == Some(true)).then_some(origin),
+    )
 }
 
 /// Convert a full conversation into Ollama's wire format, resolving each
@@ -1902,6 +1934,30 @@ mod tests {
             response.thinking,
             vec![ThinkingBlock::text("hmm").with_origin(&test_origin())],
             "the block names Ollama and the model that answered"
+        );
+    }
+
+    #[test]
+    fn the_reasoning_counted_is_the_reasoning_the_request_sends_back() {
+        let client = make_client("http://localhost:11434", "m");
+        let thinking_on = CompletionOptions {
+            thinking: Some(ThinkingConfig::Toggle(true)),
+            ..CompletionOptions::default()
+        };
+        assert_eq!(
+            client.replayed_reasoning(&exchange_with_thinking(), &[], &thinking_on),
+            ["current thinking"],
+            "only the thinking that goes on the wire is counted"
+        );
+        assert!(
+            client
+                .replayed_reasoning(
+                    &exchange_with_thinking(),
+                    &[],
+                    &CompletionOptions::default()
+                )
+                .is_empty(),
+            "a request with thinking off sends none back"
         );
     }
 

@@ -47,6 +47,7 @@ This skill provides reference documentation for every major workspace system. Ac
 │   ├── .index/              # Tantivy BM25 search index
 │   ├── .index_manifest.json # Index file tracking
 │   ├── usage_totals.json    # Running token totals of the main chat
+│   ├── context_breakdown.json # Estimate of the next request's parts, saved after each turn
 │   ├── usage/               # Per-request model usage records, one YYYY-MM.jsonl per month
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
 │   └── sessions/            # Agent session run records and transcripts (YYYY-MM/DD/), created on first run

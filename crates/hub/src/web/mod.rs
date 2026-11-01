@@ -13,6 +13,7 @@ pub mod checkpoints;
 pub mod cloud;
 pub(crate) mod cloud_sign_in;
 pub mod config;
+mod context;
 mod inbox;
 pub mod providers;
 pub mod secrets;
