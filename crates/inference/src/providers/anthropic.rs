@@ -3906,6 +3906,48 @@ mod tests {
         );
     }
 
+    /// A reply's reasoning is bound to the status line its message arrived
+    /// with, as the agent sends it, and not to where the system prompt's
+    /// cache breakpoint sits.
+    #[test]
+    fn earlier_reasoning_is_bound_to_the_stored_status_line_but_not_the_cache_boundary() {
+        let mut history = vec![
+            Message::system("You are helpful."),
+            Message::system("[Received: Mon 9:00]"),
+            Message::user("hi"),
+        ];
+        reply(&mut history, "Hello.", None, vec![signed("greet", "sig-1")]);
+        history.push(Message::system(
+            "[Received: Mon 9:05][Last Message: 5 minutes ago]",
+        ));
+        history.push(Message::user("thanks"));
+
+        let (_, api) = convert(&history);
+        assert_eq!(
+            block_types(&api).get(1).unwrap(),
+            "thinking,text",
+            "the status line replayed unchanged keeps the reasoning bound"
+        );
+
+        let mut marked = history.clone();
+        *marked.first_mut().unwrap() = Message::system_with_cache_boundary("You are", " helpful.");
+        let (_, api) = convert(&marked);
+        assert_eq!(
+            block_types(&api).get(1).unwrap(),
+            "thinking,text",
+            "moving the cache breakpoint leaves the bytes, and the binding, unchanged"
+        );
+
+        let mut restamped = history;
+        *restamped.get_mut(1).unwrap() = Message::system("[Received: Mon 9:01]");
+        let (_, api) = convert(&restamped);
+        assert_eq!(
+            block_types(&api).get(1).unwrap(),
+            "text",
+            "a status line rendered differently is a change ahead of the reasoning"
+        );
+    }
+
     #[test]
     fn a_block_left_out_takes_every_later_one_with_it_until_new_reasoning_is_bound() {
         let mut history = first_turn();
