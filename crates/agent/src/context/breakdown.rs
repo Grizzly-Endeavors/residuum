@@ -10,15 +10,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use residuum_inference::{InferenceProvider, Message, ToolDefinition};
-use residuum_memory::tokens::{estimate_message_tokens, estimate_tokens};
+use residuum_memory::tokens::{TOKENS_PER_IMAGE, estimate_request_message_tokens, estimate_tokens};
 
 use super::types::SectionKind;
 use crate::turn::ModelRequest;
-
-/// What one image a request sends is counted as. An image reaches the
-/// request as base64 with no pixel size to estimate from; providers bill a
-/// photo or screenshot scaled to their size limit at about this many tokens.
-pub(crate) const IMAGE_TOKENS: usize = 1_600;
 
 /// The approximate tokens of each part of the agent's next model request.
 /// The parts add up to `total_tokens`, the estimate of the whole request.
@@ -125,7 +120,7 @@ fn count_request(
         _ => 0,
     };
     for (index, message) in request.messages.iter().enumerate().skip(conversation_start) {
-        let tokens = estimate_message_tokens(std::slice::from_ref(message));
+        let tokens = estimate_request_message_tokens(message);
         if layout.status_lines.contains(&index) {
             breakdown.status_line_tokens += tokens;
         } else {
@@ -136,7 +131,7 @@ fn count_request(
             breakdown.image_count += message.images.len();
         }
     }
-    breakdown.image_tokens = breakdown.image_count * IMAGE_TOKENS;
+    breakdown.image_tokens = breakdown.image_count * TOKENS_PER_IMAGE;
 
     let (builtin, mcp) = request
         .tools
@@ -158,7 +153,7 @@ fn count_system_prompt(
     sections: &[(SectionKind, Range<usize>)],
     breakdown: &mut ContextBreakdown,
 ) {
-    let whole = estimate_message_tokens(std::slice::from_ref(system));
+    let whole = estimate_request_message_tokens(system);
     let last = sections.len().saturating_sub(1);
     let mut counted = 0;
     for (position, (kind, range)) in sections.iter().enumerate() {
@@ -232,8 +227,10 @@ mod tests {
 
     use async_trait::async_trait;
     use residuum_inference::{
-        CompletionOptions, ImageData, InferenceError, InferenceResponse, MessageSender, ToolCall,
+        CompletionOptions, ImageData, InferenceError, InferenceResponse, MessageSender,
+        ThinkingBlock, ToolCall,
     };
+    use residuum_memory::tokens::estimate_message_tokens;
     use residuum_workspace::identity::IdentityFiles;
 
     use super::*;
@@ -318,13 +315,17 @@ mod tests {
         } else {
             0
         };
-        estimate_message_tokens(&request.messages)
+        request
+            .messages
+            .iter()
+            .map(estimate_request_message_tokens)
+            .sum::<usize>()
             + request
                 .tools
                 .iter()
                 .map(estimate_tool_tokens)
                 .sum::<usize>()
-            + images * IMAGE_TOKENS
+            + images * TOKENS_PER_IMAGE
             + reasoning
                 .iter()
                 .map(|text| estimate_tokens(text))
@@ -402,7 +403,8 @@ mod tests {
         assert_eq!(breakdown.history_count, 2);
         assert_eq!(
             breakdown.history_tokens,
-            estimate_message_tokens(&[sent, Message::assistant("on it", None)]),
+            estimate_request_message_tokens(&sent)
+                + estimate_request_message_tokens(&Message::assistant("on it", None)),
             "the sender line the model sees is counted"
         );
     }
@@ -427,7 +429,7 @@ mod tests {
         assert_eq!(before.status_line_tokens, 0);
         assert_eq!(
             after.status_line_tokens,
-            estimate_message_tokens(&[line]),
+            estimate_request_message_tokens(&line),
             "the line is counted as the system message it is sent as"
         );
         assert_eq!(after.history_tokens, before.history_tokens);
@@ -473,10 +475,10 @@ mod tests {
         .await;
 
         assert_eq!(taken.image_count, 2);
-        assert_eq!(taken.image_tokens, 2 * IMAGE_TOKENS);
+        assert_eq!(taken.image_tokens, 2 * TOKENS_PER_IMAGE);
         assert_eq!(
             taken.total_tokens,
-            without.total_tokens + 2 * IMAGE_TOKENS,
+            without.total_tokens + 2 * TOKENS_PER_IMAGE,
             "the images add exactly their flat count"
         );
         assert_eq!(refused.image_count, 0, "a text-only model is sent none");
@@ -597,6 +599,50 @@ mod tests {
         assert_eq!(breakdown.total_tokens, breakdown.parts_total());
         assert_eq!(breakdown.history_count, 5);
         assert_eq!(breakdown.image_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_stored_message_is_counted_once_across_the_parts_it_is_sent_as() {
+        let mut asked = Message::user_with_images("what's this?", vec![image()]).with_sender(Some(
+            MessageSender {
+                name: "Sam".to_string(),
+                id: "id-sam".to_string(),
+                interface: "discord".to_string(),
+                location: None,
+            },
+        ));
+        asked.status_line = Some("[Received: Mon 2026-11-02 09:00 UTC]".to_string());
+        let answered =
+            Message::assistant("It's a cat.", None).with_thinking(vec![ThinkingBlock::text(
+                "it has whiskers and pointed ears",
+            )]);
+        let stored = vec![asked, answered];
+        let inputs = RequestInputs {
+            recent_messages: history(stored.clone()),
+            ..RequestInputs::default()
+        };
+        // A provider that takes the image and sends all the reasoning back.
+        let model = Model {
+            takes_images: true,
+            reasoning: vec!["it has whiskers and pointed ears".to_string()],
+        };
+
+        let breakdown = breakdown_of(&inputs, &model).await;
+
+        // The stored history's own estimate counts the sender line, status
+        // line, image and reasoning with each message; the breakdown counts
+        // each in its own part. They differ only by each part rounding up on
+        // its own, while counting any of them twice adds a whole line or
+        // image.
+        let sent = breakdown.history_tokens
+            + breakdown.status_line_tokens
+            + breakdown.image_tokens
+            + breakdown.reasoning_tokens;
+        let stored_estimate = estimate_message_tokens(&stored);
+        assert!(
+            sent.abs_diff(stored_estimate) <= 3,
+            "the request's parts count {sent}, the stored history {stored_estimate}"
+        );
     }
 
     #[tokio::test]
