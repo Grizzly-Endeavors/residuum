@@ -3569,9 +3569,10 @@ mod tests {
 
         let requests = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
-        let sent: Vec<String> = body["messages"]
-            .as_array()
-            .unwrap()
+        let sent: Vec<String> = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .expect("the body has a messages array")
             .iter()
             .filter_map(|message| message["reasoning_content"].as_str().map(str::to_string))
             .collect();
