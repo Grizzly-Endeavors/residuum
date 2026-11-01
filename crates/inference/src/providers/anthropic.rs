@@ -177,6 +177,8 @@ impl AnthropicClient {
         let exchange_start = current_exchange_start(messages);
         let mut api_messages: Vec<AnthropicMessage> = Vec::new();
         let mut system_seen = false;
+        let mut unbound = 0_usize;
+        let mut first_unbound: Option<usize> = None;
 
         for (index, msg) in messages.iter().enumerate() {
             let converted = match msg.role {
@@ -211,7 +213,13 @@ impl AnthropicClient {
 
                     if let Some(origin) = replay_thinking {
                         let ahead = (index < exchange_start).then_some(&prefix);
-                        blocks.extend(replayable_thinking(&msg.thinking, origin, ahead));
+                        let (replayed, left_out) =
+                            replayable_thinking(&msg.thinking, origin, ahead);
+                        blocks.extend(replayed);
+                        if left_out > 0 {
+                            unbound += left_out;
+                            first_unbound.get_or_insert(index);
+                        }
                     }
 
                     if !msg.content.is_empty() {
@@ -257,6 +265,16 @@ impl AnthropicClient {
             };
             prefix.add(&converted);
             api_messages.push(converted);
+        }
+        if let Some(first_message) = first_unbound {
+            // A prefix that should hold and doesn't (a section moving in the
+            // system prompt, a reshuffled tool list) shows up only as lost
+            // cache reads; this says where the conversation diverged.
+            debug!(
+                left_out = unbound,
+                first_message,
+                "left out earlier turns' reasoning: the system prompt, tools or messages ahead of it changed since it was written, or it was saved without a binding"
+            );
         }
 
         ConvertedMessages {
@@ -571,12 +589,31 @@ impl AnthropicClient {
     }
 
     /// Parse the API response into our generic `InferenceResponse`.
+    ///
+    /// Only the response's leading run of reasoning, the blocks with nothing
+    /// but reasoning ahead of them, can go back to the API. The request sends
+    /// a message's reasoning ahead of its text and tool calls and leaves out
+    /// its server tool blocks, so a block that came after any other content
+    /// (reasoning after a web search, say) would go back out of position,
+    /// ahead of content its signature covers, and the API would refuse it.
+    /// Such a block keeps its text for display and loses its signature; an
+    /// encrypted one has nothing to display and is left out.
     fn parse_response(response: AnthropicResponse) -> InferenceResponse {
         let mut text_parts: Vec<String> = Vec::new();
         let mut thinking: Vec<ThinkingBlock> = Vec::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut leading = true;
+        let mut unreplayable = 0_usize;
 
         for block in response.content {
+            let is_thinking = matches!(
+                block,
+                AnthropicContentBlock::Thinking { .. }
+                    | AnthropicContentBlock::RedactedThinking { .. }
+            );
+            if !is_thinking {
+                leading = false;
+            }
             match block {
                 AnthropicContentBlock::Text { text } => {
                     text_parts.push(text);
@@ -588,7 +625,10 @@ impl AnthropicClient {
                     // The API sends an empty signature for a block it has not
                     // signed. A block with neither text nor a signature has
                     // nothing to show and nothing to send back.
-                    let signature = signature.filter(|s| !s.is_empty());
+                    let mut signature = signature.filter(|s| !s.is_empty());
+                    if !leading && signature.take().is_some() {
+                        unreplayable += 1;
+                    }
                     if !text.is_empty() || signature.is_some() {
                         thinking.push(ThinkingBlock {
                             text,
@@ -598,10 +638,14 @@ impl AnthropicClient {
                     }
                 }
                 AnthropicContentBlock::RedactedThinking { data } => {
-                    thinking.push(ThinkingBlock {
-                        redacted: Some(data),
-                        ..ThinkingBlock::default()
-                    });
+                    if leading {
+                        thinking.push(ThinkingBlock {
+                            redacted: Some(data),
+                            ..ThinkingBlock::default()
+                        });
+                    } else {
+                        unreplayable += 1;
+                    }
                 }
                 AnthropicContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall {
@@ -620,7 +664,16 @@ impl AnthropicClient {
                 AnthropicContentBlock::WebSearchToolResult { tool_use_id, .. } => {
                     debug!(tool_use_id = %tool_use_id, "web search tool result in response");
                 }
+                AnthropicContentBlock::Other => {
+                    debug!("content block of a type this client does not know in response");
+                }
             }
+        }
+        if unreplayable > 0 {
+            debug!(
+                unreplayable,
+                "reasoning that came after other content in the response is kept for display but never sent back"
+            );
         }
 
         let usage = response.usage.map(|u| Usage {
@@ -786,30 +839,45 @@ fn api_error(status: reqwest::StatusCode, body: &str) -> InferenceError {
 /// refuses an exchange whose last assistant turn lost its reasoning; a
 /// changed prefix there is left to the API's refusal and the `drop_block`
 /// retry (see [`AnthropicBlockBinding`]).
+///
+/// Also returns how many blocks that could otherwise go back were left out
+/// because their binding does not match `ahead`.
 fn replayable_thinking(
     thinking: &[ThinkingBlock],
     reader: &ThinkingOrigin,
     ahead: Option<&PrefixFingerprint>,
-) -> Vec<AnthropicContentBlock> {
-    let bound_here = ahead.map(PrefixFingerprint::binding);
-    blocks_produced_at(thinking, reader, ReplayScope::SameModel)
+) -> (Vec<AnthropicContentBlock>, usize) {
+    let sendable = blocks_produced_at(thinking, reader, ReplayScope::SameModel)
         .into_iter()
-        .filter(|block| match &bound_here {
-            None => true,
-            Some(None) => false,
-            Some(Some(here)) => block.binding.as_deref() == Some(here.as_str()),
-        })
-        .filter_map(|block| match (&block.redacted, &block.signature) {
-            (Some(data), _) => Some(AnthropicContentBlock::RedactedThinking { data: data.clone() }),
-            (None, Some(signature)) if !signature.is_empty() => {
-                Some(AnthropicContentBlock::Thinking {
-                    thinking: block.text.clone(),
-                    signature: Some(signature.clone()),
-                })
+        .filter_map(|block| {
+            let sent = match (&block.redacted, &block.signature) {
+                (Some(data), _) => AnthropicContentBlock::RedactedThinking { data: data.clone() },
+                (None, Some(signature)) if !signature.is_empty() => {
+                    AnthropicContentBlock::Thinking {
+                        thinking: block.text.clone(),
+                        signature: Some(signature.clone()),
+                    }
+                }
+                (None, _) => return None,
+            };
+            Some((block.binding.as_deref(), sent))
+        });
+    let Some(ahead) = ahead else {
+        return (sendable.map(|(_, sent)| sent).collect(), 0);
+    };
+    let here = ahead.binding();
+    let mut unbound = 0_usize;
+    let blocks = sendable
+        .filter_map(|(binding, sent)| {
+            if here.is_some() && binding == here.as_deref() {
+                Some(sent)
+            } else {
+                unbound += 1;
+                None
             }
-            (None, _) => None,
         })
-        .collect()
+        .collect();
+    (blocks, unbound)
 }
 
 /// A running fingerprint of a request's bytes in the order the API reads
@@ -1058,8 +1126,8 @@ impl PartialUsage {
 
 /// A content block as it builds up from its deltas.
 struct StreamBlock {
-    /// `None` for a block type this client does not know.
-    block: Option<AnthropicContentBlock>,
+    /// `Other` for a block this client cannot read, which keeps its place.
+    block: AnthropicContentBlock,
     /// The tool input, which arrives as fragments of JSON text and is parsed
     /// once the whole response is in.
     partial_json: String,
@@ -1136,10 +1204,10 @@ impl<'a> StreamAssembler<'a> {
 
     fn start_block(&mut self, index: usize, content_block: Value) {
         let block = match serde_json::from_value::<AnthropicContentBlock>(content_block) {
-            Ok(block) => Some(block),
+            Ok(block) => block,
             Err(e) => {
-                debug!(index, error = %e, "ignoring anthropic content block of an unsupported type");
-                None
+                debug!(index, error = %e, "ignoring the contents of an anthropic content block this client cannot read");
+                AnthropicContentBlock::Other
             }
         };
         self.blocks.insert(
@@ -1159,27 +1227,24 @@ impl<'a> StreamAssembler<'a> {
             );
             return;
         };
-        match (entry.block.as_mut(), delta) {
-            (Some(AnthropicContentBlock::Text { text }), BlockDelta::TextDelta { text: more }) => {
+        match (&mut entry.block, delta) {
+            (AnthropicContentBlock::Text { text }, BlockDelta::TextDelta { text: more }) => {
                 text.push_str(&more);
                 self.sink.push(StreamDelta::Text(more));
             }
             (
-                Some(AnthropicContentBlock::Thinking { thinking, .. }),
+                AnthropicContentBlock::Thinking { thinking, .. },
                 BlockDelta::ThinkingDelta { thinking: more },
             ) => {
                 thinking.push_str(&more);
                 self.sink.push(StreamDelta::Thinking(more));
             }
             (
-                Some(AnthropicContentBlock::Thinking { signature, .. }),
+                AnthropicContentBlock::Thinking { signature, .. },
                 BlockDelta::SignatureDelta { signature: more },
             ) => signature.get_or_insert_with(String::new).push_str(&more),
             (
-                Some(
-                    AnthropicContentBlock::ToolUse { .. }
-                    | AnthropicContentBlock::ServerToolUse { .. },
-                ),
+                AnthropicContentBlock::ToolUse { .. } | AnthropicContentBlock::ServerToolUse { .. },
                 BlockDelta::InputJsonDelta { partial_json },
             ) => entry.partial_json.push_str(&partial_json),
             (_, BlockDelta::Other) => {}
@@ -1212,9 +1277,7 @@ impl<'a> StreamAssembler<'a> {
         let truncated = self.stop_reason.as_deref() == Some("max_tokens");
         let mut content = Vec::with_capacity(self.blocks.len());
         for entry in self.blocks.into_values() {
-            let Some(mut block) = entry.block else {
-                continue;
-            };
+            let mut block = entry.block;
             if !entry.partial_json.is_empty() {
                 match &mut block {
                     AnthropicContentBlock::ToolUse { name, input, .. }
@@ -1245,7 +1308,8 @@ impl<'a> StreamAssembler<'a> {
                     | AnthropicContentBlock::RedactedThinking { .. }
                     | AnthropicContentBlock::Image { .. }
                     | AnthropicContentBlock::ToolResult { .. }
-                    | AnthropicContentBlock::WebSearchToolResult { .. } => {}
+                    | AnthropicContentBlock::WebSearchToolResult { .. }
+                    | AnthropicContentBlock::Other => {}
                 }
             }
             content.push(block);
@@ -1655,6 +1719,11 @@ enum AnthropicContentBlock {
         #[serde(default)]
         content: Value,
     },
+    /// A response block of a type this client does not know. It still holds
+    /// a place in the response, which decides what reasoning can go back
+    /// (see `parse_response`). Never part of a request.
+    #[serde(other, skip_serializing)]
+    Other,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -3920,6 +3989,141 @@ mod tests {
         );
     }
 
+    /// A reply that reasons, searches the web, and reasons again (signed and
+    /// encrypted) before `tail`, as a non-streaming response body.
+    fn reasoning_around_a_search(tail: Value, stop_reason: &str) -> Value {
+        let mut content = vec![
+            json!({"type": "thinking", "thinking": "plan", "signature": "sig-a"}),
+            json!({"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+                "input": {"query": "rust"}}),
+            json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []}),
+            json!({"type": "thinking", "thinking": "read the results", "signature": "sig-b"}),
+            json!({"type": "redacted_thinking", "data": "ENC-LATE"}),
+        ];
+        content.push(tail);
+        json!({
+            "content": content,
+            "stop_reason": stop_reason,
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        })
+    }
+
+    #[test]
+    fn reasoning_after_other_content_is_kept_for_display_and_never_replayable() {
+        let body =
+            reasoning_around_a_search(json!({"type": "text", "text": "Found it."}), "end_turn");
+        let response: AnthropicResponse = serde_json::from_value(body).unwrap();
+
+        let parsed = AnthropicClient::parse_response(response).produced_at(&test_origin());
+
+        assert_eq!(
+            parsed.thinking,
+            vec![
+                signed("plan", "sig-a"),
+                ThinkingBlock::text("read the results").with_origin(&test_origin())
+            ],
+            "the leading block keeps its signature; the later one keeps only its text, and the \
+             later encrypted one has nothing to show and is dropped"
+        );
+        assert_eq!(parsed.content, "Found it.", "text is unaffected");
+    }
+
+    #[test]
+    fn a_block_of_an_unknown_type_ends_the_leading_reasoning() {
+        let response: AnthropicResponse = serde_json::from_value(json!({
+            "content": [
+                {"type": "mystery_block", "x": 1},
+                {"type": "thinking", "thinking": "after it", "signature": "sig-1"},
+                {"type": "text", "text": "answer"}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        }))
+        .unwrap();
+
+        let parsed = AnthropicClient::parse_response(response);
+
+        assert_eq!(
+            parsed.thinking,
+            vec![ThinkingBlock::text("after it")],
+            "an unknown block still holds a place ahead of the reasoning"
+        );
+        assert_eq!(parsed.content, "answer", "the rest of the response is read");
+    }
+
+    /// Run `body` through a non-streaming exchange of two requests with
+    /// thinking on: the first gets `body` back, and `continue_with` turns
+    /// that response into the history of the second. Returns the second
+    /// request as sent.
+    async fn next_request_after(
+        body: Value,
+        continue_with: impl FnOnce(&mut Vec<Message>, InferenceResponse),
+    ) -> Value {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let client = test_client(&server.uri());
+        let options = thinking_options(4096);
+        let mut history = vec![Message::system("Be helpful."), Message::user("look it up")];
+
+        let first = client.complete(&history, &[], &options).await.unwrap();
+        continue_with(&mut history, first);
+        client.complete(&history, &[], &options).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        serde_json::from_slice(&requests.get(1).unwrap().body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_searched_reply_goes_back_with_only_its_leading_reasoning() {
+        let body =
+            reasoning_around_a_search(json!({"type": "text", "text": "Found it."}), "end_turn");
+
+        let second = next_request_after(body, |history, first| {
+            history.push(Message::assistant(first.content, None).with_thinking(first.thinking));
+            history.push(Message::user("thanks"));
+        })
+        .await;
+
+        assert_eq!(
+            at(&second, "/messages/1/content"),
+            &json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-a"},
+                {"type": "text", "text": "Found it."}
+            ]),
+            "reasoning written after the search would sit ahead of content its signature covers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_searching_tool_call_in_progress_goes_back_with_only_its_leading_reasoning() {
+        let body = reasoning_around_a_search(
+            json!({"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {"command": "ls"}}),
+            "tool_use",
+        );
+
+        let second = next_request_after(body, |history, first| {
+            history.push(
+                Message::assistant(first.content, Some(first.tool_calls))
+                    .with_thinking(first.thinking),
+            );
+            history.push(Message::tool("a.txt", "toolu_1"));
+        })
+        .await;
+
+        assert_eq!(
+            at(&second, "/messages/1/content"),
+            &json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-a"},
+                {"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {"command": "ls"}}
+            ]),
+            "the exchange in progress replays every replayable block, which is only the leading one"
+        );
+    }
+
     #[test]
     fn every_assistant_message_of_the_current_exchange_replays_its_thinking() {
         let messages = vec![
@@ -4758,6 +4962,125 @@ mod tests {
             "server tools are not our calls"
         );
         assert_eq!(sink.text(), "Found it.", "nothing else is streamed as text");
+    }
+
+    #[tokio::test]
+    async fn streamed_reasoning_after_a_search_is_shown_but_not_replayed() {
+        let events = [
+            message_start(json!({"input_tokens": 5, "output_tokens": 1})),
+            block_start(
+                0,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            delta(0, json!({"type": "thinking_delta", "thinking": "plan"})),
+            delta(0, json!({"type": "signature_delta", "signature": "sig-a"})),
+            block_stop(0),
+            block_start(
+                1,
+                json!({"type": "server_tool_use", "id": "srvtoolu_1",
+                    "name": "web_search", "input": {}}),
+            ),
+            delta(
+                1,
+                json!({"type": "input_json_delta", "partial_json": "{\"query\":\"rust\"}"}),
+            ),
+            block_stop(1),
+            block_start(
+                2,
+                json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1",
+                    "content": []}),
+            ),
+            block_stop(2),
+            block_start(
+                3,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            delta(
+                3,
+                json!({"type": "thinking_delta", "thinking": "read the results"}),
+            ),
+            delta(3, json!({"type": "signature_delta", "signature": "sig-b"})),
+            block_stop(3),
+            block_start(4, json!({"type": "redacted_thinking", "data": "ENC-LATE"})),
+            block_stop(4),
+            block_start(
+                5,
+                json!({"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {}}),
+            ),
+            delta(
+                5,
+                json!({"type": "input_json_delta", "partial_json": "{\"command\":\"ls\"}"}),
+            ),
+            block_stop(5),
+            message_end("tool_use", json!({"output_tokens": 8})),
+        ]
+        .concat();
+
+        let (result, sink, _) = stream_from(sse_response(&[events]), test_client).await;
+        let response = result.unwrap();
+
+        assert_eq!(
+            response.thinking,
+            vec![
+                answering_hello(signed("plan", "sig-a")),
+                answering_hello(
+                    ThinkingBlock::text("read the results").with_origin(&test_origin())
+                ),
+            ],
+            "only the leading block keeps its signature, and the late encrypted one is dropped"
+        );
+        assert_eq!(
+            sink.thinking(),
+            "planread the results",
+            "both blocks still stream to the reader"
+        );
+
+        let mut history = simple_user_message();
+        history.push(
+            Message::assistant(response.content, Some(response.tool_calls))
+                .with_thinking(response.thinking),
+        );
+        history.push(Message::tool("a.txt", "toolu_1"));
+        let (_, api) = convert(&history);
+        assert_eq!(
+            serde_json::to_value(&api.get(1).unwrap().content).unwrap(),
+            json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-a"},
+                {"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {"command": "ls"}}
+            ]),
+            "the exchange in progress goes back with only the leading reasoning"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_streamed_block_this_client_cannot_read_keeps_its_place() {
+        let events = [
+            message_start(json!({"input_tokens": 5, "output_tokens": 1})),
+            block_start(0, json!({"type": "web_fetch_tool_result", "x": 1})),
+            block_stop(0),
+            block_start(
+                1,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            delta(1, json!({"type": "thinking_delta", "thinking": "after it"})),
+            delta(1, json!({"type": "signature_delta", "signature": "sig-1"})),
+            block_stop(1),
+            block_start(2, json!({"type": "text", "text": ""})),
+            delta(2, json!({"type": "text_delta", "text": "Done."})),
+            block_stop(2),
+            message_end("end_turn", json!({"output_tokens": 8})),
+        ]
+        .concat();
+
+        let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
+
+        assert_eq!(
+            result.unwrap().thinking,
+            vec![answering_hello(
+                ThinkingBlock::text("after it").with_origin(&test_origin())
+            )],
+            "reasoning after a block of an unknown type is not leading, so it is never sent back"
+        );
     }
 
     #[tokio::test]
