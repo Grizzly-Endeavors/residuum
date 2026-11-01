@@ -143,7 +143,7 @@ pub(crate) async fn execute_observation(
             tracing::debug!("shutting down, dropping in-flight observation before anything was written");
             return false;
         }
-        extraction = mem.observer.extract(&recent, &mem.layout) => extraction,
+        extraction = mem.observer.extract(&recent, &mem.layout, None) => extraction,
     };
     let extraction = match extraction {
         Ok(e) => e,
@@ -324,7 +324,7 @@ pub(crate) async fn execute_forced_observation(
             tracing::debug!("shutting down, dropping forced observation before anything was written");
             return false;
         }
-        extraction = mem.observer.extract(&recent, &mem.layout) => extraction,
+        extraction = mem.observer.extract(&recent, &mem.layout, None) => extraction,
     };
     // A manual force always attempts regardless of the automatic tracker's
     // backoff state, but still reports its outcome to it — a working manual

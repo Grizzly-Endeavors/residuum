@@ -797,7 +797,9 @@ async fn after_turn(
     // observation on completion.
     if let Some(res) = resources {
         let mem_env = session_memory_env(res, env.tz);
-        memory.maybe_stage(history.own(), &mem_env).await;
+        memory
+            .maybe_stage(history.own(), &info.run_id, &mem_env)
+            .await;
     }
     let recent_messages = &mut history.messages;
 
