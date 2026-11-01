@@ -37,5 +37,3 @@ path = ["/opt/residuum-tools"]
 
 Changing `[tools].path` and reloading config applies to `exec` immediately;
 already-running MCP stdio servers pick up the change on their next reconnect.
-
-See the authoritative reference: `docs/systems-usage/tools.md`.

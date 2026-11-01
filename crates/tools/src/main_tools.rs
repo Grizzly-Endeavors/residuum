@@ -150,7 +150,7 @@ fn register_main_workspace_tools(
         Arc::clone(deps.model_catalog),
         tz,
     );
-    registration::register_skill_tools(tools, Arc::clone(deps.skill_state));
+    registration::register_skill_tools(tools, injections, Arc::clone(deps.skill_state));
     registration::register_inbox_tools(tools, injections, layout, tz);
 }
 
@@ -227,7 +227,7 @@ pub fn init_tool_registry(
         Arc::clone(deps.session_registry),
     );
 
-    // Workspace checkpoint history (workspace repository only)
+    // Checkpoint history and restore for the workspace and team repositories
     registration::register_workspace_checkpoint_tools(
         &mut tools,
         Arc::clone(deps.checkpoints),
@@ -271,26 +271,12 @@ mod tests {
     /// callers directly (see `docs/systems-usage/a2a.md`).
     const SESSION_ONLY_TOOLS: &[&str] = &["a2a_task_update"];
 
-    /// A `ConversationTarget` naming the `a2a` endpoint, as an a2a
-    /// conversation session's tool scope carries.
-    fn a2a_conversation_target() -> residuum_bus::ConversationTarget {
-        residuum_bus::ConversationTarget {
-            endpoint: "a2a".to_string(),
-            conversation_id: "key:tester/ctx-1".to_string(),
-        }
-    }
+    /// `TOOLS.md`, the contract every tool's description is quoted from.
+    const TOOLS_MD: &str = include_str!("TOOLS.md");
 
-    /// Enforces "every tool registered for main is also registered for
-    /// sessions, except the documented main-only allowlist" by building both
-    /// registration surfaces from equivalent config (every optional tool
-    /// gate turned on) and comparing their tool names directly. A tool added
-    /// to one registry but not the other fails this test instead of drifting
-    /// silently.
-    #[tokio::test]
-    async fn session_registry_matches_main_minus_documented_allowlist() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let h = RegistryHarness::build(dir.path()).await;
-
+    /// Main's registry over `h`, with every optional tool gate on (the
+    /// harness config carries an Ollama web search backend).
+    fn build_main_registry(h: &RegistryHarness) -> ToolRegistry {
         let auto_mode = residuum_agent::auto_mode::AutoModeGate::new_shared(
             "test",
             residuum_config::AutoModeConfig::default(),
@@ -322,8 +308,73 @@ mod tests {
             model_catalog: &model_catalog,
             mailboxes: None,
         };
-        let (main_tools, _, _) =
+        let (tools, _, _) =
             init_tool_registry(&h.cfg, &h.layout, &h.hybrid_searcher, chrono_tz::UTC, &deps);
+        tools
+    }
+
+    /// How TOOLS.md quotes a description: each line as a blockquote line, and
+    /// each paragraph break as a bare `>`.
+    fn quote_as_tools_md(description: &str) -> String {
+        description
+            .split('\n')
+            .map(|line| {
+                if line.is_empty() {
+                    ">".to_string()
+                } else {
+                    format!("> {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every tool main registers is quoted in TOOLS.md with its exact current
+    /// description, so a description edit that skips TOOLS.md fails here
+    /// instead of drifting silently.
+    #[tokio::test]
+    async fn every_main_tool_description_is_quoted_in_tools_md() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = RegistryHarness::build(dir.path()).await;
+
+        // A Windows checkout with autocrlf turns TOOLS.md's line endings into
+        // CRLF, while the descriptions are LF, so compare on LF.
+        let tools_md = TOOLS_MD.replace("\r\n", "\n");
+        let definitions = build_main_registry(&h).definitions();
+        assert!(!definitions.is_empty(), "main registers no tools");
+        for definition in definitions {
+            let expected = format!("\n{}\n", quote_as_tools_md(&definition.description));
+            assert!(
+                tools_md.contains(&expected),
+                "crates/tools/src/TOOLS.md does not quote the current description of `{}`: \
+                 update that tool's \"Description sent to LLM\" block to match its \
+                 definition() exactly",
+                definition.name
+            );
+        }
+    }
+
+    /// A `ConversationTarget` naming the `a2a` endpoint, as an a2a
+    /// conversation session's tool scope carries.
+    fn a2a_conversation_target() -> residuum_bus::ConversationTarget {
+        residuum_bus::ConversationTarget {
+            endpoint: "a2a".to_string(),
+            conversation_id: "key:tester/ctx-1".to_string(),
+        }
+    }
+
+    /// Enforces "every tool registered for main is also registered for
+    /// sessions, except the documented main-only allowlist" by building both
+    /// registration surfaces from equivalent config (every optional tool
+    /// gate turned on) and comparing their tool names directly. A tool added
+    /// to one registry but not the other fails this test instead of drifting
+    /// silently.
+    #[tokio::test]
+    async fn session_registry_matches_main_minus_documented_allowlist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = RegistryHarness::build(dir.path()).await;
+
+        let main_tools = build_main_registry(&h);
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 

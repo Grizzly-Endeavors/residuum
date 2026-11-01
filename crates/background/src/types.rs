@@ -98,6 +98,8 @@ pub struct SubAgentBuildConfig {
     /// Guards against a model repeating the exact same tool call in this
     /// session's turns.
     pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
+    /// What the chat interfaces post, for the session's `HARNESS` section.
+    pub intermediate_delivery: residuum_agent::context::IntermediateDelivery,
     /// Skill to activate for this session, if any. Its body becomes the
     /// session's role instructions through the normal active-skill path.
     pub skill: Option<String>,

@@ -50,6 +50,10 @@ use serde_json::Value;
 
 use residuum_inference::ToolError;
 
+/// The `model` parameter of `subagent_spawn` and the `model_tier` parameter of
+/// `schedule_action`: both take a tier or an explicit model id.
+pub(crate) const MODEL_PARAMETER_DESCRIPTION: &str = "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".";
+
 pub(crate) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
     args.get(field)
         .and_then(Value::as_str)

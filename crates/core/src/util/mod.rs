@@ -1,6 +1,6 @@
 //! Shared utilities: fatal errors, filesystem helpers, monitored spawning, env-var
-//! expansion, frontmatter parsing, late-bound weak handles,
-//! percent-encoding, and XML escaping.
+//! expansion, frontmatter parsing, late-bound weak handles, and
+//! percent-encoding.
 
 pub(crate) mod backoff_tracker;
 mod env_expand;
@@ -12,7 +12,6 @@ mod percent_encode;
 pub mod secret_compare;
 mod spawn;
 pub mod telemetry;
-mod xml;
 
 pub use backoff_tracker::{BackoffTracker, NoticeAction, RetryGate};
 pub use env_expand::expand_env_vars;
@@ -22,4 +21,3 @@ pub use late_bound::LateBound;
 pub use percent_encode::percent_encode_unreserved;
 pub use secret_compare::secrets_match;
 pub use spawn::{panic_message, spawn_blocking_in_span, spawn_in_span, spawn_monitored};
-pub use xml::xml_escape;
