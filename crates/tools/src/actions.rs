@@ -455,7 +455,7 @@ mod tests {
         assert!(result.is_err(), "agent_name: main should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("no longer"),
+            err.contains("not a valid agent_name"),
             "error should explain why, got: {err}"
         );
     }
