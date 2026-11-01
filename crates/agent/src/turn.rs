@@ -695,6 +695,54 @@ async fn publish_stream_pieces(
     }
 }
 
+/// The request one model call sends: the messages, and the tool definitions
+/// built-in tools first, then MCP tools.
+pub struct ModelRequest {
+    pub messages: Vec<Message>,
+    pub tools: Vec<ToolDefinition>,
+}
+
+/// Build the request a model call sends from the turn's current state.
+///
+/// The turn loop calls this every iteration, and the test seam
+/// (`residuum_agent::testing::render_model_request`) calls it too, so a test
+/// sees the bytes production sends. The system prompt is reassembled each
+/// time to pick up MCP changes. Identity is a snapshot taken at turn entry
+/// (reloaded from disk each turn), so mid-turn identity-file edits apply on
+/// the next turn.
+pub(crate) async fn build_model_request(
+    identity: &IdentityFiles,
+    recent_messages: &RecentMessages,
+    memory_ctx: &MemoryContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
+    status_line: Option<&StatusLine>,
+    tools: &ToolRegistry,
+    mcp_registry: &SharedMcpRegistry,
+) -> ModelRequest {
+    let mut tool_definitions = tools.definitions();
+
+    // Merge MCP tool definitions from all connected servers. The registry
+    // has already dropped any MCP tool whose name collides with a built-in
+    // or with an earlier server, so this union never carries a duplicate
+    // name (collision policy: crates/mcp/src/CLAUDE.md).
+    let mcp_guard = mcp_registry.read().await;
+    tool_definitions.extend(mcp_guard.tool_definitions());
+    drop(mcp_guard);
+
+    let messages = assemble_system_prompt(
+        identity,
+        recent_messages,
+        memory_ctx,
+        prompt_ctx,
+        status_line,
+    );
+
+    ModelRequest {
+        messages,
+        tools: tool_definitions,
+    }
+}
+
 /// Make one model request, raced against the stop token.
 ///
 /// A main-agent turn hands the provider a sink that forwards its streamed
@@ -907,29 +955,19 @@ pub async fn execute_turn(
         // repeats it, so it always equals the iteration.
         let call = u32::try_from(iteration).unwrap_or(u32::MAX);
 
-        let mut tool_definitions = resources.tools.definitions();
-
-        // Merge MCP tool definitions from all connected servers. The registry
-        // has already dropped any MCP tool whose name collides with a built-in
-        // or with an earlier server, so this union never carries a duplicate
-        // name (collision policy: crates/mcp/src/CLAUDE.md).
-        let mcp_guard = resources.mcp_registry.read().await;
-        tool_definitions.extend(mcp_guard.tool_definitions());
-        drop(mcp_guard);
-
-        // System prompt is reassembled each iteration to pick up MCP changes.
-        // Identity is a snapshot taken at turn entry (reloaded from disk each
-        // turn), so mid-turn identity-file edits apply on the next turn.
-        let messages = assemble_system_prompt(
+        let request = build_model_request(
             resources.identity,
             recent_messages,
             memory_ctx,
             prompt_ctx,
             status_line,
-        );
+            resources.tools,
+            resources.mcp_registry,
+        )
+        .await;
 
         let (mut response, streamed) =
-            match call_model(resources, events, &messages, &tool_definitions, call).await? {
+            match call_model(resources, events, &request.messages, &request.tools, call).await? {
                 ModelCall::Completed { response, streamed } => (response, streamed),
                 ModelCall::Stopped => {
                     tracing::info!(
