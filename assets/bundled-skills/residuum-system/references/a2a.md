@@ -38,5 +38,3 @@ Agents in your own hub are teammates, addressed `agent:<name>` and reached direc
 ## Your other instances (siblings)
 
 If the user runs more than one Residuum install, they find and trust each other once they have joined one another — no `config/a2a.json` entry or caller key needed. Every agent on another install is listed by `<instance>/<agent>` (for example `laptop/scout`); `list_agents` marks it with `(your instance)`, and a message from it reads as coming from that instance by name, described as your own other instance rather than an external caller. Talk to it the same way as any other remote agent, with `a2a:<instance>/<agent>`. Your teammates in the same hub are never listed this way.
-
-See the authoritative reference: `docs/systems-usage/a2a.md`.

@@ -107,9 +107,8 @@ fn build_pulse_prompt(
         pulse.name
     ));
     parts.push(
-        "This run is autonomous — no user is present, so you cannot ask questions or request \
-         clarification; act on the tasks as written. Do not create or modify pulses \
-         (HEARTBEAT.yml)."
+        "This run is autonomous — no user is present, so you cannot ask questions; act on the \
+         tasks as written. Do not create or modify pulses (HEARTBEAT.yml)."
             .to_string(),
     );
 

@@ -50,5 +50,3 @@ A value that is exactly `secret:<name>` resolves from the hub's secret store (wh
 
 No dedicated tools — once a server is running, its tools are merged directly
 into the agent's available tool set.
-
-See the authoritative reference: `docs/systems-usage/mcp.md`.

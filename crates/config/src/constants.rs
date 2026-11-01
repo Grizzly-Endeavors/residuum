@@ -58,8 +58,9 @@ pub(crate) const DEFAULT_PULSE_ENABLED: bool = true;
 /// Default observer token threshold before firing.
 pub const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
 
-/// Default reflector token threshold before compressing.
-pub const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
+/// Default reflector token threshold before compressing. Measured on the observation
+/// log as the main prompt displays it (`ObservationLog::display_formatted`).
+pub const DEFAULT_REFLECTOR_THRESHOLD: usize = 22_000;
 
 /// Default observer cooldown period in seconds before observation fires.
 pub const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;

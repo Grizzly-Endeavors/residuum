@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use residuum_config::{SkillDir, SkillSource};
-use residuum_core::util::xml_escape;
 
 use super::{parser::parse_skill_md, types::SkillIndexEntry};
 
@@ -13,13 +12,13 @@ pub struct SkillIndex {
     /// Directories that couldn't be read during the scan that built this
     /// index (permission errors, etc. — a missing directory is not an
     /// error and isn't recorded here), as `(dir, error message)` pairs. The
-    /// rest of the scan still ran; callers with a publisher in scope
-    /// surface these as a notice.
+    /// rest of the scan still ran; `SkillState::rescan` turns these into
+    /// notices.
     skipped: Vec<(PathBuf, String)>,
     /// User-facing notices produced by the most recent scan: a skill with an
     /// oversized description that loaded anyway, or a skill skipped for
-    /// invalid frontmatter. Callers publish these to the bus rather than
-    /// leaving them as debug/warn log lines only.
+    /// invalid frontmatter. `SkillState::rescan` returns them for the caller
+    /// to publish, so they reach the user rather than only the logs.
     notices: Vec<String>,
 }
 
@@ -90,29 +89,24 @@ impl SkillIndex {
         self.entries.iter().find(|e| e.name == lower)
     }
 
-    /// Format the index as XML for the system prompt.
+    /// Format the index for the system prompt: one line per skill with its
+    /// layer and the path of its `SKILL.md`, since a skill can point to
+    /// files beside it.
     #[must_use]
     pub fn format_for_prompt(&self) -> String {
-        if self.entries.is_empty() {
-            return String::new();
-        }
-
-        let mut parts = Vec::with_capacity(self.entries.len() + 2);
-        parts.push("<available_skills>".to_string());
-
-        for entry in &self.entries {
-            let skill_md = entry.skill_dir.join("SKILL.md");
-            parts.push(format!(
-                "  <skill>\n    <name>{}</name>\n    <layer>{}</layer>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
-                xml_escape(&entry.name),
-                entry.source,
-                xml_escape(&entry.description),
-                skill_md.display(),
-            ));
-        }
-
-        parts.push("</available_skills>".to_string());
-        parts.join("\n")
+        self.entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "- {} ({}, {}): {}",
+                    entry.name,
+                    entry.source,
+                    entry.skill_dir.join("SKILL.md").display(),
+                    single_line(&entry.description),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Get all index entries.
@@ -124,8 +118,8 @@ impl SkillIndex {
     /// User-facing notices produced by the most recent scan.
     ///
     /// Covers a skill with an oversized description that loaded anyway, and
-    /// a skill skipped for invalid frontmatter. Callers are expected to
-    /// publish these to the bus so they reach the user, not just the logs.
+    /// a skill skipped for invalid frontmatter. `SkillState::rescan` returns
+    /// them for the caller to publish, so they reach the user.
     #[must_use]
     pub fn notices(&self) -> &[String] {
         &self.notices
@@ -136,6 +130,12 @@ impl SkillIndex {
 struct SeenSkill {
     source: SkillSource,
     skill_md: PathBuf,
+}
+
+/// Collapse whitespace (including newlines) so a description stays on its
+/// skill's one index line.
+fn single_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Scan a single directory for skill subfolders.
@@ -552,11 +552,11 @@ mod tests {
         let prompt = index.format_for_prompt();
 
         assert!(
-            prompt.contains("<name>mine</name>\n    <layer>agent</layer>"),
+            prompt.contains("- mine (agent, "),
             "agent skill should be labelled agent: {prompt}"
         );
         assert!(
-            prompt.contains("<name>ours</name>\n    <layer>team</layer>"),
+            prompt.contains("- ours (team, "),
             "team skill should be labelled team: {prompt}"
         );
     }
@@ -691,51 +691,42 @@ mod tests {
         };
 
         let output = index.format_for_prompt();
-        assert!(
-            output.contains("<available_skills>"),
-            "should have opening tag"
-        );
-        assert!(
-            output.contains("</available_skills>"),
-            "should have closing tag"
-        );
-        assert!(
-            output.contains("<name>pdf-processing</name>"),
-            "should contain skill name"
-        );
-        assert!(
-            output.contains("<layer>agent</layer>"),
-            "should show the layer the skill came from"
-        );
-        assert!(
-            output.contains("<description>Extracts text from PDFs</description>"),
-            "should contain description"
-        );
         let location = PathBuf::from("/tmp/skills/pdf-processing").join("SKILL.md");
-        assert!(
-            output.contains(&format!("<location>{}</location>", location.display())),
-            "should contain full location path"
+        assert_eq!(
+            output,
+            format!(
+                "- pdf-processing (agent, {}): Extracts text from PDFs",
+                location.display()
+            ),
+            "one line with the name, layer, location and description"
         );
     }
 
     #[test]
-    fn format_for_prompt_escapes_xml_special_chars() {
+    fn format_for_prompt_puts_each_skill_on_one_line() {
+        let entry = |name: &str, description: &str| SkillIndexEntry {
+            name: name.to_string(),
+            description: description.to_string(),
+            skill_dir: PathBuf::from("/tmp").join(name),
+            source: SkillSource::Team,
+        };
         let index = SkillIndex {
             skipped: Vec::new(),
-            entries: vec![SkillIndexEntry {
-                name: "my-skill".to_string(),
-                description: "Handles <tags> & \"quotes\"".to_string(),
-                skill_dir: PathBuf::from("/tmp/my-skill"),
-                source: SkillSource::Agent,
-            }],
+            entries: vec![
+                entry("first", "Spans\n  two lines"),
+                entry("second", "Handles <tags> & \"quotes\""),
+            ],
             notices: Vec::new(),
         };
         let output = index.format_for_prompt();
-        assert!(output.contains("&lt;tags&gt;"), "< and > should be escaped");
-        assert!(output.contains("&amp;"), "& should be escaped");
+        assert_eq!(output.lines().count(), 2, "one line per skill: {output}");
         assert!(
-            !output.contains("<tags>"),
-            "raw < should not appear in output"
+            output.contains("): Spans two lines"),
+            "a multi-line description is collapsed onto its line: {output}"
+        );
+        assert!(
+            output.contains("): Handles <tags> & \"quotes\""),
+            "a description is shown as written: {output}"
         );
     }
 }

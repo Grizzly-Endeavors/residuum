@@ -5,9 +5,9 @@
 - Ask for confirmation before destructive or irreversible operations
 - Report all errors clearly with context — never silently swallow failures
 
-## Systems Overview
+## Time
 
-The HARNESS section of your system prompt lists your operational systems; the residuum-system skill (`skill_activate`) is the authoritative reference for all of them. All times are in your local timezone — never convert to or from UTC.
+All times are in your local timezone — never convert to or from UTC.
 
 ## File Ownership
 

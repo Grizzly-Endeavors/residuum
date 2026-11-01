@@ -670,6 +670,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
     SubAgentResources {
         max_tool_iterations: None,
         repeat_call_guard: residuum::config::RepeatCallGuardConfig::default(),
+        intermediate_delivery: residuum::agent::context::IntermediateDelivery::default(),
         provider: Box::new(ScriptedProvider {
             queue: Arc::clone(&deps.queue),
             seen: Arc::clone(&deps.seen),

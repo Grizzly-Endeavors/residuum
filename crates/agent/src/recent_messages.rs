@@ -1,10 +1,14 @@
 //! In-memory recent message history before observation.
 
+use chrono::{DateTime, Utc};
 use residuum_inference::Message;
 
-/// In-memory buffer holding recent conversation messages before observation.
+/// In-memory buffer holding recent conversation messages before observation,
+/// with the time each message entered the buffer.
 pub struct RecentMessages {
     messages: Vec<Message>,
+    /// When each entry of `messages` (same index) entered the buffer.
+    recorded_at: Vec<DateTime<Utc>>,
 }
 
 impl Default for RecentMessages {
@@ -19,12 +23,14 @@ impl RecentMessages {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            recorded_at: Vec::new(),
         }
     }
 
     /// Add a message to the recent history.
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
+        self.recorded_at.push(Utc::now());
     }
 
     /// Get all recent messages.
@@ -39,6 +45,13 @@ impl RecentMessages {
         self.messages.get(idx..).unwrap_or_default()
     }
 
+    /// When each message from the given index on entered the buffer, in the
+    /// same order as [`Self::messages_since`].
+    #[must_use]
+    pub fn recorded_at_since(&self, idx: usize) -> &[DateTime<Utc>] {
+        self.recorded_at.get(idx..).unwrap_or_default()
+    }
+
     /// Get the current message count.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -47,12 +60,16 @@ impl RecentMessages {
 
     /// Append all messages to the end of the buffer.
     pub fn extend(&mut self, messages: Vec<Message>) {
+        let now = Utc::now();
+        self.recorded_at
+            .extend(std::iter::repeat_n(now, messages.len()));
         self.messages.extend(messages);
     }
 
     /// Remove all messages from the buffer.
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.recorded_at.clear();
     }
 
     /// Check if the buffer is empty.
@@ -124,6 +141,9 @@ impl RecentMessages {
         if messages.is_empty() {
             return;
         }
+        let mut new_recorded_at = vec![Utc::now(); messages.len()];
+        new_recorded_at.append(&mut self.recorded_at);
+        self.recorded_at = new_recorded_at;
         let mut new_messages = messages;
         new_messages.append(&mut self.messages);
         self.messages = new_messages;
@@ -358,6 +378,34 @@ mod tests {
             recent.messages()[2].content,
             "third",
             "last message should be from extend"
+        );
+    }
+
+    #[test]
+    fn records_when_each_message_entered() {
+        let mut recent = RecentMessages::new();
+        let before = Utc::now();
+        push_user_msg(&mut recent, "first");
+        recent.extend(vec![Message::user("second")]);
+        recent.prepend(vec![Message::user("zeroth")]);
+        let after = Utc::now();
+
+        let recorded = recent.recorded_at_since(0);
+        assert_eq!(recorded.len(), 3, "every message should have a time");
+        assert!(
+            recorded.iter().all(|at| *at >= before && *at <= after),
+            "each time should be when the message entered the buffer"
+        );
+        assert_eq!(
+            recent.recorded_at_since(1),
+            &recorded[1..],
+            "times should line up with messages_since"
+        );
+
+        recent.clear();
+        assert!(
+            recent.recorded_at_since(0).is_empty(),
+            "clear should drop the times too"
         );
     }
 

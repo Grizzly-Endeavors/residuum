@@ -79,6 +79,9 @@ pub struct SpawnContext {
     /// Guards against a model repeating the exact same tool call, mirroring
     /// `cfg.agent.repeat_call_guard`.
     pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
+    /// What the chat interfaces post, for every session's `HARNESS` section,
+    /// from the interfaces' `deliver_intermediate` settings.
+    pub intermediate_delivery: residuum_agent::context::IntermediateDelivery,
     pub layout: WorkspaceLayout,
     pub role_overrides: std::collections::HashMap<String, residuum_config::RoleOverrides>,
     /// Builds every fork's tool registry, scoped to that session; it holds
@@ -335,6 +338,7 @@ pub(crate) async fn build_spawn_resources(
         options,
         max_tool_iterations: ctx.max_tool_iterations,
         repeat_call_guard: ctx.repeat_call_guard,
+        intermediate_delivery: ctx.intermediate_delivery,
         skill: skill.map(str::to_string),
         observations,
         recent_context,
