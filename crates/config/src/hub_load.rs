@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn load_at_rejects_a_negative_price() {
+    fn load_at_drops_a_negative_price_with_a_notice() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
@@ -339,11 +339,15 @@ mod tests {
         )
         .unwrap();
 
-        let message = HubConfig::load_at(dir.path()).unwrap_err().to_string();
+        let cfg = HubConfig::load_at(dir.path()).unwrap();
 
+        assert!(cfg.pricing.is_empty(), "the negative price is not loaded");
         assert!(
-            message.contains("[pricing] \"openai/gpt-4o\" input"),
-            "{message}"
+            cfg.load_notices
+                .iter()
+                .any(|n| n.contains("[pricing] \"openai/gpt-4o\" input")),
+            "the user is told which rate was dropped: {:?}",
+            cfg.load_notices
         );
     }
 }

@@ -22,9 +22,8 @@ use super::tracing_config;
 /// variables.
 ///
 /// # Errors
-/// Returns `FatalError::Config` if the timezone is missing/invalid, the
-/// tracing log level string is invalid, or a `[pricing]` key or rate is
-/// invalid.
+/// Returns `FatalError::Config` if the timezone is missing/invalid or the
+/// tracing log level string is invalid.
 pub fn from_file_and_env(
     file: Option<&HubConfigFile>,
     hub_dir: &Path,
@@ -87,7 +86,7 @@ fn from_file_and_env_inner(
         &secrets,
         &mut notices,
     );
-    let pricing = resolve_hub_pricing(file.and_then(|f| f.pricing.as_ref()))?;
+    let pricing = resolve_hub_pricing(file.and_then(|f| f.pricing.as_ref()), &mut notices);
 
     Ok(HubConfig {
         timezone,
@@ -179,36 +178,49 @@ fn resolve_hub_background_config(section: Option<&HubBackgroundConfigFile>) -> H
 
 /// Resolve the hub's `[pricing]` overrides. A key must name a provider kind
 /// and a model, and each rate must be a finite, non-negative number of USD per
-/// million tokens. A bad price fails the load: an estimate built on a wrong
-/// rate looks plausible, so it is not guessed around.
-///
-/// # Errors
-/// Returns `FatalError::Config` naming the key and rate that is wrong.
+/// million tokens. An entry that breaks either rule is dropped with a notice,
+/// so the model keeps its built-in price (or none) and the other entries load.
 fn resolve_hub_pricing(
     section: Option<&BTreeMap<String, ModelPrice>>,
-) -> Result<BTreeMap<String, ModelPrice>, FatalError> {
+    notices: &mut Vec<String>,
+) -> BTreeMap<String, ModelPrice> {
     let Some(section) = section else {
-        return Ok(BTreeMap::new());
+        return BTreeMap::new();
     };
-    for (key, price) in section {
-        ModelSpec::from_str(key)
-            .map_err(|reason| FatalError::Config(format!("[pricing] \"{key}\": {reason}")))?;
-        let rates = [
-            ("input", price.input),
-            ("output", price.output),
-            ("cache_read", price.cache_read),
-            ("cache_write", price.cache_write),
-            ("cache_write_long", price.cache_write_long),
-        ];
-        for (rate, value) in rates {
-            if !value.is_finite() || value < 0.0 {
-                return Err(FatalError::Config(format!(
-                    "[pricing] \"{key}\" {rate} must be a finite number of zero or more USD per million tokens, got {value}"
-                )));
+    section
+        .iter()
+        .filter_map(|(key, price)| match validate_price(key, price) {
+            Ok(()) => Some((key.clone(), price.clone())),
+            Err(reason) => {
+                tracing::warn!(key = %key, %reason, "[pricing] entry is invalid, ignoring it");
+                notices.push(format!(
+                    "[pricing] \"{key}\" {reason}; this price is ignored."
+                ));
+                None
             }
+        })
+        .collect()
+}
+
+/// Check one `[pricing]` entry. The error completes the sentence
+/// `[pricing] "key" ...`.
+fn validate_price(key: &str, price: &ModelPrice) -> Result<(), String> {
+    ModelSpec::from_str(key)?;
+    let rates = [
+        ("input", price.input),
+        ("output", price.output),
+        ("cache_read", price.cache_read),
+        ("cache_write", price.cache_write),
+        ("cache_write_long", price.cache_write_long),
+    ];
+    for (rate, value) in rates {
+        if !value.is_finite() || value < 0.0 {
+            return Err(format!(
+                "{rate} must be a finite number of zero or more USD per million tokens, got {value}"
+            ));
         }
     }
-    Ok(section.clone())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -449,17 +461,26 @@ cache_write_long = 3.0
     }
 
     #[test]
-    fn a_negative_or_non_finite_price_fails_the_load() {
+    fn a_negative_or_non_finite_price_is_dropped_with_a_notice() {
         for value in ["-2.5", "nan", "inf"] {
             let file = parse(&format!(
-                "timezone = \"UTC\"\n\n[pricing.\"openai/gpt-4o\"]\ninput = {value}\noutput = 10.0\ncache_read = 1.25\ncache_write = 2.5\ncache_write_long = 2.5\n"
+                "timezone = \"UTC\"\n\n[pricing.\"openai/gpt-4o\"]\ninput = {value}\noutput = 10.0\ncache_read = 1.25\ncache_write = 2.5\ncache_write_long = 2.5\n\n[pricing.\"anthropic/claude-sonnet-4-6\"]\n{FULL_PRICE}"
             ));
-            let err = from_file_and_env(Some(&file), &test_dir())
-                .unwrap_err()
-                .to_string();
+            let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
             assert!(
-                err.contains("openai/gpt-4o") && err.contains("input"),
-                "{value} should name the key and rate: {err}"
+                !cfg.pricing.contains_key("openai/gpt-4o"),
+                "{value} is not a price"
+            );
+            assert!(
+                cfg.pricing.contains_key("anthropic/claude-sonnet-4-6"),
+                "a valid entry beside the bad one still loads"
+            );
+            assert!(
+                cfg.load_notices
+                    .iter()
+                    .any(|n| n.contains("[pricing] \"openai/gpt-4o\" input")),
+                "{value} should raise a notice naming the key and rate: {:?}",
+                cfg.load_notices
             );
         }
     }
@@ -470,9 +491,14 @@ cache_write_long = 3.0
             let file = parse(&format!(
                 "timezone = \"UTC\"\n\n[pricing.\"{key}\"]\n{FULL_PRICE}"
             ));
+            let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+            assert!(cfg.pricing.is_empty(), "{key} should not be priced");
             assert!(
-                from_file_and_env(Some(&file), &test_dir()).is_err(),
-                "{key} should be rejected"
+                cfg.load_notices
+                    .iter()
+                    .any(|n| n.contains(&format!("[pricing] \"{key}\""))),
+                "{key} should raise a notice naming it: {:?}",
+                cfg.load_notices
             );
         }
     }

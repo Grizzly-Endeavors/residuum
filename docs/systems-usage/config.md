@@ -125,7 +125,7 @@ cache_write = 3.75
 cache_write_long = 6.0
 ```
 
-An entry replaces the built-in price for that model, and each of the five rates is required. A key that doesn't name a known provider and a model, or a rate that is negative or not a finite number, fails the hub config load with a message naming the key and rate. Prices are read from `hub/config.toml`, which reloads when it changes. The Settings modal's Model prices section (Settings → All agents → Model prices) edits this table, one row per `provider/model` with its five rates.
+An entry replaces the built-in price for that model, and each of the five rates is required. An entry whose key doesn't name a known provider and a model, or whose rate is negative or not a finite number, is ignored: the model keeps its built-in price (or has none), and a notice names the key and rate. The other entries still load. Prices are read from `hub/config.toml`, which reloads when it changes. The Settings modal's Model prices section (Settings → All agents → Model prices) edits this table, one row per `provider/model` with its five rates.
 
 A model id that carries a trailing `-YYYYMMDD` date is matched by its base id when it has no price of its own, so a dated snapshot such as `claude-haiku-4-5-20251001` is priced as `claude-haiku-4-5`. An exact key always wins over that match.
 
