@@ -218,7 +218,7 @@ impl AnthropicClient {
                         blocks.extend(replayed);
                         if left_out > 0 {
                             unbound += left_out;
-                            first_unbound.get_or_insert(index);
+                            first_unbound = first_unbound.or(Some(index));
                         }
                     }
 
@@ -3092,7 +3092,7 @@ mod tests {
                 "{retention:?}"
             );
             assert_eq!(body.get("cache_control").unwrap(), &cache_control);
-            assert!(cache_breakpoints(&body) <= 4, "{retention:?}");
+            assert_eq!(cache_breakpoints(&body), 2, "{retention:?}");
         }
     }
 
