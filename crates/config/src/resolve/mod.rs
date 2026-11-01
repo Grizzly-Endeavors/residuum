@@ -1641,6 +1641,16 @@ main = "oai/gpt-4o"
     }
 
     #[test]
+    fn session_affinity_key_is_pinned_across_toolchains() {
+        // The expected value is SHA-256 of the path bytes, truncated to 64 bits,
+        // so a Rust upgrade that changes std's hashing cannot move the key.
+        assert_eq!(
+            models::session_affinity_key(Path::new("/srv/residuum/workspace"), "main"),
+            "residuum-main-47a4a67a92a2575c",
+        );
+    }
+
+    #[test]
     fn web_search_anthropic_overrides() {
         let cfg_toml = r#"
 [web_search.anthropic]

@@ -4,7 +4,6 @@
 //! `ProviderSpec` values with failover chains.
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
 use crate::types::{BackgroundModelsConfig, RoleOverrides};
@@ -248,10 +247,21 @@ pub(super) fn scope_all_session_affinity(
 }
 
 /// A role's session-affinity key: `residuum-<role>-<hash of the workspace path>`.
+///
+/// The hash is SHA-256 over the path's bytes, keeping the first 64 bits, so a
+/// key stays the same across toolchain upgrades. `DefaultHasher` promises no
+/// such stability.
 pub(crate) fn session_affinity_key(workspace_dir: &Path, role: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    workspace_dir.hash(&mut hasher);
-    format!("residuum-{role}-{:016x}", hasher.finish())
+    let digest = ring::digest::digest(
+        &ring::digest::SHA256,
+        workspace_dir.as_os_str().as_encoded_bytes(),
+    );
+    let hash = digest
+        .as_ref()
+        .iter()
+        .take(8)
+        .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte));
+    format!("residuum-{role}-{hash:016x}")
 }
 
 /// Stamp every spec in a role's chain with that role's session-affinity key.
