@@ -255,7 +255,6 @@ pub fn init_tool_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::testing::RegistryHarness;
 
     /// Tools that must stay main-only, never registered for a session. This
