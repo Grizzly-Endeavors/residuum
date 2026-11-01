@@ -911,8 +911,9 @@ pub async fn execute_turn(
 
         // Merge MCP tool definitions from all connected servers. The registry
         // has already dropped any MCP tool whose name collides with a built-in
-        // or with an earlier server, so this union never carries a duplicate
-        // name (collision policy: crates/mcp/src/CLAUDE.md).
+        // or with a tool of a server whose name sorts first, so this union
+        // never carries a duplicate name (collision policy:
+        // crates/mcp/src/CLAUDE.md).
         let mcp_guard = resources.mcp_registry.read().await;
         tool_definitions.extend(mcp_guard.tool_definitions());
         drop(mcp_guard);
