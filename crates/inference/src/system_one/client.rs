@@ -13,11 +13,13 @@ use super::types::{
     ModelListResponse, Question, SystemOneModel, SystemOneRequest, SystemOneResponse,
 };
 use crate::http::{SharedHttpClient, read_error_body, warn_if_insecure_remote};
-use residuum_config::RetryConfig;
+use residuum_config::{RetryConfig, SystemOneProvider};
 
 /// Where a System 1 model is served and how to call it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SystemOneEndpoint {
+    /// The provider kind, recorded as the provider id of each usage record.
+    pub kind: SystemOneProvider,
     /// Display name used in messages: `TypeSafe`, Ollama, or a host.
     pub provider: String,
     /// Base URL without the `/v1/...` path.
@@ -286,6 +288,7 @@ mod tests {
         SystemOneClient::new(
             http,
             SystemOneEndpoint {
+                kind: SystemOneProvider::TypeSafe,
                 provider: "TypeSafe".to_string(),
                 base_url: server.uri(),
                 model: "jev-latest".to_string(),
@@ -378,6 +381,7 @@ mod tests {
         let c = SystemOneClient::new(
             http,
             SystemOneEndpoint {
+                kind: SystemOneProvider::Ollama,
                 provider: "Ollama".to_string(),
                 base_url: format!("{}/v1/", server.uri()),
                 model: "nimble".to_string(),
@@ -465,6 +469,7 @@ mod tests {
         let c = SystemOneClient::new(
             http,
             SystemOneEndpoint {
+                kind: SystemOneProvider::Ollama,
                 provider: "Ollama".to_string(),
                 base_url: "http://unreachable.invalid".to_string(),
                 model: "nimble".to_string(),

@@ -115,6 +115,17 @@ impl SystemOneProvider {
         }
     }
 
+    /// The stable id usage records carry for this provider: lowercase like
+    /// the provider kinds, so a grouping key or a `[pricing]` key can name it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TypeSafe => "typesafe",
+            Self::Ollama => "ollama",
+            Self::Other => "other",
+        }
+    }
+
     /// The base URL used when the config names none.
     #[must_use]
     pub fn default_url(self) -> Option<&'static str> {

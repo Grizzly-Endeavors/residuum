@@ -114,9 +114,11 @@ impl AutoModeGate {
             Err(_) => (configured_model, AttemptOutcome::Failed, None),
         };
         let attempt = AttemptUsage {
-            provider: status
-                .provider
-                .unwrap_or_else(|| UsageComponent::SystemOne.name().to_string()),
+            provider: self
+                .system_one
+                .provider_id()
+                .unwrap_or(UsageComponent::SystemOne.name())
+                .to_string(),
             model,
             outcome,
             usage,
@@ -482,6 +484,7 @@ mod tests {
         assert_eq!(records.len(), 1, "the one decision-model call is recorded");
         let record = records.first().unwrap();
         assert_eq!(record.component, UsageComponent::SystemOne);
+        assert_eq!(record.provider, "ollama");
         assert_eq!(record.model, "nimble");
         assert_eq!(record.outcome, AttemptOutcome::Succeeded);
         assert_eq!(

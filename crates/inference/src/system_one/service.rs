@@ -29,6 +29,7 @@ const REQUEST_TIMEOUT_SECS: u64 = 120;
 #[must_use]
 pub(crate) fn endpoint_from_config(cfg: &SystemOneConfig) -> SystemOneEndpoint {
     SystemOneEndpoint {
+        kind: cfg.provider,
         provider: cfg.display_name(),
         base_url: cfg.url.clone(),
         model: cfg.model.clone(),
@@ -113,6 +114,17 @@ impl SystemOneService {
     #[must_use]
     pub fn status(&self) -> SystemOneStatus {
         self.status.borrow().clone()
+    }
+
+    /// The id of the configured provider, as usage records carry it; `None`
+    /// when no client is configured.
+    #[must_use]
+    pub fn provider_id(&self) -> Option<&'static str> {
+        self.client
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|client| client.endpoint().kind.as_str())
     }
 
     /// Ask `questions` about `state`, recording the outcome in the status.
