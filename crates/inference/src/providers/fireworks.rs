@@ -24,6 +24,7 @@ pub(crate) fn dialect(session_affinity: Option<String>) -> OpenAiDialect {
         cached_tokens_from_headers: Some(cached_prompt_tokens),
         hosted_web_search: false,
         always_replays_reasoning: true,
+        takes_default_output_limit: true,
     }
 }
 

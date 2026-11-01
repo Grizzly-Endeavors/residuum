@@ -39,6 +39,18 @@ use residuum_config::{ThinkingConfig, ThinkingLevel};
 /// conflict, so the stand-in is short readable text.
 const MISSING_REASONING_PLACEHOLDER: &str = "(reasoning for this step is not available)";
 
+/// The `reasoning_effort` `OpenAI`'s own API gets on a call that asks for no
+/// thinking and caps its output below the configured default, such as the
+/// subconscious's. `max_completion_tokens` bounds reasoning too, and a model
+/// that reasons at its default effort (`medium` on current models) can spend
+/// a small cap reasoning and return nothing. The API reference lists `none`,
+/// `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, but support is
+/// per model: GPT-6 Astra refuses `none`, GPT-6.1 Sol refuses `none` and
+/// `minimal`. `low` is the least effort no model is documented to refuse; a
+/// model that takes no `reasoning_effort` at all refuses the field, and the
+/// client then leaves it out.
+const CAPPED_REASONING_EFFORT: &str = "low";
+
 /// Reads a cached prompt token count out of response headers.
 pub(super) type CachedTokensFromHeaders = fn(&reqwest::header::HeaderMap) -> Option<u32>;
 
@@ -56,6 +68,11 @@ pub(crate) struct OpenAiDialect {
     pub(super) hosted_web_search: bool,
     /// Whether the host takes `reasoning_content` back whatever its URL is.
     pub(super) always_replays_reasoning: bool,
+    /// Whether the host gets the configured output limit on every request.
+    /// A generic compatible server gets a limit only when a request caps its
+    /// output below that default: some refuse a limit the model can't meet,
+    /// such as vLLM once the prompt plus the limit exceeds the context.
+    pub(super) takes_default_output_limit: bool,
 }
 
 impl Default for OpenAiDialect {
@@ -65,6 +82,7 @@ impl Default for OpenAiDialect {
             cached_tokens_from_headers: None,
             hosted_web_search: true,
             always_replays_reasoning: false,
+            takes_default_output_limit: false,
         }
     }
 }
@@ -84,6 +102,10 @@ pub(crate) struct OpenAiClient {
     /// `reasoning_content`, after which tool calls without reasoning of the
     /// host's own carry [`MISSING_REASONING_PLACEHOLDER`] from the start.
     fills_missing_reasoning: Arc<AtomicBool>,
+    /// Set once the API has refused [`CAPPED_REASONING_EFFORT`] (a model
+    /// that takes no `reasoning_effort`), after which capped requests go
+    /// without it.
+    refuses_capped_effort: Arc<AtomicBool>,
 }
 
 impl OpenAiClient {
@@ -110,6 +132,7 @@ impl OpenAiClient {
             retry,
             dialect: OpenAiDialect::default(),
             fills_missing_reasoning: Arc::new(AtomicBool::new(false)),
+            refuses_capped_effort: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -137,6 +160,7 @@ impl OpenAiClient {
             retry,
             dialect: OpenAiDialect::default(),
             fills_missing_reasoning: Arc::new(AtomicBool::new(false)),
+            refuses_capped_effort: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -271,14 +295,22 @@ impl OpenAiClient {
             .as_ref()
             .and_then(Self::build_reasoning_effort);
         let official = self.is_official_host();
+        // A cap below the configured default is one the caller chose for
+        // this call; the default itself is a ceiling for every call.
+        let cap = options.max_tokens.filter(|&limit| limit < self.max_tokens);
         // `OpenAI`'s API takes `max_completion_tokens`, which also bounds
         // reasoning; compatible hosts take the older `max_tokens`.
         let output_limit = options.max_tokens.unwrap_or(self.max_tokens);
         let (max_tokens, max_completion_tokens) = if official {
             (None, Some(output_limit))
-        } else {
+        } else if self.dialect.takes_default_output_limit {
             (Some(output_limit), None)
+        } else {
+            (cap, None)
         };
+        let capped_reasoning_effort =
+            (official && cap.is_some() && reasoning_effort.is_none() && openai_tools.is_empty())
+                .then_some(CAPPED_REASONING_EFFORT);
         let (messages, missing_reasoning) = self.convert_messages(messages);
         PreparedRequest {
             messages,
@@ -288,9 +320,12 @@ impl OpenAiClient {
             response_format,
             temperature: options.temperature,
             reasoning_effort,
+            capped_reasoning_effort,
             max_tokens,
             max_completion_tokens,
-            prompt_cache_key: official
+            prompt_cache_key: self
+                .host()
+                .is_some_and(|host| is_openai_platform_host(&host))
                 .then(|| options.cache.conversation_key.clone())
                 .flatten(),
         }
@@ -325,18 +360,24 @@ impl OpenAiClient {
 
     /// Send a request, and once more with placeholder reasoning on the tool
     /// calls that have none if the host refuses it for missing
-    /// `reasoning_content`.
+    /// `reasoning_content`, or without [`CAPPED_REASONING_EFFORT`] if the
+    /// model refuses that.
     async fn send_with_reasoning_fallback(
         &self,
         prepared: &PreparedRequest,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
-        let mut fill = self.fills_missing_reasoning.load(Ordering::Relaxed);
+        let mut attempt = Attempt {
+            fill_missing_reasoning: self.fills_missing_reasoning.load(Ordering::Relaxed),
+            drop_capped_effort: self.refuses_capped_effort.load(Ordering::Relaxed),
+        };
         loop {
-            let request = prepared.request(&self.model, sink.is_some(), fill);
+            let request = prepared.request(&self.model, sink.is_some(), attempt);
+            let sent_capped_effort =
+                !attempt.drop_capped_effort && prepared.capped_reasoning_effort.is_some();
             match self.send(&request, sink).await {
                 Err(e)
-                    if !fill
+                    if !attempt.fill_missing_reasoning
                         && !prepared.missing_reasoning.is_empty()
                         && is_missing_reasoning_refusal(&e) =>
                 {
@@ -349,7 +390,20 @@ impl OpenAiClient {
                     if let Some(sink) = sink {
                         sink.restart_if_needed();
                     }
-                    fill = true;
+                    attempt.fill_missing_reasoning = true;
+                }
+                Err(e) if sent_capped_effort && is_reasoning_effort_refusal(&e) => {
+                    if !self.refuses_capped_effort.swap(true, Ordering::Relaxed) {
+                        info!(
+                            model = %self.model,
+                            effort = CAPPED_REASONING_EFFORT,
+                            "model refused the reasoning_effort sent with a capped request; sending capped requests without it from now on"
+                        );
+                    }
+                    if let Some(sink) = sink {
+                        sink.restart_if_needed();
+                    }
+                    attempt.drop_capped_effort = true;
                 }
                 result => return result,
             }
@@ -569,10 +623,36 @@ fn is_missing_reasoning_refusal(error: &InferenceError) -> bool {
         .any(|refusal| lower.contains(refusal))
 }
 
+/// Whether the API refused the `reasoning_effort` a request carried, as a
+/// field the model doesn't take or a value it doesn't support.
+fn is_reasoning_effort_refusal(error: &InferenceError) -> bool {
+    let InferenceError::Api(message) = error else {
+        return false;
+    };
+    let lower = message.to_lowercase();
+    lower.contains("reasoning_effort")
+        && [
+            "unsupported",
+            "not supported",
+            "unrecognized",
+            "unknown",
+            "invalid",
+        ]
+        .iter()
+        .any(|refusal| lower.contains(refusal))
+}
+
 /// Whether `host` is `OpenAI`'s own service, which accepts only the fields
 /// its API documents.
 fn is_official_openai_host(host: &str) -> bool {
-    host == "api.openai.com" || host.ends_with(".openai.com") || host.ends_with(".openai.azure.com")
+    is_openai_platform_host(host) || host.ends_with(".openai.azure.com")
+}
+
+/// Whether `host` is `OpenAI`'s own platform rather than an Azure OpenAI
+/// deployment. Azure documents `prompt_cache_key` only for GPT-5.6 and later
+/// model families, so only the platform gets it.
+fn is_openai_platform_host(host: &str) -> bool {
+    host == "api.openai.com" || host.ends_with(".openai.com")
 }
 
 #[async_trait]
@@ -742,22 +822,35 @@ struct PreparedRequest {
     tools: Option<Vec<OpenAiToolEntry>>,
     response_format: Option<OpenAiResponseFormat>,
     temperature: Option<f32>,
+    /// The effort the configured thinking asks for.
     reasoning_effort: Option<String>,
+    /// The effort sent when thinking asks for none, on a capped request to
+    /// `OpenAI`'s own API (see [`CAPPED_REASONING_EFFORT`]).
+    capped_reasoning_effort: Option<&'static str>,
     max_tokens: Option<u32>,
     max_completion_tokens: Option<u32>,
     prompt_cache_key: Option<String>,
 }
 
+/// What an attempt at a request changes after the host refused an earlier
+/// one. The default is the request as prepared.
+#[derive(Debug, Clone, Copy, Default)]
+struct Attempt {
+    /// Send placeholder reasoning on the tool calls that have none.
+    fill_missing_reasoning: bool,
+    /// Leave out the capped request's `reasoning_effort`.
+    drop_capped_effort: bool,
+}
+
 impl PreparedRequest {
-    /// The request body for one attempt, with placeholder reasoning on the
-    /// tool calls that have none when `fill_missing_reasoning` is set.
+    /// The request body for one attempt.
     fn request<'a>(
         &'a self,
         model: &'a str,
         stream: bool,
-        fill_missing_reasoning: bool,
+        attempt: Attempt,
     ) -> ChatCompletionRequest<'a> {
-        let messages = if fill_missing_reasoning && !self.missing_reasoning.is_empty() {
+        let messages = if attempt.fill_missing_reasoning && !self.missing_reasoning.is_empty() {
             self.filled_messages.get_or_init(|| {
                 let mut filled = self.messages.clone();
                 for index in &self.missing_reasoning {
@@ -781,7 +874,9 @@ impl PreparedRequest {
             tool_choice: self.tools.is_some().then_some("auto"),
             response_format: self.response_format.as_ref(),
             temperature: self.temperature,
-            reasoning_effort: self.reasoning_effort.as_deref(),
+            reasoning_effort: self.reasoning_effort.as_deref().or(self
+                .capped_reasoning_effort
+                .filter(|_| !attempt.drop_capped_effort)),
             max_tokens: self.max_tokens,
             max_completion_tokens: self.max_completion_tokens,
             stream: stream.then_some(true),
@@ -2310,12 +2405,13 @@ mod tests {
         );
     }
 
-    /// A client for `OpenAI`'s own host. Its requests are only built, never sent.
-    fn official_host_client() -> OpenAiClient {
+    /// A client for the host at `base_url`. Its requests are only built,
+    /// never sent.
+    fn client_at(base_url: &str) -> OpenAiClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
         OpenAiClient::with_http_client_and_api_key(
             http,
-            "https://api.openai.com/v1",
+            base_url,
             "gpt-4o",
             "key",
             TEST_MAX_TOKENS,
@@ -2323,20 +2419,43 @@ mod tests {
         )
     }
 
+    /// A client for `OpenAI`'s own host.
+    fn official_host_client() -> OpenAiClient {
+        client_at("https://api.openai.com/v1")
+    }
+
+    /// A client for a generic compatible server, such as vLLM.
+    fn compatible_host_client() -> OpenAiClient {
+        client_at("https://vllm.example.com/v1")
+    }
+
     /// The body of the request `options` builds for `client`, without sending it.
     fn built_body(client: &OpenAiClient, options: &CompletionOptions) -> Value {
-        let prepared = client.prepare(&[Message::user("hi")], &[], options);
-        serde_json::to_value(prepared.request("gpt-4o", false, false)).unwrap()
+        built_body_with_tools(client, &[], options)
+    }
+
+    fn built_body_with_tools(
+        client: &OpenAiClient,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Value {
+        let prepared = client.prepare(&[Message::user("hi")], tools, options);
+        serde_json::to_value(prepared.request("gpt-4o", false, Attempt::default())).unwrap()
+    }
+
+    /// Options with an output cap of `max_tokens` and a conversation key.
+    fn capped_at(max_tokens: u32) -> CompletionOptions {
+        let mut options = CompletionOptions {
+            max_tokens: Some(max_tokens),
+            ..CompletionOptions::default()
+        };
+        options.cache.conversation_key = Some("conversation-1".to_string());
+        options
     }
 
     #[test]
     fn official_host_gets_max_completion_tokens_and_the_cache_key() {
-        let mut options = CompletionOptions {
-            max_tokens: Some(2048),
-            ..CompletionOptions::default()
-        };
-        options.cache.conversation_key = Some("conversation-1".to_string());
-        let body = built_body(&official_host_client(), &options);
+        let body = built_body(&official_host_client(), &capped_at(2048));
         assert_eq!(
             at(&body, "/max_completion_tokens"),
             &json!(2048),
@@ -2354,6 +2473,33 @@ mod tests {
     }
 
     #[test]
+    fn official_host_gets_the_configured_default_when_the_request_sets_none() {
+        let body = built_body(&official_host_client(), &CompletionOptions::default());
+        assert_eq!(
+            at(&body, "/max_completion_tokens"),
+            &json!(TEST_MAX_TOKENS),
+            "OpenAI's own API always gets an output limit"
+        );
+    }
+
+    #[test]
+    fn azure_gets_max_completion_tokens_but_no_cache_key() {
+        let body = built_body(
+            &client_at("https://example.openai.azure.com/openai/v1"),
+            &capped_at(2048),
+        );
+        assert_eq!(
+            at(&body, "/max_completion_tokens"),
+            &json!(2048),
+            "Azure OpenAI takes the official limit field"
+        );
+        assert!(
+            body.get("prompt_cache_key").is_none(),
+            "Azure documents prompt_cache_key only for GPT-5.6 and later, so it gets none: {body}"
+        );
+    }
+
+    #[test]
     fn official_host_sends_no_cache_key_without_a_conversation() {
         let body = built_body(&official_host_client(), &CompletionOptions::default());
         assert!(
@@ -2362,32 +2508,134 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn compatible_host_gets_max_tokens_and_no_cache_key() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "choices": [{"message": {"role": "assistant", "content": "ok"}}]
-            })))
-            .mount(&server)
-            .await;
-        let mut options = CompletionOptions::default();
-        options.cache.conversation_key = Some("conversation-1".to_string());
-        make_client(server.uri(), "m")
-            .complete(&[Message::user("hi")], &[], &options)
-            .await
-            .unwrap();
-        let requests = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&requests.first().unwrap().body).unwrap();
-        assert_eq!(
-            at(&body, "/max_tokens"),
-            &json!(TEST_MAX_TOKENS),
-            "a compatible host gets the configured default when the request sets none"
+    #[test]
+    fn compatible_host_gets_no_output_limit_at_the_configured_default() {
+        let body = built_body(&compatible_host_client(), &capped_at(TEST_MAX_TOKENS));
+        assert!(
+            body.get("max_tokens").is_none() && body.get("max_completion_tokens").is_none(),
+            "a server such as vLLM refuses a prompt plus limit over the context, so the default \
+             is not sent: {body}"
         );
         assert!(
-            body.get("max_completion_tokens").is_none() && body.get("prompt_cache_key").is_none(),
-            "a compatible host gets neither max_completion_tokens nor prompt_cache_key: {body}"
+            body.get("prompt_cache_key").is_none(),
+            "a compatible host gets no prompt_cache_key: {body}"
+        );
+        let body = built_body(&compatible_host_client(), &CompletionOptions::default());
+        assert!(
+            body.get("max_tokens").is_none(),
+            "nor when the request sets no limit: {body}"
+        );
+    }
+
+    #[test]
+    fn compatible_host_gets_a_cap_below_the_configured_default_as_max_tokens() {
+        let body = built_body(&compatible_host_client(), &capped_at(1024));
+        assert_eq!(
+            at(&body, "/max_tokens"),
+            &json!(1024),
+            "a call's own smaller cap, such as the subconscious's, is sent"
+        );
+        assert!(
+            body.get("max_completion_tokens").is_none() && body.get("reasoning_effort").is_none(),
+            "a compatible host gets neither max_completion_tokens nor a capped effort: {body}"
+        );
+    }
+
+    #[test]
+    fn official_host_caps_reasoning_on_a_capped_call_with_thinking_off() {
+        let body = built_body(&official_host_client(), &capped_at(1024));
+        assert_eq!(
+            at(&body, "/reasoning_effort"),
+            &json!(CAPPED_REASONING_EFFORT),
+            "a small cap would otherwise go to reasoning at the model's default effort"
+        );
+
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Toggle(false)),
+            ..capped_at(1024)
+        };
+        let body = built_body(&official_host_client(), &options);
+        assert_eq!(
+            at(&body, "/reasoning_effort"),
+            &json!(CAPPED_REASONING_EFFORT),
+            "thinking switched off asks for no reasoning either"
+        );
+    }
+
+    #[test]
+    fn official_host_leaves_reasoning_alone_where_the_call_chose_it_or_set_no_cap() {
+        let body = built_body(&official_host_client(), &capped_at(TEST_MAX_TOKENS));
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "a call at the configured default gets the model's own effort: {body}"
+        );
+
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Level(ThinkingLevel::High)),
+            ..capped_at(1024)
+        };
+        let body = built_body(&official_host_client(), &options);
+        assert_eq!(
+            at(&body, "/reasoning_effort"),
+            &json!("high"),
+            "configured thinking keeps its effort"
+        );
+
+        let tools = [ToolDefinition {
+            name: "exec".to_string(),
+            description: "Run a command".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let body = built_body_with_tools(&official_host_client(), &tools, &capped_at(1024));
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "GPT-5.4 and later refuse tools with any reasoning_effort, so a call with tools gets none: {body}"
+        );
+    }
+
+    #[test]
+    fn a_refused_capped_effort_is_left_out_of_the_next_attempt() {
+        let prepared =
+            official_host_client().prepare(&[Message::user("hi")], &[], &capped_at(1024));
+        let attempt = Attempt {
+            drop_capped_effort: true,
+            ..Attempt::default()
+        };
+        let body = serde_json::to_value(prepared.request("gpt-4o", false, attempt)).unwrap();
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "the retry goes without the effort the model refused: {body}"
+        );
+        assert_eq!(
+            at(&body, "/max_completion_tokens"),
+            &json!(1024),
+            "and keeps its cap"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_refusals_are_told_apart_from_other_errors() {
+        let refused =
+            |message: &str| is_reasoning_effort_refusal(&InferenceError::Api(message.to_string()));
+        assert!(
+            refused(
+                "400 Bad Request: Unsupported parameter: 'reasoning_effort' is not supported with this model."
+            ),
+            "a model that takes no effort"
+        );
+        assert!(
+            refused(
+                "400 Bad Request: Unsupported value: 'reasoning_effort' does not support 'low' with this model."
+            ),
+            "a model that takes other values"
+        );
+        assert!(
+            !refused("400 Bad Request: Invalid 'messages[0].content': string too long."),
+            "an error about something else"
+        );
+        assert!(
+            !refused("429 Too Many Requests: rate limited"),
+            "a transient failure"
         );
     }
 
