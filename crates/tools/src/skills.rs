@@ -297,6 +297,8 @@ mod tests {
 
     #[tokio::test]
     async fn activate_drops_an_active_skill_whose_files_were_deleted() {
+        use residuum_bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+
         let dir = tempfile::tempdir().unwrap();
         write_skill(
             dir.path(),
@@ -327,7 +329,6 @@ mod tests {
             .await
             .unwrap();
 
-        use residuum_bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
         let bus = residuum_bus::spawn_broker();
         let mut notices: residuum_bus::Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
