@@ -2795,9 +2795,9 @@ done
             name: "big".to_string(),
             command: "sh".to_string(),
             args: vec!["-c".to_string(), BIG_OUTPUT_MCP_SERVER.to_string()],
-            env: std::collections::HashMap::new(),
+            env: std::collections::BTreeMap::new(),
             transport: residuum_mcp::McpTransport::Stdio,
-            headers: std::collections::HashMap::new(),
+            headers: std::collections::BTreeMap::new(),
             timeout_secs: None,
         };
         let mcp_registry = residuum_mcp::McpRegistry::new_shared();
