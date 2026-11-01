@@ -48,6 +48,17 @@ pub enum UsageComponent {
 }
 
 impl UsageComponent {
+    /// Every component's [`name`](Self::name), for checking a filter against.
+    pub const NAMES: [&str; 7] = [
+        "main",
+        "session",
+        "observer",
+        "reflector",
+        "subconscious",
+        "system_one",
+        "web_model",
+    ];
+
     /// The component's name without its details, as records are filtered by.
     #[must_use]
     pub fn name(&self) -> &'static str {
@@ -696,5 +707,25 @@ mod tests {
             r#"{"recorded_at":"2026-11-01T00:00:00Z","component":{"session":{"kind":"agent"}},"provider":"openai","model":"gpt","outcome":"failed"}"#
         );
         assert_eq!(serde_json::from_str::<UsageRecord>(&line).unwrap(), record);
+    }
+
+    #[test]
+    fn every_component_name_is_listed_once() {
+        let components = [
+            UsageComponent::Main,
+            UsageComponent::Session {
+                kind: "pulse".to_string(),
+            },
+            UsageComponent::Observer,
+            UsageComponent::Reflector,
+            UsageComponent::Subconscious,
+            UsageComponent::SystemOne,
+            UsageComponent::WebModel,
+        ];
+        let mut names: Vec<&str> = components.iter().map(UsageComponent::name).collect();
+        names.sort_unstable();
+        let mut listed = UsageComponent::NAMES.to_vec();
+        listed.sort_unstable();
+        assert_eq!(names, listed);
     }
 }
