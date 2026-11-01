@@ -209,46 +209,13 @@ impl AnthropicClient {
                     }
                 }
                 Role::Assistant => {
-                    let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
-
-                    if let Some(origin) = replay_thinking {
-                        let ahead = (index < exchange_start).then_some(&prefix);
-                        let (replayed, left_out) =
-                            replayable_thinking(&msg.thinking, origin, ahead);
-                        blocks.extend(replayed);
-                        if left_out > 0 {
-                            unbound += left_out;
-                            first_unbound = first_unbound.or(Some(index));
-                        }
+                    let ahead = (index < exchange_start).then_some(&prefix);
+                    let (message, left_out) = assistant_message(msg, replay_thinking, ahead);
+                    if left_out > 0 {
+                        unbound += left_out;
+                        first_unbound = first_unbound.or(Some(index));
                     }
-
-                    if !msg.content.is_empty() {
-                        blocks.push(AnthropicContentBlock::Text {
-                            text: msg.content.clone(),
-                        });
-                    }
-
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        for tc in tool_calls {
-                            blocks.push(AnthropicContentBlock::ToolUse {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                input: tc.arguments.clone(),
-                            });
-                        }
-                    }
-
-                    // The API rejects an empty blocks array, so an empty
-                    // assistant message goes as plain text.
-                    let content = if blocks.is_empty() {
-                        AnthropicContent::Text(msg.content.clone())
-                    } else {
-                        AnthropicContent::Blocks(blocks)
-                    };
-                    AnthropicMessage {
-                        role: String::from("assistant"),
-                        content,
-                    }
+                    message
                 }
                 Role::Tool => {
                     let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
@@ -878,6 +845,53 @@ fn replayable_thinking(
         })
         .collect();
     (blocks, unbound)
+}
+
+/// Convert one assistant message: its replayable reasoning first, then its
+/// text and tool calls.
+///
+/// `ahead` is the fingerprint of the request ahead of this message when it is
+/// an earlier turn, and `None` for the current exchange (see
+/// [`replayable_thinking`]). Returns the message and how many reasoning blocks
+/// were left out because their binding did not match.
+fn assistant_message(
+    msg: &Message,
+    replay_thinking: Option<&ThinkingOrigin>,
+    ahead: Option<&PrefixFingerprint>,
+) -> (AnthropicMessage, usize) {
+    let (mut blocks, left_out) = match replay_thinking {
+        Some(origin) => replayable_thinking(&msg.thinking, origin, ahead),
+        None => (Vec::new(), 0),
+    };
+
+    if !msg.content.is_empty() {
+        blocks.push(AnthropicContentBlock::Text {
+            text: msg.content.clone(),
+        });
+    }
+
+    if let Some(tool_calls) = &msg.tool_calls {
+        for tc in tool_calls {
+            blocks.push(AnthropicContentBlock::ToolUse {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.arguments.clone(),
+            });
+        }
+    }
+
+    // The API rejects an empty blocks array, so an empty
+    // assistant message goes as plain text.
+    let content = if blocks.is_empty() {
+        AnthropicContent::Text(msg.content.clone())
+    } else {
+        AnthropicContent::Blocks(blocks)
+    };
+    let message = AnthropicMessage {
+        role: String::from("assistant"),
+        content,
+    };
+    (message, left_out)
 }
 
 /// A running fingerprint of a request's bytes in the order the API reads
