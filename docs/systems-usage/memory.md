@@ -36,6 +36,8 @@ If the process exits mid-run, the run's transcript is not lost: it is appended t
 - Soft threshold (`threshold_tokens`): starts a cooldown timer, fires when cooldown expires
 - Force threshold (`force_threshold_tokens`): fires immediately, bypassing cooldown
 
+The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
+
 **What it produces per episode (under `memory/episodes/YYYY-MM/DD/`):**
 - `ep-NNN.jsonl` — line 1 is meta JSON, subsequent lines are serialized messages
 - `ep-NNN.obs.json` — JSON array of extracted observations
@@ -150,7 +152,7 @@ An agent session's fork carries a snapshot of the observation log and the recent
 
 ## The Model's Thinking
 
-When a model returns reasoning, it is kept as `thinking` blocks on the assistant message it belongs to: readable `text`, for providers that need it an opaque `signature` or an encrypted block to send back unchanged, and an `origin` naming the provider API and model that produced the block, which is how a provider tells its own blocks from another's (see [Config](config.md#model-calls-thinking-timeouts-and-streaming)). `memory/recent_messages.json` and session transcripts hold the blocks whole. An episode transcript, which is never replayed to a provider, holds the readable text only. Thinking is not memory: the observer's extraction transcript, the interaction-pair chunks that are searched, `memory_get` output and the token estimates behind the observer thresholds and the conversation size are built from what was said and done, never from the model's reasoning. See [Turn Control](turn-control.md#the-main-conversation-stream) for what the web shows.
+When a model returns reasoning, it is kept as `thinking` blocks on the assistant message it belongs to: readable `text`, for providers that need it an opaque `signature` or an encrypted block to send back unchanged, and an `origin` naming the provider API and model that produced the block, which is how a provider tells its own blocks from another's (see [Config](config.md#model-calls-thinking-timeouts-and-streaming)). `memory/recent_messages.json` and session transcripts hold the blocks whole. An episode transcript, which is never replayed to a provider, holds the readable text only. Thinking is not memory: the observer's extraction transcript, the interaction-pair chunks that are searched and `memory_get` output are built from what was said and done, never from the model's reasoning. The token estimates behind the observer thresholds and the conversation size count the readable reasoning text, since it is part of what the request carries. See [Turn Control](turn-control.md#the-main-conversation-stream) for what the web shows.
 
 ## Message Senders
 
