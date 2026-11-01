@@ -190,7 +190,7 @@ fn resolve_hub_pricing(
     section
         .iter()
         .filter_map(|(key, price)| match validate_price(key, price) {
-            Ok(()) => Some((key.clone(), price.clone())),
+            Ok(()) => Some((key.clone(), *price)),
             Err(reason) => {
                 tracing::warn!(key = %key, %reason, "[pricing] entry is invalid, ignoring it");
                 notices.push(format!(
