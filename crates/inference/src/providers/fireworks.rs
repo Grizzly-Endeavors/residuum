@@ -359,7 +359,7 @@ mod tests {
         let server = ScriptedServer::start(vec![script]).await;
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
         let client =
-            OpenAiClient::with_http_client(http, server.uri(), "m", RetryConfig::no_retry())
+            OpenAiClient::with_http_client(http, server.uri(), "m", 4096, RetryConfig::no_retry())
                 .with_dialect(dialect(None));
         let sink = RecordingSink::default();
         let result = client
@@ -401,7 +401,7 @@ mod tests {
 
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
         let client =
-            OpenAiClient::with_http_client(http, server.uri(), "m", RetryConfig::no_retry())
+            OpenAiClient::with_http_client(http, server.uri(), "m", 4096, RetryConfig::no_retry())
                 .with_dialect(dialect(None));
         client
             .complete(&messages, &[], &CompletionOptions::default())

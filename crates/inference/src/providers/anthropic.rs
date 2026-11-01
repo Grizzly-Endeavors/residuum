@@ -2905,7 +2905,7 @@ mod tests {
                 .map(|(key, v)| usize::from(key == "cache_control") + cache_breakpoints(v))
                 .sum(),
             Value::Array(items) => items.iter().map(cache_breakpoints).sum(),
-            _ => 0,
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => 0,
         }
     }
 
