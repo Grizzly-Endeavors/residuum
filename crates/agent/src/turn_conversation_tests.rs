@@ -868,6 +868,7 @@ async fn a_calls_thinking_precedes_its_text_and_tool_calls_and_is_kept_in_histor
             redacted: None,
             part: None,
             origin: None,
+            binding: None,
         }],
     );
     let second = with_thinking(
@@ -880,6 +881,7 @@ async fn a_calls_thinking_precedes_its_text_and_tool_calls_and_is_kept_in_histor
                 redacted: Some("encrypted".to_string()),
                 part: None,
                 origin: None,
+                binding: None,
             },
             ThinkingBlock::text("Say so."),
         ],
@@ -914,6 +916,7 @@ async fn a_calls_thinking_precedes_its_text_and_tool_calls_and_is_kept_in_histor
             redacted: None,
             part: None,
             origin: None,
+            binding: None,
         }],
         "the intermediate assistant message keeps its blocks whole"
     );
@@ -934,6 +937,7 @@ async fn a_call_with_only_encrypted_reasoning_publishes_no_thinking_frame() {
             redacted: Some("encrypted".to_string()),
             part: None,
             origin: None,
+            binding: None,
         }],
     );
     let run = run_turn(vec![Step::reply(response)]).await;
@@ -954,6 +958,7 @@ async fn thinking_reaches_the_durable_transcript_with_the_message_it_belongs_to(
         redacted: None,
         part: None,
         origin: None,
+        binding: None,
     }];
     let run = run_turn(vec![
         Step::reply(with_thinking(
