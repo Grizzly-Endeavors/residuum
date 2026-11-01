@@ -13,6 +13,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 
+use super::attempt::ListsAttempts;
 use super::stream::TrackedSink;
 use super::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, Role,
@@ -193,7 +194,8 @@ impl ImageInputGuard {
         // problem; a retry refused again leaves the model's images alone.
         let response = self
             .send_without_images(&stripped, tools, options, sink, true)
-            .await?;
+            .await
+            .after_attempts(err.attempts().to_vec())?;
         self.learn(&err);
         Ok(response)
     }

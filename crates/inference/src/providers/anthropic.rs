@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use crate::attempt::{FailedRequest, ListsAttempts, record_attempt};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
@@ -21,7 +22,7 @@ use crate::{
     ProviderApi, ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
     ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
-use residuum_config::RetryConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// Anthropic Messages API version header value.
@@ -405,11 +406,13 @@ impl AnthropicClient {
             manual: self.manual_thinking.load(Ordering::Relaxed),
             drop_mismatched: self.drop_mismatched_thinking.load(Ordering::Relaxed),
         };
+        let mut refused = Vec::new();
         loop {
             let request = prepared.request(&self.model, sink.is_some(), mode);
             let adaptive = request.thinking.as_ref().is_some_and(|t| !t.is_manual());
             match self.send(&request, sink).await {
                 Err(e) if adaptive && is_adaptive_unsupported(&e) => {
+                    refused.extend(e.into_parts().1);
                     if !self.manual_thinking.swap(true, Ordering::Relaxed) {
                         info!(
                             model = %self.model,
@@ -422,6 +425,7 @@ impl AnthropicClient {
                     mode.manual = true;
                 }
                 Err(e) if adaptive && !mode.drop_mismatched && is_thinking_bound_elsewhere(&e) => {
+                    refused.extend(e.into_parts().1);
                     if !self.drop_mismatched_thinking.swap(true, Ordering::Relaxed) {
                         info!(
                             model = %self.model,
@@ -433,12 +437,13 @@ impl AnthropicClient {
                     }
                     mode.drop_mismatched = true;
                 }
-                result => return result,
+                result => return result.after_attempts(refused),
             }
         }
     }
 
-    /// Send a pre-built request to the Anthropic API and parse the response.
+    /// Send a pre-built request to the Anthropic API and parse the response,
+    /// recording the request as one attempt of the call.
     #[tracing::instrument(skip_all, fields(
         model = %request.model,
         message_count = request.messages.len(),
@@ -456,6 +461,15 @@ impl AnthropicClient {
         request: &AnthropicRequest<'_>,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(ProviderKind::Anthropic, request.model, result)
+    }
+
+    async fn send_request(
+        &self,
+        request: &AnthropicRequest<'_>,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         debug!(
             max_tokens = request.max_tokens,
             "sending anthropic completion request"
@@ -536,7 +550,7 @@ impl AnthropicClient {
                     "anthropic API error — full request/response for diagnosis"
                 );
             }
-            return Err(error);
+            return Err(error.into());
         }
 
         let api_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
@@ -703,7 +717,7 @@ pub fn is_oauth_key(key: &str) -> bool {
 /// Whether the API refused a request because the model does not accept
 /// adaptive thinking.
 fn is_adaptive_unsupported(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error else {
+    let InferenceError::Api(message) = error.cause() else {
         return false;
     };
     let lower = message.to_lowercase();
@@ -715,7 +729,7 @@ fn is_adaptive_unsupported(error: &InferenceError) -> bool {
 /// `signature` in `thinking` block. The block is bound to a different
 /// conversation."
 fn is_thinking_bound_elsewhere(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error else {
+    let InferenceError::Api(message) = error.cause() else {
         return false;
     };
     message
@@ -842,15 +856,22 @@ fn build_thinking(
 
 /// Read a streamed Messages response to its end, pushing text and thinking to
 /// `sink` as it arrives, and return it as the response a non-streaming
-/// request would have returned.
+/// request would have returned. A stream that fails after reporting usage
+/// (`message_start` carries the input counts) keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
     sink: &dyn StreamSink,
-) -> Result<AnthropicResponse, InferenceError> {
+) -> Result<AnthropicResponse, FailedRequest> {
     let mut assembler = StreamAssembler::new(sink);
-    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
-    assembler.finish()
+    let read = read_sse(response, idle_secs, |event| assembler.handle(&event)).await;
+    let usage = assembler.usage.map(AnthropicUsage::usage);
+    match read {
+        Ok(()) => assembler
+            .finish()
+            .map_err(|error| FailedRequest::spent(error, usage)),
+        Err(error) => Err(FailedRequest::spent(error, usage)),
+    }
 }
 
 /// One streamed event, by its `type`.
@@ -2029,7 +2050,7 @@ mod tests {
         assert!(result.is_err(), "request should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Timeout(_)),
+            matches!(err.cause(), InferenceError::Timeout(_)),
             "error should be Timeout variant, got: {err:?}"
         );
     }
@@ -3695,6 +3716,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stream_that_dies_after_message_start_keeps_its_usage_on_the_attempt() {
+        let cut_off = [
+            message_start(json!({"input_tokens": 25, "output_tokens": 1})),
+            block_start(0, json!({"type": "text", "text": ""})),
+            delta(0, json!({"type": "text_delta", "text": "half"})),
+        ]
+        .concat();
+        let (result, _sink, _server) = stream_from(sse_response(&[cut_off]), test_client).await;
+        let err = result.unwrap_err();
+
+        assert!(
+            matches!(err.cause(), InferenceError::StreamInterrupted(_)),
+            "the stream ended early: {err:?}"
+        );
+        assert_eq!(
+            err.attempts(),
+            [crate::AttemptUsage {
+                provider: "anthropic".to_string(),
+                model: TEST_MODEL.to_string(),
+                outcome: crate::AttemptOutcome::Failed,
+                usage: Some(Usage {
+                    uncached_input_tokens: Some(25),
+                    output_tokens: Some(1),
+                    ..Usage::default()
+                }),
+            }],
+            "the input billed at message_start is not lost with the stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_adaptive_request_is_listed_before_the_one_that_answered() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "thinking": {"type": "adaptive"}
+            })))
+            .respond_with(ResponseTemplate::new(400).set_body_json(adaptive_unsupported_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "thinking": {"type": "enabled"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .mount(&server)
+            .await;
+
+        let response = test_client(&server.uri())
+            .complete(&simple_user_message(), &[], &thinking_options(4096))
+            .await
+            .unwrap();
+
+        let outcomes: Vec<_> = response.attempts.iter().map(|a| a.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                crate::AttemptOutcome::Failed,
+                crate::AttemptOutcome::Succeeded
+            ],
+            "the refused request is an attempt of the call too"
+        );
+        assert_eq!(response.attempts.last().unwrap().usage, response.usage);
+    }
+
+    #[tokio::test]
     async fn missing_usage_counts_stay_unknown_in_a_stream() {
         let (streamed, _sink, _server) = stream_from(
             sse_response(&[text_stream(
@@ -3832,7 +3921,7 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), test_client).await;
         let err = cut_clean.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)),
+            matches!(err.cause(), InferenceError::StreamInterrupted(_)),
             "a stream that ends cleanly but early is interrupted: {err:?}"
         );
         assert!(err.is_retryable(), "an interrupted stream is retried");
@@ -3840,7 +3929,7 @@ mod tests {
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), test_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            matches!(dropped_err.cause(), InferenceError::StreamInterrupted(_)),
             "a body cut off mid-stream is interrupted: {dropped_err:?}"
         );
         assert!(
@@ -3863,7 +3952,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Api(message) if message.contains("overloaded_error")),
+            matches!(err.cause(), InferenceError::Api(message) if message.contains("overloaded_error")),
             "the error event surfaces with its type: {err:?}"
         );
         assert!(err.is_retryable(), "overloaded_error is retryable");
@@ -3949,7 +4038,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.cause(), InferenceError::Stalled(1)),
             "no bytes for the configured time is a stall: {err:?}"
         );
         assert_eq!(
@@ -4170,7 +4259,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Parse(m) if m.contains("exec")),
+            matches!(err.cause(), InferenceError::Parse(m) if m.contains("exec")),
             "the tool is named: {err:?}"
         );
         assert!(!err.is_retryable(), "garbage input will not improve");

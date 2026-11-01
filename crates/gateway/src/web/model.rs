@@ -257,7 +257,9 @@ fn build_request(
 /// result to the design's response/error contract (§7): `json` parsed from
 /// the model's content when a schema was requested (`502` if it doesn't
 /// parse), `504` on provider timeout, `502` with a plain message for any
-/// other provider failure (the raw error goes to logs only).
+/// other provider failure (the raw error goes to logs only). The reported
+/// `model` is the one that answered, which differs from `model_label` (the
+/// primary) when the call failed over.
 async fn run_completion(
     provider: &dyn InferenceProvider,
     model_label: &str,
@@ -288,10 +290,15 @@ async fn run_completion(
             } else {
                 None
             };
+            let answered_by = resp.answered_by().map_or_else(
+                || model_label.to_string(),
+                |attempt| format!("{}/{}", attempt.provider, attempt.model),
+            );
             let usage = UsageResponse::from(resp.usage.unwrap_or_default());
             tracing::info!(
                 artifact = identity_label,
-                model = model_label,
+                model = %answered_by,
+                attempts = resp.attempts.len(),
                 input_tokens = usage.input_tokens,
                 output_tokens = usage.output_tokens,
                 "model call completed"
@@ -299,28 +306,30 @@ async fn run_completion(
             Json(ModelCompleteResponse {
                 content: resp.content,
                 json,
-                model: model_label.to_string(),
+                model: answered_by,
                 usage,
             })
             .into_response()
         }
-        Err(InferenceError::Timeout(secs)) => {
-            tracing::warn!(
-                artifact = identity_label,
-                model = model_label,
-                timeout_secs = secs,
-                "model call timed out"
-            );
-            error_response(
-                StatusCode::GATEWAY_TIMEOUT,
-                "The model didn't respond in time. Try again in a moment.",
-            )
-        }
         Err(e) => {
+            if let InferenceError::Timeout(secs) = e.cause() {
+                tracing::warn!(
+                    artifact = identity_label,
+                    model = model_label,
+                    timeout_secs = *secs,
+                    attempts = e.attempts().len(),
+                    "model call timed out"
+                );
+                return error_response(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "The model didn't respond in time. Try again in a moment.",
+                );
+            }
             tracing::warn!(
                 error = %e,
                 artifact = identity_label,
                 model = model_label,
+                attempts = e.attempts().len(),
                 "model call failed"
             );
             error_response(
@@ -707,6 +716,63 @@ mod tests {
             "anthropic/claude-test",
             "chart",
             &messages,
+            &CompletionOptions::default(),
+            false,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    fn attempt(
+        model: &str,
+        outcome: residuum_inference::AttemptOutcome,
+    ) -> residuum_inference::AttemptUsage {
+        residuum_inference::AttemptUsage {
+            provider: "ollama".to_string(),
+            model: model.to_string(),
+            outcome,
+            usage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_completion_reports_the_model_that_answered_after_a_failover() {
+        let mut response = ok_response("from the fallback", Usage::default());
+        response.attempts = vec![
+            attempt("primary-model", residuum_inference::AttemptOutcome::Failed),
+            attempt(
+                "fallback-model",
+                residuum_inference::AttemptOutcome::Succeeded,
+            ),
+        ];
+        let provider = StubProvider::once(Ok(response));
+        let resp = run_completion(
+            &provider,
+            "ollama/primary-model",
+            "chart",
+            &[Message::user("hi")],
+            &CompletionOptions::default(),
+            false,
+        )
+        .await;
+        let parsed: ModelCompleteResponse = serde_json::from_value(body_json(resp).await).unwrap();
+        assert_eq!(parsed.model, "ollama/fallback-model");
+    }
+
+    #[tokio::test]
+    async fn run_completion_timeout_after_retries_is_still_504() {
+        let provider = StubProvider::once(Err(InferenceError::Attempted {
+            error: Box::new(InferenceError::Timeout(30)),
+            attempts: vec![
+                attempt("primary-model", residuum_inference::AttemptOutcome::Failed),
+                attempt("primary-model", residuum_inference::AttemptOutcome::Failed),
+            ],
+        }));
+        let resp = run_completion(
+            &provider,
+            "ollama/primary-model",
+            "chart",
+            &[Message::user("hi")],
             &CompletionOptions::default(),
             false,
         )

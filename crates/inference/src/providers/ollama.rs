@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::attempt::{FailedRequest, record_attempt};
 use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
@@ -17,8 +18,8 @@ use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ResponseFormat, StopReason, StreamSink, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
 };
-use residuum_config::RetryConfig;
 use residuum_config::ThinkingConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 
 /// Ollama API client implementing the [`InferenceProvider`] trait.
 #[derive(Clone)]
@@ -179,6 +180,17 @@ impl OllamaClient {
         request: &OllamaChatRequest<'_>,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(ProviderKind::Ollama, request.model, result)
+    }
+
+    /// Send one request and parse its response. Ollama reports usage only in
+    /// its final chunk, so a failure never follows reported usage.
+    async fn send_request(
+        &self,
+        request: &OllamaChatRequest<'_>,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         let timeout_secs = self.http.timeout_secs();
 
         debug!(
@@ -218,7 +230,7 @@ impl OllamaClient {
             );
             let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
                 .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
-            return Err(InferenceError::Api(error_msg));
+            return Err(InferenceError::Api(error_msg).into());
         }
 
         let resp = if let Some(sink) = sink {
@@ -1135,7 +1147,7 @@ mod tests {
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.cause(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1244,7 +1256,7 @@ mod tests {
 
         assert!(result.is_err(), "should return an error for 500");
         assert!(
-            matches!(result.unwrap_err(), InferenceError::Api(_)),
+            matches!(result.unwrap_err().cause(), InferenceError::Api(_)),
             "should be an Api error"
         );
     }
@@ -1280,7 +1292,7 @@ mod tests {
         assert!(result.is_err(), "should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Timeout(1)),
+            matches!(err.cause(), InferenceError::Timeout(1)),
             "should be a Timeout error with 1 second"
         );
         assert_eq!(
@@ -1683,7 +1695,7 @@ mod tests {
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.cause(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -2085,7 +2097,7 @@ mod tests {
         .await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.cause(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending before `done` is an interrupted stream: {err:?}"
         );
     }
@@ -2099,7 +2111,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)),
+            matches!(err.cause(), InferenceError::StreamInterrupted(_)),
             "a body cut off mid-stream is interrupted: {err:?}"
         );
         assert_eq!(sink.text(), "", "the partial answer is voided");
@@ -2115,7 +2127,7 @@ mod tests {
         let (result, _, _) = stream_from(ndjson_response(&[stream]), plain_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Api(m) if m.contains("unexpectedly stopped")),
+            matches!(err.cause(), InferenceError::Api(m) if m.contains("unexpectedly stopped")),
             "the server's message is kept: {err:?}"
         );
     }
@@ -2129,7 +2141,7 @@ mod tests {
         let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.cause(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
     }

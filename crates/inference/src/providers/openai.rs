@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::attempt::{FailedRequest, ListsAttempts, record_attempt};
 use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
@@ -26,7 +27,7 @@ use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ResponseFormat, Role, StopReason, StreamSink, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
 };
-use residuum_config::RetryConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// The `reasoning_content` sent with a tool-calling assistant message of the
@@ -47,6 +48,8 @@ pub(super) type CachedTokensFromHeaders = fn(&reqwest::header::HeaderMap) -> Opt
 /// its own value.
 #[derive(Debug, Clone)]
 pub(crate) struct OpenAiDialect {
+    /// The provider kind each request's attempt is recorded under.
+    pub(super) provider: ProviderKind,
     /// Headers sent with every chat completion request.
     pub(super) request_headers: Vec<(&'static str, String)>,
     /// For hosts that report cache hits in response headers rather than the
@@ -61,6 +64,7 @@ pub(crate) struct OpenAiDialect {
 impl Default for OpenAiDialect {
     fn default() -> Self {
         Self {
+            provider: ProviderKind::OpenAi,
             request_headers: Vec::new(),
             cached_tokens_from_headers: None,
             hosted_web_search: true,
@@ -299,6 +303,7 @@ impl OpenAiClient {
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
         let mut fill = self.fills_missing_reasoning.load(Ordering::Relaxed);
+        let mut refused = Vec::new();
         loop {
             let request = prepared.request(&self.model, sink.is_some(), fill);
             match self.send(&request, sink).await {
@@ -307,6 +312,7 @@ impl OpenAiClient {
                         && !prepared.missing_reasoning.is_empty()
                         && is_missing_reasoning_refusal(&e) =>
                 {
+                    refused.extend(e.into_parts().1);
                     if !self.fills_missing_reasoning.swap(true, Ordering::Relaxed) {
                         info!(
                             model = %self.model,
@@ -318,12 +324,13 @@ impl OpenAiClient {
                     }
                     fill = true;
                 }
-                result => return result,
+                result => return result.after_attempts(refused),
             }
         }
     }
 
-    /// Send a pre-built request to the OpenAI-compatible API and parse the response.
+    /// Send a pre-built request to the OpenAI-compatible API and parse the
+    /// response, recording the request as one attempt of the call.
     #[tracing::instrument(skip_all, fields(
         model = %request.model,
         message_count = request.messages.len(),
@@ -341,6 +348,15 @@ impl OpenAiClient {
         request: &ChatCompletionRequest<'_>,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(self.dialect.provider, request.model, result)
+    }
+
+    async fn send_request(
+        &self,
+        request: &ChatCompletionRequest<'_>,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         let timeout_secs = self.http.timeout_secs();
         let request_json = serde_json::to_string(request)
             .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
@@ -384,7 +400,7 @@ impl OpenAiClient {
             );
             let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(InferenceError::Api(format!("{status}: {error_body}")));
+            return Err(InferenceError::Api(format!("{status}: {error_body}")).into());
         }
 
         let header_cached_tokens = self
@@ -416,17 +432,23 @@ impl OpenAiClient {
     }
 }
 
-/// Turn a completed (or fully streamed) response into an `InferenceResponse`.
+/// Turn a completed response into an `InferenceResponse`. A response that
+/// can't be used keeps the usage it reported on its error.
 fn parse_response(
     chat_response: ChatCompletionResponse,
     header_cached_tokens: Option<u32>,
-) -> Result<InferenceResponse, InferenceError> {
+) -> Result<InferenceResponse, FailedRequest> {
     let usage = chat_response
         .usage
         .map(|u| usage_from(u, header_cached_tokens));
 
     let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
-        InferenceError::Parse("OpenAI API response contained no choices in response".to_string())
+        FailedRequest::spent(
+            InferenceError::Parse(
+                "OpenAI API response contained no choices in response".to_string(),
+            ),
+            usage,
+        )
     })?;
 
     let mut reply = ReplyAssembler::new(None);
@@ -447,8 +469,10 @@ fn parse_response(
         })
         .collect();
     let truncated = choice.finish_reason.as_deref() == Some("length");
+    let tool_calls = build_tool_calls(raw_calls, truncated)
+        .map_err(|error| FailedRequest::spent(error, usage))?;
 
-    let mut resp = InferenceResponse::new(content, build_tool_calls(raw_calls, truncated)?);
+    let mut resp = InferenceResponse::new(content, tool_calls);
     resp.usage = usage;
     resp.thinking = thinking;
     resp.stop_reason = choice.finish_reason.as_deref().map(map_stop_reason);
@@ -538,7 +562,7 @@ fn build_tool_calls(
 /// it doesn't know names it too, so that wording is not taken for a request
 /// for it.
 fn is_missing_reasoning_refusal(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error else {
+    let InferenceError::Api(message) = error.cause() else {
         return false;
     };
     let lower = message.to_lowercase();
@@ -599,32 +623,42 @@ impl InferenceProvider for OpenAiClient {
 
 /// Read a streamed chat completion to its end, pushing text and reasoning to
 /// `sink` as they arrive, and return it as the response a non-streaming
-/// request would have returned.
+/// request would have returned. A stream that fails after its usage chunk
+/// keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
     sink: &dyn StreamSink,
     header_cached_tokens: Option<u32>,
-) -> Result<InferenceResponse, InferenceError> {
-    let mut assembler = StreamAssembler::new(sink);
-    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
-    assembler.finish(header_cached_tokens)
+) -> Result<InferenceResponse, FailedRequest> {
+    let mut assembler = StreamAssembler::new(sink, header_cached_tokens);
+    let read = read_sse(response, idle_secs, |event| assembler.handle(&event)).await;
+    let usage = assembler.usage;
+    match read {
+        Ok(()) => assembler
+            .finish()
+            .map_err(|error| FailedRequest::spent(error, usage)),
+        Err(error) => Err(FailedRequest::spent(error, usage)),
+    }
 }
 
 struct StreamAssembler<'a> {
     reply: ReplyAssembler<'a>,
     tool_calls: BTreeMap<u32, RawToolCall>,
-    usage: Option<OpenAiUsage>,
+    /// The cached prompt count a host reported in the response headers.
+    header_cached_tokens: Option<u32>,
+    usage: Option<Usage>,
     finish_reason: Option<String>,
     /// The `[DONE]` marker arrived.
     done: bool,
 }
 
 impl<'a> StreamAssembler<'a> {
-    fn new(sink: &'a dyn StreamSink) -> Self {
+    fn new(sink: &'a dyn StreamSink, header_cached_tokens: Option<u32>) -> Self {
         Self {
             reply: ReplyAssembler::new(Some(sink)),
             tool_calls: BTreeMap::new(),
+            header_cached_tokens,
             usage: None,
             finish_reason: None,
             done: false,
@@ -647,7 +681,7 @@ impl<'a> StreamAssembler<'a> {
             }));
         }
         if let Some(usage) = chunk.usage {
-            self.usage = Some(usage);
+            self.usage = Some(usage_from(usage, self.header_cached_tokens));
         }
         // Only the first choice is used: a request never asks for more.
         if let Some(choice) = chunk.choices.into_iter().next() {
@@ -693,10 +727,7 @@ impl<'a> StreamAssembler<'a> {
 
     /// Assemble the response a non-streaming request would have returned.
     /// Fails when the stream stopped short of its end.
-    fn finish(
-        self,
-        header_cached_tokens: Option<u32>,
-    ) -> Result<InferenceResponse, InferenceError> {
+    fn finish(self) -> Result<InferenceResponse, InferenceError> {
         if !self.done && self.finish_reason.is_none() {
             return Err(InferenceError::StreamInterrupted(
                 "the stream ended before the response was complete".to_string(),
@@ -707,7 +738,7 @@ impl<'a> StreamAssembler<'a> {
         let tool_calls = build_tool_calls(self.tool_calls.into_values().collect(), truncated)?;
 
         let mut resp = InferenceResponse::new(content, tool_calls);
-        resp.usage = self.usage.map(|u| usage_from(u, header_cached_tokens));
+        resp.usage = self.usage;
         resp.thinking = thinking;
         resp.stop_reason = self.finish_reason.as_deref().map(map_stop_reason);
         Ok(resp)
@@ -1618,7 +1649,7 @@ mod tests {
         assert!(result.is_err(), "401 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.cause(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -1654,7 +1685,7 @@ mod tests {
         assert!(result.is_err(), "429 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.cause(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -1685,7 +1716,7 @@ mod tests {
 
         assert!(result.is_err(), "500 should return error");
         assert!(
-            matches!(result.unwrap_err(), InferenceError::Api(_)),
+            matches!(result.unwrap_err().cause(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
     }
@@ -1710,7 +1741,7 @@ mod tests {
         assert!(result.is_err(), "empty choices should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Parse(_)),
+            matches!(err.cause(), InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -1753,7 +1784,7 @@ mod tests {
         assert!(result.is_err(), "malformed tool arguments should error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Parse(_)),
+            matches!(err.cause(), InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -1775,7 +1806,7 @@ mod tests {
         assert!(result.is_err(), "timeout should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Timeout(1)),
+            matches!(err.cause(), InferenceError::Timeout(1)),
             "should be a Timeout error with 1 second"
         );
         assert_eq!(
@@ -2124,7 +2155,7 @@ mod tests {
         assert!(result.is_err(), "401 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.cause(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -2157,7 +2188,7 @@ mod tests {
         assert!(result.is_err(), "empty data should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Parse(_)),
+            matches!(err.cause(), InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -2255,6 +2286,84 @@ mod tests {
             Some(documented_usage_normalized()),
             "the final usage chunk normalizes the same way as a whole response"
         );
+    }
+
+    fn failed_attempt(prompt: u32, completion: u32) -> crate::AttemptUsage {
+        crate::AttemptUsage {
+            provider: "openai".to_string(),
+            model: "test-model".to_string(),
+            outcome: crate::AttemptOutcome::Failed,
+            usage: Some(Usage {
+                uncached_input_tokens: Some(prompt),
+                output_tokens: Some(completion),
+                ..Usage::default()
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_fails_after_its_usage_chunk_keeps_that_usage_on_the_attempt() {
+        let stream = [
+            delta_chunk(json!({"role": "assistant", "content": "partial"})),
+            usage_chunk(100, 7),
+            sse_data(
+                json!({"error": {"message": "The server had an error", "type": "server_error"}}),
+            ),
+        ]
+        .concat();
+        let (result, _sink, _server) = stream_from(sse_response(&[stream]), plain_client).await;
+        let err = result.unwrap_err();
+
+        assert!(
+            matches!(err.cause(), InferenceError::Api(_)),
+            "the in-stream error ends the call: {err:?}"
+        );
+        assert_eq!(err.attempts(), [failed_attempt(100, 7)]);
+    }
+
+    #[tokio::test]
+    async fn a_whole_response_that_cannot_be_used_keeps_its_usage_on_the_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+        let err = plain_client(server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err.cause(), InferenceError::Parse(_)), "{err:?}");
+        assert_eq!(err.attempts(), [failed_attempt(40, 2)]);
+    }
+
+    #[tokio::test]
+    async fn a_fireworks_attempt_is_recorded_under_fireworks() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
+                    "finish_reason": "stop"}]
+            })))
+            .mount(&server)
+            .await;
+        let response = plain_client(server.uri())
+            .with_dialect(crate::providers::fireworks::dialect(None))
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        let answered = response.attempts.last().unwrap();
+        assert_eq!(
+            (answered.provider.as_str(), answered.model.as_str()),
+            ("fireworks", "test-model")
+        );
+        assert_eq!(answered.outcome, crate::AttemptOutcome::Succeeded);
     }
 
     #[tokio::test]
@@ -2593,14 +2702,14 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), plain_client).await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.cause(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending with no finish reason is an interrupted stream: {err:?}"
         );
 
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), plain_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            matches!(dropped_err.cause(), InferenceError::StreamInterrupted(_)),
             "a dropped connection is an interrupted stream: {dropped_err:?}"
         );
         assert_eq!(sink.text(), "", "what streamed is voided");
@@ -2635,7 +2744,7 @@ mod tests {
             stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.cause(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
         assert_eq!(sink.text(), "", "the partial text is voided");

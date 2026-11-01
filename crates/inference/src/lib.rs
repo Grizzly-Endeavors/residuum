@@ -3,6 +3,7 @@
 //! The `test-support` feature adds `testing`, the gated model server and
 //! provider other crates' tests hold model calls open with.
 
+mod attempt;
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;
