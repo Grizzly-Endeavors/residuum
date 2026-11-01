@@ -148,6 +148,46 @@ const BUILT_IN: &[(&str, ModelPrice)] = &[
         },
     ),
     (
+        "gemini/gemini-3.8-flash",
+        ModelPrice {
+            input: 0.75,
+            output: 3.75,
+            cache_read: 0.075,
+            cache_write: 0.75,
+            cache_write_long: 0.75,
+        },
+    ),
+    (
+        "gemini/gemini-3.6-flash",
+        ModelPrice {
+            input: 0.75,
+            output: 3.75,
+            cache_read: 0.075,
+            cache_write: 0.75,
+            cache_write_long: 0.75,
+        },
+    ),
+    (
+        "gemini/gemini-3-flash-preview",
+        ModelPrice {
+            input: 0.50,
+            output: 3.00,
+            cache_read: 0.05,
+            cache_write: 0.50,
+            cache_write_long: 0.50,
+        },
+    ),
+    (
+        "gemini/gemini-3.1-pro-preview",
+        ModelPrice {
+            input: 2.00,
+            output: 12.00,
+            cache_read: 0.20,
+            cache_write: 2.00,
+            cache_write_long: 2.00,
+        },
+    ),
+    (
         "fireworks/accounts/fireworks/models/kimi-k3",
         ModelPrice {
             input: 3.0,
@@ -165,6 +205,16 @@ const BUILT_IN: &[(&str, ModelPrice)] = &[
             cache_read: 0.26,
             cache_write: 1.40,
             cache_write_long: 1.40,
+        },
+    ),
+    (
+        "fireworks/accounts/fireworks/models/glm-5p3-flash",
+        ModelPrice {
+            input: 0.15,
+            output: 0.50,
+            cache_read: 0.03,
+            cache_write: 0.15,
+            cache_write_long: 0.15,
         },
     ),
 ];
@@ -446,6 +496,30 @@ mod tests {
         assert_eq!(
             table.estimate("anthropic", "claude-haiku-4-5-latest", &usage),
             None
+        );
+    }
+
+    #[test]
+    fn the_gemini_and_fireworks_flash_entries_use_their_listed_rates() {
+        let usage = Usage {
+            uncached_input_tokens: Some(1_000_000),
+            cache_read_tokens: Some(1_000_000),
+            output_tokens: Some(1_000_000),
+            ..Usage::default()
+        };
+
+        let table = PriceTable::new(&BTreeMap::new());
+
+        // gemini-3.8-flash: $0.75 input, $0.075 cached, $3.75 output.
+        assert_usd(table.estimate("gemini", "gemini-3.8-flash", &usage), 4.575);
+        // glm-5p3-flash: $0.15 input, $0.03 cached, $0.50 output.
+        assert_usd(
+            table.estimate(
+                "fireworks",
+                "accounts/fireworks/models/glm-5p3-flash",
+                &usage,
+            ),
+            0.68,
         );
     }
 

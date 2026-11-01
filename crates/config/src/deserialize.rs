@@ -297,7 +297,7 @@ impl ModelStringList {
 /// Accepts:
 /// - `main = "anthropic/claude-sonnet-4-6"`
 /// - `main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]`
-/// - `observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2, thinking = "off" }`
+/// - `observer = { model = "gemini/gemini-3.8-flash", temperature = 0.2, thinking = "off" }`
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub(super) enum ModelAssignment {
