@@ -122,6 +122,38 @@ impl Tool for StopAgentTool {
 
 // ─── ListAgentsTool ──────────────────────────────────────────────────────────
 
+/// How much of a remote agent's card description `list_agents` shows.
+const REMOTE_DESCRIPTION_MAX_CHARS: usize = 200;
+
+/// How many of a remote agent's skills `list_agents` names.
+const REMOTE_SKILLS_MAX: usize = 10;
+
+/// A remote agent's card description, cut to [`REMOTE_DESCRIPTION_MAX_CHARS`]
+/// with a note of how much was left out.
+fn remote_description(description: &str) -> String {
+    let (shown, omitted) = crate::split_chars(description, REMOTE_DESCRIPTION_MAX_CHARS);
+    if omitted == 0 {
+        return shown.to_string();
+    }
+    format!("{shown}… [{omitted} more characters cut]")
+}
+
+/// A remote agent's skills, each already formatted, up to
+/// [`REMOTE_SKILLS_MAX`], with a note of how many were left out.
+fn remote_skills(skills: &[String]) -> String {
+    let mut text = skills
+        .iter()
+        .take(REMOTE_SKILLS_MAX)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let omitted = skills.len().saturating_sub(REMOTE_SKILLS_MAX);
+    if omitted > 0 {
+        write!(text, ", … {omitted} more not listed").ok();
+    }
+    text
+}
+
 /// Tool for listing the main agent, every live session, every teammate, and
 /// every remote A2A agent.
 pub struct ListAgentsTool {
@@ -236,7 +268,9 @@ impl Tool for ListAgentsTool {
         for agent in &agents {
             let status = match &agent.status {
                 AgentStatus::Pending => "resolving its agent card".to_string(),
-                AgentStatus::Ok(card) => format!("online — {}", card.description),
+                AgentStatus::Ok(card) => {
+                    format!("online — {}", remote_description(&card.description))
+                }
                 AgentStatus::Error(e) => format!("error — {e}"),
             };
             let instance_note = if agent.source == AgentSource::Sibling {
@@ -253,7 +287,7 @@ impl Tool for ListAgentsTool {
                     .iter()
                     .map(|s| format!("{} ({})", s.name, s.id))
                     .collect();
-                write!(line, " — skills: {}", skills.join(", ")).ok();
+                write!(line, " — skills: {}", remote_skills(&skills)).ok();
             }
             lines.push(line);
             for task in open_tasks.iter().filter(|t| t.agent == agent.name) {
@@ -853,6 +887,38 @@ mod tests {
             .unwrap();
         assert!(result.is_error);
         assert!(result.output.contains("a2a:nope"), "got: {}", result.output);
+    }
+
+    #[test]
+    fn remote_description_is_cut_and_says_how_much_was_left_out() {
+        let long = "d".repeat(REMOTE_DESCRIPTION_MAX_CHARS + 30);
+        assert_eq!(
+            remote_description(&long),
+            format!(
+                "{}… [30 more characters cut]",
+                "d".repeat(REMOTE_DESCRIPTION_MAX_CHARS)
+            )
+        );
+        let short = "short description";
+        assert_eq!(remote_description(short), short);
+    }
+
+    #[test]
+    fn remote_skills_list_up_to_the_cap_and_count_the_rest() {
+        let skills: Vec<String> = (1..=12).map(|n| format!("skill {n} (s{n})")).collect();
+        let listed = remote_skills(&skills);
+        assert!(listed.starts_with("skill 1 (s1), skill 2 (s2)"), "{listed}");
+        assert!(listed.contains("skill 10 (s10)"), "{listed}");
+        assert!(!listed.contains("skill 11"), "{listed}");
+        assert!(listed.ends_with(", … 2 more not listed"), "{listed}");
+    }
+
+    #[test]
+    fn remote_skills_at_the_cap_carry_no_note() {
+        let skills: Vec<String> = (1..=REMOTE_SKILLS_MAX)
+            .map(|n| format!("skill {n} (s{n})"))
+            .collect();
+        assert!(!remote_skills(&skills).contains("more not listed"));
     }
 
     #[tokio::test]

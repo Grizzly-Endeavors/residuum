@@ -56,6 +56,17 @@ pub(crate) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'
         .ok_or_else(|| ToolError::InvalidArguments(format!("{field} is required")))
 }
 
+/// The first `max` characters of `text`, and how many characters follow them.
+pub(crate) fn split_chars(text: &str, max: usize) -> (&str, usize) {
+    match text.char_indices().nth(max) {
+        None => (text, 0),
+        Some((byte, _)) => {
+            let (head, tail) = text.split_at(byte);
+            (head, tail.chars().count())
+        }
+    }
+}
+
 /// Publish a plain-language notice to the system notification channel, if a
 /// publisher is configured. Never fails the caller: a publish error is
 /// logged and otherwise ignored. Shared by tools that take user-visible
@@ -64,5 +75,18 @@ pub(crate) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'
 pub(crate) async fn publish_notice(publisher: Option<&residuum_bus::Publisher>, message: String) {
     if let Some(publisher) = publisher {
         residuum_bus::notice::publish_notice(publisher, message).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_chars;
+
+    #[test]
+    fn split_chars_counts_characters_not_bytes() {
+        assert_eq!(split_chars("héllo", 2), ("hé", 3));
+        assert_eq!(split_chars("héllo", 5), ("héllo", 0));
+        assert_eq!(split_chars("héllo", 99), ("héllo", 0));
+        assert_eq!(split_chars("", 3), ("", 0));
     }
 }

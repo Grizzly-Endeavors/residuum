@@ -68,6 +68,15 @@ fn agent_context(trigger: CheckpointTrigger, summary: impl Into<String>) -> Chec
 
 // ─── workspace_history ───────────────────────────────────────────────────
 
+/// The most checkpoints one `list` call returns.
+const MAX_LIST_LIMIT: usize = 200;
+
+/// How many changed paths `show` lists when the call names no `limit`.
+const DEFAULT_SHOWN_PATHS: usize = 50;
+
+/// The most changed paths one `show` call lists.
+const MAX_SHOWN_PATHS: usize = 200;
+
 /// Tool for listing checkpoints and showing what a checkpoint changed.
 pub struct WorkspaceHistoryTool {
     engine: Arc<CheckpointEngine>,
@@ -92,7 +101,8 @@ impl WorkspaceHistoryTool {
         let limit = arguments
             .get("limit")
             .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok());
+            .and_then(|n| usize::try_from(n).ok())
+            .map(|n| n.min(MAX_LIST_LIMIT));
 
         let page = self
             .engine
@@ -121,6 +131,13 @@ impl WorkspaceHistoryTool {
     async fn show(&self, arguments: &Value) -> Result<ToolResult, ToolError> {
         let id = require_str(arguments, "checkpoint_id")?.to_string();
         let repo = repo_arg(arguments)?;
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_SHOWN_PATHS, |n| {
+                usize::try_from(n).unwrap_or(MAX_SHOWN_PATHS)
+            })
+            .clamp(1, MAX_SHOWN_PATHS);
         let detail = self
             .engine
             .show_checkpoint(repo, id.clone())
@@ -137,8 +154,17 @@ impl WorkspaceHistoryTool {
         if detail.changed_paths.is_empty() {
             lines.push("  (no changes)".to_string());
         }
-        for change in &detail.changed_paths {
+        for change in detail.changed_paths.iter().take(limit) {
             lines.push(format!("  {:?} {}", change.kind, change.path));
+        }
+        let omitted = detail.changed_paths.len().saturating_sub(limit);
+        if omitted > 0 {
+            let next = if limit < MAX_SHOWN_PATHS {
+                "call show again with a larger limit (at most 200) to list them"
+            } else {
+                "show lists at most 200 paths per call"
+            };
+            lines.push(format!("  … {omitted} more path(s) not shown; {next}"));
         }
         Ok(ToolResult::success(lines.join("\n")))
     }
@@ -169,7 +195,8 @@ impl Tool for WorkspaceHistoryTool {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "list only: maximum checkpoints to return (default 50)"
+                        "maximum": MAX_LIST_LIMIT,
+                        "description": "maximum checkpoints to return (list, default 50, at most 200) or changed paths to list (show, default 50, at most 200)"
                     },
                     "checkpoint_id": {
                         "type": "string",
@@ -411,6 +438,59 @@ mod tests {
             .unwrap();
         assert!(!result.is_error);
         assert!(result.output.contains("No checkpoints"));
+    }
+
+    #[tokio::test]
+    async fn show_lists_up_to_its_limit_and_counts_the_paths_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path());
+        let ws = dir.path().join("workspace");
+        let names = ["a.md", "b.md", "c.md"];
+        for name in names {
+            std::fs::write(ws.join(name), "v1").unwrap();
+        }
+        engine
+            .checkpoint_workspace_before_action(agent_context(CheckpointTrigger::PreAction, "v1"))
+            .await;
+        for name in names {
+            std::fs::write(ws.join(name), "v2").unwrap();
+        }
+        engine
+            .checkpoint_workspace_before_action(agent_context(CheckpointTrigger::PreAction, "v2"))
+            .await;
+
+        let page = engine
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
+            .await
+            .unwrap();
+        let newest = page.items.first().expect("two checkpoints").id.clone();
+        let tool = WorkspaceHistoryTool::new(engine);
+
+        let capped = tool
+            .execute(serde_json::json!({
+                "action": "show",
+                "checkpoint_id": newest,
+                "limit": 2
+            }))
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(capped.matches(".md").count(), 2, "{capped}");
+        assert!(
+            capped.contains("more path(s) not shown; call show again with a larger limit"),
+            "{capped}"
+        );
+
+        let full = tool
+            .execute(serde_json::json!({
+                "action": "show",
+                "checkpoint_id": newest
+            }))
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(full.matches(".md").count(), 3, "{full}");
+        assert!(!full.contains("not shown"), "{full}");
     }
 
     #[tokio::test]
