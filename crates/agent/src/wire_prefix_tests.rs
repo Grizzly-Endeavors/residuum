@@ -120,7 +120,10 @@ struct Body<'a> {
 impl<'a> Body<'a> {
     fn parse(json: &'a str) -> Self {
         let fields: BTreeMap<&'a str, &'a RawValue> = serde_json::from_str(json).unwrap();
-        let raw_messages: &'a RawValue = fields["messages"];
+        let raw_messages: &'a RawValue = fields
+            .get("messages")
+            .copied()
+            .expect("a request body has messages");
         let messages: Vec<&'a RawValue> = serde_json::from_str(raw_messages.get()).unwrap();
         Self { fields, messages }
     }
