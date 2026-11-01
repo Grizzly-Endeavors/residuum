@@ -5,7 +5,7 @@ use residuum_memory::tokens::{estimate_message_tokens, estimate_tokens};
 use residuum_workspace::identity::IdentityFiles;
 
 use super::super::recent_messages::RecentMessages;
-use super::prompt::{build_status_line, build_system_content};
+use super::prompt::{build_status_line, build_system_message};
 use super::types::{ContextBreakdown, MemoryContext, PromptContext, StatusLine};
 
 /// Compute a per-section token breakdown for the current agent context.
@@ -64,12 +64,14 @@ pub(crate) fn assemble_system_prompt(
     prompt_ctx: &PromptContext<'_>,
     status_line: Option<&StatusLine>,
 ) -> Vec<Message> {
-    let system_content = build_system_content(identity, memory_ctx, &prompt_ctx.skills);
-
     let conversation = recent_messages.messages();
     let mut messages = Vec::with_capacity(2 + conversation.len());
 
-    messages.push(Message::system(system_content));
+    messages.push(build_system_message(
+        identity,
+        memory_ctx,
+        &prompt_ctx.skills,
+    ));
     messages.extend(conversation.iter().map(|m| {
         let mut rendered = m.clone();
         if m.sender.is_some() {

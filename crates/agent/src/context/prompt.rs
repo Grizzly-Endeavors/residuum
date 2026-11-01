@@ -1,6 +1,7 @@
 //! System prompt content builders.
 
 use residuum_core::time::{format_display_datetime, format_relative_time};
+use residuum_inference::Message;
 use residuum_workspace::identity::IdentityFiles;
 
 use super::types::{MemoryContext, SkillsContext, StatusLine};
@@ -53,9 +54,12 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
     tag
 }
 
-/// Build the system prompt content from identity files.
+/// Separates the system prompt's sections.
+const SECTION_SEPARATOR: &str = "\n\n";
+
+/// Build the system prompt message from identity files, memory and skills.
 ///
-/// Assembly order (designed to maximize prompt caching efficiency):
+/// Assembly order:
 /// 1. `SOUL.md`
 /// 2. `AGENTS.md` (team)
 /// 3. `HARNESS` (code-owned, static — always present)
@@ -68,67 +72,84 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
 /// 10. `SKILLS_INDEX` (available skills listing)
 /// 11. `ACTIVE_SKILLS` (when skills are loaded)
 ///
-/// Static sections (1-5) form a stable cache prefix shared across all conversations.
-/// Dynamic sections (6-9) update as knowledge, the team and memory change. The skills index (10)
-/// appears before the active section (11) to maximize cache reuse as skills change.
-pub(super) fn build_system_content(
+/// Providers cache a request by its exact byte prefix, and the system prompt
+/// comes before the conversation, so a change to any section invalidates the
+/// cached prefix from that section on, the conversation included. Sections
+/// 1-7 change rarely (identity and wiki edits, a teammate starting or
+/// stopping); sections 8-11 change as memory is observed and skills are
+/// activated. The message's cache boundary sits after section 7: Anthropic
+/// puts an explicit cache breakpoint there, so a change to sections 8-11
+/// still reads the tools and sections 1-7 from the cache. Providers that
+/// reuse the longest matching prefix (OpenAI-compatible hosts, Gemini, local
+/// models) get the same effect from the order alone. The skills index (10)
+/// comes before the active skills (11) so activating a skill leaves the
+/// index cached.
+pub(super) fn build_system_message(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
     skills_ctx: &SkillsContext<'_>,
-) -> String {
-    let mut parts = Vec::new();
+) -> Message {
+    let mut stable = Vec::new();
 
     if let Some(soul) = &identity.soul {
-        parts.push(section("SOUL.md", soul));
+        stable.push(section("SOUL.md", soul));
     }
 
     if let Some(agents) = &identity.agents {
-        parts.push(section("AGENTS.md", agents));
+        stable.push(section("AGENTS.md", agents));
     }
 
-    parts.push(section("HARNESS", HARNESS));
+    stable.push(section("HARNESS", HARNESS));
 
     if let Some(bootstrap) = &identity.bootstrap {
-        parts.push(section("BOOTSTRAP.md", bootstrap));
+        stable.push(section("BOOTSTRAP.md", bootstrap));
     }
 
     if let Some(user) = &identity.user {
-        parts.push(section("USER.md", user));
+        stable.push(section("USER.md", user));
     }
 
     if let Some(wiki_index) = &identity.wiki_index {
-        parts.push(section("WIKI_INDEX", wiki_index));
+        stable.push(section("WIKI_INDEX", wiki_index));
     }
 
     if let Some(team) = &identity.team {
-        parts.push(section("TEAM", team));
+        stable.push(section("TEAM", team));
     }
+
+    let mut changing = Vec::new();
 
     if let Some(obs) = memory_ctx.observations
         && !obs.is_empty()
     {
-        parts.push(section("OBSERVATION_LOG", obs));
+        changing.push(section("OBSERVATION_LOG", obs));
     }
 
     if let Some(ctx) = memory_ctx.recent_context
         && !ctx.is_empty()
     {
-        parts.push(section("RECENT_CONTEXT", ctx));
+        changing.push(section("RECENT_CONTEXT", ctx));
     }
 
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
-        parts.push(section("SKILLS_INDEX", idx));
+        changing.push(section("SKILLS_INDEX", idx));
     }
 
     if let Some(active) = skills_ctx.active_instructions
         && !active.is_empty()
     {
-        parts.push(section("ACTIVE_SKILLS", active));
+        changing.push(section("ACTIVE_SKILLS", active));
     }
 
-    parts.join("\n\n")
+    // The separator opens the changing part rather than closing the stable
+    // one, so the stable part's bytes don't depend on what follows it.
+    let rest: String = changing
+        .iter()
+        .flat_map(|part| [SECTION_SEPARATOR, part.as_str()])
+        .collect();
+    Message::system_with_cache_boundary(stable.join(SECTION_SEPARATOR), &rest)
 }
 
 #[cfg(test)]
@@ -136,6 +157,15 @@ mod tests {
     use chrono::NaiveDateTime;
 
     use super::*;
+
+    /// The system prompt's text, as every provider sends it.
+    fn system_text(
+        identity: &IdentityFiles,
+        memory_ctx: &MemoryContext<'_>,
+        skills_ctx: &SkillsContext<'_>,
+    ) -> String {
+        build_system_message(identity, memory_ctx, skills_ctx).content
+    }
 
     fn no_memory() -> MemoryContext<'static> {
         MemoryContext {
@@ -160,7 +190,7 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
         assert!(
             content.contains("test agent"),
             "should include soul content"
@@ -183,7 +213,7 @@ mod tests {
     fn system_content_includes_harness_even_with_empty_identity() {
         let identity = IdentityFiles::default();
 
-        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
 
         assert!(
             content.contains("<HARNESS>"),
@@ -203,7 +233,7 @@ mod tests {
             observations: Some("episode ep-001: user prefers concise output"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &SkillsContext::default());
 
         assert!(
             content.contains("<OBSERVATION_LOG>"),
@@ -227,7 +257,7 @@ mod tests {
             observations: Some(""),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &SkillsContext::default());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
@@ -238,7 +268,7 @@ mod tests {
     fn system_content_skips_none_observations() {
         let identity = IdentityFiles::default();
 
-        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "None observations should be skipped"
@@ -256,7 +286,7 @@ mod tests {
             observations: Some("some observation"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &SkillsContext::default());
 
         assert!(
             content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
@@ -296,7 +326,7 @@ mod tests {
             observations: Some("obs"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &SkillsContext::default());
 
         assert!(
             content.contains("<TEAM>\nYou are \"a\".\n- b (running): Reviews\n</TEAM>"),
@@ -311,8 +341,84 @@ mod tests {
     }
 
     #[test]
+    fn the_cache_boundary_follows_the_team_block() {
+        let identity = IdentityFiles {
+            soul: Some("soul".to_string()),
+            user: Some("user".to_string()),
+            team: Some("roster".to_string()),
+            ..IdentityFiles::default()
+        };
+        let mem = MemoryContext {
+            observations: Some("obs"),
+            recent_context: Some("recent"),
+        };
+        let skills = SkillsContext {
+            index: Some("index"),
+            active_instructions: Some("active"),
+        };
+        let message = build_system_message(&identity, &mem, &skills);
+
+        let (stable, rest) = message.cache_split().unwrap();
+        assert!(stable.ends_with("</TEAM>"), "{stable}");
+        assert!(rest.starts_with("\n\n<OBSERVATION_LOG>"), "{rest}");
+        for changing in [
+            "OBSERVATION_LOG",
+            "RECENT_CONTEXT",
+            "SKILLS_INDEX",
+            "ACTIVE_SKILLS",
+        ] {
+            assert!(
+                !stable.contains(changing),
+                "{changing} is after the boundary"
+            );
+            assert!(rest.contains(changing), "{changing} is after the boundary");
+        }
+    }
+
+    #[test]
+    fn the_system_text_is_every_section_joined_by_a_blank_line() {
+        let identity = IdentityFiles {
+            soul: Some("soul".to_string()),
+            team: Some("roster".to_string()),
+            ..IdentityFiles::default()
+        };
+        let mem = MemoryContext {
+            observations: Some("obs"),
+            recent_context: None,
+        };
+        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let expected = [
+            section("SOUL.md", "soul"),
+            section("HARNESS", HARNESS),
+            section("TEAM", "roster"),
+            section("OBSERVATION_LOG", "obs"),
+        ]
+        .join("\n\n");
+        assert_eq!(content, expected);
+    }
+
+    #[test]
+    fn memory_and_skills_changes_leave_the_stable_part_unchanged() {
+        let identity = IdentityFiles {
+            soul: Some("soul".to_string()),
+            ..IdentityFiles::default()
+        };
+        let before = build_system_message(&identity, &no_memory(), &SkillsContext::default());
+        let mem = MemoryContext {
+            observations: Some("a new observation"),
+            recent_context: None,
+        };
+        let after = build_system_message(&identity, &mem, &SkillsContext::default());
+
+        let (stable_before, rest_before) = before.cache_split().unwrap();
+        let (stable_after, _) = after.cache_split().unwrap();
+        assert_eq!(rest_before, "", "nothing changing yet");
+        assert_eq!(stable_before, stable_after);
+    }
+
+    #[test]
     fn no_team_block_without_a_roster() {
-        let content = build_system_content(
+        let content = system_text(
             &IdentityFiles::default(),
             &no_memory(),
             &SkillsContext::default(),
@@ -327,7 +433,7 @@ mod tests {
             observations: None,
             recent_context: Some("We were implementing a caching layer."),
         };
-        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &SkillsContext::default());
 
         assert!(
             content.contains("<RECENT_CONTEXT>"),
@@ -346,7 +452,7 @@ mod tests {
             observations: None,
             recent_context: Some(""),
         };
-        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &SkillsContext::default());
         assert!(
             !content.contains("RECENT_CONTEXT"),
             "empty recent context should be skipped"
@@ -360,7 +466,7 @@ mod tests {
             observations: Some("some observations"),
             recent_context: Some("narrative summary"),
         };
-        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &SkillsContext::default());
 
         let obs_close = content.find("</OBSERVATION_LOG>");
         let ctx_open = content.find("<RECENT_CONTEXT>");
@@ -384,7 +490,7 @@ mod tests {
             user: Some("user facts".to_string()),
             ..IdentityFiles::default()
         };
-        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
 
         assert!(
             content.contains("<BOOTSTRAP.md>\nfirst run guidance\n</BOOTSTRAP.md>"),
@@ -428,7 +534,7 @@ mod tests {
             .unwrap();
 
         let identity = IdentityFiles::load(&layout).await.unwrap();
-        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
 
         let positions: Vec<usize> = [
             "agent soul",
@@ -453,7 +559,7 @@ mod tests {
             agents: Some("agent rules".to_string()),
             ..IdentityFiles::default()
         };
-        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
 
         assert!(
             !content.contains("BOOTSTRAP.md"),
@@ -472,7 +578,7 @@ mod tests {
             ),
             active_instructions: None,
         };
-        let content = build_system_content(&identity, &no_memory(), &skills);
+        let content = system_text(&identity, &no_memory(), &skills);
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should have skills index section"
@@ -496,7 +602,7 @@ mod tests {
                 "<active_skill name=\"pdf\">\nUse this for PDFs.\n</active_skill>",
             ),
         };
-        let content = build_system_content(&identity, &no_memory(), &skills);
+        let content = system_text(&identity, &no_memory(), &skills);
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
             "should have active skills section"
@@ -514,7 +620,7 @@ mod tests {
             index: Some(""),
             active_instructions: None,
         };
-        let content = build_system_content(&identity, &no_memory(), &skills);
+        let content = system_text(&identity, &no_memory(), &skills);
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
@@ -524,7 +630,7 @@ mod tests {
     #[test]
     fn skills_none_skipped() {
         let identity = IdentityFiles::default();
-        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
         assert!(
             !content.contains("SKILLS_INDEX"),
             "None skills index should be skipped"
