@@ -15,10 +15,11 @@ use residuum_inference::Usage;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionUsageTotals {
-    /// Input tokens sent across every model call this session has made,
-    /// counting every prompt whole: uncached input, cache reads and cache
-    /// writes together ([`Usage::total_input_tokens`]). The uncached part is
-    /// this minus `cache_read_tokens` and `cache_write_tokens`.
+    /// Input tokens sent across the answering request of every model call
+    /// this session has made, counting every prompt whole: uncached input,
+    /// cache reads and cache writes together ([`Usage::total_input_tokens`]).
+    /// The uncached part is this minus `cache_read_tokens` and
+    /// `cache_write_tokens`.
     #[ts(type = "number")]
     pub input_tokens: u64,
     /// The part of `input_tokens` read from the prompt cache.

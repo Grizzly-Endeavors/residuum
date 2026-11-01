@@ -7,10 +7,11 @@
  */
 export type SessionUsageTotals = { 
 /**
- * Input tokens sent across every model call this session has made,
- * counting every prompt whole: uncached input, cache reads and cache
- * writes together ([`Usage::total_input_tokens`]). The uncached part is
- * this minus `cache_read_tokens` and `cache_write_tokens`.
+ * Input tokens sent across the answering request of every model call
+ * this session has made, counting every prompt whole: uncached input,
+ * cache reads and cache writes together ([`Usage::total_input_tokens`]).
+ * The uncached part is this minus `cache_read_tokens` and
+ * `cache_write_tokens`.
  */
 input_tokens: number, 
 /**
