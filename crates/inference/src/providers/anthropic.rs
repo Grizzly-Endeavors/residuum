@@ -3618,7 +3618,10 @@ mod tests {
     #[tokio::test]
     async fn streamed_usage_is_normalized_like_the_whole_response() {
         let mut start_usage = documented_usage();
-        start_usage["output_tokens"] = json!(1);
+        start_usage
+            .as_object_mut()
+            .unwrap()
+            .insert("output_tokens".to_string(), json!(1));
         let (streamed, _sink, _server) = stream_from(
             sse_response(&[text_stream(start_usage, documented_usage())]),
             test_client,

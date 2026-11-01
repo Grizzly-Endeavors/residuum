@@ -123,7 +123,7 @@ mod tests {
 
     /// The same 10,000-token prompt with 9,000 tokens read from the cache,
     /// as an OpenAI-shaped and an Anthropic-shaped provider report it once
-    /// normalized: OpenAI's `prompt_tokens` counted the cache, Anthropic's
+    /// normalized: `OpenAI`'s `prompt_tokens` counted the cache, Anthropic's
     /// `input_tokens` did not.
     #[test]
     fn session_usage_totals_count_a_prompt_the_same_for_every_provider_shape() {
