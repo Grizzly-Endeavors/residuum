@@ -7,7 +7,7 @@ use residuum_config::Config;
 use residuum_core::util::FatalError;
 use residuum_inference::{
     CompletionOptions, EmbeddingProvider, SharedHttpClient, WebSearchNativeConfig,
-    build_embedding_provider, build_provider_chain_with_notices, completion_options_for_role,
+    build_embedding_provider, build_provider_chain_with_notices, main_conversation_options,
 };
 use residuum_memory::observer::Observer;
 use residuum_memory::reflector::Reflector;
@@ -98,7 +98,7 @@ pub fn init_providers(
             search_context_size: pn.search_context_size.clone(),
             exclude_domains: pn.exclude_domains.clone(),
         });
-    let mut options = completion_options_for_role(cfg, "main");
+    let mut options = main_conversation_options(cfg);
     options.web_search = web_search;
 
     Ok(ProviderComponents {

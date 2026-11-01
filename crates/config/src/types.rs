@@ -1139,6 +1139,16 @@ pub struct Config {
     pub load_notices: Vec<String>,
 }
 
+impl Config {
+    /// The stable key that names this agent's main conversation to model
+    /// providers that route requests by key: a hash of the workspace path,
+    /// so no filesystem detail leaves the machine.
+    #[must_use]
+    pub fn main_conversation_key(&self) -> String {
+        crate::resolve::session_affinity_key(&self.workspace_dir, "main")
+    }
+}
+
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
