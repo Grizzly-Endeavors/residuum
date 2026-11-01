@@ -623,6 +623,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn default_request_has_system_prompt_first_and_tools_in_registry_order() {
+        use residuum_agent::testing::{RequestInputs, render_model_request};
+        use residuum_inference::Role;
+
+        let mut registry = ToolRegistry::new();
+        register_defaults_in(&mut registry, PathBuf::from("/tmp/residuum-test-workspace"));
+
+        let request = render_model_request(&RequestInputs::default(), &registry).await;
+
+        let [system, ..] = request.messages.as_slice() else {
+            panic!("the request carries at least the system prompt: {request:?}");
+        };
+        assert_eq!(system.role, Role::System);
+        let sent: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
+        assert_eq!(sent, registry.tool_names());
+        assert!(
+            sent.iter().any(|name| name == "exec"),
+            "exec is sent: {sent:?}"
+        );
+    }
+
     fn ollama_backend() -> residuum_config::StandaloneBackendConfig {
         residuum_config::StandaloneBackendConfig {
             name: "ollama".to_string(),
