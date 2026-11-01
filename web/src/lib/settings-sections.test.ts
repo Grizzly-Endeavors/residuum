@@ -40,6 +40,7 @@ describe("section registry", () => {
       ["system_one", "Decision model", "main"],
       ["updates", "Updates", "main"],
       ["limits", "Session limits", "main"],
+      ["pricing", "Model prices", "main"],
       ["listener", "Agent-to-agent", "advanced"],
       ["diagnostics", "Diagnostics", "advanced"],
       ["raw", "Raw config", "advanced"],
