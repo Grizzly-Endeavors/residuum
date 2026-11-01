@@ -580,6 +580,24 @@ impl McpRegistry {
         self.running_owner_of_tool(tool_name).map(str::to_string)
     }
 
+    /// Add a running server named `name` that offers `tools`, with no live
+    /// client behind it, for tests that need MCP tools in a request. A
+    /// server already under that name is replaced.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_running_server(&mut self, name: &str, tools: Vec<ToolDefinition>) {
+        self.servers.insert(
+            name.to_string(),
+            TrackedServer {
+                name: name.to_string(),
+                command: "test".to_string(),
+                args: vec![],
+                status: McpStatus::Running,
+                client: None,
+                tools,
+            },
+        );
+    }
+
     /// Get tool definitions from all running servers.
     ///
     /// The result is de-duplicated so the model is offered each name exactly
@@ -919,17 +937,7 @@ mod tests {
     /// Push a running server with the given tools directly (bypassing connect,
     /// which needs a live client).
     fn push_running_server(registry: &mut McpRegistry, name: &str, tools: &[&str]) {
-        registry.servers.insert(
-            name.to_string(),
-            TrackedServer {
-                name: name.to_string(),
-                command: "cmd".to_string(),
-                args: vec![],
-                status: McpStatus::Running,
-                client: None,
-                tools: tools.iter().map(|t| tool_def(t)).collect(),
-            },
-        );
+        registry.insert_running_server(name, tools.iter().map(|t| tool_def(t)).collect());
     }
 
     #[test]

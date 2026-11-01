@@ -36,6 +36,7 @@ residuum-config = { workspace = true, features = ["test-support"] }
 residuum-bus = { workspace = true, features = ["test-support"] }
 residuum-inference = { workspace = true, features = ["test-support"] }
 residuum-memory = { workspace = true, features = ["test-support"] }
+residuum-mcp = { workspace = true, features = ["test-support"] }
 residuum-workspace = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 rustls = { workspace = true }

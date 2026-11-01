@@ -1884,6 +1884,76 @@ mod tests {
         );
     }
 
+    /// The tool list and system prompt a request sends, as JSON, with the
+    /// echo tool built in and MCP servers connected in the order given.
+    async fn sent_with_mcp_servers(registry: &SharedMcpRegistry) -> (String, String) {
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(crate::testing::EchoTool));
+        let inputs = crate::testing::RequestInputs {
+            mcp: Some(Arc::clone(registry)),
+            ..crate::testing::RequestInputs::default()
+        };
+        let request = crate::testing::render_model_request(&inputs, &tools).await;
+        (
+            serde_json::to_string(&request.tools).unwrap(),
+            serde_json::to_string(request.messages.first().unwrap()).unwrap(),
+        )
+    }
+
+    fn mcp_tools(server: &str, names: &[&str]) -> Vec<ToolDefinition> {
+        names
+            .iter()
+            .map(|name| ToolDefinition {
+                name: (*name).to_string(),
+                description: format!("{name}, from {server}"),
+                parameters: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            })
+            .collect()
+    }
+
+    async fn connect_in_order(servers: &[(&str, &[&str])]) -> SharedMcpRegistry {
+        let registry = residuum_mcp::McpRegistry::new_shared();
+        for (server, names) in servers {
+            registry
+                .write()
+                .await
+                .insert_running_server(server, mcp_tools(server, names));
+        }
+        registry
+    }
+
+    #[tokio::test]
+    async fn mcp_servers_connected_in_either_order_send_the_same_request_prefix() {
+        let zeta_first =
+            connect_in_order(&[("zeta", &["z_lookup"]), ("alpha", &["a_search", "a_fetch"])]).await;
+        let alpha_first =
+            connect_in_order(&[("alpha", &["a_search", "a_fetch"]), ("zeta", &["z_lookup"])]).await;
+
+        assert_eq!(
+            sent_with_mcp_servers(&zeta_first).await,
+            sent_with_mcp_servers(&alpha_first).await,
+            "the tools and system prompt don't depend on the order servers connected in"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_mcp_server_reconnecting_unchanged_leaves_the_request_prefix_alone() {
+        let registry = connect_in_order(&[("alpha", &["a_search"]), ("zeta", &["z_lookup"])]).await;
+        let before = sent_with_mcp_servers(&registry).await;
+
+        // A reload that restarts a server whose config didn't change.
+        registry
+            .write()
+            .await
+            .insert_running_server("alpha", mcp_tools("alpha", &["a_search"]));
+
+        assert_eq!(
+            sent_with_mcp_servers(&registry).await,
+            before,
+            "an unchanged server keeps its tools' bytes and position"
+        );
+    }
+
     /// Counts the replies it is told went out.
     #[derive(Default)]
     struct CountingAudience(AtomicUsize);
