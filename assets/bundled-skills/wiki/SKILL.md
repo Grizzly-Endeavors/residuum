@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Page format, index rules, and ingest/lint procedures for the team knowledge wiki in team/wiki/. Activate before creating, editing, moving, or deleting any wiki page. Also the role of the memory_tending and wiki_lint pulses.
+description: Page format, index rules, and ingest/lint procedures for the team knowledge wiki in team/wiki/. Activate before creating, editing, moving, or deleting any wiki page.
 ---
 
 # Knowledge Wiki

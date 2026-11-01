@@ -75,7 +75,7 @@ impl Tool for ScheduleActionTool {
                     },
                     "model_tier": {
                         "type": "string",
-                        "description": "The model the action's session runs on: a tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form, such as \"anthropic/claude-haiku-4-5\" (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\"."
+                        "description": super::MODEL_PARAMETER_DESCRIPTION
                     }
                 },
                 "required": ["name", "prompt", "run_at"]
@@ -106,9 +106,9 @@ impl Tool for ScheduleActionTool {
             .is_some_and(|a| a.eq_ignore_ascii_case("main"))
         {
             return Err(ToolError::InvalidArguments(
-                "\"main\" is no longer a valid agent_name — every session fork already carries \
-                 the main agent's identity and memory snapshot, so name a skill instead, or \
-                 omit agent_name to run on the prompt alone."
+                "main is not a valid agent_name; every session fork already carries the main \
+                 agent's identity and memory snapshot, so name a skill instead, or omit \
+                 agent_name to run on the prompt alone."
                     .to_string(),
             ));
         }
@@ -455,7 +455,7 @@ mod tests {
         assert!(result.is_err(), "agent_name: main should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("no longer"),
+            err.contains("not a valid agent_name"),
             "error should explain why, got: {err}"
         );
     }

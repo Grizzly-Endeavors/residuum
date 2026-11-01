@@ -63,7 +63,7 @@ impl GatewayConfig {
 pub struct MemoryConfig {
     /// Token threshold before the observer fires.
     pub observer_threshold_tokens: usize,
-    /// Token threshold before the reflector compresses.
+    /// Token threshold before the reflector compresses, estimated on the observation log as the main prompt displays it.
     pub reflector_threshold_tokens: usize,
     /// Cooldown period in seconds after the soft threshold is crossed.
     pub observer_cooldown_secs: u64,

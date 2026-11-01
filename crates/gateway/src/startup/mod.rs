@@ -426,6 +426,9 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         },
         max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
         repeat_call_guard: inputs.cfg.agent.repeat_call_guard,
+        intermediate_delivery: residuum_agent::context::IntermediateDelivery::from_config(
+            inputs.cfg,
+        ),
         layout: inputs.layout.clone(),
         role_overrides: inputs.cfg.role_overrides.clone(),
         session_tools,

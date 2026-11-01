@@ -53,5 +53,3 @@ It is resolved when the server connects. An unknown key fails that server's conn
 ## Limits
 
 Redaction matches each value and its base64 and percent-encoded forms. A value transformed any other way, or embedded inside a larger encoded blob, is not caught, so don't transform keys in ways that print them.
-
-See the authoritative reference: `docs/systems-usage/agent-keys.md`.

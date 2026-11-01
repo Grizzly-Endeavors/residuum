@@ -161,10 +161,11 @@ async fn index_format_for_prompt() {
 
     let index = SkillIndex::scan(&layered_dirs(&layout)).await.unwrap();
     let output = index.format_for_prompt();
-    assert!(output.contains("<available_skills>"));
-    assert!(output.contains("</available_skills>"));
-    assert!(output.contains("<name>pdf-processing</name>"));
-    assert!(output.contains("<description>Extracts text from PDFs</description>"));
+    let line = output
+        .lines()
+        .find(|line| line.starts_with("- pdf-processing (agent, "))
+        .unwrap_or_else(|| panic!("index should list pdf-processing: {output}"));
+    assert!(line.ends_with("): Extracts text from PDFs"), "{line}");
 }
 
 // ── Full lifecycle ───────────────────────────────────────────────────────

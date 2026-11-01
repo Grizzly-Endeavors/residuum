@@ -244,7 +244,7 @@ describe("Memory", () => {
 
     expect(box("Start summarizing at").value).toBe("30000");
     expect(box("Wait before summarizing")).toHaveAccessibleDescription(/Default: 120 seconds\./);
-    expect(box("Condense memories at")).toHaveAccessibleDescription(/Default: 40,000 tokens\./);
+    expect(box("Condense memories at")).toHaveAccessibleDescription(/Default: 22,000 tokens\./);
 
     await type("Start summarizing at", "45000");
     await save(scope);

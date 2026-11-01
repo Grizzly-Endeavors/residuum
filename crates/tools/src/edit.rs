@@ -455,9 +455,7 @@ impl Tool for EditTool {
                           the ones before it, and the file is only written if every edit \
                           succeeds. Copy old_string from read_file output without the \
                           line-number prefix. To delete text, use an empty new_string. The file \
-                          must have been read with read_file first. Files under team/ are shared \
-                          with teammates: if one changed after you read it, nothing is written and \
-                          the error names who changed it, so read it again and redo your change. \
+                          must have been read with read_file first. \
                           Use this over write_file when changing part of an existing file."
                 .to_string(),
             parameters: serde_json::json!({

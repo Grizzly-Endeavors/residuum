@@ -40,7 +40,7 @@ A relative `path` resolves against the agent's workspace root, not the process's
 **Source:** `write.rs` · `WriteTool`
 
 **Description sent to LLM:**
-> Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change.
+> Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting.
 
 ### Input
 
@@ -74,7 +74,7 @@ A relative `path` resolves against the agent's workspace root, not the process's
 **Source:** `edit.rs` · `EditTool`
 
 **Description sent to LLM:**
-> Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change. Use this over write_file when changing part of an existing file.
+> Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Use this over write_file when changing part of an existing file.
 
 ### Input
 
@@ -123,10 +123,13 @@ A relative `path` resolves against the agent's workspace root, not the process's
 
 **Source:** `exec.rs` · `ExecTool`
 
-**Description sent to LLM:**
-> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+**Description sent to LLM (Unix):**
+> Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
 
-The description sent to the LLM reflects the current platform.
+**Description sent to LLM (Windows):**
+> Execute a shell command and return its output. Commands run via `cmd /C` with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+
+Both forms are listed because the description reflects the platform the binary was built for.
 
 ### Input
 
@@ -310,9 +313,13 @@ On error:
 
 On success: `"Activated skill '{name}'."`
 
-On error: skill not found.
+On error: skill not found, or the skill is already active, or the skills rescan failed (`"failed to rescan skills: …"`).
 
-**Side effect:** Appends the skill's markdown body to the active system prompt.
+When the rescan dropped an active skill, one line per dropped skill follows the activation message (on success or error), e.g. `Deactivated skill "{name}" — its files were removed or it can't be loaded from your skill directories.`
+
+On error, each new notice from the rescan follows as well, one line each: an unreadable skills directory, a skill skipped for invalid frontmatter (`skipped skill at {path}: …`), or a skill with an oversized description. A notice is new when this skill state has not produced it in an earlier scan.
+
+**Side effects:** Rescans the skill directories before activating, so a skill authored since startup can be activated and an active skill whose files were removed is dropped. Each dropped skill is published to the system notification channel and named in the output. A new notice from the rescan is published to the channel as well. A notice that persists is not published again by this tool; startup and config reload publish every notice. Appends the skill's markdown body to the active system prompt.
 
 ---
 
@@ -354,7 +361,7 @@ On error: skill is not currently active.
 | `prompt`     | string          | yes      | The prompt to execute when the action fires                                                                                                                       |
 | `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
 | `agent_name` | string          | no       | A skill name (e.g. `"memory-analyst"`) to fork the session with that skill as its role. Omit to fork a plain session with no skill. `"main"` is rejected. |
-| `model_tier` | string | no | The action's model: a tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id, the format `providers.toml` uses. Defaults to medium. An explicit model runs with no failover. |
+| `model_tier` | string | no | A tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id, the format `providers.toml` uses. An explicit model runs with no failover. Defaults to `"medium"`. |
 
 ### Output
 
@@ -640,7 +647,7 @@ On error (`is_error = true`): `"there is no agent named '{agent}'"` for an unkno
 |-------------|--------|-----------------|--------------------------------------------------------------------------------|
 | `endpoint`  | string | yes             | Target endpoint name (any interactive or notification endpoint)               |
 | `message`   | string | no†             | Message body or caption text                                                   |
-| `file_path` | string | no†             | Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. Always use this instead of pasting file paths as text. |
+| `file_path` | string | no†             | Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. |
 | `title`     | string | no              | Optional title for notifications (defaults to first 60 chars of message)      |
 | `conversation` | string | no           | Conversation ID on a chat endpoint, from `list_conversations`. Omit to message the owner directly. |
 
@@ -744,7 +751,7 @@ teams:
 **Source:** `switch_endpoint.rs` · `SwitchEndpointTool`
 
 **Description sent to LLM:**
-> Switch the active endpoint for subsequent responses. Takes effect on the next turn. Use list_endpoints to see available interactive endpoints.
+> Send your background output (sub-agent results, scheduled work, and other turns the user didn't start) to a different interactive endpoint. The current reply is unaffected, and the user's next message switches output back to wherever they wrote from. Use list_endpoints to see available interactive endpoints.
 
 ### Input
 
@@ -844,7 +851,7 @@ The teammate section lists every agent in the hub, sorted by name, from the hub'
 |------------------|-----------------|----------|-----------------------------------------------------------------------|
 | `task`           | string          | yes      | The prompt/instructions for the session                              |
 | `skill`          | string          | no       | Name of a skill to activate as the session's role. Omit to run on the task prompt alone. Must match a known skill or the call fails. `"main"` is rejected. |
-| `model`          | string          | no       | A tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id, the format `providers.toml` uses. Default: `"medium"`. An explicit model runs with no failover. |
+| `model`          | string          | no       | A tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id, the format `providers.toml` uses. An explicit model runs with no failover. Defaults to `"medium"`. |
 
 ### Session Roles
 
@@ -880,13 +887,13 @@ The session runs in the background via the session runtime. Every turn's outcome
 **Source:** `message_agent.rs` · `MessageAgentTool`
 
 **Description sent to LLM:**
-> Send a text message to another agent. Address forms: "main" or a session address (yours; see list_agents); "agent:<name>" (a teammate's main); "agent:<name>/<session-address>" (a teammate's session; copy the exact address from its message); "a2a:<name>" (a remote agent). Fire-and-forget: a running recipient sees the message at its next tool-call boundary, an idle one starts a turn, a completed session resumes at the same address. Replies arrive later as separate messages addressed to you; a remote agent replies from "a2a:<name>". A stopped or failed teammate returns an error and nothing is queued. Use list_agents for addresses.
+> Send a text message to another agent at the address in `to`. Fire-and-forget: a running recipient sees the message at its next tool-call boundary, an idle one starts a turn, a completed session resumes at the same address. Replies arrive later as separate messages addressed to you; a remote agent replies from "a2a:<name>". A stopped or failed teammate returns an error and nothing is queued. Use list_agents for addresses.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                                  |
 |-----------|--------|----------|----------------------------------------------------------------|
-| `to`      | string | yes      | Address to message: `"main"`, a session address from `list_agents`, `"agent:<name>"` or `"agent:<name>/<session-address>"` for a teammate, or `"a2a:<name>"` for a remote agent. |
+| `to`      | string | yes      | Address to message: `"main"`, a session address (yours; see `list_agents`), `"agent:<name>"` for a teammate's main, `"agent:<name>/<session-address>"` for one of its sessions (copy the exact address from its message), or `"a2a:<name>"` for a remote agent. |
 | `message` | string | yes      | The message body.                                             |
 | `skill`   | string | no       | Only meaningful when `to` is a remote agent: the id of one of its advertised skills, sent as `message.metadata.skill`. |
 
@@ -1156,6 +1163,12 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 
 On success: `"Task marked {completed|marked as needing more input|marked failed}; the caller has been notified."`
 
+On error: an unknown `state`, an empty `message`, or an artifact path that's empty, escapes the workspace, doesn't exist, or exceeds 20 MB — reported as `is_error = true` naming the specific artifact and reason.
+
+**Side effect:** Publishes an `A2aTaskSignalEvent` on the bus, which the session's A2A task executor is waiting on to end the task's execution stream with the matching status. Each requested artifact is read into an A2A part first (UTF-8 text becomes a text part; anything else becomes a raw part with a detected media type) — a read failure fails the whole call before anything is published, so a caller never sees a partial update.
+
+**Available to sessions:** registered only in a session whose tool scope's `conversation_target` names the `a2a` endpoint — never in the main agent's registry, and never in a session started any other way. See `docs/systems-usage/a2a.md`.
+
 ---
 
 ## `workspace_history`
@@ -1163,13 +1176,13 @@ On success: `"Task marked {completed|marked as needing more input|marked failed}
 **Source:** `workspace_checkpoints.rs` · `WorkspaceHistoryTool`
 
 **Description sent to LLM:**
-> List workspace checkpoints (recovery snapshots of workspace files, taken automatically at turn boundaries and before destructive actions), optionally filtered to those that changed a given path, or show what a specific checkpoint changed.
+> List checkpoints (recovery snapshots of workspace or team files, taken automatically at turn boundaries and before destructive actions), optionally filtered to those that changed a given path, or show what a specific checkpoint changed.
 
 ### Input
 
 | Parameter       | Type   | Required | Description                                                                 |
 |-----------------|--------|----------|-------------------------------------------------------------------------------|
-| `repo`          | string (enum) | no | `"workspace"` (default, your own files) or `"team"` (the shared team directory). Paths are relative to that root. |
+| `repo`          | string (enum) | no | `"workspace"` (default, your own files) or `"team"` (the shared team/ directory). Paths are relative to that root. |
 | `action`        | string (enum) | yes | `"list"` to list checkpoints, `"show"` to see what one checkpoint changed. |
 | `path`          | string | no (list only) | Restrict to checkpoints that changed this workspace-relative file or directory. |
 | `limit`         | integer | no | list: checkpoints to return (default 50, at most 200). show: changed paths to list (default 50, at most 200). A larger value counts as 200. |
@@ -1192,17 +1205,18 @@ On error (returned as `is_error = true`): `action` is missing or unrecognized, `
 **Source:** `workspace_checkpoints.rs` · `WorkspaceRestoreTool`
 
 **Description sent to LLM:**
-> Restore a workspace file or directory to its content at a checkpoint (from workspace_history), or undo a checkpoint's own changes -- reverting each path it changed back to its content just before it, skipping any path that was changed again since so a later edit is never clobbered. Both actions checkpoint the result first, so a restore or undo can itself be undone.
+> Restore a workspace or team file or directory to its content at a checkpoint (from workspace_history), or undo a checkpoint's own changes -- reverting each path it changed back to its content just before it, skipping any path that was changed again since so a later edit is never clobbered. Both actions checkpoint the result first, so a restore or undo can itself be undone.
 
 ### Input
 
 | Parameter       | Type   | Required | Description |
 |-----------------|--------|----------|--------------|
+| `repo` | string (enum) | no | `"workspace"` (default) or `"team"`: the checkpoint history to restore from. Paths are relative to that root. |
 | `action`        | string (enum) | yes | `"restore_path"` to restore one file/directory, `"undo_turn"` to revert everything a checkpoint changed. |
 | `checkpoint_id` | string | yes | The checkpoint id, from `workspace_history`. |
 | `path`          | string | yes (restore_path only) | The workspace-relative file or directory to restore. |
 
-Scoped to the workspace checkpoint repository only, like `workspace_history`.
+`repo` selects the workspace or team checkpoint history, as for `workspace_history`; the config repository is not reachable from this tool.
 
 ### Output
 
@@ -1211,9 +1225,3 @@ Scoped to the workspace checkpoint repository only, like `workspace_history`.
 `undo_turn`: `"Reverted {N} path(s) from checkpoint {short id}: {paths}."`, plus `" Skipped {N} path(s) changed again since: {paths}."` when any were skipped to avoid clobbering a later edit.
 
 On error (returned as `is_error = true`): `action` or `checkpoint_id` is missing or unrecognized, `path` contains `..` or is absolute, the checkpoint id doesn't resolve, or (`restore_path` only) `path` isn't present at that checkpoint.
-
-On error: an unknown `state`, an empty `message`, or an artifact path that's empty, escapes the workspace, doesn't exist, or exceeds 20 MB — reported as `is_error = true` naming the specific artifact and reason.
-
-**Side effect:** Publishes an `A2aTaskSignalEvent` on the bus, which the session's A2A task executor is waiting on to end the task's execution stream with the matching status. Each requested artifact is read into an A2A part first (UTF-8 text becomes a text part; anything else becomes a raw part with a detected media type) — a read failure fails the whole call before anything is published, so a caller never sees a partial update.
-
-**Available to sessions:** registered only in a session whose tool scope's `conversation_target` names the `a2a` endpoint — never in the main agent's registry, and never in a session started any other way. See `docs/systems-usage/a2a.md`.

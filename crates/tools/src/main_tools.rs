@@ -150,7 +150,7 @@ fn register_main_workspace_tools(
         Arc::clone(deps.model_catalog),
         tz,
     );
-    registration::register_skill_tools(tools, Arc::clone(deps.skill_state));
+    registration::register_skill_tools(tools, injections, Arc::clone(deps.skill_state));
     registration::register_inbox_tools(tools, injections, layout, tz);
 }
 
@@ -228,7 +228,7 @@ pub fn init_tool_registry(
         Arc::clone(deps.session_registry),
     );
 
-    // Workspace checkpoint history (workspace repository only)
+    // Checkpoint history and restore for the workspace and team repositories
     registration::register_workspace_checkpoint_tools(
         &mut tools,
         Arc::clone(deps.checkpoints),
@@ -270,6 +270,50 @@ mod tests {
     /// session started from the `a2a` endpoint — main never handles A2A
     /// callers directly (see `docs/systems-usage/a2a.md`).
     const SESSION_ONLY_TOOLS: &[&str] = &["a2a_task_update"];
+
+    /// `TOOLS.md`, the contract every tool's description is quoted from.
+    const TOOLS_MD: &str = include_str!("TOOLS.md");
+
+    /// How TOOLS.md quotes a description: each line as a blockquote line, and
+    /// each paragraph break as a bare `>`.
+    fn quote_as_tools_md(description: &str) -> String {
+        description
+            .split('\n')
+            .map(|line| {
+                if line.is_empty() {
+                    ">".to_string()
+                } else {
+                    format!("> {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every tool main registers is quoted in TOOLS.md with its exact current
+    /// description, so a description edit that skips TOOLS.md fails here
+    /// instead of drifting silently.
+    #[tokio::test]
+    async fn every_main_tool_description_is_quoted_in_tools_md() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = RegistryHarness::build(dir.path()).await;
+
+        // A Windows checkout with autocrlf turns TOOLS.md's line endings into
+        // CRLF, while the descriptions are LF, so compare on LF.
+        let tools_md = TOOLS_MD.replace("\r\n", "\n");
+        let definitions = h.main_registry().definitions();
+        assert!(!definitions.is_empty(), "main registers no tools");
+        for definition in definitions {
+            let expected = format!("\n{}\n", quote_as_tools_md(&definition.description));
+            assert!(
+                tools_md.contains(&expected),
+                "crates/tools/src/TOOLS.md does not quote the current description of `{}`: \
+                 update that tool's \"Description sent to LLM\" block to match its \
+                 definition() exactly",
+                definition.name
+            );
+        }
+    }
 
     /// A `ConversationTarget` naming the `a2a` endpoint, as an a2a
     /// conversation session's tool scope carries.

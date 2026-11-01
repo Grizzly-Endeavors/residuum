@@ -30,7 +30,7 @@ Skills are discovered from three layers, scanned in priority order:
 
 Put a skill in your own `skills/` when only you should have it, and in `team/skills/` when every agent should.
 
-**Deduplication**: If multiple skills share the same name, the highest-priority layer wins. Lookup is case-insensitive by name. The `<available_skills>` index shows each skill's layer in a `<layer>` element.
+**Deduplication**: If multiple skills share the same name, the highest-priority layer wins. Lookup is case-insensitive by name. The skills index shows each skill's layer on its line.
 
 Skills used as session roles (`subagent_spawn`'s `skill`, a pulse's `agent`) resolve through the same layers, so a team skill works as a role.
 
@@ -40,18 +40,16 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `skill_activate` | `name` (string) | Load a skill's body into the active system prompt. |
+| `skill_activate` | `name` (string) | Rescan the skill directories, then load a skill's body into the active system prompt. |
 | `skill_deactivate` | `name` (string) | Remove a skill's body from the system prompt. |
 
 ## How Skills Appear in the Prompt
 
-Available skills are listed in an XML block:
+Available skills are listed in the `SKILLS_INDEX` section, one line per skill:
 
-```xml
-<available_skills>
-- my-skill: Brief description shown in the skill listing.
-- another-skill: Another description.
-</available_skills>
+```
+- my-skill (agent, /path/to/skills/my-skill/SKILL.md): Brief description shown in the skill listing.
+- another-skill (team, /path/to/team/skills/another-skill/SKILL.md): Another description.
 ```
 
 Active skills inject their full body:
@@ -68,7 +66,7 @@ Detailed instructions, workflows, and reference material.
 
 - **Activation** reads the SKILL.md body from disk and adds it to the active skill list. The body persists in the system prompt until deactivated.
 - **Deactivation** removes the body from the prompt.
-- **Rescan** (`skill_activate` triggers a rescan) re-reads all skill directories and removes any active skills whose source files no longer exist.
+- **Rescan** re-reads all skill directories. It runs on config reload and before each `skill_activate`, so a newly written skill can be activated without a reload. Active skills whose source files no longer exist are removed; the removal is reported once, on the notification channel and, for `skill_activate`, in its result. Startup and each config reload publish every notice the scan produces (an unreadable directory, a skill skipped for invalid frontmatter, a skill with an oversized description). `skill_activate` publishes only the notices that are new since the last scan, and a failed `skill_activate` names those new notices in its result.
 - Skill lookup is **case-insensitive** by name.
 
 ## Gotchas

@@ -20,10 +20,38 @@ pub struct SkillsContext<'a> {
     pub active_instructions: Option<&'a str>,
 }
 
+/// Which chat interfaces post the text the agent writes before a tool call
+/// (each interface's `deliver_intermediate` setting), so the `HARNESS`
+/// section tells the agent what reaches each chat. An interface that isn't
+/// configured counts as off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IntermediateDelivery {
+    pub telegram: bool,
+    pub discord: bool,
+    pub teams: bool,
+}
+
+impl IntermediateDelivery {
+    /// Read each chat interface's `deliver_intermediate` setting.
+    #[must_use]
+    pub fn from_config(cfg: &residuum_config::Config) -> Self {
+        Self {
+            telegram: cfg
+                .telegram
+                .as_ref()
+                .is_some_and(|t| t.deliver_intermediate),
+            discord: cfg.discord.as_ref().is_some_and(|d| d.deliver_intermediate),
+            teams: cfg.teams.as_ref().is_some_and(|t| t.deliver_intermediate),
+        }
+    }
+}
+
 /// Bundle of external context injected into the system prompt.
 #[derive(Default)]
 pub struct PromptContext<'a> {
     pub skills: SkillsContext<'a>,
+    /// What the chat interfaces post, for the `HARNESS` section.
+    pub intermediate_delivery: IntermediateDelivery,
 }
 
 /// A per-section breakdown of the agent's approximate token usage.

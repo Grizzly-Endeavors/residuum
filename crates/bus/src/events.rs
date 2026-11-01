@@ -362,37 +362,6 @@ pub struct AgentResultEvent {
     pub timestamp: NaiveDateTime,
 }
 
-impl AgentResultEvent {
-    /// Format this result for injection into the agent's conversation context.
-    #[must_use]
-    pub fn format_for_agent(&self) -> String {
-        let mut out = format!(
-            "[Session Result]\nSession: {} ({})\nTask: {}\nSource: {}\nStatus: {}",
-            self.session_address,
-            self.run_id,
-            self.source_label,
-            self.source.as_str(),
-            self.status,
-        );
-
-        if !self.summary.is_empty() {
-            out.push('\n');
-            out.push_str("Output:\n");
-            out.push_str(&self.summary);
-        }
-
-        match &self.transcript_path {
-            Some(path) => {
-                out.push_str("\nTranscript: ");
-                out.push_str(&path.display().to_string());
-            }
-            None => out.push_str("\nTranscript: unavailable (failed to save)"),
-        }
-
-        out
-    }
-}
-
 /// A message one agent sends to another by address (`message_agent` tool).
 ///
 /// Delivered as an `Interrupt::AgentMessage` to a
@@ -1280,28 +1249,7 @@ pub enum WorkspaceEvent {
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
-
     use super::*;
-    use crate::types::SkillName;
-
-    fn make_agent_result(summary: &str, transcript: Option<&str>) -> AgentResultEvent {
-        AgentResultEvent {
-            session_address: SessionAddress::from("scheduled-check-0001"),
-            run_id: "t1".into(),
-            source_label: "pulse:check".into(),
-            agent_skill: Some(SkillName::from("default")),
-            source: EventTrigger::Pulse,
-            disposition: ResultDisposition::Silent,
-            status: AgentResultStatus::Completed,
-            summary: summary.into(),
-            transcript_path: transcript.map(std::path::PathBuf::from),
-            timestamp: NaiveDate::from_ymd_opt(2026, 3, 13)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap(),
-        }
-    }
 
     #[test]
     fn ends_with_sentinel_matches_exact_and_trailing() {
@@ -1375,33 +1323,6 @@ mod tests {
             }
             .to_string(),
             "failed: timeout"
-        );
-    }
-
-    #[test]
-    fn format_for_agent_empty_summary_no_transcript() {
-        let event = make_agent_result("", None);
-        assert_eq!(
-            event.format_for_agent(),
-            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nTranscript: unavailable (failed to save)"
-        );
-    }
-
-    #[test]
-    fn format_for_agent_with_summary_no_transcript() {
-        let event = make_agent_result("some output", None);
-        assert_eq!(
-            event.format_for_agent(),
-            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nOutput:\nsome output\nTranscript: unavailable (failed to save)"
-        );
-    }
-
-    #[test]
-    fn format_for_agent_empty_summary_with_transcript() {
-        let event = make_agent_result("", Some("/tmp/transcript.txt"));
-        assert_eq!(
-            event.format_for_agent(),
-            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nTranscript: /tmp/transcript.txt"
         );
     }
 
@@ -1603,15 +1524,6 @@ mod tests {
         assert!(
             MainConversationEvent::user_message(&notice, "turn-1").is_none(),
             "background input no agent sent is not announced"
-        );
-    }
-
-    #[test]
-    fn format_for_agent_with_summary_and_transcript() {
-        let event = make_agent_result("some output", Some("/tmp/transcript.txt"));
-        assert_eq!(
-            event.format_for_agent(),
-            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nOutput:\nsome output\nTranscript: /tmp/transcript.txt"
         );
     }
 

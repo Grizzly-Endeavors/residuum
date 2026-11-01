@@ -191,7 +191,7 @@ impl Tool for SendMessageTool {
                     },
                     "file_path": {
                         "type": "string",
-                        "description": "Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. Always use this instead of pasting file paths as text."
+                        "description": "Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads."
                     },
                     "title": {
                         "type": "string",

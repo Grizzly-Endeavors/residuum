@@ -233,8 +233,8 @@ Spawn configuration lives at the call site, not in the file:
 | Caller | Where the config lives |
 |--------|------------------------|
 | `subagent_spawn` | The tool's `skill` and `model` parameters. |
-| Heartbeat pulses | `agent` and `model_tier` on the pulse in `HEARTBEAT.yml`. `agent: "main"` and `include_identity` are removed — a pulse using either fails to load with an error naming it. |
-| Scheduled actions | `agent` and `model_tier` on the action. `agent_name: "main"` is rejected by `schedule_action` and dropped (loudly) from any stored action that predates this change. |
+| Heartbeat pulses | `agent` and `model_tier` on the pulse in `HEARTBEAT.yml`. `agent: "main"` and `include_identity` are not accepted — a pulse using either fails to load with an error naming it. |
+| Scheduled actions | `agent` and `model_tier` on the action. `agent_name: "main"` is rejected by `schedule_action`, and a stored action carrying it is dropped (loudly) at startup load. |
 | Subconscious `learner` | Fixed in code: the `learner` skill, `large` tier. |
 
 A spawn naming a skill that does not resolve fails loudly rather than running a session without the instructions that define its job.
@@ -268,7 +268,7 @@ A session has its own working memory and merges what it learned into global memo
 
 ## Session Store
 
-Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. While the run is live, its transcript is durably appended to a sibling `<run-id>.transcript.jsonl` file after every model response and tool result, so a crash mid-turn loses at most the message in flight; on completion the full transcript is folded into the metadata file too, so a finished run's record is a single, self-contained file. Stopped runs keep their transcript up to the point they were stopped and merge into memory like any other run.
+Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. While the run is live, its transcript is durably appended to a sibling `<run-id>.transcript.jsonl` file after every model response and tool result, one message per line with a `recorded_at` time, so a crash mid-turn loses at most the message in flight; on completion the full transcript is folded into the metadata file too, so a finished run's record is a single, self-contained file. Stopped runs keep their transcript up to the point they were stopped and merge into memory like any other run.
 
 At startup, any run left incomplete by a prior process exit goes through the full completion pipeline — skip check, final observation, merge — from its persisted transcript before normal operation resumes, then is marked completed.
 

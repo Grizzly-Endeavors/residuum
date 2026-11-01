@@ -15,6 +15,8 @@ Fires after agent turns when accumulated unobserved message tokens exceed a thre
 - **Soft threshold** (`threshold_tokens`): starts a cooldown timer; fires when cooldown expires.
 - **Force threshold** (`force_threshold_tokens`): fires immediately, bypassing cooldown.
 
+The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
+
 The main agent's own cycle runs off the event loop in a background worker, so it never delays the next message, a stop, or a shutdown — at most one cycle runs at a time, and a trigger arriving mid-cycle coalesces into one follow-up rather than stacking. The `/observe` and `/reflect` chat commands run through the same worker and answer with a notice when they finish. Memory can be "one step stale" as a result: a turn that starts before a still-running cycle finishes sees the pre-cycle context. The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
 
 | File | Format | Contents |
@@ -35,13 +37,13 @@ An automatic extraction or merge failure backs off exponentially (1m, 2m, 4m, ..
 
 ## Agent Sessions and Memory
 
-Every agent session (a pulse, a scheduled action, a webhook, or a `subagent_spawn`/learner sub-agent) merges its own findings into this same global memory when it completes — background work is not a memory dead end. A session's transcript is checked against the same observer thresholds; crossing the force threshold mid-run stages observations locally until the run finishes. On completion a run skips producing an episode only if it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under `episode_skip_token_floor` (`[background]` config, default ~2000 tokens) — its transcript is kept in the session store regardless. Otherwise the staged and final observations merge as one episode tagged with the session's address, run id, and category, so search results stay traceable to their source. A session's narrative lives on its own episode, never in the shared `recent_context.json`.
+Every agent session (a pulse, a scheduled action, a webhook, or a `subagent_spawn`/learner sub-agent) merges its own findings into this same global memory when it completes — background work is not a memory dead end. A session's transcript is checked against the same observer thresholds; crossing the force threshold mid-run stages observations locally until the run finishes. Each message is extracted with the time it was recorded in the run. Long stretches are extracted in consecutive chunks that each fit within the force threshold, oldest first; a trailing remainder of up to a quarter of the threshold joins the chunk before it, and a single message larger than the threshold is sent on its own. Chunk sizes count the text the observer is sent, so reasoning and images are not counted; each observer request carries about the force threshold's worth of messages, up to a quarter more when a remainder joins it, plus the extraction prompt and headers. On completion a run skips producing an episode only if it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under `episode_skip_token_floor` (`[background]` config, default ~2000 tokens) — its transcript is kept in the session store regardless. Otherwise the staged and final observations merge as one episode tagged with the session's address, run id, and category, so search results stay traceable to their source. A session's narrative lives on its own episode, never in the shared `recent_context.json`.
 
-If the process crashes mid-run, nothing is lost: the transcript is appended to durably after every model response and tool result, and any run that never finished goes through this same skip-check/extract/merge pipeline from its saved transcript at the next startup.
+If the process crashes mid-run, nothing is lost: the transcript is appended to durably after every model response and tool result, each line with the time it was appended, and any run that never finished goes through this same skip-check/extract/merge pipeline from its saved transcript at the next startup.
 
 ## Reflector
 
-Fires when `memory/observations.json` exceeds its token threshold. Calls an LLM to merge and deduplicate the observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just denser.
+Fires when the observation log exceeds its token threshold (`reflector_threshold_tokens`, default 22,000). The threshold is estimated on the log as the main prompt displays it: the `Format:` line plus one `[timestamp] | [episode] | [visibility]` entry per observation. Calls an LLM to merge and deduplicate the observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just denser.
 
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki. These are completely separate systems.
 
@@ -71,7 +73,7 @@ A workbench artifact runs the same search via `GET /api/agents/<agent>/memory/se
 
 ## Thinking
 
-An assistant message may carry the model's reasoning as `thinking` blocks (readable `text`, plus an opaque `signature` or encrypted block some providers need replayed). `recent_messages.json` and session transcripts keep the blocks whole; episode transcripts keep the readable text only. The observer, reflector, search index, `memory_get` and token estimates never include it. If you read `recent_messages.json` directly, ignore the `signature`, `redacted`, `part` and `origin` fields (`origin` names the provider and model that produced a block, so a provider replays only its own).
+An assistant message may carry the model's reasoning as `thinking` blocks (readable `text`, plus an opaque `signature` or encrypted block some providers need replayed). `recent_messages.json` and session transcripts keep the blocks whole; episode transcripts keep the readable text only. The observer, reflector, search index and `memory_get` never include it. The token estimates behind the observer thresholds count its readable text. If you read `recent_messages.json` directly, ignore the `signature`, `redacted`, `part` and `origin` fields (`origin` names the provider and model that produced a block, so a provider replays only its own).
 
 ## Status Lines
 

@@ -70,11 +70,7 @@ pub(crate) fn assemble_system_prompt(
         .count();
     let mut messages = Vec::with_capacity(1 + conversation.len() + status_lines);
 
-    messages.push(build_system_message(
-        identity,
-        memory_ctx,
-        &prompt_ctx.skills,
-    ));
+    messages.push(build_system_message(identity, memory_ctx, prompt_ctx));
     for m in conversation {
         if let Some(line) = &m.status_line {
             messages.push(Message::system(line.clone()));
@@ -335,9 +331,10 @@ mod tests {
 
         let prompt_ctx = PromptContext {
             skills: SkillsContext {
-                index: Some("<available_skills/>"),
+                index: Some("- pdf (team, /skills/pdf/SKILL.md): Reads PDFs"),
                 active_instructions: Some("<active_skill>instructions</active_skill>"),
             },
+            ..PromptContext::default()
         };
 
         let bd = compute_context_breakdown(&identity, &memory, &prompt_ctx, &recent, 0, 0);

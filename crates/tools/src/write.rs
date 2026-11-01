@@ -155,9 +155,7 @@ impl Tool for WriteTool {
             description:
                 "Write content to a file. Creates parent directories if they don't exist. \
                  Overwrites the file if it already exists. Existing files must be read \
-                 with read_file before overwriting. Files under team/ are shared with \
-                 teammates: if one changed after you read it, nothing is written and the \
-                 error names who changed it, so read it again and redo your change."
+                 with read_file before overwriting."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
