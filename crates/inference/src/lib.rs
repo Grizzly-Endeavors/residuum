@@ -14,6 +14,7 @@ pub(crate) mod failover;
 mod gen_ai_span;
 mod http;
 mod image_input;
+pub mod pricing;
 pub(crate) mod providers;
 mod reply;
 mod retry;
@@ -37,6 +38,7 @@ pub use factory::{
 pub use failover::NoticeSink;
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use image_input::ImagesOmitted;
+pub use pricing::{CostEstimate, PriceTable};
 pub use providers::anthropic;
 pub use providers::null::NullProvider;
 pub use reply::strip_code_fences;
