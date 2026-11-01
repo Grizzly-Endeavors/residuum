@@ -5,6 +5,8 @@
 //! hits reported in response headers rather than the `usage` body, no hosted
 //! web search tool, and routing by an affinity key.
 
+use residuum_config::ProviderKind;
+
 use super::openai::OpenAiDialect;
 
 /// Response header carrying the prompt tokens served from cache.
@@ -17,6 +19,7 @@ const SESSION_AFFINITY_HEADER: &str = "x-session-affinity";
 /// `x-session-affinity` header when there is one.
 pub(crate) fn dialect(session_affinity: Option<String>) -> OpenAiDialect {
     OpenAiDialect {
+        provider: ProviderKind::Fireworks,
         request_headers: session_affinity
             .map(|affinity| (SESSION_AFFINITY_HEADER, affinity))
             .into_iter()

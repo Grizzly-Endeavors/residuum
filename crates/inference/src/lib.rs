@@ -3,6 +3,7 @@
 //! The `test-support` feature adds `testing`, the gated model server and
 //! provider other crates' tests hold model calls open with.
 
+mod attempt;
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;
@@ -41,9 +42,9 @@ pub(crate) use retry::with_retry;
 pub use role_options::completion_options_for_role;
 pub use tool::{ToolError, ToolResult};
 pub use types::{
-    AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
-    MessageAttachment, MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta,
-    StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
-    WebSearchNativeConfig, joined_thinking_text, readable_thinking,
+    AgentSender, AttemptOutcome, AttemptUsage, CompletionOptions, ImageData, InferenceProvider,
+    InferenceResponse, Message, MessageAttachment, MessageSender, ProviderApi, ResponseFormat,
+    Role, StopReason, StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall,
+    ToolDefinition, Usage, WebSearchNativeConfig, joined_thinking_text, readable_thinking,
 };
 pub(crate) use types::{ReplayScope, blocks_produced_at};

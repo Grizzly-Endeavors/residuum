@@ -6,11 +6,13 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use super::InferenceError;
+use crate::attempt::ListsAttempts;
 use residuum_config::RetryConfig;
 
 /// Execute a fallible async operation with retry logic.
 ///
 /// Only retries if the error is marked as retryable via [`InferenceError::is_retryable()`].
+/// The result lists every attempt the failed tries recorded ahead of its own.
 ///
 /// # Errors
 /// Returns the last error if all retries are exhausted or if a non-retryable error occurs.
@@ -19,71 +21,73 @@ pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, InferenceError>>,
+    T: ListsAttempts,
 {
     let mut attempts = 0;
     let mut delay = config.initial_delay;
+    let mut spent = Vec::new();
 
     loop {
-        match operation().await {
-            Ok(result) => return Ok(result),
-            Err(e) if !e.is_retryable() => return Err(e),
-            Err(e) if attempts >= config.max_retries => {
-                warn!(
-                    attempts = attempts + 1,
-                    error = %e,
-                    "max retries exceeded"
-                );
-                return Err(e);
-            }
-            Err(e) => {
-                if attempts == 0 {
-                    warn!(
-                        max_retries = config.max_retries,
-                        error = %e,
-                        "transient error, retrying"
-                    );
-                } else {
-                    debug!(
-                        attempt = attempts + 1,
-                        max_retries = config.max_retries,
-                        error = %e,
-                        "retry attempt"
-                    );
-                }
-                attempts += 1;
-
-                // Add jitter (+-25%)
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "precision loss acceptable for jitter calculation"
-                )]
-                let jitter = delay.as_millis() as f64 * (rand::random::<f64>() * 0.5 - 0.25);
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "precision loss acceptable for duration calculation"
-                )]
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "jittered delay is always positive and fits in u64"
-                )]
-                let jittered_delay =
-                    Duration::from_millis((delay.as_millis() as f64 + jitter) as u64);
-                sleep(jittered_delay).await;
-
-                // Exponential backoff
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    clippy::cast_precision_loss,
-                    reason = "backoff duration fits in u64 range"
-                )]
-                let next_delay = Duration::from_millis(
-                    (delay.as_millis() as f64 * config.backoff_multiplier) as u64,
-                );
-                delay = next_delay.min(config.max_delay);
-            }
+        let (e, tried) = match operation().await {
+            Ok(result) => return Ok(result.after_attempts(spent)),
+            Err(e) => e.into_parts(),
+        };
+        spent.extend(tried);
+        if !e.is_retryable() {
+            return Err(e.after_attempts(spent));
         }
+        if attempts >= config.max_retries {
+            warn!(
+                attempts = attempts + 1,
+                error = %e,
+                "max retries exceeded"
+            );
+            return Err(e.after_attempts(spent));
+        }
+        if attempts == 0 {
+            warn!(
+                max_retries = config.max_retries,
+                error = %e,
+                "transient error, retrying"
+            );
+        } else {
+            debug!(
+                attempt = attempts + 1,
+                max_retries = config.max_retries,
+                error = %e,
+                "retry attempt"
+            );
+        }
+        attempts += 1;
+
+        // Add jitter (+-25%)
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "precision loss acceptable for jitter calculation"
+        )]
+        let jitter = delay.as_millis() as f64 * (rand::random::<f64>() * 0.5 - 0.25);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "precision loss acceptable for duration calculation"
+        )]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "jittered delay is always positive and fits in u64"
+        )]
+        let jittered_delay = Duration::from_millis((delay.as_millis() as f64 + jitter) as u64);
+        sleep(jittered_delay).await;
+
+        // Exponential backoff
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "backoff duration fits in u64 range"
+        )]
+        let next_delay =
+            Duration::from_millis((delay.as_millis() as f64 * config.backoff_multiplier) as u64);
+        delay = next_delay.min(config.max_delay);
     }
 }
 
@@ -94,6 +98,93 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::InferenceResponse;
+    use crate::Usage;
+    use crate::attempt::{FailedRequest, record_attempt};
+    use crate::types::{AttemptOutcome, AttemptUsage};
+    use residuum_config::ProviderKind;
+
+    fn fast_retry() -> RetryConfig {
+        RetryConfig {
+            max_retries: 3,
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+            backoff_multiplier: 1.0,
+        }
+    }
+
+    fn output(tokens: u32) -> Option<Usage> {
+        Some(Usage {
+            output_tokens: Some(tokens),
+            ..Usage::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn a_retried_call_lists_the_failed_attempt_and_the_success() {
+        let call_count = Arc::new(AtomicU32::new(0));
+        let result = with_retry(&fast_retry(), || {
+            let count = Arc::clone(&call_count);
+            async move {
+                if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let failed = FailedRequest::spent(
+                        InferenceError::StreamInterrupted("reset".to_string()),
+                        output(3),
+                    );
+                    return record_attempt(ProviderKind::Anthropic, "claude", Err(failed));
+                }
+                let mut response = InferenceResponse::new("done".to_string(), vec![]);
+                response.usage = output(9);
+                record_attempt(ProviderKind::Anthropic, "claude", Ok(response))
+            }
+        })
+        .await
+        .unwrap();
+
+        let attempt = |outcome, usage| AttemptUsage {
+            provider: "anthropic".to_string(),
+            model: "claude".to_string(),
+            outcome,
+            usage,
+        };
+        assert_eq!(
+            result.attempts,
+            vec![
+                attempt(AttemptOutcome::Failed, output(3)),
+                attempt(AttemptOutcome::Succeeded, output(9)),
+            ]
+        );
+        assert_eq!(result.usage, output(9), "usage stays the success's own");
+    }
+
+    #[tokio::test]
+    async fn a_call_that_exhausts_its_retries_carries_every_attempt() {
+        let config = RetryConfig {
+            max_retries: 2,
+            ..fast_retry()
+        };
+        let err = with_retry(&config, || async {
+            record_attempt(
+                ProviderKind::OpenAi,
+                "gpt",
+                Err(InferenceError::Api("503 Service Unavailable: busy".to_string()).into()),
+            )
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.attempts().len(), 3, "initial + 2 retries: {err:?}");
+        assert!(
+            err.attempts()
+                .iter()
+                .all(|a| a.outcome == AttemptOutcome::Failed && a.usage.is_none()),
+            "every attempt failed and reported nothing: {err:?}"
+        );
+        assert!(
+            matches!(err.cause(), InferenceError::Api(_)),
+            "the cause is the last error"
+        );
+    }
 
     #[tokio::test]
     async fn succeeds_immediately() {
@@ -105,13 +196,17 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Ok::<_, InferenceError>("success".to_string())
+                Ok::<_, InferenceError>(InferenceResponse::new("success".to_string(), vec![]))
             }
         })
         .await;
 
         assert!(result.is_ok(), "should succeed on first attempt");
-        assert_eq!(result.unwrap(), "success", "value should pass through");
+        assert_eq!(
+            result.unwrap().content,
+            "success",
+            "value should pass through"
+        );
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             1,
@@ -138,7 +233,7 @@ mod tests {
                 if current < 2 {
                     Err(InferenceError::Api("rate limit exceeded".to_string()))
                 } else {
-                    Ok::<_, InferenceError>("success".to_string())
+                    Ok::<_, InferenceError>(InferenceResponse::new("success".to_string(), vec![]))
                 }
             }
         })
@@ -168,7 +263,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(InferenceError::Parse("invalid json".to_string()))
+                Err::<InferenceResponse, _>(InferenceError::Parse("invalid json".to_string()))
             }
         })
         .await;
@@ -197,7 +292,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(InferenceError::Api("rate limit exceeded".to_string()))
+                Err::<InferenceResponse, _>(InferenceError::Api("rate limit exceeded".to_string()))
             }
         })
         .await;
@@ -220,7 +315,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(InferenceError::Api("rate limit exceeded".to_string()))
+                Err::<InferenceResponse, _>(InferenceError::Api("rate limit exceeded".to_string()))
             }
         })
         .await;
@@ -250,7 +345,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(InferenceError::Api("rate limit exceeded".to_string()))
+                Err::<InferenceResponse, _>(InferenceError::Api("rate limit exceeded".to_string()))
             }
         })
         .await;
