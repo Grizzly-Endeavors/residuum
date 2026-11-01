@@ -58,6 +58,7 @@ uuid = { workspace = true }
 wiremock = { workspace = true, optional = true }
 
 [dev-dependencies]
+residuum-mcp = { workspace = true, features = ["test-support"] }
 residuum-core = { workspace = true, features = ["test-support"] }
 residuum-config = { workspace = true, features = ["test-support"] }
 residuum-bus = { workspace = true, features = ["test-support"] }

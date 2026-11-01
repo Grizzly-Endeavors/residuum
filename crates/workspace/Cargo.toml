@@ -34,6 +34,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+residuum-mcp = { workspace = true, features = ["test-support"] }
 residuum-core = { workspace = true, features = ["test-support"] }
 residuum-config = { workspace = true, features = ["test-support"] }
 residuum-bus = { workspace = true, features = ["test-support"] }
