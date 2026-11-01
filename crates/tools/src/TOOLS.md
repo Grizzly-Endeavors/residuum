@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. Returns at most 2000 lines per call unless a limit is given; use offset/limit to page through the rest. There is no file size limit, and the output header reports the file's total size and line count. Lines longer than 2000 characters are cut. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
+> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. Unless a limit is given, returns at most 2000 lines or 30000 characters per call, whichever comes first, and the header names the offset to continue from. There is no file size limit, and the output header reports the file's total size and line count. Lines longer than 2000 characters are cut. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
 
 ### Input
 
@@ -17,11 +17,11 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 |-----------|---------|----------|--------------------------------------------------|
 | `path`    | string  | yes      | Absolute or relative path to the file to read. A path starting with "team/" is in the shared team folder |
 | `offset`  | integer | no       | Line number to start reading from (0-based, default: 0) |
-| `limit`   | integer | no       | Maximum number of lines to read (default: 2000)  |
+| `limit`   | integer | no       | Maximum number of lines to read (default: 2000, and a page without a limit also stops at a character budget) |
 
 ### Output
 
-**Text files:** a header line reporting the file's total size and line count, then lines formatted as `{line_num:>4}\t{content}` joined by newlines. The header adds a range note (`showing lines X-Y of N`) when the output doesn't cover the whole file. When lines remain after the range, the note also says to page with `offset`/`limit` or to search with `exec` and grep. A line-truncation note when any line exceeds 2000 characters (`... (truncated)`). There is no file size limit — a large file is paged by `offset`/`limit`, not refused, and is streamed rather than loaded whole into memory.
+**Text files:** a header line reporting the file's total size and line count, then lines formatted as `{line_num:>4}\t{content}` joined by newlines. The header adds a range note (`showing lines X-Y of N`) when the output doesn't cover the whole file. When lines remain after the range, the note also names the offset to continue from (`; continue with offset=Y, or use exec with grep to find specific content`). Without a `limit`, a page stops at 2000 lines or once its numbered lines reach 30000 characters, whichever comes first, so it fits under the turn loop's 32,000-character limit for tool results (see [Large Tool Results](../../docs/systems-usage/turn-control.md#large-tool-results)); an explicit `limit` returns every requested line. A line-truncation note when any line exceeds 2000 characters (`... (truncated)`). There is no file size limit — a large file is paged by `offset`/`limit`, not refused, and is streamed rather than loaded whole into memory.
 
 **Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images. Capped at the model API's inline image size limit (20 MB); over that, the error names the limit as a model API fact, not a residuum one.
 

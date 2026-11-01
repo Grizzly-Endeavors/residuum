@@ -1,5 +1,6 @@
 //! File reading tool for the agent.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -157,17 +158,18 @@ impl Tool for ReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Read the contents of a file. Each output line is prefixed with its \
-                          line number and a tab (e.g. `   1\\thello`); the prefix is not part of \
-                          the file, so leave it out of edit_file's old_string. \
-                          Returns at most 2000 lines per call unless a limit is given; use \
-                          offset/limit to page through the rest. There is no file size limit, \
-                          and the output header reports the file's total size and line count. \
-                          Lines longer than 2000 characters are cut. \
-                          Image files (JPEG, PNG, GIF, WebP) are returned as inline images \
-                          for visual inspection instead of raw bytes, capped by the model API's \
-                          inline image size limit."
-                .to_string(),
+            description: format!(
+                "Read the contents of a file. Each output line is prefixed with its line \
+                 number and a tab (e.g. `   1\\thello`); the prefix is not part of the file, \
+                 so leave it out of edit_file's old_string. Unless a limit is given, returns \
+                 at most {DEFAULT_MAX_LINES} lines or {} characters per call, whichever comes \
+                 first, and the header names the offset to continue from. There is no file \
+                 size limit, and the output header reports the file's total size and line \
+                 count. Lines longer than {MAX_CHARS_PER_LINE} characters are cut. Image files \
+                 (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection \
+                 instead of raw bytes, capped by the model API's inline image size limit.",
+                crate::PAGE_BUDGET
+            ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -181,7 +183,7 @@ impl Tool for ReadTool {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of lines to read (default: 2000)"
+                        "description": "Maximum number of lines to read (default: 2000, and a page without a limit also stops at a character budget)"
                     }
                 },
                 "required": ["path"]
@@ -251,6 +253,14 @@ impl Tool for ReadTool {
         let limit = explicit_limit.map_or(DEFAULT_MAX_LINES, |l| {
             usize::try_from(l).unwrap_or(usize::MAX)
         });
+        // A default page also stops at the page budget, so it fits under the
+        // history limit and is never cut again by the turn loop. An explicit
+        // limit is the caller's choice and is honoured in full.
+        let char_budget = if explicit_limit.is_some() {
+            usize::MAX
+        } else {
+            crate::PAGE_BUDGET
+        };
 
         let file = match tokio::fs::File::open(&resolved).await {
             Ok(f) => f,
@@ -263,6 +273,8 @@ impl Tool for ReadTool {
         let mut total_lines: usize = 0;
         let mut first_shown_line: Option<usize> = None;
         let mut last_shown_line: usize = 0;
+        let mut body_chars: usize = 0;
+        let mut page_full = false;
 
         loop {
             let line = match lines_stream.next_line().await {
@@ -276,12 +288,19 @@ impl Tool for ReadTool {
             if line_no <= start {
                 continue;
             }
-            // Keep streaming (without collecting) past the limit so total_lines stays accurate.
-            if selected.len() >= limit {
+            // Keep streaming (without collecting) past the page's end so total_lines stays accurate.
+            if page_full || selected.len() >= limit {
                 continue;
             }
 
             let (formatted, was_truncated) = format_numbered_line(line_no, &line);
+            // Each shown line costs its characters plus the newline joining it.
+            let line_chars = formatted.chars().count() + 1;
+            if !selected.is_empty() && body_chars + line_chars > char_budget {
+                page_full = true;
+                continue;
+            }
+            body_chars += line_chars;
             if was_truncated {
                 truncated_count += 1;
             }
@@ -301,8 +320,10 @@ impl Tool for ReadTool {
                 let mut notice =
                     format!("showing lines {first}-{last_shown_line} of {total_lines}");
                 if last_shown_line < total_lines {
-                    notice.push_str(
-                        "; use offset/limit to see more, or exec with grep to find specific content",
+                    _ = write!(
+                        notice,
+                        "; continue with offset={last_shown_line}, or use exec with grep to \
+                         find specific content"
                     );
                 }
                 warnings.push(notice);
@@ -490,7 +511,7 @@ mod tests {
         let file_path = dir.path().join("big.txt");
         let mut big_content = String::new();
         for i in 1..=3000 {
-            _ = writeln!(big_content, "line {i}");
+            _ = writeln!(big_content, "{i}");
         }
         tokio::fs::write(&file_path, &big_content).await.unwrap();
 
@@ -562,7 +583,7 @@ mod tests {
         let file_path = dir.path().join("paged.txt");
         let mut content = String::new();
         for i in 1..=3000 {
-            _ = writeln!(content, "line {i}");
+            _ = writeln!(content, "{i}");
         }
         tokio::fs::write(&file_path, &content).await.unwrap();
 
@@ -642,6 +663,85 @@ mod tests {
             "a read cut short by the cap should suggest paging: {}",
             capped.output
         );
+    }
+
+    /// A file of `count` lines of 80 characters each, as written and as text.
+    async fn wide_lines_file(dir: &Path, count: usize) -> PathBuf {
+        let path = dir.join("wide-lines.txt");
+        let content: String = (1..=count)
+            .map(|n| format!("{n:>6} {}\n", "x".repeat(73)))
+            .collect();
+        tokio::fs::write(&path, content).await.unwrap();
+        path
+    }
+
+    /// The `offset=N` a paged read says to continue from.
+    fn continue_offset(output: &str) -> usize {
+        let (_, rest) = output.split_once("continue with offset=").unwrap();
+        rest.split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_default_page_fits_under_the_history_limit_and_names_the_next_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wide_lines_file(dir.path(), 1000).await;
+        let tool = make_tool();
+
+        let first = tool
+            .execute(serde_json::json!({ "path": path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(
+            first.output.chars().count() <= residuum_agent::HISTORY_RESULT_MAX_CHARS,
+            "a default page is never cut again by the turn loop: {} characters",
+            first.output.chars().count()
+        );
+        let next = continue_offset(&first.output);
+        assert!(
+            first.output.contains(&format!(
+                "showing lines 1-{next} of 1000; continue with offset={next}"
+            )),
+            "{}",
+            first.output.lines().take(3).collect::<Vec<_>>().join("\n")
+        );
+        let last_line = first.output.lines().last().unwrap();
+        assert!(
+            last_line.starts_with(&format!("{next:>4}\t")),
+            "the page ends at the line the header names: {last_line}"
+        );
+
+        let second = tool
+            .execute(serde_json::json!({ "path": path.to_str().unwrap(), "offset": next }))
+            .await
+            .unwrap();
+        assert!(
+            second
+                .output
+                .contains(&format!("showing lines {}-", next + 1)),
+            "the next page starts right after the first: {}",
+            second.output.lines().take(3).collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_limit_is_not_cut_to_the_page_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wide_lines_file(dir.path(), 1000).await;
+        let tool = make_tool();
+
+        let result = tool
+            .execute(serde_json::json!({ "path": path.to_str().unwrap(), "limit": 1000 }))
+            .await
+            .unwrap();
+
+        let content_lines = result.output.lines().filter(|l| l.contains('\t')).count();
+        assert_eq!(content_lines, 1000, "every requested line is returned");
+        assert!(!result.output.contains("continue with offset"));
     }
 
     #[tokio::test]
