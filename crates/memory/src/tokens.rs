@@ -13,10 +13,10 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
 }
 
-/// Estimate the total tokens across a slice of messages.
+/// Estimate the total tokens across a slice of stored history messages.
 ///
-/// Accounts for role labels, tool call metadata, the sender prefix, reasoning
-/// text and images in addition to content.
+/// Accounts for role labels, tool call metadata, the sender prefix, the
+/// status line, reasoning text and images in addition to content.
 #[must_use]
 pub fn estimate_message_tokens(messages: &[Message]) -> usize {
     messages.iter().map(estimate_single_message).sum()
@@ -32,13 +32,22 @@ const TOKENS_PER_IMAGE: usize = 1_600;
 /// Estimate tokens for a single message including metadata overhead.
 ///
 /// Counts the message as the request carries it: the sender prefix as rendered,
-/// the reasoning text replayed with it, and its images.
+/// its stored status line, the reasoning text replayed with it, and its images.
+///
+/// `msg` is a stored history message. Assembly replays a stored status line
+/// as its own system message ahead of the message, so a stored message is
+/// where the line is counted, once.
 pub(crate) fn estimate_single_message(msg: &Message) -> usize {
     // Rendered content, including the `[From: …]` line for a known sender
     let mut chars = msg.attributed_content().len();
 
     // Role label overhead (~10 chars)
     chars += 10;
+
+    // The status line, sent as its own system message with its own role label
+    if let Some(line) = &msg.status_line {
+        chars += line.len() + 10;
+    }
 
     // Reasoning text; signatures and encrypted blocks are opaque and left out
     chars += msg
@@ -205,6 +214,18 @@ mod tests {
             estimate_single_message(&plain),
             "signatures and encrypted blocks are not text the model reads"
         );
+    }
+
+    #[test]
+    fn a_stored_status_line_counts_once_with_its_role_label() {
+        let line = "[Received: Sunday Nov 1st 2026 | 10:49]";
+        let mut stamped = Message::user("hello world");
+        stamped.status_line = Some(line.to_string());
+
+        // "hello world" 11 + 10 role, plus the 39-char line + 10 role = 70 => 18 tokens
+        assert_eq!(line.len(), 39);
+        assert_eq!(estimate_single_message(&stamped), 18);
+        assert_eq!(estimate_message_tokens(std::slice::from_ref(&stamped)), 18);
     }
 
     #[test]

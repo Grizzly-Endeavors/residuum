@@ -15,7 +15,7 @@ Fires after agent turns when accumulated unobserved message tokens exceed a thre
 - **Soft threshold** (`threshold_tokens`): starts a cooldown timer; fires when cooldown expires.
 - **Force threshold** (`force_threshold_tokens`): fires immediately, bypassing cooldown.
 
-The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
+The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its status line, its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
 
 The main agent's own cycle runs off the event loop in a background worker, so it never delays the next message, a stop, or a shutdown — at most one cycle runs at a time, and a trigger arriving mid-cycle coalesces into one follow-up rather than stacking. The `/observe` and `/reflect` chat commands run through the same worker and answer with a notice when they finish. Memory can be "one step stale" as a result: a turn that starts before a still-running cycle finishes sees the pre-cycle context. The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
 

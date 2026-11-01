@@ -36,7 +36,7 @@ If the process exits mid-run, the run's transcript is not lost: it is appended t
 - Soft threshold (`threshold_tokens`): starts a cooldown timer, fires when cooldown expires
 - Force threshold (`force_threshold_tokens`): fires immediately, bypassing cooldown
 
-The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
+The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its status line (see [Status Lines](#status-lines)), its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
 
 **What it produces per episode (under `memory/episodes/YYYY-MM/DD/`):**
 - `ep-NNN.jsonl` — line 1 is meta JSON, subsequent lines are serialized messages
