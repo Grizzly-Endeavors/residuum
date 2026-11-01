@@ -47,10 +47,10 @@ pub use role_options::{completion_options_for_role, main_conversation_options};
 pub use tool::{ToolError, ToolResult};
 pub use types::{
     AgentSender, AttemptOutcome, AttemptUsage, CacheHints, CacheRetention, CompletionOptions,
-    ImageData, InferenceProvider,
-    InferenceResponse, Message, MessageAttachment, MessageSender, ProviderApi, ResponseFormat,
-    Role, StopReason, StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall,
-    ToolDefinition, Usage, WebSearchNativeConfig, joined_thinking_text, readable_thinking,
+    ImageData, InferenceProvider, InferenceResponse, Message, MessageAttachment, MessageSender,
+    ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
+    ThinkingOrigin, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig, joined_thinking_text,
+    readable_thinking,
 };
 pub(crate) use types::{ReplayScope, blocks_produced_at};
 pub use usage_record::{UsageComponent, UsageRecord, UsageRecorder};
