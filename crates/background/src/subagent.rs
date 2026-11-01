@@ -640,7 +640,7 @@ mod tests {
         );
         let skills_index = skills_index.unwrap();
         assert!(
-            skills_index.contains("<layer>team</layer>"),
+            skills_index.contains("- team-role (team, "),
             "index should label the team skill: {skills_index}"
         );
     }
