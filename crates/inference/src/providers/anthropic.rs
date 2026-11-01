@@ -3931,18 +3931,18 @@ mod tests {
 
         let mut marked = history.clone();
         *marked.first_mut().unwrap() = Message::system_with_cache_boundary("You are", " helpful.");
-        let (_, api) = convert(&marked);
+        let (_, marked_api) = convert(&marked);
         assert_eq!(
-            block_types(&api).get(1).unwrap(),
+            block_types(&marked_api).get(1).unwrap(),
             "thinking,text",
             "moving the cache breakpoint leaves the bytes, and the binding, unchanged"
         );
 
         let mut restamped = history;
         *restamped.get_mut(1).unwrap() = Message::system("[Received: Mon 9:01]");
-        let (_, api) = convert(&restamped);
+        let (_, restamped_api) = convert(&restamped);
         assert_eq!(
-            block_types(&api).get(1).unwrap(),
+            block_types(&restamped_api).get(1).unwrap(),
             "text",
             "a status line rendered differently is a change ahead of the reasoning"
         );
