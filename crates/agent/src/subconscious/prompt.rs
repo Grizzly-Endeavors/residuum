@@ -36,9 +36,8 @@ pub(super) const LEARN_FORMAT_SPEC: &str = r#"Separately, use the "learnings" ar
 - "summary": one or two sentences capturing the signal, specific enough to act on without re-reading the transcript
 - "signal_type": "preference" for a user preference, correction, expressed frustration, or a working-style cue; "recovery" when the agent hit an error or obstacle and had to work around it or find a non-obvious solution
 
-Returning an empty "learnings" array is the normal, correct outcome — most turns
-teach nothing durable. Do not duplicate a corrective finding as a learning, and
-do not manufacture a signal just to fill the array."#;
+Do not duplicate a corrective finding as a learning, and do not manufacture a
+signal just to fill the array."#;
 
 /// JSON schema for the subconscious response, used with structured output mode.
 ///
@@ -172,30 +171,28 @@ fn phase_question(phase: EvalPhase) -> &'static str {
         EvalPhase::MidTurn => {
             "The agent is still working on this turn. Is it currently violating one of its \
              instructions or heading in a direction an instruction forbids? Ignore work that is \
-             simply unfinished. If nothing is clearly wrong, return an empty list — that is the \
-             normal, expected result. Never invent a problem to seem useful."
+             simply unfinished. If nothing is clearly wrong, return an empty list."
         }
         EvalPhase::EndOfTurn => {
             "The agent has finished this turn. Acting as a triage step, decide what still needs \
              the agent's attention: did it omit something it should have done — for example, \
              failing to record a stated user preference in the wiki — or violate one of its \
              instructions? Do not repeat steering that was already applied this turn, and do not \
-             escalate a queued note unless it remains genuinely unaddressed. Returning no \
-             findings is the normal, correct outcome — most turns need nothing."
+             escalate a queued note unless it remains genuinely unaddressed."
         }
     }
 }
 
 /// Render the steering already applied this turn as triage context.
 ///
-/// Returned with a trailing blank line so it slots directly before the
-/// transcript; an empty scratch produces an empty string (no section).
+/// Returned with a leading blank line so it follows the phase question
+/// directly; an empty scratch produces an empty string (no section).
 fn format_prior_steering(prior: &TurnScratch) -> String {
     if prior.is_empty() {
         return String::new();
     }
 
-    let mut out = String::from("# Steering Already Applied This Turn\n\n");
+    let mut out = String::from("\n\n# Steering Already Applied This Turn\n\n");
     if !prior.applied_corrections.is_empty() {
         out.push_str(
             "The mid-turn watch already sent these course corrections to the agent. Do not \
@@ -223,7 +220,6 @@ fn format_prior_steering(prior: &TurnScratch) -> String {
             out.push('\n');
         }
     }
-    out.push('\n');
     out
 }
 
@@ -233,6 +229,11 @@ fn format_prior_steering(prior: &TurnScratch) -> String {
 /// format requirement cannot be lost by editing the disk file. `prior` carries
 /// the steering the mid-turn watch already applied, so the end-of-turn pass can
 /// triage rather than re-classify from scratch.
+///
+/// The user message runs transcript, phase question, steering. Within a turn the
+/// transcript and question repeat between calls and the steering grows, so
+/// keeping the steering last leaves the longest shared prefix for the provider's
+/// prompt cache.
 pub(super) fn build_eval_prompt(
     policy: &str,
     identity: &str,
@@ -258,7 +259,7 @@ pub(super) fn build_eval_prompt(
     vec![
         Message::system(system),
         Message::user(format!(
-            "{}\n\n{prior_section}# Turn Transcript\n\n{transcript}",
+            "# Turn Transcript\n\n{transcript}\n\n{}{prior_section}",
             phase_question(phase)
         )),
     ]
@@ -465,6 +466,64 @@ mod tests {
         assert!(
             !user.contains("Steering Already Applied"),
             "empty scratch must not add a steering section"
+        );
+    }
+
+    #[test]
+    fn mid_turn_prompts_share_prefix_through_transcript() {
+        let identity = "## SOUL.md\n\nBe kind.";
+        let transcript = format_turn_transcript(
+            &[
+                Message::user("write the report"),
+                Message::assistant("drafting it now".to_string(), None),
+            ],
+            10_000,
+        );
+        let prior = TurnScratch {
+            applied_corrections: vec!["Re-read AGENTS.md before editing.".to_string()],
+            queued_notes: Vec::new(),
+        };
+
+        let first = build_eval_prompt(
+            "policy",
+            identity,
+            &transcript,
+            EvalPhase::MidTurn,
+            None,
+            false,
+        );
+        let second = build_eval_prompt(
+            "policy",
+            identity,
+            &transcript,
+            EvalPhase::MidTurn,
+            Some(&prior),
+            false,
+        );
+
+        assert_eq!(
+            first.first().map(|m| &m.content),
+            second.first().map(|m| &m.content),
+            "system message must be identical across calls within a turn"
+        );
+
+        let shared_prefix = format!("# Turn Transcript\n\n{transcript}");
+        let first_user = first.get(1).map_or("", |m| m.content.as_str());
+        let second_user = second.get(1).map_or("", |m| m.content.as_str());
+        assert!(
+            first_user.starts_with(&shared_prefix),
+            "user message must begin with the transcript"
+        );
+        assert!(
+            second_user.starts_with(&shared_prefix),
+            "user message must begin with the same transcript"
+        );
+
+        let question_at = second_user.find("still working");
+        let steering_at = second_user.find("Steering Already Applied");
+        assert!(
+            question_at.is_some() && steering_at.is_some() && question_at < steering_at,
+            "phase question must precede the steering, which grows between calls"
         );
     }
 
