@@ -1045,6 +1045,7 @@ async fn apply_post_turn_result(
     agent: &mut Agent,
     layout: &WorkspaceLayout,
     skill_state: &SharedSkillState,
+    cfg: &Config,
     result: crate::post_turn::PostTurnResult,
 ) {
     use crate::post_turn::PostTurnResult;
@@ -1072,7 +1073,7 @@ async fn apply_post_turn_result(
             }
         }
     }
-    let ctx_strings = load_prompt_context_strings(skill_state).await;
+    let ctx_strings = load_prompt_context_strings(skill_state, cfg).await;
     agent
         .save_latest_breakdown(&ctx_strings.as_prompt_context())
         .await;
@@ -1398,7 +1399,14 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
             // the turn that triggered it.
             result = rt.post_turn_result_rx.recv() => {
                 if let Some(result) = result {
-                    apply_post_turn_result(&mut rt.agent, &rt.layout, &rt.skill_state, result).await;
+                    apply_post_turn_result(
+                        &mut rt.agent,
+                        &rt.layout,
+                        &rt.skill_state,
+                        &rt.cfg,
+                        result,
+                    )
+                    .await;
                 }
             }
 
@@ -1592,6 +1600,7 @@ mod tests {
             &mut agent,
             &layout,
             &skill_state,
+            &crate::testing::test_config(),
             PostTurnResult::ObservationReady,
         )
         .await;
