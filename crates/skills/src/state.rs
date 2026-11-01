@@ -29,7 +29,6 @@ pub struct RescanReport {
 
 impl RescanReport {
     /// Every user-facing message in the report, dropped skills first.
-    #[must_use]
     pub fn messages(&self) -> impl Iterator<Item = &str> {
         self.dropped.iter().chain(&self.notices).map(String::as_str)
     }
@@ -484,7 +483,10 @@ mod tests {
             "the skipped skill should produce one notice"
         );
         assert!(
-            report.notices[0].contains("bad-skill"),
+            report
+                .notices
+                .first()
+                .is_some_and(|n| n.contains("bad-skill")),
             "the notice should name the skipped skill: {:?}",
             report.notices
         );
@@ -520,7 +522,10 @@ mod tests {
         );
         assert_eq!(report.dropped.len(), 1, "one dropped skill: {report:?}");
         assert!(
-            report.dropped[0].contains("gone-skill"),
+            report
+                .dropped
+                .first()
+                .is_some_and(|d| d.contains("gone-skill")),
             "the dropped line should name the skill: {:?}",
             report.dropped
         );
