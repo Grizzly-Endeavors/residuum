@@ -11,11 +11,12 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Default page size returned per call, to avoid context window blowout.
+/// Page size returned per call: the shared page budget, so a page fits under
+/// the history limit and is never cut again by the turn loop.
 ///
 /// Not a hard limit on what can be fetched: `offset` pages through the rest
 /// of a longer page across further calls.
-const DEFAULT_PAGE_BYTES: usize = 50_000;
+const DEFAULT_PAGE_BYTES: usize = crate::PAGE_BUDGET;
 
 /// Response body bytes read before the download stops.
 ///
@@ -125,7 +126,8 @@ impl Tool for WebFetchTool {
 
         let (body, truncated) = read_capped_body(&mut response, &content_type).await?;
 
-        let is_html = content_type.contains("html");
+        let is_html =
+            content_type.contains("html") || (content_type.is_empty() && looks_like_html(&body));
         let content = if is_html {
             match extract_content(&body, url) {
                 Ok(text) => text,
@@ -205,6 +207,18 @@ fn is_textual_content_type(content_type: &str) -> bool {
         || ct.contains("yaml")
         || ct.contains("javascript")
         || ct.contains("csv")
+}
+
+/// Whether a body served without a Content-Type is an HTML document: it
+/// opens, after any byte-order mark and leading whitespace, with a
+/// `<!doctype html` or `<html` tag (ASCII case ignored).
+fn looks_like_html(body: &str) -> bool {
+    let start = body.trim_start_matches('\u{feff}').trim_start();
+    ["<!doctype html", "<html"].iter().any(|opening| {
+        start
+            .get(..opening.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(opening))
+    })
 }
 
 /// Extract readable content from HTML using readability algorithm.
@@ -466,6 +480,36 @@ mod tests {
     }
 
     #[test]
+    fn a_full_page_fits_under_the_history_limit() {
+        let notes = [
+            "content-type: application/json".to_string(),
+            format!(
+                "page is larger than the {MAX_DOWNLOAD_BYTES}-byte download limit; only the \
+                 first {MAX_DOWNLOAD_BYTES} bytes were fetched"
+            ),
+        ];
+        for content in ["a".repeat(MAX_DOWNLOAD_BYTES), "é".repeat(100_000)] {
+            let page = page_content(&content, 1, &notes);
+            assert!(page.contains("call again with offset="), "more remains");
+            assert!(
+                page.chars().count() <= residuum_agent::HISTORY_RESULT_MAX_CHARS,
+                "a page is never cut again by the turn loop: {} characters",
+                page.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn looks_like_html_spots_a_document_opening_only() {
+        assert!(looks_like_html("<!DOCTYPE html><html></html>"));
+        assert!(looks_like_html("\u{feff}\n  <html lang=\"en\">"));
+        assert!(looks_like_html("<!doctype HTML>"));
+        assert!(!looks_like_html("{\"html\": \"<p>x</p>\"}"));
+        assert!(!looks_like_html("plain text mentioning <html> later"));
+        assert!(!looks_like_html(""));
+    }
+
+    #[test]
     fn page_content_includes_notes_on_every_page() {
         let short = "{}";
         let notes = ["content-type: application/json".to_string()];
@@ -639,6 +683,39 @@ mod tests {
         assert!(
             !result.output.contains("var hidden") && !result.output.contains("&amp;"),
             "script contents should not be returned and no entity should be left encoded: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_html_without_a_content_type_is_cleaned() {
+        let server = MockServer::start().await;
+        // set_body_bytes sends no Content-Type header.
+        Mock::given(method("GET"))
+            .and(path("/untyped"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(
+                "<!DOCTYPE html><html><head><title>Test</title>\
+                 <script>var hidden = 1;</script></head>\
+                 <body><article><p>Untyped page text.</p></article></body></html>",
+            ))
+            .mount(&server)
+            .await;
+
+        let tool = WebFetchTool::new();
+        let result = tool
+            .execute(serde_json::json!({"url": format!("{}/untyped", server.uri())}))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "{}", result.output);
+        assert!(
+            result.output.contains("Untyped page text."),
+            "the page text is kept: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("var hidden") && !result.output.contains("<p>"),
+            "an HTML body with no Content-Type is cleaned like HTML: {}",
             result.output
         );
     }
