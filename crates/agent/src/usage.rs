@@ -471,7 +471,10 @@ mod tests {
         assert_eq!(answered.conversation, None);
         assert_eq!(answered.model, "main-model");
         assert_eq!(answered.usage, Some(usage(30, 4)));
-        let failed = records.get(1).unwrap();
-        assert_eq!(failed.outcome, residuum_inference::AttemptOutcome::Failed);
+        let failed_record = records.get(1).expect("the failed attempt is second");
+        assert_eq!(
+            failed_record.outcome,
+            residuum_inference::AttemptOutcome::Failed
+        );
     }
 }

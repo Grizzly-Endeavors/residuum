@@ -664,7 +664,7 @@ async fn push_and_record_many(
 enum ModelCall {
     /// The call returned a response.
     Completed {
-        response: InferenceResponse,
+        response: Box<InferenceResponse>,
         /// Whether text or reasoning streamed to the main conversation while
         /// the call ran and has not been voided since: when the response
         /// turns out to be one the turn discards, it must void them.
@@ -753,11 +753,11 @@ async fn call_model(
     match outcome {
         None => Ok(ModelCall::Stopped),
         Some(result) => {
-            if let Some(sink) = resources.usage_sink {
-                sink.record_call(resources.provider, &result).await;
+            if let Some(usage_sink) = resources.usage_sink {
+                usage_sink.record_call(resources.provider, &result).await;
             }
             Ok(ModelCall::Completed {
-                response: result.context("model completion failed")?,
+                response: Box::new(result.context("model completion failed")?),
                 streamed,
             })
         }
@@ -936,7 +936,7 @@ pub async fn execute_turn(
 
         let (mut response, streamed) =
             match call_model(resources, events, &messages, &tool_definitions, call).await? {
-                ModelCall::Completed { response, streamed } => (response, streamed),
+                ModelCall::Completed { response, streamed } => (*response, streamed),
                 ModelCall::Stopped => {
                     tracing::info!(
                         iterations = iteration,
