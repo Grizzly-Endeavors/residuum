@@ -291,7 +291,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let h = RegistryHarness::build(dir.path()).await;
 
-        let mut main_names = h.main_registry().tool_names();
+        let main_tools = h.main_registry();
+        let mut main_names = main_tools.tool_names();
         main_names.sort();
 
         let session_tools = h.session_registry_for(
