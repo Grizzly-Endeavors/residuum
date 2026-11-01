@@ -70,6 +70,15 @@ impl TrackedServer {
     }
 }
 
+/// A server's tools in name order, the order their definitions reach the
+/// model in. A server may list its tools in any order, and that order can
+/// change between its processes, which would change the tool block of every
+/// request.
+fn in_name_order(mut tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+    tools
+}
+
 /// Result of a reconciliation diff (before connections are made).
 #[derive(Debug, Default)]
 pub(crate) struct McpReconcileResult {
@@ -422,7 +431,7 @@ impl McpRegistry {
         if let Some(server) = self.servers.get_mut(&entry.name) {
             server.status = McpStatus::Running;
             server.client = Some(client);
-            server.tools = tools;
+            server.tools = in_name_order(tools);
             tracing::info!(tool_count = server.tools.len(), "mcp server connected");
         } else {
             tracing::warn!(
@@ -593,7 +602,7 @@ impl McpRegistry {
                 args: vec![],
                 status: McpStatus::Running,
                 client: None,
-                tools,
+                tools: in_name_order(tools),
             },
         );
     }
@@ -952,6 +961,23 @@ mod tests {
             .map(|d| d.name)
             .collect();
         assert_eq!(names, ["a_tool", "z_tool"]);
+    }
+
+    #[test]
+    fn a_servers_tools_are_offered_in_name_order_whatever_order_it_lists_them() {
+        let mut registry = McpRegistry::new();
+        push_running_server(&mut registry, "srv", &["write_file", "exec", "read_file"]);
+
+        let names: Vec<String> = registry
+            .tool_definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["exec", "read_file", "write_file"],
+            "a server's listing order must not reach the model request"
+        );
     }
 
     #[test]
