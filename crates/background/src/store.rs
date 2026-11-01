@@ -1040,11 +1040,11 @@ mod tests {
         let lines = store
             .read_transcript_lines(&info.run_id, info.started_at)
             .await;
-        assert_eq!(lines.len(), 2, "both lines should load");
-        let old = lines.first().unwrap();
+        let [old, new] = lines.as_slice() else {
+            panic!("both lines should load, got {}", lines.len());
+        };
         assert_eq!(old.message.content, "old line");
         assert_eq!(old.recorded_at, None, "an old line has no recorded time");
-        let new = lines.get(1).unwrap();
         assert_eq!(new.message.content, "new line");
         assert!(
             new.recorded_at

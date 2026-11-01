@@ -138,7 +138,7 @@ fn chunk_within(messages: &[RecentMessage], budget: usize) -> Vec<&[RecentMessag
     let mut chunks = Vec::new();
     let mut rest = messages;
     while !rest.is_empty() {
-        let mut tokens = 0usize;
+        let mut tokens = 0_usize;
         let mut len = rest.len();
         for (i, rm) in rest.iter().enumerate() {
             tokens =
@@ -690,7 +690,7 @@ mod tests {
             id.is_some(),
             "the chunked extraction should merge an episode"
         );
-        let calls = calls.lock().unwrap();
+        let calls = calls.lock().unwrap().clone();
         assert_eq!(
             calls.len(),
             3,
@@ -708,7 +708,6 @@ mod tests {
                 );
             }
         }
-        drop(calls);
         let log = residuum_memory::log_store::load_observation_log(&layout.observations_json())
             .await
             .unwrap();
