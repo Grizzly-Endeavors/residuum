@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use residuum_bus::Publisher;
 use residuum_bus::origin::MessageOrigin;
-use residuum_inference::{CompletionOptions, InferenceProvider, Message};
+use residuum_inference::{CacheRetention, CompletionOptions, InferenceProvider, Message};
 use residuum_mcp::SharedMcpRegistry;
 use residuum_workspace::identity::IdentityFiles;
 
@@ -475,7 +475,13 @@ impl Agent {
             stop_token,
         };
         let result = self
-            .run_turn_from(kickoff_index, correlation_id, &status_line, wiring)
+            .run_turn_from(
+                kickoff_index,
+                correlation_id,
+                &status_line,
+                turn_cache_retention(origin),
+                wiring,
+            )
             .await;
         if result.is_err()
             && let Some(origin) = origin
@@ -522,6 +528,7 @@ impl Agent {
                 failed.kickoff_index,
                 &failed.correlation_id,
                 &status_line,
+                turn_cache_retention(Some(&failed.origin)),
                 wiring,
             )
             .await;
@@ -532,12 +539,14 @@ impl Agent {
     }
 
     /// Run a turn whose opening message sits at `kickoff_index` in history,
-    /// under `correlation_id`.
+    /// under `correlation_id`, asking providers to keep its cache for
+    /// `retention`.
     async fn run_turn_from(
         &mut self,
         kickoff_index: usize,
         correlation_id: &str,
         status_line: &StatusLine,
+        retention: CacheRetention,
         wiring: TurnWiring<'_>,
     ) -> anyhow::Result<Vec<String>> {
         self.identity = self.load_identity_snapshot().await;
@@ -555,12 +564,14 @@ impl Agent {
             std::sync::Arc::clone(&self.usage_totals),
             self.usage_totals_path.clone(),
         );
+        let mut options = self.options.clone();
+        options.cache.retention = retention;
         let resources = TurnResources {
             provider: &*self.provider,
             tools: &self.tools,
             mcp_registry: &self.mcp_registry,
             identity: &self.identity,
-            options: &self.options,
+            options: &options,
             max_tool_iterations: self.max_tool_iterations,
             repeat_call_guard: self.repeat_call_guard,
             stop_token,
@@ -637,6 +648,18 @@ impl Agent {
     #[must_use]
     pub fn messages_since(&self, idx: usize) -> &[Message] {
         self.recent_messages.messages_since(idx)
+    }
+}
+
+/// How long providers should keep a main turn's cache. A person often
+/// replies more than five minutes after the agent's last answer, so a turn a
+/// person started keeps it for the long period; a turn a session's result,
+/// another agent or the system started keeps the provider's default.
+fn turn_cache_retention(origin: Option<&MessageOrigin>) -> CacheRetention {
+    if origin.is_some_and(MessageOrigin::is_from_person) {
+        CacheRetention::Long
+    } else {
+        CacheRetention::Short
     }
 }
 
@@ -750,6 +773,111 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
+    }
+
+    /// Answers every call, recording the cache hints it was sent.
+    struct CacheHintsRecorder {
+        seen: Arc<std::sync::Mutex<Vec<residuum_inference::CacheHints>>>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for CacheHintsRecorder {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.seen.lock().unwrap().push(options.cache.clone());
+            Ok(InferenceResponse::new("ok".to_string(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "cache-hints-recorder"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_person_s_turn_keeps_its_cache_longer_than_a_background_turn() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut options = CompletionOptions::default();
+        options.cache.conversation_key = Some("main-conversation".to_string());
+        let mut agent = Agent::new(
+            Box::new(CacheHintsRecorder {
+                seen: Arc::clone(&seen),
+            }),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options,
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::HopCounter::new(0),
+        );
+        let background = MessageOrigin {
+            endpoint: residuum_bus::origin::BACKGROUND_ENDPOINT.to_string(),
+            ..web_origin()
+        };
+
+        for origin in [web_origin(), background] {
+            let (publisher, ep) = test_bus();
+            let mut irx = residuum_bus::testing::dead_interrupt_rx();
+            agent
+                .process_message(
+                    "hi",
+                    &publisher,
+                    Some(&ep),
+                    "",
+                    Some(&origin),
+                    &PromptContext::default(),
+                    &mut irx,
+                    &[],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let seen = seen.lock().unwrap().clone();
+        let key = Some("main-conversation".to_string());
+        assert_eq!(
+            seen,
+            vec![
+                residuum_inference::CacheHints {
+                    conversation_key: key.clone(),
+                    retention: CacheRetention::Long,
+                },
+                residuum_inference::CacheHints {
+                    conversation_key: key,
+                    retention: CacheRetention::Short,
+                },
+            ],
+            "the person's turn first, then the background one, both keyed to the conversation"
+        );
+    }
+
+    #[test]
+    fn only_a_person_s_message_asks_for_long_retention() {
+        let from_agent = MessageOrigin {
+            agent_sender: Some(Box::new(residuum_inference::AgentSender {
+                address: "agent:other".to_string(),
+                category: "teammate".to_string(),
+                run_id: None,
+            })),
+            ..web_origin()
+        };
+        assert_eq!(
+            turn_cache_retention(Some(&web_origin())),
+            CacheRetention::Long
+        );
+        assert_eq!(
+            turn_cache_retention(Some(&from_agent)),
+            CacheRetention::Short
+        );
+        assert_eq!(turn_cache_retention(None), CacheRetention::Short);
     }
 
     #[tokio::test]

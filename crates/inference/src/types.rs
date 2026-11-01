@@ -65,8 +65,9 @@ pub struct Message {
     pub agent_sender: Option<AgentSender>,
     /// The model's reasoning behind an assistant message, as its provider
     /// returned it. Kept so the conversation's readers can show it and so a
-    /// provider that requires its reasoning back within a tool-use exchange
-    /// gets it unchanged. Providers decide which of it they replay.
+    /// provider that takes its reasoning back (within a tool-use exchange,
+    /// or with every earlier turn) gets it unchanged. Providers decide which
+    /// of it they replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<ThinkingBlock>,
     /// The id of the message this entry records, for a message one agent,
@@ -84,6 +85,13 @@ pub struct Message {
     /// conversation to a person leaves it out, since nobody said it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub context: bool,
+    /// For a system message, the byte offset in `content` where the part
+    /// that rarely changes ends. A provider that caches at explicit
+    /// breakpoints marks one there; every provider still sends `content`
+    /// whole. Set when the request is built,
+    /// never stored.
+    #[serde(skip)]
+    pub cache_boundary: Option<usize>,
 }
 
 /// One piece of a model's reasoning, as its provider returned it.
@@ -115,6 +123,13 @@ pub struct ThinkingBlock {
     /// origin has none to match and is never replayed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ThinkingOrigin>,
+    /// A fingerprint of everything the request that produced the block sent
+    /// ahead of it, for a provider that accepts a block back only while that
+    /// part of the conversation is unchanged (Anthropic's current models).
+    /// The provider compares it with the same fingerprint of a later request
+    /// to tell whether the block still belongs to that conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<String>,
 }
 
 impl ThinkingBlock {
@@ -221,7 +236,7 @@ pub(crate) fn blocks_produced_at<'a>(
 /// in the middle of: the message after the last assistant message that made
 /// no tool calls, or the first message when there is none. A provider that
 /// needs its reasoning replayed with the tool calls it led to replays it for
-/// the assistant messages from here on, and no earlier.
+/// the assistant messages from here on.
 pub(crate) fn current_exchange_start(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -318,6 +333,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -336,6 +352,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -354,6 +371,20 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
+        }
+    }
+
+    /// Create a system message whose content is `stable` followed by `rest`,
+    /// with its cache boundary between the two.
+    #[must_use]
+    pub fn system_with_cache_boundary(stable: impl Into<String>, rest: &str) -> Self {
+        let mut content = stable.into();
+        let boundary = content.len();
+        content.push_str(rest);
+        Self {
+            cache_boundary: Some(boundary),
+            ..Self::system(content)
         }
     }
 
@@ -372,6 +403,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -390,6 +422,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -412,6 +445,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -665,6 +699,31 @@ pub struct WebSearchNativeConfig {
     pub exclude_domains: Option<Vec<String>>,
 }
 
+/// How a call should be cached by providers that let the caller choose.
+///
+/// The default suits a one-off call: no conversation key, short retention.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheHints {
+    /// Stable identifier of the conversation this call belongs to, for
+    /// providers that route requests by key. None for one-off calls.
+    pub conversation_key: Option<String>,
+    /// How long the provider should keep this call's cached prefix.
+    pub retention: CacheRetention,
+}
+
+/// How long a provider should keep a call's cached prefix.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CacheRetention {
+    /// The provider's default (five minutes on Anthropic): suits calls that
+    /// follow each other closely, such as a session's tool loop.
+    #[default]
+    Short,
+    /// An hour on Anthropic: suits a conversation with a person, who often
+    /// pauses longer than five minutes between messages. Cache writes cost
+    /// more (2x base input on Anthropic, against 1.25x).
+    Long,
+}
+
 /// Options for model completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct CompletionOptions {
@@ -678,6 +737,8 @@ pub struct CompletionOptions {
     pub thinking: Option<ThinkingConfig>,
     /// Provider-native web search configuration. None disables web search.
     pub web_search: Option<WebSearchNativeConfig>,
+    /// How the call should be cached.
+    pub cache: CacheHints,
 }
 
 /// A piece of a model response that arrived while the call is still running.
@@ -924,6 +985,33 @@ mod tests {
         let msg = Message::system("you are a test agent");
         assert_eq!(msg.role, Role::System, "role should be System");
         assert_eq!(msg.content, "you are a test agent", "content should match");
+        assert_eq!(
+            msg.cache_boundary, None,
+            "a plain system message has no boundary"
+        );
+    }
+
+    #[test]
+    fn a_cache_boundary_sits_between_the_parts_it_joins() {
+        let msg = Message::system_with_cache_boundary("stable", "\n\nrest");
+        assert_eq!(msg.role, Role::System);
+        assert_eq!(
+            msg.content, "stable\n\nrest",
+            "the content is both parts, unchanged"
+        );
+        assert_eq!(msg.cache_boundary, Some("stable".len()));
+
+        let all_stable = Message::system_with_cache_boundary("stable", "");
+        assert_eq!(all_stable.cache_boundary, Some(all_stable.content.len()));
+    }
+
+    #[test]
+    fn a_cache_boundary_is_never_stored() {
+        let msg = Message::system_with_cache_boundary("stable", "rest");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("cache_boundary"), "{json}");
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cache_boundary, None);
     }
 
     #[test]
@@ -1077,6 +1165,7 @@ mod tests {
                 redacted: None,
                 part: None,
                 origin: None,
+                binding: None,
             },
             ThinkingBlock {
                 text: String::new(),
@@ -1084,6 +1173,7 @@ mod tests {
                 redacted: Some("encrypted".to_string()),
                 part: None,
                 origin: None,
+                binding: None,
             },
         ]);
 

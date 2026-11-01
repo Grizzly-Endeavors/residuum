@@ -17,9 +17,10 @@ use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::types::current_exchange_start;
 use crate::with_retry;
 use crate::{
-    CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ProviderApi, ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
-    ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
+    CacheRetention, CompletionOptions, ImageData, InferenceError, InferenceProvider,
+    InferenceResponse, Message, ProviderApi, ReplayScope, ResponseFormat, Role, StopReason,
+    StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    blocks_produced_at,
 };
 use residuum_config::RetryConfig;
 use residuum_config::{ThinkingConfig, ThinkingLevel};
@@ -147,37 +148,48 @@ impl AnthropicClient {
 
     /// Convert our generic messages into Anthropic-specific format.
     ///
-    /// System messages are extracted and returned separately as a concatenated
-    /// string (Anthropic uses a top-level `system` field rather than putting
-    /// system messages in the messages array).
+    /// The first system message becomes the top-level `system` text
+    /// (Anthropic has no system role in `messages`); any later one goes in as
+    /// a user message prefixed `System: `.
     ///
-    /// With a `replay_thinking` origin (this client's own), the reasoning
-    /// behind an assistant message that made tool calls goes back ahead of
-    /// its other blocks while the tool-use exchange it belongs to is still
-    /// going on, because the API rejects the next request otherwise. Only
-    /// blocks that origin produced go back (see [`replayable_thinking`]).
-    /// Reasoning behind earlier replies is not sent, and none is when the
-    /// request has thinking off (`None`).
+    /// With a `replay_thinking` origin (this client's own), each assistant
+    /// message's reasoning goes back unchanged ahead of its other blocks, so
+    /// the request repeats the conversation as it was sent before and the
+    /// prompt cache holds through earlier turns. [`replayable_thinking`]
+    /// decides which blocks go back. None does when the request has thinking
+    /// off (`None`).
+    ///
+    /// `tools` are the request's tool entries, which a block is bound to
+    /// along with the system prompt and the earlier messages.
     fn convert_messages(
         messages: &[Message],
+        tools: Option<&[AnthropicToolEntry]>,
         replay_thinking: Option<&ThinkingOrigin>,
-    ) -> (Option<String>, Vec<AnthropicMessage>) {
-        let mut system_parts: Vec<&str> = Vec::new();
-        let mut api_messages: Vec<AnthropicMessage> = Vec::new();
+    ) -> ConvertedMessages {
+        let system = messages
+            .iter()
+            .find(|msg| msg.role == Role::System)
+            .map(|msg| msg.content.clone());
+        let mut prefix = PrefixFingerprint::new();
+        prefix.add(&tools);
+        prefix.add(&system);
+
         let exchange_start = current_exchange_start(messages);
+        let mut api_messages: Vec<AnthropicMessage> = Vec::new();
+        let mut system_seen = false;
+        let mut unbound = 0_usize;
+        let mut first_unbound: Option<usize> = None;
 
         for (index, msg) in messages.iter().enumerate() {
-            match msg.role {
-                Role::System => {
-                    if system_parts.is_empty() {
-                        system_parts.push(&msg.content);
-                    } else {
-                        api_messages.push(AnthropicMessage {
-                            role: String::from("user"),
-                            content: AnthropicContent::Text(format!("System: {}", msg.content)),
-                        });
-                    }
+            let converted = match msg.role {
+                Role::System if !system_seen => {
+                    system_seen = true;
+                    continue;
                 }
+                Role::System => AnthropicMessage {
+                    role: String::from("user"),
+                    content: AnthropicContent::Text(format!("System: {}", msg.content)),
+                },
                 Role::User => {
                     let content = if msg.images.is_empty() {
                         AnthropicContent::Text(msg.content.clone())
@@ -191,49 +203,19 @@ impl AnthropicClient {
                         append_image_blocks(&mut blocks, &msg.images);
                         AnthropicContent::Blocks(blocks)
                     };
-                    api_messages.push(AnthropicMessage {
+                    AnthropicMessage {
                         role: String::from("user"),
                         content,
-                    });
+                    }
                 }
                 Role::Assistant => {
-                    let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
-
-                    if let Some(origin) = replay_thinking
-                        && index >= exchange_start
-                    {
-                        blocks.extend(replayable_thinking(&msg.thinking, origin));
+                    let ahead = (index < exchange_start).then_some(&prefix);
+                    let (message, left_out) = assistant_message(msg, replay_thinking, ahead);
+                    if left_out > 0 {
+                        unbound += left_out;
+                        first_unbound = first_unbound.or(Some(index));
                     }
-
-                    if !msg.content.is_empty() {
-                        blocks.push(AnthropicContentBlock::Text {
-                            text: msg.content.clone(),
-                        });
-                    }
-
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        for tc in tool_calls {
-                            blocks.push(AnthropicContentBlock::ToolUse {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                input: tc.arguments.clone(),
-                            });
-                        }
-                    }
-
-                    if blocks.is_empty() {
-                        // Empty assistant message -- send as plain text to avoid
-                        // sending an empty blocks array which the API rejects
-                        api_messages.push(AnthropicMessage {
-                            role: String::from("assistant"),
-                            content: AnthropicContent::Text(msg.content.clone()),
-                        });
-                    } else {
-                        api_messages.push(AnthropicMessage {
-                            role: String::from("assistant"),
-                            content: AnthropicContent::Blocks(blocks),
-                        });
-                    }
+                    message
                 }
                 Role::Tool => {
                     let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
@@ -242,20 +224,32 @@ impl AnthropicClient {
                         content: msg.content.clone(),
                     }];
                     append_image_blocks(&mut blocks, &msg.images);
-                    api_messages.push(AnthropicMessage {
+                    AnthropicMessage {
                         role: String::from("user"),
                         content: AnthropicContent::Blocks(blocks),
-                    });
+                    }
                 }
-            }
+            };
+            prefix.add(&converted);
+            api_messages.push(converted);
+        }
+        if let Some(first_message) = first_unbound {
+            // A prefix that should hold and doesn't (a section moving in the
+            // system prompt, a reshuffled tool list) shows up only as lost
+            // cache reads; this says where the conversation diverged.
+            debug!(
+                left_out = unbound,
+                first_message,
+                "left out earlier turns' reasoning: the system prompt, tools or messages ahead of it changed since it was written, or it was saved without a binding"
+            );
         }
 
-        let system = (!system_parts.is_empty()).then(|| system_parts.join("\n"));
-
-        // Merge consecutive same-role messages (required by Anthropic API for tool results)
-        let api_messages = merge_consecutive_messages(api_messages);
-
-        (system, api_messages)
+        ConvertedMessages {
+            system,
+            // Merge consecutive same-role messages (required by Anthropic API for tool results)
+            messages: merge_consecutive_messages(api_messages),
+            binding: prefix.binding(),
+        }
     }
 
     /// Convert tool definitions to Anthropic's format.
@@ -322,29 +316,27 @@ impl AnthropicClient {
         let thinking_on = build_thinking(options.thinking.as_ref(), max_tokens, false)
             .thinking
             .is_some();
-        let origin = self.origin();
-        let (system, messages) = Self::convert_messages(messages, thinking_on.then_some(&origin));
+        let cache_boundary = messages
+            .iter()
+            .find(|msg| msg.role == Role::System)
+            .and_then(|msg| msg.cache_boundary);
         let has_web_search = options.web_search.is_some();
         let tools = (!tools.is_empty() || has_web_search)
             .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
+        let origin = self.origin();
+        let ConvertedMessages {
+            system,
+            messages,
+            binding,
+        } = Self::convert_messages(messages, tools.as_deref(), thinking_on.then_some(&origin));
 
-        // OAuth tokens require the Claude Code identity as an isolated first block
-        // in the system prompt to access newer models (sonnet 4.6, opus 4.6).
-        let system: Option<AnthropicSystem> = if is_oauth_key(&self.api_key) {
-            let mut blocks = vec![AnthropicSystemBlock {
-                r#type: "text",
-                text: OAUTH_IDENTITY.to_string(),
-            }];
-            if let Some(s) = system {
-                blocks.push(AnthropicSystemBlock {
-                    r#type: "text",
-                    text: s,
-                });
-            }
-            Some(AnthropicSystem::Blocks(blocks))
-        } else {
-            system.map(AnthropicSystem::Text)
-        };
+        let cache_control = AnthropicCacheControl::for_retention(options.cache.retention);
+        let system = AnthropicSystem::build(
+            system,
+            cache_boundary,
+            is_oauth_key(&self.api_key),
+            cache_control,
+        );
 
         let output_format = match &options.response_format {
             ResponseFormat::Text => None,
@@ -362,6 +354,8 @@ impl AnthropicClient {
             temperature: self.temperature_to_send(options.temperature),
             max_tokens,
             thinking: options.thinking.clone(),
+            binding,
+            cache_control,
         }
     }
 
@@ -389,7 +383,11 @@ impl AnthropicClient {
             result
         })
         .await?;
-        Ok(response.produced_at(&self.origin()))
+        let mut response = response.produced_at(&self.origin());
+        for block in &mut response.thinking {
+            block.binding.clone_from(&prepared.binding);
+        }
+        Ok(response)
     }
 
     /// Send a request asking for adaptive thinking, and again with a manual
@@ -558,12 +556,31 @@ impl AnthropicClient {
     }
 
     /// Parse the API response into our generic `InferenceResponse`.
+    ///
+    /// Only the response's leading run of reasoning, the blocks with nothing
+    /// but reasoning ahead of them, can go back to the API. The request sends
+    /// a message's reasoning ahead of its text and tool calls and leaves out
+    /// its server tool blocks, so a block that came after any other content
+    /// (reasoning after a web search, say) would go back out of position,
+    /// ahead of content its signature covers, and the API would refuse it.
+    /// Such a block keeps its text for display and loses its signature; an
+    /// encrypted one has nothing to display and is left out.
     fn parse_response(response: AnthropicResponse) -> InferenceResponse {
         let mut text_parts: Vec<String> = Vec::new();
         let mut thinking: Vec<ThinkingBlock> = Vec::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut leading = true;
+        let mut unreplayable = 0_usize;
 
         for block in response.content {
+            let is_thinking = matches!(
+                block,
+                AnthropicContentBlock::Thinking { .. }
+                    | AnthropicContentBlock::RedactedThinking { .. }
+            );
+            if !is_thinking {
+                leading = false;
+            }
             match block {
                 AnthropicContentBlock::Text { text } => {
                     text_parts.push(text);
@@ -575,7 +592,10 @@ impl AnthropicClient {
                     // The API sends an empty signature for a block it has not
                     // signed. A block with neither text nor a signature has
                     // nothing to show and nothing to send back.
-                    let signature = signature.filter(|s| !s.is_empty());
+                    let mut signature = signature.filter(|s| !s.is_empty());
+                    if !leading && signature.take().is_some() {
+                        unreplayable += 1;
+                    }
                     if !text.is_empty() || signature.is_some() {
                         thinking.push(ThinkingBlock {
                             text,
@@ -585,10 +605,14 @@ impl AnthropicClient {
                     }
                 }
                 AnthropicContentBlock::RedactedThinking { data } => {
-                    thinking.push(ThinkingBlock {
-                        redacted: Some(data),
-                        ..ThinkingBlock::default()
-                    });
+                    if leading {
+                        thinking.push(ThinkingBlock {
+                            redacted: Some(data),
+                            ..ThinkingBlock::default()
+                        });
+                    } else {
+                        unreplayable += 1;
+                    }
                 }
                 AnthropicContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall {
@@ -607,7 +631,16 @@ impl AnthropicClient {
                 AnthropicContentBlock::WebSearchToolResult { tool_use_id, .. } => {
                     debug!(tool_use_id = %tool_use_id, "web search tool result in response");
                 }
+                AnthropicContentBlock::Other => {
+                    debug!("content block of a type this client does not know in response");
+                }
             }
+        }
+        if unreplayable > 0 {
+            debug!(
+                unreplayable,
+                "reasoning that came after other content in the response is kept for display but never sent back"
+            );
         }
 
         let usage = response.usage.map(|u| Usage {
@@ -743,9 +776,11 @@ fn api_error(status: reqwest::StatusCode, body: &str) -> InferenceError {
 // Thinking
 // ---------------------------------------------------------------------------
 
-/// The blocks of an assistant message's reasoning that the API accepts back:
+/// The blocks of an assistant message's reasoning that go back to the API:
 /// each readable block with its signature, and redacted blocks unchanged,
-/// provided `reader`'s own model produced them.
+/// provided `reader`'s own model produced them and, for a message before the
+/// tool-use exchange in progress (`ahead` is the fingerprint of the request
+/// up to that message), the conversation ahead of them is unchanged.
 ///
 /// A signature is verified against the model that issued it, and on current
 /// models against the conversation before it too. A block another provider
@@ -755,23 +790,179 @@ fn api_error(status: reqwest::StatusCode, body: &str) -> InferenceError {
 /// the generation), and the API drops one it cannot read; sending only the
 /// model's own blocks never depends on that. A block without a signature or
 /// encrypted data would be rejected, so it is left out too.
+///
+/// Current models accept a block back only while the system prompt, the
+/// tools and every message ahead of it are what they were when it was
+/// written, and refuse the request (or drop the block and every one after
+/// it) otherwise. Those change between turns: the system prompt's memory
+/// sections, the tool list, observation rotating history out. So an earlier
+/// turn's block goes back only while its recorded `binding` matches `ahead`.
+/// Once a block is left out, every block written after it was bound to a
+/// conversation that still held it, so their bindings no longer match
+/// either and they are left out with it: what is sent never has a gap the
+/// API would refuse. A block saved without a binding is never sent back
+/// from an earlier turn. Within the exchange in progress (`ahead` is
+/// `None`) every block goes back, because a model on a manual budget
+/// refuses an exchange whose last assistant turn lost its reasoning; a
+/// changed prefix there is left to the API's refusal and the `drop_block`
+/// retry (see [`AnthropicBlockBinding`]).
+///
+/// Also returns how many blocks that could otherwise go back were left out
+/// because their binding does not match `ahead`.
 fn replayable_thinking(
     thinking: &[ThinkingBlock],
     reader: &ThinkingOrigin,
-) -> Vec<AnthropicContentBlock> {
-    blocks_produced_at(thinking, reader, ReplayScope::SameModel)
+    ahead: Option<&PrefixFingerprint>,
+) -> (Vec<AnthropicContentBlock>, usize) {
+    let sendable = blocks_produced_at(thinking, reader, ReplayScope::SameModel)
         .into_iter()
-        .filter_map(|block| match (&block.redacted, &block.signature) {
-            (Some(data), _) => Some(AnthropicContentBlock::RedactedThinking { data: data.clone() }),
-            (None, Some(signature)) if !signature.is_empty() => {
-                Some(AnthropicContentBlock::Thinking {
-                    thinking: block.text.clone(),
-                    signature: Some(signature.clone()),
-                })
+        .filter_map(|block| {
+            let sent = match (&block.redacted, &block.signature) {
+                (Some(data), _) => AnthropicContentBlock::RedactedThinking { data: data.clone() },
+                (None, Some(signature)) if !signature.is_empty() => {
+                    AnthropicContentBlock::Thinking {
+                        thinking: block.text.clone(),
+                        signature: Some(signature.clone()),
+                    }
+                }
+                (None, _) => return None,
+            };
+            Some((block.binding.as_deref(), sent))
+        });
+    let Some(ahead) = ahead else {
+        return (sendable.map(|(_, sent)| sent).collect(), 0);
+    };
+    let here = ahead.binding();
+    let mut unbound = 0_usize;
+    let blocks = sendable
+        .filter_map(|(binding, sent)| {
+            if here.is_some() && binding == here.as_deref() {
+                Some(sent)
+            } else {
+                unbound += 1;
+                None
             }
-            (None, _) => None,
         })
-        .collect()
+        .collect();
+    (blocks, unbound)
+}
+
+/// Convert one assistant message: its replayable reasoning first, then its
+/// text and tool calls.
+///
+/// `ahead` is the fingerprint of the request ahead of this message when it is
+/// an earlier turn, and `None` for the current exchange (see
+/// [`replayable_thinking`]). Returns the message and how many reasoning blocks
+/// were left out because their binding did not match.
+fn assistant_message(
+    msg: &Message,
+    replay_thinking: Option<&ThinkingOrigin>,
+    ahead: Option<&PrefixFingerprint>,
+) -> (AnthropicMessage, usize) {
+    let (mut blocks, left_out) = match replay_thinking {
+        Some(origin) => replayable_thinking(&msg.thinking, origin, ahead),
+        None => (Vec::new(), 0),
+    };
+
+    if !msg.content.is_empty() {
+        blocks.push(AnthropicContentBlock::Text {
+            text: msg.content.clone(),
+        });
+    }
+
+    if let Some(tool_calls) = &msg.tool_calls {
+        for tc in tool_calls {
+            blocks.push(AnthropicContentBlock::ToolUse {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.arguments.clone(),
+            });
+        }
+    }
+
+    // The API rejects an empty blocks array, so an empty
+    // assistant message goes as plain text.
+    let content = if blocks.is_empty() {
+        AnthropicContent::Text(msg.content.clone())
+    } else {
+        AnthropicContent::Blocks(blocks)
+    };
+    let message = AnthropicMessage {
+        role: String::from("assistant"),
+        content,
+    };
+    (message, left_out)
+}
+
+/// A running fingerprint of a request's bytes in the order the API reads
+/// them (tools, system prompt, messages), taken over the same JSON the
+/// request sends. A response's reasoning records the fingerprint of the
+/// whole request that produced it as its `binding`, and a later request
+/// compares that with its own fingerprint up to the message the reasoning
+/// belongs to (see [`replayable_thinking`]).
+///
+/// 64-bit FNV-1a: a fixed function, so a binding saved by one build matches
+/// in the next. A collision would only send a block the API then refuses,
+/// which the `drop_block` retry absorbs.
+struct PrefixFingerprint {
+    /// `None` once a part could not be serialized; nothing then matches.
+    state: Option<u64>,
+}
+
+impl PrefixFingerprint {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Self {
+            state: Some(Self::OFFSET_BASIS),
+        }
+    }
+
+    /// Extend the fingerprint with `part` as the request serializes it.
+    fn add(&mut self, part: &impl Serialize) {
+        if self.state.is_none() {
+            return;
+        }
+        if let Err(error) = serde_json::to_writer(&mut *self, part) {
+            warn!(
+                error = %error,
+                "could not fingerprint part of an anthropic request; earlier turns' reasoning is not sent back in it"
+            );
+            self.state = None;
+        }
+    }
+
+    /// The fingerprint so far, as a block's `binding` records it.
+    fn binding(&self) -> Option<String> {
+        self.state.map(|state| format!("{state:016x}"))
+    }
+}
+
+impl std::io::Write for PrefixFingerprint {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(state) = self.state.as_mut() {
+            for byte in buf {
+                *state ^= u64::from(*byte);
+                *state = state.wrapping_mul(Self::PRIME);
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A conversation in the Messages API's shape.
+struct ConvertedMessages {
+    /// The top-level system prompt text.
+    system: Option<String>,
+    messages: Vec<AnthropicMessage>,
+    /// The fingerprint of the whole request: the `binding` of the reasoning
+    /// its response carries.
+    binding: Option<String>,
 }
 
 /// How a request asks for thinking: the `thinking` field and the effort that
@@ -949,8 +1140,8 @@ impl PartialUsage {
 
 /// A content block as it builds up from its deltas.
 struct StreamBlock {
-    /// `None` for a block type this client does not know.
-    block: Option<AnthropicContentBlock>,
+    /// `Other` for a block this client cannot read, which keeps its place.
+    block: AnthropicContentBlock,
     /// The tool input, which arrives as fragments of JSON text and is parsed
     /// once the whole response is in.
     partial_json: String,
@@ -1027,10 +1218,10 @@ impl<'a> StreamAssembler<'a> {
 
     fn start_block(&mut self, index: usize, content_block: Value) {
         let block = match serde_json::from_value::<AnthropicContentBlock>(content_block) {
-            Ok(block) => Some(block),
+            Ok(block) => block,
             Err(e) => {
-                debug!(index, error = %e, "ignoring anthropic content block of an unsupported type");
-                None
+                debug!(index, error = %e, "ignoring the contents of an anthropic content block this client cannot read");
+                AnthropicContentBlock::Other
             }
         };
         self.blocks.insert(
@@ -1050,27 +1241,24 @@ impl<'a> StreamAssembler<'a> {
             );
             return;
         };
-        match (entry.block.as_mut(), delta) {
-            (Some(AnthropicContentBlock::Text { text }), BlockDelta::TextDelta { text: more }) => {
+        match (&mut entry.block, delta) {
+            (AnthropicContentBlock::Text { text }, BlockDelta::TextDelta { text: more }) => {
                 text.push_str(&more);
                 self.sink.push(StreamDelta::Text(more));
             }
             (
-                Some(AnthropicContentBlock::Thinking { thinking, .. }),
+                AnthropicContentBlock::Thinking { thinking, .. },
                 BlockDelta::ThinkingDelta { thinking: more },
             ) => {
                 thinking.push_str(&more);
                 self.sink.push(StreamDelta::Thinking(more));
             }
             (
-                Some(AnthropicContentBlock::Thinking { signature, .. }),
+                AnthropicContentBlock::Thinking { signature, .. },
                 BlockDelta::SignatureDelta { signature: more },
             ) => signature.get_or_insert_with(String::new).push_str(&more),
             (
-                Some(
-                    AnthropicContentBlock::ToolUse { .. }
-                    | AnthropicContentBlock::ServerToolUse { .. },
-                ),
+                AnthropicContentBlock::ToolUse { .. } | AnthropicContentBlock::ServerToolUse { .. },
                 BlockDelta::InputJsonDelta { partial_json },
             ) => entry.partial_json.push_str(&partial_json),
             (_, BlockDelta::Other) => {}
@@ -1103,9 +1291,7 @@ impl<'a> StreamAssembler<'a> {
         let truncated = self.stop_reason.as_deref() == Some("max_tokens");
         let mut content = Vec::with_capacity(self.blocks.len());
         for entry in self.blocks.into_values() {
-            let Some(mut block) = entry.block else {
-                continue;
-            };
+            let mut block = entry.block;
             if !entry.partial_json.is_empty() {
                 match &mut block {
                     AnthropicContentBlock::ToolUse { name, input, .. }
@@ -1136,7 +1322,8 @@ impl<'a> StreamAssembler<'a> {
                     | AnthropicContentBlock::RedactedThinking { .. }
                     | AnthropicContentBlock::Image { .. }
                     | AnthropicContentBlock::ToolResult { .. }
-                    | AnthropicContentBlock::WebSearchToolResult { .. } => {}
+                    | AnthropicContentBlock::WebSearchToolResult { .. }
+                    | AnthropicContentBlock::Other => {}
                 }
             }
             content.push(block);
@@ -1207,15 +1394,30 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+/// A cache breakpoint: on a block, or top level for automatic caching, which
+/// the API places on the request's last cacheable block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct AnthropicCacheControl {
     r#type: &'static str,
+    /// `"1h"`, or absent for the API's five-minute default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<&'static str>,
 }
 
 impl AnthropicCacheControl {
-    const DEFAULT: Self = Self {
-        r#type: "ephemeral",
-    };
+    /// The breakpoint every marker in a request uses. One TTL for all of
+    /// them keeps the API's rule that longer-lived entries come before
+    /// shorter ones, and its rule that an explicit marker on the last block
+    /// match the top-level one.
+    fn for_retention(retention: CacheRetention) -> Self {
+        Self {
+            r#type: "ephemeral",
+            ttl: match retention {
+                CacheRetention::Short => None,
+                CacheRetention::Long => Some("1h"),
+            },
+        }
+    }
 }
 
 /// The request's `thinking` field.
@@ -1264,11 +1466,15 @@ impl AnthropicThinking {
 ///
 /// Current Claude models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) bind
 /// each thinking block to everything ahead of it: the system prompt, the
-/// tool definitions and the earlier messages. The turn loop rebuilds the
-/// system prompt and the tool list for every model call, so what comes
-/// before a replayed block can change during a tool-use exchange, and the
-/// API may then refuse the request with "Invalid `signature` in `thinking`
-/// block. The block is bound to a different conversation." Only after such a
+/// tool definitions and the earlier messages. An earlier turn's block goes
+/// back only while that is unchanged (see [`replayable_thinking`]), but the
+/// turn loop rebuilds the system prompt and the tool list for every model
+/// call, so what comes before a block of the exchange in progress can change
+/// during the exchange, and the API may then refuse the request with
+/// "Invalid `signature` in `thinking` block. The block is bound to a
+/// different conversation." The same refusal follows a change this client
+/// cannot see, such as the API reading a reply differently from how it is
+/// sent back. Only after such a
 /// refusal does a client send `drop_block`, which makes the API drop that
 /// block and every thinking block after it and answer anyway; the response's
 /// `input_transformations` says so (see [`AnthropicInputTransformation`]).
@@ -1316,9 +1522,6 @@ struct ThinkingMode {
 }
 
 /// System prompt content — plain string or array of text blocks.
-///
-/// OAuth tokens require the Claude Code identity as an isolated first block,
-/// so the system prompt must be sent as an array for OAuth requests.
 #[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 enum AnthropicSystem {
@@ -1326,10 +1529,68 @@ enum AnthropicSystem {
     Blocks(Vec<AnthropicSystemBlock>),
 }
 
+impl AnthropicSystem {
+    /// The `system` field for a request whose system prompt is `system`,
+    /// with the stable part of it ending at byte `cache_boundary`.
+    ///
+    /// A system prompt with a cache boundary goes as blocks, its stable part
+    /// carrying an explicit `cache_control` breakpoint, so the tools and that
+    /// part stay cached when the rest of the system prompt changes. That is
+    /// one breakpoint besides the request's top-level automatic one, well
+    /// under the API's four. OAuth tokens require the Claude Code identity
+    /// as an isolated first block to access newer models, so their system
+    /// prompt is always an array. Anything else goes as a plain string.
+    fn build(
+        system: Option<String>,
+        cache_boundary: Option<usize>,
+        oauth: bool,
+        cache_control: AnthropicCacheControl,
+    ) -> Option<Self> {
+        let split = system
+            .as_deref()
+            .zip(cache_boundary.filter(|&at| at > 0))
+            .and_then(|(text, at)| text.split_at_checked(at));
+        if !oauth && split.is_none() {
+            return system.map(Self::Text);
+        }
+        let mut blocks = Vec::new();
+        if oauth {
+            blocks.push(AnthropicSystemBlock::text(OAUTH_IDENTITY));
+        }
+        match (system.as_deref(), split) {
+            (_, Some((stable, rest))) => {
+                blocks.push(AnthropicSystemBlock {
+                    cache_control: Some(cache_control),
+                    ..AnthropicSystemBlock::text(stable)
+                });
+                if !rest.is_empty() {
+                    blocks.push(AnthropicSystemBlock::text(rest));
+                }
+            }
+            (Some(text), None) => blocks.push(AnthropicSystemBlock::text(text)),
+            (None, None) => {}
+        }
+        Some(Self::Blocks(blocks))
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct AnthropicSystemBlock {
     r#type: &'static str,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+impl AnthropicSystemBlock {
+    /// A text block with no cache breakpoint.
+    fn text(text: &str) -> Self {
+        Self {
+            r#type: "text",
+            text: text.to_string(),
+            cache_control: None,
+        }
+    }
 }
 
 /// What stays the same across a request's attempts.
@@ -1341,6 +1602,11 @@ struct PreparedRequest {
     temperature: Option<f32>,
     max_tokens: u32,
     thinking: Option<ThinkingConfig>,
+    /// What the reasoning in the response is bound to (see
+    /// [`ConvertedMessages::binding`]).
+    binding: Option<String>,
+    /// The request's top-level automatic cache breakpoint.
+    cache_control: AnthropicCacheControl,
 }
 
 impl PreparedRequest {
@@ -1375,7 +1641,7 @@ impl PreparedRequest {
             temperature: self.temperature,
             thinking,
             stream: stream.then_some(true),
-            cache_control: AnthropicCacheControl::DEFAULT,
+            cache_control: self.cache_control,
         }
     }
 }
@@ -1467,6 +1733,11 @@ enum AnthropicContentBlock {
         #[serde(default)]
         content: Value,
     },
+    /// A response block of a type this client does not know. It still holds
+    /// a place in the response, which decides what reasoning can go back
+    /// (see `parse_response`). Never part of a request.
+    #[serde(other, skip_serializing)]
+    Other,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1599,6 +1870,13 @@ mod tests {
         ThinkingOrigin::new(ProviderApi::Anthropic, TEST_MODEL)
     }
 
+    /// The system text and messages the test client sends for `messages`,
+    /// with no tools and thinking on.
+    fn convert(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessage>) {
+        let converted = AnthropicClient::convert_messages(messages, None, Some(&test_origin()));
+        (converted.system, converted.messages)
+    }
+
     /// Create a test client pointing at the given mock server URL.
     fn test_client(base_url: &str) -> AnthropicClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
@@ -1614,6 +1892,14 @@ mod tests {
 
     fn simple_user_message() -> Vec<Message> {
         vec![Message::user("Hello")]
+    }
+
+    /// `block` as the test client records it in a response to
+    /// [`simple_user_message`] with no tools: bound to that request.
+    fn answering_hello(mut block: ThinkingBlock) -> ThinkingBlock {
+        block.binding =
+            AnthropicClient::convert_messages(&simple_user_message(), None, None).binding;
+        block
     }
 
     fn success_response_body() -> Value {
@@ -1761,7 +2047,7 @@ mod tests {
         assert!(result.is_ok(), "system message request should succeed");
 
         // Verify system was extracted properly by checking the conversion
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (system, api_msgs) = convert(&messages);
         assert_eq!(
             system.as_deref(),
             Some("You are a helpful assistant."),
@@ -1845,7 +2131,7 @@ mod tests {
             Message::tool("Rust is a systems programming language.", "toolu_abc123"),
         ];
 
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (system, api_msgs) = convert(&messages);
         assert!(system.is_none(), "no system message expected");
         assert_eq!(api_msgs.len(), 3, "should have 3 API messages");
 
@@ -2386,7 +2672,9 @@ mod tests {
         );
         assert_eq!(
             resp.thinking,
-            vec![ThinkingBlock::text("Let me reason about this...").with_origin(&test_origin())],
+            vec![answering_hello(
+                ThinkingBlock::text("Let me reason about this...").with_origin(&test_origin())
+            )],
             "thinking should be extracted separately"
         );
     }
@@ -2537,8 +2825,7 @@ mod tests {
             Message::tool("Result B", "tool_2"),
         ];
 
-        let (_system, api_msgs) =
-            AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_system, api_msgs) = convert(&messages);
 
         // user, assistant, merged-user (two tool results)
         assert_eq!(
@@ -2611,8 +2898,7 @@ mod tests {
             Message::user("Thanks, now do something else"),
         ];
 
-        let (_system, api_msgs) =
-            AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_system, api_msgs) = convert(&messages);
 
         // assistant, merged-user (tool_result + user text)
         assert_eq!(
@@ -2657,8 +2943,7 @@ mod tests {
             Message::user("Follow up"),
         ];
 
-        let (_system, api_msgs) =
-            AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_system, api_msgs) = convert(&messages);
 
         assert_eq!(api_msgs.len(), 3, "alternating roles should not be merged");
         assert_eq!(api_msgs.first().unwrap().role, "user");
@@ -2689,6 +2974,210 @@ mod tests {
             result.is_ok(),
             "request with cache_control should succeed: {result:?}"
         );
+    }
+
+    // --- Prompt caching: system breakpoint and TTL ---
+
+    const OAUTH_TEST_KEY: &str = "sk-ant-oat01-test-key";
+
+    /// Every `cache_control` marker in a request body, top level included.
+    fn cache_breakpoints(value: &Value) -> usize {
+        match value {
+            Value::Object(map) => map
+                .iter()
+                .map(|(key, v)| usize::from(key == "cache_control") + cache_breakpoints(v))
+                .sum(),
+            Value::Array(items) => items.iter().map(cache_breakpoints).sum(),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => 0,
+        }
+    }
+
+    fn cache_options(retention: CacheRetention) -> CompletionOptions {
+        CompletionOptions {
+            cache: crate::CacheHints {
+                conversation_key: Some("main".to_string()),
+                retention,
+            },
+            ..CompletionOptions::default()
+        }
+    }
+
+    /// A conversation whose system prompt has a stable part and a part that
+    /// changes, as the agent's own system prompt does.
+    fn conversation_with_cache_boundary() -> Vec<Message> {
+        vec![
+            Message::system_with_cache_boundary("stable sections", "\n\nchanging sections"),
+            Message::user("Hello"),
+        ]
+    }
+
+    /// The single request body `key` sent with `options`.
+    async fn body_sent_with(key: &str, messages: &[Message], options: &CompletionOptions) -> Value {
+        let server = MockServer::start().await;
+        mount_ok(&server).await;
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = AnthropicClient::new(
+            http,
+            server.uri(),
+            key,
+            "claude-sonnet-4-6",
+            1024,
+            RetryConfig::no_retry(),
+        );
+        client.complete(messages, &[], options).await.unwrap();
+        let [body]: [Value; 1] = sent_bodies(&server).await.try_into().unwrap();
+        body
+    }
+
+    #[tokio::test]
+    async fn short_retention_marks_the_stable_system_block_with_the_default_ttl() {
+        let body = body_sent_with(
+            "test-api-key",
+            &conversation_with_cache_boundary(),
+            &cache_options(CacheRetention::Short),
+        )
+        .await;
+
+        assert_eq!(
+            body.get("system").unwrap(),
+            &json!([
+                {"type": "text", "text": "stable sections", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "\n\nchanging sections"},
+            ])
+        );
+        assert_eq!(
+            body.get("cache_control").unwrap(),
+            &json!({"type": "ephemeral"}),
+            "automatic caching still covers the conversation tail"
+        );
+        assert_eq!(cache_breakpoints(&body), 2);
+    }
+
+    #[tokio::test]
+    async fn long_retention_asks_for_an_hour_on_both_breakpoints() {
+        let body = body_sent_with(
+            "test-api-key",
+            &conversation_with_cache_boundary(),
+            &cache_options(CacheRetention::Long),
+        )
+        .await;
+
+        assert_eq!(
+            body.get("system").unwrap(),
+            &json!([
+                {
+                    "type": "text",
+                    "text": "stable sections",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                },
+                {"type": "text", "text": "\n\nchanging sections"},
+            ])
+        );
+        assert_eq!(
+            body.get("cache_control").unwrap(),
+            &json!({"type": "ephemeral", "ttl": "1h"})
+        );
+        assert_eq!(cache_breakpoints(&body), 2);
+    }
+
+    #[tokio::test]
+    async fn oauth_keeps_the_identity_block_first_and_marks_the_stable_block() {
+        for (retention, cache_control) in [
+            (CacheRetention::Short, json!({"type": "ephemeral"})),
+            (
+                CacheRetention::Long,
+                json!({"type": "ephemeral", "ttl": "1h"}),
+            ),
+        ] {
+            let body = body_sent_with(
+                OAUTH_TEST_KEY,
+                &conversation_with_cache_boundary(),
+                &cache_options(retention),
+            )
+            .await;
+
+            assert_eq!(
+                body.get("system").unwrap(),
+                &json!([
+                    {"type": "text", "text": OAUTH_IDENTITY},
+                    {"type": "text", "text": "stable sections", "cache_control": cache_control},
+                    {"type": "text", "text": "\n\nchanging sections"},
+                ]),
+                "{retention:?}"
+            );
+            assert_eq!(body.get("cache_control").unwrap(), &cache_control);
+            assert_eq!(cache_breakpoints(&body), 2, "{retention:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_system_prompt_with_nothing_after_its_boundary_is_one_marked_block() {
+        let messages = vec![
+            Message::system_with_cache_boundary("stable sections", ""),
+            Message::user("Hello"),
+        ];
+        let body = body_sent_with("test-api-key", &messages, &CompletionOptions::default()).await;
+
+        assert_eq!(
+            body.get("system").unwrap(),
+            &json!([
+                {"type": "text", "text": "stable sections", "cache_control": {"type": "ephemeral"}},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_system_prompt_without_a_boundary_is_sent_as_before() {
+        let messages = vec![Message::system("Be helpful."), Message::user("Hello")];
+        let body = body_sent_with(
+            "test-api-key",
+            &messages,
+            &cache_options(CacheRetention::Long),
+        )
+        .await;
+
+        assert_eq!(body.get("system").unwrap(), &json!("Be helpful."));
+        assert_eq!(
+            body.get("cache_control").unwrap(),
+            &json!({"type": "ephemeral", "ttl": "1h"})
+        );
+        assert_eq!(cache_breakpoints(&body), 1, "only the automatic breakpoint");
+    }
+
+    #[test]
+    fn a_boundary_outside_the_system_text_marks_nothing() {
+        let cache_control = AnthropicCacheControl::for_retention(CacheRetention::Short);
+        for (text, boundary) in [("stable", 0), ("é", 1), ("short", 99)] {
+            let system = AnthropicSystem::build(
+                Some(text.to_string()),
+                Some(boundary),
+                false,
+                cache_control,
+            );
+            assert!(
+                matches!(&system, Some(AnthropicSystem::Text(sent)) if sent == text),
+                "{text:?} at {boundary} goes as plain text: {system:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_system_blocks_join_back_into_the_system_text() {
+        let cache_control = AnthropicCacheControl::for_retention(CacheRetention::Long);
+        let text = "stable sections\n\nchanging sections";
+        for oauth in [false, true] {
+            let Some(AnthropicSystem::Blocks(blocks)) = AnthropicSystem::build(
+                Some(text.to_string()),
+                Some("stable sections".len()),
+                oauth,
+                cache_control,
+            ) else {
+                panic!("a system prompt with a boundary goes as blocks");
+            };
+            let skip = usize::from(oauth);
+            let joined: String = blocks.iter().skip(skip).map(|b| b.text.as_str()).collect();
+            assert_eq!(joined, text, "oauth: {oauth}");
+        }
     }
 
     #[test]
@@ -2809,7 +3298,7 @@ mod tests {
             Message::user("Hello"),
         ];
 
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (system, api_msgs) = convert(&messages);
         assert_eq!(
             system.as_deref(),
             Some("First instruction."),
@@ -3234,7 +3723,7 @@ mod tests {
             ),
             Message::tool("a.txt", "toolu_1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_, api) = convert(&messages);
         assert_eq!(
             block_types(&api).get(1).unwrap(),
             "thinking,redacted_thinking,text,tool_use",
@@ -3254,7 +3743,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_before_the_last_plain_reply_is_not_replayed() {
+    fn unbound_thinking_of_an_earlier_exchange_is_not_replayed() {
         let messages = vec![
             Message::user("first"),
             assistant_with_thinking(
@@ -3272,22 +3761,380 @@ mod tests {
             ),
             Message::tool("ok", "toolu_1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_, api) = convert(&messages);
         let types = block_types(&api);
         assert_eq!(
             types.get(1).unwrap(),
             "text,tool_use",
-            "an earlier exchange's tool-call message loses its thinking"
+            "an earlier exchange's block with no binding has nothing to prove it still applies"
         );
-        assert_eq!(
-            types.get(3).unwrap(),
-            "text",
-            "a plain reply never carries thinking back"
-        );
+        assert_eq!(types.get(3).unwrap(), "text", "nor does an earlier reply's");
         assert_eq!(
             types.get(5).unwrap(),
             "thinking,tool_use",
             "the exchange in progress keeps its thinking"
+        );
+    }
+
+    /// Append the reply the test client records for a request made of
+    /// `history` (no tools): its reasoning bound to that request.
+    fn reply(
+        history: &mut Vec<Message>,
+        content: &str,
+        calls: Option<Vec<ToolCall>>,
+        thinking: Vec<ThinkingBlock>,
+    ) {
+        let binding =
+            AnthropicClient::convert_messages(history, None, Some(&test_origin())).binding;
+        let thinking = thinking
+            .into_iter()
+            .map(|mut block| {
+                block.binding.clone_from(&binding);
+                block
+            })
+            .collect();
+        history.push(assistant_with_thinking(content, calls, thinking));
+    }
+
+    /// A finished first turn: a tool call with signed and redacted
+    /// reasoning, its result, and a reasoned reply.
+    fn first_turn() -> Vec<Message> {
+        let mut history = vec![
+            Message::system("You are helpful."),
+            Message::user("list files"),
+        ];
+        reply(
+            &mut history,
+            "",
+            Some(vec![call("t1")]),
+            vec![signed("plan", "sig-1"), redacted("ENCRYPTED")],
+        );
+        history.push(Message::tool("a.txt", "t1"));
+        reply(
+            &mut history,
+            "Found a.txt.",
+            None,
+            vec![signed("wrap-up", "sig-2")],
+        );
+        history
+    }
+
+    #[test]
+    fn earlier_turns_replay_their_thinking_unchanged() {
+        let mut history = first_turn();
+        history.push(Message::user("thanks"));
+
+        let (_, api) = convert(&history);
+
+        assert_eq!(
+            serde_json::to_value(&api.get(1).unwrap().content).unwrap(),
+            json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+                {"type": "redacted_thinking", "data": "ENCRYPTED"},
+                {"type": "tool_use", "id": "t1", "name": "exec", "input": {"command": "ls"}}
+            ]),
+            "the first turn's tool call goes back with its reasoning as received"
+        );
+        assert_eq!(
+            serde_json::to_value(&api.get(3).unwrap().content).unwrap(),
+            json!([
+                {"type": "thinking", "thinking": "wrap-up", "signature": "sig-2"},
+                {"type": "text", "text": "Found a.txt."}
+            ]),
+            "so does its reply"
+        );
+    }
+
+    #[test]
+    fn consecutive_turns_share_their_prefix_through_the_previous_exchange() {
+        let mut history = first_turn();
+        let reply_at = history.len() - 1;
+        let (first_system, first) = convert(history.get(..reply_at).unwrap());
+        history.push(Message::user("thanks"));
+
+        let (second_system, second) = convert(&history);
+
+        assert_eq!(
+            first_system, second_system,
+            "the system prompt is unchanged"
+        );
+        let bytes = |messages: &[AnthropicMessage]| {
+            messages
+                .iter()
+                .map(|m| serde_json::to_string(m).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bytes(second.get(..first.len()).unwrap()),
+            bytes(&first),
+            "the next turn repeats the last request of the turn before byte for byte"
+        );
+        assert_eq!(
+            block_types(&second).get(first.len()).unwrap(),
+            "thinking,text",
+            "and then that turn's reply, reasoning included"
+        );
+    }
+
+    #[test]
+    fn earlier_thinking_is_left_out_once_the_conversation_ahead_of_it_changes() {
+        let mut history = first_turn();
+        history.push(Message::user("thanks"));
+        let tools = AnthropicClient::convert_tools(
+            &[ToolDefinition {
+                name: "exec".to_string(),
+                description: "Run a command".to_string(),
+                parameters: json!({"type": "object"}),
+            }],
+            None,
+        );
+
+        let with_tools =
+            AnthropicClient::convert_messages(&history, Some(&tools), Some(&test_origin()));
+        assert_eq!(
+            block_types(&with_tools.messages).get(1..4).unwrap(),
+            ["tool_use", "tool_result", "text"],
+            "a block written before the tools changed is left out"
+        );
+
+        *history.first_mut().unwrap() = Message::system("You are terse.");
+        let (_, api) = convert(&history);
+        assert_eq!(
+            block_types(&api).get(1..4).unwrap(),
+            ["tool_use", "tool_result", "text"],
+            "so is one written before the system prompt changed"
+        );
+    }
+
+    #[test]
+    fn a_block_left_out_takes_every_later_one_with_it_until_new_reasoning_is_bound() {
+        let mut history = first_turn();
+        history.push(Message::user("and now?"));
+        reply(
+            &mut history,
+            "Nothing else.",
+            None,
+            vec![signed("second", "sig-3")],
+        );
+
+        *history.get_mut(1).unwrap() = Message::user("list every file");
+        history.push(Message::user("ok"));
+        reply(&mut history, "Done.", None, vec![signed("third", "sig-4")]);
+        history.push(Message::user("bye"));
+
+        let (_, api) = convert(&history);
+        let types = block_types(&api);
+        assert_eq!(
+            types.get(1).unwrap(),
+            "tool_use",
+            "the edit ahead of the first turn's reasoning leaves it out"
+        );
+        assert_eq!(
+            types.get(5).unwrap(),
+            "text",
+            "a later turn's reasoning was bound to a conversation holding the first turn's, so it goes too"
+        );
+        assert_eq!(
+            types.get(7).unwrap(),
+            "thinking,text",
+            "reasoning written after the edit is bound to the conversation as it is now"
+        );
+    }
+
+    #[test]
+    fn the_exchange_in_progress_replays_its_thinking_even_after_the_prefix_changed() {
+        let mut history = vec![Message::system("You are helpful."), Message::user("go")];
+        reply(
+            &mut history,
+            "",
+            Some(vec![call("t1")]),
+            vec![signed("plan", "s1")],
+        );
+        history.push(Message::tool("r1", "t1"));
+        *history.first_mut().unwrap() = Message::system("You are terse.");
+
+        let (_, api) = convert(&history);
+
+        assert_eq!(
+            block_types(&api).get(1).unwrap(),
+            "thinking,tool_use",
+            "the API's refusal and the drop_block retry handle a changed prefix mid-exchange"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_s_reasoning_goes_back_in_the_next_turn() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [
+                    {"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+                    {"type": "text", "text": "Done."}
+                ],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+        let client = test_client(&server.uri());
+        let tools = vec![ToolDefinition {
+            name: "exec".to_string(),
+            description: "Run a command".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let options = thinking_options(4096);
+        let mut history = vec![Message::system("Be helpful."), Message::user("hi")];
+
+        let first = client.complete(&history, &tools, &options).await.unwrap();
+        history.push(Message::assistant(first.content, None).with_thinking(first.thinking));
+        history.push(Message::user("again"));
+        client.complete(&history, &tools, &options).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let second: Value = serde_json::from_slice(&requests.get(1).unwrap().body).unwrap();
+        assert_eq!(
+            at(&second, "/messages/1/content"),
+            &json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+                {"type": "text", "text": "Done."}
+            ]),
+            "the response's reasoning is bound to the request that produced it, which the next turn repeats"
+        );
+    }
+
+    /// A reply that reasons, searches the web, and reasons again (signed and
+    /// encrypted) before `tail`, as a non-streaming response body.
+    fn reasoning_around_a_search(tail: Value, stop_reason: &str) -> Value {
+        let mut content = vec![
+            json!({"type": "thinking", "thinking": "plan", "signature": "sig-a"}),
+            json!({"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+                "input": {"query": "rust"}}),
+            json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []}),
+            json!({"type": "thinking", "thinking": "read the results", "signature": "sig-b"}),
+            json!({"type": "redacted_thinking", "data": "ENC-LATE"}),
+        ];
+        content.push(tail);
+        json!({
+            "content": content,
+            "stop_reason": stop_reason,
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        })
+    }
+
+    #[test]
+    fn reasoning_after_other_content_is_kept_for_display_and_never_replayable() {
+        let body =
+            reasoning_around_a_search(json!({"type": "text", "text": "Found it."}), "end_turn");
+        let response: AnthropicResponse = serde_json::from_value(body).unwrap();
+
+        let parsed = AnthropicClient::parse_response(response).produced_at(&test_origin());
+
+        assert_eq!(
+            parsed.thinking,
+            vec![
+                signed("plan", "sig-a"),
+                ThinkingBlock::text("read the results").with_origin(&test_origin())
+            ],
+            "the leading block keeps its signature; the later one keeps only its text, and the \
+             later encrypted one has nothing to show and is dropped"
+        );
+        assert_eq!(parsed.content, "Found it.", "text is unaffected");
+    }
+
+    #[test]
+    fn a_block_of_an_unknown_type_ends_the_leading_reasoning() {
+        let response: AnthropicResponse = serde_json::from_value(json!({
+            "content": [
+                {"type": "mystery_block", "x": 1},
+                {"type": "thinking", "thinking": "after it", "signature": "sig-1"},
+                {"type": "text", "text": "answer"}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        }))
+        .unwrap();
+
+        let parsed = AnthropicClient::parse_response(response);
+
+        assert_eq!(
+            parsed.thinking,
+            vec![ThinkingBlock::text("after it")],
+            "an unknown block still holds a place ahead of the reasoning"
+        );
+        assert_eq!(parsed.content, "answer", "the rest of the response is read");
+    }
+
+    /// Run `body` through a non-streaming exchange of two requests with
+    /// thinking on: the first gets `body` back, and `continue_with` turns
+    /// that response into the history of the second. Returns the second
+    /// request as sent.
+    async fn next_request_after(
+        body: Value,
+        continue_with: impl FnOnce(&mut Vec<Message>, InferenceResponse),
+    ) -> Value {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let client = test_client(&server.uri());
+        let options = thinking_options(4096);
+        let mut history = vec![Message::system("Be helpful."), Message::user("look it up")];
+
+        let first = client.complete(&history, &[], &options).await.unwrap();
+        continue_with(&mut history, first);
+        client.complete(&history, &[], &options).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        serde_json::from_slice(&requests.get(1).unwrap().body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_searched_reply_goes_back_with_only_its_leading_reasoning() {
+        let body =
+            reasoning_around_a_search(json!({"type": "text", "text": "Found it."}), "end_turn");
+
+        let second = next_request_after(body, |history, first| {
+            history.push(Message::assistant(first.content, None).with_thinking(first.thinking));
+            history.push(Message::user("thanks"));
+        })
+        .await;
+
+        assert_eq!(
+            at(&second, "/messages/1/content"),
+            &json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-a"},
+                {"type": "text", "text": "Found it."}
+            ]),
+            "reasoning written after the search would sit ahead of content its signature covers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_searching_tool_call_in_progress_goes_back_with_only_its_leading_reasoning() {
+        let body = reasoning_around_a_search(
+            json!({"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {"command": "ls"}}),
+            "tool_use",
+        );
+
+        let second = next_request_after(body, |history, first| {
+            history.push(
+                Message::assistant(first.content, Some(first.tool_calls))
+                    .with_thinking(first.thinking),
+            );
+            history.push(Message::tool("a.txt", "toolu_1"));
+        })
+        .await;
+
+        assert_eq!(
+            at(&second, "/messages/1/content"),
+            &json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-a"},
+                {"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {"command": "ls"}}
+            ]),
+            "the exchange in progress replays every replayable block, which is only the leading one"
         );
     }
 
@@ -3300,7 +4147,7 @@ mod tests {
             assistant_with_thinking("", Some(vec![call("t2")]), vec![signed("two", "s2")]),
             Message::tool("r2", "t2"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_, api) = convert(&messages);
         let types = block_types(&api);
         assert_eq!(
             types.get(1).unwrap(),
@@ -3352,7 +4199,7 @@ mod tests {
             ),
             Message::tool("r1", "t1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_, api) = convert(&messages);
         let blocks = serde_json::to_value(&api.get(1).unwrap().content).unwrap();
         assert_eq!(
             blocks,
@@ -3395,7 +4242,7 @@ mod tests {
             Message::tool("r1", "t1"),
         ];
 
-        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+        let (_, api) = convert(&messages);
 
         let blocks = serde_json::to_value(&api.get(1).unwrap().content).unwrap();
         assert_eq!(
@@ -3589,7 +4436,10 @@ mod tests {
         assert_eq!(streamed.content, "Hello w\u{f6}rld", "text assembled");
         assert_eq!(
             streamed.thinking,
-            vec![signed("Let me think.", "sig-abc"), redacted("ENC")],
+            vec![
+                answering_hello(signed("Let me think.", "sig-abc")),
+                answering_hello(redacted("ENC"))
+            ],
             "thinking keeps its signature and the redacted block"
         );
         assert_eq!(streamed.tool_calls.len(), 1, "one tool call");
@@ -4057,7 +4907,9 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         assert_eq!(
             result.unwrap().thinking,
-            vec![ThinkingBlock::text("unsigned musing").with_origin(&test_origin())],
+            vec![answering_hello(
+                ThinkingBlock::text("unsigned musing").with_origin(&test_origin())
+            )],
             "an empty signature is no signature, and a block with nothing in it is dropped"
         );
     }
@@ -4124,6 +4976,125 @@ mod tests {
             "server tools are not our calls"
         );
         assert_eq!(sink.text(), "Found it.", "nothing else is streamed as text");
+    }
+
+    #[tokio::test]
+    async fn streamed_reasoning_after_a_search_is_shown_but_not_replayed() {
+        let events = [
+            message_start(json!({"input_tokens": 5, "output_tokens": 1})),
+            block_start(
+                0,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            delta(0, json!({"type": "thinking_delta", "thinking": "plan"})),
+            delta(0, json!({"type": "signature_delta", "signature": "sig-a"})),
+            block_stop(0),
+            block_start(
+                1,
+                json!({"type": "server_tool_use", "id": "srvtoolu_1",
+                    "name": "web_search", "input": {}}),
+            ),
+            delta(
+                1,
+                json!({"type": "input_json_delta", "partial_json": "{\"query\":\"rust\"}"}),
+            ),
+            block_stop(1),
+            block_start(
+                2,
+                json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1",
+                    "content": []}),
+            ),
+            block_stop(2),
+            block_start(
+                3,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            delta(
+                3,
+                json!({"type": "thinking_delta", "thinking": "read the results"}),
+            ),
+            delta(3, json!({"type": "signature_delta", "signature": "sig-b"})),
+            block_stop(3),
+            block_start(4, json!({"type": "redacted_thinking", "data": "ENC-LATE"})),
+            block_stop(4),
+            block_start(
+                5,
+                json!({"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {}}),
+            ),
+            delta(
+                5,
+                json!({"type": "input_json_delta", "partial_json": "{\"command\":\"ls\"}"}),
+            ),
+            block_stop(5),
+            message_end("tool_use", json!({"output_tokens": 8})),
+        ]
+        .concat();
+
+        let (result, sink, _) = stream_from(sse_response(&[events]), test_client).await;
+        let response = result.unwrap();
+
+        assert_eq!(
+            response.thinking,
+            vec![
+                answering_hello(signed("plan", "sig-a")),
+                answering_hello(
+                    ThinkingBlock::text("read the results").with_origin(&test_origin())
+                ),
+            ],
+            "only the leading block keeps its signature, and the late encrypted one is dropped"
+        );
+        assert_eq!(
+            sink.thinking(),
+            "planread the results",
+            "both blocks still stream to the reader"
+        );
+
+        let mut history = simple_user_message();
+        history.push(
+            Message::assistant(response.content, Some(response.tool_calls))
+                .with_thinking(response.thinking),
+        );
+        history.push(Message::tool("a.txt", "toolu_1"));
+        let (_, api) = convert(&history);
+        assert_eq!(
+            serde_json::to_value(&api.get(1).unwrap().content).unwrap(),
+            json!([
+                {"type": "thinking", "thinking": "plan", "signature": "sig-a"},
+                {"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {"command": "ls"}}
+            ]),
+            "the exchange in progress goes back with only the leading reasoning"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_streamed_block_this_client_cannot_read_keeps_its_place() {
+        let events = [
+            message_start(json!({"input_tokens": 5, "output_tokens": 1})),
+            block_start(0, json!({"type": "web_fetch_tool_result", "x": 1})),
+            block_stop(0),
+            block_start(
+                1,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            delta(1, json!({"type": "thinking_delta", "thinking": "after it"})),
+            delta(1, json!({"type": "signature_delta", "signature": "sig-1"})),
+            block_stop(1),
+            block_start(2, json!({"type": "text", "text": ""})),
+            delta(2, json!({"type": "text_delta", "text": "Done."})),
+            block_stop(2),
+            message_end("end_turn", json!({"output_tokens": 8})),
+        ]
+        .concat();
+
+        let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
+
+        assert_eq!(
+            result.unwrap().thinking,
+            vec![answering_hello(
+                ThinkingBlock::text("after it").with_origin(&test_origin())
+            )],
+            "reasoning after a block of an unknown type is not leading, so it is never sent back"
+        );
     }
 
     #[tokio::test]

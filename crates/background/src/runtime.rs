@@ -220,6 +220,7 @@ impl SessionRuntime {
     #[tracing::instrument(skip_all, fields(session.address = %req.address))]
     pub fn spawn(&self, req: SessionSpawnRequest, resources: Option<SubAgentResources>) {
         let run_id = generate_run_id();
+        let resources = resources.map(|res| res.keyed_to_run(&run_id));
         let category = SessionCategory::from_trigger(&req.trigger);
         let purpose = truncate_prompt_preview(&req.subagent_config.opening_text());
         let idle_timeout = self.idle_timeouts.for_trigger(&req.trigger);
@@ -2543,6 +2544,53 @@ mod tests {
             !transcript.contains("cabin") && !transcript.contains("june"),
             "main's conversation stays out of the fork's own transcript: {transcript}"
         );
+    }
+
+    /// Answers every call, recording the cache hints it was sent.
+    struct CacheHintsRecorder {
+        seen: Arc<std::sync::Mutex<Vec<residuum_inference::CacheHints>>>,
+    }
+
+    #[async_trait]
+    impl residuum_inference::InferenceProvider for CacheHintsRecorder {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.seen.lock().unwrap().push(options.cache.clone());
+            Ok(InferenceResponse::new("done".to_string(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "cache-hints-recorder"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_s_calls_are_keyed_to_its_run_with_short_retention() {
+        let (runtime, mut sub) = test_runtime(3).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut resources = make_resources("unused");
+        resources.provider = Box::new(CacheHintsRecorder {
+            seen: Arc::clone(&seen),
+        });
+
+        runtime.spawn(sample_request("spawned-cache-0001"), Some(resources));
+        let event = next_event("the session's result to be published", &mut sub).await;
+
+        let seen = seen.lock().unwrap().clone();
+        assert!(!seen.is_empty(), "the session called the model");
+        for hints in seen {
+            assert_eq!(
+                hints,
+                residuum_inference::CacheHints {
+                    conversation_key: Some(event.run_id.clone()),
+                    retention: residuum_inference::CacheRetention::Short,
+                }
+            );
+        }
     }
 
     #[tokio::test]

@@ -5195,6 +5195,7 @@ dependencies = [
  "iana-time-zone",
  "rand 0.8.6",
  "residuum-core",
+ "ring",
  "serde",
  "serde_json",
  "shellexpand",

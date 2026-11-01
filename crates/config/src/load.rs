@@ -252,6 +252,14 @@ impl Config {
             Self::validate_agent_providers_toml(contents, agent_dir, agent_name, hub)
         })
     }
+
+    /// The stable key that names this agent's main conversation to model
+    /// providers that route requests by key: a hash of the workspace path,
+    /// so no filesystem detail leaves the machine.
+    #[must_use]
+    pub fn main_conversation_key(&self) -> String {
+        crate::resolve::session_affinity_key(&self.workspace_dir, "main")
+    }
 }
 
 /// The agent's name from its workspace directory's file name.
