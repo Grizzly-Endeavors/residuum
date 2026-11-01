@@ -266,92 +266,116 @@ impl Tool for ReadTool {
             Ok(f) => f,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
-        let mut lines_stream = BufReader::new(file).lines();
-
-        let mut selected: Vec<String> = Vec::new();
-        let mut truncated_count: usize = 0;
-        let mut total_lines: usize = 0;
-        let mut first_shown_line: Option<usize> = None;
-        let mut last_shown_line: usize = 0;
-        let mut body_chars: usize = 0;
-        let mut page_full = false;
-
-        loop {
-            let line = match lines_stream.next_line().await {
-                Ok(Some(l)) => l,
-                Ok(None) => break,
-                Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
-            };
-            total_lines += 1;
-            let line_no = total_lines;
-
-            if line_no <= start {
-                continue;
-            }
-            // Keep streaming (without collecting) past the page's end so total_lines stays accurate.
-            if page_full || selected.len() >= limit {
-                continue;
-            }
-
-            let (formatted, was_truncated) = format_numbered_line(line_no, &line);
-            // Each shown line costs its characters plus the newline joining it.
-            let line_chars = formatted.chars().count() + 1;
-            if !selected.is_empty() && body_chars + line_chars > char_budget {
-                page_full = true;
-                continue;
-            }
-            body_chars += line_chars;
-            if was_truncated {
-                truncated_count += 1;
-            }
-            selected.push(formatted);
-            first_shown_line.get_or_insert(line_no);
-            last_shown_line = line_no;
-        }
-
-        // Build the info/warnings header. Total size and line count are
-        // always reported so a paged or truncated view never hides how much
-        // more there is to see.
-        let mut warnings: Vec<String> = vec![format!(
-            "file: {total_size} bytes, {total_lines} line(s) total"
-        )];
-        match first_shown_line {
-            Some(first) if first > 1 || last_shown_line < total_lines => {
-                let mut notice =
-                    format!("showing lines {first}-{last_shown_line} of {total_lines}");
-                if last_shown_line < total_lines {
-                    _ = write!(
-                        notice,
-                        "; continue with offset={last_shown_line}, or use exec with grep to \
-                         find specific content"
-                    );
-                }
-                warnings.push(notice);
-            }
-            None if total_lines > 0 => {
-                warnings.push(format!(
-                    "offset {offset} is at or beyond the file's {total_lines} line(s); nothing to show"
-                ));
-            }
-            Some(_) | None => {}
-        }
-        if truncated_count > 0 {
-            warnings.push(format!(
-                "warning: {truncated_count} line(s) exceeded {MAX_CHARS_PER_LINE} characters and were truncated"
-            ));
-        }
+        let page = match TextPage::read(file, start, limit, char_budget).await {
+            Ok(page) => page,
+            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+        };
 
         // Record read in tracker, keyed by the resolved path so it matches
         // what write_file/edit_file check against regardless of how this
         // call's path argument was spelled.
         self.record_read(&resolved, record).await;
 
-        let header = warnings.join("\n");
-        let body = selected.join("\n");
-        if body.is_empty() {
-            Ok(ToolResult::success(header))
+        Ok(ToolResult::success(page.render(total_size, offset)))
+    }
+}
+
+/// One page of a text file, as `read_file` shows it.
+struct TextPage {
+    /// The shown lines, numbered.
+    lines: Vec<String>,
+    /// How many shown lines were cut at [`MAX_CHARS_PER_LINE`].
+    truncated: usize,
+    /// Lines in the whole file.
+    total_lines: usize,
+    /// The first and last line numbers shown (1-based), when any are.
+    shown: Option<(usize, usize)>,
+}
+
+impl TextPage {
+    /// Stream `file`, keeping the lines after the first `start`, up to
+    /// `limit` lines and `char_budget` characters of numbered lines (at least
+    /// one line). Lines past the page are still counted, so `total_lines` is
+    /// the file's.
+    async fn read(
+        file: tokio::fs::File,
+        start: usize,
+        limit: usize,
+        char_budget: usize,
+    ) -> std::io::Result<Self> {
+        let mut lines_stream = BufReader::new(file).lines();
+        let mut page = Self {
+            lines: Vec::new(),
+            truncated: 0,
+            total_lines: 0,
+            shown: None,
+        };
+        let mut body_chars: usize = 0;
+        let mut page_full = false;
+
+        while let Some(line) = lines_stream.next_line().await? {
+            page.total_lines += 1;
+            let line_no = page.total_lines;
+            if line_no <= start || page_full || page.lines.len() >= limit {
+                continue;
+            }
+
+            let (formatted, was_truncated) = format_numbered_line(line_no, &line);
+            // Each shown line costs its characters plus the newline joining it.
+            let line_chars = formatted.chars().count() + 1;
+            if !page.lines.is_empty() && body_chars + line_chars > char_budget {
+                page_full = true;
+                continue;
+            }
+            body_chars += line_chars;
+            page.truncated += usize::from(was_truncated);
+            page.lines.push(formatted);
+            let first = page.shown.map_or(line_no, |(first, _)| first);
+            page.shown = Some((first, line_no));
+        }
+        Ok(page)
+    }
+
+    /// The result text: a header, then the numbered lines. The header always
+    /// reports the file's size and line count, so a paged or truncated view
+    /// never hides how much more there is to see; a partial page also names
+    /// its range and the offset to continue from.
+    fn render(&self, total_size: u64, offset: u64) -> String {
+        let total_lines = self.total_lines;
+        let mut header: Vec<String> = vec![format!(
+            "file: {total_size} bytes, {total_lines} line(s) total"
+        )];
+        match self.shown {
+            Some((first, last)) if first > 1 || last < total_lines => {
+                let mut notice = format!("showing lines {first}-{last} of {total_lines}");
+                if last < total_lines {
+                    _ = write!(
+                        notice,
+                        "; continue with offset={last}, or use exec with grep to find \
+                         specific content"
+                    );
+                }
+                header.push(notice);
+            }
+            None if total_lines > 0 => {
+                header.push(format!(
+                    "offset {offset} is at or beyond the file's {total_lines} line(s); nothing to show"
+                ));
+            }
+            Some(_) | None => {}
+        }
+        if self.truncated > 0 {
+            header.push(format!(
+                "warning: {} line(s) exceeded {MAX_CHARS_PER_LINE} characters and were truncated",
+                self.truncated
+            ));
+        }
+
+        let header = header.join("\n");
+        if self.lines.is_empty() {
+            header
         } else {
-            Ok(ToolResult::success(format!("{header}\n\n{body}")))
+            format!("{header}\n\n{}", self.lines.join("\n"))
         }
     }
 }
@@ -667,10 +691,12 @@ mod tests {
 
     /// A file of `count` lines of 80 characters each, as written and as text.
     async fn wide_lines_file(dir: &Path, count: usize) -> PathBuf {
+        use std::fmt::Write as _;
         let path = dir.join("wide-lines.txt");
-        let content: String = (1..=count)
-            .map(|n| format!("{n:>6} {}\n", "x".repeat(73)))
-            .collect();
+        let content = (1..=count).fold(String::new(), |mut text, n| {
+            _ = writeln!(text, "{n:>6} {}", "x".repeat(73));
+            text
+        });
         tokio::fs::write(&path, content).await.unwrap();
         path
     }
