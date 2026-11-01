@@ -2,7 +2,6 @@
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use std::process::Output;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,12 +17,22 @@ use residuum_config::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };
 use residuum_config::{SharedToolsPath, apply_tools_path};
-use residuum_core::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
+use residuum_core::process::{
+    Capture, Captured, CapturedOutput, RunOutcome, run_with_timeout_and_cancel, shell_command,
+};
 use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Maximum output size from a command (100KB).
+/// Maximum size of the output shown from one command (100KB), notes included.
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
+
+/// Most of stderr shown, as its tail. Stderr is what a failing command says
+/// last and most plainly, so it gets a quarter of the cap.
+const STDERR_BUDGET_BYTES: usize = MAX_OUTPUT_BYTES / 4;
+
+/// Space held back from the cap for the section labels and the omission notes
+/// that surround the shown streams.
+const NOTE_RESERVE_BYTES: usize = 256;
 
 /// Default command timeout in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -157,15 +166,15 @@ impl ExecTool {
 
     /// Store a finished command's stdout as a key and report the outcome,
     /// never returning the stdout itself.
-    async fn store_output(&self, target: &StoreTarget, output: &Output) -> ToolResult {
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    async fn store_output(&self, target: &StoreTarget, output: &CapturedOutput) -> ToolResult {
+        // Captured whole for a store, so the head is the entire stdout.
+        let stdout = String::from_utf8_lossy(&output.stdout.head);
         let value = stdout.trim_end_matches(['\r', '\n']);
-        let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = self
             .redactor()
             .await
             .with_entry(&target.name, value)
-            .redact(&stderr)
+            .redact(&shown_stderr(&output.stderr))
             .into_owned();
 
         if !output.status.success() {
@@ -260,17 +269,16 @@ impl ExecTool {
     async fn captured_output_message(
         &self,
         reason: &str,
-        output: &Output,
+        output: &CapturedOutput,
         store_target: Option<&StoreTarget>,
     ) -> String {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         if let Some(target) = store_target {
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stdout = String::from_utf8_lossy(&output.stdout.head);
             let stderr = self
                 .redactor()
                 .await
                 .with_entry(&target.name, &stdout)
-                .redact(&stderr)
+                .redact(&shown_stderr(&output.stderr))
                 .into_owned();
             with_stderr(
                 format!("{reason}; nothing was stored and stdout was discarded"),
@@ -293,9 +301,12 @@ impl Tool for ExecTool {
             name: self.name().to_string(),
             description: format!(
                 "Execute a shell command and return its output. Commands run via \
-                 {} with a configurable timeout (default 120 seconds). Use `keys` to \
-                 expose agent keys as environment variables (see agent_keys_list); use \
-                 `store_output_as` to store stdout as a new agent key instead of returning it.",
+                 {} with a configurable timeout (default 120 seconds). Output over 100 KB \
+                 keeps the start of stdout and the end of stderr (and the end of stdout when \
+                 the command fails) and says how many bytes were left out. Terminal colour \
+                 codes are removed. Use `keys` to expose agent keys as environment variables \
+                 (see agent_keys_list); use `store_output_as` to store stdout as a new agent \
+                 key instead of returning it.",
                 if cfg!(windows) { "`cmd /C`" } else { "`sh -c`" }
             ),
             parameters: serde_json::json!({
@@ -391,11 +402,21 @@ impl Tool for ExecTool {
             cmd.env(var, value);
         }
 
+        // A store keeps stdout whole; otherwise stdout keeps its head and tail,
+        // since a failing command's end is shown and its start gives context.
+        let stdout_capture = if store_target.is_some() {
+            Capture::All
+        } else {
+            Capture::HeadAndTail {
+                head: MAX_OUTPUT_BYTES,
+                tail: MAX_OUTPUT_BYTES,
+            }
+        };
         let (outcome, output) = match run_with_timeout_and_cancel(
             cmd,
             Duration::from_secs(timeout_secs),
             cancel,
-            (Capture::All, Capture::All),
+            (stdout_capture, Capture::Tail(STDERR_BUDGET_BYTES)),
         )
         .await
         {
@@ -466,7 +487,7 @@ fn parse_store_target(arguments: &Value) -> Result<Option<StoreTarget>, ToolErro
     }
 }
 
-fn exit_code_label(output: &Output) -> String {
+fn exit_code_label(output: &CapturedOutput) -> String {
     output
         .status
         .code()
@@ -476,9 +497,8 @@ fn exit_code_label(output: &Output) -> String {
 /// Build the message for a timed-out or cancelled command that has no
 /// `store_output_as`: `reason` plus whatever stdout/stderr it produced
 /// before it ended, labelled as partial rather than final.
-fn format_captured_output(reason: &str, output: &Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+fn format_captured_output(reason: &str, output: &CapturedOutput) -> String {
+    let (stdout, stderr) = shown_streams(&output.stdout, &output.stderr, true);
 
     let mut text = reason.to_string();
     if !stdout.is_empty() {
@@ -489,7 +509,7 @@ fn format_captured_output(reason: &str, output: &Output) -> String {
         text.push_str("\nSTDERR so far:\n");
         text.push_str(&stderr);
     }
-    truncate_output(text)
+    text
 }
 
 /// Append a labelled stderr block to `message` when there is any.
@@ -497,27 +517,63 @@ fn with_stderr(message: String, stderr: &str) -> String {
     if stderr.is_empty() {
         return message;
     }
-    truncate_output(format!("{message}\nSTDERR:\n{stderr}"))
+    format!("{message}\nSTDERR:\n{stderr}")
 }
 
-fn truncate_output(mut text: String) -> String {
-    // floor_char_boundary avoids splitting a multi-byte character.
-    if text.len() > MAX_OUTPUT_BYTES {
-        text.truncate(text.floor_char_boundary(MAX_OUTPUT_BYTES));
-        text.push_str("\n... (output truncated)");
+/// The text of stderr as a result shows it, before any redaction.
+fn shown_stderr(stderr: &Captured) -> String {
+    shape_stream("stderr", stderr, 0, STDERR_BUDGET_BYTES)
+}
+
+/// The text of each stream a result shows, within the output cap.
+///
+/// stderr shows its tail. stdout takes the rest of the cap: its head alone
+/// when the command succeeded, and its head plus tail when it failed, with
+/// the head getting a quarter of stdout's share.
+fn shown_streams(stdout: &Captured, stderr: &Captured, failed: bool) -> (String, String) {
+    let stderr_text = shown_stderr(stderr);
+    let stdout_budget = MAX_OUTPUT_BYTES.saturating_sub(NOTE_RESERVE_BYTES + stderr_text.len());
+    let (head, tail) = if failed {
+        let head = stdout_budget / 4;
+        (head, stdout_budget - head)
+    } else {
+        (stdout_budget, 0)
+    };
+    (shape_stream("stdout", stdout, head, tail), stderr_text)
+}
+
+/// A stream as shown: its first `head` bytes and last `tail` bytes, with a
+/// note between them saying how many bytes were left out.
+fn shape_stream(name: &str, stream: &Captured, head: usize, tail: usize) -> String {
+    let shown_head = prefix(&stream.head, head);
+    let shown_tail = suffix(&stream.tail, tail);
+    let omitted = stream.total_bytes() - shown_head.len() - shown_tail.len();
+
+    let mut text = String::from_utf8_lossy(shown_head).into_owned();
+    if omitted > 0 {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        _ = writeln!(text, "[… {omitted} bytes of {name} omitted …]");
     }
+    text.push_str(&String::from_utf8_lossy(shown_tail));
     text
 }
 
-/// Combine stdout and stderr into the tool result for a normal run.
-fn format_output(output: &Output) -> ToolResult {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+fn prefix(bytes: &[u8], len: usize) -> &[u8] {
+    bytes.get(..len.min(bytes.len())).unwrap_or(bytes)
+}
 
-    let mut result_text = String::new();
-    if !stdout.is_empty() {
-        result_text.push_str(&stdout);
-    }
+fn suffix(bytes: &[u8], len: usize) -> &[u8] {
+    bytes
+        .get(bytes.len().saturating_sub(len)..)
+        .unwrap_or(bytes)
+}
+
+/// Combine stdout and stderr into the tool result for a normal run.
+fn format_output(output: &CapturedOutput) -> ToolResult {
+    let failed = !output.status.success();
+    let (mut result_text, stderr) = shown_streams(&output.stdout, &output.stderr, failed);
     if !stderr.is_empty() {
         if !result_text.is_empty() {
             result_text.push('\n');
@@ -525,7 +581,6 @@ fn format_output(output: &Output) -> ToolResult {
         result_text.push_str("STDERR:\n");
         result_text.push_str(&stderr);
     }
-    let mut result_text = truncate_output(result_text);
 
     if output.status.success() {
         if result_text.is_empty() {
@@ -858,30 +913,162 @@ mod tests {
         );
     }
 
+    fn captured(head: &[u8], omitted: usize, tail: &[u8]) -> Captured {
+        Captured {
+            head: head.to_vec(),
+            tail: tail.to_vec(),
+            omitted,
+        }
+    }
+
+    #[test]
+    fn shape_stream_shows_both_ends_with_a_note_between() {
+        let stream = captured(b"abcdef", 4, b"wxyz");
+        assert_eq!(
+            shape_stream("stdout", &stream, 6, 4),
+            "abcdef\n[… 4 bytes of stdout omitted …]\nwxyz"
+        );
+    }
+
+    #[test]
+    fn shape_stream_counts_bytes_cut_from_the_head_budget() {
+        let stream = captured(b"abcdef", 0, b"");
+        assert_eq!(
+            shape_stream("stdout", &stream, 3, 0),
+            "abc\n[… 3 bytes of stdout omitted …]\n"
+        );
+    }
+
+    #[test]
+    fn shape_stream_counts_bytes_cut_from_the_tail_budget() {
+        let stream = captured(b"", 2, b"wxyz");
+        assert_eq!(
+            shape_stream("stderr", &stream, 0, 2),
+            "[… 4 bytes of stderr omitted …]\nyz"
+        );
+    }
+
+    #[test]
+    fn shape_stream_without_omission_is_the_whole_stream() {
+        let stream = captured(b"head", 0, b"tail");
+        assert_eq!(shape_stream("stdout", &stream, 100, 100), "headtail");
+        assert_eq!(shape_stream("stdout", &Captured::default(), 100, 100), "");
+    }
+
+    #[test]
+    fn shown_streams_keep_only_the_head_of_stdout_on_success() {
+        let stdout = captured(&[b'h'; MAX_OUTPUT_BYTES], 5_000, &[b't'; MAX_OUTPUT_BYTES]);
+        let (shown, _) = shown_streams(&stdout, &Captured::default(), false);
+        assert!(shown.starts_with('h'));
+        assert!(
+            !shown.contains(&"t".repeat(8)),
+            "the tail of a successful run is not shown"
+        );
+        assert!(shown.contains("bytes of stdout omitted"), "{shown}");
+    }
+
+    #[test]
+    fn shown_streams_keep_the_tail_of_stdout_when_the_command_fails() {
+        let stdout = captured(&[b'h'; MAX_OUTPUT_BYTES], 5_000, &[b't'; MAX_OUTPUT_BYTES]);
+        let (shown, _) = shown_streams(&stdout, &Captured::default(), true);
+        assert!(shown.starts_with('h'));
+        assert!(shown.ends_with('t'));
+        assert!(shown.contains("bytes of stdout omitted"), "{shown}");
+    }
+
+    #[test]
+    fn shown_streams_keep_the_tail_of_stderr_and_stay_within_the_cap() {
+        let stdout = captured(&[b'h'; MAX_OUTPUT_BYTES], 9_000, &[b't'; MAX_OUTPUT_BYTES]);
+        let stderr = captured(b"", 1_000, b"final error\n");
+        for failed in [false, true] {
+            let (stdout_text, stderr_text) = shown_streams(&stdout, &stderr, failed);
+            assert!(stderr_text.ends_with("final error\n"), "{stderr_text}");
+            assert!(stderr_text.starts_with("[… 1000 bytes of stderr omitted …]"));
+            assert!(
+                stdout_text.len() + stderr_text.len() + "STDERR:\n".len() <= MAX_OUTPUT_BYTES,
+                "shown output must fit the cap: stdout {} stderr {}",
+                stdout_text.len(),
+                stderr_text.len()
+            );
+        }
+    }
+
+    #[test]
+    fn shown_streams_show_small_output_whole() {
+        let stdout = captured(b"out\n", 0, b"");
+        let stderr = captured(b"err\n", 0, b"");
+        assert_eq!(
+            shown_streams(&stdout, &stderr, true),
+            ("out\n".to_string(), "err\n".to_string())
+        );
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
-    async fn exec_output_truncated() {
+    async fn exec_keeps_the_start_of_large_stdout_and_the_end_of_large_stderr() {
         let tool = ExecTool::new(None, None, None, workspace_root());
-        // Generate more than 100KB of output
-        let command = if cfg!(windows) {
-            "powershell -NoProfile -Command \"'x' * 204800\""
-        } else {
-            "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
-        };
         let result = tool
-            .execute(serde_json::json!({ "command": command }))
+            .execute(serde_json::json!({
+                "command": "seq 1 100000; seq 1 30000 >&2"
+            }))
             .await
             .unwrap();
 
-        assert!(!result.is_error, "command should succeed");
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.starts_with("1\n2\n3\n"), "stdout head kept");
         assert!(
-            result.output.contains("(output truncated)"),
-            "large output should be truncated: output len = {}",
-            result.output.len()
+            !result.output.contains("\n99999\n"),
+            "stdout middle dropped"
         );
+        assert!(result.output.contains("bytes of stdout omitted"));
         assert!(
-            result.output.len() < 200 * 1024,
-            "truncated output should be smaller than raw output"
+            result.output.ends_with("30000\n"),
+            "stderr's last line kept"
         );
+        assert!(result.output.contains("bytes of stderr omitted"));
+        assert!(result.output.len() <= MAX_OUTPUT_BYTES);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_failing_command_keeps_the_end_of_stdout() {
+        let tool = ExecTool::new(None, None, None, workspace_root());
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "seq 1 100000; echo boom >&2; exit 3"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .output
+                .starts_with("command exited with code 3\n1\n2\n"),
+            "{}",
+            result.output
+        );
+        assert!(result.output.contains("\n100000\n"), "stdout's end is kept");
+        assert!(result.output.contains("bytes of stdout omitted"));
+        assert!(
+            result.output.ends_with("STDERR:\nboom\n"),
+            "{}",
+            result.output
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_removes_ansi_colour_codes_from_output() {
+        let tool = ExecTool::new(None, None, None, workspace_root());
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "printf '\\033[31mred\\033[0m\\n'; printf '\\033[1mbold\\033[0m\\n' >&2"
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(result.output, "red\n\nSTDERR:\nbold\n");
     }
 
     #[cfg(unix)]
