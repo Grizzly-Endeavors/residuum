@@ -40,7 +40,7 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `skill_activate` | `name` (string) | Load a skill's body into the active system prompt. |
+| `skill_activate` | `name` (string) | Rescan the skill directories, then load a skill's body into the active system prompt. |
 | `skill_deactivate` | `name` (string) | Remove a skill's body from the system prompt. |
 
 ## How Skills Appear in the Prompt
@@ -68,7 +68,7 @@ Detailed instructions, workflows, and reference material.
 
 - **Activation** reads the SKILL.md body from disk and adds it to the active skill list. The body persists in the system prompt until deactivated.
 - **Deactivation** removes the body from the prompt.
-- **Rescan** (`skill_activate` triggers a rescan) re-reads all skill directories and removes any active skills whose source files no longer exist.
+- **Rescan** re-reads all skill directories. It runs on config reload and before each `skill_activate`, so a newly written skill can be activated without a reload. Active skills whose source files no longer exist are removed. Each rescan publishes its notices (an unreadable directory, a skill skipped for invalid frontmatter, a skill with an oversized description).
 - Skill lookup is **case-insensitive** by name.
 
 ## Gotchas
