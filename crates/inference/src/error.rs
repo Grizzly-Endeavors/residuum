@@ -1,46 +1,78 @@
 //! Errors returned by inference provider operations.
 
-use thiserror::Error;
+use std::fmt;
 
 use crate::types::AttemptUsage;
 
 /// Errors from model provider operations.
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum InferenceError {
     /// HTTP request failed (network, DNS, TLS)
-    #[error("HTTP request failed: {0}")]
-    Request(#[from] reqwest::Error),
+    Request(reqwest::Error),
 
     /// Response could not be parsed
-    #[error("failed to parse response: {0}")]
     Parse(String),
 
     /// API returned an error status
-    #[error("API error: {0}")]
     Api(String),
 
     /// Request timed out
-    #[error("request timed out after {0} seconds")]
     Timeout(u64),
 
     /// A streaming response went quiet: no bytes arrived for this many seconds
-    #[error("the model stopped responding for {0}s")]
     Stalled(u64),
 
     /// A streaming response ended or broke before it was complete
-    #[error("the response stream was interrupted: {0}")]
     StreamInterrupted(String),
 
     /// A model call that ended in `error`, with every request it sent, in
-    /// order. Shows as `error` alone; [`InferenceError::underlying`] is the error
-    /// to classify, and [`InferenceError::attempts`] what the call spent.
-    #[error("{error}")]
+    /// order. Shows as `error` alone and keeps `error`'s source chain;
+    /// [`InferenceError::underlying`] is the error to classify, and
+    /// [`InferenceError::attempts`] what the call spent.
     Attempted {
         /// What ended the call; never itself `Attempted`.
         error: Box<InferenceError>,
         /// Every request the call sent, in order.
         attempts: Vec<AttemptUsage>,
     },
+}
+
+impl fmt::Display for InferenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Request(e) => write!(f, "HTTP request failed: {e}"),
+            Self::Parse(msg) => write!(f, "failed to parse response: {msg}"),
+            Self::Api(msg) => write!(f, "API error: {msg}"),
+            Self::Timeout(secs) => write!(f, "request timed out after {secs} seconds"),
+            Self::Stalled(secs) => write!(f, "the model stopped responding for {secs}s"),
+            Self::StreamInterrupted(msg) => {
+                write!(f, "the response stream was interrupted: {msg}")
+            }
+            Self::Attempted { error, .. } => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for InferenceError {
+    /// The error's own cause. An `Attempted` wrapper is transparent here, so a
+    /// wrapped error reports the same chain as the bare one.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Request(e) => Some(e),
+            Self::Attempted { error, .. } => error.source(),
+            Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_) => None,
+        }
+    }
+}
+
+impl From<reqwest::Error> for InferenceError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Request(error)
+    }
 }
 
 impl InferenceError {
@@ -657,5 +689,37 @@ mod tests {
                 .to_string(),
         );
         assert_eq!(err.cause_phrase(), "an error talking to the AI provider");
+    }
+
+    /// A request the client rejects before sending it, so the `reqwest` error
+    /// carries its own cause (the URL parse failure).
+    fn request_error() -> InferenceError {
+        let error = reqwest::Client::new().get("not a url").build().unwrap_err();
+        InferenceError::from(error)
+    }
+
+    #[test]
+    fn a_wrapped_error_formats_its_root_cause_like_the_bare_one() {
+        let rejected = request_error();
+        let root =
+            std::iter::successors(std::error::Error::source(&rejected), |cause| cause.source())
+                .last()
+                .expect("a rejected URL has a root cause")
+                .to_string();
+        let bare = anyhow::Error::from(request_error());
+        let wrapped = anyhow::Error::from(InferenceError::Attempted {
+            error: Box::new(request_error()),
+            attempts: Vec::new(),
+        });
+
+        assert_eq!(
+            format!("{wrapped:#}"),
+            format!("{bare:#}"),
+            "wrapping an error in its attempts leaves its chain unchanged"
+        );
+        assert!(
+            format!("{wrapped:#}").contains(&root),
+            "the root cause reaches the formatted chain: {wrapped:#}"
+        );
     }
 }
