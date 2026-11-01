@@ -193,7 +193,7 @@ async fn run_task_script(
             Some(output),
         ),
     };
-    let (stdout, stderr) = output.map_or_else(Default::default, |o| (o.stdout, o.stderr));
+    let (stdout, stderr) = output.map_or_else(Default::default, |o| (o.stdout.head, o.stderr.tail));
     let stdout = redactor
         .redact(&capped_stdout(&stdout, max_stdout))
         .into_owned();
