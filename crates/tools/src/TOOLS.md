@@ -1014,18 +1014,20 @@ Calls `TeamDirectory::delete` as `Actor::Agent(<caller>)`: the agent is stopped,
 **Source:** `web_fetch.rs` · `WebFetchTool`
 
 **Description sent to LLM:**
-> Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports.
+> Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports. Downloads stop at a size limit, which the header reports when a page is cut short.
 
 ### Input
 
-| Parameter | Type    | Required | Description                                                                                          |
-|-----------|---------|----------|-------------------------------------------------------------------------------------------------------|
-| `url`     | string  | yes      | The URL to fetch                                                                                     |
-| `offset`  | integer | no       | Byte offset into the fetched content to start the page from (default: 0); continue from a previous response's offset |
+| Parameter | Type    | Required | Description                                                                                                                                  |
+|-----------|---------|----------|----------------------------------------------------------------------------------------------------------------------------------------------|
+| `url`     | string  | yes      | The URL to fetch                                                                                                                             |
+| `offset`  | integer | no       | Byte offset into the fetched content to start the page from (default: 0). To continue reading, pass the offset from a previous response's `call again with offset=N to continue` line. |
 
 ### Output
 
-On success: a header (`total {n} bytes`, plus a `content-type: ...` note for anything other than HTML/plain text, plus `showing bytes X-Y; call again with offset=Y to continue` when more remains) followed by the page's content. HTML is extracted to readable text; any other textual body (JSON, XML, YAML, CSV, plain text, etc.) is returned as-is. There is no total-size limit — a longer page is read in full by paging through `offset`, not truncated.
+On success: a header (`total {n} bytes`, plus a `content-type: ...` note for anything other than HTML/plain text, plus a note that the page is larger than the download limit when it was cut short, plus `showing bytes X-Y; call again with offset=Y to continue` when more remains) followed by the page's content. HTML is extracted to readable text: the contents of `script`, `style`, `noscript` and `template` elements are dropped and HTML entities such as `&amp;` are decoded. Any other textual body (JSON, XML, YAML, CSV, plain text, etc.) is returned as-is, without entity decoding.
+
+The download limit is 5 MiB (5,242,880 bytes). A page past that is cut short: only the first 5,242,880 bytes are fetched, and paging through `offset` covers those bytes.
 
 On error (`is_error = true`):
 - HTTP error status: `"HTTP {status} fetching {url}"`
