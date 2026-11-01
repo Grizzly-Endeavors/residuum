@@ -43,7 +43,7 @@ If the process crashes mid-run, nothing is lost: the transcript is appended to d
 
 ## Reflector
 
-Fires when `memory/observations.json` exceeds its token threshold. Calls an LLM to merge and deduplicate the observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just denser.
+Fires when the observation log exceeds its token threshold (`reflector_threshold_tokens`, default 22,000). The threshold is estimated on the log as the main prompt displays it: the `Format:` line plus one `[timestamp] | [episode] | [visibility]` entry per observation. Calls an LLM to merge and deduplicate the observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just denser.
 
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki. These are completely separate systems.
 

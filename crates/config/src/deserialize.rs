@@ -364,7 +364,7 @@ pub(super) struct ModelsConfigFile {
 pub(super) struct MemoryConfigFile {
     /// Token threshold before the observer fires.
     pub(super) observer_threshold_tokens: Option<usize>,
-    /// Token threshold before the reflector compresses.
+    /// Token threshold before the reflector compresses, estimated on the observation log as the main prompt displays it.
     pub(super) reflector_threshold_tokens: Option<usize>,
     /// Cooldown period in seconds after the soft threshold is crossed.
     pub(super) observer_cooldown_secs: Option<u64>,
