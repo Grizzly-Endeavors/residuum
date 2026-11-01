@@ -116,6 +116,7 @@ impl SessionToolFactory for SessionTools {
     fn build(&self, scope: SessionToolScope) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.set_agent_keys(Arc::clone(&self.agent_keys));
+        registration::attach_result_store(&mut registry, &self.hub_dir, &self.layout);
         let injections = RegistryInjections {
             tools_path: Some(Arc::clone(&self.tools_path)),
             checkpoints: Some(Arc::clone(&self.checkpoints)),

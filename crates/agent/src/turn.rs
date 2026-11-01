@@ -473,10 +473,11 @@ pub struct TurnResources<'a> {
     /// persists the transcript some other way (the main agent).
     pub transcript_sink: Option<&'a dyn TranscriptSink>,
     /// Durable session-level usage totals to accumulate this turn's model
-    /// calls into, for the web UI's conversation size. `None` for a turn that
-    /// doesn't track them (tests, and any turn kind that never surfaces to
-    /// a web client). The per-turn progress the activity line shows publishes
-    /// regardless of whether this is set.
+    /// calls into, for the web UI's conversation size, and where each call's
+    /// usage records go. `None` for a turn that doesn't track them (tests,
+    /// and any turn kind that never surfaces to a web client). The per-turn
+    /// progress the activity line shows publishes regardless of whether this
+    /// is set.
     pub usage_sink: Option<&'a dyn UsageSink>,
     /// This turn's current hop count: set by the caller to the kickoff
     /// input's hop count before the turn starts, and raised here whenever an
@@ -663,7 +664,7 @@ async fn push_and_record_many(
 enum ModelCall {
     /// The call returned a response.
     Completed {
-        response: InferenceResponse,
+        response: Box<InferenceResponse>,
         /// Whether text or reasoning streamed to the main conversation while
         /// the call ran and has not been voided since: when the response
         /// turns out to be one the turn discards, it must void them.
@@ -751,10 +752,15 @@ async fn call_model(
 
     match outcome {
         None => Ok(ModelCall::Stopped),
-        Some(result) => Ok(ModelCall::Completed {
-            response: result.context("model completion failed")?,
-            streamed,
-        }),
+        Some(result) => {
+            if let Some(usage_sink) = resources.usage_sink {
+                usage_sink.record_call(resources.provider, &result).await;
+            }
+            Ok(ModelCall::Completed {
+                response: Box::new(result.context("model completion failed")?),
+                streamed,
+            })
+        }
     }
 }
 
@@ -930,7 +936,7 @@ pub async fn execute_turn(
 
         let (mut response, streamed) =
             match call_model(resources, events, &messages, &tool_definitions, call).await? {
-                ModelCall::Completed { response, streamed } => (response, streamed),
+                ModelCall::Completed { response, streamed } => (*response, streamed),
                 ModelCall::Stopped => {
                     tracing::info!(
                         iterations = iteration,
@@ -1571,8 +1577,18 @@ async fn execute_tool(
         );
     }
 
-    // Repeat-call guard steering note, appended after redaction so it never
-    // gets mistaken for agent-key-bearing tool output.
+    // A result too long for history is saved whole (already redacted) and
+    // replaced by an excerpt naming the file. This string is what history
+    // stores, so replay sends the same bytes; it is never re-derived.
+    if let Some(store) = resources.tools.result_store() {
+        output = store
+            .keep_for_history(output, &tool_call.name, &tool_call.id)
+            .await;
+    }
+
+    // Repeat-call guard steering note, appended after redaction and the
+    // excerpt so it never gets mistaken for agent-key-bearing tool output
+    // and always stays visible.
     if let Some(note) = steering_note {
         output.push_str("\n\n");
         output.push_str(&note);
@@ -1696,10 +1712,12 @@ async fn stop_repeated_tool_call(
 fn log_usage(response: &InferenceResponse) {
     if let Some(usage) = response.usage {
         tracing::debug!(
-            input_tokens = usage.input_tokens,
-            output_tokens = usage.output_tokens,
-            cache_creation_tokens = usage.cache_creation_tokens,
+            uncached_input_tokens = usage.uncached_input_tokens,
             cache_read_tokens = usage.cache_read_tokens,
+            cache_write_tokens = usage.cache_write_tokens,
+            cache_write_long_tokens = usage.cache_write_long_tokens,
+            output_tokens = usage.output_tokens,
+            reasoning_tokens = usage.reasoning_tokens,
             "token usage"
         );
     } else {
@@ -2369,6 +2387,223 @@ mod tests {
         );
     }
 
+    /// Run one call to `name` through `execute_tool` and return the tool
+    /// message it recorded.
+    async fn record_one_tool_call(
+        tools: &ToolRegistry,
+        mcp_registry: &SharedMcpRegistry,
+        name: &str,
+    ) -> String {
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: name.to_string(),
+            arguments: serde_json::json!({}),
+            server: None,
+        };
+        let provider = residuum_inference::NullProvider;
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools,
+            mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            hop_counter: &hop_counter,
+            usage_sink: None,
+        };
+        let bus_handle = residuum_bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Endpoint {
+                output_endpoint: TurnOutput::Fixed(None),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut recent = RecentMessages::new();
+        execute_tool(&tool_call, &resources, &mut recent, &events, 0, None).await;
+        let msg = recent
+            .messages()
+            .first()
+            .expect("a tool-result message should have been recorded");
+        assert_eq!(msg.role, Role::Tool);
+        msg.content.clone()
+    }
+
+    /// The one file a store holds after a single offloaded result.
+    fn only_saved_result(store: &crate::ToolResultStore) -> std::path::PathBuf {
+        let files: Vec<_> = std::fs::read_dir(store.dir())
+            .expect("the store's directory should exist once a result is saved")
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1, "exactly one saved result: {files:?}");
+        files.into_iter().next().unwrap()
+    }
+
+    #[tokio::test]
+    async fn execute_tool_saves_an_oversized_built_in_result_and_keeps_an_excerpt() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = residuum_config::agent_keys::AgentKeys::new_shared(dir.path().join("keys"));
+        keys.set(
+            "api_key",
+            "sk-live-redactme42",
+            None,
+            residuum_config::agent_keys::KeyCreator::User,
+        )
+        .await
+        .unwrap();
+        let body = {
+            use std::fmt::Write as _;
+            (1..=5_000).fold(String::new(), |mut text, n| {
+                _ = writeln!(text, "row {n} of the dump");
+                text
+            })
+        };
+        let raw = format!("HEAD-MARK sk-live-redactme42\n{body}TAIL-MARK sk-live-redactme42");
+        let store = crate::ToolResultStore::new(dir.path().join("tool-results"), "scout");
+
+        let mut tools = ToolRegistry::new();
+        tools.set_agent_keys(keys);
+        tools.set_result_store(store.clone());
+        tools.register(Box::new(FixedOutputTool::new(raw)));
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
+
+        let content = record_one_tool_call(&tools, &mcp_registry, "fixed_output").await;
+
+        let saved = only_saved_result(&store);
+        let full = std::fs::read_to_string(&saved).unwrap();
+        let redacted =
+            format!("HEAD-MARK [agent-key:api_key]\n{body}TAIL-MARK [agent-key:api_key]");
+        assert_eq!(full, redacted, "the file holds the full redacted result");
+
+        assert!(
+            content.chars().count() < crate::HISTORY_RESULT_MAX_CHARS,
+            "history keeps an excerpt, not the whole result ({} chars)",
+            content.chars().count()
+        );
+        assert!(
+            content.starts_with("HEAD-MARK [agent-key:api_key]"),
+            "{content}"
+        );
+        assert!(
+            content.ends_with("TAIL-MARK [agent-key:api_key]"),
+            "{content}"
+        );
+        assert!(!content.contains("sk-live-redactme42"));
+        assert!(
+            content.contains(&format!("saved at {}", saved.display())),
+            "the excerpt names the saved file: {content}"
+        );
+        assert!(
+            content.contains("read_file starting at offset"),
+            "{content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_tool_keeps_a_result_under_the_threshold_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::ToolResultStore::new(dir.path(), "scout");
+        let output = "a modest result\n".repeat(100);
+
+        let mut tools = ToolRegistry::new();
+        tools.set_result_store(store.clone());
+        tools.register(Box::new(FixedOutputTool::new(output.clone())));
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
+
+        let content = record_one_tool_call(&tools, &mcp_registry, "fixed_output").await;
+
+        assert_eq!(content, output, "a short result is recorded byte for byte");
+        assert!(
+            !store.dir().exists(),
+            "nothing is saved for a result under the threshold"
+        );
+    }
+
+    /// A stdio MCP server, as a `sh` script, offering one tool,
+    /// `big_output`, whose result is `MCP-HEAD`, 40,000 `x`s and `MCP-TAIL`.
+    /// It answers the requests a connect and one call send: `initialize`,
+    /// `tools/list` and `tools/call`; notifications get no reply.
+    #[cfg(unix)]
+    const BIG_OUTPUT_MCP_SERVER: &str = r#"
+big=$(head -c 40000 /dev/zero | tr '\000' x)
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | grep -o '"id":[0-9]*' | head -n 1 | cut -d: -f2)
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"big","version":"1.0.0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"big_output","description":"returns a large result","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"MCP-HEAD %s MCP-TAIL"}],"isError":false}}\n' "$id" "$big" ;;
+  esac
+done
+"#;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_tool_saves_an_oversized_mcp_result_and_keeps_an_excerpt() {
+        let entry = residuum_mcp::McpServerEntry {
+            name: "big".to_string(),
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), BIG_OUTPUT_MCP_SERVER.to_string()],
+            env: std::collections::HashMap::new(),
+            transport: residuum_mcp::McpTransport::Stdio,
+            headers: std::collections::HashMap::new(),
+            timeout_secs: None,
+        };
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
+        let report = wait::guarded("the fake MCP server to connect", async {
+            mcp_registry
+                .write()
+                .await
+                .reconcile_and_connect(&[entry])
+                .await
+        })
+        .await;
+        assert!(
+            report.failures.is_empty(),
+            "the fake MCP server should connect: {:?}",
+            report.failures
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::ToolResultStore::new(dir.path(), "scout");
+        let mut tools = ToolRegistry::new();
+        tools.set_result_store(store.clone());
+
+        let content = wait::guarded(
+            "the MCP tool call to be recorded",
+            record_one_tool_call(&tools, &mcp_registry, "big_output"),
+        )
+        .await;
+
+        let full = std::fs::read_to_string(only_saved_result(&store)).unwrap();
+        assert_eq!(
+            full,
+            format!("MCP-HEAD {} MCP-TAIL", "x".repeat(40_000)),
+            "the file holds the MCP server's whole result"
+        );
+        assert!(content.starts_with("MCP-HEAD"), "{content}");
+        assert!(content.ends_with("MCP-TAIL"), "{content}");
+        assert!(
+            content.chars().count() < crate::HISTORY_RESULT_MAX_CHARS,
+            "history keeps an excerpt of the MCP result"
+        );
+
+        mcp_registry.write().await.disconnect_all().await;
+    }
+
     /// Run `counting_tool` once through `execute_tool` with an Auto Mode
     /// that denies "Running the counting tool", against a decision model
     /// answering `deny_0` with `probability` (or an unreachable one when
@@ -2377,6 +2612,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        let usage_dir = tempfile::tempdir().unwrap();
         let server = MockServer::start().await;
         if let Some(p) = probability {
             Mock::given(method("POST"))
@@ -2412,6 +2648,9 @@ mod tests {
                 threshold: 0.5,
             },
             service,
+            residuum_inference::UsageRecorder::new(&residuum_config::WorkspaceLayout::new(
+                usage_dir.path(),
+            )),
         );
 
         let runs = Arc::new(AtomicUsize::new(0));
@@ -2794,6 +3033,8 @@ mod tests {
         calls: StdMutex<Vec<Option<residuum_inference::Usage>>>,
         tool_call_batches: StdMutex<Vec<u32>>,
         totals_to_return: StdMutex<Vec<SessionUsageTotals>>,
+        /// Each recorded model call: the provider's model and whether it answered.
+        recorded_calls: StdMutex<Vec<(String, bool)>>,
     }
 
     impl MockUsageSink {
@@ -2802,6 +3043,7 @@ mod tests {
                 calls: StdMutex::new(Vec::new()),
                 tool_call_batches: StdMutex::new(Vec::new()),
                 totals_to_return: StdMutex::new(totals_to_return),
+                recorded_calls: StdMutex::new(Vec::new()),
             }
         }
 
@@ -2817,6 +3059,17 @@ mod tests {
 
     #[async_trait]
     impl UsageSink for MockUsageSink {
+        async fn record_call(
+            &self,
+            provider: &dyn InferenceProvider,
+            result: &Result<InferenceResponse, residuum_inference::InferenceError>,
+        ) {
+            self.recorded_calls
+                .lock()
+                .unwrap()
+                .push((provider.model_name().to_string(), result.is_ok()));
+        }
+
         async fn accumulate(&self, usage: Option<residuum_inference::Usage>) -> SessionUsageTotals {
             self.calls.lock().unwrap().push(usage);
             self.next_totals()
@@ -2830,10 +3083,9 @@ mod tests {
 
     fn usage(input: u32, output: u32) -> residuum_inference::Usage {
         residuum_inference::Usage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(input),
+            output_tokens: Some(output),
+            ..Default::default()
         }
     }
 
@@ -3247,6 +3499,96 @@ mod tests {
         assert!(
             sink.tool_call_batches.lock().unwrap().is_empty(),
             "the sink's tool-call path should never be reached when no tools ran"
+        );
+        assert_eq!(
+            *sink.recorded_calls.lock().unwrap(),
+            vec![(provider.model_name().to_string(), true)],
+            "the turn's one model call is recorded"
+        );
+    }
+
+    /// Fails every call, as a provider that's down does.
+    struct FailingProvider;
+
+    #[async_trait]
+    impl InferenceProvider for FailingProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
+            Err(residuum_inference::InferenceError::Api(
+                "503 overloaded".to_string(),
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "failing"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_model_call_is_recorded_before_the_turn_fails() {
+        let provider = FailingProvider;
+        let tools = ToolRegistry::new();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: Some(&sink),
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = residuum_bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Endpoint {
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let memory_ctx = MemoryContext {
+            observations: None,
+            recent_context: None,
+        };
+        let prompt_ctx = PromptContext::default();
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("go"));
+
+        let result = execute_turn(
+            recent.len() - 1,
+            &resources,
+            &memory_ctx,
+            &prompt_ctx,
+            &mut recent,
+            &events,
+            None,
+            &mut interrupt_rx,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "the turn fails with its model call");
+        assert_eq!(
+            *sink.recorded_calls.lock().unwrap(),
+            vec![("failing".to_string(), false)],
+            "the failed call is still recorded"
         );
     }
 

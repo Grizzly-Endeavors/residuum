@@ -344,6 +344,8 @@ mod tests {
                     "interrupted": false,
                     "usage": {
                         "input_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
                         "output_tokens": 0,
                         "context_tokens": null,
                         "tool_calls": 0,

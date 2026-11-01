@@ -72,7 +72,7 @@ pulses:
 ```
 
 - Scripts run in task order through the platform shell (`sh -c`, or `cmd /S /C` on Windows) from the workspace root, with the same `PATH` as your `exec` tool and with your own privileges — anything your `exec` tool can do, a pulse script can do. Agent keys are not passed in as environment variables; agent-key values in the output are redacted.
-- Without `script_only`, the script's stdout is appended to its task's section of the session prompt (a task with a `script` doesn't need a `prompt`).
+- Without `script_only`, the script's stdout is appended to its task's section of the session prompt (a task with a `script` doesn't need a `prompt`). Terminal colour codes are removed from the output first.
 - With `script_only: true` on every task, no session runs. Empty output (or output ending in `HEARTBEAT_OK`) is silent; anything else is filed to the inbox as printed, and pushed to every notification channel when it ends with `HEARTBEAT_URGENT`. `agent`, `model_tier`, `context_from` and task prompts have no effect on such a pulse; setting them still loads the pulse but raises a warning (a diagnostic, or a reload note listing settings with no effect). Its fire shows as running in the Schedule place while its scripts run, and its outcome (`ok`, silent fires too; `failed`; `stopped`) is the pulse's last run, recorded in `pulse_state.json` under `last_fire`.
 - Stdout past `script_max_output_kb` (default 64 KiB) is cut, with a line saying so.
 - The time limit (default 60 s) covers background processes the script leaves holding its output; at the limit the whole process tree is killed.

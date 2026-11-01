@@ -1,12 +1,35 @@
 //! Validated hub-level configuration: the settings that belong to the
 //! process rather than to any one agent, loaded from `hub/config.toml`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
 
 use super::constants::{
     DEFAULT_HOP_HARD_LIMIT, DEFAULT_HOP_SOFT_LIMIT, DEFAULT_MAX_CONCURRENT_BACKGROUND,
 };
 use super::types::{CloudConfig, GatewayConfig, TracingConfig};
+
+/// What one model costs, in USD per million tokens. A provider with no
+/// separate cache-write price bills writes as input, so its entry repeats the
+/// input rate there.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPrice {
+    /// Input tokens billed at the full input rate.
+    pub input: f64,
+    /// Output tokens, reasoning included.
+    pub output: f64,
+    /// Input tokens read from the prompt cache.
+    pub cache_read: f64,
+    /// Input tokens written to the prompt cache at the default TTL (5 minutes
+    /// on Anthropic).
+    pub cache_write: f64,
+    /// Input tokens written to the prompt cache with a 1-hour TTL, which
+    /// Anthropic bills higher than the default TTL.
+    pub cache_write_long: f64,
+}
 
 /// The A2A settings that are hub-level: who the process listens as. Per-agent
 /// visibility (`[a2a] visibility`) lives on the agent's own config instead —
@@ -89,6 +112,17 @@ impl SystemOneProvider {
             Self::TypeSafe => "TypeSafe",
             Self::Ollama => "Ollama",
             Self::Other => "the decision model service",
+        }
+    }
+
+    /// The stable id usage records carry for this provider: lowercase like
+    /// the provider kinds, so a grouping key or a `[pricing]` key can name it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TypeSafe => "typesafe",
+            Self::Ollama => "ollama",
+            Self::Other => "other",
         }
     }
 
@@ -189,6 +223,10 @@ pub struct HubConfig {
     /// The System 1 (decision model) endpoint. `None` when `[system_one]` is
     /// absent or too incomplete to call (a load notice says why).
     pub system_one: Option<SystemOneConfig>,
+    /// Price overrides from `[pricing."provider/model"]`, keyed by the provider
+    /// kind and model id usage records carry. Each one replaces the built-in
+    /// price for that model.
+    pub pricing: BTreeMap<String, ModelPrice>,
     /// Directory this config was loaded from (`~/.residuum/hub`).
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while

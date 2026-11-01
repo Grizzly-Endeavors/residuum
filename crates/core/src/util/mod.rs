@@ -2,6 +2,7 @@
 //! expansion, frontmatter parsing, late-bound weak handles, and
 //! percent-encoding.
 
+pub(crate) mod ansi;
 pub(crate) mod backoff_tracker;
 mod env_expand;
 mod error;

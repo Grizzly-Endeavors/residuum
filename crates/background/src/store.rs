@@ -1132,10 +1132,9 @@ mod tests {
         // turns complete; the caller refreshes its own copy from the
         // registry before finalizing (see `background::runtime::finish_run`).
         info.usage.accumulate(Some(residuum_inference::Usage {
-            input_tokens: 200,
-            output_tokens: 40,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(200),
+            output_tokens: Some(40),
+            ..Default::default()
         }));
 
         let path = store

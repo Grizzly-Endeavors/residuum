@@ -20,7 +20,14 @@ function summary(runId: string, overrides: Partial<SessionSummary> = {}): Sessio
     completed_at: null,
     episode_id: null,
     interrupted: false,
-    usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
+    usage: {
+      input_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 0,
+      context_tokens: null,
+      tool_calls: 0,
+    },
     outcome: null,
     error: null,
     error_details: null,
@@ -292,7 +299,14 @@ describe("following a run through the hub's session relay", () => {
     ]);
     expect(run.summary?.state).toBe("idle");
 
-    const totals = { input_tokens: 1200, output_tokens: 300, context_tokens: 1500, tool_calls: 4 };
+    const totals = {
+      input_tokens: 1200,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 300,
+      context_tokens: 1500,
+      tool_calls: 4,
+    };
     relay.relay("atlas", {
       type: "session_turn_usage",
       address: ADDRESS,

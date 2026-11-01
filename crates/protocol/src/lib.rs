@@ -2072,6 +2072,8 @@ mod tests {
             tool_calls: 3,
             session_totals: Some(SessionUsageTotals {
                 input_tokens: 100,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 output_tokens: 42,
                 context_tokens: Some(100),
                 tool_calls: 3,
@@ -2087,6 +2089,8 @@ mod tests {
                 "tool_calls": 3,
                 "session_totals": {
                     "input_tokens": 100,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
                     "output_tokens": 42,
                     "context_tokens": 100,
                     "tool_calls": 3,

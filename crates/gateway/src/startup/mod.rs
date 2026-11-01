@@ -860,6 +860,14 @@ async fn build_tools_and_agent(
         &inputs.tool_deps,
     );
 
+    // Saved oversized tool results are kept for a week; clear the older
+    // ones in the background so startup never waits on the sweep.
+    if let Some(store) = tools.result_store().cloned() {
+        drop(residuum_core::util::spawn_in_span(async move {
+            store.sweep_expired().await;
+        }));
+    }
+
     // Reserve the built-in tool namespace so any MCP tool (workspace or web
     // search) that reuses a built-in name is shadowed visibly instead of
     // silently. See crates/mcp/src/CLAUDE.md.
@@ -1295,6 +1303,7 @@ async fn init_supporting_infra(
         cfg.agent_name.clone(),
         cfg.auto_mode.clone(),
         Arc::clone(&shared.system_one),
+        residuum_inference::UsageRecorder::new(layout),
     );
     SupportingInfra {
         net,

@@ -69,17 +69,18 @@ impl SessionMemory {
     /// into the staging area immediately — the same rotation the main agent
     /// performs when its own recent-message threshold is crossed. Staged
     /// observations are not visible to any other agent until the run
-    /// completes.
+    /// completes. Each extraction's usage is recorded under `run_id`.
     pub(crate) async fn maybe_stage(
         &mut self,
         transcript: &[TimedMessage<'_>],
+        run_id: &str,
         env: &SessionMemoryEnv<'_>,
     ) {
         let tail = wrap(self.unstaged(transcript), env.tz);
         if tail.is_empty() || env.observer.check_thresholds(&tail) != ObserveAction::ForceNow {
             return;
         }
-        self.stage(&tail, env).await;
+        self.stage(&tail, Some(run_id), env).await;
     }
 
     /// The part of `items` (a run's transcript, wrapped or not) that nothing
@@ -97,11 +98,16 @@ impl SessionMemory {
     /// whose extraction fails, leaving it and everything after it unstaged:
     /// a later staging pass picks it up again, and a failure is usually the
     /// model being unreachable, which the remaining chunks would hit too.
-    async fn stage(&mut self, tail: &[RecentMessage], env: &SessionMemoryEnv<'_>) {
+    async fn stage(
+        &mut self,
+        tail: &[RecentMessage],
+        conversation: Option<&str>,
+        env: &SessionMemoryEnv<'_>,
+    ) {
         let chunks = chunk_within(tail, env.observer.force_threshold_tokens());
         let chunk_count = chunks.len();
         for (index, chunk) in chunks.into_iter().enumerate() {
-            match env.observer.extract(chunk, env.layout).await {
+            match env.observer.extract(chunk, env.layout, conversation).await {
                 Ok(extraction) => {
                     tracing::info!(
                         observations = extraction.observations.len(),
@@ -243,7 +249,9 @@ pub(crate) async fn complete_session_memory(
         return None;
     }
 
-    memory.stage(memory.unstaged(&wrapped), env).await;
+    memory
+        .stage(memory.unstaged(&wrapped), tag.run_id.as_deref(), env)
+        .await;
 
     let SessionMemory {
         extracted: observations,
@@ -580,7 +588,9 @@ mod tests {
         )];
 
         let mut memory = SessionMemory::new();
-        memory.maybe_stage(&untimed(&transcript), &env).await;
+        memory
+            .maybe_stage(&untimed(&transcript), "run-test-1", &env)
+            .await;
 
         assert!(
             memory.has_staged(),
@@ -605,7 +615,9 @@ mod tests {
         let transcript = vec![Message::user("hi")];
 
         let mut memory = SessionMemory::new();
-        memory.maybe_stage(&untimed(&transcript), &env).await;
+        memory
+            .maybe_stage(&untimed(&transcript), "run-test-1", &env)
+            .await;
 
         assert!(
             !memory.has_staged(),
@@ -799,7 +811,9 @@ mod tests {
         );
 
         let mut memory = SessionMemory::new();
-        memory.maybe_stage(&untimed(&transcript), &env).await;
+        memory
+            .maybe_stage(&untimed(&transcript), "run-test-1", &env)
+            .await;
 
         assert_eq!(memory.covered_through, 3, "the whole tail should be staged");
         let calls = calls.lock().unwrap();
@@ -832,7 +846,9 @@ mod tests {
         let transcript = marked_transcript();
 
         let mut memory = SessionMemory::new();
-        memory.maybe_stage(&untimed(&transcript), &env).await;
+        memory
+            .maybe_stage(&untimed(&transcript), "run-test-1", &env)
+            .await;
 
         assert_eq!(
             calls.lock().unwrap().len(),

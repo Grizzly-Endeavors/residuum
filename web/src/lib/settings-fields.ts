@@ -7,16 +7,18 @@
 //
 // A field is named by a `FieldRef`. Fields of the config files are plain
 // (`config`, `role`); the entries of a collection (`provider`, `webhook`,
-// `mcp`) are named by the entry's name, with no `field` for the entry as a
-// whole.
+// `mcp`, `price`) are named by the entry's name, with no `field` for the entry
+// as a whole.
 
 import type { AgentConfigFileName } from "./config-coordinator";
 import { sectionForConfigKey, type ScopeKind, type SectionId } from "./settings-sections";
 import {
   CONFIG_FIELD_MAP,
   MODEL_ROLE_MAP,
+  PRICE_RATES,
   configFieldOwner,
   type ConfigFields,
+  type PriceRate,
   type WebhookFormEntry,
 } from "./settings-toml";
 import type { Diagnostic, McpServerEntry, ModelRoleKey, SettingsProviderEntry } from "./types";
@@ -34,7 +36,9 @@ export type FieldRef =
   | { kind: "provider"; name: string; field?: EntryField<SettingsProviderEntry> }
   /** A model role. `field` names its temperature or thinking override. */
   | { kind: "role"; role: ModelRoleKey; field?: "temperature" | "thinking" }
-  | { kind: "mcp"; name: string; field?: EntryField<McpServerEntry> };
+  | { kind: "mcp"; name: string; field?: EntryField<McpServerEntry> }
+  /** A `[pricing]` entry, keyed `provider/model`. Its rates are named by their own keys. */
+  | { kind: "price"; name: string; field?: PriceRate };
 
 /** Where each field of a collection's entry saves, inside the entry's own table. */
 const WEBHOOK_KEYS = {
@@ -73,6 +77,7 @@ const ROLE_PATHS: Readonly<Record<ModelRoleKey, readonly string[]>> = {
 const CONFIG_PATHS: ReadonlyMap<keyof ConfigFields, readonly string[]> = new Map([
   ...CONFIG_FIELD_MAP.map((spec) => [spec.key, spec.path] as const),
   ["webhooks", ["webhooks"]] as const,
+  ["pricing", ["pricing"]] as const,
 ]);
 
 /** The key a field saves to, as path segments: `["models", "main"]` for `models.main`. */
@@ -92,6 +97,8 @@ export function keyPathOf(ref: FieldRef): readonly string[] {
       return [...ROLE_PATHS[ref.role], ...(ref.field === undefined ? [] : [ref.field])];
     case "mcp":
       return ["mcpServers", ref.name, ...(ref.field === undefined ? [] : [MCP_KEYS[ref.field]])];
+    case "price":
+      return ["pricing", ref.name, ...(ref.field === undefined ? [] : [ref.field])];
   }
 }
 
@@ -105,6 +112,7 @@ export function fieldRefKey(ref: FieldRef): string {
     case "webhook":
     case "provider":
     case "mcp":
+    case "price":
       return `${ref.kind}:${ref.name}:${ref.field ?? ""}`;
   }
 }
@@ -148,7 +156,12 @@ export function locateField(kind: ScopeKind, file: FieldFile, path: string): Fie
   const segments = segmentsOf(path);
   const [head, name, key] = segments;
   if (head === undefined) return null;
-  if (kind === "all") return file === "config" ? locateConfigField(segments, "hub") : null;
+  if (kind === "all") {
+    if (file !== "config") return null;
+    if (head !== "pricing") return locateConfigField(segments, "hub");
+    if (name === undefined) return { kind: "config", field: "pricing" };
+    return { kind: "price", name, field: PRICE_RATES.find((rate) => rate === key) };
+  }
   switch (file) {
     case "mcp":
       return head === "mcpServers" && name !== undefined

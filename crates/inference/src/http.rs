@@ -119,31 +119,35 @@ pub fn warn_if_insecure_remote(url: &str) {
 }
 
 /// Map a reqwest error to a [`InferenceError`], detecting timeouts.
+///
+/// The URL is dropped from the error before it is wrapped: reqwest's text
+/// includes the URL, and a provider may carry a credential in one.
 pub fn map_request_error(e: reqwest::Error, timeout_secs: u64) -> InferenceError {
     if e.is_timeout() {
         InferenceError::Timeout(timeout_secs)
     } else {
-        InferenceError::Request(e)
+        InferenceError::Request(e.without_url())
     }
 }
 
 /// Map an error from sending a streaming request to a [`InferenceError`].
+/// Drops the URL as [`map_request_error`] does.
 pub fn map_stream_request_error(e: reqwest::Error, idle_secs: u64) -> InferenceError {
     if e.is_timeout() {
         InferenceError::Stalled(idle_secs)
     } else {
-        InferenceError::Request(e)
+        InferenceError::Request(e.without_url())
     }
 }
 
 /// Map an error from reading a streaming response body: the model going
 /// quiet is a stall, anything else (a dropped connection, a body that ends
-/// mid-chunk) an interrupted stream.
-pub fn map_stream_read_error(e: &reqwest::Error, idle_secs: u64) -> InferenceError {
+/// mid-chunk) an interrupted stream. Drops the URL as [`map_request_error`] does.
+pub fn map_stream_read_error(e: reqwest::Error, idle_secs: u64) -> InferenceError {
     if e.is_timeout() {
         InferenceError::Stalled(idle_secs)
     } else {
-        InferenceError::StreamInterrupted(error_chain(e))
+        InferenceError::StreamInterrupted(error_chain(&e.without_url()))
     }
 }
 
@@ -388,10 +392,46 @@ mod tests {
             .unwrap()
             .text()
             .await;
-        let error = map_stream_read_error(&body.unwrap_err(), 5);
+        let error = map_stream_read_error(body.unwrap_err(), 5);
         assert!(
             matches!(&error, InferenceError::StreamInterrupted(detail) if !detail.is_empty()),
             "a body cut off mid-chunk is an interrupted stream with a reason: {error:?}"
         );
+    }
+
+    /// A send that fails at the transport, carrying a credential in its
+    /// query. Binds a port and frees it, so the connection is refused at once.
+    async fn refused_send(query: &str) -> reqwest::Error {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let error = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/models?{query}"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.url().is_some(), "the fixture error names its URL");
+        error
+    }
+
+    #[tokio::test]
+    async fn mapped_errors_never_name_the_url_or_its_query() {
+        const SECRET: &str = "key=hunter2-secret";
+        let mapped = [
+            map_request_error(refused_send(SECRET).await, 5),
+            map_stream_request_error(refused_send(SECRET).await, 5),
+            map_stream_read_error(refused_send(SECRET).await, 5),
+        ];
+        for error in mapped {
+            let text = error.to_string();
+            assert!(
+                !text.contains("hunter2") && !text.contains("://") && !text.contains("127.0.0.1"),
+                "a mapped error names no URL or query: {text}"
+            );
+            assert!(
+                text.contains("error sending request") || text.contains("connect"),
+                "the cause is kept: {text}"
+            );
+        }
     }
 }

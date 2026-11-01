@@ -20,7 +20,9 @@ use parse::parse_reflection_response;
 use prompt::{REFLECTION_CONTENT_PROMPT, build_reflection_prompt, reflector_response_schema};
 use residuum_config::DEFAULT_REFLECTOR_THRESHOLD;
 use residuum_config::WorkspaceLayout;
-use residuum_inference::{CompletionOptions, InferenceProvider, ResponseFormat};
+use residuum_inference::{
+    CompletionOptions, InferenceProvider, ResponseFormat, UsageComponent, UsageRecorder,
+};
 
 /// Reflector configuration.
 #[derive(Debug, Clone)]
@@ -107,8 +109,8 @@ impl Reflector {
     }
 
     /// Compress `log` into a reorganized, shorter log. Reads the reflector
-    /// guidance from disk but writes nothing; `replace_with_compressed`
-    /// stores the result.
+    /// guidance from disk and records the model call's usage in the workspace,
+    /// but writes no memory; `replace_with_compressed` stores the result.
     ///
     /// # Errors
     /// Returns an error if the LLM call fails, its response can't be parsed,
@@ -151,11 +153,11 @@ impl Reflector {
             },
             ..CompletionOptions::default()
         };
-        let response = self
-            .provider
-            .complete(&messages, &[], &options)
-            .await
-            .context("reflector LLM call failed")?;
+        let result = self.provider.complete(&messages, &[], &options).await;
+        UsageRecorder::new(layout)
+            .record_call(&UsageComponent::Reflector, None, &*self.provider, &result)
+            .await;
+        let response = result.context("reflector LLM call failed")?;
 
         // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content, self.config.tz)?;
@@ -430,6 +432,41 @@ mod tests {
         .await
         .unwrap();
         (dir, layout)
+    }
+
+    #[tokio::test]
+    async fn compress_records_its_model_call_as_reflector_usage() {
+        let (_dir, layout) = layout_with_log(vec![sample_observation("ep-001")]).await;
+        let reflected = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        let usage = residuum_inference::Usage {
+            uncached_input_tokens: Some(40_000),
+            output_tokens: Some(9_000),
+            ..residuum_inference::Usage::default()
+        };
+        Reflector::new(
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE).with_usage(usage)),
+            ReflectorConfig::default(),
+        )
+        .compress(&layout, &reflected)
+        .await
+        .unwrap();
+
+        let records = UsageRecorder::new(&layout)
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1, "one record for the one call");
+        let record = records.first().unwrap();
+        assert_eq!(record.component, UsageComponent::Reflector);
+        assert_eq!(record.conversation, None);
+        assert_eq!(record.model, "mock-memory");
+        assert_eq!(record.usage, Some(usage));
     }
 
     #[tokio::test]

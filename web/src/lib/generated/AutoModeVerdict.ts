@@ -21,4 +21,8 @@ reason: string | null,
 /**
  * Input tokens the check cost.
  */
-input_tokens: number | null, };
+input_tokens: number | null, 
+/**
+ * Output tokens the check cost.
+ */
+output_tokens: number | null, };

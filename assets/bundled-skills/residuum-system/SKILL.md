@@ -46,6 +46,8 @@ This skill provides reference documentation for every major workspace system. Ac
 │   ├── vectors.db           # sqlite-vec vector database (optional)
 │   ├── .index/              # Tantivy BM25 search index
 │   ├── .index_manifest.json # Index file tracking
+│   ├── usage_totals.json    # Running token totals of the main chat
+│   ├── usage/               # Per-request model usage records, one YYYY-MM.jsonl per month
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
 │   └── sessions/            # Agent session run records and transcripts (YYYY-MM/DD/), created on first run
 ├── skills/                  # This agent's own skills (also sub-agent roles); team-wide skills live in team/skills/

@@ -283,7 +283,14 @@ describe("stopped and failed agents over HTTP", () => {
     });
     expect(await fetchJson(at(agent, "/usage"))).toEqual({
       status: 200,
-      body: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
+      body: {
+        input_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        context_tokens: null,
+        tool_calls: 0,
+      },
     });
     expect(await fetchJson(at(agent, "/inbox/mock_1/attachments/0"))).toEqual({
       status: 404,

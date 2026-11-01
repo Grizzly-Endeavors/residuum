@@ -391,6 +391,7 @@ mod tests {
             background: super::super::HubBackgroundConfig::default(),
             push: super::super::HubPushConfig::default(),
             system_one: None,
+            pricing: std::collections::BTreeMap::new(),
             config_dir: std::env::temp_dir().join("residuum-test-load-hub"),
             load_notices: Vec::new(),
         }

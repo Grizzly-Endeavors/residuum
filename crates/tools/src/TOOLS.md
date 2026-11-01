@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit to page through the rest — there is no file size limit, the output header reports the file's total size and line count either way. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
+> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. Unless a limit is given, returns at most 2000 lines or 30000 characters per call, whichever comes first, and the header names the offset to continue from. There is no file size limit, and the output header reports the file's total size and line count. Lines longer than 2000 characters are cut. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
 
 ### Input
 
@@ -17,11 +17,11 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 |-----------|---------|----------|--------------------------------------------------|
 | `path`    | string  | yes      | Absolute or relative path to the file to read. A path starting with "team/" is in the shared team folder |
 | `offset`  | integer | no       | Line number to start reading from (0-based, default: 0) |
-| `limit`   | integer | no       | Maximum number of lines to read (default: 2000)  |
+| `limit`   | integer | no       | Maximum number of lines to read (default: 2000, and a page without a limit also stops at a character budget) |
 
 ### Output
 
-**Text files:** a header line reporting the file's total size and line count, then lines formatted as `{line_num:>4}\t{content}` joined by newlines. The header adds a range note (`showing lines X-Y of N; ...`) when the output doesn't cover the whole file, and a line-truncation note when any line exceeds 2000 characters (`... (truncated)`). There is no file size limit — a large file is paged by `offset`/`limit`, not refused, and is streamed rather than loaded whole into memory.
+**Text files:** a header line reporting the file's total size and line count, then lines formatted as `{line_num:>4}\t{content}` joined by newlines. The header adds a range note (`showing lines X-Y of N`) when the output doesn't cover the whole file. When lines remain after the range, the note also names the offset to continue from (`; continue with offset=Y, or use exec with grep to find specific content`). Without a `limit`, a page stops at 2000 lines or once its numbered lines reach 30000 characters, whichever comes first, so it fits under the turn loop's 32,000-character limit for tool results (see [Large Tool Results](../../docs/systems-usage/turn-control.md#large-tool-results)); an explicit `limit` returns every requested line. A line-truncation note when any line exceeds 2000 characters (`... (truncated)`). There is no file size limit — a large file is paged by `offset`/`limit`, not refused, and is streamed rather than loaded whole into memory.
 
 **Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images. Capped at the model API's inline image size limit (20 MB); over that, the error names the limit as a model API fact, not a residuum one.
 
@@ -123,8 +123,8 @@ A relative `path` resolves against the agent's workspace root, not the process's
 
 **Source:** `exec.rs` · `ExecTool`
 
-**Description sent to LLM (Unix):**
-> Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds). Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+**Description sent to LLM:**
+> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
 
 **Description sent to LLM (Windows):**
 > Execute a shell command and return its output. Commands run via `cmd /C` with a configurable timeout (default 120 seconds). Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
@@ -144,13 +144,13 @@ Both forms are listed because the description reflects the platform the binary w
 
 On success (exit code 0): stdout, followed by `STDERR:\n{stderr}` if stderr is non-empty. If both are empty, returns `"(no output)"`.
 
-On error (exit code ≠ 0): `"command exited with code {N}\n{stdout+stderr}"`.
+On error (exit code ≠ 0): `"command exited with code {N}\n{stdout+stderr}"`, where stdout also keeps its end (see the cap below).
 
 On timeout: the command's whole process tree is killed (not just the immediate shell), and the result is an error carrying whatever stdout/stderr it had already produced: `"command timed out after {N} seconds; its process tree was killed"`, followed by `STDOUT so far:\n{stdout}` and/or `STDERR so far:\n{stderr}` for whichever are non-empty.
 
 On cancellation (the turn was stopped while the command was running): same process-tree kill and same partial-output shape, reported as a cancellation rather than a failure — `"the turn was stopped while this command was running; its process tree was killed"` plus whatever `STDOUT so far` / `STDERR so far` it had produced. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
 
-Output is capped at 100 KB; larger output is truncated with `\n... (output truncated)`.
+Output is capped at 30000 bytes across stdout and stderr, with the omission notes counted inside the cap. The cap sits under the turn loop's 32,000-character limit for tool results (see [Large Tool Results](../../docs/systems-usage/turn-control.md#large-tool-results)), so exec's output is never cut a second time. Stderr shows its last 7500 bytes. Stdout shows its first bytes, and for a failing command (non-zero exit, timeout or cancellation) its last bytes as well, with the head taking a quarter of stdout's share; the end shown is the true end of stdout at every size. Each cut is marked in place as `[… {N} bytes of {stdout|stderr} omitted …]`. Partial output from a timeout or cancellation is shaped the same way.
 
 With `keys`: an unknown name returns `"unknown agent key(s): {names}. Available: {names}. Nothing was run."` without spawning anything. Without an agent key store: `"agent keys are not available in this context. Nothing was run."`
 
@@ -236,7 +236,7 @@ On error: `"no agent key named '{name}'"`, or a store read/write failure.
 | Parameter         | Type            | Required | Description                                                  |
 |-------------------|-----------------|----------|--------------------------------------------------------------|
 | `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
-| `limit`           | integer         | no       | Maximum results to return (default: 5, no upper cap)         |
+| `limit`           | integer         | no       | Maximum results to return (default: 5, at most 50; a larger value counts as 50, a value below 1 counts as 1) |
 | `source`          | string          | no       | Filter by source: `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
@@ -470,7 +470,7 @@ On error: `limit` is not a whole number of at least 1 (`"limit must be at least 
 **Source:** `inbox/agent.rs` · `InboxReadTool`
 
 **Description sent to LLM:**
-> Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
+> Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first, each cut to its first 500 characters; read one in full by its ref. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
 
 ### Input
 
@@ -500,10 +500,12 @@ Earlier messages, oldest first:     (only when k > 1)
 
 --- From {the user[, to a, b] | agent} · {timestamp} · Ref: {ref}
 Title: {title}
-{body}
+{body, cut to its first 500 characters}… [{n} more characters; read it in full with inbox_read and id {ref}]     (the note only when the body is cut)
 
 Later messages (read with inbox_read): {ref}, {ref}     (only when k < n)
 ```
+
+The requested item's own body is always shown whole. Only the earlier messages of its thread are cut.
 
 On error:
 - `id` is neither a valid stem nor a valid ref → invalid arguments
@@ -835,7 +837,7 @@ main — always live
     task {task_id} — {state} — {last_status_text|(no status yet)}
 ```
 
-The teammate section lists every agent in the hub, sorted by name, from the hub's agent directory; the count `{N}` excludes the caller's own `(you)` entry. The role line is the `description` of the teammate's wiki role page (`team/wiki/agents/<name>.md`). `main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
+The teammate section lists every agent in the hub, sorted by name, from the hub's agent directory; the count `{N}` excludes the caller's own `(you)` entry. The role line is the `description` of the teammate's wiki role page (`team/wiki/agents/<name>.md`). `main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. A remote agent's card description is cut to its first 200 characters, followed by `… [{N} more characters cut]` when it is longer. Its skills list names at most 10; the rest follow as `… {N} more not listed`. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -1021,18 +1023,20 @@ Calls `TeamDirectory::delete` as `Actor::Agent(<caller>)`: the agent is stopped,
 **Source:** `web_fetch.rs` · `WebFetchTool`
 
 **Description sent to LLM:**
-> Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports.
+> Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports. Downloads stop at a size limit, which the header reports when a page is cut short.
 
 ### Input
 
-| Parameter | Type    | Required | Description                                                                                          |
-|-----------|---------|----------|-------------------------------------------------------------------------------------------------------|
-| `url`     | string  | yes      | The URL to fetch                                                                                     |
-| `offset`  | integer | no       | Byte offset into the fetched content to start the page from (default: 0); continue from a previous response's offset |
+| Parameter | Type    | Required | Description                                                                                                                                  |
+|-----------|---------|----------|----------------------------------------------------------------------------------------------------------------------------------------------|
+| `url`     | string  | yes      | The URL to fetch                                                                                                                             |
+| `offset`  | integer | no       | Byte offset into the fetched content to start the page from (default: 0). To continue reading, pass the offset from a previous response's `call again with offset=N to continue` line. |
 
 ### Output
 
-On success: a header (`total {n} bytes`, plus a `content-type: ...` note for anything other than HTML/plain text, plus `showing bytes X-Y; call again with offset=Y to continue` when more remains) followed by the page's content. HTML is extracted to readable text; any other textual body (JSON, XML, YAML, CSV, plain text, etc.) is returned as-is. There is no total-size limit — a longer page is read in full by paging through `offset`, not truncated.
+On success: a header (`total {n} bytes`, plus a `content-type: ...` note for anything other than HTML/plain text, plus a note that the page is larger than the download limit when it was cut short, plus `showing bytes X-Y; call again with offset=Y to continue` when more remains) followed by the page's content. A page holds at most 30000 bytes, which fits under the turn loop's 32,000-character limit for tool results (see [Large Tool Results](../../docs/systems-usage/turn-control.md#large-tool-results)), so a page is never cut a second time. HTML (a Content-Type naming `html`, or a body served with no Content-Type that opens with `<!doctype html` or `<html`) is extracted to readable text: the contents of `script`, `style`, `noscript` and `template` elements are dropped and HTML entities such as `&amp;` are decoded. Any other textual body (JSON, XML, YAML, CSV, plain text, etc.) is returned as-is, without entity decoding.
+
+The download limit is 5 MiB (5,242,880 bytes). A page past that is cut short: only the first 5,242,880 bytes are fetched, and paging through `offset` covers those bytes.
 
 On error (`is_error = true`):
 - HTTP error status: `"HTTP {status} fetching {url}"`
@@ -1060,7 +1064,7 @@ On execution error:
 | Parameter     | Type    | Required | Description                                      |
 |---------------|---------|----------|--------------------------------------------------|
 | `query`       | string  | yes      | The search query                                 |
-| `max_results` | integer | no       | Maximum number of results to return (default: 5) |
+| `max_results` | integer | no       | Maximum number of results to return (default: 5, at most 10; a larger value counts as 10) |
 
 ### Output
 
@@ -1073,7 +1077,11 @@ Found {N} result(s):
    {snippet}
 ```
 
+A snippet longer than 500 characters is cut to its first 500, followed by `… [snippet cut, {N} more characters; open the URL for the rest]`.
+
 On success with no results: `"No search results found."`
+
+On success with a response in a shape the tool does not recognise: `"Search response:"` followed by the response JSON. A response longer than 2,000 characters is cut to its first 2,000 under `"Search response (first 2000 of {total} characters):"` and ends with `… [{N} more characters not shown]`.
 
 On non-2xx HTTP response: `"ollama web search API returned HTTP {status}: {body}"` (returned as `is_error = true`)
 
@@ -1177,19 +1185,19 @@ On error: an unknown `state`, an empty `message`, or an artifact path that's emp
 
 | Parameter       | Type   | Required | Description                                                                 |
 |-----------------|--------|----------|-------------------------------------------------------------------------------|
-| `repo` | string (enum) | no | `"workspace"` (default) or `"team"`: the checkpoint history to read. Paths are relative to that root. |
+| `repo`          | string (enum) | no | `"workspace"` (default, your own files) or `"team"` (the shared team/ directory). Paths are relative to that root. |
 | `action`        | string (enum) | yes | `"list"` to list checkpoints, `"show"` to see what one checkpoint changed. |
 | `path`          | string | no (list only) | Restrict to checkpoints that changed this workspace-relative file or directory. |
-| `limit`         | integer | no (list only) | Maximum checkpoints to return (default 50). |
+| `limit`         | integer | no | list: checkpoints to return (default 50, at most 200). show: changed paths to list (default 50, at most 200). A larger value counts as 200. |
 | `checkpoint_id` | string | no (show only) | The checkpoint id to describe, from a previous `list` call. |
 
-`repo` selects the workspace or team checkpoint history; the config repository is not reachable from this tool.
+Config repositories (root `config.toml`/`providers.toml` and the encrypted key stores) are never reachable from this tool.
 
 ### Output
 
 `list`: `"{N} checkpoint(s):"` followed by one line per checkpoint (`short id [trigger] address — summary (N path(s) changed)`), or `"No checkpoints yet."`.
 
-`show`: a header line naming the checkpoint's trigger, address, and summary, followed by one line per changed path (`Added|Modified|Deleted <path>`), or `"(no changes)"`.
+`show`: a header line naming the checkpoint's trigger, address, and summary, followed by one line per changed path (`Added|Modified|Deleted <path>`), up to `limit` of them, or `"(no changes)"`. When more paths changed than are listed, the last line is `"… {N} more path(s) not shown; call show again with a larger limit (at most 200) to list them"`, or `"… {N} more path(s) not shown; show lists at most 200 paths per call"` once `limit` is already 200.
 
 On error (returned as `is_error = true`): `action` is missing or unrecognized, `checkpoint_id` is missing for `show`, `path` contains `..` or is absolute, or the checkpoint id doesn't resolve.
 

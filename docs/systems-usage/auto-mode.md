@@ -26,13 +26,13 @@ Every tool call the turn loop dispatches is checked: built-in tools and tool-ser
 
 The call is blocked when at least one deny rule's probability is at or above the threshold and no allow rule's is. An allow rule at or above the threshold lets the call run even when a deny rule matched.
 
-- **Blocked:** the call doesn't run. Its result, marked as an error, reads: Auto Mode blocked this call, so it did not run: it matches the rule "…" (93% sure). Try a different approach that the rule allows, or ask the user to do it or to change the rule. The turn continues. An `info` log records the tool, rule, probability and input tokens.
-- **Allowed:** the call runs normally. A `debug` log records the verdict, any exception that applied, and the input tokens.
+- **Blocked:** the call doesn't run. Its result, marked as an error, reads: Auto Mode blocked this call, so it did not run: it matches the rule "…" (93% sure). Try a different approach that the rule allows, or ask the user to do it or to change the rule. The turn continues. An `info` log records the tool, rule, probability, and input and output tokens.
+- **Allowed:** the call runs normally. A `debug` log records the verdict, any exception that applied, and the input and output tokens.
 - **Unchecked:** when the decision model can't answer (none is set up, it's unreachable, it refused the request, or an answer was missing), the call runs without a check. There is no per-call warning; the decision model's outage shows once on Home until it answers again (see [Decision model](system-one.md#status-and-outages)), and Auto Mode's settings show it too.
 
 ## What the user sees
 
-Each tool result frame carries the verdict as `auto_mode` `{ decision, rule, probability, reason, input_tokens }` when Auto Mode checked the call: `tool_result` on the agent's WebSocket, and `session_tool_result` for sessions and in the hub's session relay. The activity feed shows a blocked call's status as "Blocked by Auto Mode" instead of "Failed". A step's details open with one line for every checked call: which rule blocked it and how sure the model was, which exception let it through, that no rule matched, or why it couldn't be checked. Chat history doesn't keep the verdict, so a reloaded conversation shows a blocked call as a failed one, with its result text still naming the rule.
+Each tool result frame carries the verdict as `auto_mode` `{ decision, rule, probability, reason, input_tokens, output_tokens }` (each token count `null` when the decision model didn't report it) when Auto Mode checked the call: `tool_result` on the agent's WebSocket, and `session_tool_result` for sessions and in the hub's session relay. The activity feed shows a blocked call's status as "Blocked by Auto Mode" instead of "Failed". A step's details open with one line for every checked call: which rule blocked it and how sure the model was, which exception let it through, that no rule matched, or why it couldn't be checked. Chat history doesn't keep the verdict, so a reloaded conversation shows a blocked call as a failed one, with its result text still naming the rule.
 
 ## Stopping it
 

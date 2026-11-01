@@ -1,8 +1,8 @@
 //! Google Gemini API provider implementation.
 //!
 //! Uses the Gemini `generateContent` REST API, and `streamGenerateContent`
-//! for streaming. Authentication is via an API key passed as a query
-//! parameter. System messages are extracted and sent as the top-level
+//! for streaming. Authentication is via the `x-goog-api-key` header, so the
+//! key never appears in a URL. System messages are extracted and sent as the top-level
 //! `systemInstruction` field. Tool results are sent as `functionResponse`
 //! parts in user-role messages.
 
@@ -12,21 +12,26 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::attempt::{FailedRequest, record_attempt};
 use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
 use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
-use crate::types::current_exchange_start;
+use crate::types::{current_exchange_start, uncached_from_inclusive_prompt};
 use crate::with_retry;
 use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
     ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
-use residuum_config::RetryConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 use residuum_config::{ThinkingConfig, ThinkingLevel};
+
+/// The header Gemini reads the API key from. The key goes here rather than in
+/// the URL because a transport error prints the URL it failed on.
+const API_KEY_HEADER: &str = "x-goog-api-key";
 
 /// The `part` of a [`ThinkingBlock`] whose signature belongs to the
 /// response's text rather than to a tool call.
@@ -93,15 +98,24 @@ impl GeminiClient {
     /// Reasoning summaries (parts marked `thought`) are kept apart from the
     /// answer, and each thought signature is recorded with the part it came
     /// on so it can be sent back there.
-    fn parse_response(
-        gemini_response: GeminiResponse,
-    ) -> Result<InferenceResponse, InferenceError> {
+    ///
+    /// A response with no candidate keeps the usage it reported on its error.
+    fn parse_response(gemini_response: GeminiResponse) -> Result<InferenceResponse, FailedRequest> {
+        let usage = gemini_response
+            .usage_metadata
+            .as_ref()
+            .map(GeminiUsageMetadata::usage);
         let candidate = gemini_response
             .candidates
             .into_iter()
             .next()
             .ok_or_else(|| {
-                InferenceError::Parse("Gemini API response contained no candidates".to_string())
+                FailedRequest::spent(
+                    InferenceError::Parse(
+                        "Gemini API response contained no candidates".to_string(),
+                    ),
+                    usage,
+                )
             })?;
 
         let mut content_text = String::new();
@@ -169,18 +183,6 @@ impl GeminiClient {
             }
         }
 
-        // Thought tokens are billed as output but reported apart from the
-        // candidates' own, so they are added in, as Anthropic's and
-        // OpenAI's output counts already include theirs.
-        let usage = gemini_response.usage_metadata.map(|u| Usage {
-            input_tokens: u.prompt_token_count,
-            output_tokens: u
-                .candidates_token_count
-                .saturating_add(u.thoughts_token_count),
-            cache_creation_tokens: None,
-            cache_read_tokens: u.cached_content_token_count,
-        });
-
         let mut model_response = InferenceResponse::new(content_text, tool_calls);
         model_response.usage = usage;
         model_response.thinking = thinking;
@@ -188,19 +190,16 @@ impl GeminiClient {
         Ok(model_response)
     }
 
-    /// Build the full endpoint URL with the API key query parameter.
+    /// Build the full endpoint URL. The API key is sent as a header, not here.
     fn endpoint(&self) -> String {
-        format!(
-            "{}/models/{}:generateContent?key={}",
-            self.base_url, self.model, self.api_key
-        )
+        format!("{}/models/{}:generateContent", self.base_url, self.model)
     }
 
     /// Build the streaming endpoint URL, which answers with server-sent events.
     fn stream_endpoint(&self) -> String {
         format!(
-            "{}/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.base_url, self.model, self.api_key
+            "{}/models/{}:streamGenerateContent?alt=sse",
+            self.base_url, self.model
         )
     }
 
@@ -426,12 +425,30 @@ impl GeminiClient {
         message_count = request.contents.len(),
         tool_count = request.tools.as_ref().map_or(0, Vec::len),
         streaming = sink.is_some(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = crate::gen_ai_span::provider_name(ProviderKind::Gemini),
+        gen_ai.request.model = %self.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
         request: &GeminiRequest,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(ProviderKind::Gemini, &self.model, result)
+    }
+
+    /// Send one request and parse its response.
+    async fn send_request(
+        &self,
+        request: &GeminiRequest,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         let timeout_secs = self.http.timeout_secs();
         let request_json = serde_json::to_string(request)
             .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
@@ -450,6 +467,7 @@ impl GeminiClient {
         };
         let response = client
             .post(url)
+            .header(API_KEY_HEADER, &self.api_key)
             .body(request_json.clone())
             .header("content-type", "application/json")
             .send()
@@ -473,7 +491,7 @@ impl GeminiClient {
             );
             let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(InferenceError::Api(format!("{status}: {error_body}")));
+            return Err(InferenceError::Api(format!("{status}: {error_body}")).into());
         }
 
         let gemini_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
@@ -597,12 +615,13 @@ impl InferenceProvider for GeminiClient {
 
 /// Read a streamed response to its end, pushing text and reasoning summary to
 /// `sink` as they arrive, and return it as the response `generateContent`
-/// would have returned.
+/// would have returned. A stream that fails after reporting usage (every
+/// event may carry it) keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
     sink: &dyn StreamSink,
-) -> Result<GeminiResponse, InferenceError> {
+) -> Result<GeminiResponse, FailedRequest> {
     let mut assembler = StreamAssembler {
         sink,
         parts: Vec::new(),
@@ -610,8 +629,14 @@ async fn read_stream(
         usage: None,
         saw_candidate: false,
     };
-    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
-    assembler.finish()
+    let read = read_sse(response, idle_secs, |event| assembler.handle(&event)).await;
+    let usage = assembler.usage.as_ref().map(GeminiUsageMetadata::usage);
+    match read {
+        Ok(()) => assembler
+            .finish()
+            .map_err(|error| FailedRequest::spent(error, usage)),
+        Err(error) => Err(FailedRequest::spent(error, usage)),
+    }
 }
 
 /// One streamed event: the next piece of the response.
@@ -898,13 +923,44 @@ struct GeminiResponseContent {
 #[expect(clippy::struct_field_names, reason = "field names match Gemini API")]
 struct GeminiUsageMetadata {
     #[serde(default, rename = "promptTokenCount")]
-    prompt_token_count: u32,
+    prompt_token_count: Option<u32>,
     #[serde(default, rename = "candidatesTokenCount")]
-    candidates_token_count: u32,
+    candidates_token_count: Option<u32>,
     #[serde(default, rename = "thoughtsTokenCount")]
-    thoughts_token_count: u32,
+    thoughts_token_count: Option<u32>,
     #[serde(default, rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
+}
+
+impl GeminiUsageMetadata {
+    /// Normalize Gemini's counts.
+    ///
+    /// `promptTokenCount` is the whole prompt with the cached part included,
+    /// so the uncached part is what remains after subtracting it. Thought
+    /// tokens are billed as output but reported apart from the candidates'
+    /// own, so they are added into output, as `Anthropic`'s and `OpenAI`'s
+    /// output counts already include theirs. `toolUsePromptTokenCount` is
+    /// left out of input: it counts context a hosted tool fetched, and the
+    /// only hosted tool sent here is Google Search, whose retrieved context
+    /// Google does not bill as input.
+    fn usage(&self) -> Usage {
+        let output_tokens = [self.candidates_token_count, self.thoughts_token_count]
+            .into_iter()
+            .flatten()
+            .reduce(u32::saturating_add);
+        Usage {
+            uncached_input_tokens: uncached_from_inclusive_prompt(
+                self.prompt_token_count,
+                self.cached_content_token_count,
+                None,
+            ),
+            cache_read_tokens: self.cached_content_token_count,
+            cache_write_tokens: None,
+            cache_write_long_tokens: None,
+            output_tokens,
+            reasoning_tokens: self.thoughts_token_count,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1001,7 +1057,7 @@ impl GeminiEmbeddingClient {
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
-            let url = format!("{base_url}/models/{model}:embedContent?key={api_key}");
+            let url = format!("{base_url}/models/{model}:embedContent");
             let request_body = GeminiEmbedContentRequest {
                 model: format!("models/{model}"),
                 content: GeminiEmbedContent {
@@ -1010,6 +1066,7 @@ impl GeminiEmbeddingClient {
             };
             let http = http.clone();
             let model = model.clone();
+            let api_key = api_key.clone();
 
             async move {
                 debug!(model = %model, "sending gemini embed request");
@@ -1017,6 +1074,7 @@ impl GeminiEmbeddingClient {
                 let response = http
                     .client()
                     .post(&url)
+                    .header(API_KEY_HEADER, &api_key)
                     .json(&request_body)
                     .send()
                     .await
@@ -1055,7 +1113,7 @@ impl GeminiEmbeddingClient {
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
-            let url = format!("{base_url}/models/{model}:batchEmbedContents?key={api_key}");
+            let url = format!("{base_url}/models/{model}:batchEmbedContents");
             let requests: Vec<GeminiEmbedContentRequest> = owned_texts
                 .iter()
                 .map(|t| GeminiEmbedContentRequest {
@@ -1068,6 +1126,7 @@ impl GeminiEmbeddingClient {
             let request_body = GeminiBatchEmbedRequest { requests };
             let http = http.clone();
             let model = model.clone();
+            let api_key = api_key.clone();
             let batch_count = owned_texts.len();
 
             async move {
@@ -1076,6 +1135,7 @@ impl GeminiEmbeddingClient {
                 let response = http
                     .client()
                     .post(&url)
+                    .header(API_KEY_HEADER, &api_key)
                     .json(&request_body)
                     .send()
                     .await
@@ -1159,7 +1219,7 @@ mod tests {
     use residuum_config::RetryConfig;
     use residuum_core::testing::gate::Gate;
     use serde_json::{Value, json};
-    use wiremock::matchers::{method, path_regex, query_param};
+    use wiremock::matchers::{header, method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const TEST_MODEL: &str = "gemini-2.0-flash";
@@ -1182,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_includes_model_and_key() {
+    fn endpoint_includes_model_but_no_key() {
         let http = SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(60)).unwrap();
         let client = GeminiClient::new(
             http,
@@ -1194,10 +1254,50 @@ mod tests {
         );
         let ep = client.endpoint();
         assert!(
-            ep.contains("/models/gemini-2.0-flash:generateContent"),
-            "endpoint should include model path"
+            ep.ends_with("/models/gemini-2.0-flash:generateContent"),
+            "endpoint should include model path: {ep}"
         );
-        assert!(ep.contains("key=my-key"), "endpoint should include API key");
+        assert!(
+            !ep.contains("my-key") && !ep.contains("key="),
+            "endpoint must not carry the API key: {ep}"
+        );
+        let stream_ep = client.stream_endpoint();
+        assert!(
+            !stream_ep.contains("my-key") && !stream_ep.contains("key="),
+            "streaming endpoint must not carry the API key: {stream_ep}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_key_travels_in_a_header_not_the_url() {
+        let body = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}"#;
+        let server = ScriptedServer::start(vec![json_response(200, body)]).await;
+        let client = GeminiClient::new(
+            SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(60)).unwrap(),
+            server.uri(),
+            "test-api-key",
+            TEST_MODEL,
+            8192,
+            RetryConfig::no_retry(),
+        );
+
+        client
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        let requests = server.requests();
+        let request = requests.first().unwrap();
+        assert_eq!(
+            request.header("x-goog-api-key"),
+            Some("test-api-key"),
+            "the key is sent in the x-goog-api-key header"
+        );
+        assert!(
+            !request.target.contains("key"),
+            "the request target carries no key: {}",
+            request.target
+        );
     }
 
     #[test]
@@ -1285,7 +1385,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "candidates": [{
                     "content": {
@@ -1317,8 +1417,12 @@ mod tests {
         assert!(response.tool_calls.is_empty(), "should have no tool calls");
         assert!(response.usage.is_some(), "should report usage");
         let usage = response.usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 5, "output tokens should match");
+        assert_eq!(
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens should match"
+        );
+        assert_eq!(usage.output_tokens, Some(5), "output tokens should match");
         assert!(response.is_complete(), "text-only response is complete");
         assert_eq!(
             response.stop_reason,
@@ -1474,7 +1578,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1507,7 +1611,7 @@ mod tests {
         assert!(result.is_err(), "empty candidates should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Parse(_)),
+            matches!(err.underlying(), InferenceError::Parse(_)),
             "should be a Parse error"
         );
         assert!(
@@ -1537,7 +1641,7 @@ mod tests {
 
         assert!(result.is_err(), "timeout should return error");
         assert!(
-            matches!(result.unwrap_err(), InferenceError::Timeout(1)),
+            matches!(result.unwrap_err().underlying(), InferenceError::Timeout(1)),
             "should be Timeout(1)"
         );
     }
@@ -1548,7 +1652,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
                 "generationConfig": {
                     "responseMimeType": "application/json",
@@ -1676,17 +1780,17 @@ mod tests {
         assert!(result.is_ok(), "cache token response should succeed");
 
         let usage = result.unwrap().usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 5, "output tokens should match");
         assert_eq!(
-            usage.cache_creation_tokens, None,
-            "Gemini does not report cache creation tokens"
+            usage,
+            Usage {
+                uncached_input_tokens: Some(2),
+                cache_read_tokens: Some(8),
+                output_tokens: Some(5),
+                ..Usage::default()
+            },
+            "promptTokenCount includes the cached part, so 2 of 10 are uncached"
         );
-        assert_eq!(
-            usage.cache_read_tokens,
-            Some(8),
-            "cache read tokens should match cachedContentTokenCount"
-        );
+        assert_eq!(usage.total_input_tokens(), Some(10));
     }
 
     #[tokio::test]
@@ -1695,7 +1799,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/.+:generateContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
                 "generationConfig": {
                     "thinkingConfig": {
@@ -2328,14 +2432,15 @@ mod tests {
             vec!["call_0", "call_1"],
             "calls numbered across events"
         );
-        let usage = streamed.usage.unwrap();
         assert_eq!(
-            (
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_tokens
-            ),
-            (21, 14, Some(4)),
+            streamed.usage,
+            Some(Usage {
+                uncached_input_tokens: Some(17),
+                cache_read_tokens: Some(4),
+                output_tokens: Some(14),
+                reasoning_tokens: Some(5),
+                ..Usage::default()
+            }),
             "usage from the last event, with the 5 thought tokens counted as output"
         );
         assert_eq!(
@@ -2353,10 +2458,18 @@ mod tests {
         let requests = server.requests();
         let request = requests.first().unwrap();
         assert!(
-            request.target.contains(":streamGenerateContent")
-                && request.target.contains("alt=sse")
-                && request.target.contains("key=test-api-key"),
+            request.target.contains(":streamGenerateContent") && request.target.contains("alt=sse"),
             "the streaming endpoint is used with SSE framing: {}",
+            request.target
+        );
+        assert_eq!(
+            request.header("x-goog-api-key"),
+            Some("test-api-key"),
+            "the streamed request carries the key in its header"
+        );
+        assert!(
+            !request.target.contains("key"),
+            "the streamed request target carries no key: {}",
             request.target
         );
     }
@@ -2387,14 +2500,17 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), make_client).await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending before a finish reason is an interrupted stream: {err:?}"
         );
 
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), make_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            matches!(
+                dropped_err.underlying(),
+                InferenceError::StreamInterrupted(_)
+            ),
             "a dropped connection is an interrupted stream: {dropped_err:?}"
         );
         assert_eq!(sink.text(), "", "the partial text is voided");
@@ -2409,7 +2525,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[blocked]), make_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Parse(m) if m.contains("no candidates")),
+            matches!(err.underlying(), InferenceError::Parse(m) if m.contains("no candidates")),
             "same error as a response that arrives whole: {err:?}"
         );
     }
@@ -2454,7 +2570,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
     }
@@ -2566,10 +2682,74 @@ mod tests {
             .unwrap()
             .usage
             .unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens unchanged");
         assert_eq!(
-            usage.output_tokens, 43,
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens unchanged"
+        );
+        assert_eq!(
+            usage.output_tokens,
+            Some(43),
             "the 40 thought tokens are output tokens beside the 3 of the answer"
+        );
+        assert_eq!(
+            usage.reasoning_tokens,
+            Some(40),
+            "the thought tokens are also kept apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_usage_counts_stay_unknown() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"candidatesTokenCount": 3, "totalTokenCount": 3}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            usage,
+            Usage {
+                output_tokens: Some(3),
+                ..Usage::default()
+            },
+            "a missing prompt count is unknown, not zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_use_prompt_tokens_stay_out_of_input() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "found it"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 120, "candidatesTokenCount": 30,
+                    "toolUsePromptTokenCount": 900, "totalTokenCount": 1050}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            usage.total_input_tokens(),
+            Some(120),
+            "search-grounding context is not billed as input"
         );
     }
 
@@ -2616,7 +2796,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/text-embedding-004:embedContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "embedding": {
                     "values": [0.1, 0.2, 0.3]
@@ -2643,7 +2823,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/text-embedding-004:batchEmbedContents"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "embeddings": [
                     { "values": [0.1, 0.2, 0.3] },
@@ -2676,7 +2856,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/text-embedding-004:embedContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
                 "error": {
                     "code": 400,
@@ -2693,7 +2873,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(

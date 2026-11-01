@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use crate::attempt::{FailedRequest, ListsAttempts, record_attempt};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
@@ -21,7 +22,7 @@ use crate::{
     ProviderApi, ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
     ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
-use residuum_config::RetryConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// Anthropic Messages API version header value.
@@ -405,11 +406,13 @@ impl AnthropicClient {
             manual: self.manual_thinking.load(Ordering::Relaxed),
             drop_mismatched: self.drop_mismatched_thinking.load(Ordering::Relaxed),
         };
+        let mut refused = Vec::new();
         loop {
             let request = prepared.request(&self.model, sink.is_some(), mode);
             let adaptive = request.thinking.as_ref().is_some_and(|t| !t.is_manual());
             match self.send(&request, sink).await {
                 Err(e) if adaptive && is_adaptive_unsupported(&e) => {
+                    refused.extend(e.into_parts().1);
                     if !self.manual_thinking.swap(true, Ordering::Relaxed) {
                         info!(
                             model = %self.model,
@@ -422,6 +425,7 @@ impl AnthropicClient {
                     mode.manual = true;
                 }
                 Err(e) if adaptive && !mode.drop_mismatched && is_thinking_bound_elsewhere(&e) => {
+                    refused.extend(e.into_parts().1);
                     if !self.drop_mismatched_thinking.swap(true, Ordering::Relaxed) {
                         info!(
                             model = %self.model,
@@ -433,23 +437,41 @@ impl AnthropicClient {
                     }
                     mode.drop_mismatched = true;
                 }
-                result => return result,
+                result => return result.after_attempts(refused),
             }
         }
     }
 
-    /// Send a pre-built request to the Anthropic API and parse the response.
+    /// Send a pre-built request to the Anthropic API and parse the response,
+    /// recording the request as one attempt of the call.
     #[tracing::instrument(skip_all, fields(
         model = %request.model,
         message_count = request.messages.len(),
         tool_count = request.tools.map_or(0, <[AnthropicToolEntry]>::len),
         streaming = sink.is_some(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = crate::gen_ai_span::provider_name(ProviderKind::Anthropic),
+        gen_ai.request.model = %request.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
         request: &AnthropicRequest<'_>,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(ProviderKind::Anthropic, request.model, result)
+    }
+
+    async fn send_request(
+        &self,
+        request: &AnthropicRequest<'_>,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         debug!(
             max_tokens = request.max_tokens,
             "sending anthropic completion request"
@@ -530,7 +552,7 @@ impl AnthropicClient {
                     "anthropic API error — full request/response for diagnosis"
                 );
             }
-            return Err(error);
+            return Err(error.into());
         }
 
         let api_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
@@ -610,12 +632,7 @@ impl AnthropicClient {
             }
         }
 
-        let usage = response.usage.map(|u| Usage {
-            input_tokens: u.input_tokens,
-            output_tokens: u.output_tokens,
-            cache_creation_tokens: u.cache_creation_input_tokens,
-            cache_read_tokens: u.cache_read_input_tokens,
-        });
+        let usage = response.usage.map(AnthropicUsage::usage);
 
         let mut resp = InferenceResponse::new(text_parts.join(""), tool_calls);
         resp.usage = usage;
@@ -701,7 +718,7 @@ pub fn is_oauth_key(key: &str) -> bool {
 /// Whether the API refused a request because the model does not accept
 /// adaptive thinking.
 fn is_adaptive_unsupported(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error else {
+    let InferenceError::Api(message) = error.underlying() else {
         return false;
     };
     let lower = message.to_lowercase();
@@ -713,7 +730,7 @@ fn is_adaptive_unsupported(error: &InferenceError) -> bool {
 /// `signature` in `thinking` block. The block is bound to a different
 /// conversation."
 fn is_thinking_bound_elsewhere(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error else {
+    let InferenceError::Api(message) = error.underlying() else {
         return false;
     };
     message
@@ -840,15 +857,22 @@ fn build_thinking(
 
 /// Read a streamed Messages response to its end, pushing text and thinking to
 /// `sink` as it arrives, and return it as the response a non-streaming
-/// request would have returned.
+/// request would have returned. A stream that fails after reporting usage
+/// (`message_start` carries the input counts) keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
     sink: &dyn StreamSink,
-) -> Result<AnthropicResponse, InferenceError> {
+) -> Result<AnthropicResponse, FailedRequest> {
     let mut assembler = StreamAssembler::new(sink);
-    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
-    assembler.finish()
+    let read = read_sse(response, idle_secs, |event| assembler.handle(&event)).await;
+    let usage = assembler.usage.map(AnthropicUsage::usage);
+    match read {
+        Ok(()) => assembler
+            .finish()
+            .map_err(|error| FailedRequest::spent(error, usage)),
+        Err(error) => Err(FailedRequest::spent(error, usage)),
+    }
 }
 
 /// One streamed event, by its `type`.
@@ -870,7 +894,7 @@ enum StreamEvent {
     MessageDelta {
         delta: MessageDeltaBody,
         #[serde(default)]
-        usage: Option<PartialUsage>,
+        usage: Option<AnthropicUsage>,
     },
     MessageStop {},
     Ping {},
@@ -885,7 +909,7 @@ enum StreamEvent {
 #[derive(Deserialize)]
 struct StreamMessageStart {
     #[serde(default)]
-    usage: Option<PartialUsage>,
+    usage: Option<AnthropicUsage>,
     #[serde(default)]
     input_transformations: Option<Vec<AnthropicInputTransformation>>,
 }
@@ -924,26 +948,54 @@ struct StreamErrorBody {
     message: String,
 }
 
-/// Token counts as they stream in. Every report is cumulative and may omit
-/// fields, so each field keeps the last value it was given.
-#[derive(Deserialize, Default, Clone, Copy)]
-struct PartialUsage {
-    #[serde(rename = "input_tokens")]
+/// Token counts as Anthropic reports them, whole or streamed.
+///
+/// `input_tokens` excludes the cache: reads and writes are reported beside
+/// it, so the three are already the disjoint parts [`Usage`] wants. Any
+/// field may be missing; a missing one stays unknown. A stream reports
+/// cumulative counts in `message_start` and `message_delta`, so merging
+/// keeps the last value each field was given.
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+struct AnthropicUsage {
+    #[serde(default, rename = "input_tokens")]
     input: Option<u32>,
-    #[serde(rename = "output_tokens")]
+    #[serde(default, rename = "output_tokens")]
     output: Option<u32>,
-    #[serde(rename = "cache_creation_input_tokens")]
-    cache_creation: Option<u32>,
-    #[serde(rename = "cache_read_input_tokens")]
+    #[serde(default, rename = "cache_creation_input_tokens")]
+    cache_write: Option<u32>,
+    #[serde(default, rename = "cache_read_input_tokens")]
     cache_read: Option<u32>,
+    /// The cache writes split by TTL.
+    #[serde(default, rename = "cache_creation")]
+    cache_write_by_ttl: Option<AnthropicCacheWriteByTtl>,
 }
 
-impl PartialUsage {
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+struct AnthropicCacheWriteByTtl {
+    #[serde(default)]
+    ephemeral_1h_input_tokens: Option<u32>,
+}
+
+impl AnthropicUsage {
     fn merge(&mut self, latest: Self) {
         self.input = latest.input.or(self.input);
         self.output = latest.output.or(self.output);
-        self.cache_creation = latest.cache_creation.or(self.cache_creation);
+        self.cache_write = latest.cache_write.or(self.cache_write);
         self.cache_read = latest.cache_read.or(self.cache_read);
+        self.cache_write_by_ttl = latest.cache_write_by_ttl.or(self.cache_write_by_ttl);
+    }
+
+    fn usage(self) -> Usage {
+        Usage {
+            uncached_input_tokens: self.input,
+            cache_read_tokens: self.cache_read,
+            cache_write_tokens: self.cache_write,
+            cache_write_long_tokens: self
+                .cache_write_by_ttl
+                .and_then(|ttl| ttl.ephemeral_1h_input_tokens),
+            output_tokens: self.output,
+            reasoning_tokens: None,
+        }
     }
 }
 
@@ -959,7 +1011,7 @@ struct StreamBlock {
 struct StreamAssembler<'a> {
     sink: &'a dyn StreamSink,
     blocks: BTreeMap<usize, StreamBlock>,
-    usage: Option<PartialUsage>,
+    usage: Option<AnthropicUsage>,
     stop_reason: Option<String>,
     input_transformations: Option<Vec<AnthropicInputTransformation>>,
     stopped: bool,
@@ -1019,9 +1071,9 @@ impl<'a> StreamAssembler<'a> {
         Ok(Flow::Continue)
     }
 
-    fn merge_usage(&mut self, latest: PartialUsage) {
+    fn merge_usage(&mut self, latest: AnthropicUsage) {
         self.usage
-            .get_or_insert_with(PartialUsage::default)
+            .get_or_insert_with(AnthropicUsage::default)
             .merge(latest);
     }
 
@@ -1141,15 +1193,9 @@ impl<'a> StreamAssembler<'a> {
             }
             content.push(block);
         }
-        let usage = self.usage.map(|u| AnthropicUsage {
-            input_tokens: u.input.unwrap_or(0),
-            output_tokens: u.output.unwrap_or(0),
-            cache_creation_input_tokens: u.cache_creation,
-            cache_read_input_tokens: u.cache_read,
-        });
         Ok(AnthropicResponse {
             content,
-            usage,
+            usage: self.usage,
             stop_reason: self.stop_reason,
             input_transformations: self.input_transformations,
         })
@@ -1545,17 +1591,6 @@ fn map_stop_reason(raw: &str) -> StopReason {
 }
 
 #[derive(Debug, Deserialize)]
-#[expect(clippy::struct_field_names, reason = "field names match Anthropic API")]
-struct AnthropicUsage {
-    input_tokens: u32,
-    output_tokens: u32,
-    #[serde(default)]
-    cache_creation_input_tokens: Option<u32>,
-    #[serde(default)]
-    cache_read_input_tokens: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
 struct AnthropicErrorResponse {
     error: AnthropicErrorDetail,
 }
@@ -1653,8 +1688,12 @@ mod tests {
         assert!(resp.tool_calls.is_empty(), "should have no tool calls");
 
         let usage = resp.usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 15, "output tokens should match");
+        assert_eq!(
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens should match"
+        );
+        assert_eq!(usage.output_tokens, Some(15), "output tokens should match");
         assert_eq!(
             resp.stop_reason,
             Some(StopReason::EndTurn),
@@ -2012,7 +2051,7 @@ mod tests {
         assert!(result.is_err(), "request should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Timeout(_)),
+            matches!(err.underlying(), InferenceError::Timeout(_)),
             "error should be Timeout variant, got: {err:?}"
         );
     }
@@ -2091,47 +2130,129 @@ mod tests {
         assert!(result.is_ok(), "request with temperature should succeed");
     }
 
-    #[tokio::test]
-    async fn cache_tokens_parsed_from_response() {
-        let server = MockServer::start().await;
-        let body = json!({
-            "content": [
-                {"type": "text", "text": "cached response"}
-            ],
-            "stop_reason": "end_turn",
-            "usage": {
-                "input_tokens": 10,
-                "output_tokens": 15,
-                "cache_creation_input_tokens": 100,
-                "cache_read_input_tokens": 50
-            }
-        });
+    /// Usage as Anthropic documents it, with the cache writes split by TTL.
+    fn documented_usage() -> Value {
+        json!({
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 2051,
+            "cache_read_input_tokens": 1800,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 51,
+                "ephemeral_1h_input_tokens": 2000
+            },
+            "output_tokens": 503,
+            "service_tier": "standard"
+        })
+    }
 
+    fn documented_usage_normalized() -> Usage {
+        Usage {
+            uncached_input_tokens: Some(12),
+            cache_read_tokens: Some(1800),
+            cache_write_tokens: Some(2051),
+            cache_write_long_tokens: Some(2000),
+            output_tokens: Some(503),
+            reasoning_tokens: None,
+        }
+    }
+
+    async fn whole_usage(usage: Value) -> Option<Usage> {
+        let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": usage
+            })))
             .mount(&server)
             .await;
-
-        let client = test_client(&server.uri());
-        let result = client
+        test_client(&server.uri())
             .complete(&simple_user_message(), &[], &CompletionOptions::default())
-            .await;
-        assert!(result.is_ok(), "cache token response should succeed");
+            .await
+            .unwrap()
+            .usage
+    }
 
-        let usage = result.unwrap().usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 15, "output tokens should match");
+    #[tokio::test]
+    async fn cache_tokens_parsed_from_response() {
+        let usage = whole_usage(documented_usage()).await.unwrap();
+        assert_eq!(usage, documented_usage_normalized());
         assert_eq!(
-            usage.cache_creation_tokens,
-            Some(100),
-            "cache creation tokens should match"
+            usage.total_input_tokens(),
+            Some(3863),
+            "input_tokens excludes the cache, so the whole prompt adds all three"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_usage_counts_stay_unknown_in_a_whole_response() {
+        assert_eq!(
+            whole_usage(json!({"output_tokens": 4})).await,
+            Some(Usage {
+                output_tokens: Some(4),
+                ..Usage::default()
+            }),
+            "a missing input count is unknown, not a parse error or zero"
+        );
+    }
+
+    /// The fields of the completed span named `name`, captured while `run`
+    /// ran on this thread.
+    async fn span_fields<F: std::future::Future>(name: &str, run: F) -> Vec<(String, String)> {
+        use residuum_core::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
+        use tracing_subscriber::layer::SubscriberExt;
+        let (layer, spans) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+        run.await;
+        spans
+            .snapshot()
+            .into_iter()
+            .find(|span| span.name == name)
+            .map(|span| span.fields)
+            .unwrap_or_default()
+    }
+
+    fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        fields
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[tokio::test]
+    async fn request_span_carries_gen_ai_usage_attributes() {
+        let fields = span_fields("send", whole_usage(documented_usage())).await;
+        assert_eq!(field(&fields, "gen_ai.request.model"), Some(TEST_MODEL));
+        assert_eq!(field(&fields, "gen_ai.operation.name"), Some("chat"));
+        assert_eq!(field(&fields, "gen_ai.provider.name"), Some("anthropic"));
+        assert_eq!(
+            field(&fields, "gen_ai.usage.input_tokens"),
+            Some("3863"),
+            "input counts the whole prompt, cache included"
+        );
+        assert_eq!(field(&fields, "gen_ai.usage.output_tokens"), Some("503"));
+        assert_eq!(
+            field(&fields, "gen_ai.usage.cache_read.input_tokens"),
+            Some("1800")
         );
         assert_eq!(
-            usage.cache_read_tokens,
-            Some(50),
-            "cache read tokens should match"
+            field(&fields, "gen_ai.usage.cache_write.input_tokens"),
+            Some("2051")
         );
+        assert_eq!(
+            field(&fields, "gen_ai.usage.reasoning.output_tokens"),
+            None,
+            "a count the provider didn't report stays unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_span_leaves_gen_ai_usage_unset_when_none_is_reported() {
+        let fields = span_fields("send", whole_usage(json!({"output_tokens": 4}))).await;
+        assert_eq!(field(&fields, "gen_ai.usage.output_tokens"), Some("4"));
+        assert_eq!(field(&fields, "gen_ai.usage.input_tokens"), None);
+        assert_eq!(field(&fields, "gen_ai.usage.cache_read.input_tokens"), None);
     }
 
     #[tokio::test]
@@ -3568,6 +3689,126 @@ mod tests {
         (result, sink, server)
     }
 
+    /// A text reply streamed with the given `message_start` and
+    /// `message_delta` usage.
+    fn text_stream(start_usage: Value, end_usage: Value) -> String {
+        [
+            message_start(start_usage),
+            block_start(0, json!({"type": "text", "text": ""})),
+            delta(0, json!({"type": "text_delta", "text": "ok"})),
+            block_stop(0),
+            message_end("end_turn", end_usage),
+        ]
+        .concat()
+    }
+
+    #[tokio::test]
+    async fn streamed_usage_is_normalized_like_the_whole_response() {
+        let mut start_usage = documented_usage();
+        start_usage
+            .as_object_mut()
+            .unwrap()
+            .insert("output_tokens".to_string(), json!(1));
+        let (streamed, _sink, _server) = stream_from(
+            sse_response(&[text_stream(start_usage, documented_usage())]),
+            test_client,
+        )
+        .await;
+        assert_eq!(
+            streamed.unwrap().usage,
+            Some(documented_usage_normalized()),
+            "cumulative message_delta counts, TTL split included, match a whole response"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_dies_after_message_start_keeps_its_usage_on_the_attempt() {
+        let cut_off = [
+            message_start(json!({"input_tokens": 25, "output_tokens": 1})),
+            block_start(0, json!({"type": "text", "text": ""})),
+            delta(0, json!({"type": "text_delta", "text": "half"})),
+        ]
+        .concat();
+        let (result, _sink, _server) = stream_from(sse_response(&[cut_off]), test_client).await;
+        let err = result.unwrap_err();
+
+        assert!(
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)),
+            "the stream ended early: {err:?}"
+        );
+        assert_eq!(
+            err.attempts(),
+            [crate::AttemptUsage {
+                provider: "anthropic".to_string(),
+                model: TEST_MODEL.to_string(),
+                outcome: crate::AttemptOutcome::Failed,
+                usage: Some(Usage {
+                    uncached_input_tokens: Some(25),
+                    output_tokens: Some(1),
+                    ..Usage::default()
+                }),
+            }],
+            "the input billed at message_start is not lost with the stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_adaptive_request_is_listed_before_the_one_that_answered() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "thinking": {"type": "adaptive"}
+            })))
+            .respond_with(ResponseTemplate::new(400).set_body_json(adaptive_unsupported_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "thinking": {"type": "enabled"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .mount(&server)
+            .await;
+
+        let response = test_client(&server.uri())
+            .complete(&simple_user_message(), &[], &thinking_options(4096))
+            .await
+            .unwrap();
+
+        let outcomes: Vec<_> = response.attempts.iter().map(|a| a.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                crate::AttemptOutcome::Failed,
+                crate::AttemptOutcome::Succeeded
+            ],
+            "the refused request is an attempt of the call too"
+        );
+        assert_eq!(response.attempts.last().unwrap().usage, response.usage);
+    }
+
+    #[tokio::test]
+    async fn missing_usage_counts_stay_unknown_in_a_stream() {
+        let (streamed, _sink, _server) = stream_from(
+            sse_response(&[text_stream(
+                json!({"output_tokens": 1}),
+                json!({"output_tokens": 4}),
+            )]),
+            test_client,
+        )
+        .await;
+        assert_eq!(
+            streamed.unwrap().usage,
+            Some(Usage {
+                output_tokens: Some(4),
+                ..Usage::default()
+            }),
+            "a stream that never reports input leaves it unknown, as a whole response does"
+        );
+    }
+
     #[tokio::test]
     async fn streamed_response_matches_the_non_streaming_one() {
         let (streamed, sink, server) =
@@ -3601,11 +3842,11 @@ mod tests {
         let usage = streamed.usage.unwrap();
         assert_eq!(
             (
-                usage.input_tokens,
+                usage.uncached_input_tokens,
                 usage.output_tokens,
                 usage.cache_read_tokens
             ),
-            (25, 42, Some(3)),
+            (Some(25), Some(42), Some(3)),
             "message_start and message_delta usage merge, the later output count winning"
         );
         assert_eq!(
@@ -3686,7 +3927,7 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), test_client).await;
         let err = cut_clean.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)),
             "a stream that ends cleanly but early is interrupted: {err:?}"
         );
         assert!(err.is_retryable(), "an interrupted stream is retried");
@@ -3694,7 +3935,10 @@ mod tests {
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), test_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            matches!(
+                dropped_err.underlying(),
+                InferenceError::StreamInterrupted(_)
+            ),
             "a body cut off mid-stream is interrupted: {dropped_err:?}"
         );
         assert!(
@@ -3717,7 +3961,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Api(message) if message.contains("overloaded_error")),
+            matches!(err.underlying(), InferenceError::Api(message) if message.contains("overloaded_error")),
             "the error event surfaces with its type: {err:?}"
         );
         assert!(err.is_retryable(), "overloaded_error is retryable");
@@ -3803,7 +4047,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "no bytes for the configured time is a stall: {err:?}"
         );
         assert_eq!(
@@ -4024,7 +4268,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Parse(m) if m.contains("exec")),
+            matches!(err.underlying(), InferenceError::Parse(m) if m.contains("exec")),
             "the tool is named: {err:?}"
         );
         assert!(!err.is_retryable(), "garbage input will not improve");

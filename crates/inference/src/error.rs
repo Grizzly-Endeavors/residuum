@@ -1,36 +1,139 @@
 //! Errors returned by inference provider operations.
 
-use thiserror::Error;
+use std::fmt;
+
+use crate::types::AttemptUsage;
 
 /// Errors from model provider operations.
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum InferenceError {
     /// HTTP request failed (network, DNS, TLS)
-    #[error("HTTP request failed: {0}")]
-    Request(#[from] reqwest::Error),
+    Request(reqwest::Error),
 
     /// Response could not be parsed
-    #[error("failed to parse response: {0}")]
     Parse(String),
 
     /// API returned an error status
-    #[error("API error: {0}")]
     Api(String),
 
     /// Request timed out
-    #[error("request timed out after {0} seconds")]
     Timeout(u64),
 
     /// A streaming response went quiet: no bytes arrived for this many seconds
-    #[error("the model stopped responding for {0}s")]
     Stalled(u64),
 
     /// A streaming response ended or broke before it was complete
-    #[error("the response stream was interrupted: {0}")]
     StreamInterrupted(String),
+
+    /// A model call that ended in `error`, with every request it sent, in
+    /// order. Shows as `error` alone and keeps `error`'s source chain;
+    /// [`InferenceError::underlying`] is the error to classify, and
+    /// [`InferenceError::attempts`] what the call spent.
+    Attempted {
+        /// What ended the call; never itself `Attempted`.
+        error: Box<InferenceError>,
+        /// Every request the call sent, in order.
+        attempts: Vec<AttemptUsage>,
+    },
+}
+
+impl fmt::Display for InferenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Request(e) => write!(f, "HTTP request failed: {e}"),
+            Self::Parse(msg) => write!(f, "failed to parse response: {msg}"),
+            Self::Api(msg) => write!(f, "API error: {msg}"),
+            Self::Timeout(secs) => write!(f, "request timed out after {secs} seconds"),
+            Self::Stalled(secs) => write!(f, "the model stopped responding for {secs}s"),
+            Self::StreamInterrupted(msg) => {
+                write!(f, "the response stream was interrupted: {msg}")
+            }
+            Self::Attempted { error, .. } => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for InferenceError {
+    /// The error's own cause. An `Attempted` wrapper is transparent here, so a
+    /// wrapped error reports the same chain as the bare one.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Request(e) => Some(e),
+            Self::Attempted { error, .. } => error.source(),
+            Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_) => None,
+        }
+    }
+}
+
+impl From<reqwest::Error> for InferenceError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Request(error)
+    }
 }
 
 impl InferenceError {
+    /// The error itself, without the attempts a failed call records on it.
+    /// Match on this rather than on `self` to tell what went wrong.
+    #[must_use]
+    pub fn underlying(&self) -> &Self {
+        match self {
+            Self::Attempted { error, .. } => error,
+            bare @ (Self::Request(_)
+            | Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_)) => bare,
+        }
+    }
+
+    /// Every request the failed call sent, in order, with what each spent.
+    /// Empty when the call failed before it sent any.
+    #[must_use]
+    pub fn attempts(&self) -> &[AttemptUsage] {
+        match self {
+            Self::Attempted { attempts, .. } => attempts,
+            Self::Request(_)
+            | Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_) => &[],
+        }
+    }
+
+    /// Split into the bare error and the attempts it carries.
+    pub(crate) fn into_parts(self) -> (Self, Vec<AttemptUsage>) {
+        match self {
+            Self::Attempted { error, attempts } => (*error, attempts),
+            bare @ (Self::Request(_)
+            | Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_)) => (bare, Vec::new()),
+        }
+    }
+
+    /// This error, recording `earlier` ahead of the attempts it already
+    /// carries. With no attempts at all it stays bare.
+    #[must_use]
+    pub(crate) fn after_attempts(self, mut earlier: Vec<AttemptUsage>) -> Self {
+        let (error, own) = self.into_parts();
+        earlier.extend(own);
+        if earlier.is_empty() {
+            return error;
+        }
+        Self::Attempted {
+            error: Box::new(error),
+            attempts: earlier,
+        }
+    }
+
     /// Whether this error is likely to succeed on retry.
     ///
     /// - Request/Timeout/Stalled/StreamInterrupted: transient network failures
@@ -40,11 +143,11 @@ impl InferenceError {
     ///   the message indicates rate-limiting, overload or a server-side failure
     #[must_use]
     pub(crate) fn is_retryable(&self) -> bool {
-        match self {
+        match self.underlying() {
             Self::Request(_) | Self::Timeout(_) | Self::Stalled(_) | Self::StreamInterrupted(_) => {
                 true
             }
-            Self::Parse(_) => false,
+            Self::Parse(_) | Self::Attempted { .. } => false,
             Self::Api(msg) => {
                 let lower = msg.to_lowercase();
                 if let Some(status) = http_status(&lower) {
@@ -64,11 +167,11 @@ impl InferenceError {
     /// user who has no reason to know what an HTTP status code or a
     /// provider's own error string means.
     fn category(&self) -> FailureCategory {
-        match self {
+        match self.underlying() {
             Self::Timeout(_) | Self::Stalled(_) => FailureCategory::Timeout,
             Self::StreamInterrupted(_) => FailureCategory::ConnectionLost,
             Self::Request(_) => FailureCategory::NetworkUnreachable,
-            Self::Parse(_) => FailureCategory::Unclassified,
+            Self::Parse(_) | Self::Attempted { .. } => FailureCategory::Unclassified,
             Self::Api(msg) => FailureCategory::from_api_message(msg),
         }
     }
@@ -78,7 +181,7 @@ impl InferenceError {
     /// `AGENTS.md`'s "No Silent Failures".
     #[must_use]
     pub fn user_message(&self) -> String {
-        self.category().user_message(self)
+        self.category().user_message(self.underlying())
     }
 
     /// Short plain-language fragment naming the cause, for embedding into a
@@ -96,7 +199,7 @@ impl InferenceError {
     /// included, is not one.
     #[must_use]
     pub(crate) fn rejects_image_input(&self) -> bool {
-        let Self::Api(msg) = self else {
+        let Self::Api(msg) = self.underlying() else {
             return false;
         };
         let lower = msg.to_lowercase();
@@ -586,5 +689,37 @@ mod tests {
                 .to_string(),
         );
         assert_eq!(err.cause_phrase(), "an error talking to the AI provider");
+    }
+
+    /// A request the client rejects before sending it, so the `reqwest` error
+    /// carries its own cause (the URL parse failure).
+    fn request_error() -> InferenceError {
+        let error = reqwest::Client::new().get("not a url").build().unwrap_err();
+        InferenceError::from(error)
+    }
+
+    #[test]
+    fn a_wrapped_error_formats_its_root_cause_like_the_bare_one() {
+        let rejected = request_error();
+        let root =
+            std::iter::successors(std::error::Error::source(&rejected), |cause| cause.source())
+                .last()
+                .expect("a rejected URL has a root cause")
+                .to_string();
+        let bare = anyhow::Error::from(request_error());
+        let wrapped = anyhow::Error::from(InferenceError::Attempted {
+            error: Box::new(request_error()),
+            attempts: Vec::new(),
+        });
+
+        assert_eq!(
+            format!("{wrapped:#}"),
+            format!("{bare:#}"),
+            "wrapping an error in its attempts leaves its chain unchanged"
+        );
+        assert!(
+            format!("{wrapped:#}").contains(&root),
+            "the root cause reaches the formatted chain: {wrapped:#}"
+        );
     }
 }

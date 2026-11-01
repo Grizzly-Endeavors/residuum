@@ -286,13 +286,16 @@ async fn fetch_gemini_models(
 ) -> Result<Vec<ModelEntry>, String> {
     let key = api_key.ok_or("api_key is required for gemini")?;
     let base = base_url.unwrap_or("https://generativelanguage.googleapis.com/v1beta");
-    let url = format!("{base}/models?key={key}&pageSize=1000");
+    let url = format!("{base}/models?pageSize=1000");
 
+    // The key travels in a header, and the errors below drop the URL: this
+    // text is shown in the web UI, and reqwest's error text includes the URL.
     let resp = client
         .get(&url)
+        .header("x-goog-api-key", key)
         .send()
         .await
-        .map_err(|err| format!("request failed: {err}"))?;
+        .map_err(|err| format!("request failed: {}", err.without_url()))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -303,7 +306,7 @@ async fn fetch_gemini_models(
     let json: serde_json::Value = resp
         .json()
         .await
-        .map_err(|err| format!("invalid json: {err}"))?;
+        .map_err(|err| format!("invalid json: {}", err.without_url()))?;
     let models = json
         .get("models")
         .and_then(|v| v.as_array())
@@ -706,6 +709,25 @@ mod tests {
             stored.as_deref(),
             Some(before.as_bytes()),
             "the returned checkpoint must hold providers.toml as it was before the patch"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_listing_transport_error_names_neither_key_nor_url() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let base = format!("http://127.0.0.1:{port}/v1beta");
+
+        let err = fetch_gemini_models(&reqwest::Client::new(), Some("hunter2-secret"), Some(&base))
+            .await
+            .err()
+            .expect("nothing listens on the freed port, so the listing fails");
+
+        assert!(err.starts_with("request failed"), "{err}");
+        assert!(
+            !err.contains("hunter2") && !err.contains("127.0.0.1"),
+            "the error shown to the user carries no key or URL: {err}"
         );
     }
 }
