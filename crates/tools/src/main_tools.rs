@@ -277,14 +277,12 @@ mod tests {
 
     /// Main's registry over `h`, with every optional tool gate on (the
     /// harness config carries an Ollama web search backend).
-    fn build_main_registry(h: &RegistryHarness) -> ToolRegistry {
+    fn build_main_registry(h: &RegistryHarness, dir: &std::path::Path) -> ToolRegistry {
         let auto_mode = residuum_agent::auto_mode::AutoModeGate::new_shared(
             "test",
             residuum_config::AutoModeConfig::default(),
             residuum_inference::system_one::SystemOneService::new(None),
-            residuum_inference::UsageRecorder::new(&residuum_config::WorkspaceLayout::new(
-                dir.path(),
-            )),
+            residuum_inference::UsageRecorder::new(&residuum_config::WorkspaceLayout::new(dir)),
         );
         let model_catalog = residuum_config::ModelCatalog::default().into_shared();
         let deps = ToolRegistryDeps {
@@ -344,7 +342,7 @@ mod tests {
         // A Windows checkout with autocrlf turns TOOLS.md's line endings into
         // CRLF, while the descriptions are LF, so compare on LF.
         let tools_md = TOOLS_MD.replace("\r\n", "\n");
-        let definitions = build_main_registry(&h).definitions();
+        let definitions = build_main_registry(&h, dir.path()).definitions();
         assert!(!definitions.is_empty(), "main registers no tools");
         for definition in definitions {
             let expected = format!("\n{}\n", quote_as_tools_md(&definition.description));
@@ -378,7 +376,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let h = RegistryHarness::build(dir.path()).await;
 
-        let main_tools = build_main_registry(&h);
+        let main_tools = build_main_registry(&h, dir.path());
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 
