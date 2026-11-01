@@ -14,9 +14,10 @@ use residuum_bus::{HEARTBEAT_OK, ends_with_sentinel};
 use residuum_config::WorkspaceLayout;
 use residuum_inference::Message;
 use residuum_memory::merge_writer::MemoryMergeWriter;
-use residuum_memory::observer::{ExtractedObservation, Extraction, ObserveAction, Observer};
+use residuum_memory::observer::{
+    ExtractedObservation, Extraction, ObserveAction, Observer, extraction_tokens,
+};
 use residuum_memory::recent_messages::RecentMessage;
-use residuum_memory::tokens::estimate_message_tokens;
 use residuum_memory::types::{SourceTag, Visibility};
 
 /// The subsystems a run's memory pipeline writes through, grouped because
@@ -74,20 +75,19 @@ impl SessionMemory {
         transcript: &[TimedMessage<'_>],
         env: &SessionMemoryEnv<'_>,
     ) {
-        let tail = self.unstaged_tail(transcript, env.tz);
+        let tail = wrap(self.unstaged(transcript), env.tz);
         if tail.is_empty() || env.observer.check_thresholds(&tail) != ObserveAction::ForceNow {
             return;
         }
         self.stage(&tail, env).await;
     }
 
-    /// The part of `transcript` nothing has been extracted from yet, wrapped
-    /// for the observer.
-    fn unstaged_tail(&self, transcript: &[TimedMessage<'_>], tz: Tz) -> Vec<RecentMessage> {
-        let tail = transcript
-            .get(self.covered_through.min(transcript.len())..)
-            .unwrap_or_default();
-        wrap(tail, tz)
+    /// The part of `items` (a run's transcript, wrapped or not) that nothing
+    /// has been extracted from yet.
+    fn unstaged<'a, T>(&self, items: &'a [T]) -> &'a [T] {
+        items
+            .get(self.covered_through.min(items.len())..)
+            .unwrap_or_default()
     }
 
     /// Extract `tail` (the transcript past `covered_through`) into the
@@ -130,29 +130,52 @@ impl SessionMemory {
     }
 }
 
-/// Split `messages` into consecutive chunks whose estimated tokens (the
-/// estimate the observer's thresholds use) stay within `budget`. A single
-/// message larger than `budget` gets a chunk of its own, since a message is
-/// never split or dropped.
+/// Split `messages` into consecutive chunks whose extraction tokens (see
+/// [`extraction_tokens`]) stay within `budget`, so each chunk's observer
+/// request stays near the budget. A single message larger than `budget` gets
+/// a chunk of its own, since a message is never split or dropped. A
+/// remainder of at most a quarter of the budget joins the chunk before it:
+/// on its own it would cost an observer call, with the extraction prompt, for
+/// a fragment.
 fn chunk_within(messages: &[RecentMessage], budget: usize) -> Vec<&[RecentMessage]> {
     let mut chunks = Vec::new();
     let mut rest = messages;
     while !rest.is_empty() {
-        let mut tokens = 0_usize;
-        let mut len = rest.len();
-        for (i, rm) in rest.iter().enumerate() {
-            tokens =
-                tokens.saturating_add(estimate_message_tokens(std::slice::from_ref(&rm.message)));
-            if i > 0 && tokens > budget {
-                len = i;
-                break;
-            }
+        let mut len = fitting_len(rest, budget);
+        if within(rest.get(len..).unwrap_or_default(), budget / 4) {
+            len = rest.len();
         }
         let (chunk, remainder) = rest.split_at(len);
         chunks.push(chunk);
         rest = remainder;
     }
     chunks
+}
+
+/// How many leading messages of `messages` fit within `budget` extraction
+/// tokens. Always at least one, so a message over the budget still makes
+/// progress.
+fn fitting_len(messages: &[RecentMessage], budget: usize) -> usize {
+    let mut tokens = 0_usize;
+    for (i, rm) in messages.iter().enumerate() {
+        tokens = tokens.saturating_add(extraction_tokens(rm));
+        if i > 0 && tokens > budget {
+            return i;
+        }
+    }
+    messages.len()
+}
+
+/// Whether `messages` together come to at most `limit` extraction tokens.
+fn within(messages: &[RecentMessage], limit: usize) -> bool {
+    let mut tokens = 0_usize;
+    for rm in messages {
+        tokens = tokens.saturating_add(extraction_tokens(rm));
+        if tokens > limit {
+            return false;
+        }
+    }
+    true
 }
 
 /// Wrap a run's messages as `RecentMessage`s with `Background` visibility,
@@ -182,8 +205,9 @@ fn wrap(messages: &[TimedMessage<'_>], tz: Tz) -> Vec<RecentMessage> {
 /// way). Anything staged mid-run is merged regardless of how the run ended.
 ///
 /// The final extraction goes through the same chunked staging as mid-run
-/// staging, so no single observer request exceeds the force threshold
-/// however long the unstaged tail is.
+/// staging, so each observer request carries about the force threshold's
+/// worth of messages however long the unstaged tail is; a single message
+/// larger than the threshold is sent on its own.
 ///
 /// Takes the run's address/run id/category as a [`SourceTag`] rather than a
 /// [`residuum_bus::session::SessionInfo`] so it can be reused both by a live run's
@@ -199,10 +223,8 @@ pub(crate) async fn complete_session_memory(
 ) -> Option<String> {
     let has_staged = memory.has_staged();
     let ended_with_heartbeat_ok = ends_with_sentinel(summary, HEARTBEAT_OK);
-    let total_tokens: usize = transcript
-        .iter()
-        .map(|m| estimate_message_tokens(std::slice::from_ref(m.message)))
-        .sum();
+    let wrapped = wrap(transcript, env.tz);
+    let total_tokens: usize = wrapped.iter().map(extraction_tokens).sum();
     let below_floor = total_tokens < env.episode_skip_token_floor;
 
     // A run with nothing staged skips producing an episode when it ended
@@ -221,8 +243,7 @@ pub(crate) async fn complete_session_memory(
         return None;
     }
 
-    let tail = memory.unstaged_tail(transcript, env.tz);
-    memory.stage(&tail, env).await;
+    memory.stage(memory.unstaged(&wrapped), env).await;
 
     let SessionMemory {
         extracted: observations,
@@ -238,7 +259,7 @@ pub(crate) async fn complete_session_memory(
     let extraction = Extraction {
         narrative,
         observations,
-        messages: wrap(transcript, env.tz),
+        messages: wrapped,
     };
 
     match env.merge_writer.merge(extraction, tag, env.tz).await {
@@ -269,7 +290,7 @@ pub(crate) fn untimed(messages: &[Message]) -> Vec<TimedMessage<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use residuum_inference::Message;
+    use residuum_inference::{ImageData, Message, ThinkingBlock};
     use residuum_memory::observer::{Observer, ObserverConfig};
     use residuum_memory::testing::MockMemoryProvider;
     use std::sync::Arc;
@@ -653,11 +674,12 @@ mod tests {
         (observer, calls)
     }
 
-    /// Six messages of about 40 estimated tokens each, every one carrying a
-    /// distinct marker so a test can tell which observer call saw it.
+    /// Six messages of about 47 extraction tokens each (a rendered entry of
+    /// 185 characters), every one carrying a distinct marker so a test can
+    /// tell which observer call saw it.
     fn marked_transcript() -> Vec<Message> {
         (0..6)
-            .map(|i| Message::user(format!("<<m{i}>> {}", "x".repeat(140))))
+            .map(|i| Message::user(format!("<<m{i}>> {}", "x".repeat(123))))
             .collect()
     }
 
@@ -755,6 +777,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_short_trailing_message_joins_the_chunk_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let (observer, calls) = recording_observer(100, None);
+        let mw = merge_writer(dir.path());
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &mw,
+            layout: &layout,
+            episode_skip_token_floor: 1,
+            tz: chrono_tz::UTC,
+        };
+        // The third message is what pushes the run over the threshold, on its
+        // reasoning. The observer is sent only its short text, which is a
+        // remainder small enough to ride with the two before it: one call.
+        let mut transcript: Vec<Message> = marked_transcript().into_iter().take(2).collect();
+        transcript.push(
+            Message::assistant("<<m2>> ok", None)
+                .with_thinking(vec![ThinkingBlock::text("r".repeat(300))]),
+        );
+
+        let mut memory = SessionMemory::new();
+        memory.maybe_stage(&untimed(&transcript), &env).await;
+
+        assert_eq!(memory.covered_through, 3, "the whole tail should be staged");
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "a short trailing message should not cost a second observer call"
+        );
+        let prompt = calls.first().unwrap();
+        assert!(prompt.contains("<<m2>> ok"));
+        assert!(
+            !prompt.contains("rrrr"),
+            "reasoning text should not be sent to the observer"
+        );
+    }
+
+    #[tokio::test]
     async fn a_failed_chunk_stops_staging_and_leaves_the_rest_unstaged() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
@@ -814,14 +876,9 @@ mod tests {
             "chunks must keep every message, in order"
         );
         for chunk in &chunks {
-            let tokens = estimate_message_tokens(
-                &chunk
-                    .iter()
-                    .map(|rm| rm.message.clone())
-                    .collect::<Vec<_>>(),
-            );
+            let tokens: usize = chunk.iter().map(extraction_tokens).sum();
             assert!(
-                tokens <= 100 || chunk.len() == 1,
+                tokens <= 100 + 100 / 4 || chunk.len() == 1,
                 "a chunk of {} messages estimated at {tokens} tokens is over budget",
                 chunk.len()
             );
@@ -888,6 +945,92 @@ mod tests {
             prompt.contains("[2026-03-01T05:45:00] [assistant]"),
             "the second message should carry its own recorded time: {prompt}"
         );
+    }
+
+    #[tokio::test]
+    async fn reasoning_text_does_not_shrink_an_observer_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let (observer, calls) = recording_observer(100, None);
+        let mw = merge_writer(dir.path());
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &mw,
+            layout: &layout,
+            episode_skip_token_floor: 1,
+            tz: chrono_tz::UTC,
+        };
+        // Each message's reasoning alone is over the budget. The observer is
+        // never sent it, so both short messages still fit one request.
+        let transcript: Vec<Message> = marked_transcript()
+            .into_iter()
+            .take(2)
+            .map(|m| m.with_thinking(vec![ThinkingBlock::text("reasoning-only ".repeat(400))]))
+            .collect();
+
+        let id = complete_session_memory(
+            sample_tag(),
+            "done",
+            &untimed(&transcript),
+            SessionMemory::new(),
+            &env,
+        )
+        .await;
+
+        assert!(id.is_some());
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "reasoning text should not split two short messages into two requests"
+        );
+        assert!(
+            !calls.first().unwrap().contains("reasoning-only"),
+            "reasoning text should not be sent to the observer"
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_and_images_alone_do_not_clear_the_skip_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let (observer, calls) = recording_observer(100_000, None);
+        let mw = merge_writer(dir.path());
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &mw,
+            layout: &layout,
+            episode_skip_token_floor: 2000,
+            tz: chrono_tz::UTC,
+        };
+        // About 2,600 tokens by the threshold estimate, which counts the
+        // reasoning and the image. The observer receives neither.
+        let image = ImageData {
+            media_type: "image/png".to_string(),
+            data: "iVBORw0KGgo=".to_string(),
+        };
+        let mut with_image = Message::user("hi");
+        with_image.images = vec![image];
+        let transcript = vec![
+            with_image,
+            Message::assistant("hello", None)
+                .with_thinking(vec![ThinkingBlock::text("r".repeat(4000))]),
+        ];
+
+        let id = complete_session_memory(
+            sample_tag(),
+            "hello",
+            &untimed(&transcript),
+            SessionMemory::new(),
+            &env,
+        )
+        .await;
+
+        assert!(
+            id.is_none(),
+            "a run whose only bulk is reasoning and images should be skipped"
+        );
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     #[test]
