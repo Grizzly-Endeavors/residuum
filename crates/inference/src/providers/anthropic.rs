@@ -17,9 +17,10 @@ use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::types::current_exchange_start;
 use crate::with_retry;
 use crate::{
-    CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ProviderApi, ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
-    ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
+    CacheRetention, CompletionOptions, ImageData, InferenceError, InferenceProvider,
+    InferenceResponse, Message, ProviderApi, ReplayScope, ResponseFormat, Role, StopReason,
+    StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    blocks_produced_at,
 };
 use residuum_config::RetryConfig;
 use residuum_config::{ThinkingConfig, ThinkingLevel};
@@ -147,9 +148,8 @@ impl AnthropicClient {
 
     /// Convert our generic messages into Anthropic-specific format.
     ///
-    /// System messages are extracted and returned separately as a concatenated
-    /// string (Anthropic uses a top-level `system` field rather than putting
-    /// system messages in the messages array).
+    /// The first system message is returned separately, for the top-level
+    /// `system` field; every later one becomes a user message.
     ///
     /// With a `replay_thinking` origin (this client's own), the reasoning
     /// behind an assistant message that made tool calls goes back ahead of
@@ -158,19 +158,19 @@ impl AnthropicClient {
     /// blocks that origin produced go back (see [`replayable_thinking`]).
     /// Reasoning behind earlier replies is not sent, and none is when the
     /// request has thinking off (`None`).
-    fn convert_messages(
-        messages: &[Message],
+    fn convert_messages<'m>(
+        messages: &'m [Message],
         replay_thinking: Option<&ThinkingOrigin>,
-    ) -> (Option<String>, Vec<AnthropicMessage>) {
-        let mut system_parts: Vec<&str> = Vec::new();
+    ) -> (Option<&'m Message>, Vec<AnthropicMessage>) {
+        let mut system: Option<&Message> = None;
         let mut api_messages: Vec<AnthropicMessage> = Vec::new();
         let exchange_start = current_exchange_start(messages);
 
         for (index, msg) in messages.iter().enumerate() {
             match msg.role {
                 Role::System => {
-                    if system_parts.is_empty() {
-                        system_parts.push(&msg.content);
+                    if system.is_none() {
+                        system = Some(msg);
                     } else {
                         api_messages.push(AnthropicMessage {
                             role: String::from("user"),
@@ -250,8 +250,6 @@ impl AnthropicClient {
             }
         }
 
-        let system = (!system_parts.is_empty()).then(|| system_parts.join("\n"));
-
         // Merge consecutive same-role messages (required by Anthropic API for tool results)
         let api_messages = merge_consecutive_messages(api_messages);
 
@@ -328,23 +326,8 @@ impl AnthropicClient {
         let tools = (!tools.is_empty() || has_web_search)
             .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
 
-        // OAuth tokens require the Claude Code identity as an isolated first block
-        // in the system prompt to access newer models (sonnet 4.6, opus 4.6).
-        let system: Option<AnthropicSystem> = if is_oauth_key(&self.api_key) {
-            let mut blocks = vec![AnthropicSystemBlock {
-                r#type: "text",
-                text: OAUTH_IDENTITY.to_string(),
-            }];
-            if let Some(s) = system {
-                blocks.push(AnthropicSystemBlock {
-                    r#type: "text",
-                    text: s,
-                });
-            }
-            Some(AnthropicSystem::Blocks(blocks))
-        } else {
-            system.map(AnthropicSystem::Text)
-        };
+        let cache_control = AnthropicCacheControl::for_retention(options.cache.retention);
+        let system = AnthropicSystem::build(system, is_oauth_key(&self.api_key), cache_control);
 
         let output_format = match &options.response_format {
             ResponseFormat::Text => None,
@@ -362,6 +345,7 @@ impl AnthropicClient {
             temperature: self.temperature_to_send(options.temperature),
             max_tokens,
             thinking: options.thinking.clone(),
+            cache_control,
         }
     }
 
@@ -1207,15 +1191,30 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+/// A cache breakpoint: on a block, or top level for automatic caching, which
+/// the API places on the request's last cacheable block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct AnthropicCacheControl {
     r#type: &'static str,
+    /// `"1h"`, or absent for the API's five-minute default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<&'static str>,
 }
 
 impl AnthropicCacheControl {
-    const DEFAULT: Self = Self {
-        r#type: "ephemeral",
-    };
+    /// The breakpoint every marker in a request uses. One TTL for all of
+    /// them keeps the API's rule that longer-lived entries come before
+    /// shorter ones, and its rule that an explicit marker on the last block
+    /// match the top-level one.
+    fn for_retention(retention: CacheRetention) -> Self {
+        Self {
+            r#type: "ephemeral",
+            ttl: match retention {
+                CacheRetention::Short => None,
+                CacheRetention::Long => Some("1h"),
+            },
+        }
+    }
 }
 
 /// The request's `thinking` field.
@@ -1316,9 +1315,6 @@ struct ThinkingMode {
 }
 
 /// System prompt content — plain string or array of text blocks.
-///
-/// OAuth tokens require the Claude Code identity as an isolated first block,
-/// so the system prompt must be sent as an array for OAuth requests.
 #[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 enum AnthropicSystem {
@@ -1326,10 +1322,64 @@ enum AnthropicSystem {
     Blocks(Vec<AnthropicSystemBlock>),
 }
 
+impl AnthropicSystem {
+    /// The `system` field for a request whose first system message is
+    /// `system`.
+    ///
+    /// A message with a cache boundary goes as blocks, its stable part
+    /// carrying an explicit `cache_control` breakpoint, so the tools and that
+    /// part stay cached when the rest of the system prompt changes. That is
+    /// one breakpoint besides the request's top-level automatic one, well
+    /// under the API's four. OAuth tokens require the Claude Code identity
+    /// as an isolated first block to access newer models, so their system
+    /// prompt is always an array. Anything else goes as a plain string.
+    fn build(
+        system: Option<&Message>,
+        oauth: bool,
+        cache_control: AnthropicCacheControl,
+    ) -> Option<Self> {
+        let split = system.and_then(Message::cache_split);
+        if !oauth && split.is_none() {
+            return system.map(|msg| Self::Text(msg.content.clone()));
+        }
+        let mut blocks = Vec::new();
+        if oauth {
+            blocks.push(AnthropicSystemBlock::text(OAUTH_IDENTITY));
+        }
+        match (system, split) {
+            (_, Some((stable, rest))) => {
+                blocks.push(AnthropicSystemBlock {
+                    cache_control: Some(cache_control),
+                    ..AnthropicSystemBlock::text(stable)
+                });
+                if !rest.is_empty() {
+                    blocks.push(AnthropicSystemBlock::text(rest));
+                }
+            }
+            (Some(msg), None) => blocks.push(AnthropicSystemBlock::text(&msg.content)),
+            (None, None) => {}
+        }
+        Some(Self::Blocks(blocks))
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct AnthropicSystemBlock {
     r#type: &'static str,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+impl AnthropicSystemBlock {
+    /// A text block with no cache breakpoint.
+    fn text(text: &str) -> Self {
+        Self {
+            r#type: "text",
+            text: text.to_string(),
+            cache_control: None,
+        }
+    }
 }
 
 /// What stays the same across a request's attempts.
@@ -1341,6 +1391,8 @@ struct PreparedRequest {
     temperature: Option<f32>,
     max_tokens: u32,
     thinking: Option<ThinkingConfig>,
+    /// The request's top-level automatic cache breakpoint.
+    cache_control: AnthropicCacheControl,
 }
 
 impl PreparedRequest {
@@ -1375,7 +1427,7 @@ impl PreparedRequest {
             temperature: self.temperature,
             thinking,
             stream: stream.then_some(true),
-            cache_control: AnthropicCacheControl::DEFAULT,
+            cache_control: self.cache_control,
         }
     }
 }
@@ -1763,7 +1815,7 @@ mod tests {
         // Verify system was extracted properly by checking the conversion
         let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert_eq!(
-            system.as_deref(),
+            system.map(|m| m.content.as_str()),
             Some("You are a helpful assistant."),
             "system should be extracted to top-level field"
         );
@@ -2691,6 +2743,174 @@ mod tests {
         );
     }
 
+    // --- Prompt caching: system breakpoint and TTL ---
+
+    const OAUTH_TEST_KEY: &str = "sk-ant-oat01-test-key";
+
+    /// Every `cache_control` marker in a request body, top level included.
+    fn cache_breakpoints(value: &Value) -> usize {
+        match value {
+            Value::Object(map) => map
+                .iter()
+                .map(|(key, v)| usize::from(key == "cache_control") + cache_breakpoints(v))
+                .sum(),
+            Value::Array(items) => items.iter().map(cache_breakpoints).sum(),
+            _ => 0,
+        }
+    }
+
+    fn cache_options(retention: CacheRetention) -> CompletionOptions {
+        CompletionOptions {
+            cache: crate::CacheHints {
+                conversation_key: Some("main".to_string()),
+                retention,
+            },
+            ..CompletionOptions::default()
+        }
+    }
+
+    /// A conversation whose system prompt has a stable part and a part that
+    /// changes, as the agent's own system prompt does.
+    fn conversation_with_cache_boundary() -> Vec<Message> {
+        vec![
+            Message::system_with_cache_boundary("stable sections", "\n\nchanging sections"),
+            Message::user("Hello"),
+        ]
+    }
+
+    /// The single request body `key` sent with `options`.
+    async fn body_sent_with(key: &str, messages: &[Message], options: &CompletionOptions) -> Value {
+        let server = MockServer::start().await;
+        mount_ok(&server).await;
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = AnthropicClient::new(
+            http,
+            server.uri(),
+            key,
+            "claude-sonnet-4-6",
+            1024,
+            RetryConfig::no_retry(),
+        );
+        client.complete(messages, &[], options).await.unwrap();
+        let [body]: [Value; 1] = sent_bodies(&server).await.try_into().unwrap();
+        body
+    }
+
+    #[tokio::test]
+    async fn short_retention_marks_the_stable_system_block_with_the_default_ttl() {
+        let body = body_sent_with(
+            "test-api-key",
+            &conversation_with_cache_boundary(),
+            &cache_options(CacheRetention::Short),
+        )
+        .await;
+
+        assert_eq!(
+            body.get("system").unwrap(),
+            &json!([
+                {"type": "text", "text": "stable sections", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "\n\nchanging sections"},
+            ])
+        );
+        assert_eq!(
+            body.get("cache_control").unwrap(),
+            &json!({"type": "ephemeral"}),
+            "automatic caching still covers the conversation tail"
+        );
+        assert_eq!(cache_breakpoints(&body), 2);
+    }
+
+    #[tokio::test]
+    async fn long_retention_asks_for_an_hour_on_both_breakpoints() {
+        let body = body_sent_with(
+            "test-api-key",
+            &conversation_with_cache_boundary(),
+            &cache_options(CacheRetention::Long),
+        )
+        .await;
+
+        assert_eq!(
+            body.get("system").unwrap(),
+            &json!([
+                {
+                    "type": "text",
+                    "text": "stable sections",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                },
+                {"type": "text", "text": "\n\nchanging sections"},
+            ])
+        );
+        assert_eq!(
+            body.get("cache_control").unwrap(),
+            &json!({"type": "ephemeral", "ttl": "1h"})
+        );
+        assert_eq!(cache_breakpoints(&body), 2);
+    }
+
+    #[tokio::test]
+    async fn oauth_keeps_the_identity_block_first_and_marks_the_stable_block() {
+        for (retention, cache_control) in [
+            (CacheRetention::Short, json!({"type": "ephemeral"})),
+            (
+                CacheRetention::Long,
+                json!({"type": "ephemeral", "ttl": "1h"}),
+            ),
+        ] {
+            let body = body_sent_with(
+                OAUTH_TEST_KEY,
+                &conversation_with_cache_boundary(),
+                &cache_options(retention),
+            )
+            .await;
+
+            assert_eq!(
+                body.get("system").unwrap(),
+                &json!([
+                    {"type": "text", "text": OAUTH_IDENTITY},
+                    {"type": "text", "text": "stable sections", "cache_control": cache_control},
+                    {"type": "text", "text": "\n\nchanging sections"},
+                ]),
+                "{retention:?}"
+            );
+            assert_eq!(body.get("cache_control").unwrap(), &cache_control);
+            assert!(cache_breakpoints(&body) <= 4, "{retention:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_system_prompt_with_nothing_after_its_boundary_is_one_marked_block() {
+        let messages = vec![
+            Message::system_with_cache_boundary("stable sections", ""),
+            Message::user("Hello"),
+        ];
+        let body = body_sent_with("test-api-key", &messages, &CompletionOptions::default()).await;
+
+        assert_eq!(
+            body.get("system").unwrap(),
+            &json!([
+                {"type": "text", "text": "stable sections", "cache_control": {"type": "ephemeral"}},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_system_prompt_without_a_boundary_is_sent_as_before() {
+        let messages = vec![Message::system("Be helpful."), Message::user("Hello")];
+        let body = body_sent_with(
+            "test-api-key",
+            &messages,
+            &cache_options(CacheRetention::Long),
+        )
+        .await;
+
+        assert_eq!(body.get("system").unwrap(), &json!("Be helpful."));
+        assert_eq!(
+            body.get("cache_control").unwrap(),
+            &json!({"type": "ephemeral", "ttl": "1h"})
+        );
+        assert_eq!(cache_breakpoints(&body), 1, "only the automatic breakpoint");
+    }
+
     #[test]
     fn adaptive_thinking_maps_levels_to_effort() {
         for (level, effort) in [
@@ -2811,7 +3031,7 @@ mod tests {
 
         let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert_eq!(
-            system.as_deref(),
+            system.map(|m| m.content.as_str()),
             Some("First instruction."),
             "only first system message goes to system field"
         );

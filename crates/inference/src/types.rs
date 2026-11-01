@@ -84,6 +84,13 @@ pub struct Message {
     /// conversation to a person leaves it out, since nobody said it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub context: bool,
+    /// For a system message, the byte offset in `content` where the part
+    /// that rarely changes ends. A provider that caches at explicit
+    /// breakpoints marks one there (see [`Message::cache_split`]); every
+    /// provider still sends `content` whole. Set when the request is built,
+    /// never stored.
+    #[serde(skip)]
+    pub cache_boundary: Option<usize>,
 }
 
 /// One piece of a model's reasoning, as its provider returned it.
@@ -318,6 +325,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -336,6 +344,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -354,7 +363,31 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
+    }
+
+    /// Create a system message whose content is `stable` followed by `rest`,
+    /// with its cache boundary between the two.
+    #[must_use]
+    pub fn system_with_cache_boundary(stable: impl Into<String>, rest: &str) -> Self {
+        let mut content = stable.into();
+        let boundary = content.len();
+        content.push_str(rest);
+        Self {
+            cache_boundary: Some(boundary),
+            ..Self::system(content)
+        }
+    }
+
+    /// The content split at its cache boundary: the part that rarely changes,
+    /// then the rest (empty when nothing follows it). `None` when the message
+    /// has no boundary, or the boundary does not fall on a character
+    /// boundary inside a non-empty stable part.
+    #[must_use]
+    pub fn cache_split(&self) -> Option<(&str, &str)> {
+        let at = self.cache_boundary.filter(|&at| at > 0)?;
+        self.content.split_at_checked(at)
     }
 
     /// Create an assistant message with optional tool calls.
@@ -372,6 +405,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -390,6 +424,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -412,6 +447,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            cache_boundary: None,
         }
     }
 
@@ -665,6 +701,31 @@ pub struct WebSearchNativeConfig {
     pub exclude_domains: Option<Vec<String>>,
 }
 
+/// How a call should be cached by providers that let the caller choose.
+///
+/// The default suits a one-off call: no conversation key, short retention.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheHints {
+    /// Stable identifier of the conversation this call belongs to, for
+    /// providers that route requests by key. None for one-off calls.
+    pub conversation_key: Option<String>,
+    /// How long the provider should keep this call's cached prefix.
+    pub retention: CacheRetention,
+}
+
+/// How long a provider should keep a call's cached prefix.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CacheRetention {
+    /// The provider's default (five minutes on Anthropic): suits calls that
+    /// follow each other closely, such as a session's tool loop.
+    #[default]
+    Short,
+    /// An hour on Anthropic: suits a conversation with a person, who often
+    /// pauses longer than five minutes between messages. Cache writes cost
+    /// more (2x base input on Anthropic, against 1.25x).
+    Long,
+}
+
 /// Options for model completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct CompletionOptions {
@@ -678,6 +739,8 @@ pub struct CompletionOptions {
     pub thinking: Option<ThinkingConfig>,
     /// Provider-native web search configuration. None disables web search.
     pub web_search: Option<WebSearchNativeConfig>,
+    /// How the call should be cached.
+    pub cache: CacheHints,
 }
 
 /// A piece of a model response that arrived while the call is still running.
@@ -924,6 +987,56 @@ mod tests {
         let msg = Message::system("you are a test agent");
         assert_eq!(msg.role, Role::System, "role should be System");
         assert_eq!(msg.content, "you are a test agent", "content should match");
+        assert_eq!(
+            msg.cache_split(),
+            None,
+            "a plain system message has no boundary"
+        );
+    }
+
+    #[test]
+    fn a_cache_boundary_splits_the_content_it_joins() {
+        let msg = Message::system_with_cache_boundary("stable", "\n\nrest");
+        assert_eq!(msg.role, Role::System);
+        assert_eq!(
+            msg.content, "stable\n\nrest",
+            "the content is both parts, unchanged"
+        );
+        assert_eq!(msg.cache_split(), Some(("stable", "\n\nrest")));
+
+        let all_stable = Message::system_with_cache_boundary("stable", "");
+        assert_eq!(all_stable.cache_split(), Some(("stable", "")));
+    }
+
+    #[test]
+    fn a_cache_boundary_outside_the_content_is_ignored() {
+        let empty_stable = Message::system_with_cache_boundary("", "rest");
+        assert_eq!(
+            empty_stable.cache_split(),
+            None,
+            "an empty stable part marks nothing"
+        );
+
+        let mid_char = Message {
+            cache_boundary: Some(1),
+            ..Message::system("é")
+        };
+        assert_eq!(mid_char.cache_split(), None, "not a character boundary");
+
+        let past_end = Message {
+            cache_boundary: Some(99),
+            ..Message::system("short")
+        };
+        assert_eq!(past_end.cache_split(), None, "past the end of the content");
+    }
+
+    #[test]
+    fn a_cache_boundary_is_never_stored() {
+        let msg = Message::system_with_cache_boundary("stable", "rest");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("cache_boundary"), "{json}");
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cache_boundary, None);
     }
 
     #[test]
