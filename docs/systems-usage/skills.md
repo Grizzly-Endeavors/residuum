@@ -37,7 +37,7 @@ The index is rebuilt at startup, after a reload of the config, and on `skill_act
 
 Skills used as session roles (`subagent_spawn`'s `skill`, a pulse's `agent`, artifact sessions, an inbound A2A `metadata.skill`) resolve through the same layered index, so a team skill works as a role for any agent.
 
-A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories. A skill skipped for invalid frontmatter, or loaded with an oversized description, also produces a notice. Each rescan publishes its notices to the system notification channel, so a broken skill is reported on every reload or activation until it is fixed.
+A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories. A skill skipped for invalid frontmatter, or loaded with an oversized description, also produces a notice. Each rescan publishes its notices to the system notification channel, so a broken skill is reported on every reload or activation until it is fixed. An active skill that a rescan drops (its files were removed, or it can't be loaded) is reported once, on the notification channel. A `skill_activate` call also names each dropped skill in its result, so the agent knows the skill's instructions are gone.
 
 ## How Skills Appear in Context
 
@@ -50,7 +50,7 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 | Tool | Parameters | Notes |
 |------|-----------|-------|
-| `skill_activate` | `name` | Rescans the skill directories, then loads the skill body into active context. Active skills whose source files no longer exist are removed. |
+| `skill_activate` | `name` | Rescans the skill directories, then loads the skill body into active context. Active skills whose source files no longer exist are removed, and the result names each one. |
 | `skill_deactivate` | `name` | Removes skill body from context. |
 
 ## Bundled Skills

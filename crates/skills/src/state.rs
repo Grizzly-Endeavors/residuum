@@ -20,7 +20,7 @@ pub struct SkillState {
 #[derive(Debug)]
 pub struct RescanReport {
     /// Active skills this rescan deactivated, one line each. A dropped skill
-    /// is reported once, since it is no longer active after this rescan.
+    /// is reported once, because the rescan removes it from the active list.
     pub dropped: Vec<String>,
     /// Problems with skill directories and skills that are still indexed.
     /// These repeat on every rescan until they are fixed.
