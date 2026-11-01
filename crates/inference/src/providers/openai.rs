@@ -76,6 +76,8 @@ pub(crate) struct OpenAiClient {
     base_url: String,
     api_key: Option<String>,
     model: String,
+    /// Output limit for requests whose options don't set one.
+    max_tokens: u32,
     retry: RetryConfig,
     dialect: OpenAiDialect,
     /// Set once the host has refused a request for missing
@@ -93,6 +95,7 @@ impl OpenAiClient {
         http: SharedHttpClient,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        max_tokens: u32,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -103,6 +106,7 @@ impl OpenAiClient {
             base_url,
             api_key: None,
             model: model.into(),
+            max_tokens,
             retry,
             dialect: OpenAiDialect::default(),
             fills_missing_reasoning: Arc::new(AtomicBool::new(false)),
@@ -118,6 +122,7 @@ impl OpenAiClient {
         base_url: impl Into<String>,
         model: impl Into<String>,
         api_key: impl Into<String>,
+        max_tokens: u32,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -128,6 +133,7 @@ impl OpenAiClient {
             base_url,
             api_key: Some(api_key.into()),
             model: model.into(),
+            max_tokens,
             retry,
             dialect: OpenAiDialect::default(),
             fills_missing_reasoning: Arc::new(AtomicBool::new(false)),
@@ -160,10 +166,23 @@ impl OpenAiClient {
     /// and rejects fields it does not know, so it gets none.
     fn replays_reasoning(&self) -> bool {
         self.dialect.always_replays_reasoning
-            || url::Url::parse(&self.base_url)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_lowercase))
+            || self
+                .host()
                 .is_some_and(|host| !is_official_openai_host(&host))
+    }
+
+    /// The lowercased host of `base_url`, when it parses and has one.
+    fn host(&self) -> Option<String> {
+        url::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_lowercase))
+    }
+
+    /// Whether this client talks to `OpenAI`'s own service, the one host that
+    /// accepts only the fields its API documents.
+    fn is_official_host(&self) -> bool {
+        self.host()
+            .is_some_and(|host| is_official_openai_host(&host))
     }
 
     /// Who the reasoning this client returns is recorded as coming from, and
@@ -251,6 +270,15 @@ impl OpenAiClient {
             .thinking
             .as_ref()
             .and_then(Self::build_reasoning_effort);
+        let official = self.is_official_host();
+        // `OpenAI`'s API takes `max_completion_tokens`, which also bounds
+        // reasoning; compatible hosts take the older `max_tokens`.
+        let output_limit = options.max_tokens.unwrap_or(self.max_tokens);
+        let (max_tokens, max_completion_tokens) = if official {
+            (None, Some(output_limit))
+        } else {
+            (Some(output_limit), None)
+        };
         let (messages, missing_reasoning) = self.convert_messages(messages);
         PreparedRequest {
             messages,
@@ -260,6 +288,11 @@ impl OpenAiClient {
             response_format,
             temperature: options.temperature,
             reasoning_effort,
+            max_tokens,
+            max_completion_tokens,
+            prompt_cache_key: official
+                .then(|| options.cache.conversation_key.clone())
+                .flatten(),
         }
     }
 
@@ -710,6 +743,9 @@ struct PreparedRequest {
     response_format: Option<OpenAiResponseFormat>,
     temperature: Option<f32>,
     reasoning_effort: Option<String>,
+    max_tokens: Option<u32>,
+    max_completion_tokens: Option<u32>,
+    prompt_cache_key: Option<String>,
 }
 
 impl PreparedRequest {
@@ -746,10 +782,13 @@ impl PreparedRequest {
             response_format: self.response_format.as_ref(),
             temperature: self.temperature,
             reasoning_effort: self.reasoning_effort.as_deref(),
+            max_tokens: self.max_tokens,
+            max_completion_tokens: self.max_completion_tokens,
             stream: stream.then_some(true),
             stream_options: stream.then_some(StreamOptions {
                 include_usage: true,
             }),
+            prompt_cache_key: self.prompt_cache_key.as_deref(),
         }
     }
 }
@@ -769,9 +808,15 @@ struct ChatCompletionRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<&'a str>,
 }
 
 /// Asks a streamed response to end with its token usage.
@@ -1243,9 +1288,12 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// The output limit the test clients fall back to when a request sets none.
+    const TEST_MAX_TOKENS: u32 = 4096;
+
     fn make_client(url: impl Into<String>, model: &str) -> OpenAiClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-        OpenAiClient::with_http_client(http, url, model, RetryConfig::no_retry())
+        OpenAiClient::with_http_client(http, url, model, TEST_MAX_TOKENS, RetryConfig::no_retry())
     }
 
     fn make_client_with_key(url: impl Into<String>, model: &str, api_key: &str) -> OpenAiClient {
@@ -1255,13 +1303,14 @@ mod tests {
             url,
             model,
             api_key,
+            TEST_MAX_TOKENS,
             RetryConfig::no_retry(),
         )
     }
 
     fn make_client_with_timeout(url: impl Into<String>, model: &str, timeout: u64) -> OpenAiClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout)).unwrap();
-        OpenAiClient::with_http_client(http, url, model, RetryConfig::no_retry())
+        OpenAiClient::with_http_client(http, url, model, TEST_MAX_TOKENS, RetryConfig::no_retry())
     }
 
     #[test]
@@ -2261,6 +2310,87 @@ mod tests {
         );
     }
 
+    /// A client for `OpenAI`'s own host. Its requests are only built, never sent.
+    fn official_host_client() -> OpenAiClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OpenAiClient::with_http_client_and_api_key(
+            http,
+            "https://api.openai.com/v1",
+            "gpt-4o",
+            "key",
+            TEST_MAX_TOKENS,
+            RetryConfig::no_retry(),
+        )
+    }
+
+    /// The body of the request `options` builds for `client`, without sending it.
+    fn built_body(client: &OpenAiClient, options: &CompletionOptions) -> Value {
+        let prepared = client.prepare(&[Message::user("hi")], &[], options);
+        serde_json::to_value(prepared.request("gpt-4o", false, false)).unwrap()
+    }
+
+    #[test]
+    fn official_host_gets_max_completion_tokens_and_the_cache_key() {
+        let mut options = CompletionOptions {
+            max_tokens: Some(2048),
+            ..CompletionOptions::default()
+        };
+        options.cache.conversation_key = Some("conversation-1".to_string());
+        let body = built_body(&official_host_client(), &options);
+        assert_eq!(
+            at(&body, "/max_completion_tokens"),
+            &json!(2048),
+            "the request's output limit goes in max_completion_tokens"
+        );
+        assert!(
+            body.get("max_tokens").is_none(),
+            "the official host does not get max_tokens: {body}"
+        );
+        assert_eq!(
+            at(&body, "/prompt_cache_key"),
+            &json!("conversation-1"),
+            "the conversation key routes the prompt cache"
+        );
+    }
+
+    #[test]
+    fn official_host_sends_no_cache_key_without_a_conversation() {
+        let body = built_body(&official_host_client(), &CompletionOptions::default());
+        assert!(
+            body.get("prompt_cache_key").is_none(),
+            "no conversation key, no prompt_cache_key: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compatible_host_gets_max_tokens_and_no_cache_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+            })))
+            .mount(&server)
+            .await;
+        let mut options = CompletionOptions::default();
+        options.cache.conversation_key = Some("conversation-1".to_string());
+        make_client(server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &options)
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert_eq!(
+            at(&body, "/max_tokens"),
+            &json!(TEST_MAX_TOKENS),
+            "a compatible host gets the configured default when the request sets none"
+        );
+        assert!(
+            body.get("max_completion_tokens").is_none() && body.get("prompt_cache_key").is_none(),
+            "a compatible host gets neither max_completion_tokens nor prompt_cache_key: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn complete_does_not_ask_for_a_stream() {
         let server = MockServer::start().await;
@@ -2615,6 +2745,7 @@ mod tests {
             http,
             server.uri(),
             "m",
+            TEST_MAX_TOKENS,
             RetryConfig {
                 max_retries: 1,
                 initial_delay: std::time::Duration::from_millis(5),

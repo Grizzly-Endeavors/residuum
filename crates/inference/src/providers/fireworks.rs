@@ -63,6 +63,7 @@ mod tests {
             url,
             model,
             api_key,
+            4096,
             RetryConfig::no_retry(),
         )
     }
@@ -154,6 +155,41 @@ mod tests {
             .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fireworks_body_sends_max_tokens_and_no_cache_key_under_its_affinity_header() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("x-session-affinity", "residuum-main-abc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fireworks_usage_body(None)))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_fireworks_client(mock_server.uri(), Some("residuum-main-abc"));
+        let mut options = CompletionOptions {
+            max_tokens: Some(512),
+            ..CompletionOptions::default()
+        };
+        options.cache.conversation_key = Some("conversation-1".to_string());
+        client
+            .complete(&[Message::user("hi")], &[], &options)
+            .await
+            .unwrap();
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert_eq!(
+            body.get("max_tokens"),
+            Some(&json!(512)),
+            "fireworks takes max_tokens"
+        );
+        assert!(
+            body.get("max_completion_tokens").is_none() && body.get("prompt_cache_key").is_none(),
+            "fireworks gets neither max_completion_tokens nor prompt_cache_key: {body}"
+        );
     }
 
     #[tokio::test]
@@ -250,6 +286,7 @@ mod tests {
             http,
             mock_server.uri(),
             "gpt-4",
+            4096,
             RetryConfig::no_retry(),
         );
         let response = client
