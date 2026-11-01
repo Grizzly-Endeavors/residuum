@@ -167,6 +167,11 @@ mod tests {
         build_system_message(identity, memory_ctx, skills_ctx).content
     }
 
+    /// The system message's text on either side of its cache boundary.
+    fn split(message: &Message) -> (&str, &str) {
+        message.content.split_at(message.cache_boundary.unwrap())
+    }
+
     fn no_memory() -> MemoryContext<'static> {
         MemoryContext {
             observations: None,
@@ -358,7 +363,7 @@ mod tests {
         };
         let message = build_system_message(&identity, &mem, &skills);
 
-        let (stable, rest) = message.cache_split().unwrap();
+        let (stable, rest) = split(&message);
         assert!(stable.ends_with("</TEAM>"), "{stable}");
         assert!(rest.starts_with("\n\n<OBSERVATION_LOG>"), "{rest}");
         for changing in [
@@ -410,8 +415,8 @@ mod tests {
         };
         let after = build_system_message(&identity, &mem, &SkillsContext::default());
 
-        let (stable_before, rest_before) = before.cache_split().unwrap();
-        let (stable_after, _) = after.cache_split().unwrap();
+        let (stable_before, rest_before) = split(&before);
+        let (stable_after, _) = split(&after);
         assert_eq!(rest_before, "", "nothing changing yet");
         assert_eq!(stable_before, stable_after);
     }

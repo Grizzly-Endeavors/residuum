@@ -86,8 +86,8 @@ pub struct Message {
     pub context: bool,
     /// For a system message, the byte offset in `content` where the part
     /// that rarely changes ends. A provider that caches at explicit
-    /// breakpoints marks one there (see [`Message::cache_split`]); every
-    /// provider still sends `content` whole. Set when the request is built,
+    /// breakpoints marks one there; every provider still sends `content`
+    /// whole. Set when the request is built,
     /// never stored.
     #[serde(skip)]
     pub cache_boundary: Option<usize>,
@@ -378,16 +378,6 @@ impl Message {
             cache_boundary: Some(boundary),
             ..Self::system(content)
         }
-    }
-
-    /// The content split at its cache boundary: the part that rarely changes,
-    /// then the rest (empty when nothing follows it). `None` when the message
-    /// has no boundary, or the boundary does not fall on a character
-    /// boundary inside a non-empty stable part.
-    #[must_use]
-    pub fn cache_split(&self) -> Option<(&str, &str)> {
-        let at = self.cache_boundary.filter(|&at| at > 0)?;
-        self.content.split_at_checked(at)
     }
 
     /// Create an assistant message with optional tool calls.
@@ -988,46 +978,23 @@ mod tests {
         assert_eq!(msg.role, Role::System, "role should be System");
         assert_eq!(msg.content, "you are a test agent", "content should match");
         assert_eq!(
-            msg.cache_split(),
-            None,
+            msg.cache_boundary, None,
             "a plain system message has no boundary"
         );
     }
 
     #[test]
-    fn a_cache_boundary_splits_the_content_it_joins() {
+    fn a_cache_boundary_sits_between_the_parts_it_joins() {
         let msg = Message::system_with_cache_boundary("stable", "\n\nrest");
         assert_eq!(msg.role, Role::System);
         assert_eq!(
             msg.content, "stable\n\nrest",
             "the content is both parts, unchanged"
         );
-        assert_eq!(msg.cache_split(), Some(("stable", "\n\nrest")));
+        assert_eq!(msg.cache_boundary, Some("stable".len()));
 
         let all_stable = Message::system_with_cache_boundary("stable", "");
-        assert_eq!(all_stable.cache_split(), Some(("stable", "")));
-    }
-
-    #[test]
-    fn a_cache_boundary_outside_the_content_is_ignored() {
-        let empty_stable = Message::system_with_cache_boundary("", "rest");
-        assert_eq!(
-            empty_stable.cache_split(),
-            None,
-            "an empty stable part marks nothing"
-        );
-
-        let mid_char = Message {
-            cache_boundary: Some(1),
-            ..Message::system("é")
-        };
-        assert_eq!(mid_char.cache_split(), None, "not a character boundary");
-
-        let past_end = Message {
-            cache_boundary: Some(99),
-            ..Message::system("short")
-        };
-        assert_eq!(past_end.cache_split(), None, "past the end of the content");
+        assert_eq!(all_stable.cache_boundary, Some(all_stable.content.len()));
     }
 
     #[test]

@@ -148,8 +148,9 @@ impl AnthropicClient {
 
     /// Convert our generic messages into Anthropic-specific format.
     ///
-    /// The first system message is returned separately, for the top-level
-    /// `system` field; every later one becomes a user message.
+    /// System messages are extracted and returned separately as a concatenated
+    /// string (Anthropic uses a top-level `system` field rather than putting
+    /// system messages in the messages array).
     ///
     /// With a `replay_thinking` origin (this client's own), the reasoning
     /// behind an assistant message that made tool calls goes back ahead of
@@ -158,19 +159,19 @@ impl AnthropicClient {
     /// blocks that origin produced go back (see [`replayable_thinking`]).
     /// Reasoning behind earlier replies is not sent, and none is when the
     /// request has thinking off (`None`).
-    fn convert_messages<'m>(
-        messages: &'m [Message],
+    fn convert_messages(
+        messages: &[Message],
         replay_thinking: Option<&ThinkingOrigin>,
-    ) -> (Option<&'m Message>, Vec<AnthropicMessage>) {
-        let mut system: Option<&Message> = None;
+    ) -> (Option<String>, Vec<AnthropicMessage>) {
+        let mut system_parts: Vec<&str> = Vec::new();
         let mut api_messages: Vec<AnthropicMessage> = Vec::new();
         let exchange_start = current_exchange_start(messages);
 
         for (index, msg) in messages.iter().enumerate() {
             match msg.role {
                 Role::System => {
-                    if system.is_none() {
-                        system = Some(msg);
+                    if system_parts.is_empty() {
+                        system_parts.push(&msg.content);
                     } else {
                         api_messages.push(AnthropicMessage {
                             role: String::from("user"),
@@ -250,6 +251,8 @@ impl AnthropicClient {
             }
         }
 
+        let system = (!system_parts.is_empty()).then(|| system_parts.join("\n"));
+
         // Merge consecutive same-role messages (required by Anthropic API for tool results)
         let api_messages = merge_consecutive_messages(api_messages);
 
@@ -321,13 +324,22 @@ impl AnthropicClient {
             .thinking
             .is_some();
         let origin = self.origin();
+        let cache_boundary = messages
+            .iter()
+            .find(|msg| msg.role == Role::System)
+            .and_then(|msg| msg.cache_boundary);
         let (system, messages) = Self::convert_messages(messages, thinking_on.then_some(&origin));
         let has_web_search = options.web_search.is_some();
         let tools = (!tools.is_empty() || has_web_search)
             .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
 
         let cache_control = AnthropicCacheControl::for_retention(options.cache.retention);
-        let system = AnthropicSystem::build(system, is_oauth_key(&self.api_key), cache_control);
+        let system = AnthropicSystem::build(
+            system,
+            cache_boundary,
+            is_oauth_key(&self.api_key),
+            cache_control,
+        );
 
         let output_format = match &options.response_format {
             ResponseFormat::Text => None,
@@ -1323,10 +1335,10 @@ enum AnthropicSystem {
 }
 
 impl AnthropicSystem {
-    /// The `system` field for a request whose first system message is
-    /// `system`.
+    /// The `system` field for a request whose system prompt is `system`,
+    /// with the stable part of it ending at byte `cache_boundary`.
     ///
-    /// A message with a cache boundary goes as blocks, its stable part
+    /// A system prompt with a cache boundary goes as blocks, its stable part
     /// carrying an explicit `cache_control` breakpoint, so the tools and that
     /// part stay cached when the rest of the system prompt changes. That is
     /// one breakpoint besides the request's top-level automatic one, well
@@ -1334,19 +1346,23 @@ impl AnthropicSystem {
     /// as an isolated first block to access newer models, so their system
     /// prompt is always an array. Anything else goes as a plain string.
     fn build(
-        system: Option<&Message>,
+        system: Option<String>,
+        cache_boundary: Option<usize>,
         oauth: bool,
         cache_control: AnthropicCacheControl,
     ) -> Option<Self> {
-        let split = system.and_then(Message::cache_split);
+        let split = system
+            .as_deref()
+            .zip(cache_boundary.filter(|&at| at > 0))
+            .and_then(|(text, at)| text.split_at_checked(at));
         if !oauth && split.is_none() {
-            return system.map(|msg| Self::Text(msg.content.clone()));
+            return system.map(Self::Text);
         }
         let mut blocks = Vec::new();
         if oauth {
             blocks.push(AnthropicSystemBlock::text(OAUTH_IDENTITY));
         }
-        match (system, split) {
+        match (system.as_deref(), split) {
             (_, Some((stable, rest))) => {
                 blocks.push(AnthropicSystemBlock {
                     cache_control: Some(cache_control),
@@ -1356,7 +1372,7 @@ impl AnthropicSystem {
                     blocks.push(AnthropicSystemBlock::text(rest));
                 }
             }
-            (Some(msg), None) => blocks.push(AnthropicSystemBlock::text(&msg.content)),
+            (Some(text), None) => blocks.push(AnthropicSystemBlock::text(text)),
             (None, None) => {}
         }
         Some(Self::Blocks(blocks))
@@ -1815,7 +1831,7 @@ mod tests {
         // Verify system was extracted properly by checking the conversion
         let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert_eq!(
-            system.map(|m| m.content.as_str()),
+            system.as_deref(),
             Some("You are a helpful assistant."),
             "system should be extracted to top-level field"
         );
@@ -2912,6 +2928,42 @@ mod tests {
     }
 
     #[test]
+    fn a_boundary_outside_the_system_text_marks_nothing() {
+        let cache_control = AnthropicCacheControl::for_retention(CacheRetention::Short);
+        for (text, boundary) in [("stable", 0), ("é", 1), ("short", 99)] {
+            let system = AnthropicSystem::build(
+                Some(text.to_string()),
+                Some(boundary),
+                false,
+                cache_control,
+            );
+            assert!(
+                matches!(&system, Some(AnthropicSystem::Text(sent)) if sent == text),
+                "{text:?} at {boundary} goes as plain text: {system:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_system_blocks_join_back_into_the_system_text() {
+        let cache_control = AnthropicCacheControl::for_retention(CacheRetention::Long);
+        let text = "stable sections\n\nchanging sections";
+        for oauth in [false, true] {
+            let Some(AnthropicSystem::Blocks(blocks)) = AnthropicSystem::build(
+                Some(text.to_string()),
+                Some("stable sections".len()),
+                oauth,
+                cache_control,
+            ) else {
+                panic!("a system prompt with a boundary goes as blocks");
+            };
+            let skip = usize::from(oauth);
+            let joined: String = blocks.iter().skip(skip).map(|b| b.text.as_str()).collect();
+            assert_eq!(joined, text, "oauth: {oauth}");
+        }
+    }
+
+    #[test]
     fn adaptive_thinking_maps_levels_to_effort() {
         for (level, effort) in [
             (ThinkingLevel::Low, "low"),
@@ -3031,7 +3083,7 @@ mod tests {
 
         let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert_eq!(
-            system.map(|m| m.content.as_str()),
+            system.as_deref(),
             Some("First instruction."),
             "only first system message goes to system field"
         );
