@@ -425,8 +425,8 @@ pub fn register_web_fetch_tool(tools: &mut ToolRegistry) {
     tools.register(Box::new(web_fetch::WebFetchTool::new()));
 }
 
-/// Register the `workspace_history` and `workspace_restore` tools,
-/// scoped to the workspace checkpoint repository only.
+/// Register the `workspace_history` and `workspace_restore` tools, covering
+/// the workspace and team checkpoint repositories.
 pub fn register_workspace_checkpoint_tools(
     tools: &mut ToolRegistry,
     checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,

@@ -171,7 +171,7 @@ fn register_session_workspace_tools(
         shared.layout.sessions_dir(),
     );
     registration::register_inbox_tools(tools, injections, &shared.layout, shared.tz);
-    // Workspace checkpoint history (workspace repository only)
+    // Checkpoint history and restore for the workspace and team repositories
     registration::register_workspace_checkpoint_tools(
         tools,
         Arc::clone(&shared.checkpoints),
