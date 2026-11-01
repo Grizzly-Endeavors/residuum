@@ -665,11 +665,33 @@ pub struct WebSearchNativeConfig {
     pub exclude_domains: Option<Vec<String>>,
 }
 
+/// How long a provider should keep a prompt cache entry for a conversation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CacheRetention {
+    /// The provider's default, in-memory retention.
+    #[default]
+    Short,
+    /// Extended retention where the provider offers it.
+    Long,
+}
+
+/// Hints that help a provider reuse a prompt cache across requests.
+#[derive(Debug, Clone, Default)]
+pub struct CacheHints {
+    /// Stable per-conversation key that routes a conversation's requests to the
+    /// same cache.
+    pub conversation_key: Option<String>,
+    /// How long the cache entry should be kept.
+    pub retention: CacheRetention,
+}
+
 /// Options for model completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct CompletionOptions {
     /// Maximum tokens to generate.
     pub max_tokens: Option<u32>,
+    /// Prompt cache routing hints.
+    pub cache: CacheHints,
     /// Desired response format.
     pub response_format: ResponseFormat,
     /// Sampling temperature (0.0–2.0). None uses provider default.

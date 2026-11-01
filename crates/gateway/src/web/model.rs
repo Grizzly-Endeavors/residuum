@@ -247,6 +247,7 @@ fn build_request(
         thinking: defaults.thinking.clone(),
         response_format,
         web_search: None,
+        ..CompletionOptions::default()
     };
 
     Ok((messages, options, schema_requested))
