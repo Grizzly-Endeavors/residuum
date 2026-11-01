@@ -1857,6 +1857,7 @@ mod tests {
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(MockProvider {
                 response: response.to_string(),
             }),
@@ -1883,6 +1884,7 @@ mod tests {
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(GatedProvider::new(gate, response)),
             tools: residuum_agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -2905,6 +2907,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2949,6 +2952,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3046,6 +3050,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3134,6 +3139,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(PanickingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3191,6 +3197,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(PanickingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3374,6 +3381,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -4182,6 +4190,7 @@ mod tests {
         let resources = SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(SequencedProvider::new(responses)),
             tools: residuum_agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -4376,6 +4385,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
@@ -4456,6 +4466,7 @@ mod tests {
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider,
             tools: residuum_agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -4882,6 +4893,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),

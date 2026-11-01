@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use residuum_agent::context::{PromptContext, SkillsContext};
+use residuum_agent::context::{IntermediateDelivery, PromptContext, SkillsContext};
 use residuum_agent::{Agent, FailedTurn, LiveOutputEndpoint, TurnOutput, TurnWiring};
 use residuum_bus::interrupt::{Interrupt, InterruptSource};
 use residuum_bus::{
@@ -33,6 +33,7 @@ use residuum_agent::context::loading::build_skill_context_strings;
 pub struct PromptContextStrings {
     pub skill_index: Option<String>,
     pub skill_active: Option<String>,
+    pub intermediate_delivery: IntermediateDelivery,
 }
 
 impl PromptContextStrings {
@@ -43,16 +44,22 @@ impl PromptContextStrings {
                 index: self.skill_index.as_deref(),
                 active_instructions: self.skill_active.as_deref(),
             },
+            intermediate_delivery: self.intermediate_delivery,
         }
     }
 }
 
-/// Load prompt context strings from skill state.
-pub async fn load_prompt_context_strings(skill_state: &SharedSkillState) -> PromptContextStrings {
+/// Load prompt context strings from skill state, and what the chat
+/// interfaces post from `cfg`.
+pub async fn load_prompt_context_strings(
+    skill_state: &SharedSkillState,
+    cfg: &Config,
+) -> PromptContextStrings {
     let (skill_index, skill_active) = build_skill_context_strings(skill_state).await;
     PromptContextStrings {
         skill_index,
         skill_active,
+        intermediate_delivery: IntermediateDelivery::from_config(cfg),
     }
 }
 
@@ -1276,7 +1283,7 @@ async fn run_main_turn(
     let before = rt.agent.message_count();
     let (turn_start, opening_text, opening) = open_main_turn(start, before, &origin, rt);
 
-    let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
+    let ctx_strings = load_prompt_context_strings(&rt.skill_state, &rt.cfg).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
     let live_output = LiveOutputEndpoint::new(output_endpoint);
@@ -1773,12 +1780,7 @@ mod tests {
         let live = LiveOutputEndpoint::new(initial);
         let mut last_instant = None;
         let mut deadline = None;
-        let prompt_ctx = PromptContext {
-            skills: residuum_agent::context::SkillsContext {
-                index: None,
-                active_instructions: None,
-            },
-        };
+        let prompt_ctx = PromptContext::default();
         let (result, leftovers, _scratch, _stopped) = run_agent_turn_with_interrupts(
             &mut rig.agent,
             &rig.messenger,
@@ -2582,12 +2584,7 @@ mod tests {
         let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
         let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
-        let prompt_ctx = PromptContext {
-            skills: residuum_agent::context::SkillsContext {
-                index: None,
-                active_instructions: None,
-            },
-        };
+        let prompt_ctx = PromptContext::default();
 
         let turn_messenger = Arc::clone(&messenger);
         let turn_conversation_router = Arc::clone(&conversation_router);
@@ -2702,12 +2699,7 @@ mod tests {
             .await
             .unwrap();
 
-        let prompt_ctx = PromptContext {
-            skills: residuum_agent::context::SkillsContext {
-                index: None,
-                active_instructions: None,
-            },
-        };
+        let prompt_ctx = PromptContext::default();
 
         let (turn_result, _leftovers, _scratch, _stopped) = run_agent_turn_with_interrupts(
             &mut agent,
@@ -2799,12 +2791,7 @@ mod tests {
         let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
         let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
-        let prompt_ctx = PromptContext {
-            skills: residuum_agent::context::SkillsContext {
-                index: None,
-                active_instructions: None,
-            },
-        };
+        let prompt_ctx = PromptContext::default();
 
         let turn_messenger = Arc::clone(&messenger);
         let turn_conversation_router = Arc::clone(&conversation_router);
@@ -3315,12 +3302,7 @@ mod tests {
             opening: TurnOpening<'_>,
             correlation_id: &str,
         ) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
-            let prompt_ctx = PromptContext {
-                skills: residuum_agent::context::SkillsContext {
-                    index: None,
-                    active_instructions: None,
-                },
-            };
+            let prompt_ctx = PromptContext::default();
             let (result, leftovers, _scratch, _stopped) = run_agent_turn_with_interrupts(
                 &mut self.agent,
                 &self.messenger,
@@ -3637,12 +3619,7 @@ mod tests {
         let (agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
         let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
-        let prompt_ctx = PromptContext {
-            skills: residuum_agent::context::SkillsContext {
-                index: None,
-                active_instructions: None,
-            },
-        };
+        let prompt_ctx = PromptContext::default();
 
         let turn_task = residuum_core::util::spawn_in_span(async move {
             run_agent_turn_with_interrupts(
@@ -3743,12 +3720,7 @@ mod tests {
         let handle = residuum_bus::spawn_broker();
         let publisher = handle.publisher();
         let ep = endpoint();
-        let prompt_ctx = PromptContext {
-            skills: residuum_agent::context::SkillsContext {
-                index: None,
-                active_instructions: None,
-            },
-        };
+        let prompt_ctx = PromptContext::default();
         let dir = tempfile::tempdir().unwrap();
         let recent_path = dir.path().join("recent_messages.json");
 
