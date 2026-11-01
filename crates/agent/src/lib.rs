@@ -16,6 +16,7 @@ mod team_roster;
 pub mod testing;
 mod think_tags;
 mod tool;
+mod tool_result_store;
 pub mod turn;
 #[cfg(test)]
 mod turn_conversation_tests;
@@ -25,4 +26,5 @@ pub use core::{Agent, AgentConfig, FailedTurn, TurnWiring};
 pub use hop::HopCounter;
 pub use team_roster::TeamRoster;
 pub use tool::{Tool, ToolRegistry};
+pub use tool_result_store::ToolResultStore;
 pub use turn::{LiveOutputEndpoint, ReplyAudience, TurnOutput};
