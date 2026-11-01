@@ -449,6 +449,8 @@ impl AnthropicClient {
         message_count = request.messages.len(),
         tool_count = request.tools.map_or(0, <[AnthropicToolEntry]>::len),
         streaming = sink.is_some(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = crate::gen_ai_span::provider_name(ProviderKind::Anthropic),
         gen_ai.request.model = %request.model,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
@@ -2222,6 +2224,8 @@ mod tests {
     async fn request_span_carries_gen_ai_usage_attributes() {
         let fields = span_fields("send", whole_usage(documented_usage())).await;
         assert_eq!(field(&fields, "gen_ai.request.model"), Some(TEST_MODEL));
+        assert_eq!(field(&fields, "gen_ai.operation.name"), Some("chat"));
+        assert_eq!(field(&fields, "gen_ai.provider.name"), Some("anthropic"));
         assert_eq!(
             field(&fields, "gen_ai.usage.input_tokens"),
             Some("3863"),

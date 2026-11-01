@@ -4,7 +4,24 @@
 //! [`record_usage`] fills the ones the response reported, so an exported trace
 //! carries what the call spent under the names trace tools read.
 
+use residuum_config::ProviderKind;
+
 use crate::types::Usage;
+
+/// The `gen_ai.operation.name` of every model call: a chat completion.
+pub(crate) const CHAT_OPERATION: &str = "chat";
+
+/// The `gen_ai.provider.name` a provider kind is traced under: the
+/// registry's well-known value where it has one, otherwise the kind's own name.
+pub(crate) fn provider_name(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::Fireworks => "fireworks",
+        ProviderKind::Gemini => "gcp.gemini",
+        ProviderKind::Ollama => "ollama",
+        ProviderKind::OpenAi => "openai",
+    }
+}
 
 /// Record `usage` on the current span. A count the provider didn't report
 /// stays unset rather than becoming zero.

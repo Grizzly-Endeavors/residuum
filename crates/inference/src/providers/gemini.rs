@@ -424,6 +424,8 @@ impl GeminiClient {
         message_count = request.contents.len(),
         tool_count = request.tools.as_ref().map_or(0, Vec::len),
         streaming = sink.is_some(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = crate::gen_ai_span::provider_name(ProviderKind::Gemini),
         gen_ai.request.model = %self.model,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,

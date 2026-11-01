@@ -84,6 +84,8 @@ impl SystemOneClient {
         system_one.provider = %self.endpoint.provider,
         system_one.model = %self.endpoint.model,
         questions = questions.len(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = self.endpoint.kind.as_str(),
         gen_ai.request.model = %self.endpoint.model,
         gen_ai.response.model = tracing::field::Empty,
         gen_ai.usage.input_tokens = tracing::field::Empty,

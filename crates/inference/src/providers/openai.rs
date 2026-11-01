@@ -336,6 +336,8 @@ impl OpenAiClient {
         message_count = request.messages.len(),
         tool_count = request.tools.map_or(0, <[OpenAiToolEntry]>::len),
         streaming = sink.is_some(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = crate::gen_ai_span::provider_name(self.dialect.provider),
         gen_ai.request.model = %request.model,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
