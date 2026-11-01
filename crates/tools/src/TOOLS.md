@@ -233,7 +233,7 @@ On error: `"no agent key named '{name}'"`, or a store read/write failure.
 | Parameter         | Type            | Required | Description                                                  |
 |-------------------|-----------------|----------|--------------------------------------------------------------|
 | `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
-| `limit`           | integer         | no       | Maximum results to return (default: 5, no upper cap)         |
+| `limit`           | integer         | no       | Maximum results to return (default: 5, at most 50; a larger value counts as 50, a value below 1 counts as 1) |
 | `source`          | string          | no       | Filter by source: `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
@@ -463,7 +463,7 @@ On error: `limit` is not a whole number of at least 1 (`"limit must be at least 
 **Source:** `inbox/agent.rs` · `InboxReadTool`
 
 **Description sent to LLM:**
-> Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
+> Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first, each cut to its first 500 characters; read one in full by its ref. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
 
 ### Input
 
@@ -493,10 +493,12 @@ Earlier messages, oldest first:     (only when k > 1)
 
 --- From {the user[, to a, b] | agent} · {timestamp} · Ref: {ref}
 Title: {title}
-{body}
+{body, cut to its first 500 characters}… [{n} more characters; read it in full with inbox_read and id {ref}]     (the note only when the body is cut)
 
 Later messages (read with inbox_read): {ref}, {ref}     (only when k < n)
 ```
+
+The requested item's own body is always shown whole. Only the earlier messages of its thread are cut.
 
 On error:
 - `id` is neither a valid stem nor a valid ref → invalid arguments
@@ -828,7 +830,7 @@ main — always live
     task {task_id} — {state} — {last_status_text|(no status yet)}
 ```
 
-The teammate section lists every agent in the hub, sorted by name, from the hub's agent directory; the count `{N}` excludes the caller's own `(you)` entry. The role line is the `description` of the teammate's wiki role page (`team/wiki/agents/<name>.md`). `main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
+The teammate section lists every agent in the hub, sorted by name, from the hub's agent directory; the count `{N}` excludes the caller's own `(you)` entry. The role line is the `description` of the teammate's wiki role page (`team/wiki/agents/<name>.md`). `main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. A remote agent's card description is cut to its first 200 characters, followed by `… [{N} more characters cut]` when it is longer. Its skills list names at most 10; the rest follow as `… {N} more not listed`. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -1055,7 +1057,7 @@ On execution error:
 | Parameter     | Type    | Required | Description                                      |
 |---------------|---------|----------|--------------------------------------------------|
 | `query`       | string  | yes      | The search query                                 |
-| `max_results` | integer | no       | Maximum number of results to return (default: 5) |
+| `max_results` | integer | no       | Maximum number of results to return (default: 5, at most 10; a larger value counts as 10) |
 
 ### Output
 
@@ -1068,7 +1070,11 @@ Found {N} result(s):
    {snippet}
 ```
 
+A snippet longer than 500 characters is cut to its first 500, followed by `… [snippet cut, {N} more characters; open the URL for the rest]`.
+
 On success with no results: `"No search results found."`
+
+On success with a response in a shape the tool does not recognise: `"Search response:"` followed by the response JSON. A response longer than 2,000 characters is cut to its first 2,000 under `"Search response (first 2000 of {total} characters):"` and ends with `… [{N} more characters not shown]`.
 
 On non-2xx HTTP response: `"ollama web search API returned HTTP {status}: {body}"` (returned as `is_error = true`)
 
@@ -1166,18 +1172,19 @@ On success: `"Task marked {completed|marked as needing more input|marked failed}
 
 | Parameter       | Type   | Required | Description                                                                 |
 |-----------------|--------|----------|-------------------------------------------------------------------------------|
+| `repo`          | string (enum) | no | `"workspace"` (default, your own files) or `"team"` (the shared team directory). Paths are relative to that root. |
 | `action`        | string (enum) | yes | `"list"` to list checkpoints, `"show"` to see what one checkpoint changed. |
 | `path`          | string | no (list only) | Restrict to checkpoints that changed this workspace-relative file or directory. |
-| `limit`         | integer | no (list only) | Maximum checkpoints to return (default 50). |
+| `limit`         | integer | no | list: checkpoints to return (default 50, at most 200). show: changed paths to list (default 50, at most 200). A larger value counts as 200. |
 | `checkpoint_id` | string | no (show only) | The checkpoint id to describe, from a previous `list` call. |
 
-Scoped to the workspace checkpoint repository only — the config repository (root `config.toml`/`providers.toml` and the encrypted key stores) is never reachable from this tool.
+Config repositories (root `config.toml`/`providers.toml` and the encrypted key stores) are never reachable from this tool.
 
 ### Output
 
 `list`: `"{N} checkpoint(s):"` followed by one line per checkpoint (`short id [trigger] address — summary (N path(s) changed)`), or `"No checkpoints yet."`.
 
-`show`: a header line naming the checkpoint's trigger, address, and summary, followed by one line per changed path (`Added|Modified|Deleted <path>`), or `"(no changes)"`.
+`show`: a header line naming the checkpoint's trigger, address, and summary, followed by one line per changed path (`Added|Modified|Deleted <path>`), up to `limit` of them, or `"(no changes)"`. When more paths changed than are listed, the last line is `"… {N} more path(s) not shown; call show again with a larger limit (at most 200) to list them"`, or `"… {N} more path(s) not shown; show lists at most 200 paths per call"` once `limit` is already 200.
 
 On error (returned as `is_error = true`): `action` is missing or unrecognized, `checkpoint_id` is missing for `show`, `path` contains `..` or is absolute, or the checkpoint id doesn't resolve.
 

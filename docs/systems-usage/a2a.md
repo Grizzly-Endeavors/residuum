@@ -206,7 +206,7 @@ Editing `config/a2a.json` through the agent's `write_file`/`edit_file` tools, th
 
 ### Card resolution and status
 
-Each configured agent's `.well-known/agent-card.json` is resolved on load and reload, and cached. A card fetch failure doesn't block startup or the rest of the file — that agent is simply marked unreachable, and a background loop retries with backoff (5s, doubling to a 60s ceiling) until it succeeds. `list_agents` reports each remote agent's current status: `online` with its description and skills, `pending` while the first fetch is still in flight, or the specific reachability error.
+Each configured agent's `.well-known/agent-card.json` is resolved on load and reload, and cached. A card fetch failure doesn't block startup or the rest of the file — that agent is simply marked unreachable, and a background loop retries with backoff (5s, doubling to a 60s ceiling) until it succeeds. `list_agents` reports each remote agent's current status: `online` with its description and skills, `pending` while the first fetch is still in flight, or the specific reachability error. The description is cut to its first 200 characters and at most 10 skills are named; `list_agents` says how much it left out.
 
 ### Sending and receiving
 

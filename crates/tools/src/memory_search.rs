@@ -11,6 +11,21 @@ use residuum_inference::{ToolError, ToolResult};
 use residuum_memory::search::{HybridSearcher, SearchFilters};
 use residuum_memory::types::DocSource;
 
+/// How many results a call returns when it names no `limit`.
+const DEFAULT_LIMIT: usize = 5;
+
+/// The most results one call returns; a larger `limit` counts as this.
+const MAX_LIMIT: usize = 50;
+
+/// The `limit` a call asks for: the default when it names none, and never more
+/// than [`MAX_LIMIT`] or less than one.
+fn requested_limit(arguments: &Value) -> usize {
+    match arguments.get("limit").and_then(Value::as_u64) {
+        Some(l) => usize::try_from(l).unwrap_or(MAX_LIMIT).clamp(1, MAX_LIMIT),
+        None => DEFAULT_LIMIT,
+    }
+}
+
 /// Tool that searches the memory index using hybrid BM25 + vector search.
 pub struct MemorySearchTool {
     searcher: Arc<HybridSearcher>,
@@ -56,7 +71,8 @@ impl Tool for MemorySearchTool {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of results to return (default: 5)"
+                        "maximum": MAX_LIMIT,
+                        "description": "Maximum number of results to return (default: 5, at most 50)"
                     },
                     "source": {
                         "type": "string",
@@ -98,10 +114,7 @@ impl Tool for MemorySearchTool {
             return Ok(ToolResult::error("query cannot be empty"));
         }
 
-        let limit = match arguments.get("limit").and_then(Value::as_u64) {
-            Some(l) => usize::try_from(l).unwrap_or(usize::MAX).max(1),
-            None => 5,
-        };
+        let limit = requested_limit(&arguments);
 
         // Map the tool-facing source names onto the internal DocSource vocabulary,
         // shared with the `/api/agents/{name}/memory/search` HTTP endpoint. Omitted → None
@@ -208,6 +221,32 @@ mod tests {
     use residuum_memory::search::MemoryIndex;
     use residuum_memory::types::Observation;
     use residuum_memory::types::Visibility;
+
+    #[test]
+    fn limit_defaults_and_clamps_to_the_maximum() {
+        assert_eq!(requested_limit(&serde_json::json!({"query": "q"})), 5);
+        assert_eq!(
+            requested_limit(&serde_json::json!({"query": "q", "limit": 12})),
+            12
+        );
+        assert_eq!(
+            requested_limit(&serde_json::json!({"query": "q", "limit": 10_000})),
+            MAX_LIMIT
+        );
+        assert_eq!(
+            requested_limit(&serde_json::json!({"query": "q", "limit": 0})),
+            1
+        );
+    }
+
+    #[test]
+    fn definition_states_the_limit_maximum() {
+        let (_dir, tool) = create_test_tool();
+        assert_eq!(
+            tool.definition().parameters["properties"]["limit"]["maximum"],
+            serde_json::json!(MAX_LIMIT)
+        );
+    }
 
     fn create_test_tool() -> (tempfile::TempDir, MemorySearchTool) {
         let dir = tempfile::tempdir().unwrap();
