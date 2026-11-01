@@ -313,12 +313,34 @@ fn parse_component(text: Option<&str>) -> Result<Option<&str>, String> {
     }
 }
 
-fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
-    (status, Json(json!({ "error": message.into() }))).into_response()
+/// A usage route's refusal: the status, and the message the answer carries
+/// under `error`.
+#[derive(Debug)]
+pub(super) struct UsageError {
+    status: StatusCode,
+    message: String,
 }
 
-fn bad_request(message: String) -> Response {
-    error_response(StatusCode::BAD_REQUEST, message)
+impl UsageError {
+    fn bad_request(message: String) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message,
+        }
+    }
+
+    fn internal(message: &str) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for UsageError {
+    fn into_response(self) -> Response {
+        (self.status, Json(json!({ "error": self.message }))).into_response()
+    }
 }
 
 /// The records in `range`, or a `500` naming the failure. A read error is
@@ -327,14 +349,13 @@ async fn load_records(
     recorder: &UsageRecorder,
     range: Range,
     component: Option<&str>,
-) -> Result<Vec<UsageRecord>, Response> {
+) -> Result<Vec<UsageRecord>, UsageError> {
     recorder
         .load(range.from, range.to, component)
         .await
         .map_err(|e| {
             tracing::error!(error = ?e, "failed to read the usage records");
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            UsageError::internal(
                 "couldn't read the usage records; the details are in Residuum's logs",
             )
         })
@@ -356,11 +377,11 @@ fn rfc3339(instant: DateTime<Utc>) -> String {
 pub(super) async fn api_usage_records(
     State(state): State<UsageState>,
     Query(query): Query<RecordsQuery>,
-) -> Result<Json<RecordsResponse>, Response> {
+) -> Result<Json<RecordsResponse>, UsageError> {
     let range = resolve_range(query.from.as_deref(), query.to.as_deref(), Utc::now())
-        .map_err(bad_request)?;
-    let limit = parse_limit(query.limit.as_deref()).map_err(bad_request)?;
-    let component = parse_component(query.component.as_deref()).map_err(bad_request)?;
+        .map_err(UsageError::bad_request)?;
+    let limit = parse_limit(query.limit.as_deref()).map_err(UsageError::bad_request)?;
+    let component = parse_component(query.component.as_deref()).map_err(UsageError::bad_request)?;
 
     let mut records = load_records(&state.recorder, range, component).await?;
     newest_first(&mut records);
@@ -380,10 +401,10 @@ pub(super) async fn api_usage_records(
 pub(super) async fn api_usage_summary(
     State(state): State<UsageState>,
     Query(query): Query<SummaryQuery>,
-) -> Result<Json<SummaryResponse>, Response> {
+) -> Result<Json<SummaryResponse>, UsageError> {
     let range = resolve_range(query.from.as_deref(), query.to.as_deref(), Utc::now())
-        .map_err(bad_request)?;
-    let group_by = GroupBy::parse(query.group_by.as_deref()).map_err(bad_request)?;
+        .map_err(UsageError::bad_request)?;
+    let group_by = GroupBy::parse(query.group_by.as_deref()).map_err(UsageError::bad_request)?;
 
     let records = load_records(&state.recorder, range, None).await?;
     let summary = summarize(&records, group_by, |record| {
