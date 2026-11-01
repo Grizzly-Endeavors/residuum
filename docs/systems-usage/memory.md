@@ -152,6 +152,14 @@ An agent session's fork carries a snapshot of the observation log and the recent
 
 When a model returns reasoning, it is kept as `thinking` blocks on the assistant message it belongs to: readable `text`, for providers that need it an opaque `signature` or an encrypted block to send back unchanged, and an `origin` naming the provider API and model that produced the block, which is how a provider tells its own blocks from another's (see [Config](config.md#model-calls-thinking-timeouts-and-streaming)). `memory/recent_messages.json` and session transcripts hold the blocks whole. An episode transcript, which is never replayed to a provider, holds the readable text only. Thinking is not memory: the observer's extraction transcript, the interaction-pair chunks that are searched, `memory_get` output and the token estimates behind the observer thresholds and the conversation size are built from what was said and done, never from the model's reasoning. See [Turn Control](turn-control.md#the-main-conversation-stream) for what the web shows.
 
+## Status Lines
+
+Every user-role message that enters the main conversation (a turn's opening message, a person's or agent's message folded into a running turn, and a message added to history as the agent stops) is stamped with a status line when it arrives: `[Current Time: Sunday Nov 1st 2026 | 10:49][Last Message: 3 mins ago][Message Source: discord]`. `Current Time` is the arrival time in the user's timezone. `Last Message` is how long before it the previous user-role message arrived, and is left out for the first one. `Message Source` names the interface it came from (`web` for the web UI, `discord`, `telegram`, `teams`, `background` for internal sources), and is left out for a turn with no origin.
+
+The line is stored with its message as a `status_line` field in `recent_messages.json` and episode transcripts, never in the message text, and is never recomputed. Every model call replays it as a system message immediately before its message, so each request repeats the previous one byte for byte and only appends, which keeps the provider's prompt cache valid across turns. A rerun of a failed turn replays the line its message arrived with. Sessions' messages carry no status line. The web chat history leaves it out.
+
+After a restart, the first new line's `Last Message` counts from the latest user-visible user message in `recent_messages.json`; background turns' messages are skipped there, though within a run every user-role message counts.
+
 ## Message Senders
 
 A user message that arrives on a chat interface (Discord, Telegram, Teams) records who sent it: display name, stable ID, interface, and where on that interface it was sent (a direct message, a named channel). The sender is stored as its own field alongside the message in `recent_messages.json` and episode transcripts; the message text is never rewritten.
