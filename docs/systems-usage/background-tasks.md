@@ -233,8 +233,8 @@ Spawn configuration lives at the call site, not in the file:
 | Caller | Where the config lives |
 |--------|------------------------|
 | `subagent_spawn` | The tool's `skill` and `model` parameters. |
-| Heartbeat pulses | `agent` and `model_tier` on the pulse in `HEARTBEAT.yml`. `agent: "main"` and `include_identity` are removed — a pulse using either fails to load with an error naming it. |
-| Scheduled actions | `agent` and `model_tier` on the action. `agent_name: "main"` is rejected by `schedule_action` and dropped (loudly) from any stored action that predates this change. |
+| Heartbeat pulses | `agent` and `model_tier` on the pulse in `HEARTBEAT.yml`. `agent: "main"` and `include_identity` are not accepted — a pulse using either fails to load with an error naming it. |
+| Scheduled actions | `agent` and `model_tier` on the action. `agent_name: "main"` is rejected by `schedule_action`, and a stored action carrying it is dropped (loudly) at startup load. |
 | Subconscious `learner` | Fixed in code: the `learner` skill, `large` tier. |
 
 A spawn naming a skill that does not resolve fails loudly rather than running a session without the instructions that define its job.
