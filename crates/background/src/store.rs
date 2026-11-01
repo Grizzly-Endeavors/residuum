@@ -482,7 +482,7 @@ impl SessionStore {
     /// Read back a run's incrementally-appended transcript, for a run that
     /// hasn't reached a terminal state — a live run's transcript in the web
     /// UI, or recovery of a run that never finished on its own.
-    /// [`Self::read_transcript_lines`] also returns the recorded times.
+    /// `Self::read_transcript_lines` also returns the recorded times.
     pub async fn read_incremental_transcript(
         &self,
         run_id: &str,
