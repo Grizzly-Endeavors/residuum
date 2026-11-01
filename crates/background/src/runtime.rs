@@ -4180,10 +4180,15 @@ mod tests {
     /// thresholds are set to fire on essentially any content, paired with a
     /// recording provider that always finds one observation — so a turn's
     /// messages always cross the force threshold and get staged. The
-    /// returned calls hold the texts of every observer call, in order.
+    /// returned calls hold the texts of every observer call, in order; the
+    /// returned layout is the workspace the staged observations land in.
     fn make_sequenced_resources_with_eager_observer(
         responses: Vec<&str>,
-    ) -> (SubAgentResources, Arc<std::sync::Mutex<Vec<Vec<String>>>>) {
+    ) -> (
+        SubAgentResources,
+        Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        residuum_config::WorkspaceLayout,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let layout = residuum_config::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
         let search_index = Arc::new(
@@ -4229,7 +4234,7 @@ mod tests {
             episode_skip_token_floor: 2000,
             hop_counter: residuum_agent::HopCounter::new(0),
         };
-        (resources, observer_calls)
+        (resources, observer_calls, layout)
     }
 
     /// Takes the texts of the observer calls recorded so far, one string per
@@ -4248,10 +4253,11 @@ mod tests {
         let (runtime, mut sub, bus_handle) = test_runtime_held_idle().await;
         let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
         let address = SessionAddress::from("spawned-researcher-0009");
-        let (resources, observer_calls) = make_sequenced_resources_with_eager_observer(vec![
-            "first turn done",
-            "second turn done",
-        ]);
+        let (resources, observer_calls, layout) =
+            make_sequenced_resources_with_eager_observer(vec![
+                "first turn done",
+                "second turn done",
+            ]);
         runtime.spawn(sample_request(address.as_ref()), Some(resources));
 
         next_idle(
@@ -4323,6 +4329,22 @@ mod tests {
 
         let event = next_event("the run to complete", &mut sub).await;
         assert_eq!(event.summary, "second turn done");
+
+        // Each turn crossed the (tiny) force threshold on its own and staged
+        // its own observation — if staging only ran once, at the end, there
+        // would be one merged observation here, not two.
+        let log = residuum_memory::log_store::load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        let matching = log
+            .observations
+            .iter()
+            .filter(|o| o.source.session_address.as_deref() == Some(address.as_ref()))
+            .count();
+        assert_eq!(
+            matching, 2,
+            "each of the run's two turns should have staged its own observation"
+        );
     }
 
     /// Calls a tool (one that doesn't exist, so it errors) on its first
