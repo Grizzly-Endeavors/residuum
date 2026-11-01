@@ -294,6 +294,14 @@ impl HubPaths {
         self.root.join("checkpoints")
     }
 
+    /// `hub/tool-results/` — the full text of tool results too long to keep
+    /// in history, one subdirectory per agent. Outside every agent's
+    /// workspace, so no checkpoint repository tracks it.
+    #[must_use]
+    pub fn tool_results_dir(&self) -> PathBuf {
+        self.root.join("tool-results")
+    }
+
     /// `hub/residuum.pid`.
     #[must_use]
     pub fn pid_file(&self) -> PathBuf {

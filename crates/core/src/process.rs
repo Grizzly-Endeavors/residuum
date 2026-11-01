@@ -6,11 +6,13 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Output, Stdio};
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
+
+use crate::util::ansi::AnsiStripper;
 
 #[cfg(unix)]
 use nix::sys::signal::{Signal, kill, killpg};
@@ -245,15 +247,47 @@ pub enum RunOutcome {
 
 /// How much of a pipe [`run_with_timeout_and_cancel`] keeps. Whatever
 /// isn't kept is still read, so the command never blocks on a full pipe.
+/// ANSI escape sequences are removed before anything is counted or kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capture {
     /// Everything.
     All,
-    /// The first `n` bytes. Ask for one byte more than will be shown to
-    /// learn whether output was cut.
+    /// The first `n` bytes.
     Head(usize),
     /// The last `n` bytes, where a failing command's final error usually is.
     Tail(usize),
+    /// The first `head` bytes and the last `tail` bytes; what lies between
+    /// them is dropped and counted in [`Captured::omitted`].
+    HeadAndTail { head: usize, tail: usize },
+}
+
+/// What one pipe kept of its output under its [`Capture`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Captured {
+    /// The first bytes kept.
+    pub head: Vec<u8>,
+    /// The last bytes kept, after `omitted` dropped bytes that follow `head`.
+    pub tail: Vec<u8>,
+    /// Bytes read between `head` and `tail` and dropped.
+    pub omitted: usize,
+}
+
+impl Captured {
+    /// Every byte the pipe produced after escape sequences were removed,
+    /// kept or not.
+    #[must_use]
+    pub fn total_bytes(&self) -> usize {
+        self.head.len() + self.omitted + self.tail.len()
+    }
+}
+
+/// A finished command's exit status and what each of its pipes kept.
+#[derive(Debug)]
+pub struct CapturedOutput {
+    /// The exit status, or the status the process was reaped with when it was killed.
+    pub status: ExitStatus,
+    pub stdout: Captured,
+    pub stderr: Captured,
 }
 
 /// How long the pipes are still read after a killed command's process
@@ -291,7 +325,7 @@ pub async fn run_with_timeout_and_cancel(
     timeout: Duration,
     cancel: &CancellationToken,
     (stdout_capture, stderr_capture): (Capture, Capture),
-) -> io::Result<(RunOutcome, Output)> {
+) -> io::Result<(RunOutcome, CapturedOutput)> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
@@ -383,7 +417,7 @@ pub async fn run_with_timeout_and_cancel(
 
     Ok((
         outcome,
-        Output {
+        CapturedOutput {
             status,
             stdout: stdout?,
             stderr: stderr?,
@@ -391,48 +425,57 @@ pub async fn run_with_timeout_and_cancel(
     ))
 }
 
-/// One pipe's captured bytes, kept per its [`Capture`].
+/// Keeps one pipe's output as its [`Capture`] asks, counting what it drops.
 struct CaptureBuffer {
-    capture: Capture,
-    bytes: Vec<u8>,
+    head_cap: usize,
+    tail_cap: usize,
+    stripper: AnsiStripper,
+    /// Scratch space for one read after escape sequences are removed.
+    plain: Vec<u8>,
+    captured: Captured,
 }
 
 impl CaptureBuffer {
     fn new(capture: Capture) -> Self {
+        let (head_cap, tail_cap) = match capture {
+            Capture::All => (usize::MAX, 0),
+            Capture::Head(n) => (n, 0),
+            Capture::Tail(n) => (0, n),
+            Capture::HeadAndTail { head, tail } => (head, tail),
+        };
         Self {
-            capture,
-            bytes: Vec::new(),
+            head_cap,
+            tail_cap,
+            stripper: AnsiStripper::default(),
+            plain: Vec::new(),
+            captured: Captured::default(),
         }
     }
 
     fn push(&mut self, chunk: &[u8]) {
-        match self.capture {
-            Capture::All => self.bytes.extend_from_slice(chunk),
-            Capture::Head(keep) => {
-                let room = keep.saturating_sub(self.bytes.len());
-                if let Some(kept) = chunk.get(..chunk.len().min(room)) {
-                    self.bytes.extend_from_slice(kept);
-                }
-            }
-            Capture::Tail(keep) => {
-                self.bytes.extend_from_slice(chunk);
-                // Trimmed in batches so each byte is moved O(1) times.
-                if self.bytes.len() > keep.saturating_mul(2) {
-                    let excess = self.bytes.len() - keep;
-                    self.bytes.drain(..excess);
-                }
-            }
+        self.plain.clear();
+        self.stripper.strip_into(chunk, &mut self.plain);
+        let room = self.head_cap.saturating_sub(self.captured.head.len());
+        let (to_head, to_tail) = self.plain.split_at(room.min(self.plain.len()));
+        self.captured.head.extend_from_slice(to_head);
+        self.captured.tail.extend_from_slice(to_tail);
+        // Trimmed in batches so each byte is moved O(1) times.
+        if self.captured.tail.len() > self.tail_cap.saturating_mul(2) {
+            self.trim_tail();
         }
     }
 
-    fn finish(mut self) -> Vec<u8> {
-        if let Capture::Tail(keep) = self.capture
-            && self.bytes.len() > keep
-        {
-            let excess = self.bytes.len() - keep;
-            self.bytes.drain(..excess);
+    fn trim_tail(&mut self) {
+        let excess = self.captured.tail.len().saturating_sub(self.tail_cap);
+        self.captured.tail.drain(..excess);
+        self.captured.omitted += excess;
+    }
+
+    fn finish(mut self) -> Captured {
+        if self.captured.tail.len() > self.tail_cap {
+            self.trim_tail();
         }
-        self.bytes
+        self.captured
     }
 }
 
@@ -443,7 +486,7 @@ fn spawn_pipe_reader<R>(
     mut pipe: R,
     capture: Capture,
     stop: CancellationToken,
-) -> tokio::task::JoinHandle<io::Result<Vec<u8>>>
+) -> tokio::task::JoinHandle<io::Result<Captured>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -470,8 +513,8 @@ where
 /// Await a [`spawn_pipe_reader`] task, surfacing a task panic as an I/O
 /// error the same way a read failure would be.
 async fn join_pipe_reader(
-    task: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
-) -> io::Result<Vec<u8>> {
+    task: tokio::task::JoinHandle<io::Result<Captured>>,
+) -> io::Result<Captured> {
     task.await
         .map_err(|e| io::Error::other(format!("pipe reader task failed: {e}")))?
 }
@@ -530,7 +573,7 @@ mod tests {
 
     // ── capture ──────────────────────────────────────────────────────────
 
-    fn captured(capture: Capture, chunks: &[&[u8]]) -> Vec<u8> {
+    fn captured(capture: Capture, chunks: &[&[u8]]) -> Captured {
         let mut buffer = CaptureBuffer::new(capture);
         for chunk in chunks {
             buffer.push(chunk);
@@ -540,14 +583,25 @@ mod tests {
 
     #[test]
     fn capture_all_keeps_everything() {
-        assert_eq!(captured(Capture::All, &[b"abc", b"def"]), b"abcdef");
+        assert_eq!(
+            captured(Capture::All, &[b"abc", b"def"]),
+            Captured {
+                head: b"abcdef".to_vec(),
+                tail: Vec::new(),
+                omitted: 0,
+            }
+        );
     }
 
     #[test]
     fn capture_head_keeps_the_first_bytes() {
         assert_eq!(
             captured(Capture::Head(4), &[b"abc", b"def", b"ghi"]),
-            b"abcd"
+            Captured {
+                head: b"abcd".to_vec(),
+                tail: Vec::new(),
+                omitted: 5,
+            }
         );
     }
 
@@ -556,9 +610,59 @@ mod tests {
         let noise = vec![b'x'; 10_000];
         assert_eq!(
             captured(Capture::Tail(5), &[&noise, b"final", b" error"]),
-            b"error"
+            Captured {
+                head: Vec::new(),
+                tail: b"error".to_vec(),
+                omitted: 10_006,
+            }
         );
-        assert_eq!(captured(Capture::Tail(64), &[b"short"]), b"short");
+        assert_eq!(
+            captured(Capture::Tail(64), &[b"short"]),
+            Captured {
+                head: Vec::new(),
+                tail: b"short".to_vec(),
+                omitted: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn capture_head_and_tail_keeps_both_ends() {
+        assert_eq!(
+            captured(
+                Capture::HeadAndTail { head: 3, tail: 4 },
+                &[b"abc", b"defgh", b"ijkl"]
+            ),
+            Captured {
+                head: b"abc".to_vec(),
+                tail: b"ijkl".to_vec(),
+                omitted: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn capture_head_and_tail_keeps_short_output_once() {
+        assert_eq!(
+            captured(Capture::HeadAndTail { head: 3, tail: 4 }, &[b"abcde"]),
+            Captured {
+                head: b"abc".to_vec(),
+                tail: b"de".to_vec(),
+                omitted: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn capture_strips_escape_sequences_before_counting() {
+        assert_eq!(
+            captured(Capture::Head(4), &[b"\x1b[3", b"1mab\x1b[0m", b"cdef"]),
+            Captured {
+                head: b"abcd".to_vec(),
+                tail: Vec::new(),
+                omitted: 2,
+            }
+        );
     }
 
     // ── a background process left holding the output ─────────────────────
@@ -626,7 +730,7 @@ mod tests {
         );
         let (outcome, output) = result.unwrap();
         assert_eq!(outcome, RunOutcome::Cancelled);
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
+        assert_eq!(String::from_utf8_lossy(&output.stdout.head).trim(), "hi");
         background_pid_dies(&dir.path().join("bg.pid")).await;
     }
 
@@ -655,7 +759,7 @@ mod tests {
             .expect("the run ends at its timeout")
             .unwrap();
         assert_eq!(outcome, RunOutcome::TimedOut);
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
+        assert_eq!(String::from_utf8_lossy(&output.stdout.head).trim(), "hi");
         background_pid_dies(&dir.path().join("bg.pid")).await;
     }
 }

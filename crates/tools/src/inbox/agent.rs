@@ -210,6 +210,10 @@ fn item_section(item_ref: &InboxRef, located: &super::mail::LocatedItem, own: bo
     output
 }
 
+/// How much of each earlier thread message's body is shown. The rest is read
+/// with `inbox_read` on that message's ref.
+const EARLIER_BODY_MAX_CHARS: usize = 500;
+
 /// The thread lines for the message `item_ref` names: the earlier messages,
 /// oldest first, and the refs of the later ones. Empty when the item is not
 /// mail or is the thread's only message.
@@ -241,15 +245,22 @@ fn thread_section(index: &MailIndex, item_ref: &InboxRef) -> String {
     if !earlier.is_empty() {
         _ = write!(output, "\n\nEarlier messages, oldest first:");
         for message in earlier {
+            let (body, omitted) = crate::split_chars(&message.body, EARLIER_BODY_MAX_CHARS);
             _ = write!(
                 output,
-                "\n\n--- From {} · {} · Ref: {}\nTitle: {}\n{}",
+                "\n\n--- From {} · {} · Ref: {}\nTitle: {}\n{body}",
                 sender_line(message),
                 message.at.format(TIME_FORMAT),
                 message.item_ref,
                 message.title,
-                message.body
             );
+            if omitted > 0 {
+                _ = write!(
+                    output,
+                    "… [{omitted} more characters; read it in full with inbox_read and id {}]",
+                    message.item_ref
+                );
+            }
         }
     }
     if !later.is_empty() {
@@ -271,7 +282,9 @@ impl Tool for InboxReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.".to_string(),
+            description: format!(
+                "Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first, each cut to its first {EARLIER_BODY_MAX_CHARS} characters; read one in full by its ref. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item."
+            ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1071,6 +1084,45 @@ mod tests {
         assert!(
             hub.load("atlas", InboxKind::Agent, "re-plan").await.read,
             "own agent-inbox item is marked read"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_read_cuts_earlier_messages_and_names_their_refs_but_shows_the_item_whole() {
+        let hub = MailHub::new(&["atlas", "nova"]);
+        let tail = "TAIL-OF-EARLIER";
+        let earlier_body = format!("{}{tail}", "x".repeat(EARLIER_BODY_MAX_CHARS));
+        hub.write(Item::agent_message(
+            "nova",
+            "plan",
+            "Plan",
+            &earlier_body,
+            9,
+        ))
+        .await;
+        let own_body = format!("{}END-OF-REPLY", "y".repeat(EARLIER_BODY_MAX_CHARS + 50));
+        hub.write(
+            Item::user_mail("atlas", "re-plan", "Re: Plan", &own_body, 10)
+                .replying_to("nova/user/plan"),
+        )
+        .await;
+
+        let out = InboxReadTool::new(hub.access("atlas"))
+            .execute(serde_json::json!({"id": "re-plan"}))
+            .await
+            .unwrap()
+            .output;
+        assert!(!out.contains(tail), "the earlier body is cut: {out}");
+        assert!(
+            out.contains(&format!(
+                "… [{} more characters; read it in full with inbox_read and id nova/user/plan]",
+                tail.chars().count()
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains(&own_body),
+            "the requested item is shown whole: {out}"
         );
     }
 

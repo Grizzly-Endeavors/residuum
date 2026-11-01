@@ -11,8 +11,29 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
+use super::split_chars;
+
 /// Default number of search results to return.
 const DEFAULT_MAX_RESULTS: u64 = 5;
+
+/// The most results the Ollama Cloud search API returns per call.
+const MAX_RESULTS: u64 = 10;
+
+/// Snippet characters shown per result; the rest is left out with a note.
+const SNIPPET_MAX_CHARS: usize = 500;
+
+/// Characters of an unrecognised response shown raw; the rest is left out.
+const RAW_RESPONSE_MAX_CHARS: usize = 2_000;
+
+/// The `max_results` the call asks for: the default when it names none, and
+/// never more than [`MAX_RESULTS`].
+fn requested_max_results(arguments: &Value) -> u64 {
+    arguments
+        .get("max_results")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_MAX_RESULTS)
+        .min(MAX_RESULTS)
+}
 
 /// Tool for searching the web using Ollama Cloud's web search API.
 pub(crate) struct OllamaWebSearchTool {
@@ -61,7 +82,8 @@ impl Tool for OllamaWebSearchTool {
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Maximum number of results to return (default: 5)"
+                        "maximum": MAX_RESULTS,
+                        "description": "Maximum number of results to return (default: 5, at most 10)"
                     }
                 },
                 "required": ["query"]
@@ -77,10 +99,7 @@ impl Tool for OllamaWebSearchTool {
                 ToolError::InvalidArguments("missing required 'query' parameter".into())
             })?;
 
-        let max_results = arguments
-            .get("max_results")
-            .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_MAX_RESULTS);
+        let max_results = requested_max_results(&arguments);
 
         debug!(query = %query, max_results = max_results, "ollama cloud web search");
 
@@ -132,7 +151,7 @@ fn format_search_results(response: &Value) -> String {
         .or_else(|| response.as_array());
 
     let Some(items) = results else {
-        return format!("Search response:\n{response}");
+        return raw_response(response);
     };
 
     if items.is_empty() {
@@ -155,7 +174,7 @@ fn format_search_results(response: &Value) -> String {
             .or_else(|| item.get("description"))
             .or_else(|| item.get("content"))
             .and_then(Value::as_str)
-            .unwrap_or("(no snippet)");
+            .map_or_else(|| "(no snippet)".to_string(), snippet_text);
 
         write!(
             output,
@@ -169,6 +188,30 @@ fn format_search_results(response: &Value) -> String {
     }
 
     output
+}
+
+/// A result's snippet, cut to [`SNIPPET_MAX_CHARS`] with a note that says how
+/// much was left out and where the rest is.
+fn snippet_text(snippet: &str) -> String {
+    let (shown, omitted) = split_chars(snippet, SNIPPET_MAX_CHARS);
+    if omitted == 0 {
+        return shown.to_string();
+    }
+    format!("{shown}… [snippet cut, {omitted} more characters; open the URL for the rest]")
+}
+
+/// An unrecognised response, dumped raw up to [`RAW_RESPONSE_MAX_CHARS`]. The
+/// note gives the full length so the reader knows what was left out.
+fn raw_response(response: &Value) -> String {
+    let text = response.to_string();
+    let (shown, omitted) = split_chars(&text, RAW_RESPONSE_MAX_CHARS);
+    if omitted == 0 {
+        return format!("Search response:\n{text}");
+    }
+    let total = RAW_RESPONSE_MAX_CHARS + omitted;
+    format!(
+        "Search response (first {RAW_RESPONSE_MAX_CHARS} of {total} characters):\n{shown}… [{omitted} more characters not shown]"
+    )
 }
 
 #[cfg(test)]
@@ -246,6 +289,82 @@ mod tests {
         let tool = OllamaWebSearchTool::new("key".into(), "http://localhost".into());
         let def = tool.definition();
         assert_eq!(def.name, "ollama_web_search", "tool name should match");
+    }
+
+    #[test]
+    fn definition_states_the_max_results_maximum() {
+        let tool = OllamaWebSearchTool::new("key".into(), "http://localhost".into());
+        let schema = tool.definition().parameters;
+        assert_eq!(
+            schema.pointer("/properties/max_results/maximum"),
+            Some(&serde_json::json!(MAX_RESULTS)),
+            "schema should carry the maximum"
+        );
+    }
+
+    #[test]
+    fn max_results_defaults_and_clamps_to_the_api_maximum() {
+        assert_eq!(
+            requested_max_results(&serde_json::json!({"query": "q"})),
+            DEFAULT_MAX_RESULTS
+        );
+        assert_eq!(
+            requested_max_results(&serde_json::json!({"query": "q", "max_results": 3})),
+            3
+        );
+        assert_eq!(
+            requested_max_results(&serde_json::json!({"query": "q", "max_results": 500})),
+            MAX_RESULTS
+        );
+    }
+
+    #[test]
+    fn long_snippet_is_cut_and_says_how_much_was_left_out() {
+        let snippet = "a".repeat(SNIPPET_MAX_CHARS + 100);
+        let json = serde_json::json!({
+            "results": [{ "title": "T", "url": "https://example.com", "snippet": snippet }]
+        });
+        let output = format_search_results(&json);
+        assert!(
+            output.contains(&format!(
+                "{}… [snippet cut, 100 more characters; open the URL for the rest]",
+                "a".repeat(SNIPPET_MAX_CHARS)
+            )),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn snippet_at_the_limit_is_shown_whole() {
+        let snippet = "b".repeat(SNIPPET_MAX_CHARS);
+        assert_eq!(snippet_text(&snippet), snippet);
+    }
+
+    #[test]
+    fn unrecognised_response_is_dumped_up_to_the_cap_with_its_full_length() {
+        let json = serde_json::json!({ "status": "x".repeat(RAW_RESPONSE_MAX_CHARS) });
+        let total = json.to_string().chars().count();
+        let output = format_search_results(&json);
+        let omitted = total - RAW_RESPONSE_MAX_CHARS;
+        assert!(
+            output.starts_with(&format!(
+                "Search response (first {RAW_RESPONSE_MAX_CHARS} of {total} characters):\n"
+            )),
+            "{output}"
+        );
+        assert!(
+            output.ends_with(&format!("… [{omitted} more characters not shown]")),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn short_unrecognised_response_is_dumped_whole() {
+        let json = serde_json::json!({ "status": "ok" });
+        assert_eq!(
+            format_search_results(&json),
+            format!("Search response:\n{json}")
+        );
     }
 
     #[tokio::test]
