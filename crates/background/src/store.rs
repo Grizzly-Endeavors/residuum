@@ -386,7 +386,8 @@ impl SessionStore {
         }
     }
 
-    /// Append newly-produced messages to a run's incremental transcript.
+    /// Append newly-produced messages to a run's incremental transcript,
+    /// each line recording the time it was appended.
     ///
     /// Called after every model response and tool result while the run is
     /// live, so a crash mid-turn loses at most the message currently in
@@ -411,9 +412,14 @@ impl SessionStore {
             return;
         }
 
+        let recorded_at = Utc::now();
         let mut buf = String::new();
         for message in messages {
-            match serde_json::to_string(message) {
+            let line = TranscriptLineRef {
+                message,
+                recorded_at,
+            };
+            match serde_json::to_string(&line) {
                 Ok(line) => {
                     buf.push_str(&line);
                     buf.push('\n');
@@ -473,23 +479,41 @@ impl SessionStore {
         message
     }
 
-    /// Read back a run's incrementally-appended transcript, for recovering a
-    /// run that never reached a terminal state on its own — whether that's
-    /// startup recovery after a prior process exit, or backfilling a run
-    /// whose task panicked mid-turn. Returns an empty vec if the file is
-    /// missing or a line fails to parse (a torn write at the very end of the
-    /// file, from a crash mid-append).
+    /// Read back a run's incrementally-appended transcript, for a run that
+    /// hasn't reached a terminal state — a live run's transcript in the web
+    /// UI, or recovery of a run that never finished on its own.
+    /// [`Self::read_transcript_lines`] also returns the recorded times.
     pub async fn read_incremental_transcript(
         &self,
         run_id: &str,
         started_at: DateTime<Utc>,
     ) -> Vec<Message> {
+        self.read_transcript_lines(run_id, started_at)
+            .await
+            .into_iter()
+            .map(|line| line.message)
+            .collect()
+    }
+
+    /// Read back a run's incrementally-appended transcript with the time
+    /// each line was appended, for recovering a run that never reached a
+    /// terminal state on its own — whether that's startup recovery after a
+    /// prior process exit, or backfilling a run whose task panicked
+    /// mid-turn. A line written without a time loads with none. Returns an
+    /// empty vec if the file is missing, and skips a line that fails to
+    /// parse (a torn write at the very end of the file, from a crash
+    /// mid-append).
+    pub(crate) async fn read_transcript_lines(
+        &self,
+        run_id: &str,
+        started_at: DateTime<Utc>,
+    ) -> Vec<TranscriptLine> {
         let path = self.transcript_path(run_id, started_at);
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => contents
                 .lines()
                 .filter_map(|line| match serde_json::from_str(line) {
-                    Ok(msg) => Some(msg),
+                    Ok(line) => Some(line),
                     Err(e) => {
                         tracing::warn!(run_id, error = %e, "skipping unparseable transcript line during recovery");
                         None
@@ -795,8 +819,8 @@ impl SessionStore {
         }
         tracing::warn!(run_id = %record.run_id, previous_state = %record.state, "recovering run left incomplete by a prior process exit");
 
-        let transcript = self
-            .read_incremental_transcript(&record.run_id, record.started_at)
+        let lines = self
+            .read_transcript_lines(&record.run_id, record.started_at)
             .await;
 
         let episode_id = match env.merge_writer.find_merged_episode(&record.run_id).await {
@@ -804,14 +828,10 @@ impl SessionStore {
                 tracing::info!(run_id = %record.run_id, episode_id = %existing, "run already merged before the process exited; backfilling record instead of re-merging");
                 Some(existing)
             }
-            Ok(None) => {
-                self.run_completion_pipeline(&record, &transcript, env)
-                    .await
-            }
+            Ok(None) => self.run_completion_pipeline(&record, &lines, env).await,
             Err(e) => {
                 tracing::warn!(run_id = %record.run_id, error = %e, "failed to check merged-run record, proceeding with the completion pipeline");
-                self.run_completion_pipeline(&record, &transcript, env)
-                    .await
+                self.run_completion_pipeline(&record, &lines, env).await
             }
         };
 
@@ -819,7 +839,7 @@ impl SessionStore {
         record.completed_at = Some(Utc::now());
         record.interrupted = true;
         record.episode_id = episode_id;
-        record.transcript = transcript;
+        record.transcript = lines.into_iter().map(|line| line.message).collect();
         if let Err(e) = write_record(path, &record).await {
             tracing::warn!(path = %path.display(), error = %e, "failed to rewrite recovered session run record");
             return false;
@@ -843,14 +863,16 @@ impl SessionStore {
     async fn run_completion_pipeline(
         &self,
         record: &RunRecord,
-        transcript: &[Message],
+        lines: &[TranscriptLine],
         env: &super::session_memory::SessionMemoryEnv<'_>,
     ) -> Option<String> {
-        let summary = transcript
+        let summary = lines
             .last()
+            .map(|line| &line.message)
             .filter(|m| m.role == residuum_inference::Role::Assistant)
             .map(|m| m.content.clone())
             .unwrap_or_default();
+        let transcript: Vec<_> = lines.iter().map(TranscriptLine::timed).collect();
         let tag = residuum_memory::types::SourceTag::session(
             record.address.clone(),
             record.run_id.clone(),
@@ -859,7 +881,7 @@ impl SessionStore {
         super::session_memory::complete_session_memory(
             tag,
             &summary,
-            transcript,
+            &transcript,
             super::session_memory::SessionMemory::new(),
             env,
         )
@@ -904,6 +926,35 @@ async fn write_record(path: &Path, record: &RunRecord) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(record)?;
     residuum_core::util::fs::atomic_write(path, &json).await?;
     Ok(())
+}
+
+/// One line of a run's `<run_id>.transcript.jsonl`, as read back: the
+/// message and when it was appended. `recorded_at` is `None` for a line
+/// written without a time.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct TranscriptLine {
+    #[serde(flatten)]
+    pub(crate) message: Message,
+    #[serde(default)]
+    pub(crate) recorded_at: Option<DateTime<Utc>>,
+}
+
+impl TranscriptLine {
+    /// This line as the session memory pipeline reads it.
+    pub(crate) fn timed(&self) -> super::session_memory::TimedMessage<'_> {
+        super::session_memory::TimedMessage {
+            message: &self.message,
+            recorded_at: self.recorded_at,
+        }
+    }
+}
+
+/// One line of a run's `<run_id>.transcript.jsonl`, as written.
+#[derive(Serialize)]
+struct TranscriptLineRef<'a> {
+    #[serde(flatten)]
+    message: &'a Message,
+    recorded_at: DateTime<Utc>,
 }
 
 /// Binds a [`SessionStore`] to one run's identity, so the turn executor can
@@ -960,6 +1011,52 @@ mod tests {
             usage: residuum_bus::usage::SessionUsageTotals::default(),
             overlap: None,
         }
+    }
+
+    #[tokio::test]
+    async fn transcript_lines_record_their_time_and_old_lines_load_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        let path = store.transcript_path(&info.run_id, info.started_at);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        // A line in the format written before lines carried a time.
+        tokio::fs::write(&path, "{\"role\":\"user\",\"content\":\"old line\"}\n")
+            .await
+            .unwrap();
+
+        let before = Utc::now();
+        store
+            .append_transcript(
+                &info.run_id,
+                info.started_at,
+                &[Message::assistant("new line", None)],
+            )
+            .await;
+        let after = Utc::now();
+
+        let lines = store
+            .read_transcript_lines(&info.run_id, info.started_at)
+            .await;
+        assert_eq!(lines.len(), 2, "both lines should load");
+        let old = lines.first().unwrap();
+        assert_eq!(old.message.content, "old line");
+        assert_eq!(old.recorded_at, None, "an old line has no recorded time");
+        let new = lines.get(1).unwrap();
+        assert_eq!(new.message.content, "new line");
+        assert!(
+            new.recorded_at
+                .is_some_and(|at| at >= before && at <= after),
+            "an appended line records when it was appended"
+        );
+
+        let messages = store
+            .read_incremental_transcript(&info.run_id, info.started_at)
+            .await;
+        let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, ["old line", "new line"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1497,7 +1594,7 @@ mod tests {
         let episode_id = crate::session_memory::complete_session_memory(
             tag,
             "done",
-            &transcript,
+            &crate::session_memory::untimed(&transcript),
             crate::session_memory::SessionMemory::new(),
             &env,
         )
