@@ -12,7 +12,7 @@ use residuum_inference::{Message, Role};
 ///
 /// A stored line is never recomputed, so replaying history renders the same
 /// bytes on every turn.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StatusClock {
     tz: chrono_tz::Tz,
     /// When the previous user message arrived, for the next `[Last Message]`.
@@ -22,7 +22,7 @@ pub struct StatusClock {
 impl StatusClock {
     /// A clock in `tz` that has seen no message yet.
     #[must_use]
-    pub fn new(tz: chrono_tz::Tz) -> Self {
+    pub(crate) fn new(tz: chrono_tz::Tz) -> Self {
         Self {
             tz,
             last_message_at: None,
@@ -30,19 +30,19 @@ impl StatusClock {
     }
 
     /// Render later lines in `tz`.
-    pub fn set_timezone(&mut self, tz: chrono_tz::Tz) {
+    pub(crate) fn set_timezone(&mut self, tz: chrono_tz::Tz) {
         self.tz = tz;
     }
 
     /// Set when the previous user message arrived (at startup, from the
     /// persisted history), for the next line's `[Last Message]`.
-    pub fn set_last_message_at(&mut self, at: Option<NaiveDateTime>) {
+    pub(crate) fn set_last_message_at(&mut self, at: Option<NaiveDateTime>) {
         self.last_message_at = at;
     }
 
     /// Stamp `message`, arriving now from the interface `source`, with its
     /// status line, and record its arrival for the next line.
-    pub fn stamp(&mut self, message: &mut Message, source: Option<&str>) {
+    pub(crate) fn stamp(&mut self, message: &mut Message, source: Option<&str>) {
         let now = now_local(self.tz);
         message.status_line = Some(render_status_line(now, self.last_message_at, source));
         self.last_message_at = Some(now);
@@ -51,7 +51,7 @@ impl StatusClock {
     /// The history entries for `message` arriving now
     /// ([`MessageEvent::into_history_messages`]), its user message stamped.
     #[must_use]
-    pub fn admit(&mut self, message: MessageEvent) -> Vec<Message> {
+    pub(crate) fn admit(&mut self, message: MessageEvent) -> Vec<Message> {
         let source = message.origin.endpoint.clone();
         let mut entries = message.into_history_messages();
         if let Some(user) = entries.iter_mut().rfind(|m| m.role == Role::User) {
