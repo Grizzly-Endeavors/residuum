@@ -1,11 +1,11 @@
 ## read_file
 
-Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit to page through the rest — there is no file size limit, the output header reports the file's total size and line count either way. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
+Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. Unless a limit is given, returns at most 2000 lines or 30000 characters per call, whichever comes first, and the header names the offset to continue from. There is no file size limit, and the output header reports the file's total size and line count. Lines longer than 2000 characters are cut. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
 
 {
   "properties": {
     "limit": {
-      "description": "Maximum number of lines to read (default: 2000)",
+      "description": "Maximum number of lines to read (default: 2000, and a page without a limit also stops at a character budget)",
       "type": "integer"
     },
     "offset": {
@@ -90,7 +90,7 @@ Edit an existing file by replacing exact text. Each entry in 'edits' replaces ol
 
 ## exec
 
-Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds). Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
 
 {
   "properties": {
@@ -181,7 +181,8 @@ Search past conversation observations, interaction chunks, and knowledge wiki pa
       "type": "array"
     },
     "limit": {
-      "description": "Maximum number of results to return (default: 5)",
+      "description": "Maximum number of results to return (default: 5, at most 50)",
+      "maximum": 50,
       "type": "integer"
     },
     "min_score": {
@@ -405,7 +406,7 @@ List inbox items, newest first. Shows unread/read status, title, source, and tim
 
 ## inbox_read
 
-Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
+Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first, each cut to its first 500 characters; read one in full by its ref. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
 
 {
   "properties": {
@@ -678,12 +679,12 @@ Send your background output (sub-agent results, scheduled work, and other turns 
 
 ## web_fetch
 
-Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports.
+Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports. Downloads stop at a size limit, which the header reports when a page is cut short.
 
 {
   "properties": {
     "offset": {
-      "description": "Byte offset into the fetched content to start the page from (default: 0). Use the offset from a previous response's \"more content\" note to continue reading.",
+      "description": "Byte offset into the fetched content to start the page from (default: 0). To continue reading, pass the offset from a previous response's \"call again with offset=N to continue\" line.",
       "type": "integer"
     },
     "url": {
@@ -774,7 +775,8 @@ List checkpoints (recovery snapshots of workspace or team files, taken automatic
       "type": "string"
     },
     "limit": {
-      "description": "list only: maximum checkpoints to return (default 50)",
+      "description": "maximum checkpoints to return (list, default 50, at most 200) or changed paths to list (show, default 50, at most 200)",
+      "maximum": 200,
       "type": "integer"
     },
     "path": {
@@ -841,7 +843,8 @@ Search the web using Ollama Cloud. Returns search results with titles, URLs, and
 {
   "properties": {
     "max_results": {
-      "description": "Maximum number of results to return (default: 5)",
+      "description": "Maximum number of results to return (default: 5, at most 10)",
+      "maximum": 10,
       "type": "integer"
     },
     "query": {
