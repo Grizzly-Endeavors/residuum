@@ -97,7 +97,7 @@ impl AgentRouterKind {
 /// file-only data routes.
 fn is_file_data_route(route: &[&str]) -> bool {
     match route {
-        ["chat", "history"] | ["usage"] | ["context"] | ["a2a", "agents", "raw"] | ["files", _] => {
+        ["chat", "history"] | ["usage" | "context"] | ["a2a", "agents", "raw"] | ["files", _] => {
             true
         }
         ["inbox", rest @ ..] => {
