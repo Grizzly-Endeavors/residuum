@@ -189,8 +189,9 @@ impl UsageRecorder {
     /// component named `component` (see [`UsageComponent::name`]), oldest
     /// file first.
     ///
-    /// A line that doesn't parse (one torn by a crash mid-append) is skipped
-    /// with a `warn`; a month with no file has no records.
+    /// A line that doesn't parse (one torn by a crash mid-append, even one cut
+    /// inside a multi-byte character) is skipped with a `warn`; a month with no
+    /// file has no records.
     ///
     /// # Errors
     /// Returns an error when a month's file exists but can't be read.
@@ -212,7 +213,7 @@ impl UsageRecorder {
             .filter(|month| (first..=last).contains(month))
         {
             let path = self.dir.join(month_file_name(year, month));
-            let contents = match tokio::fs::read_to_string(&path).await {
+            let contents = match tokio::fs::read(&path).await {
                 Ok(contents) => contents,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
@@ -293,12 +294,15 @@ fn parse_month_file_name(name: &str) -> Option<(i32, u32)> {
     (month_file_name(year, month) == name).then_some((year, month))
 }
 
-fn parse_lines<'a>(path: &'a Path, contents: &'a str) -> impl Iterator<Item = UsageRecord> + 'a {
+/// The records in a month file's bytes. Each line is decoded on its own, so
+/// a line torn inside a multi-byte character is skipped without costing the
+/// rest of the file.
+fn parse_lines<'a>(path: &'a Path, contents: &'a [u8]) -> impl Iterator<Item = UsageRecord> + 'a {
     contents
-        .lines()
+        .split(|byte| *byte == b'\n')
         .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .filter_map(move |(index, line)| match serde_json::from_str(line) {
+        .filter(|(_, line)| !line.trim_ascii().is_empty())
+        .filter_map(move |(index, line)| match serde_json::from_slice(line) {
             Ok(record) => Some(record),
             Err(e) => {
                 tracing::warn!(
@@ -643,6 +647,55 @@ mod tests {
         assert_eq!(parse_month_file_name("2026-1.jsonl"), None);
         assert_eq!(parse_month_file_name("2026-11.jsonl.tmp"), None);
         assert_eq!(parse_month_file_name("notes.jsonl"), None);
+    }
+
+    #[tokio::test]
+    async fn a_line_torn_inside_a_multibyte_character_costs_only_itself() {
+        let (dir, recorder) = recorder();
+        let one = [attempt("m", AttemptOutcome::Succeeded, None)];
+        recorder
+            .record_attempts_at(at(2026, 11, 1, 1), &UsageComponent::Main, None, &one)
+            .await;
+
+        // `é` is two bytes in UTF-8; a crash between them leaves a line that is
+        // not valid UTF-8.
+        let torn_record = UsageRecord {
+            recorded_at: at(2026, 11, 1, 2),
+            component: UsageComponent::Main,
+            conversation: Some("café".to_string()),
+            provider: "anthropic".to_string(),
+            model: "m".to_string(),
+            outcome: AttemptOutcome::Succeeded,
+            usage: None,
+        };
+        let line = serde_json::to_vec(&torn_record).unwrap();
+        let cut = line.iter().position(|byte| *byte == 0xC3).unwrap() + 1;
+        let torn = line.get(..cut).unwrap();
+
+        let path = WorkspaceLayout::new(dir.path())
+            .usage_records_dir()
+            .join("2026-11.jsonl");
+        let mut contents = tokio::fs::read(&path).await.unwrap();
+        contents.extend_from_slice(torn);
+        tokio::fs::write(&path, &contents).await.unwrap();
+
+        let (from, to) = all_time();
+        let before = recorder.load(from, to, None).await.unwrap();
+        assert_eq!(
+            before.len(),
+            1,
+            "the torn line is skipped and the whole record before it still loads"
+        );
+
+        recorder
+            .record_attempts_at(at(2026, 11, 1, 3), &UsageComponent::Main, None, &one)
+            .await;
+        let after = recorder.load(from, to, None).await.unwrap();
+        assert_eq!(
+            after.len(),
+            2,
+            "a record appended after the torn line still reads"
+        );
     }
 
     #[tokio::test]
