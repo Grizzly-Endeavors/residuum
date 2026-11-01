@@ -3,9 +3,11 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use residuum_bus::Publisher;
 use residuum_inference::ToolDefinition;
 use residuum_skills::SharedSkillState;
 
+use super::publish_notice;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
@@ -14,13 +16,25 @@ use residuum_inference::{ToolError, ToolResult};
 /// Tool for activating a skill's instructions into the system prompt.
 pub struct SkillActivateTool {
     state: SharedSkillState,
+    publisher: Option<Publisher>,
 }
 
 impl SkillActivateTool {
     /// Create a new `SkillActivateTool`.
     #[must_use]
     pub fn new(state: SharedSkillState) -> Self {
-        Self { state }
+        Self {
+            state,
+            publisher: None,
+        }
+    }
+
+    /// Publish the notices each rescan produces, such as a skill that was
+    /// skipped for invalid frontmatter.
+    #[must_use]
+    pub fn with_publisher(mut self, publisher: Publisher) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 }
 
@@ -52,11 +66,27 @@ impl Tool for SkillActivateTool {
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let name = super::require_str(&arguments, "name")?;
 
-        let mut state = self.state.lock().await;
-        match state.activate(name).await {
-            Ok(active) => Ok(ToolResult::success(format!(
-                "Activated skill '{}'.",
-                active.name
+        // Rescan before activating, so a skill authored since startup can be
+        // activated and an active skill whose files were removed is dropped,
+        // without a config reload. The notices go out after the lock is
+        // released.
+        let (activation, notices) = {
+            let mut state = self.state.lock().await;
+            let notices = match state.rescan().await {
+                Ok(notices) => notices,
+                Err(e) => {
+                    return Ok(ToolResult::error(format!("failed to rescan skills: {e}")));
+                }
+            };
+            let activation = state.activate(name).await.map(|active| active.name.clone());
+            (activation, notices)
+        };
+        for notice in notices {
+            publish_notice(self.publisher.as_ref(), notice).await;
+        }
+        match activation {
+            Ok(skill_name) => Ok(ToolResult::success(format!(
+                "Activated skill '{skill_name}'."
             ))),
             Err(e) => Ok(ToolResult::error(e.to_string())),
         }
@@ -214,5 +244,130 @@ mod tests {
             .await
             .unwrap();
         assert!(!deactivate_result.is_error, "deactivate should succeed");
+    }
+
+    async fn write_skill(root: &std::path::Path, name: &str, frontmatter: &str) {
+        let skill_dir = root.join(name);
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        tokio::fs::write(skill_dir.join("SKILL.md"), frontmatter)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn activate_finds_a_skill_created_after_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(
+            SkillIndex::default(),
+            vec![SkillDir::agent(dir.path())],
+        )));
+
+        write_skill(
+            dir.path(),
+            "late-skill",
+            "---\nname: late-skill\ndescription: \"Authored later\"\n---\n\nLate body.\n",
+        )
+        .await;
+
+        let result = SkillActivateTool::new(Arc::clone(&state))
+            .execute(serde_json::json!({"name": "late-skill"}))
+            .await
+            .unwrap();
+        assert!(
+            !result.is_error,
+            "activate should rescan first: {}",
+            result.output
+        );
+        assert_eq!(
+            state.lock().await.active_skill_names(),
+            vec!["late-skill"],
+            "the rescanned skill should be active"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_drops_an_active_skill_whose_files_were_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(
+            dir.path(),
+            "gone-skill",
+            "---\nname: gone-skill\ndescription: \"Will be deleted\"\n---\n\nGone body.\n",
+        )
+        .await;
+        write_skill(
+            dir.path(),
+            "kept-skill",
+            "---\nname: kept-skill\ndescription: \"Stays\"\n---\n\nKept body.\n",
+        )
+        .await;
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(
+            index,
+            vec![SkillDir::agent(dir.path())],
+        )));
+        SkillActivateTool::new(Arc::clone(&state))
+            .execute(serde_json::json!({"name": "gone-skill"}))
+            .await
+            .unwrap();
+        assert_eq!(state.lock().await.active_skill_names(), vec!["gone-skill"]);
+
+        tokio::fs::remove_dir_all(dir.path().join("gone-skill"))
+            .await
+            .unwrap();
+
+        let result = SkillActivateTool::new(Arc::clone(&state))
+            .execute(serde_json::json!({"name": "kept-skill"}))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{}", result.output);
+        assert_eq!(
+            state.lock().await.active_skill_names(),
+            vec!["kept-skill"],
+            "the deleted skill should be dropped by the activation's rescan"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_publishes_the_notices_its_rescan_produced() {
+        use residuum_bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(
+            dir.path(),
+            "good-skill",
+            "---\nname: good-skill\ndescription: \"Valid\"\n---\n\nGood body.\n",
+        )
+        .await;
+        write_skill(dir.path(), "bad-skill", "---\n: invalid [[\n---\n").await;
+        let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(
+            SkillIndex::default(),
+            vec![SkillDir::agent(dir.path())],
+        )));
+
+        let bus = residuum_bus::spawn_broker();
+        let mut notices: residuum_bus::Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tool = SkillActivateTool::new(Arc::clone(&state)).with_publisher(bus.publisher());
+
+        let result = tool
+            .execute(serde_json::json!({"name": "good-skill"}))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{}", result.output);
+
+        let notice = notices
+            .recv()
+            .await
+            .unwrap()
+            .expect("a notice was published for the skipped skill");
+        assert!(
+            notice.message.contains("bad-skill"),
+            "the notice should name the skipped skill: {}",
+            notice.message
+        );
     }
 }

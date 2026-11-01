@@ -150,7 +150,7 @@ fn register_main_workspace_tools(
         Arc::clone(deps.model_catalog),
         tz,
     );
-    registration::register_skill_tools(tools, Arc::clone(deps.skill_state));
+    registration::register_skill_tools(tools, injections, Arc::clone(deps.skill_state));
     registration::register_inbox_tools(tools, injections, layout, tz);
 }
 

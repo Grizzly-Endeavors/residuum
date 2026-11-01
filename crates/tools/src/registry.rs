@@ -163,7 +163,7 @@ fn register_session_workspace_tools(
         Arc::clone(&shared.agent_keys),
         Arc::clone(&shared.checkpoints),
     );
-    registration::register_skill_tools(tools, Arc::clone(&scope.skill_state));
+    registration::register_skill_tools(tools, injections, Arc::clone(&scope.skill_state));
     registration::register_memory_tools(
         tools,
         Arc::clone(&shared.hybrid_searcher),
