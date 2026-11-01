@@ -38,4 +38,8 @@ path = ["/opt/residuum-tools"]
 Changing `[tools].path` and reloading config applies to `exec` immediately;
 already-running MCP stdio servers pick up the change on their next reconnect.
 
+## Large tool results
+
+A tool result over 32,000 characters (any tool, built-in or MCP) is saved whole, with agent-key values redacted, to `~/.residuum/hub/tool-results/<your agent>/`, and you see its first and last few thousand characters around a note naming the file, its size, and the lines left out, with the `read_file` offset and limit that read them. Use `read_file` to page through the rest, or `exec` (`grep`, `jq`, `cut`) to search it; `read_file` cuts lines over 2,000 characters, so use `exec` for a result that is one long line. Saved results are deleted after seven days. See `docs/systems-usage/turn-control.md`, Large Tool Results.
+
 See the authoritative reference: `docs/systems-usage/tools.md`.

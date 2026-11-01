@@ -244,16 +244,16 @@ fn excerpt(output: &str, path: &Path) -> String {
         newlines_before_tail + 1
     };
     let omitted = if first_omitted >= last_omitted {
-        format!("Part of line {first_omitted} is")
+        format!("Part of line {first_omitted} is left out here; read it")
     } else {
-        format!("Lines {first_omitted}-{last_omitted} are")
+        format!("Lines {first_omitted}-{last_omitted} are left out here; read them")
     };
     let offset = first_omitted.saturating_sub(1);
     let limit = last_omitted.saturating_sub(first_omitted) + 1;
 
     let note = format!(
         "[Output too long to keep in full: {total_chars} characters, {total_lines} lines. \
-         The full output is saved at {}. {omitted} left out here; read them with read_file \
+         The full output is saved at {}. {omitted} with read_file \
          (offset {offset}, limit {limit}), or search the file with exec.]",
         path.display()
     );
