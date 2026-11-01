@@ -14,6 +14,8 @@
 
 **Update `TOOLS.md` in the same commit** as the Rust change. Never let them drift.
 
+A change to a tool's name, description or schema also changes `crates/tools/golden/default_tools.txt`, the main tool list as the model receives it. Run `just golden-update` and commit the rewritten file in the same commit.
+
 The file lives at `crates/tools/src/TOOLS.md`.
 
 ## Mechanical checklist: adding a new tool

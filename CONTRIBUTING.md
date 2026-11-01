@@ -109,6 +109,7 @@ Tests are required for new functionality.
 - **Integration tests** are modules of the one test binary in `tests/it/`: add a file and a `mod` line in `tests/it/main.rs`. Each module's doc comment carries one `//! covers: <package>, …` line, which the pre-push hook uses to pick tests. Modules share a process, so a test never changes environment variables, the current directory or the global tracing subscriber. Member crates have no `tests/` directory; tests spanning several crates are `it` modules.
 - **Filters** match a test's path, and a member crate's paths start below the crate: `residuum-memory`'s search tests are `search::tests::…`, so run them with `just test-crate memory search::`, not `just test memory::`.
 - **Shared helpers** live in the lowest crate that can hold them, in a `testing` module behind that crate's `test-support` feature.
+- **Golden files** in `crates/tools/golden/` hold the default agent's system prompt and tool list as the model receives them, so a change to prompt or tool text shows up as a diff in review. When you change that text on purpose, run `just golden-update` and commit the rewritten files with the change.
 
 #### Waiting in tests
 

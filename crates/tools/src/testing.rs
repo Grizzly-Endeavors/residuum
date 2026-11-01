@@ -271,6 +271,52 @@ impl RegistryHarness {
             skill_state: Arc::clone(&self.skill_state),
         })
     }
+
+    /// Build the main agent's tool registry over these handles, the way
+    /// [`crate::main_tools::init_tool_registry`] builds it at startup, with
+    /// the UTC timezone and the default model catalog.
+    #[must_use]
+    pub fn main_registry(&self) -> ToolRegistry {
+        let auto_mode = residuum_agent::auto_mode::AutoModeGate::new_shared(
+            "test",
+            residuum_config::AutoModeConfig::default(),
+            residuum_inference::system_one::SystemOneService::new(None),
+        );
+        let model_catalog = residuum_config::ModelCatalog::default().into_shared();
+        let deps = crate::main_tools::ToolRegistryDeps {
+            action_store: &self.action_store,
+            action_notify: &self.action_notify,
+            skill_state: &self.skill_state,
+            tools_path: &self.tools_path,
+            path_policy: &self.path_policy,
+            auto_mode: &auto_mode,
+            agent_keys: &self.agent_keys,
+            session_registry: &self.session_registry,
+            endpoint_registry: &self.endpoint_registry,
+            publisher: &self.publisher,
+            build: residuum_core::testing::HARNESS_BUILD,
+            tracing_service: &self.tracing_service,
+            tracing_client_context: &self.tracing_client_context,
+            agent_messenger: &self.agent_messenger,
+            hop_counter: &self.hop_counter,
+            a2a_hub: &self.a2a_hub,
+            a2a_tracker: &self.a2a_tracker,
+            checkpoints: &self.checkpoints,
+            config_reload_tracker: &self.config_reload_tracker,
+            hub_dir: &self.hub_dir,
+            lifecycle: &self.lifecycle,
+            model_catalog: &model_catalog,
+            mailboxes: None,
+        };
+        let (tools, _, _) = crate::main_tools::init_tool_registry(
+            &self.cfg,
+            &self.layout,
+            &self.hybrid_searcher,
+            chrono_tz::UTC,
+            &deps,
+        );
+        tools
+    }
 }
 
 /// A fresh tool set for the agent `name` over `hub`: its own read tracker,

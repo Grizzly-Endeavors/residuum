@@ -291,40 +291,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let h = RegistryHarness::build(dir.path()).await;
 
-        let auto_mode = residuum_agent::auto_mode::AutoModeGate::new_shared(
-            "test",
-            residuum_config::AutoModeConfig::default(),
-            residuum_inference::system_one::SystemOneService::new(None),
-        );
-        let model_catalog = residuum_config::ModelCatalog::default().into_shared();
-        let deps = ToolRegistryDeps {
-            action_store: &h.action_store,
-            action_notify: &h.action_notify,
-            skill_state: &h.skill_state,
-            tools_path: &h.tools_path,
-            path_policy: &h.path_policy,
-            auto_mode: &auto_mode,
-            agent_keys: &h.agent_keys,
-            session_registry: &h.session_registry,
-            endpoint_registry: &h.endpoint_registry,
-            publisher: &h.publisher,
-            build: residuum_core::testing::HARNESS_BUILD,
-            tracing_service: &h.tracing_service,
-            tracing_client_context: &h.tracing_client_context,
-            agent_messenger: &h.agent_messenger,
-            hop_counter: &h.hop_counter,
-            a2a_hub: &h.a2a_hub,
-            a2a_tracker: &h.a2a_tracker,
-            checkpoints: &h.checkpoints,
-            config_reload_tracker: &h.config_reload_tracker,
-            hub_dir: &h.hub_dir,
-            lifecycle: &h.lifecycle,
-            model_catalog: &model_catalog,
-            mailboxes: None,
-        };
-        let (main_tools, _, _) =
-            init_tool_registry(&h.cfg, &h.layout, &h.hybrid_searcher, chrono_tz::UTC, &deps);
-        let mut main_names = main_tools.tool_names();
+        let mut main_names = h.main_registry().tool_names();
         main_names.sort();
 
         let session_tools = h.session_registry_for(
