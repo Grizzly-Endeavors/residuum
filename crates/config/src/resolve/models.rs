@@ -260,7 +260,7 @@ pub(crate) fn session_affinity_key(workspace_dir: &Path, role: &str) -> String {
         .as_ref()
         .iter()
         .take(8)
-        .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte));
+        .fold(0_u64, |acc, byte| (acc << 8) | u64::from(*byte));
     format!("residuum-{role}-{hash:016x}")
 }
 
