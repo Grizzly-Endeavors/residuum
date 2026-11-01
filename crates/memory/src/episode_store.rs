@@ -1320,6 +1320,7 @@ mod tests {
                     redacted: Some("encrypted-blob".to_string()),
                     part: None,
                     origin: None,
+                    binding: None,
                 }]),
         ];
         write_episode_transcript(dir.path(), &episode, &messages)
@@ -1354,6 +1355,7 @@ mod tests {
                     redacted: Some("encrypted-blob".to_string()),
                     part: None,
                     origin: None,
+                    binding: None,
                 }]),
         ];
         write_episode_transcript(dir.path(), &episode, &messages)

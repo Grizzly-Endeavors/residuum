@@ -65,8 +65,9 @@ pub struct Message {
     pub agent_sender: Option<AgentSender>,
     /// The model's reasoning behind an assistant message, as its provider
     /// returned it. Kept so the conversation's readers can show it and so a
-    /// provider that requires its reasoning back within a tool-use exchange
-    /// gets it unchanged. Providers decide which of it they replay.
+    /// provider that takes its reasoning back (within a tool-use exchange,
+    /// or with every earlier turn) gets it unchanged. Providers decide which
+    /// of it they replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<ThinkingBlock>,
     /// The id of the message this entry records, for a message one agent,
@@ -115,6 +116,13 @@ pub struct ThinkingBlock {
     /// origin has none to match and is never replayed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ThinkingOrigin>,
+    /// A fingerprint of everything the request that produced the block sent
+    /// ahead of it, for a provider that accepts a block back only while that
+    /// part of the conversation is unchanged (Anthropic's current models).
+    /// The provider compares it with the same fingerprint of a later request
+    /// to tell whether the block still belongs to that conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<String>,
 }
 
 impl ThinkingBlock {
@@ -221,7 +229,7 @@ pub(crate) fn blocks_produced_at<'a>(
 /// in the middle of: the message after the last assistant message that made
 /// no tool calls, or the first message when there is none. A provider that
 /// needs its reasoning replayed with the tool calls it led to replays it for
-/// the assistant messages from here on, and no earlier.
+/// the assistant messages from here on.
 pub(crate) fn current_exchange_start(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -1077,6 +1085,7 @@ mod tests {
                 redacted: None,
                 part: None,
                 origin: None,
+                binding: None,
             },
             ThinkingBlock {
                 text: String::new(),
@@ -1084,6 +1093,7 @@ mod tests {
                 redacted: Some("encrypted".to_string()),
                 part: None,
                 origin: None,
+                binding: None,
             },
         ]);
 

@@ -301,6 +301,7 @@ mod tests {
                 redacted: None,
                 part: None,
                 origin: None,
+                binding: None,
             },
             ThinkingBlock {
                 text: String::new(),
@@ -308,6 +309,7 @@ mod tests {
                 redacted: Some("encrypted-secret".to_string()),
                 part: None,
                 origin: None,
+                binding: None,
             },
             ThinkingBlock {
                 text: "Then the arithmetic.".to_string(),
@@ -315,6 +317,7 @@ mod tests {
                 redacted: None,
                 part: None,
                 origin: None,
+                binding: None,
             },
         ])
     }

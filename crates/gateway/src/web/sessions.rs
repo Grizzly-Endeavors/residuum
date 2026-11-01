@@ -1070,6 +1070,7 @@ mod tests {
                             redacted: None,
                             part: None,
                             origin: None,
+                            binding: None,
                         },
                     ]),
                 ],
