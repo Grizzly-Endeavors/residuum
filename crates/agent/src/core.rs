@@ -2485,7 +2485,7 @@ mod tests {
     /// Whether `message` is a status line the request carries.
     fn is_status_line(message: &Message) -> bool {
         message.role == residuum_inference::Role::System
-            && message.content.starts_with("[Current Time:")
+            && message.content.starts_with("[Received:")
     }
 
     #[tokio::test]
@@ -2520,7 +2520,7 @@ mod tests {
         assert_eq!(*reply_one, (Role::Assistant, "one"));
         assert_eq!(line.0, Role::System);
         assert!(
-            line.1.starts_with("[Current Time:")
+            line.1.starts_with("[Received:")
                 && line.1.contains("[Last Message:")
                 && line.1.ends_with("[Message Source: web]"),
             "the new message's line, computed at its arrival: {}",

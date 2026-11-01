@@ -304,7 +304,7 @@ mod tests {
     async fn status_line_round_trips_and_is_optional_on_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
-        let line = "[Current Time: Sunday Nov 1st 2026 | 10:49][Message Source: web]";
+        let line = "[Received: Sunday Nov 1st 2026 | 10:49][Message Source: web]";
         let mut stamped = Message::user("hi");
         stamped.status_line = Some(line.to_string());
 

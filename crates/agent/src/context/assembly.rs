@@ -192,10 +192,10 @@ mod tests {
     fn stored_status_lines_precede_their_messages() {
         let identity = IdentityFiles::default();
         let mut recent = RecentMessages::new();
-        recent.push(stamped_user("first", "[Current Time: one]"));
+        recent.push(stamped_user("first", "[Received: one]"));
         recent.push(Message::assistant("response", None));
         recent.push(Message::system("background note"));
-        recent.push(stamped_user("second", "[Current Time: two]"));
+        recent.push(stamped_user("second", "[Received: two]"));
 
         let messages =
             assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
@@ -207,11 +207,11 @@ mod tests {
         assert_eq!(
             rendered,
             [
-                (Role::System, "[Current Time: one]"),
+                (Role::System, "[Received: one]"),
                 (Role::User, "first"),
                 (Role::Assistant, "response"),
                 (Role::System, "background note"),
-                (Role::System, "[Current Time: two]"),
+                (Role::System, "[Received: two]"),
                 (Role::User, "second"),
             ],
             "each stored line sits immediately before its own message"

@@ -75,7 +75,7 @@ An assistant message may carry the model's reasoning as `thinking` blocks (reada
 
 ## Status Lines
 
-Each user message in your main conversation is preceded by a system message like `[Current Time: Sunday Nov 1st 2026 | 10:49][Last Message: 3 mins ago][Message Source: discord]`, written once when that message arrived and stored with it (the `status_line` field in `recent_messages.json`, not part of the message text). `Current Time` is when it arrived, in the user's timezone; `Last Message` is how long before it the previous user message arrived; `Message Source` is the interface it came from (`web` for the web UI, `background` for internal sources). Earlier messages keep the lines they arrived with, so read each line as the time of its own message, not the current time. Session runs have no status lines.
+Each user message in your main conversation is preceded by a system message like `[Received: Sunday Nov 1st 2026 | 10:49][Last Message: 3 mins ago][Message Source: discord]`, written once when that message arrived and stored with it (the `status_line` field in `recent_messages.json`, not part of the message text). `Received` is when it arrived, in the user's timezone; `Last Message` is how long before it the previous user message arrived; `Message Source` is the interface it came from (`web` for the web UI, `background` for internal sources). Earlier messages keep the lines they arrived with. A session stamps none of its own messages; a fork of the main conversation replays the lines its carried messages arrived with.
 
 ## Gotchas
 

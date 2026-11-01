@@ -7,7 +7,7 @@ use residuum_core::time::{format_display_datetime, format_relative_time, now_loc
 use residuum_inference::{Message, Role};
 
 /// Stamps each user message entering the main conversation with its status
-/// line: `[Current Time: …][Last Message: …][Message Source: …]`, computed
+/// line: `[Received: …][Last Message: …][Message Source: …]`, computed
 /// at the message's arrival and stored on it ([`Message::status_line`]).
 ///
 /// A stored line is never recomputed, so replaying history renders the same
@@ -70,7 +70,7 @@ fn render_status_line(
 ) -> String {
     use std::fmt::Write as _;
 
-    let mut tag = format!("[Current Time: {}]", format_display_datetime(now));
+    let mut tag = format!("[Received: {}]", format_display_datetime(now));
 
     if let Some(prev) = last_message_at {
         let relative = format_relative_time(now - prev);
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn line_without_a_previous_message_has_no_last_message() {
         let line = render_status_line(dt(2026, 2, 22, 17, 0), None, None);
-        assert!(line.starts_with("[Current Time:"), "got: {line}");
+        assert!(line.starts_with("[Received:"), "got: {line}");
         assert!(!line.contains("[Last Message:"), "got: {line}");
     }
 

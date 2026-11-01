@@ -84,7 +84,7 @@ pub struct Message {
     /// conversation to a person leaves it out, since nobody said it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub context: bool,
-    /// The status line (current time, time since the previous message, the
+    /// The status line (arrival time, time since the previous message, the
     /// interface it came from) the agent reads with a user message, rendered
     /// once when the message entered the main conversation. Every request
     /// replays it unchanged as a system message immediately before the
