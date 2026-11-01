@@ -1146,7 +1146,7 @@ mod tests {
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1255,7 +1255,7 @@ mod tests {
 
         assert!(result.is_err(), "should return an error for 500");
         assert!(
-            matches!(result.unwrap_err().cause(), InferenceError::Api(_)),
+            matches!(result.unwrap_err().underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
     }
@@ -1291,7 +1291,7 @@ mod tests {
         assert!(result.is_err(), "should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Timeout(1)),
+            matches!(err.underlying(), InferenceError::Timeout(1)),
             "should be a Timeout error with 1 second"
         );
         assert_eq!(
@@ -1694,7 +1694,7 @@ mod tests {
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -2096,7 +2096,7 @@ mod tests {
         .await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending before `done` is an interrupted stream: {err:?}"
         );
     }
@@ -2110,7 +2110,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::StreamInterrupted(_)),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)),
             "a body cut off mid-stream is interrupted: {err:?}"
         );
         assert_eq!(sink.text(), "", "the partial answer is voided");
@@ -2126,7 +2126,7 @@ mod tests {
         let (result, _, _) = stream_from(ndjson_response(&[stream]), plain_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(m) if m.contains("unexpectedly stopped")),
+            matches!(err.underlying(), InferenceError::Api(m) if m.contains("unexpectedly stopped")),
             "the server's message is kept: {err:?}"
         );
     }
@@ -2140,7 +2140,7 @@ mod tests {
         let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
     }

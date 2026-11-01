@@ -133,7 +133,7 @@ mod tests {
         );
         let err = record_attempt(ProviderKind::Anthropic, "claude", Err(failed)).unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::StreamInterrupted(_)),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)),
             "the cause stays the stream error: {err:?}"
         );
         assert_eq!(
@@ -179,11 +179,11 @@ mod tests {
             .collect();
         assert_eq!(models, ["a", "b"]);
         assert!(
-            !matches!(combined.cause(), InferenceError::Attempted { .. }),
+            !matches!(combined.underlying(), InferenceError::Attempted { .. }),
             "records never nest"
         );
         assert!(
-            matches!(combined.cause(), InferenceError::Timeout(2)),
+            matches!(combined.underlying(), InferenceError::Timeout(2)),
             "the last error is the cause"
         );
     }

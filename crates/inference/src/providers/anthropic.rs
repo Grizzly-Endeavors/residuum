@@ -716,7 +716,7 @@ pub fn is_oauth_key(key: &str) -> bool {
 /// Whether the API refused a request because the model does not accept
 /// adaptive thinking.
 fn is_adaptive_unsupported(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error.cause() else {
+    let InferenceError::Api(message) = error.underlying() else {
         return false;
     };
     let lower = message.to_lowercase();
@@ -728,7 +728,7 @@ fn is_adaptive_unsupported(error: &InferenceError) -> bool {
 /// `signature` in `thinking` block. The block is bound to a different
 /// conversation."
 fn is_thinking_bound_elsewhere(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error.cause() else {
+    let InferenceError::Api(message) = error.underlying() else {
         return false;
     };
     message
@@ -2049,7 +2049,7 @@ mod tests {
         assert!(result.is_err(), "request should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Timeout(_)),
+            matches!(err.underlying(), InferenceError::Timeout(_)),
             "error should be Timeout variant, got: {err:?}"
         );
     }
@@ -3729,7 +3729,7 @@ mod tests {
         let err = result.unwrap_err();
 
         assert!(
-            matches!(err.cause(), InferenceError::StreamInterrupted(_)),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)),
             "the stream ended early: {err:?}"
         );
         assert_eq!(
@@ -3923,7 +3923,7 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), test_client).await;
         let err = cut_clean.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::StreamInterrupted(_)),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)),
             "a stream that ends cleanly but early is interrupted: {err:?}"
         );
         assert!(err.is_retryable(), "an interrupted stream is retried");
@@ -3931,7 +3931,10 @@ mod tests {
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), test_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err.cause(), InferenceError::StreamInterrupted(_)),
+            matches!(
+                dropped_err.underlying(),
+                InferenceError::StreamInterrupted(_)
+            ),
             "a body cut off mid-stream is interrupted: {dropped_err:?}"
         );
         assert!(
@@ -3954,7 +3957,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(message) if message.contains("overloaded_error")),
+            matches!(err.underlying(), InferenceError::Api(message) if message.contains("overloaded_error")),
             "the error event surfaces with its type: {err:?}"
         );
         assert!(err.is_retryable(), "overloaded_error is retryable");
@@ -4040,7 +4043,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "no bytes for the configured time is a stall: {err:?}"
         );
         assert_eq!(
@@ -4261,7 +4264,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Parse(m) if m.contains("exec")),
+            matches!(err.underlying(), InferenceError::Parse(m) if m.contains("exec")),
             "the tool is named: {err:?}"
         );
         assert!(!err.is_retryable(), "garbage input will not improve");

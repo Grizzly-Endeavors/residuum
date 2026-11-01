@@ -32,7 +32,7 @@ pub enum InferenceError {
     StreamInterrupted(String),
 
     /// A model call that ended in `error`, with every request it sent, in
-    /// order. Shows as `error` alone; [`InferenceError::cause`] is the error
+    /// order. Shows as `error` alone; [`InferenceError::underlying`] is the error
     /// to classify, and [`InferenceError::attempts`] what the call spent.
     #[error("{error}")]
     Attempted {
@@ -47,7 +47,7 @@ impl InferenceError {
     /// The error itself, without the attempts a failed call records on it.
     /// Match on this rather than on `self` to tell what went wrong.
     #[must_use]
-    pub fn cause(&self) -> &Self {
+    pub fn underlying(&self) -> &Self {
         match self {
             Self::Attempted { error, .. } => error,
             bare @ (Self::Request(_)
@@ -111,7 +111,7 @@ impl InferenceError {
     ///   the message indicates rate-limiting, overload or a server-side failure
     #[must_use]
     pub(crate) fn is_retryable(&self) -> bool {
-        match self.cause() {
+        match self.underlying() {
             Self::Request(_) | Self::Timeout(_) | Self::Stalled(_) | Self::StreamInterrupted(_) => {
                 true
             }
@@ -135,7 +135,7 @@ impl InferenceError {
     /// user who has no reason to know what an HTTP status code or a
     /// provider's own error string means.
     fn category(&self) -> FailureCategory {
-        match self.cause() {
+        match self.underlying() {
             Self::Timeout(_) | Self::Stalled(_) => FailureCategory::Timeout,
             Self::StreamInterrupted(_) => FailureCategory::ConnectionLost,
             Self::Request(_) => FailureCategory::NetworkUnreachable,
@@ -149,7 +149,7 @@ impl InferenceError {
     /// `AGENTS.md`'s "No Silent Failures".
     #[must_use]
     pub fn user_message(&self) -> String {
-        self.category().user_message(self.cause())
+        self.category().user_message(self.underlying())
     }
 
     /// Short plain-language fragment naming the cause, for embedding into a
@@ -167,7 +167,7 @@ impl InferenceError {
     /// included, is not one.
     #[must_use]
     pub(crate) fn rejects_image_input(&self) -> bool {
-        let Self::Api(msg) = self.cause() else {
+        let Self::Api(msg) = self.underlying() else {
             return false;
         };
         let lower = msg.to_lowercase();

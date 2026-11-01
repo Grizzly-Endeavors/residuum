@@ -327,7 +327,7 @@ async fn run_completion(
             .into_response()
         }
         Err(e) => {
-            if let InferenceError::Timeout(secs) = e.cause() {
+            if let InferenceError::Timeout(secs) = e.underlying() {
                 tracing::warn!(
                     artifact = identity_label,
                     model = model_label,

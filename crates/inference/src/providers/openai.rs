@@ -561,7 +561,7 @@ fn build_tool_calls(
 /// it doesn't know names it too, so that wording is not taken for a request
 /// for it.
 fn is_missing_reasoning_refusal(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error.cause() else {
+    let InferenceError::Api(message) = error.underlying() else {
         return false;
     };
     let lower = message.to_lowercase();
@@ -1648,7 +1648,7 @@ mod tests {
         assert!(result.is_err(), "401 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -1684,7 +1684,7 @@ mod tests {
         assert!(result.is_err(), "429 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -1715,7 +1715,7 @@ mod tests {
 
         assert!(result.is_err(), "500 should return error");
         assert!(
-            matches!(result.unwrap_err().cause(), InferenceError::Api(_)),
+            matches!(result.unwrap_err().underlying(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
     }
@@ -1740,7 +1740,7 @@ mod tests {
         assert!(result.is_err(), "empty choices should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Parse(_)),
+            matches!(err.underlying(), InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -1783,7 +1783,7 @@ mod tests {
         assert!(result.is_err(), "malformed tool arguments should error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Parse(_)),
+            matches!(err.underlying(), InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -1805,7 +1805,7 @@ mod tests {
         assert!(result.is_err(), "timeout should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Timeout(1)),
+            matches!(err.underlying(), InferenceError::Timeout(1)),
             "should be a Timeout error with 1 second"
         );
         assert_eq!(
@@ -2154,7 +2154,7 @@ mod tests {
         assert!(result.is_err(), "401 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -2187,7 +2187,7 @@ mod tests {
         assert!(result.is_err(), "empty data should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Parse(_)),
+            matches!(err.underlying(), InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -2314,7 +2314,7 @@ mod tests {
         let err = result.unwrap_err();
 
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "the in-stream error ends the call: {err:?}"
         );
         assert_eq!(err.attempts(), [failed_attempt(100, 7)]);
@@ -2336,7 +2336,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err.cause(), InferenceError::Parse(_)), "{err:?}");
+        assert!(
+            matches!(err.underlying(), InferenceError::Parse(_)),
+            "{err:?}"
+        );
         assert_eq!(err.attempts(), [failed_attempt(40, 2)]);
     }
 
@@ -2701,14 +2704,17 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), plain_client).await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending with no finish reason is an interrupted stream: {err:?}"
         );
 
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), plain_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err.cause(), InferenceError::StreamInterrupted(_)),
+            matches!(
+                dropped_err.underlying(),
+                InferenceError::StreamInterrupted(_)
+            ),
             "a dropped connection is an interrupted stream: {dropped_err:?}"
         );
         assert_eq!(sink.text(), "", "what streamed is voided");
@@ -2743,7 +2749,7 @@ mod tests {
             stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
         assert_eq!(sink.text(), "", "the partial text is voided");

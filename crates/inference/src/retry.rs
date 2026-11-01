@@ -185,7 +185,7 @@ mod tests {
             "every attempt failed and reported nothing: {err:?}"
         );
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "the cause is the last error"
         );
     }

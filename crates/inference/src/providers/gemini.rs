@@ -1530,7 +1530,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1563,7 +1563,7 @@ mod tests {
         assert!(result.is_err(), "empty candidates should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Parse(_)),
+            matches!(err.underlying(), InferenceError::Parse(_)),
             "should be a Parse error"
         );
         assert!(
@@ -1593,7 +1593,7 @@ mod tests {
 
         assert!(result.is_err(), "timeout should return error");
         assert!(
-            matches!(result.unwrap_err().cause(), InferenceError::Timeout(1)),
+            matches!(result.unwrap_err().underlying(), InferenceError::Timeout(1)),
             "should be Timeout(1)"
         );
     }
@@ -2444,14 +2444,17 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), make_client).await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending before a finish reason is an interrupted stream: {err:?}"
         );
 
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), make_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err.cause(), InferenceError::StreamInterrupted(_)),
+            matches!(
+                dropped_err.underlying(),
+                InferenceError::StreamInterrupted(_)
+            ),
             "a dropped connection is an interrupted stream: {dropped_err:?}"
         );
         assert_eq!(sink.text(), "", "the partial text is voided");
@@ -2466,7 +2469,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[blocked]), make_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Parse(m) if m.contains("no candidates")),
+            matches!(err.underlying(), InferenceError::Parse(m) if m.contains("no candidates")),
             "same error as a response that arrives whole: {err:?}"
         );
     }
@@ -2511,7 +2514,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
     }
@@ -2814,7 +2817,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err.cause(), InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
