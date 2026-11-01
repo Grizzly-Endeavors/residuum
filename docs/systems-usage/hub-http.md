@@ -168,7 +168,7 @@ Errors are `{ "error": message }`: `400` for a `from` or `to` that isn't an RFC 
 
 ### Context breakdown
 
-`GET /api/agents/{name}/context` answers the context breakdown the agent saved after its latest main turn (see [Turn Control](turn-control.md#turn-progress-and-usage-totals)): an estimate of what its next model request is made of, the same figures `/context` replies with. It reads `memory/context_breakdown.json`, so it answers in every agent state, never waits for a running turn, and never opens a checkpoint repository. The answer is one object:
+`GET /api/agents/{name}/context` answers the context breakdown the agent saved after its latest main turn or memory change between turns (see [Turn Control](turn-control.md#turn-progress-and-usage-totals)): an estimate of what its next model request is made of, the same figures `/context` replies with. It reads `memory/context_breakdown.json`, so it answers in every agent state, never waits for a running turn, and never opens a checkpoint repository. The answer is one object:
 
 ```
 {

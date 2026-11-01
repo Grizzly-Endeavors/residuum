@@ -620,9 +620,10 @@ impl Agent {
     }
 
     /// Save the breakdown of the request the next turn starts from, for the
-    /// hub to serve. An agent with no workspace layout saves nothing; a
-    /// failed write is logged and never fails the turn.
-    async fn save_latest_breakdown(&self, prompt_ctx: &PromptContext<'_>) {
+    /// hub to serve. Called after every turn and after any change the memory
+    /// pipeline makes to history between turns. An agent with no workspace
+    /// layout saves nothing; a failed write is logged and never fails the turn.
+    pub async fn save_latest_breakdown(&self, prompt_ctx: &PromptContext<'_>) {
         let Some(layout) = &self.layout else {
             return;
         };

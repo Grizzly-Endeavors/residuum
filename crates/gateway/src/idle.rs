@@ -13,6 +13,7 @@
 use crate::memory::MemorySubsystems;
 use crate::post_turn::IdleContinuation;
 use crate::types::AgentRuntime;
+use residuum_agent::Agent;
 use residuum_bus::EndpointName;
 use residuum_config::WEB_UI_ENDPOINT;
 
@@ -55,15 +56,15 @@ pub(super) async fn execute_idle_transition(
 /// Finish an idle transition once its background observe cycle's result
 /// arrives: clear the in-memory message buffer and inject the continuity
 /// system message. Called from `run_loop`'s `apply_post_turn_result`.
-pub(super) fn apply_idle_continuation(rt: &mut AgentRuntime, continuation: &IdleContinuation) {
-    rt.agent.clear_messages();
+pub(super) fn apply_idle_continuation(agent: &mut Agent, continuation: &IdleContinuation) {
+    agent.clear_messages();
 
     let summary = format_idle_summary(
         continuation.timeout_mins,
         continuation.total_skills,
         &continuation.idle_endpoint,
     );
-    rt.agent.inject_system_message(&summary);
+    agent.inject_system_message(&summary);
 }
 
 /// Where agent-started main turns go once the owner is idle: the configured

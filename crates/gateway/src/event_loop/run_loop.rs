@@ -13,8 +13,9 @@ use tokio::time::Duration;
 use tracing::Instrument;
 
 use crate::types::{AgentRuntime, CoreReceivers, GatewayCore, GatewayState};
+use residuum_agent::Agent;
 use residuum_bus::control::ReloadSignal;
-use residuum_config::{Config, HubConfig};
+use residuum_config::{Config, HubConfig, WorkspaceLayout};
 use residuum_core::util::FatalError;
 use residuum_hub::activity::ActivityTracker;
 use residuum_hub::launch::{
@@ -24,11 +25,12 @@ use residuum_hub::launch::{
 use residuum_hub::services::HubServices;
 use residuum_interfaces::AdapterSenders;
 use residuum_proactivity::pulse::scheduler::PulseScheduler;
+use residuum_skills::SharedSkillState;
 
 use super::commands::handle_server_command;
 use super::http::{A2aServingDeps, build_agent_a2a, build_gateway_app, spawn_adapters};
 use super::pulse::{handle_pulse_fire_event, handle_pulse_result_event, handle_pulse_tick};
-use super::turns::{handle_inbound_message, handle_retry_request};
+use super::turns::{handle_inbound_message, handle_retry_request, load_prompt_context_strings};
 
 use crate::{actions, idle, reload, web};
 use residuum_hub::{config_watcher, last_known_good};
@@ -1036,14 +1038,22 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
 /// one thing neither `post_turn` worker can do for itself. See that
 /// module's own docs for why this exists as a deferred, drained-by-the-loop
 /// step instead of being awaited inline by whichever turn triggered it.
-async fn apply_post_turn_result(rt: &mut AgentRuntime, result: crate::post_turn::PostTurnResult) {
+///
+/// Each arm changes what the next request is made of, so the context
+/// breakdown is saved again at the end, for the hub to serve.
+async fn apply_post_turn_result(
+    agent: &mut Agent,
+    layout: &WorkspaceLayout,
+    skill_state: &SharedSkillState,
+    result: crate::post_turn::PostTurnResult,
+) {
     use crate::post_turn::PostTurnResult;
     match result {
         PostTurnResult::ObservationReady => {
-            crate::memory::apply_observation_reload(&mut rt.agent, &rt.layout).await;
+            crate::memory::apply_observation_reload(agent, layout).await;
         }
         PostTurnResult::ReflectionReady => {
-            if let Err(e) = rt.agent.reload_observations(&rt.layout).await {
+            if let Err(e) = agent.reload_observations(layout).await {
                 tracing::warn!(error = %e, "failed to reload observations after reflection");
             }
         }
@@ -1052,17 +1062,20 @@ async fn apply_post_turn_result(rt: &mut AgentRuntime, result: crate::post_turn:
             continuation,
         } => {
             if reload_needed {
-                crate::memory::apply_observation_reload(&mut rt.agent, &rt.layout).await;
+                crate::memory::apply_observation_reload(agent, layout).await;
             }
-            idle::apply_idle_continuation(rt, &continuation);
+            idle::apply_idle_continuation(agent, &continuation);
         }
         PostTurnResult::SubconsciousNotes(notes) => {
             for note in notes {
-                rt.agent
-                    .inject_system_message(format!("[Subconscious note] {note}"));
+                agent.inject_system_message(format!("[Subconscious note] {note}"));
             }
         }
     }
+    let ctx_strings = load_prompt_context_strings(skill_state).await;
+    agent
+        .save_latest_breakdown(&ctx_strings.as_prompt_context())
+        .await;
 }
 
 /// Run the memory observation pipeline.
@@ -1384,7 +1397,9 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
             // (see `crate::post_turn`) — never awaited inline by
             // the turn that triggered it.
             result = rt.post_turn_result_rx.recv() => {
-                if let Some(result) = result { apply_post_turn_result(&mut rt, result).await; }
+                if let Some(result) = result {
+                    apply_post_turn_result(&mut rt.agent, &rt.layout, &rt.skill_state, result).await;
+                }
             }
 
             cmd = rt.command_rx.recv() => {
@@ -1425,7 +1440,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_last_known_good_fallback, drain_pending_reloads};
+    use super::{agent_last_known_good_fallback, apply_post_turn_result, drain_pending_reloads};
     use crate::types::GatewayCore;
     use residuum_bus::control::ReloadSignal;
     use residuum_config::HubConfig;
@@ -1527,6 +1542,72 @@ mod tests {
         assert_eq!(
             drain_pending_reloads(first, &mut rx),
             vec![ReloadSignal::Agent]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_post_turn_change_to_history_is_in_the_saved_breakdown() {
+        use crate::post_turn::PostTurnResult;
+        use residuum_agent::context::{PromptContext, load_context_snapshot};
+        use residuum_agent::{Agent, AgentConfig, HopCounter, ToolRegistry};
+        use residuum_config::WorkspaceLayout;
+        use residuum_inference::{CompletionOptions, Message, NullProvider};
+        use residuum_skills::{SkillIndex, SkillState};
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        let mut agent = Agent::new(
+            Box::new(NullProvider),
+            ToolRegistry::new(),
+            residuum_mcp::McpRegistry::new_shared(),
+            residuum_workspace::identity::IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: Some(layout.clone()),
+            },
+            HopCounter::new(0),
+        );
+        agent.restore_messages(
+            (0..5)
+                .flat_map(|i| {
+                    [
+                        Message::user(format!("question {i}")),
+                        Message::assistant(format!("answer {i}"), None),
+                    ]
+                })
+                .collect(),
+        );
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        agent.save_latest_breakdown(&PromptContext::default()).await;
+        let before = load_context_snapshot(&layout.context_breakdown_json())
+            .await
+            .unwrap()
+            .expect("the turn saved its breakdown");
+
+        apply_post_turn_result(
+            &mut agent,
+            &layout,
+            &skill_state,
+            PostTurnResult::ObservationReady,
+        )
+        .await;
+
+        let after = load_context_snapshot(&layout.context_breakdown_json())
+            .await
+            .unwrap()
+            .expect("the post-turn change saved its breakdown");
+        assert!(
+            after.breakdown.history_count < before.breakdown.history_count,
+            "the observation dropped history, and the saved breakdown no longer counts it"
+        );
+        assert_eq!(
+            after.breakdown,
+            agent.context_breakdown(&PromptContext::default()).await,
+            "the saved breakdown is the request the next turn starts from"
         );
     }
 }
