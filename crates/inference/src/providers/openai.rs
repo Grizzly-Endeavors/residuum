@@ -729,6 +729,31 @@ impl InferenceProvider for OpenAiClient {
         self.run(messages, tools, options, Some(sink)).await
     }
 
+    /// The `reasoning_content` the converted request carries, with the
+    /// placeholder counted on each tool call that gets it once the host has
+    /// asked for reasoning on every one.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        _options: &CompletionOptions,
+    ) -> Vec<String> {
+        let (converted, missing) = self.convert_messages(messages);
+        let placeholders = if self.fills_missing_reasoning.load(Ordering::Relaxed) {
+            missing.len()
+        } else {
+            0
+        };
+        converted
+            .into_iter()
+            .filter_map(|message| message.reasoning_content)
+            .chain(std::iter::repeat_n(
+                MISSING_REASONING_PLACEHOLDER.to_string(),
+                placeholders,
+            ))
+            .collect()
+    }
+
     fn model_name(&self) -> &str {
         &self.model
     }
@@ -3498,6 +3523,38 @@ mod tests {
                 .iter()
                 .all(|r| reasoning_at(r, 7).as_deref() == Some("mine")),
             "the host's own reasoning is never replaced"
+        );
+    }
+
+    #[test]
+    fn the_reasoning_counted_is_the_reasoning_the_request_sends_back() {
+        let options = CompletionOptions::default();
+        let compatible = reasoning_client_at("http://localhost:8000/v1");
+        assert_eq!(
+            compatible.replayed_reasoning(&reasoning_exchange(), &[], &options),
+            ["current reasoning"],
+            "only the reasoning that goes on the wire is counted"
+        );
+        assert!(
+            reasoning_client_at("https://api.openai.com/v1")
+                .replayed_reasoning(&reasoning_exchange(), &[], &options)
+                .is_empty(),
+            "OpenAI itself is sent none"
+        );
+
+        let exchange = failover_exchange(Some("mine"));
+        assert_eq!(
+            compatible.replayed_reasoning(&exchange, &[], &options),
+            ["mine"],
+            "a tool call with nothing to replay sends nothing until the host asks for it"
+        );
+        compatible
+            .fills_missing_reasoning
+            .store(true, Ordering::Relaxed);
+        assert_eq!(
+            compatible.replayed_reasoning(&exchange, &[], &options),
+            ["mine", MISSING_REASONING_PLACEHOLDER],
+            "once it has, the placeholder it is sent counts too"
         );
     }
 

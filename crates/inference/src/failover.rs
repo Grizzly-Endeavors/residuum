@@ -283,6 +283,28 @@ impl InferenceProvider for FailoverProvider {
         self.run(messages, tools, options, Some(&tracked)).await
     }
 
+    /// Whether any hop takes images: a request with images goes to one that
+    /// does first (see `attempt_order`).
+    fn takes_images(&self) -> bool {
+        self.providers
+            .iter()
+            .any(|provider| provider.takes_images())
+    }
+
+    /// The reasoning the hop tried first for this request sends back.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Vec<String> {
+        self.attempt_order(messages)
+            .first()
+            .and_then(|&(idx, _)| self.providers.get(idx))
+            .map(|provider| provider.replayed_reasoning(messages, tools, options))
+            .unwrap_or_default()
+    }
+
     /// The primary's model, whichever provider answers a call: the model
     /// that answered is the last of the response's `attempts`.
     fn model_name(&self) -> &str {
@@ -1306,6 +1328,17 @@ mod tests {
                 self.complete(messages, tools, options).await
             }
 
+            /// Names the model and how many images the request reached it with.
+            fn replayed_reasoning(
+                &self,
+                messages: &[Message],
+                _tools: &[ToolDefinition],
+                _options: &CompletionOptions,
+            ) -> Vec<String> {
+                let images: usize = messages.iter().map(|m| m.images.len()).sum();
+                vec![format!("{} saw {images} images", self.name)]
+            }
+
             fn model_name(&self) -> &str {
                 self.name
             }
@@ -1357,6 +1390,35 @@ mod tests {
                 .iter()
                 .map(|request| request.iter().map(|m| m.images.len()).sum())
                 .collect()
+        }
+
+        #[test]
+        fn the_reasoning_counted_and_the_images_taken_follow_the_hop_tried_first() {
+            let options = CompletionOptions::default();
+            let (primary, _) = hop("glm-5.3", ImageInput::TextOnly, false);
+            let (fallback, _) = hop("gpt-4o", ImageInput::Accepted, false);
+            let chain = FailoverProvider::new(vec![primary, fallback]);
+
+            assert!(chain.takes_images(), "a hop that takes images answers them");
+            assert_eq!(
+                chain.replayed_reasoning(&[Message::user("hi")], &[], &options),
+                ["glm-5.3 saw 0 images"],
+                "a text turn is counted on the primary"
+            );
+            assert_eq!(
+                chain.replayed_reasoning(&with_image(), &[], &options),
+                ["gpt-4o saw 1 images"],
+                "an image turn is counted on the hop that takes it"
+            );
+
+            let (text_only, _) = hop("glm-5.3", ImageInput::TextOnly, false);
+            let text_chain = FailoverProvider::new(vec![text_only]);
+            assert!(!text_chain.takes_images(), "no hop takes images");
+            assert_eq!(
+                text_chain.replayed_reasoning(&with_image(), &[], &options),
+                ["glm-5.3 saw 0 images"],
+                "a text-only model is counted over the request it is sent, without the images"
+            );
         }
 
         #[tokio::test]

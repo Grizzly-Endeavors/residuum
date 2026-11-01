@@ -253,6 +253,22 @@ impl InferenceProvider for ImageInputGuard {
         self.strip_up_front().is_none()
     }
 
+    /// The inner provider's, over the request as this guard sends it: with
+    /// the images left out when the model is known to be text-only.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Vec<String> {
+        match self.strip_up_front().and_then(|_| strip_images(messages)) {
+            Some(stripped) => self
+                .inner
+                .replayed_reasoning(&stripped.messages, tools, options),
+            None => self.inner.replayed_reasoning(messages, tools, options),
+        }
+    }
+
     fn model_name(&self) -> &str {
         self.inner.model_name()
     }

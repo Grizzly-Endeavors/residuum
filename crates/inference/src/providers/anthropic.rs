@@ -306,6 +306,29 @@ impl AnthropicClient {
         None
     }
 
+    /// Convert a request's tools and conversation, replaying this client's
+    /// own reasoning when the request has thinking on. Both the request that
+    /// is sent and [`InferenceProvider::replayed_reasoning`] come from here,
+    /// so what the context breakdown counts is what goes on the wire.
+    fn convert_request(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> (Option<Vec<AnthropicToolEntry>>, ConvertedMessages) {
+        let max_tokens = options.max_tokens.unwrap_or(self.max_tokens);
+        let thinking_on = build_thinking(options.thinking.as_ref(), max_tokens, false)
+            .thinking
+            .is_some();
+        let has_web_search = options.web_search.is_some();
+        let tools = (!tools.is_empty() || has_web_search)
+            .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
+        let origin = self.origin();
+        let converted =
+            Self::convert_messages(messages, tools.as_deref(), thinking_on.then_some(&origin));
+        (tools, converted)
+    }
+
     /// Build everything about a request that stays the same across retries.
     fn prepare(
         &self,
@@ -314,22 +337,18 @@ impl AnthropicClient {
         options: &CompletionOptions,
     ) -> PreparedRequest {
         let max_tokens = options.max_tokens.unwrap_or(self.max_tokens);
-        let thinking_on = build_thinking(options.thinking.as_ref(), max_tokens, false)
-            .thinking
-            .is_some();
         let cache_boundary = messages
             .iter()
             .find(|msg| msg.role == Role::System)
             .and_then(|msg| msg.cache_boundary);
-        let has_web_search = options.web_search.is_some();
-        let tools = (!tools.is_empty() || has_web_search)
-            .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
-        let origin = self.origin();
-        let ConvertedMessages {
-            system,
-            messages,
-            binding,
-        } = Self::convert_messages(messages, tools.as_deref(), thinking_on.then_some(&origin));
+        let (
+            tools,
+            ConvertedMessages {
+                system,
+                messages,
+                binding,
+            },
+        ) = self.convert_request(messages, tools, options);
 
         let cache_control = AnthropicCacheControl::for_retention(options.cache.retention);
         let system = AnthropicSystem::build(
@@ -715,6 +734,26 @@ impl InferenceProvider for AnthropicClient {
         sink: &dyn StreamSink,
     ) -> Result<InferenceResponse, InferenceError> {
         self.run(messages, tools, options, Some(sink)).await
+    }
+
+    /// The text of each `thinking` block the converted request carries;
+    /// redacted blocks carry none.
+    fn replayed_reasoning(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Vec<String> {
+        let (_, converted) = self.convert_request(messages, tools, options);
+        converted
+            .messages
+            .into_iter()
+            .flat_map(|message| message.content.into_blocks())
+            .filter_map(|block| match block {
+                AnthropicContentBlock::Thinking { thinking, .. } => Some(thinking),
+                _ => None,
+            })
+            .collect()
     }
 
     fn model_name(&self) -> &str {
@@ -3963,6 +4002,37 @@ mod tests {
                 {"type": "text", "text": "Found a.txt."}
             ]),
             "so does its reply"
+        );
+    }
+
+    #[test]
+    fn the_reasoning_counted_is_the_reasoning_the_request_sends_back() {
+        let client = test_client("http://localhost:1");
+        let thinking_on = CompletionOptions {
+            thinking: Some(ThinkingConfig::Toggle(true)),
+            ..CompletionOptions::default()
+        };
+        let mut history = first_turn();
+        history.push(Message::user("thanks"));
+
+        assert_eq!(
+            client.replayed_reasoning(&history, &[], &thinking_on),
+            ["plan", "wrap-up"],
+            "both earlier blocks with text go back while still bound; the redacted one has no text"
+        );
+        assert!(
+            client
+                .replayed_reasoning(&history, &[], &CompletionOptions::default())
+                .is_empty(),
+            "a request with thinking off sends no reasoning back"
+        );
+
+        *history.first_mut().unwrap() = Message::system("You are terse.");
+        assert!(
+            client
+                .replayed_reasoning(&history, &[], &thinking_on)
+                .is_empty(),
+            "reasoning left out of the request after a change ahead of it is not counted"
         );
     }
 
