@@ -58,6 +58,8 @@ These settings in the agent's `config.toml` shape every call to a model. A model
 
 **Streaming.** Every provider can hand a response's text and thinking to the caller while the model is still producing them (`InferenceProvider::complete_streaming`). The response it returns when the call ends is complete, and is the same response a call that returned whole (`complete`) would have given for that output. The memory observer, the reflector and the web UI's model-test endpoint use `complete`, so they get the whole response from one non-streaming request. On the wire: Anthropic streams server-sent events, OpenAI-compatible servers stream `chat/completions` chunks with `stream_options.include_usage` so the last chunk carries token usage, Gemini uses `streamGenerateContent?alt=sse`, and Ollama streams newline-delimited JSON.
 
+**`max_tokens`** caps the output of each model call on every provider. A request that sets its own limit, such as the subconscious's 1024, uses that instead. Anthropic and Gemini take it in their own limit field. OpenAI's own API takes `max_completion_tokens`, which also bounds reasoning; other OpenAI-compatible hosts, Fireworks included, take `max_tokens`; Ollama takes `num_predict`.
+
 **`thinking`** is `off`, `on`, `low`, `medium` or `high`, and each provider maps it to its own request:
 
 | Provider | `on` | `low` / `medium` / `high` | Reasoning that comes back |
