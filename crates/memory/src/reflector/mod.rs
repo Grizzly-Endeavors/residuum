@@ -98,16 +98,12 @@ impl Reflector {
     }
 
     /// Check whether the observation log exceeds the reflection threshold.
+    ///
+    /// Measures the log as the main prompt displays it, so the threshold is the
+    /// size the agent carries in every turn.
     #[must_use]
     pub fn should_reflect(&self, log: &ObservationLog) -> bool {
-        let serialized = match serde_json::to_string_pretty(&log.observations) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to serialize observations for threshold check");
-                return false;
-            }
-        };
-        estimate_tokens(&serialized) >= self.config.threshold_tokens
+        estimate_tokens(&log.display_formatted()) >= self.config.threshold_tokens
     }
 
     /// Compress `log` into a reorganized, shorter log. Reads the reflector
@@ -137,9 +133,10 @@ impl Reflector {
         };
 
         // Serialize the flat observations for the LLM prompt — keep full objects
-        // so the model has timestamp info for intelligent merging.
-        let serialized = serde_json::to_string_pretty(&log.observations)
-            .context("failed to serialize observations")?;
+        // so the model has timestamp info for intelligent merging. Compact, so
+        // indentation isn't re-sent as tokens on every reflection.
+        let serialized =
+            serde_json::to_string(&log.observations).context("failed to serialize observations")?;
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
@@ -232,7 +229,13 @@ mod tests {
     use crate::log_store::save_observation_log;
     use crate::testing::MockMemoryProvider;
     use crate::types::{Observation, Visibility};
+    use async_trait::async_trait;
     use parse::parse_reflection_response;
+    use residuum_inference::{
+        CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+        ToolDefinition,
+    };
+    use std::sync::Mutex;
 
     fn sample_observation(episode_id: &str) -> Observation {
         Observation {
@@ -288,6 +291,40 @@ mod tests {
         assert!(
             reflector.should_reflect(&log),
             "log exceeding threshold should trigger"
+        );
+    }
+
+    #[test]
+    fn should_reflect_measures_the_displayed_log() {
+        let mut log = ObservationLog::new();
+        for episode in ["ep-001", "ep-002", "ep-003", "ep-004"] {
+            log.observations.push(sample_observation(episode));
+        }
+
+        let display_tokens = estimate_tokens(&log.display_formatted());
+        let indented = serde_json::to_string_pretty(&log.observations).unwrap();
+        assert!(
+            estimate_tokens(&indented) > display_tokens + 1,
+            "indented JSON must measure larger than the display text, or this test cannot tell them apart"
+        );
+
+        let reflector_at = |threshold_tokens| {
+            Reflector::new(
+                Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
+                ReflectorConfig {
+                    threshold_tokens,
+                    tz: chrono_tz::UTC,
+                    role_overrides: None,
+                },
+            )
+        };
+        assert!(
+            reflector_at(display_tokens).should_reflect(&log),
+            "log at exactly its displayed size should trigger"
+        );
+        assert!(
+            !reflector_at(display_tokens + 1).should_reflect(&log),
+            "log one token under the threshold should not trigger, even though its indented JSON would"
         );
     }
 
@@ -578,6 +615,68 @@ mod tests {
 
         let result = reflector_replying("[]").compress(&layout, &reflected).await;
         assert!(result.is_err(), "empty array response should error");
+    }
+
+    /// Records the messages of every completion call and replies with a fixed response.
+    struct RecordingProvider {
+        response: String,
+        requests: Arc<Mutex<Vec<Vec<Message>>>>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for RecordingProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.requests.lock().unwrap().push(messages.to_vec());
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "mock-recording"
+        }
+    }
+
+    #[tokio::test]
+    async fn compress_sends_observations_as_compact_json() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let reflector = Reflector::new(
+            Box::new(RecordingProvider {
+                response: COMPRESSED_RESPONSE.to_string(),
+                requests: Arc::clone(&requests),
+            }),
+            ReflectorConfig {
+                threshold_tokens: 10,
+                tz: chrono_tz::UTC,
+                role_overrides: None,
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let log = ObservationLog {
+            observations: vec![sample_observation("ep-001"), sample_observation("ep-002")],
+        };
+
+        reflector.compress(&layout, &log).await.unwrap();
+
+        let sent = requests.lock().unwrap();
+        let [messages] = sent.as_slice() else {
+            panic!("expected one completion call, got {}", sent.len());
+        };
+        let user = messages.last().map_or("", |m| m.content.as_str());
+        let compact = serde_json::to_string(&log.observations).unwrap();
+        let indented = serde_json::to_string_pretty(&log.observations).unwrap();
+        assert!(
+            user.contains(&compact),
+            "reflector should receive the observations as compact JSON"
+        );
+        assert!(
+            !user.contains(&indented),
+            "reflector should not receive indented JSON"
+        );
     }
 
     #[test]
