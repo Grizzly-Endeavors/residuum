@@ -13,15 +13,15 @@ use residuum_mcp::{McpRegistry, SharedMcpRegistry};
 use residuum_workspace::identity::IdentityFiles;
 
 use super::Tool;
-use super::context::{MemoryContext, PromptContext, SkillsContext, StatusLine};
+use super::context::{MemoryContext, PromptContext, SkillsContext};
 use super::recent_messages::RecentMessages;
 use super::tool::ToolRegistry;
 use super::turn::{ModelRequest, build_model_request};
 use residuum_inference::{ToolDefinition, ToolError, ToolResult};
 
 /// The inputs one model request is assembled from. `Default` is an agent
-/// with no identity files, no history, no memory, no skills, no status line
-/// and no MCP servers, so a test sets only what it varies.
+/// with no identity files, no history, no memory, no skills and no MCP
+/// servers, so a test sets only what it varies.
 #[derive(Default)]
 pub struct RequestInputs {
     pub identity: IdentityFiles,

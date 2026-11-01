@@ -2500,17 +2500,17 @@ mod tests {
         let requests = requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 3, "two calls in turn one, one in turn two");
         assert_extends(
-            &requests[0],
-            &requests[1],
+            &requests[0].messages,
+            &requests[1].messages,
             "the tool loop's second call extends its first",
         );
         assert_extends(
-            &requests[1],
-            &requests[2],
+            &requests[1].messages,
+            &requests[2].messages,
             "the next turn extends the previous turn's last request",
         );
 
-        let tail: Vec<(Role, &str)> = requests[2][requests[1].len()..]
+        let tail: Vec<(Role, &str)> = requests[2].messages[requests[1].messages.len()..]
             .iter()
             .map(|m| (m.role, m.content.as_str()))
             .collect();
@@ -2528,7 +2528,11 @@ mod tests {
         );
         assert_eq!(*second, (Role::User, "second"));
         assert_eq!(
-            requests[2].iter().filter(|m| is_status_line(m)).count(),
+            requests[2]
+                .messages
+                .iter()
+                .filter(|m| is_status_line(m))
+                .count(),
             2,
             "one line per user message"
         );
@@ -2620,8 +2624,8 @@ mod tests {
 
         let requests = requests.lock().unwrap().clone();
         assert_eq!(
-            request_json(&requests[0]),
-            request_json(&requests[1]),
+            request_json(&requests[0].messages),
+            request_json(&requests[1].messages),
             "the rerun sends the failed attempt's request unchanged"
         );
     }
@@ -2650,8 +2654,8 @@ mod tests {
         after.set_last_user_message_at(restore.last_user_message_at);
         send(&mut after, "second", "t2", &[]).await.unwrap();
 
-        let first_request = before_requests.lock().unwrap()[0].clone();
-        let restored_request = after_requests.lock().unwrap()[0].clone();
+        let first_request = before_requests.lock().unwrap()[0].messages.clone();
+        let restored_request = after_requests.lock().unwrap()[0].messages.clone();
         assert_extends(
             &first_request,
             &restored_request,
