@@ -92,6 +92,14 @@ pub struct Message {
     /// never stored.
     #[serde(skip)]
     pub cache_boundary: Option<usize>,
+    /// The status line (arrival time, time since the previous message, the
+    /// interface it came from) the agent reads with a user message, rendered
+    /// once when the message entered the main conversation. Every request
+    /// replays it unchanged as a system message immediately before the
+    /// message, so the request's bytes up to the newest message stay the
+    /// same from one turn to the next. `None` for every other entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_line: Option<String>,
 }
 
 /// One piece of a model's reasoning, as its provider returned it.
@@ -334,6 +342,7 @@ impl Message {
             attachments: Vec::new(),
             context: false,
             cache_boundary: None,
+            status_line: None,
         }
     }
 
@@ -353,6 +362,7 @@ impl Message {
             attachments: Vec::new(),
             context: false,
             cache_boundary: None,
+            status_line: None,
         }
     }
 
@@ -372,6 +382,7 @@ impl Message {
             attachments: Vec::new(),
             context: false,
             cache_boundary: None,
+            status_line: None,
         }
     }
 
@@ -404,6 +415,7 @@ impl Message {
             attachments: Vec::new(),
             context: false,
             cache_boundary: None,
+            status_line: None,
         }
     }
 
@@ -423,6 +435,7 @@ impl Message {
             attachments: Vec::new(),
             context: false,
             cache_boundary: None,
+            status_line: None,
         }
     }
 
@@ -446,6 +459,7 @@ impl Message {
             attachments: Vec::new(),
             context: false,
             cache_boundary: None,
+            status_line: None,
         }
     }
 

@@ -30,7 +30,9 @@ pub(super) struct ChatHistoryQuery {
 ///
 /// A [`RecentMessage`] with the model's reasoning reduced to readable text:
 /// the opaque signatures and encrypted data a provider needs replayed
-/// belong to the model's conversation, never to a client.
+/// belong to the model's conversation, never to a client. The status line
+/// the agent reads with a user message is left out the same way: nobody
+/// wrote it.
 #[derive(Debug, Serialize)]
 pub struct HistoryMessage {
     /// The message, without its reasoning blocks.
@@ -58,6 +60,7 @@ impl From<RecentMessage> for HistoryMessage {
             .collect();
         let message = Message {
             thinking: Vec::new(),
+            status_line: None,
             ..recent.message
         };
         Self {

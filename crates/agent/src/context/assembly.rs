@@ -5,8 +5,8 @@ use residuum_memory::tokens::{estimate_message_tokens, estimate_tokens};
 use residuum_workspace::identity::IdentityFiles;
 
 use super::super::recent_messages::RecentMessages;
-use super::prompt::{build_status_line, build_system_message};
-use super::types::{ContextBreakdown, MemoryContext, PromptContext, StatusLine};
+use super::prompt::build_system_message;
+use super::types::{ContextBreakdown, MemoryContext, PromptContext};
 
 /// Compute a per-section token breakdown for the current agent context.
 pub(crate) fn compute_context_breakdown(
@@ -53,42 +53,37 @@ pub(crate) fn compute_context_breakdown(
 /// Assemble the full message list for a model call.
 ///
 /// Creates a system message from identity files and observation log content,
-/// then appends the recent messages. When a `StatusLine` is provided, a
-/// system message with the current time (and optionally how long since the
-/// last message) is inserted immediately before the last user message.
+/// then appends the recent messages. A message that carries a status line
+/// ([`Message::status_line`]) is preceded by it as a system message, the
+/// bytes stored when the message arrived, so earlier turns replay unchanged.
 #[must_use]
 pub(crate) fn assemble_system_prompt(
     identity: &IdentityFiles,
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
-    status_line: Option<&StatusLine>,
 ) -> Vec<Message> {
     let conversation = recent_messages.messages();
-    let mut messages = Vec::with_capacity(2 + conversation.len());
+    let status_lines = conversation
+        .iter()
+        .filter(|m| m.status_line.is_some())
+        .count();
+    let mut messages = Vec::with_capacity(1 + conversation.len() + status_lines);
 
     messages.push(build_system_message(
         identity,
         memory_ctx,
         &prompt_ctx.skills,
     ));
-    messages.extend(conversation.iter().map(|m| {
+    for m in conversation {
+        if let Some(line) = &m.status_line {
+            messages.push(Message::system(line.clone()));
+        }
         let mut rendered = m.clone();
         if m.sender.is_some() {
             rendered.content = m.attributed_content().into_owned();
         }
-        rendered
-    }));
-
-    if let Some(ctx) = status_line {
-        let tag = build_status_line(ctx);
-        // Insert before the last user message
-        if let Some(pos) = messages
-            .iter()
-            .rposition(|m| m.role == residuum_inference::Role::User)
-        {
-            messages.insert(pos, Message::system(tag));
-        }
+        messages.push(rendered);
     }
 
     messages
@@ -100,8 +95,6 @@ pub(crate) fn assemble_system_prompt(
     reason = "test code uses indexing for clarity"
 )]
 mod tests {
-    use chrono::NaiveDateTime;
-
     use super::*;
     use crate::context::types::SkillsContext;
     use residuum_inference::Role;
@@ -113,25 +106,13 @@ mod tests {
         }
     }
 
-    fn dt(year: i32, month: u32, day: u32, hour: u32, min: u32) -> NaiveDateTime {
-        chrono::NaiveDate::from_ymd_opt(year, month, day)
-            .unwrap()
-            .and_hms_opt(hour, min, 0)
-            .unwrap()
-    }
-
     #[test]
     fn assemble_with_empty_identity() {
         let identity = IdentityFiles::default();
         let recent = RecentMessages::new();
 
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            None,
-        );
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
         assert_eq!(messages.len(), 1, "should have system message only");
         assert_eq!(
             messages.first().map(|m| &m.role),
@@ -154,13 +135,8 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            None,
-        );
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
         assert_eq!(messages.len(), 2, "should have system + user message");
         assert_eq!(
             messages[0].role,
@@ -193,13 +169,8 @@ mod tests {
         recent.push(Message::user("second").with_sender(Some(sender("Sam"))));
         recent.push(Message::user("from the web ui"));
 
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            None,
-        );
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
         let contents: Vec<&str> = messages[1..].iter().map(|m| m.content.as_str()).collect();
         assert_eq!(
             contents,
@@ -213,175 +184,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn time_context_inserted_before_last_user_message() {
-        let identity = IdentityFiles::default();
-        let mut recent = RecentMessages::new();
-        recent.push(Message::user("hello"));
-        recent.push(Message::assistant("hi there", None));
-        recent.push(Message::user("what time is it?"));
-
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: Some(dt(2026, 2, 22, 16, 45)),
-            message_source: None,
-        };
-
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            Some(&ctx),
-        );
-
-        // Find the status line system message
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.content.contains("[Current Time:")),
-            "should have status line message"
-        );
-
-        // Status line should be right before the last user message
-        let time_pos = messages
-            .iter()
-            .position(|m| m.content.contains("[Current Time:"))
-            .unwrap();
-        assert_eq!(
-            messages[time_pos + 1].content,
-            "what time is it?",
-            "status line should be immediately before last user message"
-        );
+    fn stamped_user(content: &str, line: &str) -> Message {
+        let mut message = Message::user(content);
+        message.status_line = Some(line.to_string());
+        message
     }
 
     #[test]
-    fn time_context_none_no_injection() {
+    fn stored_status_lines_precede_their_messages() {
         let identity = IdentityFiles::default();
         let mut recent = RecentMessages::new();
-        recent.push(Message::user("hello"));
-
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            None,
-        );
-        assert_eq!(messages.len(), 2, "should have system + user, no time tag");
-    }
-
-    #[test]
-    fn time_context_first_message_no_last() {
-        let identity = IdentityFiles::default();
-        let mut recent = RecentMessages::new();
-        recent.push(Message::user("first message"));
-
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: None,
-            message_source: None,
-        };
-
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            Some(&ctx),
-        );
-
-        let time_msg = messages
-            .iter()
-            .find(|m| m.content.contains("[Current Time:"));
-        assert!(time_msg.is_some(), "should have status line message");
-
-        let tag = &time_msg.unwrap().content;
-        assert!(
-            !tag.contains("[Last Message:"),
-            "should not contain last message when None, got: {tag}"
-        );
-    }
-
-    #[test]
-    fn time_context_includes_message_source() {
-        let identity = IdentityFiles::default();
-        let mut recent = RecentMessages::new();
-        recent.push(Message::user("hello from discord"));
-
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: None,
-            message_source: Some("discord".to_string()),
-        };
-
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            Some(&ctx),
-        );
-
-        let time_msg = messages
-            .iter()
-            .find(|m| m.content.contains("[Current Time:"));
-        assert!(time_msg.is_some(), "should have time context message");
-
-        let tag = time_msg.map(|m| m.content.as_str());
-        assert!(
-            tag.is_some_and(|t| t.contains("[Message Source: discord]")),
-            "should contain message source tag, got: {tag:?}"
-        );
-    }
-
-    #[test]
-    fn time_context_only_before_last_user_message() {
-        let identity = IdentityFiles::default();
-        let mut recent = RecentMessages::new();
-        recent.push(Message::user("first"));
+        recent.push(stamped_user("first", "[Received: one]"));
         recent.push(Message::assistant("response", None));
-        recent.push(Message::user("second"));
-        recent.push(Message::assistant("response 2", None));
-        recent.push(Message::user("third"));
+        recent.push(Message::system("background note"));
+        recent.push(stamped_user("second", "[Received: two]"));
 
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: Some(dt(2026, 2, 22, 16, 0)),
-            message_source: None,
-        };
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
 
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            Some(&ctx),
-        );
-
-        // Only one time context message
-        let time_count = messages
+        let rendered: Vec<(Role, &str)> = messages[1..]
             .iter()
-            .filter(|m| m.content.contains("[Current Time:"))
-            .count();
+            .map(|m| (m.role, m.content.as_str()))
+            .collect();
         assert_eq!(
-            time_count, 1,
-            "should have exactly one time context message"
-        );
-
-        // It should be before "third", not "first" or "second"
-        let time_pos = messages
-            .iter()
-            .position(|m| m.content.contains("[Current Time:"))
-            .unwrap();
-        assert_eq!(
-            messages[time_pos + 1].content,
-            "third",
-            "time tag should be before the last user message"
+            rendered,
+            [
+                (Role::System, "[Received: one]"),
+                (Role::User, "first"),
+                (Role::Assistant, "response"),
+                (Role::System, "background note"),
+                (Role::System, "[Received: two]"),
+                (Role::User, "second"),
+            ],
+            "each stored line sits immediately before its own message"
         );
     }
 
-    // ── compute_context_breakdown tests ──────────────────────────────────────
+    #[test]
+    fn messages_without_a_stored_line_get_none() {
+        let identity = IdentityFiles::default();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("hello"));
+
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
+        assert_eq!(messages.len(), 2, "system prompt + user, no status line");
+    }
 
     #[test]
     fn context_breakdown_empty_identity_no_messages() {
@@ -500,40 +348,6 @@ mod tests {
         assert!(
             bd.active_skills_tokens > 0,
             "active skills should produce nonzero tokens"
-        );
-    }
-
-    #[test]
-    fn status_line_no_user_message_no_injection() {
-        let identity = IdentityFiles::default();
-        let mut recent = RecentMessages::new();
-        recent.push(Message::assistant("hello", None));
-
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: None,
-            message_source: None,
-        };
-
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            Some(&ctx),
-        );
-
-        // No user message in history → rposition finds nothing → no injection
-        assert_eq!(
-            messages.len(),
-            2,
-            "no user message means no status line injection"
-        );
-        assert!(
-            !messages
-                .iter()
-                .any(|m| m.content.contains("[Current Time:")),
-            "should not inject status line when no user message is present"
         );
     }
 }

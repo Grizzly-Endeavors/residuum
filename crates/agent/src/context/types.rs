@@ -1,17 +1,5 @@
 //! Context types used in system prompt assembly.
 
-use chrono::NaiveDateTime;
-
-/// Ephemeral context injected before the last user message in each LLM call.
-pub struct StatusLine {
-    /// Current local time.
-    pub now: NaiveDateTime,
-    /// When the previous user message was sent (if any).
-    pub last_message_at: Option<NaiveDateTime>,
-    /// Which interface this message arrived from (e.g. `"ws"`, `"discord"`).
-    pub message_source: Option<String>,
-}
-
 /// Memory-related context injected into the system prompt.
 ///
 /// Groups observation log and recent narrative context to avoid parameter

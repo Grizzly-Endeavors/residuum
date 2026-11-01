@@ -73,6 +73,10 @@ A workbench artifact runs the same search via `GET /api/agents/<agent>/memory/se
 
 An assistant message may carry the model's reasoning as `thinking` blocks (readable `text`, plus an opaque `signature` or encrypted block some providers need replayed). `recent_messages.json` and session transcripts keep the blocks whole; episode transcripts keep the readable text only. The observer, reflector, search index, `memory_get` and token estimates never include it. If you read `recent_messages.json` directly, ignore the `signature`, `redacted`, `part` and `origin` fields (`origin` names the provider and model that produced a block, so a provider replays only its own).
 
+## Status Lines
+
+Each user message in your main conversation is preceded by a system message like `[Received: Sunday Nov 1st 2026 | 10:49][Last Message: 3 mins ago][Message Source: discord]`, written once when that message arrived and stored with it (the `status_line` field in `recent_messages.json`, not part of the message text). `Received` is when it arrived, in the user's timezone; `Last Message` is how long before it the previous user message arrived; `Message Source` is the interface it came from (`web` for the web UI, `background` for internal sources). Earlier messages keep the lines they arrived with. A session stamps none of its own messages; a fork of the main conversation replays the lines its carried messages arrived with.
+
 ## Gotchas
 
 - Episode IDs are zero-padded to 3 digits (`ep-001`, `ep-012`). The next ID is determined by scanning existing files for the highest number.

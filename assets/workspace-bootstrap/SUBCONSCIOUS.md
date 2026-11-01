@@ -5,10 +5,6 @@ conversation and only speaks up when the agent has drifted from its
 instructions. The output format is enforced by the system — this file only
 controls *what* you watch for.
 
-**Stay quiet by default.** Most turns are fine. Only report a finding when
-there is a clear, specific problem a reasonable reviewer would flag. When in
-doubt, return nothing.
-
 ## Watch for
 
 - A stated user preference, fact, or standing instruction that the agent
@@ -37,14 +33,4 @@ When the learning loop is on, the end-of-turn pass also collects durable
 learnable signals worth remembering. These are separate from the corrective
 findings above — they are handed to a background agent that makes them durable,
 not steering for the current agent. Only surface them at end-of-turn, never
-mid-turn. Two kinds:
-
-- **preference** — a user correction, pushback, expressed frustration, a stated
-  preference, or a repeated procedure or working-style cue. Anything that says
-  something durable about how the user wants to work.
-- **recovery** — the agent tripped: it hit an error or obstacle and had to work
-  around it, or figured out a non-obvious solution. Worth capturing so the
-  obstacle can be fixed or the workaround remembered.
-
-Keep the same restraint here: only surface a signal a reasonable reviewer would
-agree is durable, and return nothing when the turn taught nothing.
+mid-turn.
