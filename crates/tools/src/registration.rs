@@ -1,13 +1,13 @@
 //! Registering the tools into a [`ToolRegistry`]: one function per group of
 //! tools, which the main agent's and each session's registry builders call.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 
 use residuum_a2a::{A2aClientHub, RemoteTaskTracker};
-use residuum_agent::{HopCounter, ToolRegistry};
+use residuum_agent::{HopCounter, ToolRegistry, ToolResultStore};
 use residuum_background::messaging::AgentMessenger;
 use residuum_background::registry::SessionRegistry;
 use residuum_background::team::TeamLink;
@@ -45,6 +45,16 @@ pub struct RegistryInjections {
     /// only this agent's own inboxes. `inbox_list` reads this agent's own
     /// inbox either way.
     pub mailboxes: Option<Arc<dyn MailboxDirectory>>,
+}
+
+/// Attach the store the turn loop saves oversized tool results to: this
+/// agent's directory under `hub/tool-results/`, outside its workspace so no
+/// checkpoint repository tracks it.
+pub fn attach_result_store(tools: &mut ToolRegistry, hub_dir: &Path, layout: &WorkspaceLayout) {
+    tools.set_result_store(ToolResultStore::new(
+        residuum_config::HubPaths::new(hub_dir).tool_results_dir(),
+        layout.agent_name().unwrap_or_default(),
+    ));
 }
 
 /// Re-register every tool that captured the user's timezone at

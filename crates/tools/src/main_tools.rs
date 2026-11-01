@@ -180,6 +180,7 @@ pub fn init_tool_registry(
     let mut tools = ToolRegistry::new();
     tools.set_agent_keys(Arc::clone(deps.agent_keys));
     tools.set_auto_mode(Arc::clone(deps.auto_mode));
+    registration::attach_result_store(&mut tools, deps.hub_dir, layout);
     register_main_workspace_tools(
         &mut tools,
         &injections,
@@ -313,6 +314,23 @@ mod tests {
             session_names, expected,
             "session registry must equal main minus the main-only allowlist \
              ({MAIN_ONLY_TOOLS:?}) plus the session-only allowlist ({SESSION_ONLY_TOOLS:?})"
+        );
+
+        // Oversized results from main and from sessions both go to the
+        // agent's directory under hub/tool-results.
+        let main_store = main_tools
+            .result_store()
+            .expect("main's registry saves oversized tool results");
+        let session_store = session_tools
+            .result_store()
+            .expect("a session's registry saves oversized tool results");
+        assert_eq!(main_store.dir(), session_store.dir());
+        assert!(
+            main_store
+                .dir()
+                .starts_with(residuum_config::HubPaths::new(&h.hub_dir).tool_results_dir()),
+            "saved results live under hub/tool-results: {}",
+            main_store.dir().display()
         );
     }
 

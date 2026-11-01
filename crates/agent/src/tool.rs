@@ -9,6 +9,7 @@ use residuum_config::agent_keys::{Redactor, SharedAgentKeys};
 use residuum_inference::{ToolDefinition, ToolError, ToolResult};
 
 use super::auto_mode::SharedAutoMode;
+use super::tool_result_store::ToolResultStore;
 
 /// Reported when a tool call is interrupted mid-execution because the turn
 /// was stopped — a user stop, a session's own stop, or daemon shutdown.
@@ -101,7 +102,8 @@ pub trait Tool: Send + Sync {
 }
 
 /// The tools a turn can call, with what the turn loop applies around every
-/// call: the agent-key redactor and the Auto Mode check.
+/// call: the agent-key redactor, the Auto Mode check, and the store that
+/// keeps oversized results out of history.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
     /// The agent key store: the source of the redactor applied to every tool
@@ -110,6 +112,9 @@ pub struct ToolRegistry {
     /// The agent's Auto Mode, checked before every tool call the turn loop
     /// dispatches. `None` means no call is checked.
     auto_mode: Option<SharedAutoMode>,
+    /// Where results too long for history are saved. `None` keeps every
+    /// result whole.
+    result_store: Option<ToolResultStore>,
 }
 
 impl Default for ToolRegistry {
@@ -126,6 +131,7 @@ impl ToolRegistry {
             tools: Vec::new(),
             agent_keys: None,
             auto_mode: None,
+            result_store: None,
         }
     }
 
@@ -139,6 +145,17 @@ impl ToolRegistry {
     #[must_use]
     pub fn auto_mode(&self) -> Option<&SharedAutoMode> {
         self.auto_mode.as_ref()
+    }
+
+    /// Attach the store the turn loop saves oversized tool results to.
+    pub fn set_result_store(&mut self, store: ToolResultStore) {
+        self.result_store = Some(store);
+    }
+
+    /// The store oversized tool results are saved to, if one is attached.
+    #[must_use]
+    pub fn result_store(&self) -> Option<&ToolResultStore> {
+        self.result_store.as_ref()
     }
 
     /// Set the agent key store used to redact tool results.
