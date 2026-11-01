@@ -751,7 +751,14 @@ impl InferenceProvider for AnthropicClient {
             .flat_map(|message| message.content.into_blocks())
             .filter_map(|block| match block {
                 AnthropicContentBlock::Thinking { thinking, .. } => Some(thinking),
-                _ => None,
+                AnthropicContentBlock::RedactedThinking { .. }
+                | AnthropicContentBlock::Text { .. }
+                | AnthropicContentBlock::Image { .. }
+                | AnthropicContentBlock::ToolUse { .. }
+                | AnthropicContentBlock::ToolResult { .. }
+                | AnthropicContentBlock::ServerToolUse { .. }
+                | AnthropicContentBlock::WebSearchToolResult { .. }
+                | AnthropicContentBlock::Other => None,
             })
             .collect()
     }
