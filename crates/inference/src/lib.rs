@@ -38,7 +38,7 @@ pub use providers::anthropic;
 pub use providers::null::NullProvider;
 pub use reply::strip_code_fences;
 pub(crate) use retry::with_retry;
-pub use role_options::completion_options_for_role;
+pub use role_options::{completion_options_for_role, main_conversation_options};
 pub use tool::{ToolError, ToolResult};
 pub use types::{
     AgentSender, CacheHints, CacheRetention, CompletionOptions, ImageData, InferenceProvider,

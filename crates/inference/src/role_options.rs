@@ -2,7 +2,7 @@
 
 use residuum_config::Config;
 
-use super::CompletionOptions;
+use super::{CacheHints, CacheRetention, CompletionOptions};
 
 /// Build `CompletionOptions` for a named role, applying per-role overrides
 /// over the global defaults.
@@ -17,6 +17,20 @@ pub fn completion_options_for_role(cfg: &Config, role: &str) -> CompletionOption
     }
 }
 
+/// `CompletionOptions` for the agent's main conversation: the `main` role's,
+/// keyed to that conversation. Each turn chooses its own retention (see
+/// `residuum_agent::Agent`); this one is a default.
+#[must_use]
+pub fn main_conversation_options(cfg: &Config) -> CompletionOptions {
+    CompletionOptions {
+        cache: CacheHints {
+            conversation_key: Some(cfg.main_conversation_key()),
+            retention: CacheRetention::Short,
+        },
+        ..completion_options_for_role(cfg, "main")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use residuum_config::testing::{test_agent_dir, test_hub_config};
@@ -24,7 +38,8 @@ mod tests {
         AgentConfigFile, ProvidersFile, ThinkingConfig, ThinkingLevel, from_file_and_env,
     };
 
-    use super::completion_options_for_role;
+    use super::{completion_options_for_role, main_conversation_options};
+    use crate::CacheHints;
 
     #[test]
     fn completion_options_for_role_with_override() {
@@ -97,6 +112,43 @@ thinking = "medium"
             opts.thinking,
             Some(ThinkingConfig::Level(ThinkingLevel::Medium)),
             "should fall back to global thinking"
+        );
+    }
+
+    #[test]
+    fn main_conversation_options_carry_the_main_conversation_key() {
+        let prov_file: ProvidersFile = toml::from_str(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        )
+        .unwrap();
+        let cfg = from_file_and_env(
+            None,
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
+
+        let main = main_conversation_options(&cfg);
+        assert_eq!(
+            main.cache.conversation_key.as_deref(),
+            Some(cfg.main_conversation_key().as_str())
+        );
+        assert_eq!(
+            main.max_tokens,
+            Some(cfg.max_tokens),
+            "the main role's options"
+        );
+
+        let observer = completion_options_for_role(&cfg, "observer");
+        assert_eq!(
+            observer.cache,
+            CacheHints::default(),
+            "side calls keep the default"
         );
     }
 }
