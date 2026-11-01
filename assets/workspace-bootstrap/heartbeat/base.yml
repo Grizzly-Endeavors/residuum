@@ -9,9 +9,7 @@
 #   active_hours: optional — "HH:MM-HH:MM" in configured timezone
 #                 supports overnight windows (e.g. "22:00-06:00")
 #   agent: ~ (plain session, no skill) | "skill-name" (session with that
-#          skill activated as its role). "main" is not accepted — every
-#          session fork already carries the main agent's identity and a
-#          memory snapshot.
+#          skill activated as its role). "main" is not accepted.
 #   model_tier: optional — "small" (default) | "medium" | "large"
 #   tasks: each has a name and a prompt. A task can also set
 #          script: a shell command run from the workspace, with the

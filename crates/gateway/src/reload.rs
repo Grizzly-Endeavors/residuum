@@ -703,6 +703,7 @@ fn build_spawn_context(
         },
         max_tool_iterations: new_cfg.agent.max_tool_iterations,
         repeat_call_guard: new_cfg.agent.repeat_call_guard,
+        intermediate_delivery: residuum_agent::context::IntermediateDelivery::from_config(new_cfg),
         layout: rt.layout.clone(),
         role_overrides: new_cfg.role_overrides.clone(),
         session_tools,

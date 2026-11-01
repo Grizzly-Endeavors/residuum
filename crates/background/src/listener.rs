@@ -1521,6 +1521,7 @@ mod tests {
             options: residuum_inference::CompletionOptions::default(),
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             layout,
             role_overrides: HashMap::new(),
             session_tools: Arc::new(NoSessionTools),

@@ -31,7 +31,7 @@ Put a skill in the agent's `skills/` when only that agent should have it, and in
 
 If multiple skills share the same name, the highest-priority layer wins and the others are hidden (logged at debug with both paths). Lookup is case-insensitive by name.
 
-Each indexed skill records the layer it came from. The `<available_skills>` block shows it in a `<layer>` element (`agent`, `team`, or `configured`).
+Each indexed skill records the layer it came from (`agent`, `team`, or `configured`), and the skills index shows it on the skill's line.
 
 The index is rebuilt at startup, after a reload of the config, and on `skill_activate`, so changes to `team/skills/` are picked up on the same triggers as changes to the agent's own `skills/`.
 
@@ -41,7 +41,7 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 ## How Skills Appear in Context
 
-- **Available skills**: listed in an `<available_skills>` block with name and description. The agent always sees this index and can decide to activate skills based on the current task.
+- **Available skills**: listed in the `SKILLS_INDEX` section, one line per skill: `- name (layer, path to SKILL.md): description`, with the description collapsed onto that line. The agent always sees this index and can decide to activate skills based on the current task.
 - **Active skills**: full body injected in `<active_skill name="...">` blocks.
 
 **Only SKILL.md is injected.** A skill directory may contain additional files (subdirectories, reference docs, workflow guides, etc.), but these are not automatically loaded. The SKILL.md body should instruct the agent to read those files using `read_file` when needed. For example, `residuum-getting-started` has a `workflows/` subdirectory — the SKILL.md body tells the agent which workflow file to read based on the user's goal.

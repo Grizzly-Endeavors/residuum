@@ -64,7 +64,7 @@ pub(crate) fn assemble_system_prompt(
     prompt_ctx: &PromptContext<'_>,
     status_line: Option<&StatusLine>,
 ) -> Vec<Message> {
-    let system_content = build_system_content(identity, memory_ctx, &prompt_ctx.skills);
+    let system_content = build_system_content(identity, memory_ctx, prompt_ctx);
 
     let conversation = recent_messages.messages();
     let mut messages = Vec::with_capacity(2 + conversation.len());
@@ -488,6 +488,7 @@ mod tests {
                 index: Some("<available_skills/>"),
                 active_instructions: Some("<active_skill>instructions</active_skill>"),
             },
+            ..PromptContext::default()
         };
 
         let bd = compute_context_breakdown(&identity, &memory, &prompt_ctx, &recent, 0, 0);

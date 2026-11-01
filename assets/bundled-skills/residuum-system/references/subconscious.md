@@ -40,5 +40,3 @@ subconscious itself off.
 `every_n_iterations`, `max_transcript_tokens`, `learning`,
 `learning_cooldown_minutes`. Model assigned via the `subconscious` role in
 `providers.toml`.
-
-See the authoritative reference: `docs/systems-usage/subconscious.md`.

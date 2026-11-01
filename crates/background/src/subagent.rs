@@ -194,6 +194,8 @@ pub struct SubAgentResources {
     /// Guards against a model repeating the exact same tool call — see
     /// [`residuum_config::AgentAbilitiesConfig::repeat_call_guard`].
     pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
+    /// What the chat interfaces post, for the session's `HARNESS` section.
+    pub intermediate_delivery: residuum_agent::context::IntermediateDelivery,
     /// Formatted skill index for the system prompt (built at fork time).
     pub skills_index: Option<String>,
     /// Snapshot of the global observation log, taken at fork time.
@@ -285,6 +287,7 @@ pub async fn build_subagent_resources(
         options,
         max_tool_iterations,
         repeat_call_guard,
+        intermediate_delivery,
         skill,
         observations,
         recent_context,
@@ -316,6 +319,7 @@ pub async fn build_subagent_resources(
     Ok(SubAgentResources {
         max_tool_iterations,
         repeat_call_guard,
+        intermediate_delivery,
         provider,
         tools,
         mcp_registry,
@@ -449,7 +453,10 @@ pub(crate) async fn execute_subagent(
         recent_context: resources.recent_context.as_deref(),
     };
 
-    let prompt_ctx = PromptContext { skills: skills_ctx };
+    let prompt_ctx = PromptContext {
+        skills: skills_ctx,
+        intermediate_delivery: resources.intermediate_delivery,
+    };
 
     let turn_resources = TurnResources {
         provider: &*resources.provider,
@@ -566,6 +573,7 @@ mod tests {
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(MockSubAgentProvider {
                 response: response.to_string(),
             }),
@@ -640,7 +648,7 @@ mod tests {
         );
         let skills_index = skills_index.unwrap();
         assert!(
-            skills_index.contains("<layer>team</layer>"),
+            skills_index.contains("- team-role (team, "),
             "index should label the team skill: {skills_index}"
         );
     }
@@ -1206,6 +1214,10 @@ mod tests {
         let resources = SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery {
+                discord: true,
+                ..residuum_agent::context::IntermediateDelivery::default()
+            },
             provider: Box::new(CapturingProvider {
                 response: "done".to_string(),
                 seen: Arc::clone(&seen),
@@ -1261,6 +1273,8 @@ mod tests {
             "wiki catalog",
             "episode ep-1: learned something",
             "we were mid-refactor",
+            // The session's HARNESS follows the agent's chat settings.
+            "On Discord, the text you write before each tool call",
         ] {
             let count = system.content.matches(needle).count();
             assert_eq!(
@@ -1332,6 +1346,7 @@ mod tests {
         let resources = SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(ToolCallThenTextProvider {
                 call_count: std::sync::atomic::AtomicUsize::new(0),
             }),
@@ -1447,6 +1462,7 @@ mod tests {
         let resources = SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,
@@ -1522,6 +1538,7 @@ mod tests {
         let resources = SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,

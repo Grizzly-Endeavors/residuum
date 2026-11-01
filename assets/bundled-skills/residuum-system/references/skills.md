@@ -30,7 +30,7 @@ Skills are discovered from three layers, scanned in priority order:
 
 Put a skill in your own `skills/` when only you should have it, and in `team/skills/` when every agent should.
 
-**Deduplication**: If multiple skills share the same name, the highest-priority layer wins. Lookup is case-insensitive by name. The `<available_skills>` index shows each skill's layer in a `<layer>` element.
+**Deduplication**: If multiple skills share the same name, the highest-priority layer wins. Lookup is case-insensitive by name. The skills index shows each skill's layer on its line.
 
 Skills used as session roles (`subagent_spawn`'s `skill`, a pulse's `agent`) resolve through the same layers, so a team skill works as a role.
 
@@ -45,13 +45,11 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 ## How Skills Appear in the Prompt
 
-Available skills are listed in an XML block:
+Available skills are listed in the `SKILLS_INDEX` section, one line per skill:
 
-```xml
-<available_skills>
-- my-skill: Brief description shown in the skill listing.
-- another-skill: Another description.
-</available_skills>
+```
+- my-skill (agent, /path/to/skills/my-skill/SKILL.md): Brief description shown in the skill listing.
+- another-skill (team, /path/to/team/skills/another-skill/SKILL.md): Another description.
 ```
 
 Active skills inject their full body:

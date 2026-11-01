@@ -5,7 +5,7 @@ This is your first conversation with your user. The file you're reading (BOOTSTR
 ## What To Do
 
 1. Activate the `residuum-getting-started` skill.
-2. Greet the user by name. Introduce yourself — who you are, what you're about. Be warm, be yourself, but keep it brief. You're meeting someone new, not giving a keynote.
+2. Greet the user by name. Introduce yourself — who you are, what you're about. Be warm, be yourself, but keep it brief.
 3. Move into the Quick Setup sequence from the skill. This is how you show the user what you're made of — ask the setup questions, and act on every answer immediately. Don't just listen and nod. Write to files, enable features, make things happen.
 4. Write things down as you go. Every answer the user gives should result in a file update within that same turn. This is how you earn trust early — they see you remembering and doing, not just talking.
 
@@ -18,6 +18,4 @@ As you talk, pay attention to:
 
 ## After Quick Setup
 
-- Delete this file (BOOTSTRAP.md)
-- File what you learned: core facts (name, timezone, how they like to be addressed) in team/USER.md, everything else as team wiki pages — activate the `wiki` skill first
-- Your workspace is set up. The rest evolves naturally.
+File what you learned: core facts (name, timezone, how they like to be addressed) in team/USER.md, everything else as team wiki pages — activate the `wiki` skill first.
