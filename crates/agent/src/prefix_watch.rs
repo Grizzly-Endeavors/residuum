@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hasher};
 
-use residuum_inference::{Message, Role, ToolDefinition};
+use residuum_inference::{Message, Role};
 use serde::Serialize;
 
 use crate::turn::ModelRequest;
@@ -417,7 +417,7 @@ fn log_divergence(conversation: &str, divergence: &Divergence) {
 )]
 mod tests {
     use super::*;
-    use residuum_inference::CompletionOptions;
+    use residuum_inference::{CompletionOptions, ToolDefinition};
 
     fn tool(name: &str, description: &str) -> ToolDefinition {
         ToolDefinition {
