@@ -351,7 +351,7 @@ mod tests {
 
         let table = PriceTable::new(&BTreeMap::new());
 
-        assert_usd(table.estimate("openai", "gpt-4o", &usage), 0.003085);
+        assert_usd(table.estimate("openai", "gpt-4o", &usage), 0.003_085);
     }
 
     #[test]

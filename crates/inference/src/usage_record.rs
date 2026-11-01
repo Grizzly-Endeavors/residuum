@@ -328,9 +328,9 @@ async fn append_lines(path: &Path, lines: &str) -> std::io::Result<()> {
     let mut buf = String::with_capacity(lines.len() + 1);
     if file.metadata().await?.len() > 0 {
         file.seek(SeekFrom::End(-1)).await?;
-        let mut last = [0u8; 1];
+        let mut last = [0_u8; 1];
         file.read_exact(&mut last).await?;
-        if last != [b'\n'] {
+        if last != *b"\n" {
             buf.push('\n');
         }
     }
@@ -433,7 +433,7 @@ mod tests {
             Some(usage(40, 0)),
             "a failed attempt keeps what it spent"
         );
-        let answered = records.get(1).unwrap();
+        let answered = records.get(1).expect("the fallback attempt is second");
         assert_eq!(answered.model, "fallback");
         assert_eq!(answered.provider, "anthropic");
         assert_eq!(answered.outcome, AttemptOutcome::Succeeded);
@@ -494,7 +494,13 @@ mod tests {
             Some(usage(500, 0)),
             "what a failed attempt spent is kept"
         );
-        assert_eq!(records.get(1).unwrap().model, "fallback");
+        assert_eq!(
+            records
+                .get(1)
+                .expect("the fallback attempt is second")
+                .model,
+            "fallback"
+        );
     }
 
     #[tokio::test]
@@ -660,7 +666,7 @@ mod tests {
     async fn a_month_with_no_file_has_no_records() {
         let (_dir, recorder) = recorder();
         let (from, to) = all_time();
-        assert!(recorder.load(from, to, None).await.unwrap().is_empty());
+        assert_eq!(recorder.load(from, to, None).await.unwrap().len(), 0);
     }
 
     #[tokio::test]

@@ -254,8 +254,8 @@ fn convert_one(span: &CompletedSpan, trace_id: TraceId, scope: &InstrumentationS
 }
 
 /// One span field as an OTEL attribute. The span buffer keeps every value as
-/// text; the GenAI token counts go out as integers, the type the OpenTelemetry
-/// GenAI conventions give them, so trace tools can sum them.
+/// text; the `GenAI` token counts go out as integers, the type the OpenTelemetry
+/// `GenAI` conventions give them, so trace tools can sum them.
 fn span_attribute(key: &str, value: &str) -> KeyValue {
     if key.starts_with("gen_ai.usage.")
         && let Ok(count) = value.parse::<i64>()

@@ -1,4 +1,4 @@
-//! OpenTelemetry GenAI usage attributes on model-call spans.
+//! OpenTelemetry `GenAI` usage attributes on model-call spans.
 //!
 //! Each provider's request span declares the `gen_ai.usage.*` fields empty;
 //! [`record_usage`] fills the ones the response reported, so an exported trace

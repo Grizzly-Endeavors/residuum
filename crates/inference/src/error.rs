@@ -49,8 +49,13 @@ impl InferenceError {
     #[must_use]
     pub fn cause(&self) -> &Self {
         match self {
-            Self::Attempted { error, .. } => &**error,
-            other => other,
+            Self::Attempted { error, .. } => error,
+            bare @ (Self::Request(_)
+            | Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_)) => bare,
         }
     }
 
@@ -60,7 +65,12 @@ impl InferenceError {
     pub fn attempts(&self) -> &[AttemptUsage] {
         match self {
             Self::Attempted { attempts, .. } => attempts,
-            _ => &[],
+            Self::Request(_)
+            | Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_) => &[],
         }
     }
 
@@ -68,7 +78,12 @@ impl InferenceError {
     pub(crate) fn into_parts(self) -> (Self, Vec<AttemptUsage>) {
         match self {
             Self::Attempted { error, attempts } => (*error, attempts),
-            other => (other, Vec::new()),
+            bare @ (Self::Request(_)
+            | Self::Parse(_)
+            | Self::Api(_)
+            | Self::Timeout(_)
+            | Self::Stalled(_)
+            | Self::StreamInterrupted(_)) => (bare, Vec::new()),
         }
     }
 

@@ -39,7 +39,7 @@ impl From<InferenceError> for FailedRequest {
 /// Record one request sent to `model` at `provider`: a response lists it as
 /// its one attempt, and an error carries it with the usage reported before
 /// the failure. The usage also goes on the current span, the provider's
-/// request span, as its GenAI attributes.
+/// request span, as its `GenAI` attributes.
 pub(crate) fn record_attempt(
     provider: ProviderKind,
     model: &str,

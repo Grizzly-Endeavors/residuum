@@ -113,11 +113,11 @@ mod tests {
         }
     }
 
-    fn output(tokens: u32) -> Option<Usage> {
-        Some(Usage {
+    fn output(tokens: u32) -> Usage {
+        Usage {
             output_tokens: Some(tokens),
             ..Usage::default()
-        })
+        }
     }
 
     #[tokio::test]
@@ -129,12 +129,12 @@ mod tests {
                 if count.fetch_add(1, Ordering::SeqCst) == 0 {
                     let failed = FailedRequest::spent(
                         InferenceError::StreamInterrupted("reset".to_string()),
-                        output(3),
+                        Some(output(3)),
                     );
                     return record_attempt(ProviderKind::Anthropic, "claude", Err(failed));
                 }
                 let mut response = InferenceResponse::new("done".to_string(), vec![]);
-                response.usage = output(9);
+                response.usage = Some(output(9));
                 record_attempt(ProviderKind::Anthropic, "claude", Ok(response))
             }
         })
@@ -150,11 +150,15 @@ mod tests {
         assert_eq!(
             result.attempts,
             vec![
-                attempt(AttemptOutcome::Failed, output(3)),
-                attempt(AttemptOutcome::Succeeded, output(9)),
+                attempt(AttemptOutcome::Failed, Some(output(3))),
+                attempt(AttemptOutcome::Succeeded, Some(output(9))),
             ]
         );
-        assert_eq!(result.usage, output(9), "usage stays the success's own");
+        assert_eq!(
+            result.usage,
+            Some(output(9)),
+            "usage stays the success's own"
+        );
     }
 
     #[tokio::test]
