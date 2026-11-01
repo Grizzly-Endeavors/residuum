@@ -124,7 +124,7 @@ A relative `path` resolves against the agent's workspace root, not the process's
 **Source:** `exec.rs` · `ExecTool`
 
 **Description sent to LLM:**
-> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). Output over 100 KB keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
 
 The description sent to the LLM reflects the current platform.
 
@@ -141,13 +141,13 @@ The description sent to the LLM reflects the current platform.
 
 On success (exit code 0): stdout, followed by `STDERR:\n{stderr}` if stderr is non-empty. If both are empty, returns `"(no output)"`.
 
-On error (exit code ≠ 0): `"command exited with code {N}\n{stdout+stderr}"`, with the same stdout and stderr shape as success.
+On error (exit code ≠ 0): `"command exited with code {N}\n{stdout+stderr}"`, where stdout also keeps its end (see the cap below).
 
 On timeout: the command's whole process tree is killed (not just the immediate shell), and the result is an error carrying whatever stdout/stderr it had already produced: `"command timed out after {N} seconds; its process tree was killed"`, followed by `STDOUT so far:\n{stdout}` and/or `STDERR so far:\n{stderr}` for whichever are non-empty.
 
 On cancellation (the turn was stopped while the command was running): same process-tree kill and same partial-output shape, reported as a cancellation rather than a failure — `"the turn was stopped while this command was running; its process tree was killed"` plus whatever `STDOUT so far` / `STDERR so far` it had produced. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
 
-Output is capped at 100 KB across stdout and stderr, with the omission notes counted inside the cap. Stderr shows its last 25 KB. Stdout shows its first bytes, and for a failing command (non-zero exit, timeout or cancellation) its last bytes as well, with the head taking a quarter of stdout's share. Each cut is marked in place as `[… {N} bytes of {stdout|stderr} omitted …]`. Partial output from a timeout or cancellation is shaped the same way.
+Output is capped at 30000 bytes across stdout and stderr, with the omission notes counted inside the cap. The cap sits under the turn loop's 32,000-character limit for tool results (see [Large Tool Results](../../docs/systems-usage/turn-control.md#large-tool-results)), so exec's output is never cut a second time. Stderr shows its last 7500 bytes. Stdout shows its first bytes, and for a failing command (non-zero exit, timeout or cancellation) its last bytes as well, with the head taking a quarter of stdout's share; the end shown is the true end of stdout at every size. Each cut is marked in place as `[… {N} bytes of {stdout|stderr} omitted …]`. Partial output from a timeout or cancellation is shaped the same way.
 
 With `keys`: an unknown name returns `"unknown agent key(s): {names}. Available: {names}. Nothing was run."` without spawning anything. Without an agent key store: `"agent keys are not available in this context. Nothing was run."`
 

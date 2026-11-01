@@ -50,6 +50,15 @@ use serde_json::Value;
 
 use residuum_inference::ToolError;
 
+/// The most a tool that shapes its own output returns from one call: a
+/// `read_file` page, a `web_fetch` page, `exec`'s capped output. It sits under
+/// the history limit with room for the tool's header and notes, so the turn
+/// loop never cuts these results a second time.
+///
+/// Counted in bytes where a tool measures bytes; a byte budget never holds
+/// more characters than bytes, so it fits the character limit either way.
+pub(crate) const PAGE_BUDGET: usize = residuum_agent::HISTORY_RESULT_MAX_CHARS - 2_000;
+
 pub(crate) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
     args.get(field)
         .and_then(Value::as_str)

@@ -23,8 +23,8 @@ use residuum_core::process::{
 use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Maximum size of the output shown from one command (100KB), notes included.
-const MAX_OUTPUT_BYTES: usize = 100 * 1024;
+/// Maximum size of the output shown from one command, notes included.
+const MAX_OUTPUT_BYTES: usize = crate::PAGE_BUDGET;
 
 /// Most of stderr shown, as its tail. Stderr is what a failing command says
 /// last and most plainly, so it gets a quarter of the cap.
@@ -301,12 +301,12 @@ impl Tool for ExecTool {
             name: self.name().to_string(),
             description: format!(
                 "Execute a shell command and return its output. Commands run via \
-                 {} with a configurable timeout (default 120 seconds). Output over 100 KB \
-                 keeps the start of stdout and the end of stderr (and the end of stdout when \
-                 the command fails) and says how many bytes were left out. Terminal colour \
-                 codes are removed. Use `keys` to expose agent keys as environment variables \
-                 (see agent_keys_list); use `store_output_as` to store stdout as a new agent \
-                 key instead of returning it.",
+                 {} with a configurable timeout (default 120 seconds). Output over \
+                 {MAX_OUTPUT_BYTES} bytes keeps the start of stdout and the end of stderr (and \
+                 the end of stdout when the command fails) and says how many bytes were left \
+                 out. Terminal colour codes are removed. Use `keys` to expose agent keys as \
+                 environment variables (see agent_keys_list); use `store_output_as` to store \
+                 stdout as a new agent key instead of returning it.",
                 if cfg!(windows) { "`cmd /C`" } else { "`sh -c`" }
             ),
             parameters: serde_json::json!({
@@ -544,9 +544,26 @@ fn shown_streams(stdout: &Captured, stderr: &Captured, failed: bool) -> (String,
 
 /// A stream as shown: its first `head` bytes and last `tail` bytes, with a
 /// note between them saying how many bytes were left out.
+///
+/// The kept bytes are one ordered stream: a capture fills its head before its
+/// tail, so a stream shorter than the capture's head has an empty tail, and
+/// the shown end is taken from wherever the stream ends. When the capture
+/// dropped bytes, a side shorter than its budget lends what it doesn't use to
+/// the other.
 fn shape_stream(name: &str, stream: &Captured, head: usize, tail: usize) -> String {
-    let shown_head = prefix(&stream.head, head);
-    let shown_tail = suffix(&stream.tail, tail);
+    let joined;
+    let (shown_head, shown_tail): (&[u8], &[u8]) = if stream.omitted == 0 {
+        joined = [stream.head.as_slice(), stream.tail.as_slice()].concat();
+        if joined.len() <= head + tail {
+            (&joined, &[])
+        } else {
+            (prefix(&joined, head), suffix(&joined, tail))
+        }
+    } else {
+        let shown_tail = suffix(&stream.tail, tail + head.saturating_sub(stream.head.len()));
+        let shown_head = prefix(&stream.head, head + tail.saturating_sub(shown_tail.len()));
+        (shown_head, shown_tail)
+    };
     let omitted = stream.total_bytes() - shown_head.len() - shown_tail.len();
 
     let mut text = String::from_utf8_lossy(shown_head).into_owned();
@@ -1012,6 +1029,193 @@ mod tests {
         assert_eq!(
             shown_streams(&stdout, &stderr, true),
             ("out\n".to_string(), "err\n".to_string())
+        );
+    }
+
+    /// At least `bytes` bytes of numbered lines, ending in a newline.
+    fn numbered_lines(bytes: usize) -> Vec<u8> {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        let mut n = 0;
+        while text.len() < bytes {
+            n += 1;
+            _ = writeln!(text, "line {n}");
+        }
+        text.into_bytes()
+    }
+
+    /// `stream` as exec's stdout capture keeps it: the head fills first, then
+    /// the tail holds the latest bytes and anything between is dropped.
+    fn as_stdout_capture(stream: &[u8]) -> Captured {
+        let head = prefix(stream, MAX_OUTPUT_BYTES);
+        let rest = stream.get(head.len()..).unwrap_or_default();
+        let tail = suffix(rest, MAX_OUTPUT_BYTES);
+        captured(head, rest.len() - tail.len(), tail)
+    }
+
+    fn last_line(stream: &[u8]) -> String {
+        let text = String::from_utf8_lossy(stream);
+        format!("{}\n", text.trim_end().lines().last().unwrap())
+    }
+
+    /// The budget `shown_streams` gives stdout when stderr is empty.
+    const STDOUT_BUDGET: usize = MAX_OUTPUT_BYTES - NOTE_RESERVE_BYTES;
+
+    #[test]
+    fn a_failing_commands_stdout_keeps_its_end_in_every_size_range() {
+        // Shorter than the capture's head (the tail is empty), between one
+        // and two capture windows (nothing dropped), and longer than both
+        // (the capture dropped its middle).
+        for size in [MAX_OUTPUT_BYTES - 20, 60_000, 150_000] {
+            let stream = numbered_lines(size);
+            let (shown, _) = shown_streams(&as_stdout_capture(&stream), &Captured::default(), true);
+            assert!(shown.starts_with("line 1\n"), "{size}: head kept");
+            assert!(
+                shown.ends_with(&last_line(&stream)),
+                "{size}: stdout's last line is shown: …{}",
+                shown.get(shown.len().saturating_sub(200)..).unwrap()
+            );
+            assert!(shown.contains("bytes of stdout omitted"), "{size}");
+            assert!(
+                shown.len() <= STDOUT_BUDGET + 64,
+                "{size}: within the budget: {}",
+                shown.len()
+            );
+            assert!(
+                shown.len() >= STDOUT_BUDGET - 64,
+                "{size}: the budget is used, not wasted: {}",
+                shown.len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_failing_commands_stdout_that_fits_is_shown_whole() {
+        let stream = numbered_lines(STDOUT_BUDGET / 2);
+        let (shown, _) = shown_streams(&as_stdout_capture(&stream), &Captured::default(), true);
+        assert_eq!(shown.as_bytes(), stream.as_slice());
+    }
+
+    #[test]
+    fn a_succeeding_commands_stdout_keeps_only_its_start_in_every_size_range() {
+        for size in [MAX_OUTPUT_BYTES - 20, 60_000, 150_000] {
+            let stream = numbered_lines(size);
+            let (shown, _) =
+                shown_streams(&as_stdout_capture(&stream), &Captured::default(), false);
+            let head = String::from_utf8_lossy(prefix(&stream, STDOUT_BUDGET));
+            let note = format!(
+                "[… {} bytes of stdout omitted …]\n",
+                stream.len() - STDOUT_BUDGET
+            );
+            assert!(
+                shown.starts_with(head.as_ref()),
+                "{size}: the head fills the budget"
+            );
+            assert!(
+                shown.ends_with(&note),
+                "{size}: only the head, then the note"
+            );
+            assert!(
+                shown.len() <= head.len() + 1 + note.len(),
+                "{size}: nothing but the head and the note: {}",
+                shown.len()
+            );
+        }
+    }
+
+    #[test]
+    fn execs_largest_output_fits_under_the_history_limit() {
+        let stdout = as_stdout_capture(&numbered_lines(500_000));
+        let stderr = captured(b"", 90_000, &numbered_lines(STDERR_BUDGET_BYTES));
+        for code in [0, 1] {
+            let output = CapturedOutput {
+                status: exit_status(code),
+                stdout: stdout.clone(),
+                stderr: stderr.clone(),
+            };
+            let result = format_output(&output);
+            assert!(
+                result.output.chars().count() <= residuum_agent::HISTORY_RESULT_MAX_CHARS,
+                "exit {code}: {} characters",
+                result.output.chars().count()
+            );
+            let partial = format_captured_output(
+                "command timed out after 120 seconds; its process tree was killed",
+                &output,
+            );
+            assert!(
+                partial.chars().count() <= residuum_agent::HISTORY_RESULT_MAX_CHARS,
+                "timed out: {} characters",
+                partial.chars().count()
+            );
+        }
+    }
+
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        #[cfg(unix)]
+        {
+            std::os::unix::process::ExitStatusExt::from_raw(code << 8)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::process::ExitStatusExt::from_raw(u32::try_from(code).unwrap())
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_failing_command_with_mid_sized_stdout_keeps_its_end() {
+        let tool = ExecTool::new(None, None, None, workspace_root());
+        // About 60 KB of stdout: more than the cap, less than the capture's
+        // head and tail together.
+        let result = tool
+            .execute(serde_json::json!({ "command": "seq 1 11000; exit 1" }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .output
+                .starts_with("command exited with code 1\n1\n2\n"),
+            "{}",
+            result.output
+        );
+        assert!(result.output.contains("bytes of stdout omitted"));
+        assert!(
+            result.output.ends_with("\n10999\n11000\n"),
+            "stdout's end is kept: …{}",
+            result
+                .output
+                .get(result.output.len().saturating_sub(200)..)
+                .unwrap()
+        );
+        assert!(result.output.len() <= MAX_OUTPUT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn exec_large_output_is_cut_to_the_cap() {
+        let tool = ExecTool::new(None, None, None, workspace_root());
+        let command = if cfg!(windows) {
+            "powershell -NoProfile -Command \"'x' * 204800\""
+        } else {
+            "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
+        };
+        let result = tool
+            .execute(serde_json::json!({ "command": command }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "{}", result.output);
+        assert!(
+            result.output.contains("bytes of stdout omitted"),
+            "large output is cut with a note: output len = {}",
+            result.output.len()
+        );
+        assert!(
+            result.output.len() <= MAX_OUTPUT_BYTES,
+            "{}",
+            result.output.len()
         );
     }
 
