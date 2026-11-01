@@ -320,6 +320,8 @@ export function seedAgentData(state: MockState): void {
   state.hasConversation = true;
   state.usage = {
     input_tokens: 412_880,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
     output_tokens: 9_214,
     context_tokens: 18_402,
     tool_calls: 37,
@@ -411,7 +413,14 @@ export function createState(
       },
     ],
     extraRecent: [],
-    usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
+    usage: {
+      input_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 0,
+      context_tokens: null,
+      tool_calls: 0,
+    },
     dropSockets: () => {},
     broadcast: () => {},
     journalOnly: () => {},

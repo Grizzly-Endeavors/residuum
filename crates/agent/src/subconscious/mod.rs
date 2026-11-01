@@ -27,7 +27,9 @@ use residuum_config::{
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
     WorkspaceLayout,
 };
-use residuum_inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
+use residuum_inference::{
+    CompletionOptions, InferenceProvider, Message, ResponseFormat, UsageComponent, UsageRecorder,
+};
 
 /// The output limit of a subconscious evaluation, whose answer is a short
 /// list of findings.
@@ -355,11 +357,16 @@ impl Subconscious {
             ..CompletionOptions::default()
         };
 
-        let response = self
-            .provider
-            .complete(&messages, &[], &options)
-            .await
-            .context("subconscious LLM call failed")?;
+        let result = self.provider.complete(&messages, &[], &options).await;
+        UsageRecorder::new(&self.layout)
+            .record_call(
+                &UsageComponent::Subconscious,
+                None,
+                &*self.provider,
+                &result,
+            )
+            .await;
+        let response = result.context("subconscious LLM call failed")?;
         if response.was_truncated() && response.content.trim().is_empty() {
             // A reasoning model can spend the whole limit reasoning and
             // answer nothing; that is a failed evaluation, not a clean one.
@@ -472,6 +479,42 @@ mod tests {
             finding.instruction.contains("wiki"),
             "instruction should carry the corrective guidance"
         );
+    }
+
+    #[tokio::test]
+    async fn evaluate_records_its_model_call_as_subconscious_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let usage = residuum_inference::Usage {
+            uncached_input_tokens: Some(2_000),
+            output_tokens: Some(80),
+            ..residuum_inference::Usage::default()
+        };
+        let sub = Subconscious::new(
+            Box::new(MockMemoryProvider::new(ACT_RESPONSE).with_usage(usage)),
+            SubconsciousConfig {
+                enabled: true,
+                ..SubconsciousConfig::default()
+            },
+            layout.clone(),
+        );
+        sub.evaluate(&make_transcript(), EvalPhase::MidTurn, None)
+            .await
+            .unwrap();
+
+        let records = UsageRecorder::new(&layout)
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1, "one record for the one call");
+        let record = records.first().unwrap();
+        assert_eq!(record.component, UsageComponent::Subconscious);
+        assert_eq!(record.model, "mock-memory");
+        assert_eq!(record.usage, Some(usage));
     }
 
     #[tokio::test]

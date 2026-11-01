@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::attempt::{FailedRequest, record_attempt};
 use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
@@ -11,14 +12,14 @@ use crate::http::{
 };
 use crate::reply::{ReplyAssembler, plain_reasoning};
 use crate::stream::{Flow, TrackedSink, read_ndjson};
-use crate::types::current_exchange_start;
+use crate::types::{current_exchange_start, uncached_from_inclusive_prompt};
 use crate::with_retry;
 use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ResponseFormat, StopReason, StreamSink, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
 };
-use residuum_config::RetryConfig;
 use residuum_config::ThinkingConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 
 /// Ollama API client implementing the [`InferenceProvider`] trait.
 #[derive(Clone)]
@@ -175,12 +176,31 @@ impl OllamaClient {
         message_count = request.messages.len(),
         tool_count = request.tools.map_or(0, <[OllamaTool]>::len),
         streaming = sink.is_some(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = crate::gen_ai_span::provider_name(ProviderKind::Ollama),
+        gen_ai.request.model = %request.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
         request: &OllamaChatRequest<'_>,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(ProviderKind::Ollama, request.model, result)
+    }
+
+    /// Send one request and parse its response. Ollama reports usage only in
+    /// its final chunk, so a failure never follows reported usage.
+    async fn send_request(
+        &self,
+        request: &OllamaChatRequest<'_>,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         let timeout_secs = self.http.timeout_secs();
 
         debug!(
@@ -220,7 +240,7 @@ impl OllamaClient {
             );
             let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
                 .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
-            return Err(InferenceError::Api(error_msg));
+            return Err(InferenceError::Api(error_msg).into());
         }
 
         let resp = if let Some(sink) = sink {
@@ -573,20 +593,27 @@ struct OllamaStreamChunk {
 /// The token counts Ollama reports when a response is done.
 #[derive(Deserialize, Default, Clone, Copy)]
 struct TokenCounts {
-    #[serde(default)]
-    prompt_eval_count: Option<u32>,
-    #[serde(default)]
-    eval_count: Option<u32>,
+    /// The whole prompt, the part reused from the KV cache included.
+    #[serde(default, rename = "prompt_eval_count")]
+    prompt: Option<u32>,
+    /// The part of the prompt reused from the KV cache.
+    #[serde(default, rename = "prompt_eval_cached_count")]
+    cached: Option<u32>,
+    #[serde(default, rename = "eval_count")]
+    generated: Option<u32>,
 }
 
 impl TokenCounts {
     fn usage(self) -> Option<Usage> {
-        (self.prompt_eval_count.is_some() || self.eval_count.is_some()).then(|| Usage {
-            input_tokens: self.prompt_eval_count.unwrap_or(0),
-            output_tokens: self.eval_count.unwrap_or(0),
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
-        })
+        let usage = Usage {
+            uncached_input_tokens: uncached_from_inclusive_prompt(self.prompt, self.cached, None),
+            cache_read_tokens: self.cached,
+            cache_write_tokens: None,
+            cache_write_long_tokens: None,
+            output_tokens: self.generated,
+            reasoning_tokens: None,
+        };
+        (usage != Usage::default()).then_some(usage)
     }
 }
 
@@ -1147,7 +1174,7 @@ mod tests {
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1256,7 +1283,7 @@ mod tests {
 
         assert!(result.is_err(), "should return an error for 500");
         assert!(
-            matches!(result.unwrap_err(), InferenceError::Api(_)),
+            matches!(result.unwrap_err().underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
     }
@@ -1292,7 +1319,7 @@ mod tests {
         assert!(result.is_err(), "should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Timeout(1)),
+            matches!(err.underlying(), InferenceError::Timeout(1)),
             "should be a Timeout error with 1 second"
         );
         assert_eq!(
@@ -1747,7 +1774,7 @@ mod tests {
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1946,6 +1973,7 @@ mod tests {
             "done": true,
             "done_reason": "stop",
             "prompt_eval_count": 26,
+            "prompt_eval_cached_count": 20,
             "eval_count": 12
         }))
     }
@@ -1983,6 +2011,7 @@ mod tests {
             "done": true,
             "done_reason": "stop",
             "prompt_eval_count": 26,
+            "prompt_eval_cached_count": 20,
             "eval_count": 12
         })
     }
@@ -2043,10 +2072,9 @@ mod tests {
             vec!["call_0", "call_1"],
             "calls from different chunks get ids by position"
         );
-        let usage = streamed.usage.unwrap();
         assert_eq!(
-            (usage.input_tokens, usage.output_tokens),
-            (26, 12),
+            streamed.usage,
+            Some(full_usage()),
             "usage comes from the final line's counts"
         );
         assert_eq!(
@@ -2148,7 +2176,7 @@ mod tests {
         .await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending before `done` is an interrupted stream: {err:?}"
         );
     }
@@ -2162,7 +2190,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)),
             "a body cut off mid-stream is interrupted: {err:?}"
         );
         assert_eq!(sink.text(), "", "the partial answer is voided");
@@ -2178,7 +2206,7 @@ mod tests {
         let (result, _, _) = stream_from(ndjson_response(&[stream]), plain_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Api(m) if m.contains("unexpectedly stopped")),
+            matches!(err.underlying(), InferenceError::Api(m) if m.contains("unexpectedly stopped")),
             "the server's message is kept: {err:?}"
         );
     }
@@ -2192,7 +2220,7 @@ mod tests {
         let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
     }
@@ -2286,11 +2314,49 @@ mod tests {
             .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        let usage = response.usage.unwrap();
         assert_eq!(
-            (usage.input_tokens, usage.output_tokens),
-            (26, 12),
+            response.usage,
+            Some(full_usage()),
             "complete reports usage too"
+        );
+    }
+
+    /// The fixtures' counts: 20 of the 26 prompt tokens came from the KV
+    /// cache.
+    fn full_usage() -> Usage {
+        Usage {
+            uncached_input_tokens: Some(6),
+            cache_read_tokens: Some(20),
+            output_tokens: Some(12),
+            ..Usage::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_counts_stay_unknown() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "m",
+                "message": {"role": "assistant", "content": "ok"},
+                "done": true,
+                "done_reason": "stop",
+                "eval_count": 2
+            })))
+            .mount(&server)
+            .await;
+        let response = make_client(server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.usage,
+            Some(Usage {
+                output_tokens: Some(2),
+                ..Usage::default()
+            }),
+            "a missing prompt count is unknown, not zero"
         );
     }
 }

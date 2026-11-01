@@ -312,4 +312,42 @@ mod tests {
 
         assert!(HubConfig::load_at(dir.path()).is_err());
     }
+
+    #[test]
+    fn load_at_reads_the_pricing_table() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[pricing.\"openai/gpt-4o\"]\ninput = 2.5\noutput = 10.0\ncache_read = 1.25\ncache_write = 2.5\ncache_write_long = 2.5\n",
+        )
+        .unwrap();
+
+        let cfg = HubConfig::load_at(dir.path()).unwrap();
+
+        assert_eq!(
+            cfg.pricing.get("openai/gpt-4o").map(|p| p.cache_read),
+            Some(1.25)
+        );
+    }
+
+    #[test]
+    fn load_at_drops_a_negative_price_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[pricing.\"openai/gpt-4o\"]\ninput = -2.5\noutput = 10.0\ncache_read = 1.25\ncache_write = 2.5\ncache_write_long = 2.5\n",
+        )
+        .unwrap();
+
+        let cfg = HubConfig::load_at(dir.path()).unwrap();
+
+        assert!(cfg.pricing.is_empty(), "the negative price is not loaded");
+        assert!(
+            cfg.load_notices
+                .iter()
+                .any(|n| n.contains("[pricing] \"openai/gpt-4o\" input")),
+            "the user is told which rate was dropped: {:?}",
+            cfg.load_notices
+        );
+    }
 }

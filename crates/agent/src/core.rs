@@ -79,10 +79,6 @@ pub struct Agent {
     /// [`Self::restore_usage_totals`]); never read by the agent itself —
     /// see `docs/systems-usage/turn-control.md`.
     usage_totals: std::sync::Arc<tokio::sync::Mutex<SessionUsageTotals>>,
-    /// Where `usage_totals` is persisted after every model call. `None`
-    /// for an agent with no workspace layout (test constructors) — totals
-    /// then live only in memory for the process's lifetime.
-    usage_totals_path: Option<std::path::PathBuf>,
     /// The latest turn, while it is the latest and it failed. Set when a
     /// turn fails; cleared when another turn starts, when a rerun of it
     /// starts, and when history is cleared or rotated (the message the
@@ -155,10 +151,6 @@ impl Agent {
         config: AgentConfig,
         hop_counter: HopCounter,
     ) -> Self {
-        let usage_totals_path = config
-            .layout
-            .as_ref()
-            .map(residuum_config::WorkspaceLayout::usage_totals_json);
         Self {
             provider,
             tools,
@@ -178,7 +170,6 @@ impl Agent {
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
                 SessionUsageTotals::default(),
             )),
-            usage_totals_path,
             failed_turn: None,
         }
     }
@@ -549,7 +540,7 @@ impl Agent {
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
         let usage_sink = MainUsageSink::new(
             std::sync::Arc::clone(&self.usage_totals),
-            self.usage_totals_path.clone(),
+            self.layout.as_ref(),
         );
         let mut options = self.options.clone();
         options.cache.retention = retention;
@@ -875,29 +866,29 @@ mod tests {
                 content: "first".to_string(),
                 tool_calls: vec![],
                 usage: Some(residuum_inference::Usage {
-                    input_tokens: 100,
-                    output_tokens: 20,
-                    cache_creation_tokens: None,
-                    cache_read_tokens: None,
+                    uncached_input_tokens: Some(100),
+                    output_tokens: Some(20),
+                    ..Default::default()
                 }),
                 thinking: Vec::new(),
                 stop_reason: None,
                 images_omitted: None,
                 thinking_dropped: 0,
+                attempts: Vec::new(),
             },
             InferenceResponse {
                 content: "second".to_string(),
                 tool_calls: vec![],
                 usage: Some(residuum_inference::Usage {
-                    input_tokens: 150,
-                    output_tokens: 30,
-                    cache_creation_tokens: None,
-                    cache_read_tokens: None,
+                    uncached_input_tokens: Some(150),
+                    output_tokens: Some(30),
+                    ..Default::default()
                 }),
                 thinking: Vec::new(),
                 stop_reason: None,
                 images_omitted: None,
                 thinking_dropped: 0,
+                attempts: Vec::new(),
             },
         ]);
 
@@ -965,10 +956,9 @@ mod tests {
 
         let mut restored = SessionUsageTotals::default();
         restored.accumulate(Some(residuum_inference::Usage {
-            input_tokens: 500,
-            output_tokens: 90,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(500),
+            output_tokens: Some(90),
+            ..Default::default()
         }));
         agent.restore_usage_totals(restored).await;
 

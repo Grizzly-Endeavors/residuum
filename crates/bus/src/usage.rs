@@ -15,17 +15,34 @@ use residuum_inference::Usage;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionUsageTotals {
-    /// Prompt tokens sent across every model call this session has made.
+    /// Input tokens sent across the answering request of every model call
+    /// this session has made, counting every prompt whole: uncached input,
+    /// cache reads and cache writes together ([`Usage::total_input_tokens`]).
+    /// The uncached part is this minus `cache_read_tokens` and
+    /// `cache_write_tokens`.
     #[ts(type = "number")]
     pub input_tokens: u64,
-    /// Completion tokens generated across every model call this session
-    /// has made.
+    /// The part of `input_tokens` read from the prompt cache.
+    ///
+    /// `#[serde(default)]` so a totals file or run record persisted before
+    /// this field existed still deserializes, showing zero.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_read_tokens: u64,
+    /// The part of `input_tokens` written to the prompt cache.
+    ///
+    /// `#[serde(default)]` for the same reason as `cache_read_tokens`.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_write_tokens: u64,
+    /// Output tokens generated across every model call this session has
+    /// made, reasoning included.
     #[ts(type = "number")]
     pub output_tokens: u64,
-    /// Context size at the most recent model call: that call's input
-    /// tokens plus its cache reads/writes — the actual token count the
+    /// Context size at the most recent model call that reported its input:
+    /// that call's whole prompt, cached or not — the token count the
     /// provider processed as context, not an estimate. `None` until the
-    /// first call that reports usage. There is no per-model context-window
+    /// first call that reports input. There is no per-model context-window
     /// size known to the codebase, so this is shown as an absolute count
     /// rather than a percentage.
     pub context_tokens: Option<u32>,
@@ -42,19 +59,21 @@ pub struct SessionUsageTotals {
 }
 
 impl SessionUsageTotals {
-    /// Fold one model call's usage into these running totals. A `None`
-    /// usage (a provider that didn't report any) leaves them unchanged.
+    /// Fold one model call's usage into these running totals. A count the
+    /// provider didn't report adds nothing, and a `None` usage leaves the
+    /// totals unchanged.
     pub fn accumulate(&mut self, usage: Option<Usage>) {
         let Some(usage) = usage else {
             return;
         };
-        self.input_tokens += u64::from(usage.input_tokens);
-        self.output_tokens += u64::from(usage.output_tokens);
-        self.context_tokens = Some(
-            usage.input_tokens
-                + usage.cache_creation_tokens.unwrap_or(0)
-                + usage.cache_read_tokens.unwrap_or(0),
-        );
+        let total_input = usage.total_input_tokens();
+        self.input_tokens += u64::from(total_input.unwrap_or(0));
+        self.cache_read_tokens += u64::from(usage.cache_read_tokens.unwrap_or(0));
+        self.cache_write_tokens += u64::from(usage.cache_write_tokens.unwrap_or(0));
+        self.output_tokens += u64::from(usage.output_tokens.unwrap_or(0));
+        if total_input.is_some() {
+            self.context_tokens = total_input;
+        }
     }
 
     /// Fold `n` more executed tool calls into these running totals.
@@ -69,10 +88,9 @@ mod tests {
 
     fn usage(input: u32, output: u32) -> Usage {
         Usage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(input),
+            output_tokens: Some(output),
+            ..Usage::default()
         }
     }
 
@@ -89,10 +107,11 @@ mod tests {
     fn session_usage_totals_context_tokens_is_the_latest_calls_full_context() {
         let mut totals = SessionUsageTotals::default();
         totals.accumulate(Some(Usage {
-            input_tokens: 100,
-            output_tokens: 20,
-            cache_creation_tokens: Some(10),
+            uncached_input_tokens: Some(100),
             cache_read_tokens: Some(5),
+            cache_write_tokens: Some(10),
+            output_tokens: Some(20),
+            ..Usage::default()
         }));
         assert_eq!(totals.context_tokens, Some(115));
         totals.accumulate(Some(usage(40, 10)));
@@ -101,6 +120,73 @@ mod tests {
             Some(40),
             "context size reflects only the most recent call, not a running sum"
         );
+    }
+
+    /// The same 10,000-token prompt with 9,000 tokens read from the cache,
+    /// as an OpenAI-shaped and an Anthropic-shaped provider report it once
+    /// normalized: `OpenAI`'s `prompt_tokens` counted the cache, Anthropic's
+    /// `input_tokens` did not.
+    #[test]
+    fn session_usage_totals_count_a_prompt_the_same_for_every_provider_shape() {
+        let openai_shaped = Usage {
+            uncached_input_tokens: Some(1_000),
+            cache_read_tokens: Some(9_000),
+            cache_write_tokens: None,
+            output_tokens: Some(50),
+            ..Usage::default()
+        };
+        let anthropic_shaped = Usage {
+            uncached_input_tokens: Some(1_000),
+            cache_read_tokens: Some(9_000),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(50),
+            ..Usage::default()
+        };
+        let mut openai = SessionUsageTotals::default();
+        openai.accumulate(Some(openai_shaped));
+        let mut anthropic = SessionUsageTotals::default();
+        anthropic.accumulate(Some(anthropic_shaped));
+        assert_eq!(openai.context_tokens, Some(10_000));
+        assert_eq!(
+            openai, anthropic,
+            "a cache hit is counted once, whichever way the provider reported it"
+        );
+        assert_eq!(openai.input_tokens, 10_000);
+        assert_eq!(openai.cache_read_tokens, 9_000);
+    }
+
+    #[test]
+    fn session_usage_totals_keep_the_last_known_context_when_a_call_reports_no_input() {
+        let mut totals = SessionUsageTotals::default();
+        totals.accumulate(Some(usage(100, 20)));
+        totals.accumulate(Some(Usage {
+            output_tokens: Some(7),
+            ..Usage::default()
+        }));
+        assert_eq!(
+            totals.context_tokens,
+            Some(100),
+            "an unknown input count is not a context of zero"
+        );
+        assert_eq!(totals.input_tokens, 100, "an unknown count adds nothing");
+        assert_eq!(totals.output_tokens, 27);
+    }
+
+    #[test]
+    fn session_usage_totals_accumulate_cache_reads_and_writes() {
+        let mut totals = SessionUsageTotals::default();
+        let call = Usage {
+            uncached_input_tokens: Some(10),
+            cache_read_tokens: Some(300),
+            cache_write_tokens: Some(40),
+            output_tokens: Some(5),
+            ..Usage::default()
+        };
+        totals.accumulate(Some(call));
+        totals.accumulate(Some(call));
+        assert_eq!(totals.cache_read_tokens, 600);
+        assert_eq!(totals.cache_write_tokens, 80);
+        assert_eq!(totals.input_tokens, 700);
     }
 
     #[test]
@@ -135,6 +221,11 @@ mod tests {
         assert_eq!(
             totals.tool_calls, 0,
             "a payload persisted before tool_calls existed should default to zero, not fail to parse"
+        );
+        assert_eq!(
+            (totals.cache_read_tokens, totals.cache_write_tokens),
+            (0, 0),
+            "a payload persisted before the cache totals existed loads with them at zero"
         );
     }
 }

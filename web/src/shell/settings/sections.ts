@@ -23,6 +23,7 @@ import ListenerSection from "./ListenerSection.svelte";
 import Memory from "./Memory.svelte";
 import ModelSection from "./ModelSection.svelte";
 import NotificationsSection from "./NotificationsSection.svelte";
+import PricingSection from "./PricingSection.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
@@ -67,6 +68,7 @@ export const ALL_SECTION_VIEWS: Record<AllSectionId, Component<AllSectionProps>>
   system_one: SystemOneSection,
   updates: UpdatesSection,
   limits: LimitsSection,
+  pricing: PricingSection,
   listener: ListenerSection,
   diagnostics: DiagnosticsSection,
   raw: RawConfig,

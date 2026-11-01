@@ -473,10 +473,11 @@ pub struct TurnResources<'a> {
     /// persists the transcript some other way (the main agent).
     pub transcript_sink: Option<&'a dyn TranscriptSink>,
     /// Durable session-level usage totals to accumulate this turn's model
-    /// calls into, for the web UI's conversation size. `None` for a turn that
-    /// doesn't track them (tests, and any turn kind that never surfaces to
-    /// a web client). The per-turn progress the activity line shows publishes
-    /// regardless of whether this is set.
+    /// calls into, for the web UI's conversation size, and where each call's
+    /// usage records go. `None` for a turn that doesn't track them (tests,
+    /// and any turn kind that never surfaces to a web client). The per-turn
+    /// progress the activity line shows publishes regardless of whether this
+    /// is set.
     pub usage_sink: Option<&'a dyn UsageSink>,
     /// This turn's current hop count: set by the caller to the kickoff
     /// input's hop count before the turn starts, and raised here whenever an
@@ -663,7 +664,7 @@ async fn push_and_record_many(
 enum ModelCall {
     /// The call returned a response.
     Completed {
-        response: InferenceResponse,
+        response: Box<InferenceResponse>,
         /// Whether text or reasoning streamed to the main conversation while
         /// the call ran and has not been voided since: when the response
         /// turns out to be one the turn discards, it must void them.
@@ -809,10 +810,15 @@ async fn call_model(
 
     match outcome {
         None => Ok(ModelCall::Stopped),
-        Some(result) => Ok(ModelCall::Completed {
-            response: result.context("model completion failed")?,
-            streamed,
-        }),
+        Some(result) => {
+            if let Some(usage_sink) = resources.usage_sink {
+                usage_sink.record_call(resources.provider, &result).await;
+            }
+            Ok(ModelCall::Completed {
+                response: Box::new(result.context("model completion failed")?),
+                streamed,
+            })
+        }
     }
 }
 
@@ -919,7 +925,7 @@ async fn request_model_response(
     recent_messages.watch_request(&request, call > 0);
 
     match call_model(resources, events, &request, call).await? {
-        ModelCall::Completed { response, streamed } => Ok(Some((response, streamed))),
+        ModelCall::Completed { response, streamed } => Ok(Some((*response, streamed))),
         ModelCall::Stopped => {
             tracing::info!(iterations = call, "turn stopped by user during model call");
             record_stop(recent_messages, resources).await;
@@ -1802,10 +1808,12 @@ async fn stop_repeated_tool_call(
 fn log_usage(response: &InferenceResponse) {
     if let Some(usage) = response.usage {
         tracing::debug!(
-            input_tokens = usage.input_tokens,
-            output_tokens = usage.output_tokens,
-            cache_creation_tokens = usage.cache_creation_tokens,
+            uncached_input_tokens = usage.uncached_input_tokens,
             cache_read_tokens = usage.cache_read_tokens,
+            cache_write_tokens = usage.cache_write_tokens,
+            cache_write_long_tokens = usage.cache_write_long_tokens,
+            output_tokens = usage.output_tokens,
+            reasoning_tokens = usage.reasoning_tokens,
             "token usage"
         );
     } else {
@@ -2850,6 +2858,7 @@ done
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        let usage_dir = tempfile::tempdir().unwrap();
         let server = MockServer::start().await;
         if let Some(p) = probability {
             Mock::given(method("POST"))
@@ -2885,6 +2894,9 @@ done
                 threshold: 0.5,
             },
             service,
+            residuum_inference::UsageRecorder::new(&residuum_config::WorkspaceLayout::new(
+                usage_dir.path(),
+            )),
         );
 
         let runs = Arc::new(AtomicUsize::new(0));
@@ -3267,6 +3279,8 @@ done
         calls: StdMutex<Vec<Option<residuum_inference::Usage>>>,
         tool_call_batches: StdMutex<Vec<u32>>,
         totals_to_return: StdMutex<Vec<SessionUsageTotals>>,
+        /// Each recorded model call: the provider's model and whether it answered.
+        recorded_calls: StdMutex<Vec<(String, bool)>>,
     }
 
     impl MockUsageSink {
@@ -3275,6 +3289,7 @@ done
                 calls: StdMutex::new(Vec::new()),
                 tool_call_batches: StdMutex::new(Vec::new()),
                 totals_to_return: StdMutex::new(totals_to_return),
+                recorded_calls: StdMutex::new(Vec::new()),
             }
         }
 
@@ -3290,6 +3305,17 @@ done
 
     #[async_trait]
     impl UsageSink for MockUsageSink {
+        async fn record_call(
+            &self,
+            provider: &dyn InferenceProvider,
+            result: &Result<InferenceResponse, residuum_inference::InferenceError>,
+        ) {
+            self.recorded_calls
+                .lock()
+                .unwrap()
+                .push((provider.model_name().to_string(), result.is_ok()));
+        }
+
         async fn accumulate(&self, usage: Option<residuum_inference::Usage>) -> SessionUsageTotals {
             self.calls.lock().unwrap().push(usage);
             self.next_totals()
@@ -3303,10 +3329,9 @@ done
 
     fn usage(input: u32, output: u32) -> residuum_inference::Usage {
         residuum_inference::Usage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(input),
+            output_tokens: Some(output),
+            ..Default::default()
         }
     }
 
@@ -3720,6 +3745,96 @@ done
         assert!(
             sink.tool_call_batches.lock().unwrap().is_empty(),
             "the sink's tool-call path should never be reached when no tools ran"
+        );
+        assert_eq!(
+            *sink.recorded_calls.lock().unwrap(),
+            vec![(provider.model_name().to_string(), true)],
+            "the turn's one model call is recorded"
+        );
+    }
+
+    /// Fails every call, as a provider that's down does.
+    struct FailingProvider;
+
+    #[async_trait]
+    impl InferenceProvider for FailingProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, residuum_inference::InferenceError> {
+            Err(residuum_inference::InferenceError::Api(
+                "503 overloaded".to_string(),
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "failing"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_model_call_is_recorded_before_the_turn_fails() {
+        let provider = FailingProvider;
+        let tools = ToolRegistry::new();
+        let mcp_registry = residuum_mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: Some(&sink),
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = residuum_bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Endpoint {
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let memory_ctx = MemoryContext {
+            observations: None,
+            recent_context: None,
+        };
+        let prompt_ctx = PromptContext::default();
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("go"));
+
+        let result = execute_turn(
+            recent.len() - 1,
+            &resources,
+            &memory_ctx,
+            &prompt_ctx,
+            &mut recent,
+            &events,
+            None,
+            &mut interrupt_rx,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "the turn fails with its model call");
+        assert_eq!(
+            *sink.recorded_calls.lock().unwrap(),
+            vec![("failing".to_string(), false)],
+            "the failed call is still recorded"
         );
     }
 

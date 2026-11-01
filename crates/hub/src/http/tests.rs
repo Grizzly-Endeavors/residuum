@@ -26,8 +26,9 @@ use crate::agent_watch::AgentChangeFeed;
 use crate::overview::{OverviewTracker, TeamOverview};
 use crate::team_events::TeamEventLog;
 use crate::web::{
-    AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
+    AgentFilesState, CheckpointAccess, ConfigApiState, UsageState, WorkspaceScope,
     agent_files_api_router as agent_files_router, agent_repair_api_router,
+    agent_usage_api_router as agent_usage_router,
 };
 use crate::{
     AgentActivity, AgentDirectory, AgentFiles, AgentPatch, DeletedAgent, HubEvent,
@@ -45,6 +46,7 @@ use residuum_checkpoints::CheckpointError;
 use residuum_config::WorkspaceLayout;
 use residuum_config::paths::TeamPaths;
 use residuum_core::testing::wait;
+use residuum_inference::{PriceTable, UsageRecorder};
 use residuum_net::tunnel::TunnelStatus;
 use residuum_workspace::team_files::TeamWriteCoordinator;
 use residuum_workspace::watch::WatchHealth;
@@ -58,6 +60,7 @@ mod pairing;
 mod push;
 mod session_relay;
 mod uploads;
+mod usage;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
@@ -348,6 +351,10 @@ impl AgentDirectory for FakeDirectory {
         let opens = Arc::clone(&self.checkpoint_opens);
         let unopenable = Arc::clone(&self.checkpoints_unopenable);
         let config = self.config_state(name, false);
+        let usage = UsageState {
+            recorder: UsageRecorder::new(&WorkspaceLayout::new(self.root.join(name))),
+            prices: Arc::new(PriceTable::new(&std::collections::BTreeMap::new())),
+        };
         Ok(agent_files_router(AgentFilesState {
             checkpoints: CheckpointAccess::lazy(move || {
                 opens.fetch_add(1, Ordering::SeqCst);
@@ -360,7 +367,8 @@ impl AgentDirectory for FakeDirectory {
                 }
             }),
             ..AgentFilesState::running(&config, self.file_registry(name))
-        }))
+        })
+        .merge(agent_usage_router(usage)))
     }
 
     fn agent_files(&self, name: &str) -> Result<AgentFiles, LifecycleError> {
@@ -1256,10 +1264,9 @@ async fn chat_history_and_usage_are_served_from_disk_in_every_agent_state() {
     h.add_failed_agent();
     let mut totals = residuum_bus::usage::SessionUsageTotals::default();
     totals.accumulate(Some(residuum_inference::Usage {
-        input_tokens: 300,
-        output_tokens: 60,
-        cache_creation_tokens: None,
-        cache_read_tokens: None,
+        uncached_input_tokens: Some(300),
+        output_tokens: Some(60),
+        ..Default::default()
     }));
 
     for name in EVERY_STATE {

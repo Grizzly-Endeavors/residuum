@@ -582,17 +582,88 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value,
 }
 
-/// Token usage information from a model response.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Token usage of one model response, normalized so every provider means the
+/// same thing by each field.
+///
+/// The three input parts are disjoint and together make up the whole prompt.
+/// `None` always means the provider did not report the number, never zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-    /// Number of input/prompt tokens consumed.
-    pub input_tokens: u32,
-    /// Number of output/completion tokens generated.
-    pub output_tokens: u32,
-    /// Tokens written to the prompt cache (Anthropic-specific).
-    pub cache_creation_tokens: Option<u32>,
-    /// Tokens read from the prompt cache.
+    /// Input tokens billed at the full input rate: neither read from nor written to the prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncached_input_tokens: Option<u32>,
+    /// Input tokens read from the prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u32>,
+    /// Input tokens written to the prompt cache, all TTLs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u32>,
+    /// The part of `cache_write_tokens` written with a long (1 hour) TTL, when the provider reports the split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_long_tokens: Option<u32>,
+    /// Output tokens generated, reasoning included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+    /// The part of `output_tokens` spent on reasoning, when reported separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
+}
+
+impl Usage {
+    /// The whole prompt: uncached input plus cache reads plus cache writes.
+    ///
+    /// `None` only when the provider reported none of the three parts.
+    #[must_use]
+    pub fn total_input_tokens(&self) -> Option<u32> {
+        [
+            self.uncached_input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(u32::saturating_add)
+    }
+}
+
+/// Uncached input for providers whose prompt count includes the cached part:
+/// the prompt minus cache reads and writes, `None` when the prompt count is
+/// missing.
+pub(crate) fn uncached_from_inclusive_prompt(
+    prompt_tokens: Option<u32>,
+    cache_read_tokens: Option<u32>,
+    cache_write_tokens: Option<u32>,
+) -> Option<u32> {
+    prompt_tokens.map(|prompt| {
+        prompt
+            .saturating_sub(cache_read_tokens.unwrap_or(0))
+            .saturating_sub(cache_write_tokens.unwrap_or(0))
+    })
+}
+
+/// One request a model call sent: who served it, how it ended, and what the
+/// provider reported it spent. A retried or failed-over call makes several.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptUsage {
+    /// Provider kind that served the attempt (e.g. "anthropic", "openai", "fireworks", "gemini", "ollama").
+    pub provider: String,
+    /// Model id the attempt was sent to.
+    pub model: String,
+    /// Whether the attempt produced the call's response.
+    pub outcome: AttemptOutcome,
+    /// What the provider reported for this attempt; None when it reported nothing.
+    pub usage: Option<Usage>,
+}
+
+/// How one attempt of a model call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptOutcome {
+    /// The attempt produced the call's response.
+    Succeeded,
+    /// The attempt failed: an error status, a broken stream, or a response
+    /// that could not be used.
+    Failed,
 }
 
 /// Why a model response ended, normalized across providers. Each provider
@@ -637,6 +708,10 @@ pub struct InferenceResponse {
     /// changed (Anthropic's `thinking_dropped` input transformation). The
     /// model answered without that reasoning.
     pub thinking_dropped: usize,
+    /// Every request this call sent, in order; the last is the one that
+    /// produced this response, and `usage` is its usage. Empty for a provider
+    /// that sends no request of its own.
+    pub attempts: Vec<AttemptUsage>,
 }
 
 impl InferenceResponse {
@@ -651,7 +726,15 @@ impl InferenceResponse {
             stop_reason: None,
             images_omitted: None,
             thinking_dropped: 0,
+            attempts: Vec::new(),
         }
+    }
+
+    /// The provider and model that produced this response: the last
+    /// attempt's. `None` for a response no provider request produced.
+    #[must_use]
+    pub fn answered_by(&self) -> Option<&AttemptUsage> {
+        self.attempts.last()
     }
 
     /// This response with every thinking block recorded as produced at
@@ -840,13 +923,58 @@ pub trait InferenceProvider: Send + Sync {
         true
     }
 
-    /// Get the model identifier.
+    /// The model this provider is configured for. A chain that fails over
+    /// keeps naming its primary; the model that answered a call is the last
+    /// of its response's [`InferenceResponse::attempts`].
     fn model_name(&self) -> &str;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn total_input_sums_the_reported_parts() {
+        let usage = Usage {
+            uncached_input_tokens: Some(10),
+            cache_read_tokens: Some(200),
+            cache_write_tokens: Some(30),
+            ..Usage::default()
+        };
+        assert_eq!(usage.total_input_tokens(), Some(240));
+        let only_read = Usage {
+            cache_read_tokens: Some(5),
+            ..Usage::default()
+        };
+        assert_eq!(
+            only_read.total_input_tokens(),
+            Some(5),
+            "missing parts count as absent, not as unknown totals"
+        );
+        assert_eq!(
+            Usage::default().total_input_tokens(),
+            None,
+            "nothing reported means the total is unknown"
+        );
+    }
+
+    #[test]
+    fn uncached_from_inclusive_prompt_subtracts_cache_and_saturates() {
+        assert_eq!(
+            uncached_from_inclusive_prompt(Some(100), Some(30), Some(20)),
+            Some(50)
+        );
+        assert_eq!(
+            uncached_from_inclusive_prompt(Some(100), None, None),
+            Some(100)
+        );
+        assert_eq!(
+            uncached_from_inclusive_prompt(Some(10), Some(30), None),
+            Some(0),
+            "an inconsistent report saturates instead of wrapping"
+        );
+        assert_eq!(uncached_from_inclusive_prompt(None, Some(30), None), None);
+    }
 
     fn jane_in_channel() -> MessageSender {
         MessageSender {

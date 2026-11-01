@@ -836,10 +836,9 @@ mod tests {
 
         let mut totals = residuum_bus::usage::SessionUsageTotals::default();
         totals.accumulate(Some(residuum_inference::Usage {
-            input_tokens: 100,
-            output_tokens: 20,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(100),
+            output_tokens: Some(20),
+            ..Default::default()
         }));
 
         publish_main(

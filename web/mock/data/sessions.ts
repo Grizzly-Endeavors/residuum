@@ -51,7 +51,14 @@ export function untrackedRunFields(): Pick<
   "usage" | "outcome" | "error" | "error_details" | "overlap" | "model" | "resolved_model"
 > {
   return {
-    usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
+    usage: {
+      input_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      output_tokens: 0,
+      context_tokens: null,
+      tool_calls: 0,
+    },
     outcome: null,
     error: null,
     error_details: null,
