@@ -7,14 +7,16 @@
 //! `<agent>/config/config.toml` (everything else). `ProvidersFile` is always
 //! agent-scoped.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
+
+use super::hub_types::ModelPrice;
 
 /// Raw TOML hub config file structure (`hub/config.toml`), deserialized
 /// directly. Hub-level: the timezone, gateway bind/port, cloud tunnel, the
 /// A2A listener's enablement/port/public URL, tracing, Web Push, and the
-/// shared background session budget and hop limits.
+/// shared background session budget and hop limits, and per-model prices.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HubConfigFile {
@@ -34,6 +36,8 @@ pub struct HubConfigFile {
     pub(super) push: Option<HubPushConfigFile>,
     /// The System 1 (decision model) provider every agent shares.
     pub(super) system_one: Option<SystemOneConfigFile>,
+    /// Per-model price overrides, keyed `provider/model`.
+    pub(super) pricing: Option<BTreeMap<String, ModelPrice>>,
 }
 
 /// Raw TOML `[system_one]` section in `hub/config.toml`.
