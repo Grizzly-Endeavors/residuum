@@ -670,7 +670,7 @@ mod tests {
         };
         let line = serde_json::to_vec(&torn_record).unwrap();
         let cut = line.iter().position(|byte| *byte == 0xC3).unwrap() + 1;
-        let torn = line.get(..cut).unwrap();
+        let (torn, _) = line.split_at(cut);
 
         let path = WorkspaceLayout::new(dir.path())
             .usage_records_dir()
