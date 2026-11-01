@@ -512,7 +512,7 @@ mod tests {
         );
         assert_eq!(
             breakdown.mcp_tool_tokens,
-            estimate_tool_tokens(request.tools.get(1).unwrap())
+            estimate_tool_tokens(request.tools.get(1).expect("the MCP tool is second"))
         );
     }
 
