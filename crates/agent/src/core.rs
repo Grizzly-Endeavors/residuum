@@ -657,6 +657,7 @@ fn turn_cache_retention(origin: Option<&MessageOrigin>) -> CacheRetention {
 )]
 mod tests {
     use super::*;
+    use crate::context::SkillsContext;
     use crate::testing::{CountingTool, EchoTool};
     use async_trait::async_trait;
     use residuum_inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
@@ -2791,6 +2792,80 @@ mod tests {
             &first_request,
             &restored_request,
             "the restored history replays the first turn's request",
+        );
+    }
+
+    /// Run one turn of `agent` with `skills_index` as its skills listing,
+    /// which is part of the system prompt.
+    async fn turn_with_skills(agent: &mut Agent, skills_index: Option<&str>) {
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+        let prompt_ctx = PromptContext {
+            skills: SkillsContext {
+                index: skills_index,
+                active_instructions: None,
+            },
+        };
+        agent
+            .process_message(
+                "hi",
+                &publisher,
+                Some(&ep),
+                "",
+                Some(&web_origin()),
+                &prompt_ctx,
+                &mut irx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_system_prompt_change_between_turns_logs_a_cache_break_once_at_info() {
+        let log = residuum_core::testing::log::EventLog::default();
+        let _capture = log.capture();
+        let (mut agent, _requests) = scripted_agent(vec![
+            Ok(reply("one")),
+            Ok(reply("two")),
+            Ok(reply("three")),
+            Ok(reply("four")),
+        ]);
+
+        turn_with_skills(&mut agent, None).await;
+        turn_with_skills(&mut agent, None).await;
+        assert!(
+            log.matching("prompt cache prefix changed").is_empty(),
+            "a turn whose earlier parts repeat logs no cache break"
+        );
+
+        turn_with_skills(&mut agent, Some("<skill name=\"a\"/>")).await;
+        turn_with_skills(&mut agent, Some("<skill name=\"b\"/>")).await;
+
+        let breaks = log.matching("prompt cache prefix changed");
+        let [first, second] = breaks.as_slice() else {
+            panic!("expected one break per skills change, got {breaks:?}");
+        };
+        assert_eq!(
+            first.level,
+            tracing::Level::INFO,
+            "the first system change between turns logs at info: {first:?}"
+        );
+        assert!(
+            first.text.contains("cause=\"system_changed\"")
+                && first.text.contains("part=\"system\""),
+            "the break names the system prompt as the changed part: {first:?}"
+        );
+        assert_eq!(
+            second.level,
+            tracing::Level::DEBUG,
+            "a repeat of the same cause logs at debug: {second:?}"
+        );
+        assert!(
+            second.text.contains("cause=\"system_changed\""),
+            "the repeat has the same cause: {second:?}"
         );
     }
 }
