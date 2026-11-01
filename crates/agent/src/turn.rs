@@ -1884,16 +1884,21 @@ mod tests {
         );
     }
 
-    /// The tool list and system prompt a request sends, as JSON, with the
-    /// echo tool built in and MCP servers connected in the order given.
-    async fn sent_with_mcp_servers(registry: &SharedMcpRegistry) -> (String, String) {
+    /// The request a turn sends with the echo tool built in and `registry`'s
+    /// MCP servers.
+    async fn request_with_mcp_servers(registry: &SharedMcpRegistry) -> ModelRequest {
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(crate::testing::EchoTool));
         let inputs = crate::testing::RequestInputs {
             mcp: Some(Arc::clone(registry)),
             ..crate::testing::RequestInputs::default()
         };
-        let request = crate::testing::render_model_request(&inputs, &tools).await;
+        crate::testing::render_model_request(&inputs, &tools).await
+    }
+
+    /// The bytes a provider caches on in `request`: its tool list and its
+    /// system prompt.
+    fn cached_bytes(request: &ModelRequest) -> (String, String) {
         (
             serde_json::to_string(&request.tools).unwrap(),
             serde_json::to_string(request.messages.first().unwrap()).unwrap(),
@@ -1923,15 +1928,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_servers_connected_in_either_order_send_the_same_request_prefix() {
-        let zeta_first =
-            connect_in_order(&[("zeta", &["z_lookup"]), ("alpha", &["a_search", "a_fetch"])]).await;
-        let alpha_first =
-            connect_in_order(&[("alpha", &["a_search", "a_fetch"]), ("zeta", &["z_lookup"])]).await;
+    async fn mcp_tools_reach_the_request_grouped_by_server_in_name_order() {
+        // Five servers, so an order that depends on hashing rather than on
+        // names fails almost surely: two random orders of five agree once in
+        // 120 times. The tools are named so that a sort over all of them
+        // would interleave the servers, which the explicit order rules out.
+        let zeta_first = connect_in_order(&[
+            ("zeta", &["page", "annotate"]),
+            ("bravo", &["ping", "count"]),
+            ("mike", &["list"]),
+            ("alpha", &["search", "fetch"]),
+            ("delta", &["lookup"]),
+        ])
+        .await;
+        let mike_first = connect_in_order(&[
+            ("mike", &["list"]),
+            ("delta", &["lookup"]),
+            ("zeta", &["page", "annotate"]),
+            ("alpha", &["search", "fetch"]),
+            ("bravo", &["ping", "count"]),
+        ])
+        .await;
 
+        let request = request_with_mcp_servers(&zeta_first).await;
+        let names: Vec<&str> = request.tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
-            sent_with_mcp_servers(&zeta_first).await,
-            sent_with_mcp_servers(&alpha_first).await,
+            names,
+            [
+                "echo", "fetch", "search", "count", "ping", "lookup", "list", "annotate", "page",
+            ],
+            "the built-in tool first, then each server's tools in name order, servers in name order"
+        );
+        assert_eq!(
+            cached_bytes(&request),
+            cached_bytes(&request_with_mcp_servers(&mike_first).await),
             "the tools and system prompt don't depend on the order servers connected in"
         );
     }
@@ -1939,7 +1969,7 @@ mod tests {
     #[tokio::test]
     async fn an_mcp_server_reconnecting_unchanged_leaves_the_request_prefix_alone() {
         let registry = connect_in_order(&[("alpha", &["a_search"]), ("zeta", &["z_lookup"])]).await;
-        let before = sent_with_mcp_servers(&registry).await;
+        let before = cached_bytes(&request_with_mcp_servers(&registry).await);
 
         // A reload that restarts a server whose config didn't change.
         registry
@@ -1948,7 +1978,7 @@ mod tests {
             .insert_running_server("alpha", mcp_tools("alpha", &["a_search"]));
 
         assert_eq!(
-            sent_with_mcp_servers(&registry).await,
+            cached_bytes(&request_with_mcp_servers(&registry).await),
             before,
             "an unchanged server keeps its tools' bytes and position"
         );
