@@ -298,7 +298,7 @@ pub(crate) fn untimed(messages: &[Message]) -> Vec<TimedMessage<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use residuum_inference::{ImageData, Message, ThinkingBlock};
+    use residuum_inference::{ImageData, Message, ThinkingBlock, UsageComponent, UsageRecorder};
     use residuum_memory::observer::{Observer, ObserverConfig};
     use residuum_memory::testing::MockMemoryProvider;
     use std::sync::Arc;
@@ -862,6 +862,49 @@ mod tests {
         assert_eq!(
             memory.covered_through, 2,
             "only the chunk that succeeded counts as covered"
+        );
+    }
+
+    #[tokio::test]
+    async fn each_chunk_of_a_mid_run_extraction_is_recorded_under_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let (observer, calls) = recording_observer(100, None);
+        let mw = merge_writer(dir.path());
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &mw,
+            layout: &layout,
+            episode_skip_token_floor: 1,
+            tz: chrono_tz::UTC,
+        };
+        let transcript = marked_transcript();
+
+        let mut memory = SessionMemory::new();
+        memory
+            .maybe_stage(&untimed(&transcript), "run-test-1", &env)
+            .await;
+
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            3,
+            "six messages should take three bounded calls"
+        );
+        let records = UsageRecorder::new(&layout)
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 3, "one usage record per observer call");
+        assert!(
+            records.iter().all(|record| {
+                record.component == UsageComponent::Observer
+                    && record.conversation.as_deref() == Some("run-test-1")
+            }),
+            "every chunk's call should be recorded as observer usage of the run"
         );
     }
 
