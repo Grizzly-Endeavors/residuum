@@ -485,7 +485,7 @@ mod tests {
 
         let prompt_ctx = PromptContext {
             skills: SkillsContext {
-                index: Some("<available_skills/>"),
+                index: Some("- pdf (team, /skills/pdf/SKILL.md): Reads PDFs"),
                 active_instructions: Some("<active_skill>instructions</active_skill>"),
             },
             ..PromptContext::default()
