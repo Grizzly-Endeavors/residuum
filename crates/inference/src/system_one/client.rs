@@ -33,6 +33,7 @@ pub struct SystemOneEndpoint {
 impl std::fmt::Debug for SystemOneEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SystemOneEndpoint")
+            .field("kind", &self.kind)
             .field("provider", &self.provider)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
